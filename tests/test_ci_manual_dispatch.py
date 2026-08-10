@@ -201,13 +201,25 @@ def test_the_paths_filter_itself_is_pull_request_only() -> None:
     )
 
 
+def _job_conditions(workflow: str) -> dict[str, str]:
+    """Job name -> its job-level `if`, for jobs that have one."""
+    out: dict[str, str] = {}
+    for name, body in _jobs(workflow).items():
+        for line in body.splitlines():
+            m = re.match(r"^    if:\s*(.+?)\s*$", line)
+            if m:
+                out[name] = m.group(1)
+                break
+    return out
+
+
 @pytest.mark.parametrize("workflow", sorted(_REQUIRED_CONTEXT_WORKFLOWS))
 def test_pull_request_payload_reads_degrade_rather_than_empty_out(workflow: str) -> None:
     """On a dispatch these expressions are `""`. Each must handle that.
 
     Three resolutions are accepted, and nothing else:
 
-    1. the job runs only on `pull_request`, so the field always exists;
+    1. the *job* runs only on `pull_request`, so the field always exists;
     2. the expression carries a `||` fallback in the template; or
     3. the value is bound to an env var whose emptiness the job's own shell
        tests before use — `commit-msg-prefix` does this, reconstructing the
@@ -216,9 +228,18 @@ def test_pull_request_payload_reads_degrade_rather_than_empty_out(workflow: str)
 
     A bare read with none of the three is the silent-empty-range bug: the check
     reports green having validated nothing.
+
+    Resolution 1 is read off the job-level `if:` and nothing else. Matching the
+    guard anywhere in the job body exempts a job for a *step*-level guard, which
+    says nothing about the steps around it: ci.yml's `pytest` job gates only its
+    `dorny/paths-filter` step on `github.event_name == 'pull_request'`, and that
+    substring alone excused the entire job — a bare
+    `${{ github.event.pull_request.base.sha }}` added to its test step left this
+    file green.
     """
+    conditions = _job_conditions(workflow)
     for name, body in _jobs(workflow).items():
-        if "github.event_name == 'pull_request'" in body:
+        if "github.event_name == 'pull_request'" in conditions.get(name, ""):
             continue
         for line in body.splitlines():
             for expr in _EXPR_RE.findall(line):
@@ -247,10 +268,11 @@ def test_the_degradation_invariant_is_not_vacuous() -> None:
     nothing to check — so pin that at least one un-defaulted read survives and
     is therefore actually being exercised.
     """
+    conditions = _job_conditions("staging-gate.yml")
     bare = [
         expr
-        for body in _jobs("staging-gate.yml").values()
-        if "github.event_name == 'pull_request'" not in body
+        for name, body in _jobs("staging-gate.yml").items()
+        if "github.event_name == 'pull_request'" not in conditions.get(name, "")
         for expr in _EXPR_RE.findall(body)
         if _PR_FIELD_RE.search(expr) and "||" not in expr
     ]
@@ -259,18 +281,6 @@ def test_the_degradation_invariant_is_not_vacuous() -> None:
         "deliberate, delete the degradation test rather than letting it pass "
         "vacuously"
     )
-
-
-def _job_conditions(workflow: str) -> dict[str, str]:
-    """Job name -> its job-level `if`, for jobs that have one."""
-    out: dict[str, str] = {}
-    for name, body in _jobs(workflow).items():
-        for line in body.splitlines():
-            m = re.match(r"^    if:\s*(.+?)\s*$", line)
-            if m:
-                out[name] = m.group(1)
-                break
-    return out
 
 
 @pytest.mark.parametrize("workflow", sorted(_REQUIRED_CONTEXT_WORKFLOWS))
