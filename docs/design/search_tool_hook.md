@@ -265,11 +265,12 @@ on fresh install: opt-in (consistency with v1.2.0 hook surface).
   `Grep|Glob` only — those are the two tools whose `tool_input`
   cleanly maps to a search query. Other matchers can be added once
   the hook surface is validated in production.
-- Hook-side caching. The retrieval layer's `RetrievalCache` is opt-in
-  for callers; the hook does not maintain its own. Repeated identical
-  queries within a session would benefit from cache reuse, but cache
-  lifetime across hook invocations is non-trivial and is deferred until
-  production data shows a hit rate worth pursuing.
+- Hook-side caching. ~~The retrieval layer's existing `RetrievalCache`
+  is opt-in for callers; the hook does not maintain its own.
+  Repeated identical queries within a session would benefit from
+  cache reuse, but cache lifetime across hook invocations is non-
+  trivial and is deferred until production data shows a hit rate
+  worth pursuing.~~
   **Moot as of [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)**
   — `RetrievalCache` was deleted as a zero-caller LRU, so there is no
   longer an opt-in cache for the hook to decline. Nothing about the hook
