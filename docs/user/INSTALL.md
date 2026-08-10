@@ -66,7 +66,7 @@ aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 
 `aelf setup --host codex` writes the hook set to Codex's configuration home (#1052) and installs the `/aelf:*` slash-command bundle as `$aelf-*` agent skills under `~/.agents/skills/` (v4.1.0+), generated from the same source bundle so the two surfaces never drift. Pass `--no-codex-skills` to install hooks only (`--codex-skills` is the default). Skill install is idempotent and prunes orphans, but only ever touches aelfrice-generated skills (an `AELFRICE-CODEX-SKILL` marker gates replacement/removal). Full detail — invocation, the generation transform, and the Codex-specific approval caveats — in [SLASH_COMMANDS § Codex host](SLASH_COMMANDS.md#codex-host-aelf--skills).
 
-#### `$CODEX_HOME` (v4.2.1+)
+#### `$CODEX_HOME` (unreleased)
 
 Codex reads its configuration from `$CODEX_HOME` when that variable is set to a non-empty value, and from `~/.codex` otherwise. All three verbs resolve the same way (#1427), so an isolated profile, a CI runner, a portable install, or two side-by-side Codex configurations each get wired where that Codex actually reads. `aelf doctor --host codex` prints the resolved home on its first line, so you can see which directory was inspected rather than infer it.
 
@@ -74,7 +74,7 @@ A `$CODEX_HOME` that does not exist, or that names something other than a direct
 
 The `$aelf-*` agent skills are **not** moved by `$CODEX_HOME` — `~/.agents/skills/` is a cross-agent standard path, shared with other agents' skills.
 
-#### Shared `hooks.json` (v4.2.1+)
+#### Shared `hooks.json` (unreleased)
 
 `hooks.json` belongs to Codex, not to aelfrice: your own entries, another installer's, and ours live in one document. Setup and unsetup take an advisory lock on a sibling `hooks.json.lock`, re-check the file's content hash immediately before committing, and replace it atomically (#1428), so a concurrent edit is merged with — never overwritten by — an aelfrice run. If the file keeps changing under three attempts, the command refuses and writes nothing; re-run it.
 
