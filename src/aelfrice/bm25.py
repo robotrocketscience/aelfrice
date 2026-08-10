@@ -1517,21 +1517,30 @@ _SIDECAR_VERSION: Final[int] = 1
 _SIDECAR_SUFFIX: Final[str] = ".bm25f"
 
 
-def sidecar_path_for(store: MemoryStore) -> Path | None:
+def sidecar_path_for(
+    store: MemoryStore, *, for_write: bool = False
+) -> Path | None:
     """The persistent-index sidecar path for `store`, or None when there
     is nothing to persist against.
 
-    None for an in-memory store, and — since #1416 — for a read-only
-    handle. `mode=ro` stops the engine writing the database; it does
-    nothing about a file aelfrice writes *beside* it, and a retrieval on
-    a read-only store was observed creating `memory.db.bm25f` in a
-    directory the caller was only supposed to be reading. Returning None
-    disables the load path too, which is the conservative half of the
-    trade: an index built in memory costs one rebuild and cannot leave a
-    stale blob behind under a handle that may not refresh it.
+    None for an in-memory store — nothing to key a sidecar to — and,
+    when `for_write` is set, for a read-only handle (#1416). `mode=ro`
+    stops the engine writing the *database*; it does nothing about a
+    file aelfrice writes beside it, and a retrieval through a read-only
+    handle was observed creating `memory.db.bm25f` in a directory the
+    caller was only supposed to be reading. That also reaches the #1328
+    diagnostics, which open the live store `mode=ro` precisely so they
+    cannot change it.
+
+    Only the write is suppressed. A read-only handle still *loads* an
+    existing sidecar: reading a blob costs the directory nothing, and
+    disabling the load as well would silently make every read-only
+    retrieval rebuild the index from scratch.
     """
     db_path = store.db_path
-    if db_path == ":memory:" or store.read_only:
+    if db_path == ":memory:":
+        return None
+    if for_write and store.read_only:
         return None
     return Path(db_path + _SIDECAR_SUFFIX)
 
@@ -1721,7 +1730,7 @@ class BM25IndexCache:
         temp file keeps concurrent readers safe: they see either the
         old blob or the new one, never a torn write.
         """
-        path = sidecar_path_for(self.store)
+        path = sidecar_path_for(self.store, for_write=True)
         if path is None:
             return
         try:

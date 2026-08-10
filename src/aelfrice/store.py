@@ -150,13 +150,60 @@ class ReadOnlyStoreUnavailable(RuntimeError):
     """
 
 
-def _is_readonly_open_failure(exc: BaseException) -> bool:
+class StoreSchemaTooOld(ReadOnlyStoreUnavailable):
+    """The store predates a table the read surface needs (#1416 AC4).
+
+    A read-only handle runs no DDL and no migration by construction, so a
+    store written by an older binary is read at whatever shape it has.
+    Without this check the shortfall surfaced as a bare
+    `sqlite3.OperationalError: no such table: edges` from whichever
+    query happened to run first — `aelf status` died in `count_edges`,
+    four call frames from the open — which is the same traceback class
+    #1416 was filed about, merely relocated.
+
+    A subclass of `ReadOnlyStoreUnavailable` so the CLI's existing
+    handler turns it into one actionable line rather than a traceback.
+    """
+
+
+#: Tables that at least one observational command cannot run without.
+#: **Measured, not assumed** (#1416): each of the 24 tables `_SCHEMA`
+#: creates was dropped in turn from a copy of a seeded store, which was
+#: then opened `read_only=True` and driven through `search`, `status`,
+#: `locked`, `speculative`, `core`, `stale`, `feed`, `introspect` and
+#: `graph`. These seven are the tables whose absence raised; the other
+#: seventeen — `exploration_events`, `ingest_log`, `sessions`,
+#: `belief_touches`, … — are untouched by every one of those commands,
+#: and refusing to read a store that merely lacks one of them would be a
+#: gratuitous denial of the very service #1416 asks for.
+#:
+#: Tables only. Columns added by later `ALTER TABLE` migrations are NOT
+#: covered, so a store old enough to be missing a *column* still reaches
+#: the query that needs it; closing that would mean pinning the expected
+#: column set of every table, and no such drift has been observed.
+READ_ONLY_REQUIRED_TABLES: Final[frozenset[str]] = frozenset({
+    "beliefs",
+    "beliefs_fts",
+    "belief_corroborations",
+    "belief_entities",
+    "edges",
+    "feedback_history",
+    "schema_meta",
+})
+
+
+def is_readonly_open_failure(exc: BaseException) -> bool:
     """True for the SQLite errors that mean "this store is not writable".
 
     Keys on `sqlite_errorname` (`SQLITE_READONLY*`, `SQLITE_CANTOPEN*`)
     rather than message text, and falls back to a substring probe only
     when the attribute is absent, so a translated or reworded message
     cannot silently turn a permission failure into a crash.
+
+    Public rather than underscored because `db_paths.open_store_for_read`
+    is the caller that decides whether to fall back to `mode=ro`, and the
+    decision must be made from the *same* predicate the read-only open
+    itself uses — a second copy would drift.
     """
     name = getattr(exc, "sqlite_errorname", "") or ""
     if name.startswith(("SQLITE_READONLY", "SQLITE_CANTOPEN")):
@@ -1399,7 +1446,7 @@ class MemoryStore:
                 self._conn.execute("SELECT count(*) FROM sqlite_master")
             except sqlite3.DatabaseError as exc:
                 self._conn.close()
-                if not _is_readonly_open_failure(exc):
+                if not is_readonly_open_failure(exc):
                     raise
                 parent = os.path.dirname(os.path.abspath(path)) or "."
                 raise ReadOnlyStoreUnavailable(
@@ -1410,6 +1457,27 @@ class MemoryStore:
                     f"directory for one command, or run this against a store "
                     f"whose sidecars exist."
                 ) from exc
+            # #1416 AC4: a read-only handle runs no migration, so a store
+            # older than the read surface must be refused *here* with a
+            # migration instruction, not left to die on `no such table`
+            # inside whichever command touched the missing one first.
+            missing = READ_ONLY_REQUIRED_TABLES - {
+                str(row[0])
+                for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type IN ('table', 'view')"
+                )
+            }
+            if missing:
+                self._conn.close()
+                raise StoreSchemaTooOld(
+                    f"{path} needs a migration this command cannot run: "
+                    f"the read-only handle found no "
+                    f"{', '.join(sorted(missing))} table. Opening the store "
+                    f"with write access once migrates it — grant write "
+                    f"access to the database and its directory, run any "
+                    f"aelfrice command, then retry."
+                )
         else:
             self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row

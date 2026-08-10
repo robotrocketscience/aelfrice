@@ -192,7 +192,7 @@ def open_store_for_read() -> MemoryStore:
     """
     import sqlite3
 
-    from aelfrice.store import _is_readonly_open_failure
+    from aelfrice.store import is_readonly_open_failure
 
     p = db_path()
     ident = repo_identity_from_db_path(p)
@@ -206,7 +206,7 @@ def open_store_for_read() -> MemoryStore:
     try:
         return MemoryStore(str(p), project_context_default=ident)
     except sqlite3.DatabaseError as exc:
-        if not _is_readonly_open_failure(exc):
+        if not is_readonly_open_failure(exc):
             raise
     return MemoryStore(str(p), project_context_default=ident, read_only=True)
 

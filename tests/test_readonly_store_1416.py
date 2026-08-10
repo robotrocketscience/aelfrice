@@ -19,6 +19,19 @@ regimes, and this file pins both:
   unwinding a traceback. `immutable=1` would open it, and is refused on
   purpose: it promises the engine the file never changes while an
   aelfrice hook outside the sandbox may still be writing it.
+
+**#1416's acceptance criterion 1 is therefore NOT met, and this file
+says so rather than around it.** AC1 asks that `aelf search` *succeed*
+with the database at 0444 and its directory at 0555. That regime is the
+second one above: with no live writer there are no sidecars, and
+`test_missing_sidecars_report_instead_of_tracebacking` asserts exit 1
+with a message. Independently confirmed at the engine, below aelfrice:
+on SQLite 3.50.4 a plain `connect` and a `mode=ro` connect both fail
+`SQLITE_READONLY_DIRECTORY` against such a directory, and only
+`immutable=1` opens it. Serving AC1 as written means taking the
+`immutable=1` promise, which is an operator decision about a
+correctness/availability trade, not one to make silently inside a
+bugfix — so the issue stays open on AC1.
 """
 from __future__ import annotations
 
@@ -33,7 +46,13 @@ import pytest
 from aelfrice.bm25 import sidecar_path_for
 from aelfrice.cli import main
 from aelfrice.db_paths import open_store_for_read
-from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
+from aelfrice.store import (
+    _SCHEMA,
+    READ_ONLY_REQUIRED_TABLES,
+    MemoryStore,
+    ReadOnlyStoreUnavailable,
+    StoreSchemaTooOld,
+)
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
@@ -162,18 +181,62 @@ def test_status_and_locked_survive_a_frozen_store(
         holder.close()
 
 
+def test_the_other_observational_commands_survive_a_frozen_store(
+    store_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1416 AC3: the rest of the declared read-only surface.
+
+    `speculative`, `core`, `stale`, `introspect`, `graph` and `feed` all
+    advertise an observational contract, and every one of them opened
+    the store read-write. `feed` is in the list because it is user-
+    visible as a read command, though it reads a JSONL log rather than
+    the database.
+
+    The dropped table is load-bearing, not decoration: a frozen store
+    whose schema is already complete gives the *writable* open nothing
+    to write, so it succeeds and the fallback is never reached. Removing
+    one table the open-time DDL battery recreates is what forces the
+    permission failure this test is about.
+    """
+    db = store_dir / "memory.db"
+    holder = _hold_sidecars(db)
+    try:
+        sqlite3.connect(str(db)).executescript(
+            "DROP TABLE IF EXISTS exploration_events;"
+        )
+        _freeze(store_dir)
+        before = _digest(db)
+        for argv in (
+            ["speculative"],
+            ["core"],
+            ["stale"],
+            ["introspect"],
+            ["graph", "codex"],
+            ["feed"],
+        ):
+            capsys.readouterr()
+            assert main(list(argv)) == 0, f"{argv} failed"
+            assert "Traceback" not in capsys.readouterr().err
+        assert _digest(db) == before
+    finally:
+        holder.close()
+
+
 def test_observational_read_writes_no_bm25f_sidecar(
     store_dir: Path,
 ) -> None:
     """`mode=ro` binds the engine, not the files aelfrice writes beside it.
 
     A read-only retrieval was observed creating `memory.db.bm25f` in a
-    directory the caller was only meant to be reading.
+    directory the caller was only meant to be reading. Only the *write*
+    is suppressed — a read-only handle still resolves the sidecar for
+    loading, so an existing index is not thrown away.
     """
     db = store_dir / "memory.db"
     store = MemoryStore(str(db), read_only=True)
     try:
-        assert sidecar_path_for(store) is None
+        assert sidecar_path_for(store, for_write=True) is None
+        assert sidecar_path_for(store) is not None, "the load path stays open"
         from aelfrice.retrieval import retrieve
 
         assert [b.content for b in retrieve(store, "codex", token_budget=800)]
@@ -214,6 +277,94 @@ def test_read_only_open_raises_the_typed_error_at_the_open_site(
     message = str(excinfo.value)
     assert "-shm" in message
     assert str(store_dir) in message
+
+
+# --- regime 3: the store is readable but older than this binary ------------
+
+
+def test_an_outdated_schema_reports_a_migration_instead_of_tracebacking(
+    store_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1416 AC4. A read-only handle runs no migration, by construction.
+
+    Before this check the shortfall surfaced as
+    `sqlite3.OperationalError: no such table: edges`, raised from
+    `count_edges` four frames below the open — the same traceback class
+    #1416 was filed about, relocated rather than removed.
+    """
+    db = store_dir / "memory.db"
+    holder = _hold_sidecars(db)
+    try:
+        sqlite3.connect(str(db)).executescript("DROP TABLE edges;")
+        _freeze(store_dir)
+        before = _digest(db)
+        capsys.readouterr()
+        rc = main(["status"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "no such table" not in err
+        assert "edges" in err
+        assert "write access" in err
+        assert _digest(db) == before
+    finally:
+        holder.close()
+
+
+def test_the_outdated_schema_error_is_typed_at_the_open_site(
+    store_dir: Path,
+) -> None:
+    db = store_dir / "memory.db"
+    holder = _hold_sidecars(db)
+    try:
+        sqlite3.connect(str(db)).executescript("DROP TABLE belief_entities;")
+        _freeze(store_dir)
+        with pytest.raises(StoreSchemaTooOld) as excinfo:
+            MemoryStore(str(db), read_only=True)
+        assert "belief_entities" in str(excinfo.value)
+        # Caught by the CLI's existing #1416 handler, hence the subclass.
+        assert isinstance(excinfo.value, ReadOnlyStoreUnavailable)
+    finally:
+        holder.close()
+
+
+def test_a_table_no_read_command_touches_does_not_block_the_read(
+    store_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The required set is a measured floor, not the whole schema.
+
+    Refusing to read a store that merely lacks `exploration_events` —
+    which not one observational command queries — would deny exactly the
+    service #1416 asks for. This is the arm that fails if the required
+    set is widened to "every table `_SCHEMA` creates".
+    """
+    db = store_dir / "memory.db"
+    holder = _hold_sidecars(db)
+    try:
+        sqlite3.connect(str(db)).executescript(
+            "DROP TABLE exploration_events;"
+        )
+        _freeze(store_dir)
+        capsys.readouterr()
+        assert main(["search", "codex"]) == 0
+        assert "codex scratch fact" in capsys.readouterr().out
+    finally:
+        holder.close()
+
+
+def test_every_required_table_is_one_this_schema_creates() -> None:
+    """Drift guard: a rename must break here, not at a user's open."""
+    fresh = sqlite3.connect(":memory:")
+    for statement in _SCHEMA:
+        fresh.execute(statement)
+    created = {
+        str(row[0])
+        for row in fresh.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+        )
+    }
+    assert READ_ONLY_REQUIRED_TABLES <= created
+    assert READ_ONLY_REQUIRED_TABLES  # a silently emptied set gates nothing
 
 
 def test_writable_store_still_gets_a_writable_handle(
