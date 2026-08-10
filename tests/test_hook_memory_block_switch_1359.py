@@ -33,15 +33,17 @@ from pathlib import Path
 
 import pytest
 
-import aelfrice.hook as hook_mod
+from aelfrice import hook as hook_mod
 from aelfrice.hook import (
     CLOSE_TAG,
     MEMORY_BLOCK_HINT,
     OPEN_TAG,
     SESSION_START_SUBBLOCK_OPEN,
     _audit_path_for_db,
+    _telemetry_path_for_db,
     memory_block_enabled,
     read_hook_audit,
+    read_user_prompt_submit_telemetry,
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -100,12 +102,20 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         _seed(db)
     monkeypatch.setenv("AELFRICE_DB", str(db))
     sout = io.StringIO()
+    serr = io.StringIO()
     rc = user_prompt_submit(
         stdin=io.StringIO(_payload(str(tmp_path))),
         stdout=sout,
-        stderr=io.StringIO(),
+        stderr=serr,
     )
     assert rc == 0
+    # A suppressed fire takes different branches through four writers, and the
+    # hook fails soft — an exception on any of them would be swallowed into a
+    # non-fatal stderr line and `rc` would still be 0. Without this the whole
+    # file could pass on a hook that was quietly erroring its way to an empty
+    # block, which is indistinguishable from suppression by stdout alone.
+    err = serr.getvalue()
+    assert "Traceback" not in err, err
     return sout.getvalue()
 
 
@@ -634,11 +644,6 @@ def test_suppressed_fire_reports_zero_injected_chars(
     is otherwise the sum of the injected hits' content lengths, so the
     disabled half's zero means suppression and not an empty retrieval.
     """
-    from aelfrice.hook import (
-        _telemetry_path_for_db,
-        read_user_prompt_submit_telemetry,
-    )
-
     on_dir = tmp_path / "on"
     on_dir.mkdir()
     on_db = on_dir / "memory.db"
