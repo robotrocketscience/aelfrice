@@ -84,26 +84,6 @@ jobs:
   # never block a merge.  The ::warning:: annotation appears in the CI log
   # and as a check-run summary.  See CONTRIBUTING.md § PR body requirements.
   # ---------------------------------------------------------------------------
-
-  # ---------------------------------------------------------------------------
-  # #170 — PR-body issue-link warning (non-blocking)
-  #
-  # Inspects the PR body for a GitHub auto-close keyword followed by an issue
-  # reference.  Recognised patterns (case-insensitive):
-  #
-  #   close[sd]? #N        closes #N, close #N, closed #N
-  #   fix(e[sd])? #N       fixes #N, fix #N, fixed #N
-  #   resolve[sd]? #N      resolves #N, resolve #N, resolved #N
-  #   … same with "GH-N" instead of "#N"
-  #
-  # PRs that legitimately have no issue (release PRs, dependency bumps, etc.)
-  # can silence the warning by including the marker <!-- no-issue --> anywhere
-  # in the PR body.
-  #
-  # CONTRACT: this job always exits 0.  It is informational only and must
-  # never block a merge.  The ::warning:: annotation appears in the CI log
-  # and as a check-run summary.  See CONTRIBUTING.md § PR body requirements.
-  # ---------------------------------------------------------------------------
   pr-body-issue-link:
     runs-on: ubuntu-latest
     steps:
