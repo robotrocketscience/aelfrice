@@ -503,6 +503,170 @@ def test_codex_abort_tolerance_does_not_cross_the_prompt(
     assert tl._last_assistant_text(str(transcript)) is None
 
 
+# The three other user-role records Codex writes that nobody typed. Bodies
+# are trimmed to their opening tag plus a representative payload; the rule
+# matches on the prefix, and every local occurrence starts at the tag.
+_CODEX_ENVIRONMENT_CONTEXT = (
+    "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"
+)
+_CODEX_RECOMMENDED_PLUGINS = (
+    "<recommended_plugins>\n  <plugin>none</plugin>\n</recommended_plugins>"
+)
+_CODEX_USER_SHELL_COMMAND = (
+    "<user_shell_command>\n<command>\nwhich tea\n</command>\n"
+    "<result>\nExit code: 1\n</result>\n</user_shell_command>"
+)
+
+
+@pytest.mark.parametrize("segments", [
+    (_CODEX_ENVIRONMENT_CONTEXT,),
+    (_CODEX_RECOMMENDED_PLUGINS,),
+    (_CODEX_USER_SHELL_COMMAND,),
+    # The paired shape rollouts actually write on a resume: the plugin
+    # list and the environment block as two segments of one record.
+    (_CODEX_RECOMMENDED_PLUGINS, _CODEX_ENVIRONMENT_CONTEXT),
+])
+def test_codex_synthetic_records_are_not_boundaries(
+    tmp_path: Path, segments: tuple[str, ...],
+) -> None:
+    """#1439: Codex's other harness-written records are not turn starts.
+
+    A `<user_shell_command>` record is written between
+    `exec_command_end` and `task_complete` with no model call in
+    between, and `<environment_context>` (with `<recommended_plugins>`
+    riding along) is re-injected on a resume just ahead of the real
+    prompt. Neither is typed, so stopping at one discards the answer the
+    current turn really gave.
+    """
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_user_input_line("question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_user_input_line("question two") + "\n" +
+        _codex_rollout_line("assistant", "TURN-2 REAL ANSWER") + "\n" +
+        _codex_user_input_line(*segments) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 REAL ANSWER"
+
+
+def test_codex_synthetic_tolerance_does_not_cross_the_prompt(
+    tmp_path: Path,
+) -> None:
+    """Skipping the synthetic records must not re-open the #1439 leak."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_user_input_line("question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_user_input_line("question two") + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call", "name": "shell"}})
+        + "\n" +
+        _codex_user_input_line(_CODEX_USER_SHELL_COMMAND) + "\n" +
+        _codex_user_input_line(_CODEX_ENVIRONMENT_CONTEXT) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
+def test_marker_beside_a_real_prompt_is_still_a_boundary(
+    tmp_path: Path,
+) -> None:
+    """A marker segment does not launder the typed segment beside it.
+
+    The exclusion is "this record says nothing but harness text", not
+    "this record mentions harness text": a record carrying the marker
+    *and* a real prompt opens a turn. Relaxing the rule to "any segment
+    is a marker" makes the record disappear as a boundary and hands the
+    new turn the previous turn's answer — the #1439 defect again.
+    """
+    claude_path = tmp_path / "transcript.jsonl"
+    claude_path.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line([
+            {"type": "text", "text": "[Request interrupted by user]"},
+            {"type": "text", "text": "question two"},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(claude_path)) is None
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        _codex_user_input_line("question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_user_input_line(
+            _CODEX_ENVIRONMENT_CONTEXT, "question two") + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(rollout)) is None
+
+
+def test_marker_match_ignores_surrounding_whitespace(tmp_path: Path) -> None:
+    """The prefix test is against the stripped text.
+
+    Hosts have padded these records with a leading newline across
+    versions; without the strip the marker reads as an ordinary prompt
+    and suppresses the interrupted turn's partial answer.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "text", "text": "TURN-2 REAL ANSWER"}) + "\n" +
+        _claude_user_line("\n  [Request interrupted by user]  \n") + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 REAL ANSWER"
+
+
+def test_empty_user_content_is_a_boundary(tmp_path: Path) -> None:
+    """A user record with no content still opens a turn.
+
+    It carries no tool_result and no marker, so there is nothing to
+    identify it as mid-turn plumbing; bounding the scan there is the
+    fail-safe direction — the cost is a missing answer, not a wrong one.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line([]) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
+def test_stop_writes_stub_when_claude_turn_has_no_answer(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """The end-to-end arm on the Claude-host shape, not just Codex."""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "tool_use", "name": "Bash", "input": {}}) + "\n",
+        encoding="utf-8",
+    )
+    rc = _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == ""
+
+
 def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     rc = _run_main({"hook_event_name": "Stop"})
     assert rc == 0
