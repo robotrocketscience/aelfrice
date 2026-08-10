@@ -643,6 +643,14 @@ def _commit_hooks_transaction(
     `result.error`, not raised. `FileLockTimeout` would otherwise escape
     to the #1161 wrapper in `cli`, which names *settings.json* — the
     other host's file, and not the one under contention here.
+
+    The sibling `hooks.json.lock` is created on demand — `_open_lock`
+    makes the parent directory, so even a first install into a home that
+    does not exist yet is serialised — and is deliberately **left in
+    place by `unsetup`**, unlike the artifacts #1173 sweeps. Unlinking a
+    lock file another process may be holding is how two writers end up
+    holding two different inodes and no mutual exclusion at all; a
+    zero-byte file is the cheaper residue.
     """
     from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
 
