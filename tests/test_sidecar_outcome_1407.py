@@ -510,7 +510,7 @@ def test_the_cadence_pass_rebuild_survives_the_per_fire_reset(
     Falsifiable by moving `reset_sidecar_outcome()` back below the
     `_maybe_run_ups_cadence_checkpoint` call, which is where it shipped.
     """
-    import aelfrice.hook as hook_mod
+    from aelfrice import hook as hook_mod
     from aelfrice.bm25 import _record_sidecar_outcome
 
     import io

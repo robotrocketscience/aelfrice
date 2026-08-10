@@ -136,7 +136,11 @@ def main() -> int:
         # guess: calling all of these "pre-field" would assert something the
         # data cannot support, in the one script whose whole job is to stop
         # exactly that kind of unearned attribution.
-        pre_field = no_index_work = None
+        # `no_index_work` is deliberately left unbound here: with no keyed
+        # row there is no boundary to split on, and the only line that
+        # prints it is in the branch this arm does not take. Binding it to
+        # None would be a value nothing reads.
+        pre_field = None
         unclassified = len(unkeyed)
     else:
         pre_field = sum(1 for t in unkeyed if t is not None and t < first_scored_ts)
