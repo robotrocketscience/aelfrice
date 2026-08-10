@@ -106,6 +106,32 @@ Conventions:
 - Tests required for every behavioral change.
 - `pyright --strict` must pass.
 
+### The bench-gate tier does not run here
+
+A green `pytest tests/` on this repository does **not** mean the quality gates
+passed. It means they were skipped.
+
+The retrieval, compression and clustering quality gates under
+`tests/bench_gate/` are marked `bench_gated` and skip unless
+`AELFRICE_CORPUS_ROOT` points at a labelled evaluation corpus. That corpus is
+private and this repository is public, so on every public CI run the whole tier
+skips. The run prints a `bench-gate tier` summary line saying how many, so the
+skips cannot be mistaken for passes.
+
+**This is a deliberate disposition (#1420 §3), not an oversight.** The
+self-hosted-runner alternative was considered and rejected: `ci.yml` is
+`on: pull_request` and runs `uv run pytest tests/`, so a fork PR executes its
+own test files on whatever host runs them — a self-hosted runner on a public
+repo is arbitrary code execution by any fork author. The mitigations (one-shot
+non-privileged container, network isolation, no repo secrets, an approving
+label gate on fork PRs) are all real, but they amount to a standing security
+commitment taken on to move one quality signal earlier. Not worth it at this
+repository's size.
+
+If you are changing retrieval ranking, compression, or clustering behaviour,
+say so in the PR body and expect the quality evidence to come from a
+corpus-bearing run rather than from CI being green.
+
 ### Commit-message prefix enforcement
 
 `scripts/check-commit-msg.py` validates that every commit subject starts with

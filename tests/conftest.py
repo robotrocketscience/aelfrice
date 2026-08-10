@@ -50,12 +50,52 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+# The one skip reason for the whole tier, so the terminal summary below can
+# recognise these skips by prefix rather than by re-deriving which tests are
+# bench-gated. It names the issue that decided the tier runs lab-side, because
+# the failure this guards against is a reader concluding the quality tier ran
+# (#1456 AC1).
+BENCH_GATE_SKIP_REASON: str = (
+    f"{CORPUS_ENV_VAR} not set or not a directory; skipping bench-gate test "
+    "(lab corpus absent by design — see #1420 §3; the corpus is private and "
+    "this repository is public)"
+)
+
+
 def _corpus_root() -> Path | None:
     raw = os.environ.get(CORPUS_ENV_VAR)
     if not raw:
         return None
     p = Path(raw).expanduser()
     return p if p.is_dir() else None
+
+
+def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untyped-def]
+    """State the bench-gate skip count as its own line (#1456 AC2).
+
+    Without this the tier's skips are indistinguishable from every other
+    skip in a `N passed, M skipped` tail, and a reader checking whether the
+    quality gates ran sees a green run and concludes they did. They did not:
+    they were never executed.
+
+    Counted by matching the shared reason prefix, not by re-deriving the
+    marker, so a test that skips for an unrelated reason is not folded in.
+    """
+    skipped = terminalreporter.stats.get("skipped", [])
+    n = sum(
+        1
+        for rep in skipped
+        if CORPUS_ENV_VAR in str(getattr(rep, "longrepr", ("", "", ""))[2])
+    )
+    if not n:
+        return
+    terminalreporter.write_sep("-", "bench-gate tier")
+    terminalreporter.write_line(
+        f"{n} bench-gate tests skipped: lab corpus absent by design "
+        f"(#1420 §3). These are the retrieval / compression / clustering "
+        f"quality gates; they did NOT run. Set {CORPUS_ENV_VAR} to a corpus "
+        f"root to execute them."
+    )
 
 
 @pytest.fixture(scope="session")
@@ -67,10 +107,7 @@ def aelfrice_corpus_root() -> Path:
     """
     root = _corpus_root()
     if root is None:
-        pytest.skip(
-            f"{CORPUS_ENV_VAR} not set or not a directory; "
-            "skipping bench-gate test (lab corpus absent)"
-        )
+        pytest.skip(BENCH_GATE_SKIP_REASON)
     return root
 
 
@@ -84,10 +121,7 @@ def _skip_bench_gated_without_corpus(request: pytest.FixtureRequest) -> None:
     if "bench_gated" not in request.keywords:
         return
     if _corpus_root() is None:
-        pytest.skip(
-            f"{CORPUS_ENV_VAR} not set or not a directory; "
-            "skipping bench-gate test (lab corpus absent)"
-        )
+        pytest.skip(BENCH_GATE_SKIP_REASON)
 
 
 def load_corpus_module(root: Path, module: str) -> list[dict]:
