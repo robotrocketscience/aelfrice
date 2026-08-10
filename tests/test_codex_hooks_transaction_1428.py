@@ -565,3 +565,27 @@ def test_concurrent_writers_preserve_the_foreign_entry(
     assert errors == []
     final = json.loads(p.read_text(encoding="utf-8"))
     assert final["hooks"]["SessionEnd"] == _FOREIGN_A["hooks"]["SessionEnd"]
+
+
+def test_removing_from_an_absent_file_does_not_create_the_codex_home(
+    tmp_path: Path,
+) -> None:
+    """An uninstall must not create the directory it uninstalls from.
+
+    `_commit_hooks_transaction` takes `exclusive_file_lock(hooks_path)`, and
+    the lock helper creates the lock file's parent before `_plan_remove` ever
+    tests for existence. Entering the transaction unconditionally therefore
+    made `aelf unsetup --host codex` (and `aelf uninstall --host codex`)
+    materialise `~/.codex/` containing `hooks.json.lock` on a machine that has
+    no Codex at all — and `codex_dir_present` is exactly what suppresses
+    `doctor`'s "not found — Codex not installed?" warning, so the uninstall
+    fabricated the artifact that hides the diagnostic.
+    """
+    codex_home = tmp_path / ".codex"
+    hooks_path = codex_home / "hooks.json"
+
+    result = remove_codex_hooks(hooks_path)
+
+    assert result.changed is False
+    assert result.error is None
+    assert not codex_home.exists(), sorted(p.name for p in tmp_path.iterdir())

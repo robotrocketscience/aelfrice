@@ -59,7 +59,7 @@ Override with `--scope user|project` and `--command /abs/path/aelf-hook` when yo
 Running Codex CLI instead? The same lifecycle verbs take `--host codex`:
 
 ```bash
-aelf setup --host codex      # hooks into ~/.codex/hooks.json + $aelf-* agent skills
+aelf setup --host codex      # hooks into $CODEX_HOME/hooks.json (else ~/.codex) + $aelf-* skills
 aelf doctor --host codex     # verify wiring; reports the installed skill count
 aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 ```
