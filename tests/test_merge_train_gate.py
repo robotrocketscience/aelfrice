@@ -567,3 +567,203 @@ def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
     assert '--base-ref "${BASE_REF}"' in text, (
         "the resolved base must be what is passed to the gate"
     )
+
+
+# --- the presence floor covers the gating set (#1458) --------------------
+#
+# #1435 built the floor from the required set, which made a head with *no*
+# check-runs distinguishable from a green one. It left the *partial* case: five
+# required contexts against ~26 check-runs, so 21 gates could be absent and the
+# verdict was byte-identical. #1436's `workflow_dispatch` hatch turned that from
+# unconstructible into two `gh workflow run` calls.
+
+
+# Workflow file -> the FLOOR_NAMES it emits. Kept beside the parser below, which
+# asserts this mapping and `.github/workflows/` agree in BOTH directions: a new
+# unfiltered PR workflow fails the guard until it is added here, and adding it
+# here without adding its names to FLOOR_NAMES fails too.
+_FLOOR_SOURCES: dict[str, frozenset[str]] = {
+    "bench-smoke.yml": frozenset({"bench-smoke"}),
+    "ci.yml": frozenset({"pytest (3.12)", "pytest (3.13)"}),
+    "label-docs.yml": frozenset({"label"}),
+    "migration-policy-check.yml": frozenset({"migration-policy-check"}),
+    "pr-size-soft-cap.yml": frozenset({"size-check"}),
+    "staging-gate.yml": frozenset({
+        "commit-msg-prefix",
+        "history-scan",
+        "pattern-scan",
+        "pr-body-issue-link",
+        "pr-title-prefix",
+        "release-docs-check",
+        "secrets-scan",
+    }),
+    "typos.yml": frozenset({"typos"}),
+}
+
+_WORKFLOW_DIR = _REPO / ".github" / "workflows"
+
+
+# Both spellings emit a check-run on a PR head. `label-docs.yml` uses
+# `pull_request_target` so it can label fork PRs, and a guard that knew only
+# `pull_request` silently dropped it out of the derived set — which is the
+# drift this guard exists to catch, so it must know every spelling.
+_PR_TRIGGER = re.compile(r"\s{2}(pull_request|pull_request_target):\s*(#.*)?$")
+
+
+def _pull_request_triggers(text: str) -> list[tuple[bool, list[str]]]:
+    """`(has_path_filter, types)` per PR trigger in the workflow's `on:` block.
+
+    Empty when the workflow has no PR trigger at all. Parsed textually on
+    purpose: PyYAML is not a dependency of this repo and is not importable in
+    CI, so a guard that imported it would not run where it matters.
+
+    Only the trigger's own sub-block is inspected. A `paths:` under `push:`
+    does not path-filter the PR trigger, and reading the whole file would
+    conflate the two.
+    """
+    lines = text.splitlines()
+    start = next(
+        (i + 1 for i, ln in enumerate(lines) if re.fullmatch(r"on:\s*", ln)), None
+    )
+    if start is None:
+        return []
+    end = next(
+        (
+            i
+            for i in range(start, len(lines))
+            if lines[i][:1].strip() and not lines[i].lstrip().startswith("#")
+        ),
+        len(lines),
+    )
+    block = lines[start:end]
+
+    found: list[tuple[bool, list[str]]] = []
+    for i, ln in enumerate(block):
+        if not _PR_TRIGGER.fullmatch(ln):
+            continue
+        sub_end = next(
+            (
+                j
+                for j in range(i + 1, len(block))
+                if block[j].strip() and not block[j].startswith("    ")
+            ),
+            len(block),
+        )
+        sub = block[i + 1 : sub_end]
+
+        has_paths = any(re.match(r"\s+paths(-ignore)?:", s) for s in sub)
+        types: list[str] = []
+        for s in sub:
+            m = re.match(r"\s+types:\s*\[(.*)\]", s)
+            if m:
+                types = [
+                    t.strip().strip("'\"") for t in m.group(1).split(",") if t.strip()
+                ]
+        found.append((has_paths, types))
+    return found
+
+
+def _emits_a_row_on_every_pr_head(text: str) -> bool:
+    """Does this workflow put a check-run on every push to a PR branch?
+
+    Three ways to be excluded, all of them real in this repo: a path filter
+    (the workflow may not run on a given diff), a `types:` list without
+    `synchronize` (`auto-add-to-board` is `[opened]`, `auto-status-board` is
+    `[closed]`), or no PR trigger at all (`replay-soak` is `schedule:`-only).
+
+    Any one qualifying trigger is enough — a workflow carrying both spellings
+    emits on every head if either of them does.
+    """
+    return any(
+        not has_paths and (not types or "synchronize" in types)
+        for has_paths, types in _pull_request_triggers(text)
+    )
+
+
+def test_a_rollup_of_only_the_required_contexts_is_not_mergeable() -> None:
+    """AC3 — the #1458 defect itself, at the level the gate can see it.
+
+    `gh workflow run ci.yml` plus `gh workflow run staging-gate.yml` produces
+    exactly the five required contexts. Before the floor widened, that head
+    evaluated identically to a fully covered one: nothing failing, nothing
+    pending, nothing missing.
+    """
+    verdict = evaluate(_all_required_green(), REQUIRED)
+    assert verdict["failing"] == []
+    assert verdict["pending"] == []
+    assert verdict["missing"] != [], (
+        "a head carrying only the five required contexts must not be mergeable; "
+        "migration-policy-check, typos, bench-smoke and the rest never ran"
+    )
+    # Named because the module docstring names it: migration-policy-check is the
+    # reason the gate covers every check-run, and it has no workflow_dispatch
+    # trigger, so during the incident the hatch exists for it cannot be produced.
+    assert "migration-policy-check" in verdict["missing"]
+
+
+def test_a_docs_only_pr_still_passes_the_floor() -> None:
+    """AC2 — the constraint that makes AC1 hard, demonstrated not argued.
+
+    A docs-only diff never runs `e2e`, `CodeQL`, `deptry`, `vulture`,
+    `Windows smoke`, `calibration` or `zizmor` — their workflows are
+    path-filtered, so they emit no check-run at all rather than a skipped one.
+    A floor containing any of those names would block every docs PR forever.
+    """
+    runs = [*_all_floor_green(), _run("Sourcery review", "skipped")]
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["missing"] == []
+    assert verdict["failing"] == []
+    assert verdict["pending"] == []
+
+
+@pytest.mark.parametrize("name", sorted(_FLOOR_SOURCES))
+def test_no_floor_name_comes_from_a_path_filtered_workflow(name: str) -> None:
+    """The property AC2 rests on, asserted per source rather than in aggregate.
+
+    If any floor source acquires a `paths:` filter, docs-only PRs start hanging
+    on a context that will never report — and the symptom would be a stuck
+    train, not a test failure, without this.
+    """
+    text = (_WORKFLOW_DIR / name).read_text()
+    assert _emits_a_row_on_every_pr_head(text), (
+        f"{name} contributes to FLOOR_NAMES but no longer emits a check-run on "
+        "every PR head; flooring on it will hang PRs it does not match"
+    )
+
+
+def test_every_unfiltered_pr_workflow_is_in_the_floor() -> None:
+    """The drift guard AC1 requires.
+
+    An explicit list is the only mechanism that names *which* check is absent,
+    and the cost of an explicit list is that it goes stale silently. This
+    re-derives the set from the workflow directory, so adding an unfiltered
+    `pull_request` workflow fails here until its names are in FLOOR_NAMES.
+    """
+    derived = {
+        path.name
+        for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
+        if _emits_a_row_on_every_pr_head(path.read_text())
+    }
+    # merge-train's own job is excluded by SELF_NAMES — waiting on it deadlocks.
+    derived.discard("merge-train.yml")
+    assert derived == set(_FLOOR_SOURCES), (
+        "the floor and .github/workflows/ have drifted; "
+        f"only in workflows: {sorted(derived - set(_FLOOR_SOURCES))}; "
+        f"only in the floor: {sorted(set(_FLOOR_SOURCES) - derived)}"
+    )
+
+
+def test_the_floor_is_exactly_what_its_sources_emit() -> None:
+    """The other direction: the mapping and the constant cannot disagree."""
+    assert frozenset().union(*_FLOOR_SOURCES.values()) == FLOOR_NAMES
+
+
+def test_the_floor_excludes_advisory_bots_and_the_trains_own_jobs() -> None:
+    """Flooring on either is a deadlock, not a gate.
+
+    An advisory name in the floor would restore exactly the #1397 blocking the
+    exclusion list exists to remove, and a self name would make the train wait
+    on itself.
+    """
+    assert not (FLOOR_NAMES & ADVISORY_NAMES)
+    assert not (FLOOR_NAMES & SELF_NAMES)
