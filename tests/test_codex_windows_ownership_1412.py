@@ -81,9 +81,16 @@ class TestIdempotence:
 
         groups = _read(hooks_path)["UserPromptSubmit"]
         assert len(groups) == 1, groups  # not 2
-        assert all(
-            WIN_HOOK not in json.dumps(g) for g in groups  # type: ignore[arg-type]
-        )
+        # Compare against the parsed commands, not the serialised group.
+        # `json.dumps` escapes every backslash, so `WIN_HOOK in json.dumps(g)`
+        # — the form this started as — could never match and the assertion
+        # held even when the stale handler survived.
+        commands = [
+            h.get("command")
+            for g in groups
+            for h in g.get("hooks", [])  # type: ignore[union-attr]
+        ]
+        assert WIN_HOOK not in commands, commands
 
     def test_the_same_file_still_duplicates_under_posix_rules(
         self, tmp_path: Path,
@@ -241,6 +248,30 @@ class TestDoctor:
         })
         report = doctor_codex(tmp_path, windows=True)
         assert any("coverage incomplete" in w for w in report.warnings)
+
+    def test_an_absent_hooks_file_says_why_every_event_is_missing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The third state, and the one left silent.
+
+        With a Codex home but no `hooks.json`, `hooks_file_present` is False
+        and `owned_handler_count` is 0, so neither warning branch ran: the
+        report listed all seven expected events as missing and said nothing
+        about why. That is the same silence the zero-handler branch was added
+        to remove, one state over.
+
+        It stays a *warning*. Never having run `aelf setup --host codex` is a
+        legitimate state, and failing doctor on it would make the Codex host
+        stricter than the Claude host for no stated reason.
+        """
+        report = doctor_codex(tmp_path, windows=True)
+
+        assert report.hooks_file_present is False
+        assert report.owned_handler_count == 0
+        assert report.missing_events == sorted(desired_codex_hooks())
+        assert any("does not exist" in w for w in report.warnings), (
+            report.warnings
+        )
 
 
 @pytest.mark.parametrize("windows", [None, True])

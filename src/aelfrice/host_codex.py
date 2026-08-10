@@ -880,6 +880,19 @@ def doctor_codex(
                 f"{hooks_path}; expected events are all missing "
                 "(run `aelf setup --host codex`)",
             )
+        elif not report.hooks_file_present:
+            # Codex is installed but has no hooks.json at all. Without this
+            # the report listed every expected event as missing and said
+            # nothing about why — the same silence the branch above was added
+            # to remove, one state over. This stays a warning, not a failure:
+            # never having run `aelf setup --host codex` is a legitimate
+            # state, and exiting nonzero on it would fail doctor on every
+            # machine that does not use the Codex host.
+            report.warnings.append(
+                f"{hooks_path} does not exist; no aelfrice hooks are "
+                "installed for the Codex host "
+                "(run `aelf setup --host codex`)",
+            )
 
     config_path = codex_config_path(cdir)
     if config_path.is_file():

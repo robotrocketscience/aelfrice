@@ -10,6 +10,7 @@ the natural implementation of it silently is not.
 from __future__ import annotations
 
 import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -174,8 +175,37 @@ class TestResolution:
         On Windows that names a directory that does not exist, so the venv
         branch of `_resolve_script` was dead and project scope silently fell
         through to a bare `PATH` search.
+
+        Compared against the *pinned* scheme, not `sysconfig`'s default one.
+        `get_path("scripts")` with no scheme resolves through
+        `get_default_scheme()`, which a distributor can patch — Debian's
+        `posix_local` is the common one — so asserting against it would fail
+        here for a reason that has nothing to do with this code. The
+        following test is the one that distinguishes the fix from the bug.
         """
-        assert launcher.scripts_dir() == Path(sysconfig.get_path("scripts"))
+        scheme = "nt" if os.name == "nt" else "posix_prefix"
+        expected = sysconfig.get_path(
+            "scripts", scheme, vars={
+                "base": sys.prefix, "installed_base": sys.prefix,
+                "platbase": sys.prefix, "installed_platbase": sys.prefix,
+            },
+        )
+        assert launcher.scripts_dir() == Path(expected)
+
+    def test_scripts_dir_follows_a_reassigned_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """`sysconfig` caches its prefix variables at first import.
+
+        A bare `sysconfig.get_path("scripts")` therefore does not follow a
+        reassigned `sys.prefix`, so the whole venv branch silently reported
+        the *installing* interpreter's directory. That version passed the
+        entire suite locally and turned six tests red on CI. `scripts_dir`
+        passes `sys.prefix` in explicitly and reads it per call; this is the
+        arm that goes red if it stops doing so.
+        """
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        assert launcher.scripts_dir().is_relative_to(tmp_path)
 
     def test_which_in_takes_an_explicit_directory(self, tmp_path: Path) -> None:
         target = _install_launcher(tmp_path)
