@@ -275,9 +275,14 @@ _TRANSCRIPT_ACK_BARE_RE: Final[re.Pattern[str]] = re.compile(
 # directives ("No work around.", the #1371 §1 acceptance case); and six —
 # 9 of the 19 rows — are **ephemeral session status** ("No failures yet.",
 # "No mutations attempted."), true of one run and of nothing after it.
-# Those ingest as `factual`/`agent_inferred` at alpha=3.0, beta=1.0, i.e. a
-# posterior mean of 0.75, which is a real percolation concern and a
-# different signal class from the ack and shell arms this rule addresses.
+# Driven through the real ingest path (`ingest_jsonl` with role="user",
+# source_label="transcript") those six store as `factual`/`user_transcript`
+# at alpha=3.0, beta=1.0, i.e. a posterior mean of 0.75. `user_transcript`,
+# not `agent_inferred`: `derive()` routes a role=user transcript row to the
+# undeflated USER_SOURCE prior (#888), so nothing scales alpha down and the
+# rows land at origin rank 3 rather than 1. That is a real percolation
+# concern, and a different signal class from the ack and shell arms this
+# rule addresses.
 # It is disclosed rather than filtered here: a recency/scope rule for
 # session status is its own change, not a clause bolted onto a punctuation
 # test. An eleventh rescued sentence *was* a pure acknowledgement; it is
