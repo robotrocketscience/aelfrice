@@ -288,6 +288,31 @@ def test_a_changelog_without_an_unreleased_header_is_an_error() -> None:
         collate("# Changelog\n", [], "4.3.0", "2026-08-10")
 
 
+def test_a_missing_entry_directory_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo'd `--unreleased` must not read as "no entries this cycle".
+
+    `Path.glob` on a path that does not exist returns `[]` with no
+    error, so without this the cut collates nothing, exits 0 and prints
+    "[Unreleased] drained into [4.3.0]" — the release ships with every
+    entry file still sitting in the real directory.
+    """
+    changelog = tmp_path / "v4.md"
+    before = _changelog("### Fixed", "", "- **Stays ([#98](u)).** Prose.")
+    changelog.write_text(before, encoding="utf-8")
+
+    code = main([
+        "collate_changelog.py", "--version", "4.3.0", "--date",
+        "2026-08-10", "--changelog", str(changelog), "--unreleased",
+        str(tmp_path / "unrleased"),
+    ])
+
+    assert code == 1
+    assert "no such directory" in capsys.readouterr().err
+    assert changelog.read_text(encoding="utf-8") == before
+
+
 def test_main_reports_a_malformed_file_and_changes_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

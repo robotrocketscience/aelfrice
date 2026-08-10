@@ -96,7 +96,22 @@ class CollationError(Exception):
 
 
 def entry_files(directory: Path) -> list[Path]:
-    """Entry files in collation order — sorted by name, not by glob."""
+    """Entry files in collation order — sorted by name, not by glob.
+
+    A missing directory is an error, not an empty one. `Path.glob` on a
+    path that does not exist returns `[]` without complaint, so a
+    typo'd `--unreleased` or a cut run from the wrong working directory
+    would collate zero files, exit 0 and report the release drained —
+    the quiet failure this whole convention has to buy off.
+    `check_changelog_dupes.py` already refuses a directory argument
+    that does not exist; this matches it.
+    """
+    if not directory.is_dir():
+        raise CollationError(
+            f"{directory}: no such directory. Nothing was collated — "
+            f"an empty result here means a wrong --unreleased path, "
+            f"not a release with no entries."
+        )
     return sorted(
         (p for p in directory.glob("*.md") if p.name != README_NAME),
         key=lambda p: p.name,
