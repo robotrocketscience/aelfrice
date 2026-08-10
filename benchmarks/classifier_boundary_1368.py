@@ -34,10 +34,12 @@ live belief set, not a fixed corpus, so they drift as beliefs accumulate.
 `n_active` is printed on every run and should be quoted alongside any figure
 taken from it. The CHANGELOG figures were taken at n=44,687, the denominator
 `correction.py`, `classification_core.py` and `value_compare.py` also quote.
-Drift is slower than the counts suggest: a re-run at n=44,688 reproduced all
-six published figures unchanged (465/249/216 and 588/32/565, 310/19/289,
-10/10/0), so quote the denominator with the figure but do not read a moved
-`n_active` as a stale table.
+Drift is slower than the counts suggest: a re-run at n=44,688 reproduced the
+enum figures unchanged (588/32/565, 310/19/289, 10/10/0), so quote the
+denominator with the figure but do not read a moved `n_active` as a stale
+table. The negation triple moved for a different reason — it is now
+473/242/231, measured on the lowercased text `detect_correction` matches
+rather than on the raw column, which is what the earlier 465/249/216 read.
 
 Usage::
 
@@ -233,8 +235,14 @@ def main(argv: list[str] | None = None) -> int:
 
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
+        # `.lower().strip()` mirrors correction.detect_correction:221, which
+        # lowercases and strips before it matches. Measuring on the raw
+        # column instead published a triple for a reading production never
+        # uses: it undercounted the real-negation half by 15 and overcounted
+        # the hyphen half by 7. A derivation script that does not take the
+        # code path it describes is measuring a different question.
         texts = [
-            row[0]
+            row[0].lower().strip()
             for row in con.execute(
                 "SELECT content FROM beliefs "
                 "WHERE valid_to IS NULL AND content IS NOT NULL"

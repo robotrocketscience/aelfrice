@@ -70,17 +70,23 @@ _ALWAYS_NEVER_TERMS: tuple[str, ...] = (
 # gone, but `\b` alone is *not* an equivalent replacement: `\b` matches
 # before a hyphen where a space did not, so `\bno\b` fires inside "no-op",
 # "no-match" and "not-yet-issued". Measured over the 44,687 active beliefs
-# of one live store, plain `\b` on both sides newly fires negation on 465
-# beliefs — 249 hyphen compounds (false positives; 214 "no-", 35 "not-")
-# and 216 real negations the trailing-space form missed (sentence-final
+# of one live store, plain `\b` on both sides newly fires negation on 473
+# beliefs — 242 hyphen compounds (false positives; 210 "no-", 32 "not-")
+# and 231 real negations the trailing-space form missed (sentence-final
 # "…is not.", "…probably no,", quote-adjacent). Negation therefore takes a
-# right bound of `(?![\w-])`, which keeps the 216 and drops the 249.
+# right bound of `(?![\w-])`, which keeps the 231 and drops the 242.
+# Measured on the text `detect_correction` actually matches — it lowercases
+# and strips at :221 — not on the raw `content` column. The distinction is
+# not cosmetic: the raw reading published 465/249/216, undercounting the
+# real-negation half by 15 and overcounting the hyphen half by 7, and it is
+# the reading the 2026-08-09 discussion and the first form of the ruling
+# both quoted.
 # Ratified by the operator ruling of 2026-08-10 on PR #1449
 # (https://github.com/robotrocketscience/aelfrice/pull/1449#issuecomment-5244041969),
 # which is the only ruling this bound has: the ruling of 2026-08-09 on the
 # same thread asked for `\bnot\s` / `\bno\s`, and this hybrid is not that.
 # The ratification names its price rather than calling the change free, so
-# this comment does too: the 216-belief widening stays, which makes **57
+# this comment does too: the 231-belief widening stays, which makes **57
 # `factual`→`correction` flips permanent** at the 0.947 correction prior for
 # everything ingested after the merge, and `"the no.1 option"` still fires
 # negation, which is wrong. Both were accepted as the cost of catching the
@@ -159,7 +165,7 @@ def _boundary_alternation(
 
     The two sides are not equally load-bearing and the docstring says so
     rather than implying symmetry buys something it does not. The **right**
-    guard is the fix: it suppresses 249 hyphen compounds on a 44,687-belief
+    guard is the fix: it suppresses 242 hyphen compounds on a 44,688-belief
     store. The **left** guard suppresses **0** on the same store — no
     belief has a hyphen-preceded negation token that the right guard does
     not already catch. It is here because "yes-no" is not a negation and
