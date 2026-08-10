@@ -240,25 +240,45 @@ class TestResolution:
     def test_which_in_does_not_escape_its_directory(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     ) -> None:
-        """The same curdir insertion applies to `which_in`'s `path=` call.
+        """A launcher in the working directory is not the venv's launcher.
 
-        Trunk's `_executable_in_dir` was `directory / name` plus an access
-        check, which could not escape `directory`. Delegating to
-        `shutil.which` reintroduced the escape on win32, inverting the
-        "project scope prefers the active environment over a global shim"
-        acceptance criterion.
+        Trunk probed `directory / name` and could not escape. Delegating to
+        `shutil.which` reintroduced an escape on win32, where `os.curdir` is
+        inserted at the front of the search list regardless of `path=`,
+        inverting the "project scope prefers the active environment over a
+        global shim" acceptance criterion.
+
+        This states the property but **cannot fail on POSIX CI**: the curdir
+        insertion is win32-only, so the delegation this replaced passes here
+        too. The test that actually goes red on a re-delegation is
+        `test_which_in_searches_a_directory_named_with_the_path_separator`,
+        which fails on any implementation that routes the directory through a
+        `PATH`-shaped parameter. Kept as the statement of intent, with the
+        enforcement named.
         """
-        outside = tmp_path / "elsewhere" / "aelf-hook.exe"
-        outside.parent.mkdir(parents=True)
-        outside.write_text("", encoding="utf-8")
-        scripts = tmp_path / "Scripts"
-        scripts.mkdir()
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        _install_launcher(cwd)
+        empty_scripts = tmp_path / "Scripts"
+        empty_scripts.mkdir()
 
-        monkeypatch.setattr(
-            launcher.shutil, "which",
-            lambda name, mode=1, path=None: str(outside),
-        )
-        assert launcher.which_in(scripts, "aelf-hook") is None
+        monkeypatch.chdir(cwd)
+        assert launcher.which_in(empty_scripts, "aelf-hook") is None
+
+    def test_which_in_searches_a_directory_named_with_the_path_separator(
+        self, tmp_path: Path,
+    ) -> None:
+        """`shutil.which` splits `path=` on `os.pathsep`; a directory is not a PATH.
+
+        ``/home/a:b/.venv/bin`` is a legal POSIX path, and routing it through
+        a PATH-shaped parameter silently searched nothing. The delegation
+        therefore lost a resolution the plain probe found — a POSIX
+        regression in a change whose stated scope was Windows-only.
+        """
+        odd = tmp_path / f"a{os.pathsep}b"
+        odd.mkdir()
+        target = _install_launcher(odd)
+        assert launcher.which_in(odd, "aelf-hook") == target
 
     def test_setup_delegates_the_scripts_dir_rather_than_re_deriving_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,

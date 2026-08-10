@@ -236,29 +236,40 @@ def scripts_dir() -> Path:
 def which_in(directory: Path, name: str) -> Path | None:
     """Resolve `name` inside `directory`, honouring Windows PATHEXT.
 
-    `shutil.which` with an explicit `path=` applies PATHEXT on win32, so
-    ``aelf-hook`` finds ``aelf-hook.exe``. `os.access(..., X_OK)` — what this
-    replaces — is meaningless on Windows, where it returns True for any
-    existing file.
+    Probes `directory` directly rather than delegating to `shutil.which`,
+    because routing a single directory through a `PATH`-shaped parameter is
+    wrong in two independent ways:
 
-    The result is confined to `directory` explicitly. `shutil.which` inserts
-    `os.curdir` at the front of the search list on win32 whenever the command
-    has no directory part, and that insertion is **not** conditional on
-    `path` being None — it sits in the `else` branch of the dirname test
-    (CPython 3.12-3.14, `shutil.py`). Passing `path=` therefore does not
-    confine anything: a stray ``aelf-hook.exe`` in the process's working
-    directory would be returned as if it were the venv's, and
-    `setup._resolve_script` would pin that relative path into settings.json.
+    * `shutil.which` splits `path=` on `os.pathsep`, so a directory whose own
+      name contains that separator is never searched. On POSIX that is ``:``,
+      and ``/home/a:b/.venv/bin`` is a legal path — the delegation lost a
+      resolution that the plain ``directory / name`` probe it replaced found,
+      a POSIX regression in a change whose stated scope was Windows-only.
+    * On win32 `shutil.which` inserts `os.curdir` at the front of the search
+      list whenever the command has no directory part. That insertion sits in
+      the `else` branch of the dirname test, **not** under `if path is None`
+      (CPython 3.12-3.14, `shutil.py`), so passing `path=` does not confine
+      anything: a stray ``aelf-hook.exe`` in the process's working directory
+      would be returned as if it were the venv's, and `setup._resolve_script`
+      would pin that relative path into settings.json.
+
+    PATHEXT is applied on Windows so ``aelf-hook`` still finds
+    ``aelf-hook.exe``. The executable bit is checked only on POSIX:
+    `os.access(..., X_OK)` is meaningless on Windows, where it answers True
+    for any existing file.
     """
-    found = shutil.which(name, path=str(directory))
-    if found is None:
-        return None
-    resolved = Path(found)
-    try:
-        inside = resolved.parent.resolve() == Path(directory).resolve()
-    except OSError:
-        return None
-    return resolved if inside else None
+    if _resolve_windows(None):
+        raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        suffixes = ["", *(ext for ext in raw.split(os.pathsep) if ext)]
+    else:
+        suffixes = [""]
+    for suffix in suffixes:
+        candidate = directory / f"{name}{suffix}"
+        if not candidate.is_file():
+            continue
+        if _resolve_windows(None) or os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def which_on_path(name: str) -> Path | None:
