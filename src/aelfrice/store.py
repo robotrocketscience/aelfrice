@@ -3594,8 +3594,13 @@ class MemoryStore:
         `fan_effect` (#1176 proposal 3, default off): rank by ACT-R
         fan-weighted activation instead of the raw overlap count — see
         `_lookup_entities_fan`. The returned tuples keep the same shape
-        and the second element is still the overlap count; only the
-        ordering changes, so no consumer needs to know which lane ran.
+        and the second element is still the overlap count, and the row
+        COUNT is `min(pool, limit)` either way. The ORDER differs — so
+        under truncation the returned *set* differs too: at a top-k, a
+        token budget, or any `[:n]`, which beliefs you get depends on
+        whether this lane ran. Take the whole pool before slicing, or
+        treat the selected set as lane-dependent. Only a caller that
+        consumes every returned row can ignore which lane ran (#1462).
 
         Empty input returns [] without hitting SQLite. The L2.5
         retrieval tier consumes this via `lookup_entities` directly —
