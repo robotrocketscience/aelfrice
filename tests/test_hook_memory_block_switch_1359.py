@@ -1011,3 +1011,108 @@ def test_suppressed_fire_draws_no_exploration_slot(
     assert _read_exploration(off_db) == []
     # The other write the lane takes: the global counter stays unclaimed.
     assert _read_exploration_counter(off_db) is None
+
+
+# ---------------------------------------------------------------------------
+# #1461 — the switch governs one half of cadence, and only one
+# ---------------------------------------------------------------------------
+
+
+def _run_with_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_id: str,
+) -> str:
+    """`_run`, but with a caller-chosen session id.
+
+    The `<cadence-resume>` block is only read on a session's *first*
+    prompt, so each arm of the split test needs its own session id or the
+    second arm silently exercises a different branch.
+    """
+    db = tmp_path / "memory.db"
+    if not db.exists():
+        _seed(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = user_prompt_submit(
+        stdin=io.StringIO(_payload(str(tmp_path), session_id=session_id)),
+        stdout=sout,
+        stderr=serr,
+    )
+    assert rc == 0
+    err = serr.getvalue()
+    assert "Traceback" not in err, err
+    return sout.getvalue()
+
+
+def _stub_both_cadence_halves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make both cadence halves produce output on demand.
+
+    Cadence is default-off and both halves depend on prior-session state,
+    so driving them for real is not something a unit test can arrange. The
+    stubs stand in for "this half had something to say", which is the only
+    property the split depends on.
+    """
+    monkeypatch.setattr(
+        hook_mod,
+        "_maybe_run_ups_cadence_checkpoint",
+        lambda *_a, **_k: "CK-BODY",
+    )
+    monkeypatch.setattr(
+        hook_mod,
+        "_maybe_read_cadence_resume",
+        lambda *_a, **_k: "<cadence-resume>\nRESUME-BODY\n</cadence-resume>",
+    )
+
+
+def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One feature, two halves, and the switch reaches exactly one of them.
+
+    `<cadence-resume>` (#871) is embedded in the session-start sub-block, so
+    it rides inside the `<aelfrice-memory>` envelope and dies with it.
+    `<cadence-checkpoint>` (#870) is written to stdout separately and does
+    not. `CONFIG.md` documents that split as intended; nothing pinned it, so
+    moving either write across the envelope boundary was a silent change to
+    what the switch means.
+
+    The control arm matters as much as the assertion: with the switch ON,
+    *both* halves must appear. Without it the suppression arm passes on a
+    fixture where the cadence stubs never fired at all, which is the same
+    output a correctly-suppressed run produces for the wrong reason.
+
+    Falsifiable in both directions -- move the `<cadence-checkpoint>` write
+    inside the envelope and the suppression arm fails; gate the
+    `_maybe_read_cadence_resume` call on something the switch does not
+    reach and the control arm fails.
+    """
+    _stub_both_cadence_halves(monkeypatch)
+
+    # Control: switch ON -- both halves reach the prompt.
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    on = _run_with_session(tmp_path, monkeypatch, "s-cadence-on")
+    assert "<cadence-checkpoint>" in on, (
+        "the checkpoint stub did not fire with the switch on; the "
+        "suppression arm below would prove nothing"
+    )
+    assert "<cadence-resume>" in on, (
+        "the resume stub did not fire with the switch on; the suppression "
+        "arm below would prove nothing"
+    )
+    assert OPEN_TAG in on
+
+    # Switch OFF -- the envelope goes, and cadence-resume goes with it.
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    off = _run_with_session(tmp_path, monkeypatch, "s-cadence-off")
+    assert OPEN_TAG not in off, "the memory block survived the switch"
+    assert "<cadence-resume>" not in off, (
+        "<cadence-resume> survived AELFRICE_MEMORY_BLOCK=0. It rides inside "
+        "the <aelfrice-memory> envelope, so suppressing the envelope must "
+        "suppress it -- CONFIG.md tells users so."
+    )
+    assert "<cadence-checkpoint>" in off, (
+        "<cadence-checkpoint> was suppressed by AELFRICE_MEMORY_BLOCK=0. "
+        "CONFIG.md documents it as surviving, because it is written outside "
+        "the envelope and is not memory injection. If this is now intended, "
+        "the docs and this test change together -- see #1461."
+    )
