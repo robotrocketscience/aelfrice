@@ -262,8 +262,11 @@ _TRANSCRIPT_ACK_BARE_RE: Final[re.Pattern[str]] = re.compile(
 # a full stop. Measured over 17,592 user sentences from this repo's own
 # archived transcripts, this rescues 19 rows — 10 distinct sentences,
 # because three of them recur four times each — while introducing zero new
-# discards, and it changes nothing at all for the 135 genuine pasted
-# commands, none of which ends in prose punctuation.
+# discards, and it changes nothing for the 135 shell-prefixed rows, which
+# all stay discarded. That zero is a limit of the rule and not a property
+# of the population; `is_transcript_scaffolding` below carries the reason
+# and the two counterexamples. Do not read it as "those 135 are all
+# genuine pasted commands".
 #
 # Not all ten are the same kind of thing, and the earlier claim that every
 # rescued row was real content was wrong. Two are the product's own policy
