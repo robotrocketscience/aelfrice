@@ -2,7 +2,7 @@
 
 Design memos for features that have shipped and stabilized. Kept here as the rationale trail for the original architectural decisions — not as current implementation spec.
 
-The general `docs/design/README.md` disclaimer ("specs may be out of date relative to shipped code; treat the source as the truth and the spec as the historical intent") applies double here: every memo in this directory's underlying issue is **CLOSED**, and the corresponding code is **in tree**. If you're trying to understand a feature's current behaviour, read the source first; if you're trying to understand *why* it was designed that way, read the memo here.
+The general `docs/design/README.md` disclaimer ("specs may be out of date relative to shipped code; treat the source as the truth and the spec as the historical intent") applies double here: every memo in this directory's underlying issue is **CLOSED**, and the corresponding code is **in tree** — with one exception, `lru_query_cache.md`, whose subject (`RetrievalCache`) was deleted in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418) and which is now the record of a removal rather than of shipped code. If you're trying to understand a feature's current behaviour, read the source first; if you're trying to understand *why* it was designed that way, read the memo here.
 
 ## Inventory
 
@@ -19,6 +19,6 @@ The general `docs/design/README.md` disclaimer ("specs may be out of date relati
 | `query_understanding.md` | [#291](https://github.com/robotrocketscience/aelfrice/issues/291) | `context_rebuilder.py` (`_query_for_recent_turns()`) |
 | `belief_retention_class.md` | [#290](https://github.com/robotrocketscience/aelfrice/issues/290) | `src/aelfrice/models.py` (`retention_class_for_source()`) |
 | `rebuild_eval_harness.md` | [#288](https://github.com/robotrocketscience/aelfrice/issues/288) | `src/aelfrice/context_rebuilder.py` (rebuild log surface) |
-| `lru_query_cache.md` | [#69](https://github.com/robotrocketscience/aelfrice/issues/69) (shipped v1.1.0) | `src/aelfrice/retrieval.py` |
+| `lru_query_cache.md` | [#69](https://github.com/robotrocketscience/aelfrice/issues/69) (shipped v1.0.3) | **none** — `RetrievalCache` deleted in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418); `src/aelfrice/retrieval.py` and `src/aelfrice/graph_spectral.py` point here for the registry it left behind |
 
 Relocated 2026-05-26 per docs audit DOCS-AUDIT-2026-05-26.md.
