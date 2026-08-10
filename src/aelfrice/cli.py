@@ -10574,6 +10574,10 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
         # #1416: a read command pointed at a store that cannot be opened
         # even `mode=ro`. One actionable line, not a traceback.
         print(f"aelf {cmd}: {exc}", file=sys.stderr)
-        return 1
+        code = 1
+    # Emitted on the failure path too: a store this binary cannot open is
+    # one of the likelier moments for "a newer aelfrice is available" to
+    # be the actionable next step, and suppressing the banner exactly
+    # there is an asymmetry nothing else in this function has.
     _maybe_emit_update_banner(cmd)
     return code
