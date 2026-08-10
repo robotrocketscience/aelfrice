@@ -1366,7 +1366,7 @@ def _cmd_graph(args: argparse.Namespace, out: object) -> int:
     from aelfrice.models import EDGE_TYPES
     import json as _json
 
-    store = open_store_for_read()  # #1416: observational
+    store = _open_store()
     try:
         seeds: list = []
         seed_scopes: dict[str, str | None] = {}
@@ -2503,7 +2503,7 @@ def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     params.append(limit)
     sql = " ".join(sql_parts)
 
-    store = open_store_for_read()  # #1416: observational
+    store = _open_store()
     try:
         rows = list(store._conn.execute(sql, params).fetchall())
     finally:
@@ -3398,7 +3398,7 @@ def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
     from aelfrice.introspect import build_report
 
     limit = None if args.limit == 0 else args.limit
-    store = open_store_for_read()  # #1416: observational
+    store = _open_store()
     try:
         report = build_report(
             store,
@@ -3566,7 +3566,7 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
     Spec: docs/design/feature-aelf-core.md. No new store method — composition over
     list_locked_beliefs(), list_belief_ids(), and get_belief().
     """
-    store = open_store_for_read()  # #1416: observational
+    store = _open_store()
     try:
         locked: list[object] = [] if args.no_locked else store.list_locked_beliefs()
         candidates: list[object] = []

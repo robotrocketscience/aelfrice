@@ -13,7 +13,8 @@ directory** before any page can be read. So there are two distinct
 regimes, and this file pins both:
 
 * usable `-wal`/`-shm` present -> a `mode=ro` handle reads fine, and
-  the observational commands must succeed;
+  the four sanctioned commands (`search`, `status`, `locked`,
+  `speculative`) must succeed;
 * sidecars absent and the directory not writable -> SQLite cannot open
   the store at all, and the command must say so in one line instead of
   unwinding a traceback. `immutable=1` would open it, and is refused on
@@ -181,16 +182,14 @@ def test_status_and_locked_survive_a_frozen_store(
         holder.close()
 
 
-def test_the_other_observational_commands_survive_a_frozen_store(
+def test_speculative_survives_a_frozen_store(
     store_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#1416 AC3: the rest of the declared read-only surface.
+    """#1416 AC3, fourth and last of the sanctioned commands.
 
-    `speculative`, `core`, `stale`, `introspect`, `graph` and `feed` all
-    advertise an observational contract, and every one of them opened
-    the store read-write. `feed` is in the list because it is user-
-    visible as a read command, though it reads a JSONL log rather than
-    the database.
+    `search`, `status`, `locked` and `speculative` are the whole of the
+    partial the 2026-08-09 ruling sanctioned; the other observational
+    commands are held (see the scope test below).
 
     The dropped table is load-bearing, not decoration: a frozen store
     whose schema is already complete gives the *writable* open nothing
@@ -206,20 +205,46 @@ def test_the_other_observational_commands_survive_a_frozen_store(
         )
         _freeze(store_dir)
         before = _digest(db)
-        for argv in (
-            ["speculative"],
-            ["core"],
-            ["stale"],
-            ["introspect"],
-            ["graph", "codex"],
-            ["feed"],
-        ):
-            capsys.readouterr()
-            assert main(list(argv)) == 0, f"{argv} failed"
-            assert "Traceback" not in capsys.readouterr().err
+        capsys.readouterr()
+        assert main(["speculative"]) == 0
+        assert "Traceback" not in capsys.readouterr().err
         assert _digest(db) == before
     finally:
         holder.close()
+
+
+def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
+    """The routed set is exactly the four the ruling named.
+
+    #1416's 2026-08-09 operator ruling sanctioned this partial for
+    `search`, `status`, `locked` and `speculative`, and held the rest —
+    "each needing its own read-only audit rather than a blanket change".
+    The held commands are not merely unfinished: on the fallback path a
+    read-only handle runs no migration and no expired-lock sweep, which
+    is the per-command semantics the audit is *for*. `feed` never opens
+    the store at all (it reads a JSONL log), so it is held trivially.
+
+    Asserted over the handlers' source rather than by driving them,
+    because the observable difference only appears on a store that is
+    unwritable — a routing added back for a *writable* store is
+    invisible behaviourally, which is exactly how the first version of
+    this branch shipped it.
+    """
+    import inspect
+
+    from aelfrice import cli
+
+    routed = {
+        name
+        for name in dir(cli)
+        if name.startswith("_cmd_")
+        and callable(getattr(cli, name))
+        and getattr(getattr(cli, name), "__module__", "") == cli.__name__
+        and "open_store_for_read()" in inspect.getsource(getattr(cli, name))
+    }
+    assert routed == {
+        "_cmd_search", "_cmd_stats", "_cmd_locked", "_cmd_speculative",
+    }, "amend the #1416 ruling before routing another command"
 
 
 def test_observational_read_writes_no_bm25f_sidecar(
