@@ -362,31 +362,85 @@ class UpgradeAdvice:
     context: str  # 'uv_tool' | 'non_uv'
 
 
+UV_RECEIPT_FILENAME: Final[str] = "uv-receipt.toml"
+
+
+def _is_windows() -> bool:
+    """Whether this process is running on Windows.
+
+    Indirected through a function on purpose. Tests cannot simply
+    `monkeypatch.setattr(os, "name", "nt")` to reach the Windows branches:
+    `pathlib.Path()` dispatches on `os.name` and raises
+    `UnsupportedOperation: cannot instantiate 'WindowsPath' on your system`
+    the moment a POSIX runner is told it is Windows. Patching this probe
+    reaches the branch without breaking path construction.
+
+    It stays a *call*, evaluated per invocation — the thing a
+    `windows: bool = os.name == "nt"` default argument fails to be, since
+    that binds once at definition time and leaves the branch permanently
+    unreachable from a test (#1412 review).
+    """
+    return os.name == "nt"
+
+
+def _uv_tool_dir() -> Path:
+    """uv's tools directory for this platform and environment.
+
+    Resolution order matches uv's own (docs.astral.sh/uv/concepts/tools —
+    "Tools directory"): ``UV_TOOL_DIR`` wins outright; otherwise the
+    platform default, which is ``%APPDATA%\\uv\\tools`` on Windows and
+    ``$XDG_DATA_HOME/uv/tools`` (falling back to
+    ``~/.local/share/uv/tools``) everywhere else.
+
+    The platform is resolved per call via ``_is_windows()``, never bound
+    as a default argument (#1412 review).
+    """
+    override = os.environ.get("UV_TOOL_DIR")
+    if override:
+        return Path(override)
+    if _is_windows():
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "uv" / "tools"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "uv" / "tools"
+
+
 def _running_from_uv_tool() -> bool:
     """True iff THIS running process is the uv-tool-managed install.
 
-    Checks whether sys.prefix / sys.executable resolves *under* the uv
-    tools root (~/.local/share/uv/tools/). Unlike a filesystem-presence
-    check, this correctly returns False for a source worktree's
-    ``uv run aelf`` even when a uv-tool install exists elsewhere on the
-    box. Use this to gate the hook auto-install — the question there is
-    "is this process the install?", not "does an install exist anywhere?"
-    (#1044 — the ``.exists()`` short-circuit reintroduced the #834 bug for
-    any user who also had a uv-tool install).
+    Two signals, strongest first. uv writes a ``uv-receipt.toml`` at the
+    root of every tool environment, and for an installed tool that root
+    *is* ``sys.prefix`` — so the receipt identifies the running
+    environment directly, with no assumption about where the tools
+    directory lives. Failing that, we ask whether sys.prefix /
+    sys.executable resolves under the tools directory.
+
+    Unlike a filesystem-presence check, this correctly returns False for
+    a source worktree's ``uv run aelf`` even when a uv-tool install
+    exists elsewhere on the box: a project venv carries no receipt and
+    does not sit under the tools directory. Use this to gate the hook
+    auto-install — the question there is "is this process the install?",
+    not "does an install exist anywhere?" (#1044 — the ``.exists()``
+    short-circuit reintroduced the #834 bug for any user who also had a
+    uv-tool install).
     """
     import sys
 
-    # ~/.local/share/uv/tools/ is the canonical uv tools root on
-    # Linux/macOS. On Windows it is %APPDATA%\uv\tools\ but we only
-    # support the POSIX layout for now.
-    # Trailing slash so we match true descendants only: a sibling like
-    # ``.../uv/toolshed`` must NOT satisfy a prefix test against
-    # ``.../uv/tools`` (Sourcery, #1044 review).
-    uv_tools_root = str(
-        Path.home() / ".local" / "share" / "uv" / "tools"
-    ).replace("\\", "/").rstrip("/") + "/"
+    try:
+        if (Path(sys.prefix) / UV_RECEIPT_FILENAME).is_file():
+            return True
+    except OSError:
+        pass
+
+    root = _uv_tool_dir()
+    # Ancestry, not a string prefix: a sibling like ``.../uv/toolshed``
+    # must not satisfy a test against ``.../uv/tools`` (Sourcery, #1044
+    # review), and a string compare also mishandles the separator and
+    # case conventions of the Windows layout this now supports.
     for candidate in (sys.prefix, sys.executable):
-        if candidate and candidate.replace("\\", "/").startswith(uv_tools_root):
+        if candidate and _path_is_under(Path(candidate), root):
             return True
     return False
 
@@ -402,9 +456,14 @@ def _is_uv_tool_install() -> bool:
     tool copy". Do NOT use this to gate auto-install — that must ask
     whether *this process* is the install; use ``_running_from_uv_tool()``
     (#1044).
+
+    A directory alone is not enough: an empty or hand-made
+    ``<tools>/aelfrice/`` without uv's receipt is not a uv install, and
+    treating it as one would hand the user an upgrade command that
+    cannot work.
     """
-    uv_tools_dir = Path.home() / ".local" / "share" / "uv" / "tools" / PACKAGE_NAME
-    if uv_tools_dir.exists():
+    uv_tools_dir = _uv_tool_dir() / PACKAGE_NAME
+    if (uv_tools_dir / UV_RECEIPT_FILENAME).is_file():
         return True
     # Secondary: this process is itself running under the uv tools tree.
     return _running_from_uv_tool()
@@ -496,27 +555,52 @@ class InstallSite:
     on_path: bool
 
 
+def _aelf_script_names() -> list[str]:
+    """Candidate filenames for the `aelf` console script on this platform.
+
+    On Windows the launcher is `aelf` plus a `PATHEXT` suffix — the same
+    set `shutil.which` consults — and there is no executable bit to test,
+    so presence is the only signal. Elsewhere it is the bare name.
+    """
+    if not _is_windows():
+        return ["aelf"]
+    # PATHEXT is a Windows-only variable and is always ';'-delimited —
+    # which is also what `os.pathsep` is on Windows. Spelling it literally
+    # keeps the branch exercisable from a POSIX test runner, where
+    # `os.pathsep` would be ':'.
+    raw = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    exts = [e for e in (p.strip() for p in raw.split(";")) if e]
+    return ["aelf" + e for e in exts] or ["aelf.EXE"]
+
+
 def _which_all_aelf() -> list[Path]:
     """Return every `aelf` executable reachable on PATH, in PATH order.
 
-    POSIX-only. We walk PATH ourselves rather than rely on `which -a`,
-    which is not portable across shells. Skips non-files and
-    non-executables.
+    We walk PATH ourselves rather than rely on `which -a`, which is not
+    portable across shells. Skips non-files, and on POSIX non-executables
+    — Windows has no executable bit, so there `PATHEXT` membership is what
+    makes a file a launcher.
     """
     seen: set[Path] = set()
     out: list[Path] = []
+    windows = _is_windows()
+    names = _aelf_script_names()
     raw = os.environ.get("PATH", "")
     for entry in raw.split(os.pathsep):
         if not entry:
             continue
-        candidate = Path(entry) / "aelf"
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if resolved in seen:
-            continue
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        for name in names:
+            candidate = Path(entry) / name
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            if not candidate.is_file():
+                continue
+            if not windows and not os.access(candidate, os.X_OK):
+                continue
             seen.add(resolved)
             out.append(candidate)
     return out
@@ -567,7 +651,7 @@ def detect_reachable_installs() -> list[InstallSite]:
     Returns an empty list on any failure (e.g. unreadable home dir).
 
     Signals checked:
-      - ~/.local/share/uv/tools/aelfrice/  → uv_tool
+      - <uv tool dir>/aelfrice/            → uv_tool
       - ~/.local/pipx/venvs/aelfrice/      → pipx
       - any `aelf` on PATH whose resolved path is NOT under the above
         roots                              → user_local_bin
@@ -591,7 +675,7 @@ def detect_reachable_installs() -> list[InstallSite]:
         except OSError:
             continue
 
-    uv_root = home / ".local" / "share" / "uv" / "tools" / PACKAGE_NAME
+    uv_root = _uv_tool_dir() / PACKAGE_NAME
     if uv_root.exists():
         on_path = any(
             _path_is_under(p, uv_root) for p in path_aelf_resolved
