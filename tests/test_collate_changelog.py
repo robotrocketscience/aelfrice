@@ -477,7 +477,14 @@ def test_the_committed_v4_changelog_collates_without_loss() -> None:
     out = collate(text, files, "4.3.0", "2026-08-10")
 
     expected = _entry_blocks(block)
-    assert len(expected) == 99, "the block this test claims to cover"
+    # Deliberately NOT a pinned count. Pinning one would re-couple this
+    # branch to the `[Unreleased]` block's contents — the exact coupling
+    # #1475 exists to remove — and every in-flight PR that adds an entry
+    # would turn this red for a reason that has nothing to do with
+    # collation. What must hold is that the block is non-empty (so the
+    # comparison below is not vacuously true against an empty set) and
+    # that every entry in it survives.
+    assert expected, "the [Unreleased] block is empty, so this test proves nothing"
     for name, file_text in files:
         one = _entry_blocks(file_text)
         assert len(one) == 1, f"{name} holds {len(one)} entries"
