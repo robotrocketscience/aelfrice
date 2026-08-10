@@ -161,24 +161,6 @@ def _handler_is_owned(handler: object, *, windows: bool | None = None) -> bool:
     return bool(key) and key in owned_keys(_OWNED_BASENAMES, windows=windows)
 
 
-def _group_is_owned(group: object, *, windows: bool | None = None) -> bool:
-    """True iff every handler in a matcher group is ours.
-
-    Retained for coverage reporting. Reconciliation no longer routes
-    through it — see `_without_owned_handlers`.
-    """
-    if not isinstance(group, dict):
-        return False
-    gd = cast(dict[str, object], group)
-    handlers = gd.get("hooks")
-    if not isinstance(handlers, list) or not handlers:
-        return False
-    return all(
-        _handler_is_owned(h, windows=windows)
-        for h in cast(list[object], handlers)
-    )
-
-
 def _owned_handlers_in(
     group: object, *, windows: bool | None = None,
 ) -> list[object]:

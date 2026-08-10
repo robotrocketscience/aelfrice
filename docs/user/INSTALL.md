@@ -48,7 +48,7 @@ Auto-detection picks the right scope and command path:
 
 | Run from… | `--scope` | `--command` |
 |---|---|---|
-| inside a project venv | `project` (writes `<project>/.claude/settings.json`) | `<project>/.venv/bin/aelf-hook` |
+| inside a project venv | `project` (writes `<project>/.claude/settings.json`) | `<project>/.venv/bin/aelf-hook`, or `<project>\.venv\Scripts\aelf-hook.exe` on Windows |
 | a `uv tool`-installed `aelf` outside any venv | `user` (writes `~/.claude/settings.json`) | first `aelf-hook` on `$PATH` |
 | a venv unrelated to `cwd` | `user` | first `aelf-hook` on `$PATH`, falls back to the active venv |
 
