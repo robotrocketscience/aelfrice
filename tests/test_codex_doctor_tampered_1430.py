@@ -28,7 +28,6 @@ from aelfrice.cli import _cmd_doctor_codex
 from aelfrice.host_codex import (
     _SKILL_FILENAME,
     _bundled_codex_skills,
-    doctor_codex,
     install_codex_hooks,
     install_codex_skills,
 )
