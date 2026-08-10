@@ -281,6 +281,58 @@ def test_unknown_top_level_keys_and_foreign_events_survive(
     assert final["hooks"]["SessionEnd"] == _FOREIGN_A["hooks"]["SessionEnd"]
 
 
+# --- an uninstall on a host that never had Codex --------------------------
+
+
+def test_remove_creates_nothing_when_there_is_no_hooks_json(
+    tmp_path: Path,
+) -> None:
+    """An uninstall verb must not create the directory it removes from.
+
+    Taking the transaction's lock is itself a write: `_open_lock` mkdirs
+    the parent and creates `hooks.json.lock`. Routing the "no file,
+    nothing to remove" case through the transaction therefore made
+    `aelf unsetup --host codex` (and `aelf uninstall --host codex`, which
+    reaches the same handler) bring the Codex home into being on a host
+    that never had Codex, leaving behind a lock file this code
+    deliberately never sweeps — the #1173 uninstall-artifact class, and
+    the opposite of what INSTALL.md promises.
+
+    Asserted over the whole subtree rather than over `hooks.json`,
+    because nothing the defect created was named `hooks.json`.
+    """
+    root = tmp_path / "host-without-codex"
+    root.mkdir()
+    hooks_path = root / ".codex" / "hooks.json"
+
+    result = remove_codex_hooks(hooks_path)
+
+    assert result.error is None
+    assert result.changed is False
+    assert sorted(p.name for p in root.rglob("*")) == []
+
+
+def test_remove_still_transacts_when_the_file_exists(tmp_path: Path) -> None:
+    """The early return is an absence check, not a bypass.
+
+    Pins that skipping the transaction is conditional on the file being
+    missing: with a real `hooks.json` present the lock is taken, so the
+    sibling lock file appears and the aelfrice entries are stripped.
+    """
+    p = tmp_path / "hooks.json"
+    install_codex_hooks(p)
+    assert json.loads(p.read_text(encoding="utf-8"))["hooks"]
+
+    result = remove_codex_hooks(p)
+
+    assert result.error is None
+    assert result.changed is True
+    assert (tmp_path / "hooks.json.lock").exists(), "the lock was not taken"
+    assert "UserPromptSubmit" not in json.loads(
+        p.read_text(encoding="utf-8")
+    ).get("hooks", {})
+
+
 # --- atomic commit ---------------------------------------------------------
 
 

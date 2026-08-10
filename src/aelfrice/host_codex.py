@@ -656,7 +656,10 @@ def _commit_hooks_transaction(
     place by `unsetup`**, unlike the artifacts #1173 sweeps. Unlinking a
     lock file another process may be holding is how two writers end up
     holding two different inodes and no mutual exclusion at all; a
-    zero-byte file is the cheaper residue.
+    zero-byte file is the cheaper residue. That residue is bounded to a
+    home that already had a `hooks.json`: `remove_codex_hooks` refuses to
+    enter this transaction at all when the file is absent, precisely
+    because entering it would create the directory and the lock.
     """
     from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
 
@@ -741,7 +744,26 @@ def remove_codex_hooks(
     Same transaction as ``install_codex_hooks`` — an uninstall racing a
     setup is exactly as capable of dropping a foreign entry as two
     setups are.
+
+    **No file, no transaction.** The absence check runs here, ahead of
+    the lock, because taking the lock is itself a write: `_open_lock`
+    mkdirs the parent and creates `hooks.json.lock`, so routing the
+    "nothing to remove" case through the transaction made
+    `aelf unsetup --host codex` — and `aelf uninstall --host codex`,
+    which reaches the same handler — *create* the Codex home on a host
+    that never had Codex, and leave behind a lock file this code
+    deliberately never sweeps. An uninstall verb that creates the
+    configuration directory it removes from is the #1173 defect class,
+    and it contradicts what INSTALL.md promises about a home aelfrice
+    will not create for you.
+
+    Racing an install that creates the file immediately after this check
+    is not a correctness problem: nothing of ours existed to strip at the
+    instant we looked, and the plan is re-read under the lock in every
+    path that does take it.
     """
+    if not hooks_path.is_file():
+        return CodexInstallResult(path=hooks_path, changed=False)
     return _commit_hooks_transaction(
         hooks_path,
         lambda text: _plan_remove(text, hooks_path, windows=windows),

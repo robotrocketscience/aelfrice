@@ -234,6 +234,31 @@ def test_setup_doctor_unsetup_all_route_to_codex_home(
     assert not skills.exists()
 
 
+def test_unsetup_creates_nothing_on_a_host_that_never_had_codex(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`unsetup` on a fresh host must leave the filesystem as it found it.
+
+    The CLI half of the `remove_codex_hooks` absence check. With
+    `$CODEX_HOME` unset, the resolved home is `~/.codex`, which does not
+    exist here — and an uninstall verb that mkdirs it (to create a lock
+    file it never sweeps) is creating the configuration directory it is
+    supposed to be removing from. The assertion is over the whole home,
+    so any residue anywhere below it fails.
+    """
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    before = sorted(p.name for p in isolated_home.rglob("*"))
+
+    rc = main(["unsetup", "--host", "codex"])
+
+    assert rc == 0
+    assert "no aelfrice entries" in capsys.readouterr().out
+    assert not (isolated_home / ".codex").exists()
+    assert sorted(p.name for p in isolated_home.rglob("*")) == before
+
+
 def test_setup_reports_bad_codex_home_without_touching_fallback(
     tmp_path: Path,
     isolated_home: Path,
