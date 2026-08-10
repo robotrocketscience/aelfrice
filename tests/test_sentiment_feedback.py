@@ -149,13 +149,37 @@ def test_strong_pattern_higher_confidence_than_base() -> None:
 # Imperatives. Every one of these is a user issuing a correction; none
 # may score positive. Before #1372 each returned positive/+1.5 — the
 # inverse of the signal, at the lane's largest magnitude.
-_CORRECTIVE_IMPERATIVES = (
+_BARE_IMPERATIVES = (
     "Correct the import path in the hook.",
     "Correct that.",
     "Correct the spelling.",
     "Please correct the docstring.",
     "correct the config value",
     "Correct this before you commit.",
+)
+
+# Interjection-prefixed: an agreement followed by a corrective
+# imperative. Still imperatives carrying an object. An earlier draft of
+# the evaluative frame admitted the interjection as a copula subject,
+# which re-scored this whole family positive/+1.5 on the `correct`
+# pattern — the #1372 defect at its original magnitude.
+_YES_PREFIXED_IMPERATIVE = "yes correct the path"
+_INTERJECTION_IMPERATIVES = (
+    _YES_PREFIXED_IMPERATIVE,
+    "yep correct the import",
+    "yup correct the value",
+    "absolutely correct the config",
+    "exactly correct the config value",
+    "totally correct the spelling",
+    "all correct the imports",
+)
+
+# "yes correct the path" is excluded from the not-positive arm: the
+# pre-existing standalone `("yes", r"\byes\b")` pattern — untouched by
+# #1372 — still scores it positive at the base tier. That residual is
+# pinned by its own test below rather than papered over here.
+_CORRECTIVE_IMPERATIVES = _BARE_IMPERATIVES + tuple(
+    p for p in _INTERJECTION_IMPERATIVES if p != _YES_PREFIXED_IMPERATIVE
 )
 
 # Control arm. Genuine praise must STILL score positive — otherwise the
@@ -184,6 +208,36 @@ def test_genuine_praise_still_positive(prompt: str) -> None:
     s = detect_sentiment(prompt)
     assert s is not None, f"praise {prompt!r} no longer detected at all"
     assert s.sentiment == POSITIVE, f"praise {prompt!r} scored {s.sentiment}"
+
+
+@pytest.mark.parametrize("prompt", _INTERJECTION_IMPERATIVES)
+def test_interjection_prefix_is_not_an_evaluative_frame(prompt: str) -> None:
+    """An interjection in front of `correct` does not make it a verdict.
+
+    The strong `correct` pattern is the one that carries +1.5, so this
+    asserts on the pattern name: whatever else may fire, the evaluative
+    frame must not.
+    """
+    s = detect_sentiment(prompt)
+    assert s is None or s.pattern != "correct", (
+        f"{prompt!r} matched the praise frame as "
+        f"{s.sentiment if s else None}/{s.valence if s else 0.0}"
+    )
+
+
+def test_yes_prefixed_imperative_residual_is_base_tier_only() -> None:
+    """Pins the known residual so it cannot be mistaken for a clean fix.
+
+    "yes correct the path" still scores positive, but through the
+    pre-existing standalone `yes` pattern at +1.0 — not through the
+    `correct` frame at +1.5. Fixing `yes` is out of #1372's scope; this
+    test fails if the frame ever re-admits the interjection.
+    """
+    s = detect_sentiment(_YES_PREFIXED_IMPERATIVE)
+    assert s is not None
+    assert s.pattern == "yes"
+    assert s.sentiment == POSITIVE
+    assert s.valence == BASE_VALENCE
 
 
 def test_framed_correct_keeps_the_strong_tier() -> None:

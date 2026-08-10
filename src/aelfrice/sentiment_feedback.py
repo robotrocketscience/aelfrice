@@ -100,8 +100,7 @@ _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 # does not also hit a strong pattern.
 
 _CORRECT_PRAISE: Final[str] = (
-    r"\b(?:that'?s|that is|this is|it'?s|it is|you'?re|you are"
-    r"|yes|yep|yup|absolutely|exactly|totally|all)\s+correct\b"
+    r"\b(?:that'?s|that is|this is|it'?s|it is|you'?re|you are)\s+correct\b"
     r"|^\s*correct[\s.!]*$"
 )
 r"""`correct` as a verdict, not as a verb.
@@ -124,6 +123,19 @@ none; this one abstains instead. Unframed praise that is not the whole
 prompt ("Correct, keep going") now scores neutral rather than positive
 — a lost positive delays a small posterior gain, where the bug it
 replaces inverted a correction into praise.
+
+The frame is copulas only. An earlier draft also admitted bare
+interjections (`yes|yep|yup|absolutely|exactly|totally|all`), which
+reopened the defect at full magnitude: "yes correct the path" is an
+agreement followed by a corrective imperative, and it scored
+positive/+1.5 on the `correct` pattern. Those alternatives are gone.
+None of them is load-bearing for praise, because an interjection that
+means praise stands on its own ("yes", "exactly") rather than needing
+`correct` after it. Residual, not introduced here: the pre-existing
+standalone `("yes", r"\byes\b")` pattern still scores "yes correct the
+path" positive at the *base* tier (+1.0, pattern `yes`). Narrowing that
+one is a different change — it is the whole of what fires on a plain
+"yes" — and is left for #1372's successor.
 """
 
 _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
