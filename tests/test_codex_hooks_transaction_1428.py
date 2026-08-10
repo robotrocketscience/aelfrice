@@ -218,6 +218,63 @@ def test_a_json_null_document_is_refused_not_overwritten(
     assert p.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("document", "needle"),
+    [
+        ('{"hooks": null}', "non-object `hooks`"),
+        ('{"hooks": {"UserPromptSubmit": null}}', "UserPromptSubmit"),
+    ],
+)
+def test_a_null_below_the_top_level_is_refused_not_reshaped(
+    tmp_path: Path, document: str, needle: str
+) -> None:
+    """`null` is a legal value at every level, not just the document.
+
+    Fixing only the document level left the identical `None`-as-sentinel
+    hole one and two levels down: `dict.get(k)` answers None for a
+    missing key *and* for a key set to `null`, so `{"hooks": null}` took
+    the "no `hooks` key yet, fill it in" branch and
+    `{"hooks":{"UserPromptSubmit":null}}` took the "no value for this
+    event yet" branch — both reshaped with `error=None`, `changed=True`
+    and no `--force`, while `{"hooks": 42}` and
+    `{"hooks":{"UserPromptSubmit":42}}` were refused. The shipped promise
+    ("a non-object `hooks` value, or a non-list value on an event
+    aelfrice installs into, is left byte-for-byte alone and reported") is
+    an absolute, so `null` must land on it too.
+    """
+    p = tmp_path / "hooks.json"
+    p.write_text(document, encoding="utf-8")
+    before = p.read_bytes()
+
+    result = install_codex_hooks(p)
+
+    assert result.error is not None
+    assert needle in result.error
+    assert "null" in result.error, "the refusal must name the JSON type"
+    assert result.changed is False
+    assert p.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "document",
+    ['{"hooks": null}', '{"hooks": {"UserPromptSubmit": null}}'],
+)
+def test_force_is_still_the_way_past_a_null_below_the_top_level(
+    tmp_path: Path, document: str
+) -> None:
+    """The new refusals must be escapable, like every sibling refusal."""
+    p = tmp_path / "hooks.json"
+    p.write_text(document, encoding="utf-8")
+
+    result = install_codex_hooks(p, force=True)
+
+    assert result.error is None
+    assert result.changed is True
+    final = json.loads(p.read_text(encoding="utf-8"))
+    assert isinstance(final["hooks"]["UserPromptSubmit"], list)
+    assert final["hooks"]["UserPromptSubmit"]
+
+
 def test_a_top_level_list_is_refused_not_overwritten(tmp_path: Path) -> None:
     """The sibling case that never regressed — pins both sentinels."""
     p = tmp_path / "hooks.json"

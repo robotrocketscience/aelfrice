@@ -388,6 +388,35 @@ _HOOKS_COMMIT_ATTEMPTS: Final[int] = 3
 #: distinguishable from a syntax error (see `_plan_install`).
 _UNPARSEABLE: Final[object] = object()
 
+#: Stands in for "this key is not in the document". Same reason as
+#: `_UNPARSEABLE`, one level down: `dict.get(k)` answers None both for a
+#: missing key and for a key explicitly set to `null`, and only the first
+#: is ours to fill in. Reusing None here is what let `{"hooks": null}`
+#: and `{"hooks":{"UserPromptSubmit":null}}` be reshaped with no error
+#: and no `--force` after the top-level case had been fixed.
+_ABSENT: Final[object] = object()
+
+
+def _json_type_name(value: object) -> str:
+    """Name `value`'s type as JSON names it, for a message about JSON.
+
+    `type(None).__name__` is `NoneType`, which is a Python detail leaking
+    into a refusal the user is meant to act on by editing a `.json` file.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
 
 def _fingerprint(path: Path) -> str:
     """Content hash of `path`; `""` when it does not exist.
@@ -474,6 +503,15 @@ def _plan_install(
     a touched event whose value was not a list, so
     `{"hooks":{"UserPromptSubmit":{"foreign":"keep"}}}` lost its object
     during an ordinary setup run with no error and no `--force`.
+
+    That guarantee is total over JSON types at all three levels, which
+    took three sentinels to say: `null` is a legal document, a legal
+    value for `hooks`, and a legal value for an event, and Python spells
+    all three `None` — the same `None` that `json.loads` never returns
+    for a syntax error and that `dict.get` returns for a missing key.
+    Fixing only the document level, as the first pass did, left
+    `{"hooks": null}` and `{"hooks":{"UserPromptSubmit":null}}` silently
+    reshaped while `{"hooks": 42}` was refused.
     """
     def refuse(msg: str) -> tuple[str | None, CodexInstallResult]:
         return None, CodexInstallResult(
@@ -504,8 +542,12 @@ def _plan_install(
                 "re-run with --force to replace it"
             )
 
-    hooks_obj = existing.get("hooks")
-    if hooks_obj is None or force:
+    # `_ABSENT`, not None, at both levels: `null` is a legal value for
+    # any JSON key, so `.get(k)` cannot tell "no such key" (ours to fill
+    # in) from "the user wrote null there" (foreign structure, and not
+    # ours to reshape).
+    hooks_obj = existing.get("hooks", _ABSENT)
+    if hooks_obj is _ABSENT or force:
         hooks_map: dict[str, object] = (
             cast(dict[str, object], hooks_obj)
             if isinstance(hooks_obj, dict) else {}
@@ -515,20 +557,20 @@ def _plan_install(
     else:
         return refuse(
             "existing hooks.json has a non-object `hooks` value "
-            f"({type(hooks_obj).__name__}); it is not ours to reshape — "
+            f"({_json_type_name(hooks_obj)}); it is not ours to reshape — "
             "fix it, or re-run with --force to replace it"
         )
 
     desired = desired_codex_hooks(scope)
     if not force:
         for event in desired:
-            current = hooks_map.get(event)
-            if current is not None and not isinstance(current, list):
+            current = hooks_map.get(event, _ABSENT)
+            if current is not _ABSENT and not isinstance(current, list):
                 return refuse(
                     f"existing hooks.json has a non-list value for the "
-                    f"`{event}` event ({type(current).__name__}); it is not "
-                    "ours to reshape — fix it, or re-run with --force to "
-                    "replace it"
+                    f"`{event}` event ({_json_type_name(current)}); it is "
+                    "not ours to reshape — fix it, or re-run with --force "
+                    "to replace it"
                 )
 
     before = json.dumps({"hooks": hooks_map}, sort_keys=True)
