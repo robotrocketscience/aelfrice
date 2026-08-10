@@ -55,7 +55,7 @@ jobs:
     # is empty and this job has no patterns to scan against. Dependabot diffs
     # only touch dependency manifests (pyproject.toml / uv.lock), which carry
     # no PII vector worth gating on. Other staging-gate jobs (secrets-scan,
-    # history-scan, commit-msg-prefix, pr-body-issue-link) still run and
+    # history-scan, commit-msg-prefix, release-docs-check) still run and
     # provide the actual security gates for dep updates.
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest

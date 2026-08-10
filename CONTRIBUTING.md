@@ -268,6 +268,21 @@ Three properties worth knowing, and the third is a caveat, not a feature.
   | `eval-calibration.yml` | `calibration` |
   | `windows-smoke.yml` | `smoke` |
   | `zizmor.yml` | `zizmor` |
+  | `ci.yml` | `pytest (3.12)`, `pytest (3.13)` |
+  | `staging-gate.yml` | `secrets-scan`, `pattern-scan`, `history-scan`, `commit-msg-prefix`, `release-docs-check` |
+  | `pr-metadata.yml` | `pr-title-prefix`, `pr-body-issue-link` |
+  | `pr-size-soft-cap.yml` | `size-check` |
+  | `replay-soak-gate.yml` | `consecutive-green` |
+  | `e2e.yml` | also `surface-failure` |
+  | `auto-add-to-board.yml` | `add-to-board` |
+  | `merge-train.yml` | `merge` |
+
+  **`pr-title-prefix` and `pr-body-issue-link` are the two rows to check first
+  after a dispatch-only recovery.** They live in `pr-metadata.yml`, which
+  deliberately has no `workflow_dispatch` — so they are exactly the gating
+  checks a dispatch cannot produce, and their absence is evaluated by an
+  absence test that an absent check satisfies. If they are missing, the head is
+  not safe to label no matter how green the dispatched rows look.
 
   Not all of them belong on every head, so an absent row is not automatically a
   problem. `windows-smoke.yml`, `eval-calibration.yml`, `e2e.yml` and
