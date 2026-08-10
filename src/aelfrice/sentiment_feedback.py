@@ -356,13 +356,13 @@ def apply_sentiment_to_pending(
 
     **Divides by the count of live, unlocked ids** — or by the live count
     when every live id is locked, since a zero divisor is not a
-    distribution (#1372 §13). The signal
-    is one utterance about (at most) one of the beliefs on the prior turn,
-    so it is worth one unit of evidence in total, not one unit *per
-    belief*. Applying the full magnitude N times manufactured N-1 units of
-    evidence out of nothing and grew the fabrication with the size of the
-    retrieval pack. Each id that can take a posterior update now receives
-    `valence / N`, so the sum of the magnitudes that move a posterior
+    distribution (#1372 §13). The signal is one utterance about (at most)
+    one of the beliefs on the prior turn, so it is worth one unit of
+    evidence in total, not one unit *per belief*. Applying the full
+    magnitude N times manufactured N-1 units of evidence out of nothing
+    and grew the fabrication with the size of the retrieval pack. Each id
+    that can take a posterior update now receives `valence / N`, so the
+    sum of the magnitudes that move a posterior
     equals the signal's own magnitude regardless of N. Live-but-locked
     ids are excluded from N because the #1168 floor refuses them; they
     still get their audit-only row, carrying the share they were offered
@@ -409,8 +409,8 @@ def apply_sentiment_to_pending(
     # its one unlocked id, which is what github/main moves too; the divisor
     # is what keeps that true. Locked packs are the ordinary shape rather
     # than the corner case: L0 locks are injected on every prompt, which
-    # is the premise the lock floor itself argues from
-    # (feedback.py). Dividing by the ids that can take the evidence keeps
+    # is the premise the lock floor itself argues from (feedback.py).
+    # Dividing by the ids that can take the evidence keeps
     # the delivered total at one unit whatever the lock mix.
     receivers = sum(1 for b in live if b.lock_level != LOCK_USER)
     # An all-locked pack has no receiver; divide by the live count so the
