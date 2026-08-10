@@ -244,16 +244,41 @@ Three properties worth knowing, and the third is a caveat, not a feature.
 - **⚠️ Dispatching these two does *not* mean the PR is safe to label.** They
   produce the five *required* contexts, and `merge-train`'s presence floor
   (`missing`, #1435) is computed over the required set only. Every other gating
-  check — `migration-policy-check`, `e2e`, `CodeQL`, `zizmor`, `typos`,
-  `windows-smoke`, `Bench Smoke`, `Eval Calibration`, `deadcode` — is evaluated
-  by *absence tests*, which an absent check satisfies. So a head carrying only
-  the dispatched rows evaluates as green while those never ran. Before labelling,
-  confirm the full set is present on the head SHA:
+  check is evaluated by *absence tests*, which an absent check satisfies. So a
+  head carrying only the dispatched rows evaluates as green while those never
+  ran. Before labelling, list what is actually on the head SHA:
 
   ```sh
   gh api repos/robotrocketscience/aelfrice/commits/<head-sha>/check-runs \
       --jq '[.check_runs[] | {n: .name, c: .conclusion}]'
   ```
+
+  Compare against the *check-run* names, which are job names and not workflow
+  names — the two differ for most of these, and a list of workflow names would
+  never match anything:
+
+  | Workflow | Check-run name(s) |
+  | --- | --- |
+  | `migration-policy-check.yml` | `migration-policy-check` |
+  | `typos.yml` | `typos` |
+  | `bench-smoke.yml` | `bench-smoke` |
+  | `deadcode.yml` | `deptry`, `vulture` |
+  | `e2e.yml` | `e2e (pipx)`, `e2e (uv-tool)`, `e2e (venv-pip)` |
+  | `codeql.yml` | `analyze (actions)`, `analyze (python)` |
+  | `eval-calibration.yml` | `calibration` |
+  | `windows-smoke.yml` | `smoke` |
+  | `zizmor.yml` | `zizmor` |
+
+  Not all of them belong on every head, so an absent row is not automatically a
+  problem. `windows-smoke.yml`, `eval-calibration.yml`, `e2e.yml` and
+  `zizmor.yml` carry workflow-level `paths:` filters and `deadcode.yml` and
+  `codeql.yml` carry `paths-ignore:`, so those check-runs are legitimately
+  missing on a head that touches none of their paths — `smoke`, for instance,
+  only appears when the PR touches `src/**`, `tests/test_windows_portability_1329.py`,
+  `pyproject.toml` or its own workflow file. Read the `on:` block before
+  concluding a row should have been there. One extra name to expect:
+  code scanning posts its own `CodeQL` check-run from the
+  `github-advanced-security` app alongside the two `analyze (…)` jobs.
 
   Widening the presence floor to cover the whole gating set is tracked
   separately — this section is the interim instruction, not the fix.
