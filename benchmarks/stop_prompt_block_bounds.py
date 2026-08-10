@@ -85,7 +85,7 @@ def _rows(db: str) -> list[tuple[str, str, str, str, str]]:
     **head** — so the bounded figures are a function of which 20 rows
     arrive first. With no `ORDER BY` SQLite scans `rowid ASC`, i.e.
     oldest-first, and every bounded percentile measures a slice production
-    never renders (max 10,218 rather than 11,388 on this repo's store).
+    never renders (max 10,218 rather than 11,508 on this repo's store).
     Sorting by `id` instead measures content-hash order, the superseded
     design this bound exists to avoid.
     """

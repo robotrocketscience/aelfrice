@@ -3865,7 +3865,7 @@ STOP_PROMPT_CLOSE_TAG: Final[str] = "</aelfrice-session-end>"
 # Candidates per session: p50=10, p75=31, p90=69, p99=402, max=6,427.
 # A cap of 20 leaves the median session whole and truncates 33% of
 # sessions; 10 would truncate 47%. Unbounded, the worst session rendered
-# 3,448,428 bytes every turn; bounded, that worst case is 11,388.
+# 3,448,428 bytes every turn; bounded, that worst case is 11,508.
 STOP_PROMPT_MAX_ITEMS: Final[int] = 20
 # Candidate content length: p50=86, p90=367, p95=605, p99=1,479,
 # max=14,360. 1,000 withholds the command for 2.05% of candidates — the
