@@ -175,8 +175,19 @@ This silences the warning without requiring a fake issue link.
 The `merge-train` workflow (`.github/workflows/merge-train.yml`)
 serializes merges: it picks up labeled PRs one at a time, verifies the
 branch is fast-forward on current `main` and all commits are signed,
-waits for required checks to complete, and FF-pushes to `main`.
+waits for the gating checks to complete, and FF-pushes to `main`.
 Concurrency-1 — no two merges race.
+
+"Gating" is wider than the five contexts branch protection marks
+*required*. `scripts/merge_train_gate.py` blocks on any failing
+non-advisory check-run, and its presence floor — the checks that must
+have *reported at all*, not merely not-failed — is the required set plus
+every check emitted by a `pull_request` workflow with no `paths:` filter
+(#1458). So a head that never ran `migration-policy-check`, `typos` or
+`bench-smoke` will not merge, even though none of those is required.
+Path-filtered workflows are deliberately outside the floor: a docs-only
+PR never runs `e2e` or `CodeQL`, and flooring on them would block it
+forever.
 
 If the bot rejects the push it removes the label and posts a comment
 explaining why. The most common cause is "branch is not fast-forward"
