@@ -260,6 +260,8 @@ def _git_first_commit_age_days() -> int | None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=5,
         )
@@ -1336,7 +1338,7 @@ def _cmd_export_canvas(args: argparse.Namespace, out: object) -> int:
     text = _json.dumps(payload, indent=2, sort_keys=False) + "\n"
     if args.out and args.out != "-":
         from pathlib import Path as _Path
-        _Path(args.out).write_text(text)
+        _Path(args.out).write_text(text, encoding="utf-8")
         print(
             f"aelf export-canvas: wrote {args.out} "
             f"({len(payload['nodes'])} nodes, {len(payload['edges'])} edges)",
@@ -1459,7 +1461,7 @@ def _cmd_graph(args: argparse.Namespace, out: object) -> int:
 
     if args.out and args.out != "-":
         from pathlib import Path as _Path
-        _Path(args.out).write_text(text)
+        _Path(args.out).write_text(text, encoding="utf-8")
         # Stat reporting: count nodes/edges from the rendered text where
         # possible so the message reflects what landed in the file.
         if args.format == "dot":
@@ -3048,7 +3050,10 @@ def _cmd_reconcile_claude_memory(args: argparse.Namespace, out: object) -> int:
             )
             try:
                 sentinel.parent.mkdir(parents=True, exist_ok=True)
-                sentinel.write_text(f"reconciled (forced): {result.reason}\n")
+                sentinel.write_text(
+                    f"reconciled (forced): {result.reason}\n",
+                    encoding="utf-8",
+                )
             except OSError:
                 pass  # idempotent; a missing sentinel only costs a re-run
         else:

@@ -856,6 +856,7 @@ def _derive_telemetry_path(
             ["git", "-C", str(project_root),
              "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True, text=True, check=False, timeout=5,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None

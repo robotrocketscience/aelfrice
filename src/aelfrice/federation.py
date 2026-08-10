@@ -94,6 +94,8 @@ def _git_toplevel() -> Path | None:
             ["git", "rev-parse", "--path-format=absolute", "--show-toplevel"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=5,
         )
@@ -145,7 +147,7 @@ def load_peer_deps(deps_path: Path | None = None) -> list[PeerDep]:
     if deps_path is None or not deps_path.exists():
         return []
     try:
-        raw_text = deps_path.read_text("utf-8")
+        raw_text = deps_path.read_text(encoding="utf-8")
     except OSError as e:
         raise ValueError(f"{deps_path}: cannot read ({e})") from e
     try:

@@ -240,7 +240,8 @@ def maybe_reconcile_claude_memory(
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         sentinel_path.write_text(
             f"claude-memory reconciled {result.n_ingested} fact(s) "
-            f"at {time.time():.0f}\n"
+            f"at {time.time():.0f}\n",
+            encoding="utf-8",
         )
     except OSError as exc:
         # Reconcile is done + idempotent; a missing sentinel only costs a

@@ -474,6 +474,8 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_LOG_TIMEOUT_SECONDS,
             check=False,
         )
@@ -537,6 +539,8 @@ def extract_git_log(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_LOG_TIMEOUT_SECONDS,
             check=False,
         )

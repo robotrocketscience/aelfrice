@@ -745,7 +745,11 @@ def _count_turn_lines(path: Path) -> int:
 
 def _read_flush_cursor(tdir: Path) -> int:
     try:
-        text = (tdir / STOP_FLUSH_CURSOR_FILENAME).read_text().strip()
+        text = (
+            (tdir / STOP_FLUSH_CURSOR_FILENAME)
+            .read_text(encoding="utf-8")
+            .strip()
+        )
         return int(text) if text else 0
     except (OSError, ValueError):
         return 0
@@ -753,7 +757,9 @@ def _read_flush_cursor(tdir: Path) -> int:
 
 def _write_flush_cursor(tdir: Path, value: int) -> None:
     try:
-        (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(str(value))
+        (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(
+            str(value), encoding="utf-8",
+        )
     except OSError:
         # Fail-soft: a non-writable transcripts dir must never break the
         # Stop hook. The cursor simply isn't advanced, so the next Stop

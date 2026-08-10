@@ -132,6 +132,8 @@ def _git_resolve(path: Path) -> tuple[Path, Path] | None:
             cwd=str(path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=_GIT_TIMEOUT_SECONDS,
         )

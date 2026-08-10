@@ -111,9 +111,15 @@ def _read_full_commit_message(commit_hash: str, cwd: str | None) -> str | None:
         r = subprocess.run(
             ["git", "log", "-1", "--format=%B", commit_hash],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
             timeout=GIT_LOG_TIMEOUT_S, cwd=cwd,
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    except (
+        FileNotFoundError,
+        OSError,
+        subprocess.TimeoutExpired,
+        UnicodeDecodeError,
+    ):
         return None
     if r.returncode != 0:
         return None

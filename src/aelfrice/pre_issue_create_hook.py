@@ -400,12 +400,14 @@ def run_guard(
     def _default_gh_runner(argv: list[str]) -> str:
         result = subprocess.run(  # noqa: S603
             argv, capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
         )
         return result.stdout
 
     def _default_git_runner(argv: list[str]) -> str:
         result = subprocess.run(  # noqa: S603
             argv, capture_output=True, text=True, timeout=5,
+            encoding="utf-8", errors="replace",
         )
         return result.stdout
 

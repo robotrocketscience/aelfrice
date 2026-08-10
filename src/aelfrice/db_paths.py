@@ -46,10 +46,17 @@ def _git_common_dir() -> Path | None:
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=5,
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    except (
+        FileNotFoundError,
+        OSError,
+        subprocess.TimeoutExpired,
+        UnicodeDecodeError,
+    ):
         return None
     if result.returncode != 0:
         return None

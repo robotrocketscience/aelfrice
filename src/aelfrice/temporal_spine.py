@@ -443,7 +443,8 @@ def maybe_backfill_temporal_spine(
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         sentinel_path.write_text(
             f"spine auto-backfilled {report.n_edges_written} edges "
-            f"at {time.time():.0f}\n"
+            f"at {time.time():.0f}\n",
+            encoding="utf-8",
         )
     except OSError as exc:
         # Backfill is done + idempotent; a missing sentinel only costs a

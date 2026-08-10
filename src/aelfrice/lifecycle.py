@@ -1311,6 +1311,8 @@ def maybe_migrate_to_uv(
             [uv_bin, "tool", "install", "--force", PACKAGE_NAME],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -1340,7 +1342,8 @@ def maybe_migrate_to_uv(
     try:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
         sentinel_path.write_text(
-            f"migrated from {advice.context} at {time.time():.0f}\n"
+            f"migrated from {advice.context} at {time.time():.0f}\n",
+            encoding="utf-8",
         )
     except OSError:
         pass

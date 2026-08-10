@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output is None:
         sys.stdout.write(payload + "\n")
     else:
-        args.output.write_text(payload + "\n")
+        args.output.write_text(payload + "\n", encoding="utf-8")
     return 0
 
 
