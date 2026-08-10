@@ -411,7 +411,14 @@ def _stated_windows_with_positions(text: str) -> list[tuple[int, str | None]]:
     # as an ambiguity and refuse. That disjointness is a property of the
     # three patterns, not of this loop, and it is pinned as one by
     # `test_no_two_patterns_claim_the_same_window` rather than defended
-    # here by a dedupe no input reaches (#1440).
+    # here by a dedupe no input reaches.
+    #
+    # This is a DELIBERATE deviation from #1440 AC1 as written ("dedupe
+    # on match start"). The criterion's intent — no window counted twice
+    # — is met; its literal mechanism is not implemented, because a
+    # branch no input reaches is a coverage claim the tests cannot back,
+    # and the sweep test fails on any future widening that would make it
+    # reachable. Recorded here so the deviation is not silent (#1440).
     for match in _UNUSABLE_WINDOW_RE.finditer(text):
         found.append((match.start(), None))
     found.sort(key=lambda item: item[0])
