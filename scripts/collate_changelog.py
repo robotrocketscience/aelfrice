@@ -221,6 +221,15 @@ def parse_unreleased(text: str) -> tuple[dict[str, list[str]], int, int]:
     bounding the block (`end` exclusive, at the next `## [` header or
     end of file), so the caller can splice without touching the rest of
     the file.
+
+    A line that is none of a `### <Category>` heading, a `- ` entry or
+    a continuation of one is an error, not a line to skip. Dropping it
+    is silent twice over: the text never reaches the dated section, and
+    the release gate's drain check then reads an empty block and
+    passes. Every dated section in v0-v4 opens with a release-summary
+    paragraph, which is exactly that shape, so a summary drafted into
+    `[Unreleased]` is a live way to lose prose. Blank lines are
+    structure, not content, and are dropped as before.
     """
     lines = text.split("\n")
     try:
@@ -250,7 +259,7 @@ def parse_unreleased(text: str) -> tuple[dict[str, list[str]], int, int]:
             )
             buffer.clear()
 
-    for line in lines[start + 1:end]:
+    for number, line in enumerate(lines[start + 1:end], start=start + 2):
         if line.startswith("### "):
             flush()
             category = line[4:].strip()
@@ -267,6 +276,16 @@ def parse_unreleased(text: str) -> tuple[dict[str, list[str]], int, int]:
             buffer.append(line)
         elif buffer:
             buffer.append(line)
+        elif line.strip():
+            raise CollationError(
+                f"[Unreleased] line {number}: {line.strip()[:60]!r} is "
+                f"neither a '### <Category>' heading, a '- ' entry, nor "
+                f"a continuation of one, so collation has nowhere to "
+                f"put it. Dropping it would be silent twice: the text "
+                f"would not reach the dated section, and the release "
+                f"drain check would pass on the block it emptied. Fold "
+                f"it into an entry, or leave it out of the block."
+            )
     flush()
     return entries, start, end
 

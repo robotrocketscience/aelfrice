@@ -294,6 +294,42 @@ def test_an_unknown_category_is_an_error() -> None:
         parse_entry_file("### Fixt\n\n- **A ([#1](u)).** x\n", "1-slug.md")
 
 
+def test_block_content_that_is_not_an_entry_is_an_error() -> None:
+    """A note paragraph in the block has nowhere to be collated to.
+
+    Dropping it is silent twice: the prose never reaches the dated
+    section, and `release-docs-check`'s drain check then reads the
+    emptied block and passes. Every dated section in v0-v4 opens with a
+    release-summary paragraph, so this shape is one keystroke away.
+    """
+    with pytest.raises(CollationError, match="neither a '### <Category>'"):
+        collate(
+            _changelog(
+                "### Fixed",
+                "",
+                "This release concentrates on retrieval.",
+                "",
+                "- **A ([#98](u)).** Prose.",
+            ),
+            [], "4.3.0", "2026-08-10",
+        )
+
+
+def test_a_sub_heading_before_the_first_entry_is_an_error() -> None:
+    """The other shape of the same loss, and above any category."""
+    entry = "- **A ([#98](u)).** x"
+    with pytest.raises(CollationError, match="'#### Retrieval'"):
+        collate(
+            _changelog("### Fixed", "", "#### Retrieval", "", entry),
+            [], "4.3.0", "2026-08-10",
+        )
+    with pytest.raises(CollationError, match="neither a '### <Category>'"):
+        collate(
+            _changelog("Summary.", "", "### Fixed", "", entry),
+            [], "4.3.0", "2026-08-10",
+        )
+
+
 def test_a_changelog_without_an_unreleased_header_is_an_error() -> None:
     with pytest.raises(CollationError, match="no '## \\[Unreleased\\]'"):
         collate("# Changelog\n", [], "4.3.0", "2026-08-10")
