@@ -13,6 +13,16 @@ This repo's archived transcripts (`<git-common-dir>/aelfrice/transcripts/`),
 the ingest path uses. Read-only: it opens no store at all, so it cannot
 perturb what it measures.
 
+**The corpus grows every time a session archives, so a headline count with no
+corpus identity beside it is unreproducible** — the failure #1398 was filed
+over. `corpus_identity` is therefore printed on every run, not offered as a
+flag, and it carries two things because neither pins the input on its own:
+the checkout (`sha`, `dirty`), which fixes the *code*, and a digest over the
+transcript files themselves, which fixes the *data*. The transcripts are
+untracked, so the sha says nothing about them; `turns.jsonl` is the live file
+the running session is still appending to, so two runs minutes apart can
+legitimately differ. Quote `corpus_sha256` with any figure taken from here.
+
 ## The two arms
 
 * **Ack** — a measured defect. The pattern allowed 40 characters of arbitrary
@@ -35,9 +45,11 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from typing import Any
 
@@ -90,11 +102,65 @@ def _transcript_dir() -> str:
     return str(transcripts_dir())
 
 
+def _corpus_paths(tdir: str) -> list[str]:
+    """The files `_load` reads, in read order.
+
+    Shared with `_corpus_identity` on purpose: a digest computed over a
+    different file list than the one measured would certify the wrong
+    corpus, which is worse than printing no digest at all.
+    """
+    paths = sorted(glob.glob(f"{tdir}/archive/*.jsonl")) + [f"{tdir}/turns.jsonl"]
+    return [p for p in paths if os.path.exists(p)]
+
+
+def _git(root: str, *args: str) -> str:
+    """`git -C root ...`, or the empty string if git is unavailable."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _corpus_identity(tdir: str, root: str = ".") -> dict[str, Any]:
+    """Everything needed to reproduce this run's inputs (#1398).
+
+    `sha`/`dirty` identify the *code* — the shape of `is_transcript_noise`
+    and of the pre-fix replica above. They do not identify the *data*:
+    the transcript archive is untracked and `turns.jsonl` is appended to
+    while this runs, so the digest below is the half that matters for the
+    corpus counts. Both are printed because a figure needs both to be
+    reproducible, and neither implies the other.
+    """
+    digest = hashlib.sha256()
+    files: list[dict[str, Any]] = []
+    for path in _corpus_paths(tdir):
+        with open(path, "rb") as fh:
+            data = fh.read()
+        digest.update(os.path.basename(path).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        files.append({"name": os.path.basename(path), "bytes": len(data)})
+    dirty = _git(root, "status", "--porcelain")
+    return {
+        "transcripts": os.path.abspath(tdir),
+        "corpus_files": len(files),
+        "corpus_bytes": sum(f["bytes"] for f in files),
+        "corpus_sha256": digest.hexdigest(),
+        "sha": _git(root, "rev-parse", "HEAD") or "unknown",
+        "dirty": bool(dirty),
+        "dirty_paths": len(dirty.splitlines()) if dirty else 0,
+    }
+
+
 def _load(tdir: str) -> tuple[list[str], list[str]]:
     prompts: list[str] = []
-    for path in sorted(glob.glob(f"{tdir}/archive/*.jsonl")) + [f"{tdir}/turns.jsonl"]:
-        if not os.path.exists(path):
-            continue
+    for path in _corpus_paths(tdir):
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 try:
@@ -134,6 +200,7 @@ def measure(tdir: str) -> dict[str, Any]:
     # at four occurrences each, so "20 rescued" reads as 20 content items and
     # is 10. Both are reported; neither is derivable from the other.
     return {
+        "corpus_identity": _corpus_identity(tdir),
         "sentences": len(sentences),
         "prompts": len(prompts),
         "sentence_discards_before": len(old),
