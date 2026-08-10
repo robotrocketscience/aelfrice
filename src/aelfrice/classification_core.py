@@ -76,7 +76,7 @@ USER_SOURCE: Final[str] = "user"
 # boundary regex built from the singular set. **46** of them are plurals
 # of keywords already in this set — 42 `constraints`, 4 `hard rules` —
 # and the remaining **50** are the intended false-positive removals
-# (`requirements` 17, `constraint_failure` 10, `mustang` 6,
+# (beliefs, not occurrences: `requirements` 17, `constraint_failure` 10, `mustang` 5,
 # `belief_requirement` 3, `required_status_checks`, …). The two halves
 # partition the 96, and the 50 is the loss the shipped set below actually
 # takes: those two plurals are added for that reason, not to widen the
