@@ -89,10 +89,14 @@ _ALWAYS_NEVER_TERMS: tuple[str, ...] = (
 # cross-checks its replica against `_NEGATION_RE`.
 #
 # This bound is deliberately negation-only. The sibling categories carry
-# the same hyphen compounds (72 for always/never, 75 for prior-reference)
-# but theirs are semantically live — "always-on" is still an absolutist
-# claim and "already-shipped" is still a prior reference, whereas "no-op"
-# negates nothing. Widening the exclusion to them would cost real signal.
+# the same hyphen compounds — 79 for always/never and 78 for
+# prior-reference — but theirs are semantically live: "always-on" is
+# still an absolutist claim and "already-shipped" is still a prior
+# reference, whereas "no-op" negates nothing. Widening the exclusion to
+# them would cost real signal. Both counts are taken on the lowercased
+# sentence, which is what this function matches against; the same two
+# counted on the raw `content` column are 76 and 75, so quote the reading
+# with the figure.
 #
 # #1159 §4: "stop" used to appear in three of the categories below
 # (`_IMPERATIVE_RE`, `_NEGATION_TERMS`, `_EMPHASIS_TERMS`), so a single
