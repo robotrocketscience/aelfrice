@@ -354,3 +354,58 @@ def test_the_committed_v4_changelog_collates_without_loss() -> None:
         ]
     )
 
+
+# ---------------------------------------------------------------------------
+# `release-docs-check` must know the new location.
+#
+# The job already refuses a release PR whose `[Unreleased]` block still
+# has content. Half the unreleased surface now lives in a directory, and
+# a file stranded there is quieter than a stranded bullet: nothing
+# renders it, so it reappears only as a duplicate in the next release.
+# The shell predicate is extracted from the workflow and run, so these
+# fail if it is edited into something that matches nothing.
+# ---------------------------------------------------------------------------
+
+_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
+
+
+def _leftover_command() -> str:
+    """The workflow's own `leftover=$(...)` scan, as written."""
+    for line in _WORKFLOW.read_text(encoding="utf-8").split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("leftover=$(") and "unreleased" in stripped:
+            return stripped
+    raise AssertionError(
+        "release-docs-check has no CHANGELOG/unreleased drain check"
+    )
+
+
+def _run_leftover(root: Path) -> list[str]:
+    import subprocess
+
+    proc = subprocess.run(
+        ["sh", "-c", _leftover_command() + '\nprintf "%s\\n" "$leftover"'],
+        cwd=root, capture_output=True, text=True, check=True,
+        timeout=20,
+    )
+    return [line for line in proc.stdout.split("\n") if line]
+
+
+@pytest.mark.timeout(30)
+def test_the_release_gate_lists_a_stranded_entry_file(tmp_path: Path) -> None:
+    directory = tmp_path / "CHANGELOG" / "unreleased"
+    directory.mkdir(parents=True)
+    (directory / "README.md").write_text("note\n", encoding="utf-8")
+    (directory / "1475-slug.md").write_text("### Fixed\n", encoding="utf-8")
+
+    assert _run_leftover(tmp_path) == ["CHANGELOG/unreleased/1475-slug.md"]
+
+
+@pytest.mark.timeout(30)
+def test_the_release_gate_ignores_the_directory_note(tmp_path: Path) -> None:
+    """A drained directory keeps its README; that is not an entry."""
+    directory = tmp_path / "CHANGELOG" / "unreleased"
+    directory.mkdir(parents=True)
+    (directory / "README.md").write_text("note\n", encoding="utf-8")
+
+    assert _run_leftover(tmp_path) == []

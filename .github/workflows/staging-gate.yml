@@ -224,6 +224,20 @@ jobs:
               fail=1
             fi
           fi
+          # #1475 — the same drain requirement for the other half of the
+          # unreleased surface. `CHANGELOG/unreleased/` holds one file
+          # per entry; collation folds them into the dated section and
+          # deletes them. A file left behind is collated into the *next*
+          # release as a duplicate of an entry that already shipped, and
+          # unlike a stranded [Unreleased] bullet nothing renders it, so
+          # nothing else would show it. README.md is the directory note,
+          # not an entry.
+          leftover=$(find CHANGELOG/unreleased -maxdepth 1 -type f -name '*.md' ! -name 'README.md' 2>/dev/null | sort)
+          if [ -n "$leftover" ]; then
+            echo "::error file=${changelog_file}::Release PR detected (${base_ver} -> ${head_ver}) but CHANGELOG/unreleased/ still holds entry files. Collate them: python3 scripts/collate_changelog.py --version ${head_ver} --date YYYY-MM-DD"
+            printf '%s\n' "$leftover" | sed 's/^/  /'
+            fail=1
+          fi
           if grep -qE "v?${head_ver}\s*\|\s*(next|planned)\b" README.md; then
             echo "::error file=README.md::Roadmap row for v${head_ver} still says 'next' or 'planned'. Flip status to 'shipped' before cutting the release."
             fail=1
