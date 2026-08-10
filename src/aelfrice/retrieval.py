@@ -40,7 +40,7 @@ NO HRR in v1.3.0. That lands at v2.0.0.
 
 There is no retrieval-level result cache: `retrieve()` is called
 directly by the hook and the CLI. A bounded LRU wrapper shipped in
-v1.3.0 and was removed in #1418 having never acquired a production
+v1.0.3 and was removed in #1418 having never acquired a production
 caller — see docs/design/historical/lru_query_cache.md. The store's
 invalidation callback registry it was built on remains, and is used by
 `BM25IndexCache`, `graph_spectral`, `hrr_index` and

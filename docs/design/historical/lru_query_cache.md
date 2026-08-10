@@ -1,7 +1,8 @@
 # LRU query cache for `aelfrice.retrieval.retrieve()`
 
 > **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).**
-> `RetrievalCache` shipped at v1.3.0, never acquired a production caller, and was
+> `RetrievalCache` shipped at v1.0.3 (2026-04-27) — two patch releases after the
+> target milestone recorded below — never acquired a production caller, and was
 > deleted along with the helpers that existed only to build its key
 > (`canonicalize_query`, `DEFAULT_CACHE_CAPACITY`,
 > `POSTERIOR_WEIGHT_KEY_PRECISION`). Everything below is kept unedited as the
