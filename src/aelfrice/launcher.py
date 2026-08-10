@@ -88,6 +88,13 @@ def command_tokens(command: str, *, windows: bool | None = None) -> list[str]:
     if _resolve_windows(windows):
         lexer = shlex.shlex(stripped, posix=False)
         lexer.whitespace_split = True
+        # `shlex` defaults `commenters` to '#', which is not comment syntax in
+        # a Windows command line — it is a legal path character. Left enabled,
+        # ``C:\\Users\\dev#1\\...\\aelf-hook.exe`` truncates to
+        # ``C:\\Users\\dev`` and ownership is lost for that user exactly the
+        # way the unfixed splitter loses it. The POSIX branch below does not
+        # need this: `shlex.split` passes `comments=False`.
+        lexer.commenters = ""
         try:
             return [tok.strip('"') for tok in lexer]
         except ValueError:
@@ -128,10 +135,60 @@ def launcher_key(token: str, *, windows: bool | None = None) -> str:
     return folded
 
 
+def _has_launcher_suffix(token: str, *, windows: bool) -> bool:
+    """Does this token's basename end in a recognised launcher suffix?"""
+    base = launcher_basename(token, windows=windows).casefold()
+    _stem, dot, suffix = base.rpartition(".")
+    return bool(dot) and f".{suffix}" in LAUNCHER_SUFFIXES
+
+
+def _spaced_program_token(tokens: list[str], *, windows: bool) -> str:
+    """Rejoin an unquoted program path that whitespace-splitting broke up.
+
+    `setup._resolve_script` writes the resolved path **unquoted** — quoting
+    changes bytes on POSIX too, and nothing in this repo pins whether Codex
+    `exec`s or shells out. On Windows that path routinely contains a space: a
+    system interpreter installs under ``C:\\Program Files\\...`` and any user
+    profile may carry one. The program is then spread across several tokens
+    and ``tokens[0]`` is a fragment (``C:\\Program``), whose key is
+    ``program`` — so our own handler stops being recognised as ours and #1412's
+    whole symptom table reproduces: setup appends a duplicate group per event
+    on every run, doctor counts zero handlers, unsetup removes nothing.
+
+    Returns the shortest prefix whose basename carries a launcher suffix, or
+    ``""`` if none does.
+
+    Switch-shaped tokens stop the scan rather than being joined over, so
+    ``wrapper.exe --out foo.exe`` cannot be read as a program named ``foo``.
+    Ownership drives deletion here, and widening it is the unsafe direction.
+    """
+    for k in range(2, len(tokens) + 1):
+        if any(tok.startswith(("-", "/")) for tok in tokens[1:k]):
+            break
+        candidate = " ".join(tokens[:k])
+        if _has_launcher_suffix(candidate, windows=windows):
+            return candidate
+    return ""
+
+
 def command_launcher_key(command: str, *, windows: bool | None = None) -> str:
-    """`launcher_key` of a whole command string's program token."""
+    """`launcher_key` of a whole command string's program token.
+
+    On Windows the program token is recovered across whitespace when the
+    written command holds an unquoted path with spaces — see
+    `_spaced_program_token`. POSIX is untouched: the module docstring's
+    no-widening rule applies, and a POSIX command is written from a resolved
+    path this project controls.
+    """
     win = _resolve_windows(windows)
-    return launcher_key(program_token(command, windows=win), windows=win)
+    tokens = command_tokens(command, windows=win)
+    if not tokens:
+        return ""
+    if win and not _has_launcher_suffix(tokens[0], windows=win):
+        rejoined = _spaced_program_token(tokens, windows=win)
+        if rejoined:
+            return launcher_key(rejoined, windows=win)
+    return launcher_key(tokens[0], windows=win)
 
 
 def owned_keys(
@@ -183,20 +240,60 @@ def which_in(directory: Path, name: str) -> Path | None:
     ``aelf-hook`` finds ``aelf-hook.exe``. `os.access(..., X_OK)` — what this
     replaces — is meaningless on Windows, where it returns True for any
     existing file.
+
+    The result is confined to `directory` explicitly. `shutil.which` inserts
+    `os.curdir` at the front of the search list on win32 whenever the command
+    has no directory part, and that insertion is **not** conditional on
+    `path` being None — it sits in the `else` branch of the dirname test
+    (CPython 3.12-3.14, `shutil.py`). Passing `path=` therefore does not
+    confine anything: a stray ``aelf-hook.exe`` in the process's working
+    directory would be returned as if it were the venv's, and
+    `setup._resolve_script` would pin that relative path into settings.json.
     """
     found = shutil.which(name, path=str(directory))
-    return Path(found) if found else None
+    if found is None:
+        return None
+    resolved = Path(found)
+    try:
+        inside = resolved.parent.resolve() == Path(directory).resolve()
+    except OSError:
+        return None
+    return resolved if inside else None
 
 
 def which_on_path(name: str) -> Path | None:
     """Resolve `name` on `PATH`, without the win32 current-directory search.
 
-    CPython's `shutil.which` prepends `os.curdir` to the search path on
-    win32 **when `path is None`**. A bare `shutil.which("aelf-hook")` can
-    therefore resolve a `aelf-hook.exe` sitting in whatever directory the
-    user happened to run `aelf setup` from, and pin that absolute path into
-    settings.json. Passing `path=` explicitly stays inside the `path is not
-    None` branch, where no such insertion happens.
+    CPython's `shutil.which` prepends `os.curdir` to the search path on win32
+    whenever the command has no directory part. That insertion lives in the
+    `else` branch of the dirname test and is **not** gated on `path is None`
+    (verified in `shutil.py` for 3.12-3.14; `requires-python` here is >=3.12),
+    so passing `path=` explicitly does not avoid it. An earlier revision of
+    this function claimed it did, and shipped a fix that changed nothing: a
+    stray ``aelf-hook.exe`` in whatever directory the user ran `aelf setup`
+    from still won, and `setup._resolve_script` still pinned it into
+    settings.json.
+
+    The result is therefore filtered rather than the search restrained: the
+    hit is kept only if its parent is one of the directories actually named
+    on `PATH`. If the working directory is itself on `PATH`, it is a
+    legitimate hit and survives.
     """
-    found = shutil.which(name, path=os.environ.get("PATH", os.defpath))
-    return Path(found) if found else None
+    raw = os.environ.get("PATH", os.defpath)
+    found = shutil.which(name, path=raw)
+    if found is None:
+        return None
+    resolved = Path(found)
+    entries: set[Path] = set()
+    for entry in raw.split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            entries.add(Path(entry).resolve())
+        except OSError:  # an unreadable or malformed PATH entry
+            continue
+    try:
+        parent = resolved.parent.resolve()
+    except OSError:
+        return None
+    return resolved if parent in entries else None

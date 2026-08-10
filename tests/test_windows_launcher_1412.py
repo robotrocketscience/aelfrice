@@ -107,6 +107,48 @@ class TestTokenising:
         ]
         assert launcher.command_launcher_key(cmd, windows=True) == "aelf-hook"
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # A system interpreter installs here; the space is not exotic.
+            (r"C:\Program Files\Python312\Scripts\aelf-hook.EXE", "aelf-hook"),
+            # Any profile may carry one.
+            (r"C:\Users\Ana Maria\.venv\Scripts\aelf-hook.exe", "aelf-hook"),
+            # '#' is a legal path character, not a comment introducer.
+            (r"C:\Users\dev#1\.venv\Scripts\aelf-hook.exe", "aelf-hook"),
+            # Unquoted, with a trailing argument.
+            (r"C:\Program Files\X\aelf-hook.exe --flag", "aelf-hook"),
+        ],
+    )
+    def test_an_unquoted_spaced_path_still_yields_the_launcher_key(
+        self, command: str, expected: str,
+    ) -> None:
+        """`_resolve_script` writes the resolved path unquoted.
+
+        The quoted form was the only one covered, and nothing in this repo
+        emits it, so the acceptance criterion "paths containing spaces are
+        covered" was ticked on a form that never occurs. Whitespace-splitting
+        an unquoted `C:\\Program Files\\...` command yields the program token
+        `C:\\Program`, whose key is `program`, so our own handler stops being
+        recognised as ours and #1412's whole symptom table reproduces.
+
+        windows-smoke cannot catch this: the runner's paths have no spaces.
+        """
+        assert launcher.command_launcher_key(command, windows=True) == expected
+
+    def test_an_argument_that_looks_like_a_launcher_is_not_the_program(
+        self,
+    ) -> None:
+        """Rejoining tokens must not widen ownership.
+
+        Ownership drives `remove_codex_hooks` and `prune_broken_aelf_hooks`,
+        so reading an argument as the program is how you delete a file
+        somebody else owns.
+        """
+        assert launcher.command_launcher_key(
+            r"C:\Other\wrapper.exe --out aelf-hook.exe", windows=True,
+        ) == "wrapper"
+
     def test_posix_tokenising_is_untouched(self) -> None:
         assert launcher.command_tokens(
             "bash /opt/x.sh 2>/dev/null", windows=False,
@@ -140,16 +182,16 @@ class TestResolution:
         assert launcher.which_in(tmp_path, "aelf-hook") == target
         assert launcher.which_in(tmp_path, "aelf-missing") is None
 
-    def test_which_on_path_never_passes_path_none(
+    def test_which_on_path_passes_an_explicit_path(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The win32 current-directory search is a hijack vector.
+        """Regression guard for the bare `shutil.which(name)` call.
 
-        CPython inserts `os.curdir` into the search path **only when `path is
-        None`**. A bare `shutil.which("aelf-hook")` on Windows can therefore
-        resolve an `aelf-hook.exe` in whatever directory `aelf setup` was run
-        from and pin it into settings.json. Asserting the kwarg is the only
-        way to catch a regression to the bare call from POSIX CI.
+        This pins the mechanism only. It passes on both the vulnerable and
+        the fixed code, because passing `path=` does **not** by itself avoid
+        the win32 curdir search — see
+        `test_a_current_directory_hit_is_rejected_even_with_an_explicit_path`,
+        which pins the property.
         """
         seen: list[object] = []
 
@@ -161,6 +203,62 @@ class TestResolution:
         monkeypatch.setenv("PATH", "/sentinel/bin")
         assert launcher.which_on_path("aelf-hook") is None
         assert seen == ["/sentinel/bin"]
+
+    def test_a_current_directory_hit_is_rejected_even_with_an_explicit_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """`path=` does not suppress the win32 current-directory search.
+
+        CPython inserts `os.curdir` at the front of the search list whenever
+        the command has no directory part. That insertion is in the `else`
+        branch of the dirname test, **not** under `if path is None` — so the
+        earlier "passing `path=` stays out of that branch" reasoning was
+        wrong and the fix built on it changed nothing. A stray
+        `aelf-hook.exe` in the process's working directory still won and
+        `_resolve_script` still pinned it into settings.json.
+
+        Simulated rather than skipped, so it runs on POSIX CI: `shutil.which`
+        is replaced by one that returns a curdir hit exactly as win32 would.
+        """
+        on_path = tmp_path / "real"
+        on_path.mkdir()
+        intruder = tmp_path / "cwd" / "aelf-hook.exe"
+        intruder.parent.mkdir()
+        intruder.write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(
+            launcher.shutil, "which",
+            lambda name, mode=1, path=None: str(intruder),
+        )
+        monkeypatch.setenv("PATH", str(on_path))
+        assert launcher.which_on_path("aelf-hook") is None
+
+        # ...and it is kept when the directory really is on PATH.
+        monkeypatch.setenv("PATH", str(intruder.parent))
+        assert launcher.which_on_path("aelf-hook") == intruder
+
+    def test_which_in_does_not_escape_its_directory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """The same curdir insertion applies to `which_in`'s `path=` call.
+
+        Trunk's `_executable_in_dir` was `directory / name` plus an access
+        check, which could not escape `directory`. Delegating to
+        `shutil.which` reintroduced the escape on win32, inverting the
+        "project scope prefers the active environment over a global shim"
+        acceptance criterion.
+        """
+        outside = tmp_path / "elsewhere" / "aelf-hook.exe"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("", encoding="utf-8")
+        scripts = tmp_path / "Scripts"
+        scripts.mkdir()
+
+        monkeypatch.setattr(
+            launcher.shutil, "which",
+            lambda name, mode=1, path=None: str(outside),
+        )
+        assert launcher.which_in(scripts, "aelf-hook") is None
 
     def test_setup_delegates_the_scripts_dir_rather_than_re_deriving_it(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
