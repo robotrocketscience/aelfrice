@@ -233,7 +233,7 @@ def test_ac5_apply_feedback_promotes_mid_rank_belief() -> None:
 
 def test_ac7_apply_feedback_fires_the_store_invalidation_callback() -> None:
     """apply_feedback must not reach into any derived cache directly; the
-    wipe travels through store.update_belief -> _fire_invalidation.
+    wipe travels through store.bump_posterior -> _fire_invalidation.
 
     Observed with a probe callback rather than through `RetrievalCache`
     (deleted in #1418). The registry itself is unaffected and still has four
@@ -241,7 +241,10 @@ def test_ac7_apply_feedback_fires_the_store_invalidation_callback() -> None:
     and `query_understanding.store_cache` — so this contract still matters.
 
     Falsifiable by making `apply_feedback` write without going through
-    `update_belief`: the probe never fires.
+    `bump_posterior`: the probe never fires. (`update_belief` is not on this
+    path at all — `feedback.py` never calls it; the posterior write is
+    `store.bump_posterior(belief_id, d_alpha, d_beta)` at feedback.py:218.
+    Naming the wrong mutator made the stated falsifier unperformable.)
     """
     s = _equal_bm25_store()
     fired: list[int] = []

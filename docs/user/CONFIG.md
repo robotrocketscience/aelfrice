@@ -459,7 +459,7 @@ Behaviour at the boundaries:
 
 Locked beliefs (L0) bypass scoring entirely; the weight only reranks the L1 BM25 candidate set. L2.5 entity-index hits and L3 BFS expansions are unaffected.
 
-Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. (Until #1418 this note also described a retrieval-result cache keyed on the resolved weight; that cache had no production caller and was removed, so there is no longer a shared cache for two callers to collide on.)
+Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through.
 
 Precedence (first decisive wins): env var `AELFRICE_POSTERIOR_WEIGHT=<float>` > explicit Python kwarg `posterior_weight=<float>` on `retrieve()` / `retrieve_v2()` > TOML `[retrieval] posterior_weight` > default `0.5`.
 
