@@ -794,6 +794,34 @@ def test_doctor_reports_disabled_state_and_names_both_switches(
     assert "[memory_block] enabled = false" in out
 
 
+def test_doctor_reports_the_state_with_a_settings_json_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row must render on the path every real install takes.
+
+    `format_report` has two call sites for every section: the
+    no-settings.json early return, and the main body below it. The other
+    tests here pass a non-existent `user_settings`, so they only ever
+    exercise the early return — the branch a user with an installed hook
+    never reaches. `nothing to check` is the sentinel of that early
+    return, so asserting its absence is what proves this fire took the
+    other path.
+    """
+    from aelfrice.doctor import diagnose, format_report
+
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    out = format_report(
+        diagnose(user_settings=settings, project_root=tmp_path)
+    )
+    assert "nothing to check" not in out
+    assert "Memory block" in out
+    assert "injection:            disabled" in out
+    assert "AELFRICE_MEMORY_BLOCK=0" in out
+    assert "[memory_block] enabled = false" in out
+
+
 def test_doctor_reads_the_project_toml_not_the_process_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
