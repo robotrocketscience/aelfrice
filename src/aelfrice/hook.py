@@ -1109,6 +1109,25 @@ def user_prompt_submit(
         # fail-soft: any error leaves cadence_checkpoint_block="" and
         # the rest of the hook is unaffected.
         cadence_checkpoint_block = ""
+        # #1407: clear the per-fire sidecar outcome BEFORE the cadence
+        # dispatch, not after it. The cadence checkpoint reaches BM25 --
+        # `_maybe_run_ups_cadence_checkpoint` -> `_run_cadence_rebuild` ->
+        # `_rebuild_and_format` -> `rebuild_v14` -> `retrieve()` -> the L1
+        # lane -> `BM25IndexCache.get()` -- so a reset placed after it wipes
+        # the outcome that pass recorded. On a fire landing on a cadence
+        # boundary with a stale sidecar, that is a `full_rebuild` erased and
+        # then re-recorded as `fresh` by the main retrieval, which the
+        # cadence pass just warmed. That is exactly the interleaving the
+        # max-wins recorder exists to survive, so a reset below it made the
+        # max-wins semantics inert for their one justifying scenario.
+        #
+        # Clearing here still satisfies what the reset is for: absence must
+        # stay distinguishable from `fresh`, so a fire that never builds an
+        # index records no outcome rather than inheriting the previous
+        # fire's. Every `get()` this fire makes now happens after the clear.
+        from aelfrice.bm25 import reset_sidecar_outcome  # noqa: PLC0415
+
+        reset_sidecar_outcome()
         try:
             payload_obj: Any = json.loads(raw) if raw.strip() else {}
             if isinstance(payload_obj, dict):
@@ -1195,14 +1214,11 @@ def user_prompt_submit(
                 _reset_last_telemetry,
             )
             _reset_last_telemetry(_LaneTelemetry())
-            # #1407: same reasoning for the BM25 sidecar outcome. Cleared
-            # to None here so that a fire which never builds an index
-            # records no outcome at all rather than inheriting the
-            # previous fire's — absence has to stay distinguishable from
-            # `fresh`, or a fire doing no work is counted as a cache hit.
-            from aelfrice.bm25 import reset_sidecar_outcome  # noqa: PLC0415
-
-            reset_sidecar_outcome()
+            # #1407: the sidecar outcome is NOT cleared here. It is cleared
+            # once per fire, above the cadence dispatch, because the cadence
+            # checkpoint reaches `BM25IndexCache.get()` and a clear at this
+            # point would discard the outcome that pass recorded. See the
+            # comment at the reset site.
             # #909: condition the BM25 query on recent dialog turns so a
             # paraphrased / pronoun / numeric-reference prompt still
             # surfaces the load-bearing thread (the topic vocabulary the

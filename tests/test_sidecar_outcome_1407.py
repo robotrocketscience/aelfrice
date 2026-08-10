@@ -478,3 +478,102 @@ def test_the_reset_stops_a_fire_inheriting_the_previous_outcome(
     assert "sidecar_outcome" not in row, (
         "a fire that did no index work inherited the previous fire's outcome"
     )
+
+
+def test_the_cadence_pass_rebuild_survives_the_per_fire_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reset must run ABOVE the cadence dispatch, not below it.
+
+    `_maybe_run_ups_cadence_checkpoint` reaches BM25 --
+    `_run_cadence_rebuild` -> `_rebuild_and_format` -> `rebuild_v14` ->
+    `retrieve()` -> the L1 lane -> `BM25IndexCache.get()`. So a fire landing
+    on a cadence boundary with a stale sidecar pays a full rebuild inside
+    that pass. If the per-fire reset sits *after* the dispatch, that outcome
+    is erased and the main retrieval then records `fresh` against a sidecar
+    the cadence pass just warmed -- undercounting exactly the expensive fires
+    #1380 is priced on, and making max-wins inert for its one justifying
+    interleaving.
+
+    **The warm-up fire is what gives this test its power, and the first
+    version of it was worthless without one.** `_drive_ups` builds a fresh
+    store, so an unwarmed fire records `full_rebuild` from its own main
+    retrieval -- and the assertion passed identically whether the reset ran
+    above or below the dispatch. Warming first makes the main retrieval
+    `fresh`, so `full_rebuild` can only have come from the cadence pass.
+
+    Stubbing the cadence pass is what makes this deterministic: cadence is
+    default-off, and reaching a real boundary with a stale sidecar is not
+    something a unit test can arrange. The stub stands in for "the cadence
+    pass did index work", which is the only property under test.
+
+    Falsifiable by moving `reset_sidecar_outcome()` back below the
+    `_maybe_run_ups_cadence_checkpoint` call, which is where it shipped.
+    """
+    import aelfrice.hook as hook_mod
+    from aelfrice.bm25 import _record_sidecar_outcome
+
+    import io
+    import json
+
+    from aelfrice.hook import user_prompt_submit
+
+    prompt = "belief number 3 about retrieval and indexing"
+
+    def _fire_again() -> dict:
+        """Fire the hook again against the store `_drive_ups` already seeded.
+
+        `_drive_ups` re-inserts its beliefs on every call, which trips the
+        `beliefs.content_hash` UNIQUE constraint the second time, so repeat
+        fires cannot go through it.
+        """
+        user_prompt_submit(
+            stdin=io.StringIO(
+                json.dumps({
+                    "prompt": prompt,
+                    "session_id": "s1",
+                    "cwd": str(tmp_path),
+                })
+            ),
+            stdout=io.StringIO(),
+        )
+        rows = [
+            r for r in _audit_rows(tmp_path)
+            if r.get("hook") == "user_prompt_submit"
+        ]
+        assert rows, "the hook wrote no user_prompt_submit audit row"
+        return rows[-1]
+
+    # Warm-up fire: builds the index, so the NEXT fire's main retrieval is
+    # not itself a full rebuild. Without this the assertion below cannot
+    # tell the cadence pass's outcome from the main retrieval's.
+    warm = _drive_ups(tmp_path, prompt, monkeypatch)
+    assert warm["sidecar_outcome"] == "full_rebuild", (
+        "expected the first fire on a fresh store to build the index"
+    )
+
+    # Control: with the index warm and no cadence pass, the fire is `fresh`.
+    control = _fire_again()
+    assert control["sidecar_outcome"] == "fresh", (
+        f"expected a warm fire to record 'fresh', got "
+        f"{control['sidecar_outcome']!r}; the control for this test does not "
+        "hold and the assertion below would prove nothing"
+    )
+
+    def _cadence_that_rebuilt(*_a: object, **_k: object) -> None:
+        # Stand in for the cadence rebuild's get() taking the build branch.
+        _record_sidecar_outcome("full_rebuild")
+        return None
+
+    monkeypatch.setattr(
+        hook_mod, "_maybe_run_ups_cadence_checkpoint", _cadence_that_rebuilt,
+    )
+
+    row = _fire_again()
+
+    assert row.get("sidecar_outcome") == "full_rebuild", (
+        f"the fire recorded {row.get('sidecar_outcome')!r}, not 'full_rebuild'. "
+        "The cadence pass paid a full rebuild and the fire must be classified "
+        "by its costliest get(); a reset below the cadence dispatch erases it. "
+        "The control above proves this fire would otherwise be 'fresh'."
+    )
