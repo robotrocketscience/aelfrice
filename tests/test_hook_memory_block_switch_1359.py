@@ -698,6 +698,70 @@ def test_suppressed_fire_reports_zero_injected_chars(
     assert "injection size p95: 0 chars" in out
 
 
+def test_suppressed_fire_audits_an_empty_block_on_the_retrieval_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit row for a suppressed retrieval fire records no block.
+
+    `aelf tail` is the inspection surface the hint names, and it renders
+    `rendered_block` and the `tokens` count derived from it. Suppressing
+    only stdout and leaving the rendered text in the audit would have
+    `aelf tail` report an injection that never reached the prompt — and
+    would falsify the shipped CONFIG.md claim that a suppressed fire's
+    `hook_audit.jsonl` row carries `tokens: 0`.
+
+    The gate-skip path pins the same thing in
+    `test_gate_skip_first_prompt_is_suppressed_by_the_switch`; this is
+    the retrieval path, the one that actually carries beliefs. The
+    absence of `prompt_shape_gate_skip` is what proves which of the two
+    emit paths ran — it is set at the gate-skip call site and nowhere
+    else. `beliefs[]` and `n_beliefs` stay populated on both halves,
+    because the audit is the record of the fire: what changes is the
+    claim about what was injected, not the record of what was found.
+    """
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed(on_db)
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-aud-on")),
+        stdout=sout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert OPEN_TAG in sout.getvalue()
+    on_rec = read_hook_audit(_audit_path_for_db(on_db))[0]
+    assert "prompt_shape_gate_skip" not in on_rec
+    assert on_rec["rendered_block"] == sout.getvalue()
+    assert int(on_rec["tokens"]) > 0  # type: ignore[call-overload]
+    assert on_rec["n_beliefs"] == 1
+    assert len(on_rec["beliefs"]) == 1  # type: ignore[arg-type]
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    sout_off = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-aud-off")),
+        stdout=sout_off,
+        stderr=io.StringIO(),
+    ) == 0
+    assert sout_off.getvalue() == ""
+    off_rec = read_hook_audit(_audit_path_for_db(off_db))[0]
+    assert "prompt_shape_gate_skip" not in off_rec
+    assert off_rec["rendered_block"] == ""
+    assert off_rec["tokens"] == 0
+    # Still the record of the fire: retrieval found the belief.
+    assert off_rec["n_beliefs"] == 1
+    assert len(off_rec["beliefs"]) == 1  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # `aelf doctor` reports the state
 # ---------------------------------------------------------------------------
