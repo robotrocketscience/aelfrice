@@ -476,11 +476,12 @@ def test_member_inside_a_longer_hyphenated_compound_still_tags(
 
     Adding `-` to the boundary class kills the defect, and also kills
     every member that legitimately sits inside a longer hyphenated
-    phrase. Measured against the live repo-local store (44,683 active
-    beliefs): the both-sides variant changes 588 beliefs and destroys
-    568 whole-category tags; left-side-only changes 310 and destroys
-    290. Roughly 40% of the losses are `default_state` assertions of
-    exactly the shape below.
+    phrase. Measured against the live repo-local store (44,687 active
+    beliefs, the denominator the CHANGELOG and `value_compare.py` quote):
+    the both-sides variant changes 588 beliefs and destroys 565
+    whole-category tags; left-side-only changes 310 and destroys 289.
+    Roughly 40% of the losses are `default_state` assertions of exactly
+    the shape below.
 
     Longest-match ordering distinguishes the two cases where a boundary
     class cannot: `deterministic` is dropped from "non-deterministic"
