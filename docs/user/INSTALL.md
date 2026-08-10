@@ -76,9 +76,9 @@ The `$aelf-*` agent skills are **not** moved by `$CODEX_HOME` — `~/.agents/ski
 
 #### Shared `hooks.json` (unreleased)
 
-`hooks.json` belongs to Codex, not to aelfrice: your own entries, another installer's, and ours live in one document. Setup and unsetup take an advisory lock on a sibling `hooks.json.lock`, re-check the file's content hash immediately before committing, and replace it atomically (#1428), so a concurrent edit is merged with — never overwritten by — an aelfrice run. If the file keeps changing under three attempts, the command refuses and writes nothing; re-run it.
+`hooks.json` belongs to Codex, not to aelfrice: your own entries, another installer's, and ours live in one document. Setup and unsetup take an advisory lock on a sibling `hooks.json.lock`, re-check the file's content hash immediately before committing, and replace it atomically (#1428), so a concurrent edit is merged with — never overwritten by — an aelfrice run. `unsetup` against a home with no `hooks.json` does none of this and creates nothing, lock file included. If the file keeps changing under three attempts, the command refuses and writes nothing; re-run it.
 
-Two refusals are new and deliberate. A non-object `hooks` value, or a non-list value on an event aelfrice installs into, is left byte-for-byte alone and reported. aelfrice can only merge into the documented `{"hooks": {"<Event>": [...]}}` shape; reshaping anything else would delete structure it did not write. Fix the file, or pass `--force` to replace it.
+Two refusals are new and deliberate. A non-object `hooks` value, or a non-list value on an event aelfrice installs into, is left byte-for-byte alone and reported — `null` included, which is a value there and not an absence. aelfrice can only merge into the documented `{"hooks": {"<Event>": [...]}}` shape; reshaping anything else would delete structure it did not write. Fix the file, or pass `--force` to replace it.
 
 One window is not closed: a process that takes no lock can still replace the file in the instant between our final check and the rename. Closing it needs a mutation protocol Codex does not currently offer.
 
