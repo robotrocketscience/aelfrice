@@ -382,6 +382,12 @@ _HOOKS_LOCK_TIMEOUT: Final[float] = 10.0
 _HOOKS_COMMIT_ATTEMPTS: Final[int] = 3
 
 
+#: Stands in for "the document could not be parsed at all". A unique
+#: object rather than None, because `null` parses to None and must stay
+#: distinguishable from a syntax error (see `_plan_install`).
+_UNPARSEABLE: Final[object] = object()
+
+
 def _fingerprint(path: Path) -> str:
     """Content hash of `path`; `""` when it does not exist.
 
@@ -462,11 +468,19 @@ def _plan_install(
     `{"hooks":{"UserPromptSubmit":{"foreign":"keep"}}}` lost its object
     during an ordinary setup run with no error and no `--force`.
     """
-    refuse = lambda msg: (  # noqa: E731 - one-line early-return shorthand
-        None, CodexInstallResult(path=hooks_path, changed=False, error=msg)
-    )
+    def refuse(msg: str) -> tuple[str | None, CodexInstallResult]:
+        return None, CodexInstallResult(
+            path=hooks_path, changed=False, error=msg,
+        )
+
     existing: dict[str, object] = {}
     if text is not None:
+        # `_UNPARSEABLE`, not None: `null` is a legal JSON document, so
+        # reusing None as the "could not parse" sentinel made a file
+        # holding `null` indistinguishable from a syntax error — and the
+        # `parsed is not _UNPARSEABLE` guard below then skipped the
+        # refusal and overwrote it with no error and no `--force`.
+        parsed: object = _UNPARSEABLE
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -475,10 +489,9 @@ def _plan_install(
                     f"existing hooks.json is invalid JSON ({exc}); "
                     "re-run with --force to replace it"
                 )
-            parsed = None
         if isinstance(parsed, dict):
             existing = cast(dict[str, object], parsed)
-        elif parsed is not None and not force:
+        elif parsed is not _UNPARSEABLE and not force:
             return refuse(
                 "existing hooks.json is not a JSON object; "
                 "re-run with --force to replace it"
@@ -624,31 +637,55 @@ def _commit_hooks_transaction(
     hashes the same. A mismatch means a writer that does not take our
     lock got in; the plan is convergent, so we re-read and re-apply
     rather than clobber, up to `_HOOKS_COMMIT_ATTEMPTS`.
-    """
-    from aelfrice.session_ring import exclusive_file_lock
 
-    with exclusive_file_lock(hooks_path, timeout=_HOOKS_LOCK_TIMEOUT):
-        for _ in range(_HOOKS_COMMIT_ATTEMPTS):
-            text, fingerprint = _read_hooks_snapshot(hooks_path)
-            serialized, result = plan(text)
-            if serialized is None:
-                return result
-            try:
-                committed = _atomic_replace_hooks(
-                    hooks_path, serialized, fingerprint,
-                )
-            except OSError as exc:
-                # A full disk, a revoked permission, an antivirus holding
-                # the rename. The previous document is still complete on
-                # disk; report rather than unwind a traceback through the
-                # CLI, which is all the caller could do with it anyway.
-                return CodexInstallResult(
-                    path=hooks_path, changed=False,
-                    error=f"could not write {hooks_path} ({exc}); "
-                          "the existing file is unchanged",
-                )
-            if committed:
-                return result
+    A lock we cannot acquire within `_HOOKS_LOCK_TIMEOUT` is reported as
+    `result.error`, not raised. `FileLockTimeout` would otherwise escape
+    to the #1161 wrapper in `cli`, which names *settings.json* — the
+    other host's file, and not the one under contention here.
+    """
+    from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
+
+    try:
+        with exclusive_file_lock(hooks_path, timeout=_HOOKS_LOCK_TIMEOUT):
+            # Nothing inside this block raises `FileLockTimeout`, so the
+            # handler below can only be the acquisition failing.
+            return _commit_under_lock(hooks_path, plan)
+    except FileLockTimeout as exc:
+        return CodexInstallResult(
+            path=hooks_path, changed=False,
+            error=(
+                f"another aelfrice process is writing {hooks_path} "
+                f"({exc}); nothing was changed. Re-run the command."
+            ),
+        )
+
+
+def _commit_under_lock(
+    hooks_path: Path,
+    plan: Callable[[str | None], tuple[str | None, CodexInstallResult]],
+) -> CodexInstallResult:
+    """The bounded read-plan-commit loop. Caller holds the lock."""
+    for _ in range(_HOOKS_COMMIT_ATTEMPTS):
+        text, fingerprint = _read_hooks_snapshot(hooks_path)
+        serialized, result = plan(text)
+        if serialized is None:
+            return result
+        try:
+            committed = _atomic_replace_hooks(
+                hooks_path, serialized, fingerprint,
+            )
+        except OSError as exc:
+            # A full disk, a revoked permission, an antivirus holding
+            # the rename. The previous document is still complete on
+            # disk; report rather than unwind a traceback through the
+            # CLI, which is all the caller could do with it anyway.
+            return CodexInstallResult(
+                path=hooks_path, changed=False,
+                error=f"could not write {hooks_path} ({exc}); "
+                      "the existing file is unchanged",
+            )
+        if committed:
+            return result
     return CodexInstallResult(
         path=hooks_path, changed=False,
         error=(

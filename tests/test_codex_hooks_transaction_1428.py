@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.file_lock import HAVE_ADVISORY_LOCKS, try_lock_exclusive
 from aelfrice.host_codex import install_codex_hooks, remove_codex_hooks
 
 #: Ceiling on every wait below. The lock timeout is 10s, so six writers
@@ -194,6 +195,73 @@ def test_force_is_the_only_way_past_a_foreign_shape(tmp_path: Path) -> None:
     assert isinstance(final["hooks"]["UserPromptSubmit"], list)
 
 
+def test_a_json_null_document_is_refused_not_overwritten(
+    tmp_path: Path,
+) -> None:
+    """`null` is a legal JSON document, and not a JSON object.
+
+    It must land on the same refusal as `42` or `[1,2,3]`. It did not:
+    the refusal guard was written as `parsed is not None`, reusing None
+    as the "could not parse" sentinel, so a file holding `null` slipped
+    past it and was replaced with a fresh aelfrice document — no error,
+    no `--force`, `changed=True`.
+    """
+    p = tmp_path / "hooks.json"
+    p.write_text("null", encoding="utf-8")
+    before = p.read_bytes()
+
+    result = install_codex_hooks(p)
+
+    assert result.error is not None
+    assert "not a JSON object" in result.error
+    assert result.changed is False
+    assert p.read_bytes() == before
+
+
+def test_a_top_level_list_is_refused_not_overwritten(tmp_path: Path) -> None:
+    """The sibling case that never regressed — pins both sentinels."""
+    p = tmp_path / "hooks.json"
+    p.write_text("[1, 2, 3]", encoding="utf-8")
+    before = p.read_bytes()
+
+    result = install_codex_hooks(p)
+
+    assert result.error is not None
+    assert "not a JSON object" in result.error
+    assert p.read_bytes() == before
+
+
+def test_force_still_replaces_a_json_null_document(tmp_path: Path) -> None:
+    """The refusal must be escapable, exactly as for the other shapes."""
+    p = tmp_path / "hooks.json"
+    p.write_text("null", encoding="utf-8")
+
+    result = install_codex_hooks(p, force=True)
+
+    assert result.error is None
+    assert result.changed is True
+    assert json.loads(p.read_text(encoding="utf-8"))["hooks"]
+
+
+def test_unparseable_bytes_are_still_replaced_under_force(
+    tmp_path: Path,
+) -> None:
+    """A syntax error and a `null` document must stay distinguishable.
+
+    Collapsing the two sentinels the other way — treating an unparseable
+    file as a parsed value — would make `--force` refuse the truncated
+    `hooks.json` it exists for.
+    """
+    p = tmp_path / "hooks.json"
+    p.write_text('{"hooks": {"UserPrompt', encoding="utf-8")
+
+    assert install_codex_hooks(p).error is not None
+    result = install_codex_hooks(p, force=True)
+
+    assert result.error is None
+    assert json.loads(p.read_text(encoding="utf-8"))["hooks"]
+
+
 def test_unknown_top_level_keys_and_foreign_events_survive(
     tmp_path: Path,
 ) -> None:
@@ -254,18 +322,116 @@ def test_existing_permission_bits_are_preserved(tmp_path: Path) -> None:
     assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
 
+# --- the lock itself -------------------------------------------------------
+#
+# The tests below are the ones that fail when the lock is deleted. The
+# multi-writer test further down does NOT: its six writers are carried
+# entirely by the fingerprint-and-retry loop, so replacing
+# `exclusive_file_lock(...)` with `contextlib.nullcontext()` leaves it
+# green. A claimed mechanism with no distinguishing assert is not a
+# tested mechanism, so the lock is asserted directly — held across the
+# read-modify-write, and reported rather than raised when contended.
+
+
+@pytest.mark.skipif(
+    not HAVE_ADVISORY_LOCKS, reason="no advisory locking on this filesystem"
+)
+def test_the_lock_is_held_across_the_read_modify_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second opener cannot take `hooks.json.lock` while we plan.
+
+    Probed from inside the snapshot read — the exact instant the
+    pre-#1428 code was exposed — with a fresh file descriptor, because
+    `flock` is held per open file description and a re-open in the same
+    process contends exactly as another process would.
+    """
+    p = tmp_path / "hooks.json"
+    _write(p, _FOREIGN_A)
+    lock_path = tmp_path / "hooks.json.lock"
+    observed: list[bool] = []
+    real = Path.read_bytes
+
+    def probing(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self == p:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                try_lock_exclusive(fd)
+                observed.append(False)  # acquired => we were NOT holding it
+            except OSError:
+                observed.append(True)
+            finally:
+                os.close(fd)
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", probing)
+    assert install_codex_hooks(p).error is None
+
+    assert observed, "the snapshot read never ran"
+    assert all(observed), (
+        "hooks.json.lock was acquirable during the read-modify-write — "
+        "the transaction is running unlocked"
+    )
+
+
+@pytest.mark.skipif(
+    not HAVE_ADVISORY_LOCKS, reason="no advisory locking on this filesystem"
+)
+def test_a_contended_lock_is_reported_and_nothing_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held lock must produce `result.error`, not a `FileLockTimeout`.
+
+    The timeout is shortened here because the wait *duration* is not the
+    subject; that it is bounded, and that the refusal names this host's
+    file, is. The shipped default is pinned separately below.
+    """
+    monkeypatch.setattr("aelfrice.host_codex._HOOKS_LOCK_TIMEOUT", 0.05)
+    p = tmp_path / "hooks.json"
+    _write(p, _FOREIGN_A)
+    before = p.read_bytes()
+
+    fd = os.open(str(tmp_path / "hooks.json.lock"), os.O_CREAT | os.O_RDWR)
+    try:
+        try_lock_exclusive(fd)
+        result = install_codex_hooks(p)
+    finally:
+        os.close(fd)
+
+    assert result.error is not None
+    assert "another aelfrice process is writing" in result.error
+    assert "hooks.json" in result.error
+    assert "settings.json" not in result.error, (
+        "the #1161 wrapper's message names the other host's file"
+    )
+    assert result.changed is False
+    assert p.read_bytes() == before
+
+
+def test_the_shipped_lock_timeout_is_bounded_and_positive() -> None:
+    """Pins the value the previous test monkeypatches away."""
+    from aelfrice.host_codex import _HOOKS_LOCK_TIMEOUT
+
+    assert _HOOKS_LOCK_TIMEOUT == 10.0
+
+
 # --- concurrent aelfrice writers ------------------------------------------
 
 
 def test_concurrent_writers_preserve_the_foreign_entry(
     tmp_path: Path,
 ) -> None:
-    """Real contention through the lock, not an injected interleave.
+    """Six real writers, no injected interleave: the union survives.
 
     Threads rather than processes: `exclusive_file_lock` takes `flock`
     on a per-open file description, so two threads each opening their own
     fd serialise exactly as two processes do — and the test stays
     deterministic and fast enough to run on every CI leg.
+
+    This is an end-to-end outcome assertion and deliberately does *not*
+    claim to pin the lock: it stays green with the lock removed, because
+    the fingerprint-and-retry loop alone carries six writers on this
+    machine. The two tests above are the ones that go red.
     """
     p = tmp_path / "hooks.json"
     _write(p, _FOREIGN_A)
