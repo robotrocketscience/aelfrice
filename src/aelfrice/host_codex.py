@@ -1211,6 +1211,77 @@ class CodexDoctorReport:
     approved_state_count: int = 0
     warnings: list[str] = field(default_factory=list[str])
 
+    def tampering(self) -> list[str]:
+        """Ways installed wiring is broken, each one a reason to exit nonzero.
+
+        The distinction this encodes is #1430's, as narrowed by the operator
+        ruling on it: **absent** wiring is not a fault — a machine that has
+        never run ``aelf setup --host codex`` is a normal machine, and failing
+        doctor there would make the Codex host stricter than the Claude host
+        for no stated reason. **Tampered or partially-broken** wiring is a
+        fault, because a green exit on it is a false green: automation and
+        users are told the requested memory surface is present when it cannot
+        work.
+
+        Every condition here is therefore gated on our handlers actually
+        being installed. None of them requires a reachable Codex model, which
+        is what parked the rest of #1430 — they are all filesystem and config
+        states, provable by fixture.
+
+        Deliberately *not* included: ``approved_state_count == 0``. Approval
+        keying is positional today and slated to change upstream, so a count
+        of zero does not distinguish "unapproved" from "keyed differently";
+        the issue itself asks for ``unknown`` rather than unhealthy when trust
+        cannot be established authoritatively.
+        """
+        if not self.owned_handler_count:
+            return []
+        reasons: list[str] = []
+        if self.stale_commands:
+            reasons.append(
+                "hook command(s) configured but not present on disk: "
+                + ", ".join(self.stale_commands),
+            )
+        if self.missing_events:
+            reasons.append(
+                "aelfrice hooks are partially installed; missing events: "
+                + ", ".join(self.missing_events),
+            )
+        if self.feature_flag_on is False:
+            reasons.append(
+                "aelfrice handlers are installed but the Codex `hooks` "
+                "feature is disabled in config.toml, so none of them run",
+            )
+        return reasons
+
+
+def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
+    """Installed ``$aelf-*`` skills whose bytes differ from what we generate.
+
+    `_is_owned_skill_dir` gates on the name prefix and the marker, which
+    establishes *ownership* but says nothing about *integrity*: a selected
+    skill whose body has been edited still counts as installed and healthy,
+    so doctor reported a skill surface that no longer does what it claims.
+
+    Only skills that are present are compared. A skill absent from disk is
+    absent wiring, which the ruling on #1430 keeps out of scope; an
+    owned-but-unreadable ``SKILL.md`` counts as modified, failing closed.
+    """
+    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    modified: list[str] = []
+    for skill_name, expected in sorted(_bundled_codex_skills().items()):
+        skill_dir = target / skill_name
+        if not _is_owned_skill_dir(skill_dir):
+            continue
+        try:
+            actual = (skill_dir / _SKILL_FILENAME).read_text(encoding="utf-8")
+        except OSError:
+            modified.append(skill_name)
+            continue
+        if actual != expected:
+            modified.append(skill_name)
+    return modified
+
 
 def doctor_codex(
     codex_dir: Path | None = None, *, windows: bool | None = None,

@@ -4824,9 +4824,27 @@ def _cmd_doctor_codex(
     )
     for warning in report.warnings:
         print(f"[warn] {warning}", file=out)  # type: ignore[arg-type]
+
+    # #1430: a green exit on broken-but-parseable wiring is a false green.
+    # Absent wiring stays exit 0 per the ruling on that issue — never having
+    # run `aelf setup --host codex` is a normal machine. Wiring that is
+    # installed and tampered with is not.
+    from aelfrice.host_codex import modified_codex_skills
+
+    faults = report.tampering()
+    modified = modified_codex_skills(skills_dir)
+    if modified:
+        faults.append(
+            "installed $aelf-* skill(s) no longer match what aelfrice "
+            "generates: " + ", ".join(modified)
+            + " (re-run `aelf setup --host codex`)",
+        )
+    for fault in faults:
+        print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
+
     if report.hooks_file_present and not report.hooks_file_valid:
         return 1
-    return 0
+    return 1 if faults else 0
 
 
 def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
