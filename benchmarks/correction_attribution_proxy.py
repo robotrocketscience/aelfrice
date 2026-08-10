@@ -1,10 +1,11 @@
 """#1291 / #1177 proposal 16 — free precision proxy for attributed correction.
 
 Proposal 16 replaces the uniform valence smear in
-`sentiment_feedback.apply_sentiment_to_pending` — which credits every belief
-injected on the prior turn with an equal share of the same valence (#1372; it
-credited every belief with the *full* valence when this proposal was written) —
-with winner-take-all attribution plus an abstention rule. Its own cheapest kill
+`sentiment_feedback.apply_sentiment_to_pending` — which credits every live,
+unlocked belief injected on the prior turn with an equal share of the same
+valence, a locked one getting an audit-only row (#1372; it credited every
+injected belief with the *full* valence when this proposal was written) — with
+winner-take-all attribution plus an abstention rule. Its own cheapest kill
 experiment is a free precision proxy: over real injection sets paired with the
 correction that followed them, compute the distribution of max-Jaccard.
 
