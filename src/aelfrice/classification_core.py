@@ -71,12 +71,16 @@ USER_SOURCE: Final[str] = "user"
 # becomes a silent recall cut. Substring containment matched every plural
 # for free — `"constraint" in "constraints"` — so spelling out only the
 # `require` family and leaving the others singular costs the type on real
-# beliefs. Measured on a 44,687-belief live store: of the 96 beliefs that
-# typed `requirement` before the boundary fix and not after, ~31 are the
-# intended false-positive removals (`constraint_failure`, `mustang`,
-# `belief_requirement`) and **46** are plurals of keywords already in this
-# set — 42 `constraints`, 4 `hard rules`. Those two are added below for
-# that reason, not to widen the surface.
+# beliefs. Measured on a 44,687-belief live store: 96 beliefs typed
+# `requirement` under substring containment and stop typing under a
+# boundary regex built from the singular set. **46** of them are plurals
+# of keywords already in this set — 42 `constraints`, 4 `hard rules` —
+# and the remaining **50** are the intended false-positive removals
+# (`requirements` 17, `constraint_failure` 10, `mustang` 6,
+# `belief_requirement` 3, `required_status_checks`, …). The two halves
+# partition the 96, and the 50 is the loss the shipped set below actually
+# takes: those two plurals are added for that reason, not to widen the
+# surface.
 #
 # `requirements` is deliberately still absent, and this is the one
 # judgment call in the group. The dotted-stem guard below makes it safe to
