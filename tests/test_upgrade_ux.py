@@ -220,9 +220,17 @@ def test_upgrade_alias_registered_in_parser() -> None:
 def test_is_uv_tool_install_via_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """uv-tool install detected when package dir exists under uv tools root."""
+    """uv-tool install detected from uv's receipt in the package dir.
+
+    The directory alone is not the signal (#1431): a hand-made or
+    left-over `<tools>/aelfrice/` without `uv-receipt.toml` would earn an
+    `uv tool upgrade` recommendation that cannot work.
+    """
     fake_uv_tools = tmp_path / ".local" / "share" / "uv" / "tools"
     (fake_uv_tools / "aelfrice").mkdir(parents=True)
+    (fake_uv_tools / "aelfrice" / "uv-receipt.toml").write_text(
+        "", encoding="utf-8",
+    )
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     assert lifecycle._is_uv_tool_install() is True
 

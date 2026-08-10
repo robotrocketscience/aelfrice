@@ -404,7 +404,9 @@ def test_running_from_uv_tool_distinguishes_process_from_presence(
 
     monkeypatch.setenv("HOME", str(tmp_path))
     # A uv-tool install exists on the box ...
-    (tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice").mkdir(parents=True)
+    tool_env = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    tool_env.mkdir(parents=True)
+    (tool_env / "uv-receipt.toml").write_text("", encoding="utf-8")
     # ... but THIS process runs from a source worktree's venv elsewhere.
     worktree_venv = tmp_path / "projects" / "aelfrice" / ".venv"
     monkeypatch.setattr(sys, "prefix", str(worktree_venv))
