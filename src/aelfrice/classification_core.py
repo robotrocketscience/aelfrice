@@ -85,7 +85,7 @@ USER_SOURCE: Final[str] = "user"
 # `requirements` is deliberately still absent, and this is the one
 # judgment call in the group. The dotted-stem guard below makes it safe to
 # add (`requirements.txt` and `requirements.in` stay non-matching), so the
-# reason is not safety: the 19 live beliefs it would recover are dominated
+# reason is not safety: the 17 live beliefs it would recover are dominated
 # by document headings rather than stated requirements, and a bare mention
 # of the filename stem should not type a belief on its own. Recorded here
 # the way the `constraint` deferral is, so an omission does not read as an
