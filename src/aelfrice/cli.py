@@ -4774,10 +4774,19 @@ def _cmd_doctor_codex(
 ) -> int:
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
-    Exit 1 only on structural failure (hooks.json present but
-    unreadable); missing wiring, missing flag, and missing trust are
-    warnings — the host may simply not be set up yet. ``codex_dir`` /
-    ``skills_dest`` override the real-HOME defaults for tests (#1136).
+    Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
+    is present but unparseable, or on wiring that is installed and broken:
+    a hook command not present on disk, a partially installed hook set, the
+    Codex ``hooks`` feature disabled while our handlers are installed, or an
+    installed ``$aelf-*`` skill that does not match what this build
+    generates. **Exit 0** when the wiring is simply absent — a machine that
+    never ran ``aelf setup --host codex`` is a normal machine — and when
+    zero ``[hooks.state]`` approvals are recorded, since approval keying is
+    positional upstream and a zero count cannot distinguish "unapproved"
+    from "keyed differently".
+
+    ``codex_dir`` / ``skills_dest`` override the real-HOME defaults for
+    tests (#1136).
     """
     from aelfrice.host_codex import CodexHomeError, doctor_codex
 
@@ -4832,12 +4841,21 @@ def _cmd_doctor_codex(
     from aelfrice.host_codex import modified_codex_skills
 
     faults = report.tampering()
-    modified = modified_codex_skills(skills_dir)
+    # Gated on wiring being installed, exactly as every hook-side fault is.
+    # Without the gate a machine with no Codex wiring at all — but with
+    # skills left behind, or skills that a release has since edited, since
+    # `aelf upgrade` does not reinstall them — exits 1 with a tampering
+    # message, which contradicts the "absent wiring stays 0" ruling.
+    modified = (
+        modified_codex_skills(skills_dir)
+        if report.owned_handler_count else []
+    )
     if modified:
         faults.append(
-            "installed $aelf-* skill(s) no longer match what aelfrice "
-            "generates: " + ", ".join(modified)
-            + " (re-run `aelf setup --host codex`)",
+            "installed $aelf-* skill(s) do not match what this build "
+            "generates (edited, or left stale by an upgrade): "
+            + ", ".join(modified)
+            + " — re-run `aelf setup --host codex`",
         )
     for fault in faults:
         print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]

@@ -46,7 +46,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, cast
 
-from aelfrice.launcher import command_launcher_key, owned_keys, program_token
+from aelfrice.launcher import (
+    command_launcher_key,
+    owned_keys,
+    program_exists,
+    program_token,
+)
 from aelfrice.setup import (
     SettingsScope,
     resolve_commit_ingest_command,
@@ -1206,6 +1211,7 @@ class CodexDoctorReport:
     parse_error: str | None = None
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
+    missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
     feature_flag_on: bool | None = None
     approved_state_count: int = 0
@@ -1247,6 +1253,11 @@ class CodexDoctorReport:
                 "aelfrice hooks are partially installed; missing events: "
                 + ", ".join(self.missing_events),
             )
+        if self.missing_handlers:
+            reasons.append(
+                "aelfrice handlers are missing from events that are "
+                "otherwise installed: " + ", ".join(self.missing_handlers),
+            )
         if self.feature_flag_on is False:
             reasons.append(
                 "aelfrice handlers are installed but the Codex `hooks` "
@@ -1264,8 +1275,18 @@ def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
     so doctor reported a skill surface that no longer does what it claims.
 
     Only skills that are present are compared. A skill absent from disk is
-    absent wiring, which the ruling on #1430 keeps out of scope; an
-    owned-but-unreadable ``SKILL.md`` counts as modified, failing closed.
+    absent wiring, which the ruling on #1430 keeps out of scope. An unreadable
+    ``SKILL.md`` is *not* reported here: `_is_owned_skill_dir` reads the file
+    itself to look for the marker and answers False when that read raises, so
+    an unreadable file is classified not-ours and skipped. Saying otherwise
+    would assert a branch this function cannot reach.
+
+    "Differs from what we generate" is not only user tampering — a release
+    that edits a slash-command body makes every installed skill differ until
+    `aelf setup --host codex` is re-run, because `aelf upgrade` does not
+    reinstall them. Both states have the same remediation and the same
+    consequence (the skill surface is not what this build ships), so they are
+    reported together and the message names both causes.
     """
     target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
     modified: list[str] = []
@@ -1275,7 +1296,7 @@ def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
             continue
         try:
             actual = (skill_dir / _SKILL_FILENAME).read_text(encoding="utf-8")
-        except OSError:
+        except OSError:  # pragma: no cover - raced with the marker read
             modified.append(skill_name)
             continue
         if actual != expected:
@@ -1319,8 +1340,24 @@ def doctor_codex(
                 f"({report.parse_error}); Codex will ignore or reject it",
             )
 
-    expected_events = set(desired_codex_hooks().keys())
+    # Coverage is compared per *handler*, not per event. An event counted as
+    # covered the moment one owned handler appeared in it, so deleting the
+    # transcript-logger handler out of `UserPromptSubmit` while `aelf-hook`
+    # remained left `missing_events` empty and doctor silent — a partial
+    # removal, which is exactly the state #1430 is about.
+    desired = desired_codex_hooks()
+    expected_keys: dict[str, set[str]] = {}
+    for event, groups in desired.items():
+        keys: set[str] = set()
+        for group in groups:
+            for handler in cast(list[object], group.get("hooks", [])):
+                cmd = cast(dict[str, object], handler).get("command")
+                if isinstance(cmd, str):
+                    keys.add(command_launcher_key(cmd, windows=windows))
+        expected_keys[event] = keys
+    expected_events = set(desired.keys())
     covered: set[str] = set()
+    found_keys: dict[str, set[str]] = {}
     for event, groups in hooks_map.items():
         if not isinstance(groups, list):
             continue
@@ -1338,14 +1375,23 @@ def doctor_codex(
                 hd = cast(dict[str, object], handler)
                 cmd = hd.get("command")
                 if isinstance(cmd, str):
+                    found_keys.setdefault(event, set()).add(
+                        command_launcher_key(cmd, windows=windows),
+                    )
                     exe = Path(program_token(cmd, windows=windows))
                     if (
                         exe.is_absolute()
-                        and not exe.exists()
+                        and not program_exists(cmd, windows=windows)
                         and cmd not in report.stale_commands
                     ):
                         report.stale_commands.append(cmd)
     report.missing_events = sorted(expected_events - covered)
+    report.missing_handlers = sorted(
+        f"{event}:{key}"
+        for event in sorted(expected_keys)
+        if event in covered
+        for key in sorted(expected_keys[event] - found_keys.get(event, set()))
+    )
     for cmd in report.stale_commands:
         report.warnings.append(f"hook command not found on disk: {cmd}")
     if report.missing_events:

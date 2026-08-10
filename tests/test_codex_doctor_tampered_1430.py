@@ -28,6 +28,7 @@ from aelfrice.cli import _cmd_doctor_codex
 from aelfrice.host_codex import (
     _SKILL_FILENAME,
     _bundled_codex_skills,
+    doctor_codex,
     install_codex_hooks,
     install_codex_skills,
 )
@@ -131,6 +132,69 @@ class TestTamperedWiringFails:
         assert rc == 1, out
         assert "none of them run" in out
 
+    def test_removing_one_handler_from_a_covered_event_fails(
+        self, installed: tuple[Path, Path],
+    ) -> None:
+        """Coverage has to be per handler, not per event.
+
+        An event counted as covered the moment *one* owned handler appeared
+        in it. Deleting the transcript-logger handler out of
+        `UserPromptSubmit` while `aelf-hook` remained left `missing_events`
+        empty, so doctor exited 0 and said nothing — while prompt-side
+        transcript logging was silently gone. That is a partial removal,
+        which is precisely the state this issue is about.
+        """
+        codex_dir, skills = installed
+        hooks = _read_hooks(codex_dir)
+        groups = hooks["UserPromptSubmit"]
+        handlers = groups[0]["hooks"]  # type: ignore[index]
+        assert len(handlers) > 1, handlers
+        del handlers[-1]
+        _write_hooks(codex_dir, hooks)
+
+        rc, out = _doctor(codex_dir, skills)
+        assert rc == 1, out
+        assert "missing from events that are otherwise installed" in out
+        assert "UserPromptSubmit:" in out
+
+    def test_a_spaced_install_path_is_not_probed_as_a_missing_command(
+        self, tmp_path: Path,
+    ) -> None:
+        """The promotion to a hard FAIL must not inherit #1412's split.
+
+        `setup._resolve_script` writes the resolved path **unquoted**, so a
+        space anywhere in it splits the command: `/home/first last/.venv/
+        bin/aelf-hook` probes as `/home/first`, and on Windows
+        `C:\\Users\\First Last\\...\\aelf-hook.exe` probes as
+        `C:\\Users\\First`. Neither exists, so a perfectly healthy install
+        landed in `stale_commands`. As a warning that was cosmetic; promoted
+        to a `[FAIL]` it fails doctor outright for those users.
+
+        Asserted against a real file on disk, and the truncated token is
+        asserted absent in the same test — so this goes red on any revert to
+        probing `tokens[0]`.
+
+        Scope note: this pins the *existence probe*. Doctor's ownership path
+        has a separate, pre-existing gap for spaced paths on POSIX —
+        `command_launcher_key` rejoins only on Windows, because its heuristic
+        keys on a launcher suffix that POSIX names do not carry — so a spaced
+        POSIX install is not recognised as ours in the first place. That is a
+        #1412 residual, not something this change introduces, and it is
+        reported separately rather than widened into here.
+        """
+        from aelfrice.launcher import program_exists
+
+        spaced = tmp_path / "first last" / "bin"
+        spaced.mkdir(parents=True)
+        launcher_file = spaced / "aelf-hook"
+        launcher_file.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher_file.chmod(0o755)
+
+        command = str(launcher_file)
+        assert " " in command
+        assert not Path(command.split()[0]).exists()   # the old probe
+        assert program_exists(command, windows=False)  # the new one
+
     def test_a_modified_skill_fails(
         self, installed: tuple[Path, Path],
     ) -> None:
@@ -150,7 +214,7 @@ class TestTamperedWiringFails:
 
         rc, out = _doctor(codex_dir, skills)
         assert rc == 1, out
-        assert "no longer match" in out
+        assert "do not match what this build generates" in out
         assert name in out
 
 
@@ -183,15 +247,46 @@ class TestTheDeliberateExclusions:
         rc, out = _doctor(codex_dir, skills)
         assert rc == 0, out
 
-    def test_a_foreign_skill_is_never_our_fault(
+    def test_a_users_own_unmarked_skill_is_never_our_fault(
         self, installed: tuple[Path, Path],
     ) -> None:
-        """No marker means not ours, so its bytes are not ours to judge."""
+        """No marker means not ours, so its bytes are not ours to judge.
+
+        The fixture uses a **bundled** name deliberately. An arbitrary name
+        like `aelf-someone-elses` never reaches the marker gate at all,
+        because `modified_codex_skills` only iterates bundled names — so
+        that version of this test passed on name-membership and stayed green
+        with the `_is_owned_skill_dir` guard deleted entirely.
+        """
         codex_dir, skills = installed
-        foreign = skills / "aelf-someone-elses"
-        foreign.mkdir()
-        (foreign / _SKILL_FILENAME).write_text(
-            "---\nname: aelf-someone-elses\n---\nmine\n", encoding="utf-8",
+        name = sorted(_bundled_codex_skills())[0]
+        (skills / name / _SKILL_FILENAME).write_text(
+            f"---\nname: {name}\n---\nthis is mine now, no marker\n",
+            encoding="utf-8",
+        )
+
+        rc, out = _doctor(codex_dir, skills)
+        assert rc == 0, out
+        assert name not in out
+
+    def test_skills_are_not_judged_when_no_wiring_is_installed(
+        self, tmp_path: Path,
+    ) -> None:
+        """Absent wiring stays exit 0 in every direction.
+
+        `aelf upgrade` does not reinstall the skills, so after a release that
+        edits any slash-command body every installed skill differs from the
+        bundle. Judging that without regard to wiring made a machine with no
+        Codex hooks at all exit 1 with a tampering message.
+        """
+        codex_dir = tmp_path / "codex"
+        codex_dir.mkdir()
+        skills = tmp_path / "skills"
+        install_codex_skills(skills)
+        name = sorted(_bundled_codex_skills())[0]
+        target = skills / name / _SKILL_FILENAME
+        target.write_text(
+            target.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8",
         )
 
         rc, out = _doctor(codex_dir, skills)

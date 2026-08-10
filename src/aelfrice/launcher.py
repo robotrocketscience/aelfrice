@@ -191,6 +191,42 @@ def command_launcher_key(command: str, *, windows: bool | None = None) -> str:
     return launcher_key(tokens[0], windows=win)
 
 
+def program_exists(command: str, *, windows: bool | None = None) -> bool:
+    """Does any plausible reading of this command name a file on disk?
+
+    Separate from `command_launcher_key` on purpose, and deliberately *not*
+    sharing its rejoin. The ownership key must stay Windows-only in its
+    spaced-path handling, because ownership drives `remove_codex_hooks` and
+    `prune_broken_aelf_hooks` and widening it on a case-sensitive filesystem
+    deletes files somebody else owns (#1412). Asking whether a file exists
+    carries no such risk, so this probes both platforms.
+
+    It has to. `setup._resolve_script` writes the resolved path unquoted, so
+    a space anywhere in it splits the command — ``/home/first last/.venv/
+    bin/aelf-hook`` yields the token ``/home/first``, and
+    ``C:\\Users\\First Last\\...\\aelf-hook.exe`` yields ``C:\\Users\\First``.
+    Probing only the first token answers "missing" for a perfectly healthy
+    install on either platform. As a warning that was noise; promoted to a
+    hard doctor failure (#1430) it would fail those users outright.
+
+    Switch-shaped tokens stop the scan, so an argument cannot be joined into
+    the program path.
+    """
+    win = _resolve_windows(windows)
+    tokens = command_tokens(command, windows=win)
+    if not tokens:
+        return False
+    for k in range(1, len(tokens) + 1):
+        if k > 1 and any(t.startswith(("-", "/")) for t in tokens[1:k]):
+            break
+        try:
+            if Path(" ".join(tokens[:k])).exists():
+                return True
+        except OSError:  # a path the platform cannot even stat
+            continue
+    return False
+
+
 def owned_keys(
     basenames: frozenset[str] | set[str] | tuple[str, ...],
     *,
