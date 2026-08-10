@@ -1,20 +1,46 @@
 name: mutation
 
+# Mutation testing, in two modes (#1457).
+#
+# The weekly job is the correctness harness: it runs the whole tree and FAILS
+# LOUDLY if mutmut did not actually produce results. That guard exists because
+# the previous version could not fail. It invoked mutmut with
+# `--paths-to-mutate` / `--tests-dir`, which mutmut 3 removed, so every run from
+# 2026-06-21 onward died with `Error: No such option` — and a blanket `|| true`
+# on both steps turned each one into a green tick. Configuration now lives in
+# `[tool.mutmut]` in `pyproject.toml`, which is where mutmut 3 reads it.
+#
+# The per-PR job is advisory by ratified design (2026-08-09): a surviving mutant
+# is reported, never blocking, until the equivalent-mutant rate has data behind
+# it. It is scoped to the PR's changed files, because mutmut across the whole
+# tree is a multi-hour job and nothing that slow belongs on a PR.
+#
+# The asymmetry is deliberate. "Advisory" is what makes a step that cannot fail
+# acceptable here, and it is only acceptable because the weekly job does fail on
+# a broken harness. If the advisory job is ever made blocking, its exit-code
+# handling has to be revisited first.
+
 on:
   schedule:
     - cron: '0 8 * * 0'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/aelfrice/**'
+      - 'pyproject.toml'
+      - '.github/workflows/mutation.yml'
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: mutation-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # --- weekly, whole tree, fails on a broken harness ----------------------
   mutmut:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -30,13 +56,122 @@ jobs:
       - name: Install mutmut
         run: uv pip install mutmut
       - name: Run mutation tests
-        id: mutmut
         run: |
-          uv run mutmut run --paths-to-mutate=src/aelfrice --tests-dir=tests || true
+          # No `|| true` on the whole pipeline. A surviving mutant is a
+          # non-zero exit and is not an error here, so the run's status is
+          # captured rather than propagated; a *harness* failure is caught by
+          # the results assertion below, which is the thing that was missing.
+          uv run mutmut run --max-children 4 || echo "mutmut run exit=$?"
           uv run mutmut results > mutation-report.txt
           cat mutation-report.txt
+      - name: Assert the run actually produced results
+        run: |
+          # The guard for the 2026-06-21 regression: a misconfigured mutmut
+          # writes a usage error and exits, and every step before this one
+          # tolerates that. An empty or error-only report is a dead harness,
+          # not a clean tree.
+          if ! grep -qE '^[a-zA-Z0-9_.]+\.[a-zA-Z0-9_]+__mutmut_[0-9]+' mutation-report.txt; then
+            echo "::error::mutmut produced no mutant results — the harness is broken, not the tree."
+            echo "--- report ---"
+            cat mutation-report.txt
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mutation-report
+          path: mutation-report.txt
+          retention-days: 30
+
+  # --- per PR, changed files only, advisory ------------------------------
+  # `continue-on-error` is load-bearing, not decoration. merge-train gates on
+  # every non-advisory check-run on the head SHA, so a job that reports failure
+  # blocks the merge — which is exactly what "advisory" must not do. This keeps
+  # the job's failure off the train while its findings stay visible in the step
+  # summary. If mutation is ever promoted to blocking, this line comes out and
+  # the name goes into `merge_train_gate.ADVISORY_NAMES` instead.
+  diff:
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev --extra archive
+      - name: Install mutmut
+        run: uv pip install mutmut
+      - name: Scope mutmut to the PR's changed files
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=d \
+              "${BASE_SHA}" "${HEAD_SHA}" -- 'src/aelfrice/*.py' || true)
+          if [ -z "${changed}" ]; then
+            echo "no changed source files under src/aelfrice — nothing to mutate"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "${changed}"
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+          # AC1: restrict the mutant set to the diff. `only_mutate` is a
+          # `[tool.mutmut]` key, so the scoping is written into the config
+          # mutmut already reads rather than passed as a flag mutmut 3 does
+          # not have.
+          python3 - "${changed}" <<'PY'
+          import sys, pathlib
+          files = [f for f in sys.argv[1].split("\n") if f.strip()]
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text(encoding="utf-8")
+          entries = "".join(f'    "{f}",\n' for f in files)
+          text = text.replace(
+              "[tool.mutmut]\n",
+              "[tool.mutmut]\nonly_mutate = [\n" + entries + "]\n",
+              1,
+          )
+          p.write_text(text, encoding="utf-8")
+          print("only_mutate scoped to:", files)
+          PY
+      - name: Run mutation tests on the diff (advisory)
+        if: steps.scope.outputs.skip != 'true'
+        run: |
+          uv run mutmut run --max-children 4 || echo "mutmut run exit=$?"
+          uv run mutmut results > mutation-report.txt || true
+          cat mutation-report.txt
+      - name: Report
+        if: steps.scope.outputs.skip != 'true'
+        run: |
+          # AC3: say the verdict is advisory in the job's own output, so a
+          # green tick is not read as "no mutants survived". The step exits 0
+          # by design — see the asymmetry note at the top of this file.
+          {
+            echo "## Mutation (advisory)"
+            echo
+            echo "Scoped to this PR's changed files under \`src/aelfrice/\`."
+            echo "**This job never fails the PR.** A green tick here means the"
+            echo "job ran, not that every mutant was killed — read the list."
+            echo
+            survivors=$(grep -cE '^[a-zA-Z0-9_.]+\.[a-zA-Z0-9_]+__mutmut_[0-9]+' \
+                mutation-report.txt || true)
+            echo "Surviving mutants reported: ${survivors:-0}"
+            echo
+            echo '```'
+            head -100 mutation-report.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.skip != 'true'
+        with:
+          name: mutation-report-diff
           path: mutation-report.txt
           retention-days: 30
