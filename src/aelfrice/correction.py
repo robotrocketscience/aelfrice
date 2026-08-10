@@ -75,8 +75,18 @@ _ALWAYS_NEVER_TERMS: tuple[str, ...] = (
 # and 216 real negations the trailing-space form missed (sentence-final
 # "…is not.", "…probably no,", quote-adjacent). Negation therefore takes a
 # right bound of `(?![\w-])`, which keeps the 216 and drops the 249.
-# Operator ruling of 2026-08-09; `benchmarks/classifier_boundary_1368.py`
-# re-derives the split and cross-checks its replica against `_NEGATION_RE`.
+# Ratified by the operator ruling of 2026-08-10 on PR #1449
+# (https://github.com/robotrocketscience/aelfrice/pull/1449#issuecomment-5244041969),
+# which is the only ruling this bound has: the ruling of 2026-08-09 on the
+# same thread asked for `\bnot\s` / `\bno\s`, and this hybrid is not that.
+# The ratification names its price rather than calling the change free, so
+# this comment does too: the 216-belief widening stays, which makes **57
+# `factual`→`correction` flips permanent** at the 0.947 correction prior for
+# everything ingested after the merge, and `"the no.1 option"` still fires
+# negation, which is wrong. Both were accepted as the cost of catching the
+# sentence-final `"…is not."` case, which the trailing-space form missed.
+# `benchmarks/classifier_boundary_1368.py` re-derives the split and
+# cross-checks its replica against `_NEGATION_RE`.
 #
 # This bound is deliberately negation-only. The sibling categories carry
 # the same hyphen compounds (72 for always/never, 75 for prior-reference)
