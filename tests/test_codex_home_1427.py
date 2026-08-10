@@ -95,6 +95,7 @@ def test_awkward_characters_survive(
 def test_relative_codex_home_is_made_absolute(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    (tmp_path / "rel-codex").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CODEX_HOME", "rel-codex")
     resolved = resolve_codex_home()
@@ -112,7 +113,72 @@ def test_non_directory_codex_home_is_an_error_not_a_fallback(
     with pytest.raises(CodexHomeError) as excinfo:
         resolve_codex_home()
     assert "CODEX_HOME" in str(excinfo.value)
+    assert "not a directory" in str(excinfo.value)
     assert not (isolated_home / ".codex").exists()
+
+
+def test_nonexistent_codex_home_is_an_error_not_a_fresh_directory(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex's own rule for a missing `$CODEX_HOME`, mirrored.
+
+    Measured against codex-cli 0.145.0 on the machine this was written
+    on::
+
+        $ CODEX_HOME=/tmp/definitely-not-here codex mcp list
+        Error: failed to load configuration
+        Caused by:
+            CODEX_HOME points to "/tmp/definitely-not-here", but that
+            path does not exist
+
+    Resolving it anyway is not a harmless convenience: setup would
+    `mkdir -p` a brand-new configuration home and report success against
+    a directory Codex refuses to start in — the "setup succeeded, hooks
+    unwired" failure #1427 is about, reached by one typo instead of by
+    ignoring the variable.
+    """
+    missing = tmp_path / "typo'd codex home"
+    monkeypatch.setenv("CODEX_HOME", str(missing))
+    with pytest.raises(CodexHomeError) as excinfo:
+        resolve_codex_home()
+    assert "does not exist" in str(excinfo.value)
+    assert not missing.exists()
+    assert not (isolated_home / ".codex").exists()
+
+
+def test_setup_does_not_create_a_nonexistent_codex_home(
+    tmp_path: Path,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI half: exit 1, nothing created, neither directory touched."""
+    missing = tmp_path / "typo-codex"
+    monkeypatch.setenv("CODEX_HOME", str(missing))
+
+    rc = main(["setup", "--host", "codex", "--no-codex-skills"])
+
+    assert rc == 1
+    assert "does not exist" in capsys.readouterr().err
+    assert not missing.exists()
+    assert not (isolated_home / ".codex").exists()
+
+
+def test_doctor_and_unsetup_refuse_a_nonexistent_codex_home(
+    tmp_path: Path,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """All three verbs resolve through one function, so all three refuse."""
+    missing = tmp_path / "typo-codex"
+    monkeypatch.setenv("CODEX_HOME", str(missing))
+
+    assert main(["doctor", "--host", "codex"]) == 1
+    assert "does not exist" in capsys.readouterr().err
+    assert main(["unsetup", "--host", "codex"]) == 1
+    assert "does not exist" in capsys.readouterr().err
+    assert not missing.exists()
 
 
 def test_skills_dir_ignores_codex_home(

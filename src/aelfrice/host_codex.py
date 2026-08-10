@@ -91,9 +91,25 @@ def resolve_codex_home() -> Path:
 
     `~` is expanded and the result is made absolute, so a relative
     `$CODEX_HOME` resolves against the process cwd exactly once, here,
-    rather than differently at each use site. An explicitly configured
-    value that names an existing non-directory raises `CodexHomeError`
-    rather than silently reverting to the conventional path.
+    rather than differently at each use site.
+
+    An explicitly configured value raises `CodexHomeError` rather than
+    reverting to the conventional path when it does not exist, or exists
+    and is not a directory. Both refusals mirror the running Codex,
+    measured against codex-cli 0.145.0 on this machine::
+
+        $ CODEX_HOME=/tmp/definitely-not-here codex mcp list
+        Error: failed to load configuration
+        Caused by:
+            CODEX_HOME points to "/tmp/definitely-not-here", but that
+            path does not exist
+
+    with the identical shape for a non-directory, and an empty value
+    falling back to the real `~/.codex`. The non-existent case matters
+    most: Codex refuses to start there, so creating it and reporting
+    success would leave `aelf setup --host codex` claiming a directory
+    Codex will not read — the same failure #1427 was filed about, one
+    typo away.
     """
     raw = os.environ.get(CODEX_HOME_ENV)
     if not raw:
@@ -107,9 +123,16 @@ def resolve_codex_home() -> Path:
             f"${CODEX_HOME_ENV} is set to {raw!r}, which is not a usable "
             f"path ({exc}); fix or unset it"
         ) from exc
-    if home.exists() and not home.is_dir():
+    if not home.exists():
         raise CodexHomeError(
-            f"${CODEX_HOME_ENV} is set to {home}, which exists but is not a "
+            f"${CODEX_HOME_ENV} points to {home}, but that path does not "
+            "exist; Codex refuses to start against it, so aelfrice will "
+            "not create it. Create the directory, fix the value, or unset "
+            "it to use the conventional ~/.codex"
+        )
+    if not home.is_dir():
+        raise CodexHomeError(
+            f"${CODEX_HOME_ENV} points to {home}, but that path is not a "
             "directory; fix or unset it"
         )
     return home

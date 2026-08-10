@@ -70,7 +70,7 @@ aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 
 Codex reads its configuration from `$CODEX_HOME` when that variable is set to a non-empty value, and from `~/.codex` otherwise. All three verbs resolve the same way (#1427), so an isolated profile, a CI runner, a portable install, or two side-by-side Codex configurations each get wired where that Codex actually reads. `aelf doctor --host codex` prints the resolved home on its first line, so you can see which directory was inspected rather than infer it.
 
-A `$CODEX_HOME` that names an existing non-directory is an error, not a fallback: setup, doctor, and unsetup all refuse and leave `~/.codex` untouched, because silently writing to the conventional path is the failure this resolution exists to prevent.
+A `$CODEX_HOME` that does not exist, or that names something other than a directory, is an error rather than a fallback: setup, doctor, and unsetup all refuse, create nothing, and leave `~/.codex` untouched. Both refusals match Codex itself — `CODEX_HOME=/nowhere codex mcp list` reports `CODEX_HOME points to "/nowhere", but that path does not exist` and stops. aelfrice will not create the directory for you, because a config home Codex refuses to start against is one where "setup succeeded" would be a false report. Create it, correct the variable, or unset it.
 
 The `$aelf-*` agent skills are **not** moved by `$CODEX_HOME` — `~/.agents/skills/` is a cross-agent standard path, shared with other agents' skills.
 
