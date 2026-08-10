@@ -363,7 +363,10 @@ def test_apply_distributes_positive_signal_across_all_pending(
 
 @pytest.mark.parametrize(
     ("n", "n_locked"),
-    [(1, 0), (2, 0), (3, 0), (2, 1), (4, 3)],
+    # The last two are the only shapes with more than one receiver *and*
+    # a lock: everywhere else the share coincides with the whole signal,
+    # so they are the arms that can tell an offered share apart from it.
+    [(1, 0), (2, 0), (3, 0), (2, 1), (4, 3), (3, 1), (4, 2)],
 )
 def test_applied_valence_sums_to_one_signal_regardless_of_pack_size(
     n: int, n_locked: int
@@ -396,6 +399,17 @@ def test_applied_valence_sums_to_one_signal_regardless_of_pack_size(
     # Every live id is still audited, locked or not.
     assert len(results) == n
     assert {r.belief_id for r in results if r.skipped_locked} == locked_ids
+
+    # Every audit row carries the same share, locked or not: a locked id
+    # is offered the share and refuses it. Asserting only the applied
+    # subtotal would let a locked row log the full signal, which is what
+    # `feedback_history` would then be read as saying it received.
+    share = AMPLIFIED_VALENCE / ((n - n_locked) or n)
+    for r in results:
+        assert abs(r.valence) == pytest.approx(share), (
+            f"{r.belief_id} (locked={r.skipped_locked}) logged {r.valence}, "
+            f"share was {share}"
+        )
 
     applied = sum(abs(r.valence) for r in results if r.posterior_applied)
     assert applied == pytest.approx(AMPLIFIED_VALENCE), (
