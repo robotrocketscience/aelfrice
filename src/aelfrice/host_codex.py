@@ -1376,7 +1376,7 @@ def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
     ``aelf-*`` directory for a command that was renamed or removed is never
     examined — while `count_installed_codex_skills` globs the same directory
     and counts it. Doctor therefore reported one more installed skill than it
-    judged, and a slash command dropped from the build stayed invokable by
+    judged, and a slash command dropped from the build stayed invocable by
     the model until the next ``aelf setup --host codex`` pruned it.
 
     The orphan predicate is `_orphan_skill_dirs`, shared with that prune

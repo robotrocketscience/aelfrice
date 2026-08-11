@@ -13,7 +13,7 @@ nonzero on installed-but-broken Codex wiring. Three things it left:
   bundle was counted as installed and never examined, because
   `modified_codex_skills` iterates bundled names only. The count doctor
   printed was therefore one higher than the number of skills it judged,
-  and a renamed-away slash command stayed invokable by the model.
+  and a renamed-away slash command stayed invocable by the model.
 * The ``approved [hooks.state] entries`` number counts every approved
   hook on the host, aelfrice's and everyone else's, because the approval
   keying is positional and not attributable back to a command. The
