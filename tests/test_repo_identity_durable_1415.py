@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import db_paths
 from aelfrice.db_paths import (
     _durable_identity,
     _identity_from_git_common_dir,
@@ -183,23 +184,89 @@ def test_a_comment_only_sidecar_is_not_an_identity(tmp_path: Path) -> None:
     assert _durable_identity(shared, "repo-cafebabe", create=True) == "repo-cafebabe"
 
 
+def test_a_zero_byte_sidecar_self_heals(tmp_path: Path) -> None:
+    """The state a kill between file creation and the flushed value left.
+
+    A zero-byte `identity` reads as "no entry", so before the re-seed
+    every host fell back to its own path-derived value — the #1415 split,
+    silently back and permanent, with nothing to repair it.
+    """
+    shared = _store_dir(tmp_path / "repo")
+    (shared / "identity").write_bytes(b"")
+
+    first = _durable_identity(shared, "hostA-11111111", create=True)
+    second = _durable_identity(shared, "hostB-22222222", create=True)
+
+    assert first == second == "hostA-11111111"
+
+
+def test_a_seed_that_cannot_be_placed_leaves_no_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seed lands whole or not at all.
+
+    The value is written to a temporary file and moved into place, so a
+    failure anywhere before the move leaves nothing for a later open to
+    read. Creating `identity` first and writing into it could not promise
+    that — which is how the zero-byte sidecar above came to exist.
+    """
+    shared = _store_dir(tmp_path / "repo")
+
+    def _die(*_a: object, **_k: object) -> None:
+        raise OSError("interrupted before the move")
+
+    monkeypatch.setattr(db_paths.os, "link", _die)
+    monkeypatch.setattr(db_paths.os, "replace", _die)
+
+    assert _durable_identity(shared, "repo-cafe1234", create=True) == "repo-cafe1234"
+    assert not (shared / "identity").exists()
+    assert list(shared.iterdir()) == []  # and no temporary file stranded
+
+
+def test_an_alias_is_not_spliced_onto_an_unterminated_line(
+    tmp_path: Path,
+) -> None:
+    """A canonical line missing its newline must not absorb the alias.
+
+    Appending in place produced `canonical-deadbeefhostB-22222222`, and
+    the next open returned that concatenation as the repo identity.
+    """
+    shared = _store_dir(tmp_path / "repo")
+    (shared / "identity").write_text("canonical-deadbeef", encoding="utf-8")
+
+    assert _durable_identity(shared, "hostB-22222222", create=True) == (
+        "canonical-deadbeef"
+    )
+    assert _durable_identity(shared, "hostB-22222222", create=True) == (
+        "canonical-deadbeef"
+    )
+    body = (shared / "identity").read_text(encoding="utf-8")
+    entries = [
+        ln.strip() for ln in body.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    assert entries == ["canonical-deadbeef", "hostB-22222222"]
+
+
 def test_an_unwritable_store_dir_falls_back_to_the_path_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fail-soft. A read-only checkout must still open its store.
 
     Degrading to the pre-#1415 behaviour is exactly as correct as it was
-    before, and is strictly better than refusing to open.
+    before, and is strictly better than refusing to open. The seam is the
+    temporary file: on a read-only filesystem that is where the seed
+    first fails.
     """
     shared = _store_dir(tmp_path / "repo")
 
     def _boom(*_a: object, **_k: object) -> None:
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(Path, "open", _boom)
-    monkeypatch.setattr(Path, "read_text", _boom)
+    monkeypatch.setattr(db_paths, "NamedTemporaryFile", _boom)
 
     assert _durable_identity(shared, "repo-fallback", create=True) == "repo-fallback"
+    assert not (shared / "identity").exists()
 
 
 def test_the_identity_format_is_unchanged(tmp_path: Path) -> None:

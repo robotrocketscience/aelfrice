@@ -20,6 +20,7 @@ import hashlib
 import os
 import subprocess
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Final
 
 from aelfrice.store import MemoryStore
@@ -130,6 +131,74 @@ def _identity_from_git_common_dir(git_dir: Path) -> str:
 #: ("which DB a row came from"), a different lifecycle.
 _IDENTITY_SIDECAR_NAME: Final[str] = "identity"
 
+_IDENTITY_SIDECAR_HEADER: Final[str] = (
+    "# aelfrice repo identity (#1415). First line is canonical;\n"
+    "# later lines are equivalent spellings seen on other hosts.\n"
+)
+
+
+def _first_sidecar_entry(sidecar: Path) -> str | None:
+    """First non-comment, non-blank line of `sidecar`, or None if it has none."""
+    try:
+        raw = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for ln in raw.splitlines():
+        stripped = ln.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return None
+
+
+def _seed_identity_sidecar(store_dir: Path, sidecar: Path, path_derived: str) -> str:
+    """Place a complete sidecar, and return the identity now in force.
+
+    The value is written to a temporary file in the same directory and
+    moved into place, so nothing that kills this process can leave a
+    partial `identity` behind. Creating the file first and flushing the
+    value at close could: a kill in between left a zero-byte sidecar,
+    which every later open reads as "no entry" — permanently reinstating
+    the #1415 split with no self-heal and no diagnostic.
+
+    `os.link` is what keeps the move exclusive. A concurrent first open
+    that already placed its answer wins, and this call returns *that*
+    value rather than overwriting it. A sidecar that exists but holds no
+    entry is degenerate — the zero-byte file above, or a comment-only one
+    — and is replaced: that replacement is the self-heal. Filesystems
+    with no hard-link support (FAT, some network shares) take the same
+    replace path, losing the race guard but never the completeness.
+
+    Raises OSError if the directory or the temporary file cannot be
+    written; the caller degrades to the path-derived identity. The
+    temporary file is unlinked on every path out of here, so a failed
+    seed strands nothing in the store directory either.
+    """
+    store_dir.mkdir(parents=True, exist_ok=True)
+    handle = NamedTemporaryFile(
+        "w", encoding="utf-8", dir=store_dir, prefix=".identity.", delete=False,
+    )
+    tmp = Path(handle.name)
+    try:
+        with handle as fh:
+            fh.write(f"{_IDENTITY_SIDECAR_HEADER}{path_derived}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.link(tmp, sidecar)
+            return path_derived
+        except OSError:
+            pass
+        existing = _first_sidecar_entry(sidecar)
+        if existing is not None:
+            return existing
+        os.replace(tmp, sidecar)
+        return path_derived
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
 
 def _durable_identity(
     store_dir: Path, path_derived: str, *, create: bool = False,
@@ -175,9 +244,13 @@ def _durable_identity(
         canonical, aliases = entries[0], entries[1:]
         if create and path_derived != canonical and path_derived not in aliases:
             # Record this host's spelling. Once per host, not per open.
+            # A last line with no terminator — what a torn write of the
+            # seed leaves — must not be appended to in place: the splice
+            # would read back as one token, and as the canonical identity.
+            terminator = "" if raw.endswith("\n") else "\n"
             try:
                 with sidecar.open("a", encoding="utf-8") as fh:
-                    fh.write(f"{path_derived}\n")
+                    fh.write(f"{terminator}{path_derived}\n")
             except OSError:
                 pass
         return canonical
@@ -186,27 +259,9 @@ def _durable_identity(
         return path_derived
 
     try:
-        store_dir.mkdir(parents=True, exist_ok=True)
-        # Exclusive create: two hosts racing the first open must not both
-        # believe they set the canonical value. The loser re-reads below.
-        with sidecar.open("x", encoding="utf-8") as fh:
-            fh.write(
-                "# aelfrice repo identity (#1415). First line is canonical;\n"
-                "# later lines are equivalent spellings seen on other hosts.\n"
-                f"{path_derived}\n"
-            )
-        return path_derived
-    except FileExistsError:
-        try:
-            for ln in sidecar.read_text(encoding="utf-8").splitlines():
-                stripped = ln.strip()
-                if stripped and not stripped.startswith("#"):
-                    return stripped
-        except OSError:
-            pass
+        return _seed_identity_sidecar(store_dir, sidecar, path_derived)
     except OSError:
-        pass
-    return path_derived
+        return path_derived
 
 
 def repo_identity_from_db_path(p: Path, *, create: bool = False) -> str:
