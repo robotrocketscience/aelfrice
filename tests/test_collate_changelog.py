@@ -589,10 +589,17 @@ def _run_leftover(root: Path) -> subprocess.CompletedProcess[str]:
     `set -euo pipefail` is the step's first line. Running without it was
     what hid the missing-directory abort: the harness returned 0 and an
     empty list where the shipped step exits 1.
+
+    `bash`, not `sh`, and that is not cosmetic either. GitHub's default
+    shell for a `run:` block on Linux is `bash -e {0}`; the CI runner's
+    `/bin/sh` is dash, which rejects `set -o pipefail` outright. An
+    `sh -c` harness therefore fails on the runner for a reason that has
+    nothing to do with the predicate, while passing on a macOS developer
+    box where `sh` is bash.
     """
     return subprocess.run(
         [
-            "sh", "-c",
+            "bash", "-c",
             "set -euo pipefail\n"
             + _leftover_command()
             + '\nprintf "%s\\n" "$leftover"',
