@@ -280,19 +280,33 @@ def program_exists(command: str, *, windows: bool | None = None) -> bool:
     Switch-shaped tokens stop the scan, so an argument cannot be joined into
     the program path.
     """
+    return existing_program_path(command, windows=windows) is not None
+
+
+def existing_program_path(
+    command: str, *, windows: bool | None = None,
+) -> Path | None:
+    """The reading of this command's program that names a file, else None.
+
+    The path behind `program_exists`, for the caller that has to say
+    *something* about the file — whether it is executable, or where it is.
+    Same scan, same switch-shaped stop; the shortest prefix wins, so an
+    argument can never displace a program that already resolved.
+    """
     win = _resolve_windows(windows)
     tokens = command_tokens(command, windows=win)
     if not tokens:
-        return False
+        return None
     for k in range(1, len(tokens) + 1):
         if k > 1 and any(t.startswith(("-", "/")) for t in tokens[1:k]):
             break
+        candidate = Path(" ".join(tokens[:k]))
         try:
-            if Path(" ".join(tokens[:k])).exists():
-                return True
+            if candidate.exists():
+                return candidate
         except OSError:  # a path the platform cannot even stat
             continue
-    return False
+    return None
 
 
 def owned_keys(

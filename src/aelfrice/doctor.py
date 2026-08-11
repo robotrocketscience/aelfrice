@@ -1076,7 +1076,17 @@ def _inspect_command(
     # through to the bare-name branch below and was reported as "not on
     # $PATH" however correctly it was installed.
     if "/" in program or "\\" in program:
-        finding = _check_path(settings_path, location, command, program)
+        # #1482: `_resolve_script` writes the resolved path unquoted, so a
+        # space anywhere in it splits the command and `program` is a
+        # fragment — `/home/first last/.venv/bin/aelf-hook` checks as
+        # `/home/first`, which does not exist. That reported a healthy
+        # install broken; harmless while the prune predicate could not
+        # recognise a spaced path as `aelf-*` at all, and a deletion the
+        # moment it could. Check the reading that names a real file, and
+        # keep reporting the raw token when none does.
+        resolved = launcher.existing_program_path(stripped)
+        target = program if resolved is None else str(resolved)
+        finding = _check_path(settings_path, location, command, target)
         return _with_silent_failure(finding) if silent else finding
     # Bare name -- $PATH lookup. Explicit `path=` (see launcher) keeps the
     # win32 current-directory search out of a diagnostic.
@@ -1205,9 +1215,22 @@ def _entry_duplicate_key(entry: object) -> tuple[str | None, str] | None:
         # #1412: same key derivation as setup/host_codex ownership. A
         # Windows launcher used to key on the entire command string, so two
         # installs of the same hook never collided and the duplicate
-        # collapse silently did nothing.
-        base = launcher.command_launcher_key(stripped)
-        if base.startswith(_AELF_HOOK_BASENAME_PREFIX):
+        # collapse silently did nothing. #1482: a POSIX install path
+        # containing a space keyed on the fragment before the space, which
+        # is not `aelf-*`, so the same collapse did nothing there either —
+        # and worse, two *different* hooks in one event shared that
+        # fragment. The candidate that carries our prefix is the key; a
+        # command with none is still excluded, so a foreign entry cannot
+        # be grouped with ours.
+        base = next(
+            (
+                key
+                for key in launcher.command_program_keys(stripped)
+                if key.startswith(_AELF_HOOK_BASENAME_PREFIX)
+            ),
+            None,
+        )
+        if base is not None:
             basenames.append(base)
     if not basenames:
         return None
@@ -1290,10 +1313,10 @@ def prune_broken_aelf_hooks(
     Walks every `hooks.<event>[i].hooks[j]` command in `settings_path`.
     An entry is removed when ALL of:
 
-    * its inner command's first whitespace token has a basename
-      starting with `aelf-` (so `aelf-hook`, `aelf-stop-hook`, etc. are
-      in scope; bare shell scripts, `bash`, custom integrations are
-      not);
+    * its inner command's program has a basename starting with `aelf-`
+      (so `aelf-hook`, `aelf-stop-hook`, etc. are in scope; bare shell
+      scripts, `bash`, custom integrations are not) — under any reading
+      of a path an unquoted space split, since #1482;
     * `_inspect_command` classifies it `status="broken"` (the program
       path / `$PATH` lookup fails).
 
@@ -1408,9 +1431,15 @@ def _entry_is_broken_aelf_hook(
         # #1412: the predicate that decides whether prune may delete this
         # entry. Under the old derivation a Windows launcher did not read as
         # `aelf-*`, so the entry was skipped -- benign. The damage came from
-        # `_inspect_command` above, which then judged it broken.
-        if not launcher.command_launcher_key(stripped).startswith(
-            _AELF_HOOK_BASENAME_PREFIX,
+        # `_inspect_command` above, which then judged it broken. #1482: a
+        # spaced POSIX path was skipped for the same reason, so a genuinely
+        # broken one could never be pruned. Deletion still needs both
+        # halves: an `aelf-*` candidate *and* a broken verdict from
+        # `_inspect_command`, whose probe is the platform-neutral
+        # `program_exists`.
+        if not any(
+            key.startswith(_AELF_HOOK_BASENAME_PREFIX)
+            for key in launcher.command_program_keys(stripped)
         ):
             continue
         finding = _inspect_command(settings_path, "<prune>", cmd)
