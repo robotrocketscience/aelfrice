@@ -3358,11 +3358,12 @@ class LaneTelemetry:
     # nothing, and reading this counter as reordering evidence is the
     # mistake the old name (`fan_effect_ranked`) invited.
     #
-    # The stronger claim in `lookup_entities`' own docstring — same set,
-    # only the ordering differs — holds only when `limit` covers the
-    # whole candidate pool. Under truncation both branches take the top
-    # `limit` of differently ordered lists, so the *sets* differ; it is
-    # the row count, not the set, that the weighting cannot change.
+    # The stronger claim `lookup_entities`' own docstring carried until
+    # #1462 — same set, only the ordering differs — held only when
+    # `limit` covers the whole candidate pool. Under truncation both
+    # branches take the top `limit` of differently ordered lists, so the
+    # *sets* differ; it is the row count, not the set, that the
+    # weighting cannot change.
     compression_renders: int = 0
     cluster_packed: int = 0
     max_coverage_packed: int = 0
