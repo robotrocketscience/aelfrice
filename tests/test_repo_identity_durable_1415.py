@@ -122,13 +122,20 @@ def test_two_clones_with_the_same_basename_stay_distinct(
 def test_worktrees_sharing_a_common_dir_share_an_identity(
     tmp_path: Path,
 ) -> None:
-    """AC3. Worktrees resolve to one git-common-dir, hence one sidecar."""
+    """AC3. Worktrees resolve to one git-common-dir, hence one sidecar.
+
+    Both worktrees and both call sites land on the same file, so the first
+    answer written there is the answer every one of them gets — including
+    a worktree opened from the host that spells the path the other way.
+    """
     shared = _store_dir(tmp_path / "repo")
     common = _identity_from_git_common_dir(tmp_path / "repo" / ".git")
+    # Whichever host's spelling this stands for, it is not `common`.
+    other_host_spelling = "repo-00000001"
 
-    assert _durable_identity(shared, common, create=True) == _durable_identity(
-        shared, common, create=True,
-    )
+    assert _durable_identity(shared, common, create=True) == common
+    assert _durable_identity(shared, other_host_spelling, create=True) == common
+    assert repo_identity_from_db_path(shared / "memory.db") == common
 
 
 def test_repo_identity_from_db_path_uses_the_sidecar(tmp_path: Path) -> None:
@@ -142,6 +149,36 @@ def test_repo_identity_from_db_path_uses_the_sidecar(tmp_path: Path) -> None:
     (shared / "identity").write_text("canonical-deadbeef\n", encoding="utf-8")
 
     assert repo_identity_from_db_path(shared / "memory.db") == "canonical-deadbeef"
+
+
+def test_repo_identity_reads_the_sidecar_not_just_its_own_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the fix, and the documented export surface.
+
+    `repo_identity()` is what a user evaluates to set
+    ``AELFRICE_PROJECT_CONTEXT``. Left deriving from the path while
+    `_open_store` stamped rows from the sidecar, it would disagree with
+    the store about the same repository — #1415 again, one layer up. The
+    inequality below is what pins that: with a sidecar the resolver
+    ignores, the exported value and the stamped value part company.
+    """
+    git_dir = tmp_path / "repo" / ".git"
+    shared = _store_dir(tmp_path / "repo")
+    (shared / "identity").write_text("otherhost-0abcdef1\n", encoding="utf-8")
+    monkeypatch.setattr(db_paths, "_git_common_dir", lambda: git_dir)
+
+    assert db_paths.repo_identity() == "otherhost-0abcdef1"
+    assert db_paths.repo_identity() != _identity_from_git_common_dir(git_dir)
+    # ... and this host's own spelling is recorded beside it, once.
+    body = (shared / "identity").read_text(encoding="utf-8")
+    entries = [
+        ln.strip() for ln in body.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    assert entries == [
+        "otherhost-0abcdef1", _identity_from_git_common_dir(git_dir),
+    ]
 
 
 def test_resolving_an_identity_does_not_write_into_that_repo(
