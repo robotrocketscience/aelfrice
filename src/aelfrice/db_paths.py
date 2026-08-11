@@ -131,7 +131,9 @@ def _identity_from_git_common_dir(git_dir: Path) -> str:
 _IDENTITY_SIDECAR_NAME: Final[str] = "identity"
 
 
-def _durable_identity(store_dir: Path, path_derived: str) -> str:
+def _durable_identity(
+    store_dir: Path, path_derived: str, *, create: bool = False,
+) -> str:
     """Resolve the repo identity that both hosts agree on (#1415).
 
     The identity used to be a digest of the absolute git-common-dir. Native
@@ -151,6 +153,14 @@ def _durable_identity(store_dir: Path, path_derived: str) -> str:
     Fails soft to `path_derived` on any I/O error — a read-only checkout or
     an unwritable ``.git`` must not break store open, and degrading to the
     old behaviour is exactly as correct as it was before.
+
+    `create=False` (the default) makes this a pure read: no sidecar is
+    seeded and no alias is appended. Only a caller that is opening *its
+    own* store passes `create=True`. `migrate` resolves the identity of a
+    legacy source it deliberately opens ``mode=ro``, and a dry run must
+    leave that repository byte-identical; a resolver that mkdir'd and wrote
+    into whatever path it was handed would write into another repo's
+    ``.git`` just for being named on a `--from`.
     """
     sidecar = store_dir / _IDENTITY_SIDECAR_NAME
     try:
@@ -163,7 +173,7 @@ def _durable_identity(store_dir: Path, path_derived: str) -> str:
 
     if entries:
         canonical, aliases = entries[0], entries[1:]
-        if path_derived != canonical and path_derived not in aliases:
+        if create and path_derived != canonical and path_derived not in aliases:
             # Record this host's spelling. Once per host, not per open.
             try:
                 with sidecar.open("a", encoding="utf-8") as fh:
@@ -171,6 +181,9 @@ def _durable_identity(store_dir: Path, path_derived: str) -> str:
             except OSError:
                 pass
         return canonical
+
+    if not create:
+        return path_derived
 
     try:
         store_dir.mkdir(parents=True, exist_ok=True)
@@ -196,7 +209,7 @@ def _durable_identity(store_dir: Path, path_derived: str) -> str:
     return path_derived
 
 
-def repo_identity_from_db_path(p: Path) -> str:
+def repo_identity_from_db_path(p: Path, *, create: bool = False) -> str:
     """Repo identity for a store at `p`, derived from its on-disk layout.
 
     The repo store lives at ``<git-common-dir>/aelfrice/memory.db``
@@ -207,12 +220,21 @@ def repo_identity_from_db_path(p: Path) -> str:
     identity, so their rows stay cross-context. Reuses the already-resolved
     path instead of re-forking `git`, so it adds no subprocess cost to the
     store-open hot path.
+
+    Consults the `identity` sidecar beside the store, which is what makes
+    one repository's identity survive two host spellings of its path
+    (#1415). That read is non-mutating by default: `create=True` — which
+    also seeds the sidecar and records this host's spelling — is for a
+    caller opening its own store, not for one naming somebody else's, and
+    `migrate` names the legacy source it opens read-only.
     """
     if str(p) == ":memory:":
         return ""
     if p.parent.name != _REPO_STORE_PARENT_DIRNAME:
         return ""
-    return _durable_identity(p.parent, _identity_from_git_common_dir(p.parent.parent))
+    return _durable_identity(
+        p.parent, _identity_from_git_common_dir(p.parent.parent), create=create,
+    )
 
 
 def repo_identity() -> str:
@@ -232,6 +254,7 @@ def repo_identity() -> str:
     return _durable_identity(
         git_dir / _REPO_STORE_PARENT_DIRNAME,
         _identity_from_git_common_dir(git_dir),
+        create=True,
     )
 
 
@@ -239,7 +262,12 @@ def _open_store() -> MemoryStore:
     p = db_path()
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
-    return MemoryStore(str(p), project_context_default=repo_identity_from_db_path(p))
+    return MemoryStore(
+        str(p),
+        # This process is opening its own store, so it is the caller
+        # entitled to seed the identity sidecar (#1415).
+        project_context_default=repo_identity_from_db_path(p, create=True),
+    )
 
 
 def open_store_for_read() -> MemoryStore:
@@ -271,6 +299,9 @@ def open_store_for_read() -> MemoryStore:
     from aelfrice.store import is_readonly_open_failure
 
     p = db_path()
+    # Deliberately no `create=True`: this function exists for the case
+    # where `.git/` is not writable, and an observational command has no
+    # business seeding an identity sidecar there (#1415).
     ident = repo_identity_from_db_path(p)
     if str(p) != ":memory:":
         try:

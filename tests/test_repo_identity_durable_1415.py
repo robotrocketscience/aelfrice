@@ -29,6 +29,8 @@ from aelfrice.db_paths import (
     _identity_from_git_common_dir,
     repo_identity_from_db_path,
 )
+from aelfrice.migrate import migrate
+from aelfrice.store import MemoryStore
 
 
 def _store_dir(root: Path) -> Path:
@@ -44,8 +46,8 @@ def test_two_spellings_of_one_repo_agree(tmp_path: Path) -> None:
     windows_spelling = "repo-b0068862"
     wsl_spelling = "repo-74ec8541"
 
-    first = _durable_identity(shared, windows_spelling)
-    second = _durable_identity(shared, wsl_spelling)
+    first = _durable_identity(shared, windows_spelling, create=True)
+    second = _durable_identity(shared, wsl_spelling, create=True)
 
     assert first == second == windows_spelling
 
@@ -62,9 +64,9 @@ def test_the_creating_host_keeps_the_identity_it_already_had(
     shared = _store_dir(tmp_path / "repo")
     path_derived = _identity_from_git_common_dir(tmp_path / "repo" / ".git")
 
-    assert _durable_identity(shared, path_derived) == path_derived
+    assert _durable_identity(shared, path_derived, create=True) == path_derived
     # ... and still, on every subsequent open.
-    assert _durable_identity(shared, path_derived) == path_derived
+    assert _durable_identity(shared, path_derived, create=True) == path_derived
 
 
 def test_the_other_spelling_is_recorded_as_an_alias(tmp_path: Path) -> None:
@@ -74,8 +76,8 @@ def test_the_other_spelling_is_recorded_as_an_alias(tmp_path: Path) -> None:
     reading the file, see that two spellings addressed this store.
     """
     shared = _store_dir(tmp_path / "repo")
-    _durable_identity(shared, "repo-aaaaaaaa")
-    _durable_identity(shared, "repo-bbbbbbbb")
+    _durable_identity(shared, "repo-aaaaaaaa", create=True)
+    _durable_identity(shared, "repo-bbbbbbbb", create=True)
 
     body = (shared / "identity").read_text(encoding="utf-8")
     entries = [
@@ -89,9 +91,9 @@ def test_an_alias_is_written_once_not_per_open(tmp_path: Path) -> None:
     """This runs on the store-open path, so a per-open append would grow
     the file without bound."""
     shared = _store_dir(tmp_path / "repo")
-    _durable_identity(shared, "repo-aaaaaaaa")
+    _durable_identity(shared, "repo-aaaaaaaa", create=True)
     for _ in range(5):
-        _durable_identity(shared, "repo-bbbbbbbb")
+        _durable_identity(shared, "repo-bbbbbbbb", create=True)
 
     body = (shared / "identity").read_text(encoding="utf-8")
     assert body.count("repo-bbbbbbbb") == 1
@@ -104,10 +106,12 @@ def test_two_clones_with_the_same_basename_stay_distinct(
     one = _store_dir(tmp_path / "a" / "proj")
     two = _store_dir(tmp_path / "b" / "proj")
     id_one = _durable_identity(
-        one, _identity_from_git_common_dir(tmp_path / "a" / "proj" / ".git")
+        one, _identity_from_git_common_dir(tmp_path / "a" / "proj" / ".git"),
+        create=True,
     )
     id_two = _durable_identity(
-        two, _identity_from_git_common_dir(tmp_path / "b" / "proj" / ".git")
+        two, _identity_from_git_common_dir(tmp_path / "b" / "proj" / ".git"),
+        create=True,
     )
 
     assert id_one != id_two
@@ -121,7 +125,9 @@ def test_worktrees_sharing_a_common_dir_share_an_identity(
     shared = _store_dir(tmp_path / "repo")
     common = _identity_from_git_common_dir(tmp_path / "repo" / ".git")
 
-    assert _durable_identity(shared, common) == _durable_identity(shared, common)
+    assert _durable_identity(shared, common, create=True) == _durable_identity(
+        shared, common, create=True,
+    )
 
 
 def test_repo_identity_from_db_path_uses_the_sidecar(tmp_path: Path) -> None:
@@ -137,12 +143,44 @@ def test_repo_identity_from_db_path_uses_the_sidecar(tmp_path: Path) -> None:
     assert repo_identity_from_db_path(shared / "memory.db") == "canonical-deadbeef"
 
 
+def test_resolving_an_identity_does_not_write_into_that_repo(
+    tmp_path: Path,
+) -> None:
+    """Reading another repo's identity must not touch its `.git`.
+
+    `migrate` resolves the SOURCE store's identity to stamp provenance on
+    the rows it copies, and opens that store ``mode=ro`` on purpose. A
+    resolver that seeded a sidecar for whatever path it was handed made
+    `aelf migrate --from <other-repo>/.git/aelfrice/memory.db` write into
+    the other repository — in the default DRY RUN, which promises to write
+    nothing at all.
+    """
+    src_dir = _store_dir(tmp_path / "other-repo")
+    src = src_dir / "memory.db"
+    MemoryStore(str(src)).close()
+    before = sorted(p.name for p in src_dir.iterdir())
+
+    migrate(
+        legacy_path=src,
+        target_path=tmp_path / "mine" / "memory.db",
+        project_root=tmp_path,
+        apply=False,
+        copy_all=True,
+    )
+
+    assert not (src_dir / "identity").exists()
+    # SQLite's own `-wal`/`-shm` companions are the only thing a `mode=ro`
+    # attach is allowed to leave behind; aelfrice adds nothing.
+    added = {p.name for p in src_dir.iterdir()} - set(before)
+    assert added <= {"memory.db-shm", "memory.db-wal"}
+
+
 def test_a_comment_only_sidecar_is_not_an_identity(tmp_path: Path) -> None:
     """A file containing only its own header must not read as canonical."""
     shared = _store_dir(tmp_path / "repo")
     (shared / "identity").write_text("# header only\n\n", encoding="utf-8")
 
-    assert _durable_identity(shared, "repo-cafebabe") == "repo-cafebabe"
+    assert _durable_identity(shared, "repo-cafebabe", create=True) == "repo-cafebabe"
 
 
 def test_an_unwritable_store_dir_falls_back_to_the_path_identity(
@@ -161,7 +199,7 @@ def test_an_unwritable_store_dir_falls_back_to_the_path_identity(
     monkeypatch.setattr(Path, "open", _boom)
     monkeypatch.setattr(Path, "read_text", _boom)
 
-    assert _durable_identity(shared, "repo-fallback") == "repo-fallback"
+    assert _durable_identity(shared, "repo-fallback", create=True) == "repo-fallback"
 
 
 def test_the_identity_format_is_unchanged(tmp_path: Path) -> None:
@@ -170,7 +208,8 @@ def test_the_identity_format_is_unchanged(tmp_path: Path) -> None:
     changed the format would break both."""
     shared = _store_dir(tmp_path / "repo")
     got = _durable_identity(
-        shared, _identity_from_git_common_dir(tmp_path / "repo" / ".git")
+        shared, _identity_from_git_common_dir(tmp_path / "repo" / ".git"),
+        create=True,
     )
 
     basename, _, digest = got.rpartition("-")
