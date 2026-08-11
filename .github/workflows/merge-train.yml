@@ -30,6 +30,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write  # #637: `gh issue close --comment` (#634 auto-close) needs issues:write
+  actions: write # #1423: `gh workflow run` for the post-merge dispatch below
 
 # Concurrency-1: this is the whole point. Two labeled events queue
 # rather than race.
@@ -297,6 +298,50 @@ jobs:
               push_err=$(cat /tmp/push.err)
               fail_and_unlabel "FF push to \`main\` failed:\n\n\`\`\`\n${push_err}\n\`\`\`\n\nCommon causes: branch protection rule changed, force-push detected by another writer, or token permission insufficient. Re-add the label after investigating."
           fi
+
+          # #1423: re-arm the post-merge workflows. The push above was made
+          # with `secrets.GITHUB_TOKEN`, and GitHub does not start workflow
+          # runs from events raised by that token — the documented recursion
+          # guard — so `on: push: branches: [main]` has not fired once since
+          # the train became the merge path. `workflow_dispatch` and
+          # `repository_dispatch` are the two documented exceptions, which is
+          # why this is a dispatch fan-out rather than a token swap: a PAT or
+          # App token on the checkout above would re-arm `on: push` for
+          # everything at once, but it puts a long-lived credential with write
+          # access to `main` in a repo whose whole merge model exists because
+          # the bot deliberately has no signing key. A schedule was rejected
+          # too — it decouples the run from the commit that caused it, which
+          # is the property `push:main` had and the only reason to want it.
+          #
+          # The list is derived, never written here. A literal list is exactly
+          # how this defect stayed invisible: the next `push:main` workflow
+          # someone adds would be silently omitted.
+          #
+          # `--ref main` and no `-f` inputs, deliberately: a dispatched run's
+          # check-runs attach to the head of the ref it was dispatched on, so
+          # targeting `main` is what makes a post-merge run structurally unable
+          # to report against a commit it did not test (#1436/#1451). `main` is
+          # at ${HEAD_SHA} as of the push above.
+          #
+          # Non-fatal by construction. `main` has already advanced; a failed
+          # dispatch must not turn a landed merge into a red train, and the
+          # heartbeat in `.github/workflows/push-trigger-heartbeat.yml` is what
+          # notices if this stops working rather than this exit code.
+          echo "[6b/6] dispatching post-merge workflows..."
+          # Assigned, not inlined into the `for` word list: a failing command
+          # substitution in a for-list is not a `set -e` failure, so a broken
+          # enumeration would iterate zero workflows and log nothing.
+          if ! dispatch_list=$(python3 scripts/push_trigger_workflows.py --branch main); then
+              echo "::warning::merge-train could not enumerate push:main workflows (#1423)"
+              dispatch_list=""
+          fi
+          for wf in ${dispatch_list}; do
+              if gh workflow run "${wf}" --ref main --repo "${REPO}"; then
+                  echo "  ${wf}: dispatched."
+              else
+                  echo "::warning::merge-train could not dispatch ${wf} (#1423)"
+              fi
+          done
 
           # Success: unlabel and post a confirmation. Don't error if
           # the unlabel step fails — main already advanced; the worst
