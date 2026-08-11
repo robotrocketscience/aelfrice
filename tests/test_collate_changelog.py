@@ -252,12 +252,14 @@ def test_existing_block_entries_come_first_within_a_category() -> None:
 def test_a_multi_paragraph_entry_file_survives_verbatim() -> None:
     """The twin of the block test below, for the new convention.
 
-    An entry's continuation paragraphs are most of its text — the
-    committed #1475 entry file is 2,591 characters across 5 lines, of
-    which the bullet line is one. Collation is a re-arrangement and
-    never a re-wrap, so the whole block has to arrive byte for byte;
-    keeping only the bullet would drop four fifths of the entry and
-    leave a plausible-looking one-liner in the release.
+    An entry's continuation paragraphs are most of its text — on the
+    committed #1475 entry file the bullet line is under a third of the
+    entry. Collation is a re-arrangement and never a re-wrap, so the
+    whole block has to arrive byte for byte; keeping only the bullet
+    would drop the rest and leave a plausible-looking one-liner in the
+    release. No character count is quoted: the entry is edited like any
+    other prose, and a figure in a docstring nothing re-derives goes
+    stale silently.
     """
     entry = "\n".join([
         "- **Multi-part ([#101](u)).** First paragraph.",
@@ -495,13 +497,16 @@ def _entry_blocks(text: str) -> list[str]:
 
 
 def test_the_committed_v4_changelog_collates_without_loss() -> None:
-    """99 block entries in the real file; none may vanish, none truncate.
+    """Whole entries, not opening lines. None may vanish, none truncate.
 
-    Whole entries, not opening lines. Most of an entry's text is its
-    indented continuation paragraphs — the committed entry file is
-    2,591 characters of which the bullet line is the first of five —
-    so comparing first lines would pass just as happily on a collation
-    that discarded every paragraph after the first.
+    Most of an entry's text is its indented continuation paragraphs —
+    the bullet line of the committed entry file is under a third of it
+    — so comparing first lines would pass just as happily on a
+    collation that discarded every paragraph after the first.
+
+    No entry count is quoted here. 96a196a1 deleted the pinned
+    `assert len(expected) == 99` on purpose: a count re-couples this
+    test to the block's contents, which is the coupling #1475 removes.
     """
     text = (_REPO / "CHANGELOG" / "v4.md").read_text(encoding="utf-8")
     block = text.split("## [Unreleased]")[1].split("\n## [")[0]

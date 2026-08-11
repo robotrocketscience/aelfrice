@@ -30,7 +30,7 @@ v1.0 has shipped. Issues and PRs are open. Please align on approach via an issue
 - [ ] `uv run pytest tests/ -x -q` — all green
 - [ ] `uv run pyright src/` — strict, no new errors
 - [ ] `uv run aelf --help` — surface unchanged (or change documented)
-- [ ] CHANGELOG entry added under `[Unreleased]` (if user-visible)
+- [ ] CHANGELOG entry added as a file under `CHANGELOG/unreleased/` (if user-visible)
 - [ ] Docs updated (if surface or behavior changed)
 
 ## Test plan
