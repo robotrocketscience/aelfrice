@@ -263,6 +263,66 @@ class TestEveryPublicEntryPointResolvesPerCall:
         ) is False
 
 
+def _windows_defaults() -> list[tuple[str, object]]:
+    """Every `windows` parameter that carries a default, with its value."""
+    import inspect
+
+    from aelfrice import host_codex
+
+    found: list[tuple[str, object]] = []
+    for module in (host_codex, launcher):
+        for name, obj in vars(module).items():
+            if not inspect.isfunction(obj):
+                continue
+            if obj.__module__ != module.__name__:
+                continue
+            param = inspect.signature(obj).parameters.get("windows")
+            if param is None or param.default is inspect.Parameter.empty:
+                continue
+            found.append((f"{module.__name__}.{name}", param.default))
+    return sorted(found)
+
+
+@pytest.mark.parametrize(
+    ("qualname", "default"), _windows_defaults(),
+    ids=[q for q, _ in _windows_defaults()],
+)
+def test_no_windows_default_is_bound_at_definition_time(
+    qualname: str, default: object,
+) -> None:
+    """The net, not the guard.
+
+    Seventeen functions across these two modules take a defaulted
+    `windows`; the behavioural arms above cover six of them. This catches
+    the remaining eleven, and it catches them by reading the *resolved default
+    object* rather than the signature's source text — a bound default is
+    already `True` or `False` by the time `inspect` sees it, which is
+    exactly the property that makes it undetectable at run time.
+
+    It is not a substitute for the arms. `windows: bool | None = None` with
+    the seam severed inside the body passes here and fails there.
+    """
+    assert default is None, f"{qualname} binds its platform default"
+
+
+def test_the_net_covers_every_seam_function() -> None:
+    """A net that discovers nothing passes silently.
+
+    If a refactor moves these functions or renames the parameter, the
+    parametrisation above collapses to zero cases and reports green.
+    """
+    discovered = dict(_windows_defaults())
+    assert len(discovered) == 17, sorted(discovered)
+    for required in (
+        "aelfrice.host_codex.install_codex_hooks",
+        "aelfrice.host_codex.remove_codex_hooks",
+        "aelfrice.host_codex.doctor_codex",
+        "aelfrice.host_codex.claude_host_has_aelfrice_hooks",
+        "aelfrice.launcher.command_launcher_key",
+    ):
+        assert required in discovered, sorted(discovered)
+
+
 class TestWindowsNormalisation:
     @pytest.mark.parametrize("token", [
         r"C:\Users\dev\.venv\Scripts\aelf-hook.EXE",
