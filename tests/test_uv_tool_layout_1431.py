@@ -45,14 +45,29 @@ def test_uv_tool_dir_honours_the_configured_directory(
     assert lifecycle._uv_tool_dir() == tmp_path / "custom tools"
 
 
-def test_uv_tool_dir_windows_default_is_appdata(
+def test_uv_tool_dir_windows_default_is_appdata_uv_data_tools(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """The Windows default is %APPDATA%\\uv\\tools, not the POSIX path."""
+    """The Windows default is %APPDATA%\\uv\\data\\tools.
+
+    uv's storage reference (docs.astral.sh/uv/reference/storage) puts the
+    *persistent data directory* at `%APPDATA%\\uv\\data` on Windows — where
+    the POSIX one is `$XDG_DATA_HOME/uv` with no `data` component — and
+    installs tools into a `tools/` subdirectory of it. `%APPDATA%\\uv\\tools`
+    names no directory uv ever writes.
+    """
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.setattr(lifecycle, "_is_windows", lambda: True)
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-    assert lifecycle._uv_tool_dir() == tmp_path / "Roaming" / "uv" / "tools"
+    assert (
+        lifecycle._uv_tool_dir()
+        == tmp_path / "Roaming" / "uv" / "data" / "tools"
+    )
+    # The asymmetry is the point: the POSIX default has no `data` level,
+    # so a shared spelling cannot be right for both.
+    monkeypatch.setattr(lifecycle, "_is_windows", lambda: False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert lifecycle._uv_tool_dir() == tmp_path / "xdg" / "uv" / "tools"
 
 
 def test_uv_tool_dir_posix_default_follows_xdg(
@@ -93,7 +108,7 @@ def test_windows_default_is_not_a_bound_default(
     windows_dir = lifecycle._uv_tool_dir()
 
     assert posix_dir != windows_dir
-    assert windows_dir == tmp_path / "Roaming" / "uv" / "tools"
+    assert windows_dir == tmp_path / "Roaming" / "uv" / "data" / "tools"
 
 
 # --- classification ------------------------------------------------------
@@ -109,7 +124,7 @@ def test_windows_uv_tool_install_is_classified_uv_tool(
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.setattr(lifecycle, "_is_windows", lambda: True)
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
-    tool_env = tmp_path / "Roaming" / "uv" / "tools" / "aelfrice"
+    tool_env = tmp_path / "Roaming" / "uv" / "data" / "tools" / "aelfrice"
     _receipt(tool_env)
     # The running process is elsewhere; disk presence alone must suffice
     # for *advice*, which is what upgrade_advice() asks.

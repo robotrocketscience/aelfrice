@@ -386,11 +386,24 @@ def _is_windows() -> bool:
 def _uv_tool_dir() -> Path:
     """uv's tools directory for this platform and environment.
 
-    Resolution order matches uv's own (docs.astral.sh/uv/concepts/tools —
-    "Tools directory"): ``UV_TOOL_DIR`` wins outright; otherwise the
-    platform default, which is ``%APPDATA%\\uv\\tools`` on Windows and
-    ``$XDG_DATA_HOME/uv/tools`` (falling back to
-    ``~/.local/share/uv/tools``) everywhere else.
+    Resolution order matches uv's own: ``UV_TOOL_DIR`` wins outright;
+    otherwise tools live in a ``tools/`` subdirectory of uv's *persistent
+    data directory*, which is where the two platforms diverge.
+
+    uv's storage reference (docs.astral.sh/uv/reference/storage) gives the
+    persistent data directory as ``$XDG_DATA_HOME/uv`` or
+    ``$HOME/.local/share/uv`` on Linux/macOS but ``%APPDATA%\\uv\\data``
+    on Windows, and says tools are installed "in a ``tools/``
+    subdirectory of the persistent data directory, e.g.,
+    ``~/.local/share/uv/tools``". So the defaults are asymmetric — the
+    Windows one carries an extra ``data`` component:
+
+        POSIX    $XDG_DATA_HOME/uv/tools  (else ~/.local/share/uv/tools)
+        Windows  %APPDATA%\\uv\\data\\tools
+
+    ``%APPDATA%\\uv\\tools`` — the literal this module carried before
+    #1431, and the one #1431's own body repeated — names no directory uv
+    ever writes, so a real Windows uv-tool install was invisible.
 
     The platform is resolved per call via ``_is_windows()``, never bound
     as a default argument (#1412 review).
@@ -401,7 +414,7 @@ def _uv_tool_dir() -> Path:
     if _is_windows():
         appdata = os.environ.get("APPDATA")
         base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / "uv" / "tools"
+        return base / "uv" / "data" / "tools"
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
     return base / "uv" / "tools"
