@@ -56,6 +56,15 @@ import scipy.sparse as sp
 import snowballstemmer
 
 from aelfrice.models import Belief
+from aelfrice.sidecar_outcome import (
+    SIDECAR_FRESH,
+    SIDECAR_FULL_REBUILD,
+    SIDECAR_INCREMENTAL,
+    SIDECAR_OUTCOMES,
+    _record_sidecar_outcome,
+    last_sidecar_outcome,
+    reset_sidecar_outcome,
+)
 from aelfrice.store import MemoryStore
 
 # v1.7.0 #154: Porter stemmer for FTS5 parity. snowballstemmer's
@@ -1545,85 +1554,11 @@ def sidecar_path_for(
     return Path(db_path + _SIDECAR_SUFFIX)
 
 
-# #1407. Which of the three sidecar outcomes the most recent
-# `BM25IndexCache.get()` in this process took. #1380's cost case is
-# `cold_cost x cold_rate`; `cold_cost` is measured (2.89 s cold first-fire at
-# 44,668 beliefs) and `cold_rate` is not, and the best prior estimate was a
-# latency proxy that cannot tell a rebuild from lock contention or a cold page
-# cache.
-#
-# Three states, not a boolean: since #1199 a stale sidecar no longer implies a
-# full rebuild, and collapsing `incremental` into `full_rebuild` is exactly what
-# made #1199's 86.2% and the 8.5% latency proxy look contradictory when they
-# were measuring different events.
-SIDECAR_FRESH: Final[str] = "fresh"
-SIDECAR_INCREMENTAL: Final[str] = "incremental"
-SIDECAR_FULL_REBUILD: Final[str] = "full_rebuild"
-SIDECAR_OUTCOMES: Final[frozenset[str]] = frozenset(
-    {SIDECAR_FRESH, SIDECAR_INCREMENTAL, SIDECAR_FULL_REBUILD}
-)
-
-# `None` means no `get()` ran since the last reset — a fire that never built an
-# index at all (no L1 lane, gate-skipped). That must stay distinguishable from
-# `fresh`, or a fire doing no work is counted as a cache hit and the rate this
-# exists to measure is silently inflated.
-_LAST_SIDECAR_OUTCOME: str | None = None
-
-
-def last_sidecar_outcome() -> str | None:
-    """The most expensive sidecar outcome of any `BM25IndexCache.get()` since
-    the last `reset_sidecar_outcome()`, or None if none has run (#1407).
-
-    Not "the most recent" — a fire that rebuilt and then hit a warm cache paid
-    for the rebuild, and must be counted as one. See `_record_sidecar_outcome`.
-    """
-    return _LAST_SIDECAR_OUTCOME
-
-
-def reset_sidecar_outcome() -> None:
-    """Clear the outcome snapshot. Called by the hook before retrieval so the
-    value read afterwards belongs to this fire and not a previous one."""
-    global _LAST_SIDECAR_OUTCOME
-    _LAST_SIDECAR_OUTCOME = None
-
-
-# Cost order. A fire is classified by the most expensive thing it paid for, not
-# by whichever `get()` happened to return last — see `_record_sidecar_outcome`.
-_SIDECAR_COST: Final[dict[str, int]] = {
-    SIDECAR_FRESH: 0,
-    SIDECAR_INCREMENTAL: 1,
-    SIDECAR_FULL_REBUILD: 2,
-}
-
-
-def _record_sidecar_outcome(outcome: str) -> None:
-    """Record the outcome of a `get()`, keeping the most expensive one so far.
-
-    Validates against `SIDECAR_OUTCOMES` so the vocabulary is a production
-    contract rather than a test-only one: an unrecognised state would otherwise
-    reach `hook_audit.jsonl` and be counted as a category nothing knows how to
-    aggregate, silently skewing the rate this field exists to measure.
-
-    **Max-wins, not last-write-wins.** A single fire can call `get()` more than
-    once — a cadence-driven rebuild followed by the main retrieval is the case
-    that exists today. Under last-write-wins that fire recorded `fresh` even
-    though it had just paid a full rebuild, and the latency proxy missed it too
-    (74 ms), so the one event #1380 is priced on was the one event the field
-    failed to count. Keeping the max makes the field answer the question it is
-    actually asked: *did this fire pay for a rebuild?* Latent today only
-    because cadence is default-off — and this field is meant to outlive that.
-    """
-    if outcome not in SIDECAR_OUTCOMES:
-        raise ValueError(
-            f"unknown sidecar outcome {outcome!r}; "
-            f"expected one of {sorted(SIDECAR_OUTCOMES)}"
-        )
-    global _LAST_SIDECAR_OUTCOME
-    if (
-        _LAST_SIDECAR_OUTCOME is None
-        or _SIDECAR_COST[outcome] > _SIDECAR_COST[_LAST_SIDECAR_OUTCOME]
-    ):
-        _LAST_SIDECAR_OUTCOME = outcome
+# #1407. The per-fire sidecar-outcome snapshot lives in `aelfrice.sidecar_outcome`,
+# a leaf module that imports nothing outside the standard library. `bm25` writes it
+# and re-exports it here so existing callers keep working; the hook reads and resets
+# it through the leaf module, so a gate-skipped fire never pulls numpy / scipy /
+# snowballstemmer in just to record that it did no index work (#1351).
 
 
 @dataclass
@@ -1862,4 +1797,14 @@ __all__ = [
     "BM25Index",
     "BM25IndexCache",
     "tokenize",
+    # #1407 re-exports from `aelfrice.sidecar_outcome`. Listed so the
+    # import above reads as a deliberate re-export rather than dead weight:
+    # the writer is here, the definitions are in a leaf module the hook can
+    # import without the numeric stack.
+    "SIDECAR_FRESH",
+    "SIDECAR_INCREMENTAL",
+    "SIDECAR_FULL_REBUILD",
+    "SIDECAR_OUTCOMES",
+    "last_sidecar_outcome",
+    "reset_sidecar_outcome",
 ]
