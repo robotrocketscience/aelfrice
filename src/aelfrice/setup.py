@@ -1877,6 +1877,18 @@ def _entry_matches_basename(
     use the identical derivation. Leaving one end on
     ``Path(first).name`` while the other normalises is how a comparison
     silently stops matching — the pair is only correct together.
+
+    #1482: together, not identical. The two sides are now deliberately
+    asymmetric and must stay that way. This side reads a command someone
+    else may have written, so it accepts *any* reading of it; the other
+    side names the hook being installed, from a path this project resolved,
+    so it commits to the most specific one. Symmetrising them reintroduces
+    the bug either way round: two first-token keys make every hook of a
+    spaced install compare equal (``/home/first last/bin/aelf-hook`` and
+    ``.../aelf-stop-hook`` both key to ``first``, so installing the second
+    *replaces* the first and the event ends up one hook short), while two
+    most-specific keys stop matching an entry whose recorded path splits
+    differently from the one being installed.
     """
     inner = entry.get(_INNER_HOOKS_KEY)
     if not isinstance(inner, list):
@@ -1890,25 +1902,32 @@ def _entry_matches_basename(
         cmd = hook_dict.get(_COMMAND_KEY)
         if not isinstance(cmd, str):
             continue
-        key = launcher.command_launcher_key(cmd)
-        if key and key == basename:
+        if any(key == basename for key in launcher.command_program_keys(cmd)):
             return True
     return False
 
 
 def _command_basename(command: str) -> str:
-    """Basename of the first whitespace-stripped path token of `command`.
+    """The name of the hook `command` installs, '' when there is none.
 
-    Mirrors the rule `_entry_matches_basename` applies on the entry side:
-    the program is the first whitespace token, the basename is what we
-    deduplicate against. Returns `""` for an empty / whitespace-only
-    command (callers treat that as "no basename, append").
+    The value `_entry_matches_basename` deduplicates against. Returns `""`
+    for an empty / whitespace-only command (callers treat that as "no
+    basename, append").
 
     #1412: routes through the shared platform-gated key, so the dedupe rule
     here cannot drift from the ownership rule in `host_codex`. On Windows
     ``...\\Scripts\\aelf-hook.EXE`` and ``aelf-hook`` are the same entry.
+
+    #1482: the *most specific* reading, not the first. Callers pass a path
+    this project resolved, so the last candidate is the console script's own
+    name; the first would be the fragment before a space in the install path
+    (``/home/first last/bin/aelf-hook`` -> ``first``), which every hook in
+    that install shares. Deduplicating on a shared fragment does not merely
+    fail to match — it matches too much, and each hook installed into an
+    event replaces the previous one.
     """
-    return launcher.command_launcher_key(command)
+    keys = launcher.command_program_keys(command)
+    return keys[-1] if keys else ""
 
 
 def _install_or_replace_entry(
