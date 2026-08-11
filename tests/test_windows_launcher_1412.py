@@ -34,6 +34,17 @@ def _install_launcher(directory: Path, name: str = LAUNCHER_NAME) -> Path:
     return target
 
 
+def _handler(command: str) -> dict[str, object]:
+    return {"type": "command", "command": command}
+
+
+def _windows_owned_document() -> str:
+    """A hooks.json holding exactly one handler, spelled the Windows way."""
+    return json.dumps({"hooks": {"UserPromptSubmit": [
+        {"hooks": [_handler(WIN_PATH)]},
+    ]}}, indent=2) + "\n"
+
+
 def test_the_platform_flag_is_not_bound_at_definition_time() -> None:
     """`os.name` must be read per call, not captured at import.
 
@@ -115,6 +126,141 @@ def test_the_unbound_default_survives_into_the_hooks_transaction(
         hooks_path.write_text(owned, encoding="utf-8")
         assert host_codex.remove_codex_hooks(hooks_path).changed is True
         assert json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"] == {}
+
+
+class TestEveryPublicEntryPointResolvesPerCall:
+    """#1489: the guard above covers the removal half and stops there.
+
+    An adversarial mutation campaign over the #1466 merge bound the default
+    on `install_codex_hooks` — ``windows: bool = os.name == "nt"`` — and
+    ``-k "codex or windows or launcher or host"`` reported 266 passed, 3
+    skipped, unchanged from the unmutated tree. The seam is threaded
+    correctly; what nothing observed was the *entry points'* own defaults.
+    There are four public ones on it, and the arm above reaches exactly one
+    (`remove_codex_hooks`).
+
+    The asymmetry is why it matters rather than being a style point.
+    `windows` decides ownership, ownership decides which handlers
+    `install_codex_hooks` replaces and `remove_codex_hooks` deletes, and no
+    CI job runs on native Windows — so a default frozen to the POSIX value
+    at import silently narrows both on the only platform where the
+    difference exists.
+
+    Each arm is paired with an explicit ``windows=False`` arm. Without the
+    pair, these would also pass on a tree where the platform gate was
+    deleted and normalisation applied unconditionally — which is the
+    dangerous direction, since it widens what a deletion path claims.
+    """
+
+    @staticmethod
+    def _unresolved_reads_as_windows(mp: pytest.MonkeyPatch) -> None:
+        """Make an *unresolved* platform read as Windows, and only that.
+
+        `_resolve_windows` consults the platform exactly when its argument
+        is `None`, so replacing it separates the two trees under test: a
+        live seam passes `None` down and reads `True` here, while a default
+        bound at definition time passes the explicit `False` it froze at
+        import on this host and the patch never fires.
+
+        `os.name` cannot be patched instead on any path that writes:
+        `tempfile` joins with `ntpath` under ``os.name == "nt"``, so
+        `os.replace` fails on a POSIX build, the transaction reports
+        `result.error`, and the assertions below would go vacuous rather
+        than red. The plan-function half of the guard above patches
+        `os.name` precisely because it is pure and never commits.
+        """
+        mp.setattr(
+            launcher, "_resolve_windows", lambda w: True if w is None else w,
+        )
+
+    def test_install_resolves_the_platform_per_call(
+        self, tmp_path: Path,
+    ) -> None:
+        """The mutation that survived: `install_codex_hooks`' own default."""
+        from aelfrice import host_codex
+
+        hooks_path = tmp_path / "hooks.json"
+        hooks_path.write_text(_windows_owned_document(), encoding="utf-8")
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._unresolved_reads_as_windows(mp)
+            assert host_codex.install_codex_hooks(hooks_path).error is None
+
+        groups = json.loads(
+            hooks_path.read_text(encoding="utf-8"),
+        )["hooks"]["UserPromptSubmit"]
+        commands = [h["command"] for g in groups for h in g["hooks"]]
+        assert WIN_PATH not in commands, commands
+        assert len(groups) == 1, groups
+
+    def test_install_does_not_claim_it_under_posix(
+        self, tmp_path: Path,
+    ) -> None:
+        """The distinguishing arm — same bytes, explicit POSIX."""
+        from aelfrice import host_codex
+
+        hooks_path = tmp_path / "hooks.json"
+        hooks_path.write_text(_windows_owned_document(), encoding="utf-8")
+        assert host_codex.install_codex_hooks(
+            hooks_path, windows=False,
+        ).error is None
+
+        groups = json.loads(
+            hooks_path.read_text(encoding="utf-8"),
+        )["hooks"]["UserPromptSubmit"]
+        assert len(groups) == 2, groups
+        assert groups[0] == {"hooks": [_handler(WIN_PATH)]}
+
+    def test_doctor_resolves_the_platform_per_call(
+        self, tmp_path: Path,
+    ) -> None:
+        from aelfrice import host_codex
+
+        (tmp_path / "hooks.json").write_text(
+            _windows_owned_document(), encoding="utf-8",
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            self._unresolved_reads_as_windows(mp)
+            report = host_codex.doctor_codex(tmp_path)
+
+        assert report.owned_handler_count == 1
+        assert "UserPromptSubmit" not in report.missing_events
+
+    def test_doctor_recognises_nothing_under_posix(
+        self, tmp_path: Path,
+    ) -> None:
+        from aelfrice import host_codex
+
+        (tmp_path / "hooks.json").write_text(
+            _windows_owned_document(), encoding="utf-8",
+        )
+        report = host_codex.doctor_codex(tmp_path, windows=False)
+        assert report.owned_handler_count == 0
+        assert "UserPromptSubmit" in report.missing_events
+
+    def test_the_claude_host_probe_resolves_the_platform_per_call(
+        self, tmp_path: Path,
+    ) -> None:
+        """`cli` calls this one with no keyword at all.
+
+        `aelf setup --host codex` uses it to decide whether the machine is
+        Codex-only, and writes the Claude-host auto-install opt-out when it
+        says no. A default frozen to POSIX answers no on a Windows dual-host
+        machine, so the opt-out lands over a live Claude-host install — the
+        original #1412 symptom, one consumer over.
+        """
+        from aelfrice import host_codex
+
+        settings = tmp_path / "settings.json"
+        settings.write_text(_windows_owned_document(), encoding="utf-8")
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._unresolved_reads_as_windows(mp)
+            assert host_codex.claude_host_has_aelfrice_hooks(settings) is True
+
+        assert host_codex.claude_host_has_aelfrice_hooks(
+            settings, windows=False,
+        ) is False
 
 
 class TestWindowsNormalisation:
