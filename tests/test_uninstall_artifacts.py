@@ -334,7 +334,9 @@ def test_sibling_filenames_match_their_owning_modules() -> None:
     without updating the removal set fails here, instead of silently
     orphaning that file on every future uninstall.
     """
-    from aelfrice import claude_memory, feed_log, hook, hook_audit, session_ring
+    from aelfrice import (
+        claude_memory, db_paths, feed_log, hook, hook_audit, session_ring,
+    )
 
     expected = {
         hook_audit.AUDIT_FILENAME,
@@ -345,6 +347,7 @@ def test_sibling_filenames_match_their_owning_modules() -> None:
         hook.SESSION_STATE_FILENAME,
         hook._RECAP_LAST_TS_FILENAME,
         claude_memory._RECONCILE_SENTINEL_NAME,
+        db_paths._IDENTITY_SIDECAR_NAME,
     }
     assert expected <= set(lifecycle._SIBLING_FILENAMES), (
         "an artifact filename changed at its source but not in the "

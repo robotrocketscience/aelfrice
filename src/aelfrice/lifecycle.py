@@ -700,6 +700,12 @@ _SIBLING_FILENAMES: Final[tuple[str, ...]] = (
     # docs/user/CONFIG.md already promises this one "is removed with it on
     # uninstall/rebuild" -- untrue until #1173, since only memory.db went.
     "claude-memory-reconciled",     # claude_memory._RECONCILE_SENTINEL_NAME
+    # db_paths._IDENTITY_SIDECAR_NAME. It is the one artifact here whose
+    # survival is not merely untidy: the sidecar is what makes the repo
+    # identity durable across path spellings (#1415), so a `--purge` that
+    # left it would hand the next install the identity of the one the user
+    # just removed.
+    "identity",
 )
 
 # Fixed-name directories the package writes beside the store.
