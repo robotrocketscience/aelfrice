@@ -557,12 +557,13 @@ def test_fan_effect_counter_is_named_for_the_hits_it_consumes() -> None:
     that the weighting reordered anything. The old name
     (`fan_effect_ranked`) claimed it was. Note the argument is about the
     row *count*, not the row set: the "same set, only the ordering
-    differs" line in `lookup_entities`' docstring holds only when
-    `limit` covers the whole candidate pool — under truncation both
-    branches take the top `limit` of differently ordered lists and the
-    sets differ. Pinned on both sides, the dataclass and the record-key
-    tuple, because a half-rename leaves the lane reading as permanently
-    dead.
+    differs" line `lookup_entities`' docstring carried until #1462 held
+    only when `limit` covers the whole candidate pool — under truncation
+    both branches take the top `limit` of differently ordered lists and
+    the sets differ, which `tests/test_fan_truncation_caveat_1462.py`
+    now pins executably. Pinned on both sides, the dataclass and the
+    record-key tuple, because a half-rename leaves the lane reading as
+    permanently dead.
     """
     names = {f.name for f in fields(LaneTelemetry)}
     assert "fan_effect_hits_consumed" in names
