@@ -1019,13 +1019,22 @@ def test_suppressed_fire_draws_no_exploration_slot(
 
 
 def _run_with_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_id: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: str,
+    prompt: str = _PROMPT,
 ) -> str:
-    """`_run`, but with a caller-chosen session id.
+    """`_run`, but with a caller-chosen session id and prompt.
 
     The `<cadence-resume>` block is only read on a session's *first*
     prompt, so each arm of the split test needs its own session id or the
     second arm silently exercises a different branch.
+
+    The prompt selects which of the two `<aelfrice-memory>` emit paths
+    renders `session_start_block`: `_PROMPT` takes the retrieval one,
+    `_GATED_PROMPT` takes the `elif gate_skip:` one. Both splice
+    `<cadence-resume>` into the same sub-block behind the same
+    `emit_memory_block` guard, so both have to be driven.
     """
     db = tmp_path / "memory.db"
     if not db.exists():
@@ -1034,7 +1043,9 @@ def _run_with_session(
     sout = io.StringIO()
     serr = io.StringIO()
     rc = user_prompt_submit(
-        stdin=io.StringIO(_payload(str(tmp_path), session_id=session_id)),
+        stdin=io.StringIO(
+            _payload(str(tmp_path), prompt, session_id=session_id),
+        ),
         stdout=sout,
         stderr=serr,
     )
@@ -1064,8 +1075,15 @@ def _stub_both_cadence_halves(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("emit_path", "prompt"),
+    [("retrieval", _PROMPT), ("gate-skip", _GATED_PROMPT)],
+)
 def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    emit_path: str,
+    prompt: str,
 ) -> None:
     """One feature, two halves, and the switch reaches exactly one of them.
 
@@ -1075,6 +1093,15 @@ def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
     not. `CONFIG.md` documents that split as intended; nothing pinned it, so
     moving either write across the envelope boundary was a silent change to
     what the switch means.
+
+    Run over both `<aelfrice-memory>` emit paths, because both render the
+    same `session_start_block` behind the same `emit_memory_block` guard:
+    the `if hits:` retrieval path and the `elif gate_skip:` path a session's
+    first prompt takes when the #674 shape gate refuses BM25. Pinning only
+    the retrieval one leaves the switch's reach over the resume half
+    unasserted on the other -- mutating just the gate-skip branch to render
+    the resume block past the switch left the single-arm version of this
+    test green.
 
     The control arm matters as much as the assertion: with the switch ON,
     *both* halves must appear. Without it the suppression arm passes on a
@@ -1090,7 +1117,9 @@ def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
 
     # Control: switch ON -- both halves reach the prompt.
     monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
-    on = _run_with_session(tmp_path, monkeypatch, "s-cadence-on")
+    on = _run_with_session(
+        tmp_path, monkeypatch, f"s-cadence-{emit_path}-on", prompt,
+    )
     assert "<cadence-checkpoint>" in on, (
         "the checkpoint stub did not fire with the switch on; the "
         "suppression arm below would prove nothing"
@@ -1103,7 +1132,9 @@ def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
 
     # Switch OFF -- the envelope goes, and cadence-resume goes with it.
     monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
-    off = _run_with_session(tmp_path, monkeypatch, "s-cadence-off")
+    off = _run_with_session(
+        tmp_path, monkeypatch, f"s-cadence-{emit_path}-off", prompt,
+    )
     assert OPEN_TAG not in off, "the memory block survived the switch"
     assert "<cadence-resume>" not in off, (
         "<cadence-resume> survived AELFRICE_MEMORY_BLOCK=0. It rides inside "
