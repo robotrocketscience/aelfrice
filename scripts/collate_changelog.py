@@ -210,6 +210,28 @@ def parse_entry_file(text: str, source: str) -> tuple[str, str]:
             f"{len(starts)}. One file per entry is the whole point: two "
             f"entries in one file re-open the collision this replaces."
         )
+    heading = next(
+        i for i, line in enumerate(lines) if line.startswith("### ")
+    )
+    if heading > starts[0]:
+        raise CollationError(
+            f"{source}: the '### {category}' heading is on line "
+            f"{heading + 1}, after the entry on line {starts[0] + 1}. "
+            f"Collation reads everything from the entry onward as the "
+            f"entry body, so the heading would be re-emitted inside the "
+            f"dated section. Put it first."
+        )
+    for number, line in enumerate(lines[:starts[0]], start=1):
+        if number - 1 == heading or not line.strip():
+            continue
+        raise CollationError(
+            f"{source} line {number}: {line.strip()[:60]!r} precedes the "
+            f"entry and is not the '### <Category>' heading, so "
+            f"collation has nowhere to put it. Dropping it would be "
+            f"silent — the text never reaches the dated section and "
+            f"nothing else reads this file. Fold it into the entry, or "
+            f"leave it out."
+        )
     entry = "\n".join(lines[starts[0]:]).rstrip()
     return category, entry
 

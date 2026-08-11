@@ -327,6 +327,42 @@ def test_an_unknown_category_is_an_error() -> None:
         parse_entry_file("### Fixt\n\n- **A ([#1](u)).** x\n", "1-slug.md")
 
 
+def test_entry_file_content_before_the_bullet_is_an_error() -> None:
+    """The entry-file twin of the block's refusal.
+
+    `parse_entry_file` reads from the first `- ` onward, so anything
+    above it that is not the category heading is discarded — and unlike
+    the block, nothing else ever reads this file, so the loss is silent
+    once and permanent. The block grew this refusal when a
+    release-summary paragraph turned out to be a live way to lose prose;
+    an entry file is now the default authoring surface and takes the
+    same prose.
+    """
+    entry = "- **A ([#1](u)).** x"
+    with pytest.raises(CollationError, match="'Context for this entry.'"):
+        parse_entry_file(
+            "\n".join(["Context for this entry.", "", "### Fixed", "", entry]),
+            "1-slug.md",
+        )
+    with pytest.raises(CollationError, match="'#### Retrieval'"):
+        parse_entry_file(
+            "\n".join(["### Fixed", "", "#### Retrieval", "", entry]),
+            "1-slug.md",
+        )
+
+
+def test_a_heading_after_the_bullet_is_an_error() -> None:
+    """Otherwise it is swallowed into the body and re-emitted inline.
+
+    The one-heading and one-bullet counts both pass in this shape, so
+    order is the only thing that catches it.
+    """
+    with pytest.raises(CollationError, match="after the entry on line"):
+        parse_entry_file(
+            "- **A ([#1](u)).** x\n\n### Fixed\n", "1-slug.md"
+        )
+
+
 def test_block_content_that_is_not_an_entry_is_an_error() -> None:
     """A note paragraph in the block has nowhere to be collated to.
 
