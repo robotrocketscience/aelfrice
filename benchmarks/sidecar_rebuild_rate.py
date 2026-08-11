@@ -48,9 +48,17 @@ outcome), not hardcoded, so it stays correct if the field's ship date moves.
 
 `full_rebuild / scored` is **not** interchangeable with the 8.5% latency proxy
 it replaces: that proxy was computed over *all* UPS fires, and `scored` can only
-ever contain fires that ran retrieval. On the live log the two differ by 2.3x,
-so reading one against the other turns a confirmation into an apparent doubling.
-All three denominators are printed for that reason.
+ever contain fires that did index work. Reading one against the other turns a
+confirmation of the proxy into an apparent doubling, which is why all three
+denominators are printed.
+
+The 2.30x separation quoted for that pair (8.69% all-fires against 20.00%
+retrieval-fires) is **a worked example on a constructed log, not a live
+measurement, and cannot yet be one**: the field is written only by this
+branch's code while installed hooks run the released package, so every
+`user_prompt_submit` row on the real log predates it and the script correctly
+reports NO MEASUREMENT YET before any rate is printed. There is no live ratio
+to cite. CHANGELOG/v4.md carries the same relabel.
 
 Usage:
     uv run python benchmarks/sidecar_rebuild_rate.py [AUDIT_LOG ...]
