@@ -28,9 +28,14 @@ cache hit would drive the measured rebuild rate toward zero. But "excluded" is
 three distinct things and reporting them as one number names a cause that has
 stopped existing:
 
-- **gate-skipped** — `prompt_shape_gate_skip` is set. Retrieval never ran, so
-  the row *can never* carry the key. This is ~57% of fires and it is permanent;
-  a warning phrased as "wait for more data" will never clear against it.
+- **gate-skipped** — `prompt_shape_gate_skip` is set *and* the row still has no
+  outcome. The shape gate refused the prompt, so the main retrieval never ran.
+  It does not follow that no index work happened: the cadence dispatch runs
+  above the gate and reaches `BM25IndexCache.get()`, so a gate-skipped fire
+  that paid a rebuild there carries the key and is scored like any other. What
+  lands here is the fire that was refused *and* built nothing — a measured
+  zero, not a gap. This is the largest bucket and it is permanent; a warning
+  phrased as "wait for more data" will never clear against it.
 - **pre-field** — logged before #1407 shipped. Genuinely "not enough data yet",
   and genuinely does shrink over time.
 - **no index work** — retrieval ran but built no index (L1 lane off). Neither a
@@ -112,8 +117,12 @@ def main() -> int:
             outcome = rec.get("sidecar_outcome")
             if outcome is None:
                 if rec.get("prompt_shape_gate_skip"):
-                    # Retrieval never ran; this row is structurally incapable
-                    # of carrying the key. Permanent, not "not yet".
+                    # Refused by the shape gate AND carrying no outcome: the
+                    # main retrieval never ran and the cadence dispatch above
+                    # the gate built nothing either. A measured zero, and a
+                    # permanent population — not "not yet". (A gate-skipped
+                    # fire that *did* pay a rebuild has the key and was
+                    # scored above; it never reaches this branch.)
                     gate_skipped += 1
                 else:
                     ts = rec.get("ts")
@@ -156,7 +165,10 @@ def main() -> int:
     print(f"  user_prompt_submit fires       {all_fires}")
     print(f"  non-UPS rows (ignored)         {non_ups}")
     print(f"  fires with an outcome (scored) {scored}")
-    print(f"  no key: gate-skipped           {gate_skipped}   <- can NEVER carry the key")
+    print(
+        f"  no key: gate-skipped           {gate_skipped}   "
+        "<- refused AND built nothing: a measured zero"
+    )
     # Gate on whether the split was COMPUTABLE, not on the count. With no
     # keyed row `pre_field` is None, and a log whose unclassified count is
     # also 0 -- every fire gate-skipped -- fell through to the else branch

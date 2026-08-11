@@ -1585,6 +1585,16 @@ def user_prompt_submit(
                 beliefs=[],
                 latency_ms=latency_ms,
                 prompt_shape_gate_skip=gate_reason,
+                # #1407: a gate-skipped fire is not automatically a fire that
+                # did no index work. The cadence dispatch runs ABOVE the shape
+                # gate and reaches `BM25IndexCache.get()`, so a fire that paid
+                # a `full_rebuild` there and was then refused by the gate has
+                # a real outcome to record. Omitting it put exactly those
+                # fires in the benchmark's permanently-excluded bucket, which
+                # is where the expensive fires #1380 is priced on would hide.
+                # Still None on the ordinary skip, so absence keeps meaning
+                # "not measured".
+                sidecar_outcome=_last_sidecar_outcome(),
                 stderr=serr,
             )
         # #980 trigger-driven phantom generation: surface a

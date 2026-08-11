@@ -582,3 +582,56 @@ def test_the_cadence_pass_rebuild_survives_the_per_fire_reset(
         "by its costliest get(); a reset below the cadence dispatch erases it. "
         "The control above proves this fire would otherwise be 'fresh'."
     )
+
+
+def test_a_gate_skipped_fire_still_records_a_rebuild_it_paid_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate-skip audit write must pass the field too.
+
+    "Gate-skipped" is not the same as "did no index work". The cadence
+    dispatch runs ABOVE the shape gate and reaches `BM25IndexCache.get()`, so
+    a fire can pay a `full_rebuild` there and then be refused by the gate. Its
+    audit row is written by the `elif gate_skip:` branch, and that branch did
+    not pass `sidecar_outcome` -- so the one fire the benchmark most needs to
+    see landed in its permanently-excluded bucket instead, indistinguishable
+    from a fire that never touched the index.
+
+    This is the same defect commit 3b2e2db2 fixed at the reset site (a reset
+    below the cadence dispatch), applied at one call site and not its sibling.
+
+    The cadence pass is stubbed for the same reason it is in the test above:
+    cadence is default-off and a real boundary with a stale sidecar is not
+    something a unit test can arrange. The stub stands in for "the cadence
+    pass did index work", which is the only property under test. The two
+    assertions on the row's shape are what make it a *gate-skip* test rather
+    than a second copy of that one.
+
+    Falsifiable by dropping `sidecar_outcome=_last_sidecar_outcome(),` from
+    the `_write_hook_audit_record` call in the `elif gate_skip:` branch.
+    """
+    from aelfrice import hook as hook_mod
+    from aelfrice.bm25 import _record_sidecar_outcome
+
+    def _cadence_that_rebuilt(*_a: object, **_k: object) -> None:
+        _record_sidecar_outcome(SIDECAR_FULL_REBUILD)
+        return None
+
+    monkeypatch.setattr(
+        hook_mod, "_maybe_run_ups_cadence_checkpoint", _cadence_that_rebuilt,
+    )
+
+    # "ok" is under the triviality threshold, so the shape gate refuses it.
+    row = _drive_ups(tmp_path, "ok", monkeypatch)
+
+    assert row.get("prompt_shape_gate_skip") == "trivial:short", (
+        f"the fixture prompt was not gate-skipped ({row.get('prompt_shape_gate_skip')!r}); "
+        "this test says nothing about the branch it exists for"
+    )
+    assert "beliefs" in row, "the gate-skip branch did not write this row"
+    assert row.get("sidecar_outcome") == "full_rebuild", (
+        f"a gate-skipped fire that paid a full rebuild recorded "
+        f"{row.get('sidecar_outcome')!r}. The cadence dispatch runs above the "
+        "shape gate, so this row has a real outcome and the benchmark must "
+        "not have to treat it as unmeasurable."
+    )
