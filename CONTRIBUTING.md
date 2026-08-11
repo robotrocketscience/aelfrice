@@ -276,6 +276,24 @@ The bot has no signing key, so it cannot rebase on your behalf
 (see `.github/workflows/flag-stale-open-prs.yml` for the original
 "no auto-rebase" rationale, #341). Authors rebase; the bot only FFs.
 
+After a successful FF the bot dispatches the post-merge workflows
+itself (#1423). It has to: the FF push is made with
+`secrets.GITHUB_TOKEN`, and GitHub raises no workflow runs from events
+made with that token, so `on: push: branches: [main]` stopped firing
+the day the merge train became the merge path — and `release-drafter`
+and `flag-stale-open-prs`, which have no other trigger, stopped running
+at all. `workflow_dispatch` is one of the two documented exceptions to
+that guard.
+
+The dispatch list is derived by `scripts/push_trigger_workflows.py`
+from the workflow files, so a new `push: [main]` workflow is picked up
+without editing the train. It does need its own `workflow_dispatch:`
+trigger to be dispatchable — `gh workflow run` 422s otherwise — and
+`tests/test_merge_train_dispatch.py` fails if a `push: [main]` workflow
+has not got one. Dispatch failures warn and never fail a merge that has
+already landed; `.github/workflows/push-trigger-heartbeat.yml` opens an
+issue if `main` outruns any of those workflows by more than 14 days.
+
 The PR-size soft-cap (`.github/workflows/pr-size-soft-cap.yml`) posts
 an advisory comment on PRs over 200 LOC or 3 files. Smaller PRs are
 less likely to lose the FF race; apply `size:override` for legitimate
