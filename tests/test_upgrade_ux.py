@@ -415,7 +415,7 @@ def test_reachable_installs_single_uv_tool_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
@@ -446,7 +446,7 @@ def test_reachable_installs_dual_uv_tool_plus_user_local_bin(
     the uv_tool one is not.
     """
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     user_bin = tmp_path / ".local" / "bin"
@@ -478,7 +478,7 @@ def test_reachable_installs_suppresses_running_interpreter_venv(
     import sys
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     # Simulate `uv run` activation: a project .venv whose bin/ has
@@ -511,7 +511,7 @@ def test_reachable_installs_does_not_suppress_when_not_in_venv(
     import sys
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     user_bin = tmp_path / ".local" / "bin"
@@ -545,7 +545,7 @@ def test_format_multi_install_warning_silent_when_single(
     from aelfrice import cli
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
@@ -559,7 +559,7 @@ def test_format_multi_install_warning_renders_when_multiple(
     from aelfrice import cli
 
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    uv_root = _make_uv_tool_root(
+    _make_uv_tool_root(
         tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
     )
     user_bin = tmp_path / ".local" / "bin"
