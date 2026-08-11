@@ -653,28 +653,43 @@ def _path_is_under(child: Path, parent: Path) -> bool:
         return False
 
 
-def _running_interpreter_aelf() -> Path | None:
-    """Return the resolved `aelf` path inside the venv hosting the
-    running interpreter, if such a venv exists and contains the script.
+def _running_interpreter_aelf() -> set[Path]:
+    """Resolved `aelf` launcher paths inside the venv hosting the running
+    interpreter. Empty when not in a venv, or when it holds no launcher.
 
     Used to suppress false-positive `user_local_bin` reports when the
     detector runs under `uv run` from a project tree: that mode
-    transiently prepends the project's `.venv/bin` to PATH, which would
-    otherwise look like a separate install on PATH.
+    transiently prepends the project's scripts directory to PATH, which
+    would otherwise look like a separate install on PATH.
+
+    The scripts directory and the launcher names must be the ones
+    `_which_all_aelf()` would find, or the suppression misses and the
+    false positive it exists to prevent comes back. It used to probe
+    exactly ``<sys.prefix>/bin/aelf``: once the PATH scan learned to find
+    `aelf.EXE`, that hard-coded pair matched nothing on Windows and a
+    plain `uv run` in a project tree reported a phantom second install
+    (#1431 review). `launcher.scripts_dir()` is the same `Scripts`/`bin`
+    resolution `setup` uses.
     """
     import sys
+
+    from aelfrice import launcher
 
     base_prefix = getattr(sys, "base_prefix", sys.prefix)
     if base_prefix == sys.prefix:
         # Not running inside a venv; nothing to suppress.
-        return None
-    candidate = Path(sys.prefix) / "bin" / "aelf"
-    if not candidate.exists():
-        return None
-    try:
-        return candidate.resolve()
-    except OSError:
-        return None
+        return set()
+    scripts = launcher.scripts_dir()
+    found: set[Path] = set()
+    for name in _aelf_script_names():
+        candidate = scripts / name
+        try:
+            if not candidate.exists():
+                continue
+            found.add(candidate.resolve())
+        except OSError:
+            continue
+    return found
 
 
 def detect_reachable_installs() -> list[InstallSite]:
@@ -738,7 +753,7 @@ def detect_reachable_installs() -> list[InstallSite]:
     for exe in path_aelf_resolved:
         if any(_path_is_under(exe, root) for root in known_roots):
             continue
-        if running_aelf is not None and exe == running_aelf:
+        if exe in running_aelf:
             # Suppress: this is the venv hosting us, not a separate install.
             continue
         sites.append(InstallSite(kind="user_local_bin", path=exe, on_path=True))

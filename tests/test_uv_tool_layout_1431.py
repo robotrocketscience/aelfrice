@@ -272,6 +272,45 @@ def test_path_scan_still_requires_the_executable_bit_on_posix(
     assert [p.name for p in lifecycle._which_all_aelf()] == ["aelf"]
 
 
+def test_the_running_venv_is_suppressed_on_windows_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`uv run` in a project tree must not report a phantom install.
+
+    The suppression probed exactly ``<sys.prefix>/bin/aelf``. Teaching the
+    PATH scan to find `aelf.EXE` without teaching the suppression the same
+    two things — `Scripts`, and the PATHEXT names — makes it miss on
+    Windows, so a plain `uv run` reports its own venv as a second install
+    and triggers the multi-install warning.
+
+    `launcher.scripts_dir` is patched rather than `os.name` for the reason
+    this module's docstring gives: a POSIX runner claiming to be Windows
+    cannot construct a `Path` at all. The stand-in is exactly what
+    `scripts_dir()` returns on Windows.
+    """
+    from aelfrice import launcher
+
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+    venv = tmp_path / "project" / ".venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "aelf.EXE").write_bytes(b"MZ")
+
+    monkeypatch.setattr(lifecycle, "_is_windows", lambda: True)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("PATH", str(scripts))
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base_python"))
+    monkeypatch.setattr(
+        launcher, "scripts_dir", lambda: Path(sys.prefix) / "Scripts",
+    )
+
+    assert lifecycle._running_interpreter_aelf() == {
+        (scripts / "aelf.EXE").resolve(),
+    }
+    assert lifecycle.detect_reachable_installs() == []
+
+
 # --- the classifier and the inventory agree ------------------------------
 
 
