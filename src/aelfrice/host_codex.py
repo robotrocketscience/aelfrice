@@ -48,6 +48,7 @@ from typing import Final, cast
 
 from aelfrice.launcher import (
     command_launcher_key,
+    command_program_keys,
     owned_keys,
     program_exists,
     program_token,
@@ -228,26 +229,59 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
     }
 
 
-def _command_basename(handler: object, *, windows: bool | None = None) -> str:
-    """Ownership key of a handler's command, '' on shape miss.
+def _command_keys(
+    handler: object, *, windows: bool | None = None,
+) -> list[str]:
+    """Every ownership key a handler's command could carry, [] on miss.
 
-    #1412: platform-gated. On Windows the key is case-folded with the
-    launcher suffix removed, so ``...\\Scripts\\aelf-hook.EXE`` compares
-    equal to ``aelf-hook``. On POSIX it is the plain basename, unchanged.
+    Replaces the single-valued `_command_basename` (#1412) at both of its
+    call sites. #1482: a spaced POSIX path has more than one reading, and
+    that helper returned only the first — deciding anything from it is the
+    defect, so nothing here keeps a single-key view of a command that was
+    written by somebody else.
+
+    #1412's platform gating is unchanged and lives in `launcher_key`: on
+    Windows the keys are case-folded with the launcher suffix removed, so
+    ``...\\Scripts\\aelf-hook.EXE`` compares equal to ``aelf-hook``; on
+    POSIX they are plain basenames.
     """
     if not isinstance(handler, dict):
-        return ""
+        return []
     hd = cast(dict[str, object], handler)
     cmd = hd.get("command")
     if not isinstance(cmd, str) or not cmd.strip():
-        return ""
-    return command_launcher_key(cmd, windows=windows)
+        return []
+    return command_program_keys(cmd, windows=windows)
+
+
+def _owned_command_key(cmd: str, *, windows: bool | None = None) -> str:
+    """The owned name a command resolves to, '' when it is not ours.
+
+    #1482: doctor compares the keys it *found* against the keys it
+    *expected*, and both sides go through here so a spaced install compares
+    per handler. Under the single-key derivation every handler of a spaced
+    install keyed to the same path fragment, which collapsed all seven
+    expected names into one and made the partial-removal check (#1430) blind
+    for exactly the users this issue is about.
+    """
+    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
+    return next(
+        (k for k in command_program_keys(cmd, windows=windows) if k in owned),
+        "",
+    )
 
 
 def _handler_is_owned(handler: object, *, windows: bool | None = None) -> bool:
-    """True iff a single handler is one of ours."""
-    key = _command_basename(handler, windows=windows)
-    return bool(key) and key in owned_keys(_OWNED_BASENAMES, windows=windows)
+    """True iff a single handler is one of ours.
+
+    #1482: every reading of the command is offered, but membership is still
+    the closed `_OWNED_BASENAMES` set, so the wider candidate list cannot
+    claim a foreign handler — ``/home/first last/bin/foreign-hook`` yields
+    ``first`` and ``foreign-hook``, and neither is ours. That matters
+    because this predicate is what `remove_codex_hooks` deletes by.
+    """
+    owned = owned_keys(_OWNED_BASENAMES, windows=windows)
+    return any(k in owned for k in _command_keys(handler, windows=windows))
 
 
 def _owned_handlers_in(
@@ -317,6 +351,10 @@ def claude_host_has_aelfrice_hooks(
     the one whose failure is silent. On Windows the old basename never
     started with ``aelf-``, so a dual-host machine read as Codex-only and
     the Claude auto-install opt-out was written over a live install.
+
+    #1482: a POSIX install path containing a space failed the same way,
+    keying as the fragment before the space; the probe now reads every
+    candidate rather than the first.
     """
     if not settings_path.is_file():
         return False
@@ -337,8 +375,10 @@ def claude_host_has_aelfrice_hooks(
                 continue
             gd = cast(dict[str, object], group)
             for handler in cast(list[object], gd.get("hooks", []) or []):
-                key = _command_basename(handler, windows=windows)
-                if key.startswith("aelf-"):
+                if any(
+                    key.startswith("aelf-")
+                    for key in _command_keys(handler, windows=windows)
+                ):
                     return True
     return False
 
@@ -1353,7 +1393,10 @@ def doctor_codex(
             for handler in cast(list[object], group.get("hooks", [])):
                 cmd = cast(dict[str, object], handler).get("command")
                 if isinstance(cmd, str):
-                    keys.add(command_launcher_key(cmd, windows=windows))
+                    keys.add(
+                        _owned_command_key(cmd, windows=windows)
+                        or command_launcher_key(cmd, windows=windows),
+                    )
         expected_keys[event] = keys
     expected_events = set(desired.keys())
     covered: set[str] = set()
@@ -1376,7 +1419,8 @@ def doctor_codex(
                 cmd = hd.get("command")
                 if isinstance(cmd, str):
                     found_keys.setdefault(event, set()).add(
-                        command_launcher_key(cmd, windows=windows),
+                        _owned_command_key(cmd, windows=windows)
+                        or command_launcher_key(cmd, windows=windows),
                     )
                     exe = Path(program_token(cmd, windows=windows))
                     if (
