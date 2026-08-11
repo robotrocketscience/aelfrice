@@ -45,10 +45,18 @@ _ASCII_LOCALE_ENV = {
     "LANG": "C",
 }
 
-# Extracts as a triple ("index" SUPPORTS "faster queries") while carrying the
-# multibyte run in its anchor text, so the belief that lands in the store is
-# the evidence that the decode survived.
-_COMMIT_MESSAGE = "the 東京 index supports faster queries"
+# Extracts as a triple while carrying the multibyte run in its anchor text,
+# so the belief that lands in the store is the evidence that the decode
+# survived. The relation has to survive the WRITE-path pattern bank, not the
+# read-path one: #1376 dropped the six single-token templates that double as
+# plural nouns — `covers`, `extends`, `follows`, `replaces`, `supports`,
+# `tests` — from `_INGEST_PATTERNS`, and `hook_commit_ingest` is the only
+# caller that passes `constrain_collision_verbs=True`. An earlier phrasing
+# here used `supports`, so after #1376 it yielded no triple, the hook
+# returned before opening a store, and this test failed on `db.exists()`
+# with an empty stderr — a "nothing was ingested" failure that looks nothing
+# like the decode failure it exists to catch.
+_COMMIT_MESSAGE = "the 東京 index is supported by the vocabulary bridge"
 
 # What an ASCII locale encoding is spelled as, across platforms and libc
 # builds: glibc reports the alias, macOS and the `locale` module's own
