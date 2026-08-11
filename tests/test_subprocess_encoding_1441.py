@@ -50,6 +50,37 @@ _ASCII_LOCALE_ENV = {
 # the evidence that the decode survived.
 _COMMIT_MESSAGE = "the 東京 index supports faster queries"
 
+# What an ASCII locale encoding is spelled as, across platforms and libc
+# builds: glibc reports the alias, macOS and the `locale` module's own
+# normalisation report these.
+_ASCII_ALIASES = frozenset({"ascii", "us-ascii", "ansi_x3.4-1968"})
+
+
+def _child_preferred_encoding(env: dict[str, str]) -> str:
+    """The encoding a child spawned with `env` would decode text mode with.
+
+    `locale.getpreferredencoding(False)` and not `locale.getencoding()`:
+    the latter reports the *locale's* encoding and so still says US-ASCII
+    under PYTHONUTF8=1, which is precisely the state this guard exists to
+    catch. Only the former follows UTF-8 mode, and only the former is what
+    `text=True` actually builds its TextIOWrapper from.
+    """
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import locale;print(locale.getpreferredencoding(False))",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert probe.returncode == 0, f"locale probe failed: {probe.stderr}"
+    return probe.stdout.strip()
+
 
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(
@@ -96,6 +127,21 @@ def test_commit_message_round_trips_under_a_non_utf8_locale(
     }
 
     env = {**os.environ, **_ASCII_LOCALE_ENV, "AELFRICE_DB": str(db)}
+
+    # Without this the test's whole failure signal rests on
+    # `_ASCII_LOCALE_ENV` biting, which is not observable from its
+    # assertions: with the `encoding=` kwarg reverted *and* PYTHONUTF8
+    # flipped 0 -> 1, the body below passes. A failure, not a skip — an
+    # environment where this cannot be arranged has not exercised #1441,
+    # and silently reporting that as green is the defect this guards.
+    preferred = _child_preferred_encoding(env)
+    assert preferred.lower() in _ASCII_ALIASES, (
+        "the child's preferred encoding is "
+        f"{preferred!r}, not ASCII — this test decodes nothing the fix "
+        "affects. Check PYTHONUTF8/PYTHONCOERCECLOCALE/LC_ALL in "
+        "_ASCII_LOCALE_ENV are reaching the child."
+    )
+
     proc = subprocess.run(
         [sys.executable, "-m", "aelfrice.hook_commit_ingest"],
         input=json.dumps(payload).encode("ascii"),
