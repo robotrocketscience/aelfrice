@@ -2,9 +2,11 @@ name: E2E
 
 # End-to-end suite (#334). Triggers:
 #  - every PR that touches code (#1420 §1).
-#  - push to main (post-merge regression catch).
+#  - post-merge on main, as a dispatch from `merge-train.yml` (#1423). The
+#    `push` arm below is retained for a merge landed by any other path, but it
+#    cannot fire for a merge-train FF — see the note on the trigger.
 # Failure surfacing (#370):
-#  - push:main fail → open issue tagged `attn:e2e-failure` referencing the SHA.
+#  - failure on main → open issue tagged `attn:e2e-failure` referencing the SHA.
 #  - PR fail → add `attn:e2e-failure` label to the PR.
 #
 # #1420 §1: this used to run only on `push` or when someone added an `e2e`
@@ -116,20 +118,29 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "attn:e2e-failure"
-      - name: Open issue on push:main failure
-        if: github.event_name == 'push'
+      # Not `== 'push'`. Since #1423 the post-merge run arrives as a
+      # `workflow_dispatch` fired by `merge-train.yml`, because the FF push
+      # itself raises no events. Left as `== 'push'` the failure-surfacing of
+      # #370 would be skipped on exactly the runs it exists for: a red
+      # post-merge e2e with nothing opened and nobody told. `!= 'pull_request'`
+      # rather than an event enumeration so the next trigger added here
+      # surfaces by default instead of silently not surfacing.
+      - name: Open issue on main-branch failure
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           short_sha="${SHA:0:7}"
           gh issue create \
             --repo "$REPO" \
-            --title "e2e: failure on main @ ${short_sha}" \
+            --title "e2e: failure on ${BRANCH} @ ${short_sha}" \
             --label "attn:e2e-failure" \
-            --body "E2E job failed on push to \`main\` at commit \`${SHA}\`.
+            --body "E2E job failed on \`${BRANCH}\` at commit \`${SHA}\` (\`${EVENT}\` run).
 
           **Failing run:** ${RUN_URL}
 
