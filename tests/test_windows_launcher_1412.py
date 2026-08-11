@@ -292,9 +292,9 @@ def test_no_windows_default_is_bound_at_definition_time(
 ) -> None:
     """The net, not the guard.
 
-    Seventeen functions across these two modules take a defaulted
+    Twenty functions across these two modules take a defaulted
     `windows`; the behavioural arms above cover six of them. This catches
-    the remaining eleven, and it catches them by reading the *resolved default
+    the rest, and it catches them by reading the *resolved default
     object* rather than the signature's source text — a bound default is
     already `True` or `False` by the time `inspect` sees it, which is
     exactly the property that makes it undetectable at run time.
@@ -310,15 +310,29 @@ def test_the_net_covers_every_seam_function() -> None:
 
     If a refactor moves these functions or renames the parameter, the
     parametrisation above collapses to zero cases and reports green.
+
+    A **floor**, not an equality. The count's job is anti-vacuity, and
+    an equality does that job no better while making every legitimate
+    new seam function a red build: #1482 added three
+    (`command_program_keys`, `_command_keys`, `_owned_command_key`) and
+    turned this red on a change that had widened the seam correctly.
+    Coverage is pinned by *name* below, which is the assertion that
+    actually says something — a count cannot tell a new seam function
+    from a renamed one.
     """
     discovered = dict(_windows_defaults())
-    assert len(discovered) == 17, sorted(discovered)
+    assert len(discovered) >= 17, sorted(discovered)
     for required in (
         "aelfrice.host_codex.install_codex_hooks",
         "aelfrice.host_codex.remove_codex_hooks",
         "aelfrice.host_codex.doctor_codex",
         "aelfrice.host_codex.claude_host_has_aelfrice_hooks",
         "aelfrice.launcher.command_launcher_key",
+        # #1482 — ownership is decided over every reading of a command,
+        # so the multi-key path carries the seam too.
+        "aelfrice.launcher.command_program_keys",
+        "aelfrice.host_codex._command_keys",
+        "aelfrice.host_codex._owned_command_key",
     ):
         assert required in discovered, sorted(discovered)
 
