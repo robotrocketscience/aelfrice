@@ -36,9 +36,17 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
+
+# Every test here that spawns the enumeration script carries its own ceiling.
+# The suite default is 5s, sized for a test that does no I/O, and a process
+# spawn under contention reports as a hang rather than as slowness on it
+# (#1307). The same number bounds the child itself, so neither layer can wait
+# forever on the other.
+_SPAWN_TIMEOUT_S = 30
 
 _REPO = Path(__file__).resolve().parents[1]
 _WORKFLOWS = _REPO / ".github" / "workflows"
@@ -96,14 +104,20 @@ def _code_lines(workflow: str) -> list[str]:
     ]
 
 
-def _script_output() -> list[str]:
+# The script is exercised through its CLI rather than imported, because the
+# CLI *is* the interface: `merge-train.yml` and the heartbeat both read its
+# stdout. Cached because the parametrised tests below call it at collection
+# time and once per case, and each call is a process spawn.
+@lru_cache(maxsize=1)
+def _script_output() -> tuple[str, ...]:
     proc = subprocess.run(
         [sys.executable, str(_SCRIPT), "--branch", "main"],
         capture_output=True,
         text=True,
         check=True,
+        timeout=_SPAWN_TIMEOUT_S,
     )
-    return proc.stdout.split()
+    return tuple(proc.stdout.split())
 
 
 def _push_main_workflows_independently() -> set[str]:
@@ -153,11 +167,13 @@ def _push_main_workflows_independently() -> set[str]:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_the_script_finds_every_push_main_workflow() -> None:
     """Independent parse, same answer — or the derived list is not derived."""
     assert set(_script_output()) == _push_main_workflows_independently()
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_the_enumeration_is_not_empty_and_excludes_tag_only_pushes() -> None:
     """Both halves are load-bearing.
 
@@ -176,6 +192,7 @@ def test_the_enumeration_is_not_empty_and_excludes_tag_only_pushes() -> None:
     )
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 @pytest.mark.parametrize("workflow", _script_output())
 def test_every_enumerated_workflow_accepts_a_dispatch(workflow: str) -> None:
     """`gh workflow run` 422s on a workflow with no `workflow_dispatch`.
@@ -191,6 +208,7 @@ def test_every_enumerated_workflow_accepts_a_dispatch(workflow: str) -> None:
     )
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 @pytest.mark.parametrize("workflow", [_MERGE_TRAIN, _HEARTBEAT])
 def test_neither_consumer_writes_the_list_down(workflow: str) -> None:
     """A literal list is the defect, not the fix.
@@ -443,10 +461,12 @@ def _run(tmp_path: Path, branch: str = "main") -> list[str]:
         capture_output=True,
         text=True,
         check=True,
+        timeout=_SPAWN_TIMEOUT_S,
     )
     return proc.stdout.split()
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_reads_flow_and_block_branch_lists(tmp_path: Path) -> None:
     _write(tmp_path, "flow.yml", "on:\n  push:\n    branches: [main, dev]\n")
     _write(
@@ -457,6 +477,7 @@ def test_parser_reads_flow_and_block_branch_lists(tmp_path: Path) -> None:
     assert _run(tmp_path) == ["block.yml", "flow.yml"]
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_ignores_tag_only_and_branch_ignore_pushes(tmp_path: Path) -> None:
     """`tags:` names a tag even when the tag is spelled like the branch.
 
@@ -472,6 +493,7 @@ def test_parser_ignores_tag_only_and_branch_ignore_pushes(tmp_path: Path) -> Non
     assert _run(tmp_path) == []
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_does_not_read_a_pull_request_branch_list(tmp_path: Path) -> None:
     """`pull_request: branches: [main]` is not a push trigger.
 
@@ -487,6 +509,7 @@ def test_parser_does_not_read_a_pull_request_branch_list(tmp_path: Path) -> None
     assert _run(tmp_path) == []
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_does_not_match_a_push_key_outside_the_on_block(tmp_path: Path) -> None:
     """A job or step named `push` must not be read as a trigger."""
     _write(
@@ -497,12 +520,14 @@ def test_parser_does_not_match_a_push_key_outside_the_on_block(tmp_path: Path) -
     assert _run(tmp_path) == []
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_accepts_the_quoted_on_key(tmp_path: Path) -> None:
     """Bare `on` is YAML 1.1's boolean `true`, so the quoted spelling is legal."""
     _write(tmp_path, "quoted.yml", '"on":\n  push:\n    branches: [main]\n')
     assert _run(tmp_path) == ["quoted.yml"]
 
 
+@pytest.mark.timeout(_SPAWN_TIMEOUT_S)
 def test_parser_matches_the_branch_literally(tmp_path: Path) -> None:
     """A wildcard is a deliberate superset, not a subscription to one branch.
 
