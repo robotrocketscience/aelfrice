@@ -52,6 +52,13 @@ ever contain fires that did index work. Reading one against the other turns a
 confirmation of the proxy into an apparent doubling, which is why all three
 denominators are printed.
 
+**Every one of them excludes the unmeasured rows** — pre-#1407 and, before any
+keyed row exists, unclassified. Those rows cannot enter the numerator, so
+leaving them under the line is arithmetically identical to scoring an
+unmeasured fire as not-a-rebuild: the bias the bullets above forbid, applied
+silently. Gate-skipped and no-index-work rows are *kept*: the fire happened and
+built nothing, which is a measured zero, and a per-fire `cold_rate` needs it.
+
 The 2.30x separation quoted for that pair (8.69% all-fires against 20.00%
 retrieval-fires) is **a worked example on a constructed log, not a live
 measurement, and cannot yet be one**: the field is written only by this
@@ -103,9 +110,10 @@ def main() -> int:
     counts: Counter[str] = Counter()
     unknown: Counter[str] = Counter()
     non_ups = 0
-    # Rows with no outcome, split by why. `gate_skipped` can never carry the
-    # key; `no_index_work` ran retrieval but built nothing; `pre_field` predates
-    # the field. Only the last of the three shrinks over time.
+    # Rows with no outcome, split by why. `gate_skipped` was refused by the
+    # shape gate and built nothing above it either; `no_index_work` ran
+    # retrieval but built nothing; `pre_field` predates the field. The first
+    # two are measured zeros; only `pre_field` shrinks over time.
     gate_skipped = 0
     unkeyed: list[str | None] = []
     scored_ts: list[str] = []
@@ -165,7 +173,20 @@ def main() -> int:
         unclassified = 0
     missing = gate_skipped + len(unkeyed)
     all_fires = scored + missing + sum(unknown.values())
-    retrieval_fires = all_fires - gate_skipped
+    # A row that can never enter the numerator must not sit in a denominator.
+    # Pre-#1407 and unclassified rows are *unmeasured*: keeping them below the
+    # line is arithmetically identical to scoring an unmeasured fire as
+    # not-a-rebuild, which is the exact bias this script exists to refuse.
+    # (Executed before the fix: 50 pre-field rows against 60 scored ones with
+    # 10 rebuilds printed 10/110 = 9.09% for a true measured 16.67%, and the
+    # CAUTION below never fired because it keys on `pre_field > scored`.)
+    #
+    # Gate-skipped and no-index-work rows are NOT subtracted. Those are
+    # measured zeros -- the fire happened and built nothing -- and an
+    # all-fires cold_rate has to contain them or it stops being per-fire.
+    unmeasured = (pre_field or 0) + unclassified
+    all_fires_measured = all_fires - unmeasured
+    retrieval_fires_measured = all_fires_measured - gate_skipped
 
     print("#1407 — BM25 sidecar outcome per user_prompt_submit fire")
     for p in logs:
@@ -205,32 +226,36 @@ def main() -> int:
     print()
 
     rebuilds = counts["full_rebuild"]
-    print("  FULL-REBUILD RATE, on each denominator:")
-    print(f"    of scored fires           {rebuilds}/{scored} = {rebuilds / scored:.2%}")
-    if retrieval_fires:
+    print("  FULL-REBUILD RATE, on each denominator.")
+    print(f"  {unmeasured} unmeasured rows (pre-#1407 + unclassified) are excluded")
+    print("  from every denominator below: they can never carry an outcome, so")
+    print("  leaving them under the line scores an unmeasured fire as")
+    print("  not-a-rebuild. Gate-skipped and no-index-work rows are kept —")
+    print("  those are measured zeros, and a per-fire rate needs them.")
+    print(f"    of scored fires             {rebuilds}/{scored} = {rebuilds / scored:.2%}")
+    if retrieval_fires_measured:
         print(
-            f"    of retrieval-running fires {rebuilds}/{retrieval_fires} = "
-            f"{rebuilds / retrieval_fires:.2%}"
+            f"    of measured retrieval fires {rebuilds}/{retrieval_fires_measured} = "
+            f"{rebuilds / retrieval_fires_measured:.2%}"
         )
-    if all_fires:
+    if all_fires_measured:
         print(
-            f"    of ALL UPS fires          {rebuilds}/{all_fires} = "
-            f"{rebuilds / all_fires:.2%}"
+            f"    of ALL measured UPS fires   {rebuilds}/{all_fires_measured} = "
+            f"{rebuilds / all_fires_measured:.2%}"
         )
     print()
-    print("  #1380 is priced per-fire, so 'of ALL UPS fires' is the cold_rate")
-    print("  term in cold_cost x cold_rate. That is also the only one comparable")
-    print("  to the 8.5% latency proxy, which was computed over all fires — the")
-    print("  scored-fires figure excludes the gate-skipped majority and reads")
-    print("  roughly 2x higher for that reason alone.")
+    print("  #1380 is priced per-fire, so 'of ALL measured UPS fires' is the")
+    print("  cold_rate term in cold_cost x cold_rate. That is also the only one")
+    print("  comparable to the 8.5% latency proxy, which was computed over all")
+    print("  fires — the scored-fires figure excludes the gate-skipped majority")
+    print("  and reads higher for that reason alone.")
 
     if pre_field is not None and pre_field > scored:
         print()
-        print(f"  CAUTION: {pre_field} pre-#1407 rows against {scored} scored. The")
-        print("  sample is dominated by fires logged before the field existed;")
-        print("  treat the rate as provisional until the scored count is larger.")
-        print("  (Gate-skipped and no-index-work rows are excluded from this")
-        print("  comparison — neither ever becomes a measurement.)")
+        print(f"  NOTE: {pre_field} pre-#1407 rows against {scored} scored. They are")
+        print("  already out of every denominator above, so the rate is not")
+        print("  biased by them — but the measured sample is the smaller of the")
+        print("  two, so treat it as provisional until the scored count grows.")
     return 0
 
 
