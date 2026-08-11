@@ -203,3 +203,135 @@ def test_the_numeric_stack_still_loads_when_retrieval_runs(tmp_path) -> None:
         "retrieve() returned nothing, so the lanes did not run and the "
         "module-set reading above says nothing about the retrieval path."
     )
+
+
+# ---------------------------------------------------------------------------
+# The driven gate-skipped fire (#1407 review)
+# ---------------------------------------------------------------------------
+#
+# Neither test above can see a regression in the *fire*. The first probes
+# `import aelfrice.hook` and stops there; the third drives `retrieve()`, where
+# the numeric stack is supposed to load. An eager import added inside
+# `user_prompt_submit` above the prompt-shape gate is invisible to both, and
+# that is precisely where #1407 first put one: `from aelfrice.bm25 import
+# reset_sidecar_outcome`, unconditional, ~60 lines above the gate. Every
+# gate-skipped fire -- the majority, and the whole population #1351 exists for
+# -- paid numpy + scipy + snowballstemmer to record that it did no index work.
+
+_GATE_SKIP_PROBE = '''
+import os
+import sys
+
+# Same env pinning as the retrieval probe: the lane resolvers are env-first,
+# and opening a MemoryStore is a write, so an unpinned run would both change
+# which modules load and mutate the developer's real store.
+for _k in [k for k in os.environ if k.startswith(("AELFRICE_", "AELF_"))]:
+    del os.environ[_k]
+
+_tmp = %(tmp)r
+os.environ["HOME"] = _tmp
+os.environ["AELFRICE_DOTDIR"] = os.path.join(_tmp, ".aelfrice")
+os.environ["AELFRICE_DB"] = os.path.join(_tmp, "memory.db")
+os.environ["AELF_NO_UPDATE_CHECK"] = "1"
+os.chdir(_tmp)
+
+import io
+import json
+import pathlib
+
+import aelfrice.hook as hook
+
+_TARGETS = {%(roots)s}
+
+
+def _roots():
+    return ",".join(sorted({m.split(".")[0] for m in sys.modules} & _TARGETS))
+
+
+print("imports_ok:%%d" %% int(hook._IMPORTS_OK))
+print("before:" + _roots())
+rc = hook.user_prompt_submit(
+    stdin=io.StringIO(
+        json.dumps({"prompt": "ok", "session_id": "s1", "cwd": _tmp})
+    ),
+    stdout=io.StringIO(),
+)
+print("after:" + _roots())
+print("rc:%%d" %% rc)
+
+rows = []
+for _p in sorted(pathlib.Path(_tmp).rglob("*.jsonl")):
+    for _line in _p.read_text(encoding="utf-8").splitlines():
+        if not _line.strip():
+            continue
+        _rec = json.loads(_line)
+        if _rec.get("hook") == "user_prompt_submit":
+            rows.append(_rec)
+print("rows:%%d" %% len(rows))
+print("gate:" + (str(rows[-1].get("prompt_shape_gate_skip") or "") if rows else ""))
+'''
+
+
+@pytest.mark.timeout(90)
+def test_a_gate_skipped_fire_does_not_import_the_numeric_stack(tmp_path) -> None:
+    """The gate. A driven fire, in a subprocess, on the skipped path.
+
+    `"ok"` is under `_MIN_PROMPT_LEN`, so `_should_skip_bm25` returns
+    `trivial:short` and no retrieval runs. The fire must still write its audit
+    row, and must finish with none of numpy / scipy / snowballstemmer in
+    `sys.modules`.
+
+    Four readings, each of which has to hold or the assertion below proves
+    nothing:
+
+    * **`imports_ok` is 1.** With the sentinel false, `user_prompt_submit`
+      returns at its second statement and never reaches any of the code under
+      test. Every case in `test_hook_import_resilience.py` patches exactly that
+      sentinel, which is why none of them can see this defect either.
+    * **`before` is empty.** Importing the hook pulls nothing, so the `after`
+      reading is attributable to the fire and to nothing else.
+    * **`gate` is the skip reason.** A gate that stopped firing would leave
+      `after` empty for the wrong reason -- or, if the prompt stopped being
+      trivial, would load the numeric stack legitimately and turn this into a
+      false alarm. Either way the assertion below would no longer be about the
+      skipped path.
+    * **one audit row.** The fire ran to completion. A fire that died early
+      also imports nothing.
+
+    Falsifiable by restoring the eager `from aelfrice.bm25 import
+    reset_sidecar_outcome` above the shape gate in `user_prompt_submit`.
+    """
+    observed = _probe(
+        _GATE_SKIP_PROBE
+        % {
+            "tmp": str(tmp_path),
+            "roots": ", ".join(repr(r) for r in _NUMERIC_ROOTS),
+        }
+    )
+    imports_ok, before, after, rc, rows, gate = observed.splitlines()
+
+    assert imports_ok == "imports_ok:1", (
+        "the hook's runtime deps did not import, so the fire returned at the "
+        "_IMPORTS_OK guard and never reached the code under test"
+    )
+    assert before == "before:", (
+        f"importing aelfrice.hook pulled the numeric stack in ({before}); the "
+        "reading after the fire is then unattributable"
+    )
+    assert rc == "rc:0", rc
+    assert rows == "rows:1", (
+        f"expected exactly one user_prompt_submit audit row, got {rows}; the "
+        "fire did not run to completion and imports nothing for that reason"
+    )
+    assert gate == "gate:trivial:short", (
+        f"the fixture prompt was not gate-skipped ({gate}); this test only "
+        "says anything about the skipped path"
+    )
+    assert after == "after:", (
+        f"a gate-skipped UserPromptSubmit fire imported {after.split(':', 1)[1]}"
+        ". Every hook fire is a fresh process and most of them are "
+        "gate-skipped, so this is paid by the majority of fires to do no work "
+        "at all. Find the eager edge with:\n"
+        "  python -X importtime -c 'import aelfrice.hook'\n"
+        "and check for an above-the-gate import inside user_prompt_submit."
+    )

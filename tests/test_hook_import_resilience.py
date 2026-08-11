@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -284,3 +285,139 @@ class TestDoctorMissingRuntimeDeps:
             project_root=tmp_path / "noproj",
         )
         assert "numpy" in report.missing_runtime_deps
+
+
+# ---------------------------------------------------------------------------
+# A real fire with an unimportable numeric stack (#1407 review)
+# ---------------------------------------------------------------------------
+#
+# Every case above patches `_IMPORTS_OK = False`, which returns at the second
+# statement of `user_prompt_submit` -- roughly a hundred lines above the hook
+# body. Since #1351 the hook's own module-scope imports do not touch numpy, so
+# a real install missing the numeric stack keeps `_IMPORTS_OK` True and runs
+# the whole body. Nothing in this file covered that, and #1407 shipped an
+# unguarded `from aelfrice.bm25 import ...` into it: the import raised, the
+# traceback escaped `user_prompt_submit`, and the fire wrote no audit row and
+# no stdout at all. An audit field must never be the reason a hook breaks.
+
+_UNIMPORTABLE_STACK_PROBE = '''
+import os
+import sys
+
+for _k in [k for k in os.environ if k.startswith(("AELFRICE_", "AELF_"))]:
+    del os.environ[_k]
+
+_tmp = %(tmp)r
+os.environ["HOME"] = _tmp
+os.environ["AELFRICE_DOTDIR"] = os.path.join(_tmp, ".aelfrice")
+os.environ["AELFRICE_DB"] = os.path.join(_tmp, "memory.db")
+os.environ["AELF_NO_UPDATE_CHECK"] = "1"
+os.chdir(_tmp)
+
+_BLOCKED = %(blocked)r
+
+
+class _Blocker:
+    """Make the named modules and their submodules unimportable."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        for _b in _BLOCKED:
+            if fullname == _b or fullname.startswith(_b + "."):
+                raise ImportError("blocked: " + fullname, name=fullname)
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+
+import io
+import json
+import pathlib
+
+import aelfrice.hook as hook
+
+print("imports_ok:%%d" %% int(hook._IMPORTS_OK))
+rc = hook.user_prompt_submit(
+    stdin=io.StringIO(
+        json.dumps({"prompt": "ok", "session_id": "s1", "cwd": _tmp})
+    ),
+    stdout=io.StringIO(),
+)
+print("rc:%%d" %% rc)
+
+rows = 0
+for _p in sorted(pathlib.Path(_tmp).rglob("*.jsonl")):
+    for _line in _p.read_text(encoding="utf-8").splitlines():
+        if _line.strip() and json.loads(_line).get("hook") == "user_prompt_submit":
+            rows += 1
+print("rows:%%d" %% rows)
+'''
+
+
+@pytest.mark.timeout(90)
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        pytest.param(
+            ("numpy", "scipy", "snowballstemmer"), id="numeric-stack-absent"
+        ),
+        pytest.param(("aelfrice.sidecar_outcome",), id="audit-leaf-absent"),
+    ],
+)
+def test_a_fire_survives_an_unimportable_module(
+    tmp_path: Path, blocked: tuple[str, ...]
+) -> None:
+    """A gate-skipped fire must exit 0, write its audit row and print no
+    traceback even when a module it reaches for cannot be imported.
+
+    A `sys.meta_path` finder raising `ImportError` stands in for an install
+    that lacks the module -- closer to the real failure than patching
+    `importlib.import_module`, because it also catches a plain `import x`
+    statement anywhere in the call graph, which is the form the regression
+    took.
+
+    The two cases pin two different things, and each has been run against its
+    own mutation:
+
+    * **numeric-stack-absent** pins that nothing above the shape gate reaches
+      into `aelfrice.bm25`. Restoring the eager `from aelfrice.bm25 import
+      reset_sidecar_outcome` there fails this with a traceback naming
+      `hook.py ... in user_prompt_submit` and zero audit rows.
+    * **audit-leaf-absent** pins the `try` / `except Exception` around that
+      import and call. The leaf module has no dependencies, so the first case
+      cannot fail on a missing guard; blocking the leaf itself is what makes
+      the guard's absence observable, and it is the general contract that
+      matters -- an audit field must never be the reason a hook breaks.
+
+    `imports_ok` must be 1 or this is the test the file already had: with the
+    sentinel false the fire returns ~100 lines above any of this.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _UNIMPORTABLE_STACK_PROBE
+            % {"tmp": str(tmp_path), "blocked": blocked},
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        "the probe process itself died; the hook let an exception escape:\n"
+        + proc.stderr
+    )
+    assert "Traceback" not in proc.stderr, (
+        "a traceback reached stderr -- the hook body aborted on an import it "
+        f"is supposed to survive:\n{proc.stderr}"
+    )
+    lines = proc.stdout.split()
+    assert lines[0] == "imports_ok:1", (
+        f"importing aelfrice.hook needs one of {blocked}, so the fire returned "
+        "at the _IMPORTS_OK guard and this test proves nothing"
+    )
+    assert "rc:0" in lines, proc.stdout
+    assert "rows:1" in lines, (
+        "the fire wrote no audit row with the numeric stack unimportable; an "
+        f"audit field broke the hook.\nstdout: {proc.stdout}\n"
+        f"stderr: {proc.stderr}"
+    )
