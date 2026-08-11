@@ -61,7 +61,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
       - name: Install mutmut
-        run: uv pip install mutmut
+        # Pinned to the major this design targets. `source_paths`,
+        # `only_mutate`, `--max-children` and the `    name: status` report
+        # format the steps below parse are all mutmut-3 specific — an
+        # unpinned major bump is the exact failure mode this workflow exists
+        # to fix, and it would arrive silently.
+        run: uv pip install 'mutmut>=3,<4'
       - name: Run mutation tests
         run: |
           # No `|| true` on the whole pipeline. A surviving mutant is a
@@ -129,10 +134,23 @@ jobs:
   # summary. If mutation is ever promoted to blocking, this line comes out and
   # the name goes into `merge_train_gate.ADVISORY_NAMES` instead.
   diff:
+    name: mutation (advisory, PR diff)
     if: github.event_name == 'pull_request'
+    # NOTE: job-level, not step-level. Every other `continue-on-error` in
+    # `.github/workflows/` is on a step, where it only spares that step; the
+    # property needed here is that the *job's* check-run conclusion is
+    # `success` even when a step fails, which is what keeps merge-train's
+    # "nothing failing" test satisfied. A test pins the level, because moving
+    # this line two levels down would still parse and would silently make the
+    # job blocking.
     continue-on-error: true
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Not 30. mutmut runs the whole suite once to collect stats before it
+    # executes a single mutant, and only then starts the per-mutant runs — a
+    # 30-minute cap spends a large fraction of its budget before the first
+    # mutant and then dies partway through them. This is a cap, not a target;
+    # the job is advisory and `concurrency` cancels it on the next push.
+    timeout-minutes: 60
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -146,15 +164,20 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
       - name: Install mutmut
-        run: uv pip install mutmut
+        run: uv pip install 'mutmut>=3,<4'
       - name: Scope mutmut to the PR's changed files
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Three dots, not two. `git diff A B` is the difference between two
+          # trees, so it includes everything merged into `main` since the
+          # branch point and would mutate files this PR never touched. The
+          # merge-base form `A...B` is the PR's own diff, which is what AC1
+          # asks for.
           changed=$(git diff --name-only --diff-filter=d \
-              "${BASE_SHA}" "${HEAD_SHA}" -- 'src/aelfrice/*.py' || true)
+              "${BASE_SHA}...${HEAD_SHA}" -- 'src/aelfrice/*.py' || true)
           if [ -z "${changed}" ]; then
             echo "no changed source files under src/aelfrice — nothing to mutate"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
