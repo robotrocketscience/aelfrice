@@ -1,10 +1,11 @@
 """One physical repo, one identity, however the host spells its path (#1415).
 
 The identity was a BLAKE2b digest of the absolute git-common-dir. Native
-Windows and WSL address the same directory as `C:\\repo\\.git` and
-`/mnt/c/repo/.git`, so they minted two identities for one store — while
-reading and writing the same `memory.db`. Provenance for a single repository
-split in two depending on which host a command ran from.
+Windows and WSL address the same directory as
+`C:\\tmp\\aelfrice_identity_repro\\.git` and
+`/mnt/c/tmp/aelfrice_identity_repro/.git`, so they minted two identities for
+one store — while reading and writing the same `memory.db`. Provenance for a
+single repository split in two depending on which host a command ran from.
 
 The fix seeds a sidecar in the directory the store already shares, so the
 first host's answer becomes canonical. The seed is the *path-derived* value
@@ -42,15 +43,20 @@ def _store_dir(root: Path) -> Path:
 
 
 def test_two_spellings_of_one_repo_agree(tmp_path: Path) -> None:
-    """The headline defect. On main these two disagree."""
+    """The headline defect. On main these two disagree.
+
+    The two values are the pair observed on #1415 — what the shipped
+    derivation returns for the two host spellings of one repository, not
+    two spellings of a path (this resolver is handed identities).
+    """
     shared = _store_dir(tmp_path / "repo")
-    windows_spelling = "repo-b0068862"
-    wsl_spelling = "repo-74ec8541"
+    windows_identity = "aelfrice_identity_repro-b0068862"
+    wsl_identity = "aelfrice_identity_repro-74ec8541"
 
-    first = _durable_identity(shared, windows_spelling, create=True)
-    second = _durable_identity(shared, wsl_spelling, create=True)
+    first = _durable_identity(shared, windows_identity, create=True)
+    second = _durable_identity(shared, wsl_identity, create=True)
 
-    assert first == second == windows_spelling
+    assert first == second == windows_identity
 
 
 def test_the_creating_host_keeps_the_identity_it_already_had(
