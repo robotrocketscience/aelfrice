@@ -420,6 +420,28 @@ def _uv_tool_dir() -> Path:
     return base / "uv" / "tools"
 
 
+def _uv_tool_env_dir() -> Path:
+    """Where a uv-tool install of THIS package would live."""
+    return _uv_tool_dir() / PACKAGE_NAME
+
+
+def _has_uv_receipt(env_root: Path) -> bool:
+    """True iff `env_root` is a uv tool environment, by uv's own receipt.
+
+    The single predicate behind both "is aelfrice installed via uv tool?"
+    (`_is_uv_tool_install`) and the reachable-install inventory
+    (`detect_reachable_installs`). Sharing the *directory resolver* was
+    not enough: while the classifier tested for the receipt and the
+    inventory tested `.exists()`, a bare `<tools>/aelfrice/` was
+    simultaneously `non_uv` to `upgrade_advice()` and a `uv_tool` site in
+    the multi-install warning (#1431 review).
+    """
+    try:
+        return (env_root / UV_RECEIPT_FILENAME).is_file()
+    except OSError:
+        return False
+
+
 def _running_from_uv_tool() -> bool:
     """True iff THIS running process is the uv-tool-managed install.
 
@@ -441,11 +463,8 @@ def _running_from_uv_tool() -> bool:
     """
     import sys
 
-    try:
-        if (Path(sys.prefix) / UV_RECEIPT_FILENAME).is_file():
-            return True
-    except OSError:
-        pass
+    if _has_uv_receipt(Path(sys.prefix)):
+        return True
 
     root = _uv_tool_dir()
     # Ancestry, not a string prefix: a sibling like ``.../uv/toolshed``
@@ -473,10 +492,11 @@ def _is_uv_tool_install() -> bool:
     A directory alone is not enough: an empty or hand-made
     ``<tools>/aelfrice/`` without uv's receipt is not a uv install, and
     treating it as one would hand the user an upgrade command that
-    cannot work.
+    cannot work. ``detect_reachable_installs()`` applies the same
+    predicate, so the advice and the inventory cannot disagree about
+    what counts as a uv-tool install.
     """
-    uv_tools_dir = _uv_tool_dir() / PACKAGE_NAME
-    if (uv_tools_dir / UV_RECEIPT_FILENAME).is_file():
+    if _has_uv_receipt(_uv_tool_env_dir()):
         return True
     # Secondary: this process is itself running under the uv tools tree.
     return _running_from_uv_tool()
@@ -664,7 +684,8 @@ def detect_reachable_installs() -> list[InstallSite]:
     Returns an empty list on any failure (e.g. unreadable home dir).
 
     Signals checked:
-      - <uv tool dir>/aelfrice/            → uv_tool
+      - <uv tool dir>/aelfrice/uv-receipt.toml
+                                           → uv_tool
       - ~/.local/pipx/venvs/aelfrice/      → pipx
       - any `aelf` on PATH whose resolved path is NOT under the above
         roots                              → user_local_bin
@@ -688,12 +709,22 @@ def detect_reachable_installs() -> list[InstallSite]:
         except OSError:
             continue
 
-    uv_root = _uv_tool_dir() / PACKAGE_NAME
-    if uv_root.exists():
+    # `known_roots` collects only the roots actually reported above. A
+    # root we declined to classify must not silently swallow an `aelf`
+    # that PATH resolves into it — that would drop the install from the
+    # inventory entirely instead of naming it.
+    known_roots: list[Path] = []
+
+    # The receipt, not mere presence — `_is_uv_tool_install()` asks the
+    # same question through the same predicate, so the classifier and
+    # this inventory cannot label one directory two different ways.
+    uv_root = _uv_tool_env_dir()
+    if _has_uv_receipt(uv_root):
         on_path = any(
             _path_is_under(p, uv_root) for p in path_aelf_resolved
         )
         sites.append(InstallSite(kind="uv_tool", path=uv_root, on_path=on_path))
+        known_roots.append(uv_root)
 
     pipx_root = home / ".local" / "pipx" / "venvs" / PACKAGE_NAME
     if pipx_root.exists():
@@ -701,9 +732,9 @@ def detect_reachable_installs() -> list[InstallSite]:
             _path_is_under(p, pipx_root) for p in path_aelf_resolved
         )
         sites.append(InstallSite(kind="pipx", path=pipx_root, on_path=on_path))
+        known_roots.append(pipx_root)
 
     running_aelf = _running_interpreter_aelf()
-    known_roots = [uv_root, pipx_root]
     for exe in path_aelf_resolved:
         if any(_path_is_under(exe, root) for root in known_roots):
             continue

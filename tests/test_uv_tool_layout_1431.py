@@ -270,3 +270,44 @@ def test_path_scan_still_requires_the_executable_bit_on_posix(
 
     (bin_dir / "aelf").chmod(0o755)
     assert [p.name for p in lifecycle._which_all_aelf()] == ["aelf"]
+
+
+# --- the classifier and the inventory agree ------------------------------
+
+
+@pytest.mark.parametrize("with_receipt", [True, False])
+def test_classifier_and_inventory_agree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, with_receipt: bool,
+) -> None:
+    """One state, one answer — in BOTH states.
+
+    Nothing pinned this. `_is_uv_tool_install()` tested for uv's receipt
+    while `detect_reachable_installs()` tested `.exists()`, so a bare
+    `<tools>/aelfrice/` was simultaneously `non_uv` to `upgrade_advice()`
+    and a `uv_tool` site in the multi-install warning — the inventory
+    naming an install the upgrade path denied existed. Sharing the
+    directory resolver is not what makes them agree; sharing the
+    predicate is.
+    """
+    tool_env = tmp_path / "tools" / "aelfrice"
+    tool_env.mkdir(parents=True)
+    if with_receipt:
+        _receipt(tool_env)
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing-here"))
+    # The running process is a plain venv elsewhere, so `_running_from_
+    # uv_tool` cannot supply the answer by itself.
+    elsewhere = tmp_path / "venv"
+    monkeypatch.setattr(sys, "prefix", str(elsewhere))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base_python"))
+    monkeypatch.setattr(sys, "executable", str(elsewhere / "bin" / "python"))
+
+    classified = lifecycle._is_uv_tool_install()
+    inventoried = any(
+        s.kind == "uv_tool" for s in lifecycle.detect_reachable_installs()
+    )
+
+    assert classified is with_receipt
+    assert inventoried is with_receipt
+    assert classified == inventoried
+    assert (lifecycle.upgrade_advice().context == "uv_tool") == inventoried
