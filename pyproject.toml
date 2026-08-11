@@ -150,8 +150,42 @@ reportMissingTypeStubs = false
 # aborts rather than guessing when it cannot find the tree.
 source_paths = ["src/aelfrice"]
 
-# Generated and vendored surfaces carry no hand-written behaviour to protect,
-# and mutating them inflates the run without adding signal.
+# mutmut runs the suite from inside `mutants/`, into which it copies only
+# `source_paths` plus a fixed set (`tests/`, `pyproject.toml`, the lockfiles).
+# Everything else the suite reaches for from the repo root has to be named
+# here or it is simply absent. `[tool.pytest.ini_options] pythonpath = ["."]`
+# then resolves to `mutants/`, so `import benchmarks` raises
+# `ModuleNotFoundError` during stats collection and *zero* mutants execute —
+# the configuration is loaded, the harness still does nothing. Each entry is
+# something the suite actually reads, not a precaution:
+#   benchmarks/  — imported by the bench tests (`pythonpath = ["."]` is there
+#                  for exactly this); `known_first_party` names it too.
+#   scripts/     — `sys.path.insert(_REPO / "scripts")` in the merge-train,
+#                  replay-soak and hook-guard tests.
+#   .github/     — the workflow-text guards (this issue's own tests, the
+#                  presence-floor derivation, the path-filter checks) read
+#                  `.github/workflows/*.yml` relative to `parents[1]`.
+#   .githooks/   — `tests/test_pre_push_hook.py` execs the hook as a
+#                  subprocess; a missing file is a FileNotFoundError, and
+#                  mutmut aborts stats on the *first* failure, so one absent
+#                  directory takes the whole run to zero mutants.
+#   docs/, CHANGELOG/, CHANGELOG.md, README.md
+#                — the docs-coverage and changelog-duplicate guards.
+also_copy = [
+    "benchmarks",
+    "scripts",
+    ".github",
+    ".githooks",
+    "docs",
+    "CHANGELOG",
+    "CHANGELOG.md",
+    "README.md",
+]
+
+# `src/aelfrice/__init__.py` is six hand-written lines of package metadata:
+# a docstring and `__version__`/`__all__` re-exports. Mutating it produces
+# mutants no behavioural test can distinguish, which is noise rather than
+# signal.
 do_not_mutate = [
     "src/aelfrice/__init__.py",
 ]
