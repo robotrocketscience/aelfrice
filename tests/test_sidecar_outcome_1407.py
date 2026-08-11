@@ -365,13 +365,18 @@ def test_the_hook_helper_reads_the_live_snapshot(
 
 
 def test_the_hook_helper_is_fail_soft(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The audit row must never be the reason a hook breaks."""
-    from aelfrice import hook
+    """The audit row must never be the reason a hook breaks.
+
+    Patched on `aelfrice.sidecar_outcome`, which is where the hook reads it
+    from: `bm25` re-exports the name, so patching the re-export would leave
+    the hook's own lookup untouched and the test would pass vacuously.
+    """
+    from aelfrice import hook, sidecar_outcome
 
     def boom() -> str | None:
-        raise RuntimeError("bm25 unavailable")
+        raise RuntimeError("sidecar outcome unavailable")
 
-    monkeypatch.setattr(bm25, "last_sidecar_outcome", boom)
+    monkeypatch.setattr(sidecar_outcome, "last_sidecar_outcome", boom)
     assert hook._last_sidecar_outcome() is None
 
 

@@ -884,9 +884,16 @@ def _last_sidecar_outcome() -> str | None:
 
     Fail-soft and function-scope: a fire that never reached the BM25 path
     must record no outcome rather than break the audit row.
+
+    Read from `aelfrice.sidecar_outcome`, not `aelfrice.bm25`. This is called
+    from the gate-skip audit write as well as the retrieving one, and a
+    gate-skipped fire is precisely the fire that must not import numpy, scipy
+    and snowballstemmer (#1351).
     """
     try:
-        from aelfrice.bm25 import last_sidecar_outcome  # noqa: PLC0415
+        from aelfrice.sidecar_outcome import (  # noqa: PLC0415
+            last_sidecar_outcome,
+        )
 
         return last_sidecar_outcome()
     except Exception:
@@ -1125,9 +1132,26 @@ def user_prompt_submit(
         # stay distinguishable from `fresh`, so a fire that never builds an
         # index records no outcome rather than inheriting the previous
         # fire's. Every `get()` this fire makes now happens after the clear.
-        from aelfrice.bm25 import reset_sidecar_outcome  # noqa: PLC0415
+        #
+        # Imported from `aelfrice.sidecar_outcome`, NOT from `aelfrice.bm25`.
+        # This runs above the prompt-shape gate, so it runs on every fire
+        # including the gate-skipped majority that never retrieves; importing
+        # `bm25` here would pull numpy + scipy + snowballstemmer into all of
+        # them and reverse #1351 for exactly the population #1351 exists for.
+        # The leaf module imports nothing outside the standard library.
+        #
+        # Fail-soft for the same reason `_last_sidecar_outcome` is: an audit
+        # field must never be the reason a hook breaks. Without the guard a
+        # broken numeric stack aborted the whole hook body from here — no
+        # audit row, no session-start block on stdout, a traceback on stderr.
+        try:
+            from aelfrice.sidecar_outcome import (  # noqa: PLC0415
+                reset_sidecar_outcome,
+            )
 
-        reset_sidecar_outcome()
+            reset_sidecar_outcome()
+        except Exception:
+            pass
         try:
             payload_obj: Any = json.loads(raw) if raw.strip() else {}
             if isinstance(payload_obj, dict):
