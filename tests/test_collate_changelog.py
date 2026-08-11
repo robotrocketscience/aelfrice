@@ -477,18 +477,26 @@ def test_the_committed_v4_changelog_collates_without_loss() -> None:
     out = collate(text, files, "4.3.0", "2026-08-10")
 
     expected = _entry_blocks(block)
-    # Deliberately NOT a pinned count. Pinning one would re-couple this
-    # branch to the `[Unreleased]` block's contents — the exact coupling
-    # #1475 exists to remove — and every in-flight PR that adds an entry
-    # would turn this red for a reason that has nothing to do with
-    # collation. What must hold is that the block is non-empty (so the
-    # comparison below is not vacuously true against an empty set) and
-    # that every entry in it survives.
-    assert expected, "the [Unreleased] block is empty, so this test proves nothing"
     for name, file_text in files:
         one = _entry_blocks(file_text)
         assert len(one) == 1, f"{name} holds {len(one)} entries"
         expected += one
+    # Deliberately NOT a pinned count. Pinning one would re-couple this
+    # branch to the `[Unreleased]` block's contents — the exact coupling
+    # #1475 exists to remove — and every in-flight PR that adds an entry
+    # would turn this red for a reason that has nothing to do with
+    # collation. What must hold is that the comparison below is not
+    # vacuously true against an empty set, and that every entry survives.
+    #
+    # The guard counts BOTH surfaces, and the ordering is the whole point.
+    # Against the block alone it is a time bomb with a known fuse: this
+    # convention drains `[Unreleased]` at the next release cut and
+    # CONTRIBUTING.md then forbids refilling it, so a block-only guard
+    # goes red on the first release PR and stays red on main afterwards —
+    # while entry files, the surface that replaces it, sit right there
+    # unexamined.
+    if not expected:
+        pytest.skip("no unreleased entries on either surface; nothing to prove")
     section = out.split("## [4.3.0] - 2026-08-10")[1].split("\n## [")[0]
     assert sorted(_entry_blocks(section)) == sorted(expected)
 
