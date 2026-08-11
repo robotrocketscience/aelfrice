@@ -3,12 +3,19 @@ name: mutation
 # Mutation testing, in two modes (#1457).
 #
 # The weekly job is the correctness harness: it runs the whole tree and FAILS
-# LOUDLY if mutmut did not actually produce results. That guard exists because
-# the previous version could not fail. It invoked mutmut with
-# `--paths-to-mutate` / `--tests-dir`, which mutmut 3 removed, so every run from
-# 2026-06-21 onward died with `Error: No such option` — and a blanket `|| true`
-# on both steps turned each one into a green tick. Configuration now lives in
-# `[tool.mutmut]` in `pyproject.toml`, which is where mutmut 3 reads it.
+# LOUDLY if mutmut did not actually execute the mutants it generated. That
+# guard exists because the previous version could not fail. It invoked mutmut
+# with `--paths-to-mutate` / `--tests-dir`, which mutmut 3 removed, so every run
+# from 2026-06-21 onward died with `Error: No such option` — and a blanket
+# `|| true` on both steps turned each one into a green tick. Configuration now
+# lives in `[tool.mutmut]` in `pyproject.toml`, which is where mutmut 3 reads
+# it — including `also_copy`, without which the suite is not importable inside
+# the `mutants/` tree mutmut runs it from and every mutant ends `not checked`.
+#
+# The guard asserts a positive signal, not report non-emptiness: `mutmut
+# results` hides killed mutants unless `--all` is passed, so an empty report is
+# what a fully-killed scope looks like. What it fails on is mutants left `not
+# checked` and a zero mutant total.
 #
 # The per-PR job is advisory by ratified design (2026-08-09): a surviving mutant
 # is reported, never blocking, until the equivalent-mutant rate has data behind
@@ -62,20 +69,51 @@ jobs:
           # captured rather than propagated; a *harness* failure is caught by
           # the results assertion below, which is the thing that was missing.
           uv run mutmut run --max-children 4 || echo "mutmut run exit=$?"
-          uv run mutmut results > mutation-report.txt
+          # `--all` is required, not cosmetic: `mutmut results` skips every
+          # killed mutant unless it is passed, so a scope in which everything
+          # died prints the same empty report as a run that executed nothing.
+          # The assertion below has to tell those two apart.
+          #
+          # `=true` is not optional either. mutmut declares it as
+          # `@click.option("--all", default=False)` with no `is_flag=True`, so
+          # click infers a BOOL that *takes an argument*: a bare `--all` exits
+          # with `Error: Option '--all' requires an argument.` and writes that
+          # sentence into the report instead of the results. Verified against
+          # mutmut 3.7.0.
+          uv run mutmut results --all=true > mutation-report.txt
           cat mutation-report.txt
       - name: Assert the run actually produced results
         run: |
-          # The guard for the 2026-06-21 regression: a misconfigured mutmut
-          # writes a usage error and exits, and every step before this one
-          # tolerates that. An empty or error-only report is a dead harness,
-          # not a clean tree.
-          if ! grep -qE '^[a-zA-Z0-9_.]+\.[a-zA-Z0-9_]+__mutmut_[0-9]+' mutation-report.txt; then
-            echo "::error::mutmut produced no mutant results — the harness is broken, not the tree."
+          # The guard for the 2026-06-21 regression, stated as a *positive*
+          # signal. Report non-emptiness cannot carry it: see the `--all` note
+          # above. What a dead harness does produce is mutants stuck at `not
+          # checked` (mutmut's status for a null exit code), which is what
+          # this job's own first run showed for every single mutant.
+          #
+          # The leading `^ *` is load-bearing. `mutmut results` prints every
+          # line as `print(f"    {k}: {status}")` — four hard-coded leading
+          # spaces — so a pattern anchored at `^` matches nothing whatever the
+          # tree looks like. A literal space-star is used rather than
+          # `[[:space:]]*` so the same pattern compiles under both grep -E and
+          # Python's `re`, which is what lets a test assert it against real
+          # mutmut output instead of asserting a substring of this file.
+          MUTANT_LINE='^ *[A-Za-z0-9_.]+__mutmut_[0-9]+: '
+          total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
+          killed=$(grep -cE ': killed$' mutation-report.txt || true)
+          survived=$(grep -cE ': survived$' mutation-report.txt || true)
+          unchecked=$(grep -cE ': not checked$' mutation-report.txt || true)
+          if [ "${total}" -eq 0 ]; then
+            echo "::error::mutmut listed no mutants at all — the harness is broken, not the tree."
             echo "--- report ---"
             cat mutation-report.txt
             exit 1
           fi
+          if [ "${unchecked}" -ne 0 ]; then
+            echo "::error::${unchecked} of ${total} mutants are 'not checked' — the run aborted before executing them."
+            grep -E ': not checked$' mutation-report.txt | head -20
+            exit 1
+          fi
+          echo "mutants: ${total} total, ${killed} killed, ${survived} survived"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -146,7 +184,10 @@ jobs:
         if: steps.scope.outputs.skip != 'true'
         run: |
           uv run mutmut run --max-children 4 || echo "mutmut run exit=$?"
-          uv run mutmut results > mutation-report.txt || true
+          # `--all=true` for the same reason, and in the same spelling, as the
+          # weekly job: without it the killed mutants are invisible, and a
+          # bare `--all` is a click usage error rather than a flag.
+          uv run mutmut results --all=true > mutation-report.txt || true
           cat mutation-report.txt
       - name: Report
         if: steps.scope.outputs.skip != 'true'
@@ -154,6 +195,13 @@ jobs:
           # AC3: say the verdict is advisory in the job's own output, so a
           # green tick is not read as "no mutants survived". The step exits 0
           # by design — see the asymmetry note at the top of this file.
+          #
+          # Same `^ *` note as the weekly guard: mutmut indents every result
+          # line by four spaces, so an `^`-anchored count is hard-wired to 0.
+          MUTANT_LINE='^ *[A-Za-z0-9_.]+__mutmut_[0-9]+: '
+          total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
+          killed=$(grep -cE ': killed$' mutation-report.txt || true)
+          survived=$(grep -cE ': survived$' mutation-report.txt || true)
           {
             echo "## Mutation (advisory)"
             echo
@@ -161,12 +209,27 @@ jobs:
             echo "**This job never fails the PR.** A green tick here means the"
             echo "job ran, not that every mutant was killed — read the list."
             echo
-            survivors=$(grep -cE '^[a-zA-Z0-9_.]+\.[a-zA-Z0-9_]+__mutmut_[0-9]+' \
-                mutation-report.txt || true)
-            echo "Surviving mutants reported: ${survivors:-0}"
+            echo "| mutants | killed | survived |"
+            echo "| --- | --- | --- |"
+            echo "| ${total:-0} | ${killed:-0} | ${survived:-0} |"
+            echo
+            # Anything that is neither killed nor survived is a harness
+            # signal, not a coverage signal, and is reported apart from the
+            # survivor tally so the two are never read as one number.
+            echo "Other statuses (harness signals, not coverage):"
             echo
             echo '```'
-            head -100 mutation-report.txt
+            for status in 'no tests' 'timeout' 'suspicious' 'skipped' \
+                'not checked' 'caught by type check'; do
+              n=$(grep -cE ": ${status}\$" mutation-report.txt || true)
+              echo "${status}: ${n:-0}"
+            done
+            echo '```'
+            echo
+            echo "Surviving mutants:"
+            echo
+            echo '```'
+            grep -E ': survived$' mutation-report.txt | head -100 || true
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
