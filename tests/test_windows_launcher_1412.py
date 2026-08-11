@@ -9,6 +9,7 @@ the natural implementation of it silently is not.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import sysconfig
@@ -49,6 +50,71 @@ def test_the_platform_flag_is_not_bound_at_definition_time() -> None:
         assert launcher.command_launcher_key(WIN_PATH) == "aelf-hook"
     # ...and back to the host's real platform once the patch is dropped.
     assert launcher.launcher_key(WIN_PATH, windows=False) == WIN_PATH
+
+
+def test_the_unbound_default_survives_into_the_hooks_transaction(
+    tmp_path: Path,
+) -> None:
+    """The same guard, one layer up, on the path #1428 rewrote.
+
+    `install_codex_hooks` and `remove_codex_hooks` stopped being the code
+    that decides ownership: they are one-line delegations into
+    `_commit_hooks_transaction`, and the decision moved into `_plan_install`
+    / `_plan_remove`. A `windows` default bound at *either* layer reads the
+    platform once at import, and the arm above keeps passing, because it
+    never enters this path at all.
+
+    Driven in two halves, because one probe cannot reach both layers here:
+
+    * **The plan functions, under a patched `os.name`.** They are pure, so
+      the patch touches nothing else. (`tempfile` joins with `ntpath` under
+      `os.name == "nt"`, so the *committing* half cannot run under this
+      patch on a POSIX build — `os.replace` fails and the transaction turns
+      the OSError into `result.error`, which would make the assertion below
+      vacuous rather than red.) `desired_codex_hooks` is frozen for the same
+      class of reason: it reads `sysconfig` under the `nt` scheme, which is
+      not what is being tested.
+    * **The public delegations, driven at `_resolve_windows`.** This still
+      distinguishes a bound default from a live seam: `_resolve_windows`
+      only consults the platform when its argument is `None`, so a default
+      bound at definition time would pass an explicit `False` down and the
+      patch would be ignored — exactly the failure this arm exists to catch.
+    """
+    import aelfrice.session_ring  # noqa: F401 - pre-warm the lazy import
+    from aelfrice import host_codex, launcher
+
+    frozen = host_codex.desired_codex_hooks("user")
+    hooks_path = tmp_path / "hooks.json"
+    owned = json.dumps({"hooks": {"UserPromptSubmit": [
+        {"hooks": [{"type": "command", "command": WIN_PATH}]},
+    ]}}, indent=2) + "\n"
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "name", "nt")
+        mp.setattr(
+            host_codex, "desired_codex_hooks", lambda scope="user": frozen,
+        )
+        serialized, _ = host_codex._plan_install(
+            owned, "user", False, hooks_path,
+        )
+        assert serialized is not None
+        groups = json.loads(serialized)["hooks"]["UserPromptSubmit"]
+        assert [
+            h["command"] for g in groups for h in g["hooks"]
+        ].count(WIN_PATH) == 0, groups
+
+        serialized, result = host_codex._plan_remove(owned, hooks_path)
+        assert result.changed is True
+        assert serialized is not None
+        assert "UserPromptSubmit" not in json.loads(serialized)["hooks"]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            launcher, "_resolve_windows", lambda w: True if w is None else w,
+        )
+        hooks_path.write_text(owned, encoding="utf-8")
+        assert host_codex.remove_codex_hooks(hooks_path).changed is True
+        assert json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"] == {}
 
 
 class TestWindowsNormalisation:
