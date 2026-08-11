@@ -1328,7 +1328,7 @@ def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
     consequence (the skill surface is not what this build ships), so they are
     reported together and the message names both causes.
     """
-    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
     modified: list[str] = []
     for skill_name, expected in sorted(_bundled_codex_skills().items()):
         skill_dir = target / skill_name
