@@ -37,9 +37,17 @@ def _git_common_dir() -> Path | None:
 
     Two worktrees of one repo share a --git-common-dir, so resolving
     against this gives them a single shared DB. Returns None when cwd
-    is outside any git work-tree, when the `git` binary is missing, or
-    when the rev-parse call fails for any reason — callers fall back to
-    the home-dir path.
+    is outside any git work-tree, when the `git` binary is missing,
+    when the rev-parse call fails for any reason, or when its output is
+    not valid UTF-8 — callers fall back to the home-dir path.
+
+    `errors="strict"` here, unlike the `replace` used at the other git
+    boundaries (#1441). Those degrade to a path that does not exist and
+    the caller already handles that; this one is *built on*. `db_path()`
+    appends to it and `_open_store()` runs `mkdir(parents=True)`, so a
+    mojibake substitution would silently create a real second store
+    under a garbled directory instead of falling back. A decode failure
+    is a fallback, not a rename.
     """
     try:
         result = subprocess.run(
@@ -47,7 +55,7 @@ def _git_common_dir() -> Path | None:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict",
             check=False,
             timeout=5,
         )
