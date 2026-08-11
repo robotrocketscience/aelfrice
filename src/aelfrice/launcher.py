@@ -176,9 +176,13 @@ def command_launcher_key(command: str, *, windows: bool | None = None) -> str:
 
     On Windows the program token is recovered across whitespace when the
     written command holds an unquoted path with spaces — see
-    `_spaced_program_token`. POSIX is untouched: the module docstring's
-    no-widening rule applies, and a POSIX command is written from a resolved
-    path this project controls.
+    `_spaced_program_token`. POSIX is untouched here, and that is a
+    limitation rather than a property: a spaced POSIX path keys to the
+    fragment before the space (``/home/first last/...`` -> ``first``).
+    Recovering it needs more than one key, because the string is ambiguous;
+    ownership therefore goes through `command_program_keys` (#1482) and this
+    stays the single-valued accessor, used for display and as that list's
+    first element.
     """
     win = _resolve_windows(windows)
     tokens = command_tokens(command, windows=win)
@@ -191,15 +195,79 @@ def command_launcher_key(command: str, *, windows: bool | None = None) -> str:
     return launcher_key(tokens[0], windows=win)
 
 
+def command_program_keys(
+    command: str, *, windows: bool | None = None,
+) -> list[str]:
+    """Every reading of this command's program, as ownership keys.
+
+    #1482, the POSIX half of #1412. `_spaced_program_token` recovers an
+    unquoted spaced path by looking for a recognised launcher *suffix*, and
+    POSIX console scripts carry none, so `command_launcher_key` leaves
+    ``/home/first last/.venv/bin/aelf-hook`` keyed as ``first`` — our own
+    handler is not recognised as ours, and #1412's symptom table reproduces
+    on POSIX: setup appends a duplicate group per event, doctor counts zero
+    handlers, unsetup removes nothing.
+
+    The answer is not a single better key: the string is genuinely ambiguous,
+    and the deciding evidence (which prefix names a real file) is on disk,
+    where an ownership predicate must not go — `remove_codex_hooks` has to
+    keep recognising its own entries after the venv they point at is gone,
+    and the predicate runs per hook entry. So this returns the *candidates*,
+    prefix-first, and each caller keeps applying its own membership rule —
+    a closed set (`host_codex._OWNED_BASENAMES`) or a fixed ``aelf-`` prefix.
+    A foreign handler at a spaced path yields candidates that are in neither,
+    so offering more readings cannot claim it.
+
+    Two rules bound the scan, both in the safe direction:
+
+    * A switch-shaped token (``-`` or ``/`` prefix) *stops* it, so an
+      argument is never read as the program. On POSIX that also stops it at
+      an absolute-path argument, which is what makes ``/opt/x/wrapper
+      /usr/bin/aelf-hook`` stay ``wrapper``.
+    * A candidate is only emitted when the token that ends it contains a
+      path separator, i.e. reads as the continuation of a split path rather
+      than as an argument. A resolved console-script path always has one
+      before its basename, so every real spaced install is still recovered
+      (including ``/home/First Middle Last/...``, where an interior token
+      has no separator and is scanned *over*), while ``/usr/bin/env
+      aelf-hook`` is not claimed.
+
+    Windows is untouched: the suffix rule already resolves the program
+    there, so the list is exactly ``[command_launcher_key(...)]`` and every
+    #1412 arm keeps its subject. The first element is always that key, on
+    both platforms, so a caller that needs one value for display can take
+    it — and this delegates to it by name, so the seams that force a
+    platform by patching it keep working.
+    """
+    win = _resolve_windows(windows)
+    primary = command_launcher_key(command, windows=windows)
+    keys: list[str] = [primary] if primary else []
+    if win:
+        return keys
+    tokens = command_tokens(command, windows=windows)
+    for k in range(2, len(tokens) + 1):
+        continuation = tokens[k - 1]
+        if continuation.startswith(("-", "/")):
+            break
+        if "/" not in continuation:
+            continue
+        key = launcher_key(" ".join(tokens[:k]), windows=win)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
 def program_exists(command: str, *, windows: bool | None = None) -> bool:
     """Does any plausible reading of this command name a file on disk?
 
-    Separate from `command_launcher_key` on purpose, and deliberately *not*
-    sharing its rejoin. The ownership key must stay Windows-only in its
-    spaced-path handling, because ownership drives `remove_codex_hooks` and
-    `prune_broken_aelf_hooks` and widening it on a case-sensitive filesystem
-    deletes files somebody else owns (#1412). Asking whether a file exists
-    carries no such risk, so this probes both platforms.
+    Separate from the ownership key on purpose, and the sharing runs one
+    way only: `command_program_keys` (#1482) recovers a spaced POSIX path
+    with a string rule, never with this scan. Ownership drives
+    `remove_codex_hooks` and `prune_broken_aelf_hooks`, so keying it on the
+    filesystem would make uninstall stop recognising its own entries the
+    moment the venv they point at is deleted, and would put a stat per
+    candidate inside a per-entry predicate. Asking whether a file exists
+    carries neither cost, so this probes both platforms.
 
     It has to. `setup._resolve_script` writes the resolved path unquoted, so
     a space anywhere in it splits the command — ``/home/first last/.venv/
