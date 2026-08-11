@@ -4816,9 +4816,15 @@ def _cmd_doctor_codex(
         "unknown" if report.feature_flag_on is None
         else ("on" if report.feature_flag_on else "off")
     )
+    # #1486: the count is host-wide. `[hooks.state]` keys are positional
+    # digests with no path back to a command, so an approval cannot be
+    # attributed to aelfrice; printing a bare number invited reading it as
+    # ours. Filtering would need a key→command mapping the Codex source
+    # marks for replacement, so the scope is named instead of guessed.
     print(
         f"[i] codex `hooks` feature: {flag}; approved [hooks.state] "
-        f"entries: {report.approved_state_count}",
+        f"entries: {report.approved_state_count} "
+        f"(all hooks on this host, not only aelfrice)",
         file=out,  # type: ignore[arg-type]
     )
     from aelfrice.host_codex import (

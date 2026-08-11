@@ -1,7 +1,7 @@
 """The trust half of #1430, carried by #1486.
 
 #1476 shipped the fixture-provable half of #1430 — doctor now exits
-nonzero on installed-but-broken Codex wiring. Two of the things it left:
+nonzero on installed-but-broken Codex wiring. Three things it left:
 
 * `modified_codex_skills()` called with no argument raised `NameError`.
   #1427 deleted the module-level ``AGENTS_SKILLS_DIR`` constant in favour
@@ -14,6 +14,12 @@ nonzero on installed-but-broken Codex wiring. Two of the things it left:
   `modified_codex_skills` iterates bundled names only. The count doctor
   printed was therefore one higher than the number of skills it judged,
   and a renamed-away slash command stayed invokable by the model.
+* The ``approved [hooks.state] entries`` number counts every approved
+  hook on the host, aelfrice's and everyone else's, because the approval
+  keying is positional and not attributable back to a command. The
+  operator ruling on this issue is *relabel*: keep the number, say what
+  it is. Filtering would need a key→command mapping that the Codex
+  source marks for replacement.
 
 Everything here is a filesystem or config state; none of it needs the
 reachable Codex model that keeps the rest of #1430 blocked externally.
@@ -186,3 +192,48 @@ class TestOrphanedSkills:
         assert rc == 0, out
         assert "(1 orphaned)" in out
         assert "no longer part of this build" not in out
+
+
+class TestApprovalCountLabel:
+    """AC1: the printed approval count must not be read as an aelfrice
+    count. Operator ruling 2026-08-11: relabel, do not filter or drop."""
+
+    def test_a_foreign_approval_is_not_reported_as_ours(
+        self, installed: tuple[Path, Path],
+    ) -> None:
+        """One approved hook, none of it ours, and the line says so.
+
+        `[hooks.state]` keys are positional digests with no path back to a
+        command, so the count cannot be attributed. Naming the scope on the
+        line is the whole fix: the number stays useful, the claim stays true.
+        """
+        codex_dir, skills = installed
+        (codex_dir / "config.toml").write_text(
+            '[hooks.state."someone-elses-hook"]\n'
+            'trusted_hash = "deadbeef"\n',
+            encoding="utf-8",
+        )
+
+        rc, out = _doctor(codex_dir, skills)
+        assert rc == 0, out
+        assert "approved [hooks.state] entries: 1" in out
+        assert "all hooks on this host, not only aelfrice" in out
+
+    def test_zero_entries_still_warns(
+        self, installed: tuple[Path, Path],
+    ) -> None:
+        """A foreign entry can only inflate the count, so zero is a true zero.
+
+        The relabel must not weaken the one unambiguous signal: handlers
+        configured and no approvals recorded means our hooks are being
+        silently skipped, whatever the keying scheme turns into upstream.
+        """
+        codex_dir, skills = installed
+        (codex_dir / "config.toml").write_text(
+            "[features]\nhooks = true\n", encoding="utf-8",
+        )
+
+        rc, out = _doctor(codex_dir, skills)
+        assert rc == 0, out
+        assert "approved [hooks.state] entries: 0" in out
+        assert "no approved [hooks.state] entries exist" in out

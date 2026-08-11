@@ -1274,6 +1274,11 @@ class CodexDoctorReport:
     missing_handlers: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
     feature_flag_on: bool | None = None
+    #: Approved ``[hooks.state]`` entries on this host — **all** of them,
+    #: not only ours (#1486). The keys are positional digests with no path
+    #: back to a command, so no aelfrice-only subset can be computed; a
+    #: foreign approval can therefore only inflate this, never deflate it,
+    #: which is what keeps the zero-approvals warning below sound.
     approved_state_count: int = 0
     warnings: list[str] = field(default_factory=list[str])
 
