@@ -4823,6 +4823,7 @@ def _cmd_doctor_codex(
     )
     from aelfrice.host_codex import (
         count_installed_codex_skills,
+        orphaned_codex_skills,
         resolve_agents_skills_dir,
     )
 
@@ -4831,9 +4832,16 @@ def _cmd_doctor_codex(
         else resolve_agents_skills_dir()
     )
     n_skills = count_installed_codex_skills(skills_dir)
+    # #1486: the count globs `aelf-*`, so it includes skills for commands
+    # this build no longer ships — which the bundle-driven integrity scan
+    # cannot see. Reporting the orphan count on the same line is what makes
+    # the two numbers reconcilable. Computed unconditionally because this
+    # line describes the directory rather than judging it; the FAIL below
+    # is the part gated on wiring.
+    orphaned = orphaned_codex_skills(skills_dir)
     print(
-        f"[i] codex skills ($aelf-*): {n_skills} installed in "
-        f"{skills_dir}",
+        f"[i] codex skills ($aelf-*): {n_skills} installed "
+        f"({len(orphaned)} orphaned) in {skills_dir}",
         file=out,  # type: ignore[arg-type]
     )
     for warning in report.warnings:
@@ -4860,6 +4868,16 @@ def _cmd_doctor_codex(
             "installed $aelf-* skill(s) do not match what this build "
             "generates (edited, or left stale by an upgrade): "
             + ", ".join(modified)
+            + " — re-run `aelf setup --host codex`",
+        )
+    # Same gate, same reason: an orphan on a machine with no Codex wiring is
+    # a leftover, not a fault. With wiring installed it is a live surface —
+    # the model can still invoke a slash command this build dropped.
+    if orphaned and report.owned_handler_count:
+        faults.append(
+            "installed $aelf-* skill(s) are no longer part of this build "
+            "(renamed or removed): "
+            + ", ".join(orphaned)
             + " — re-run `aelf setup --host codex`",
         )
     for fault in faults:

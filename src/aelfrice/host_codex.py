@@ -1100,6 +1100,29 @@ class CodexSkillsResult:
     failed: tuple[str, ...] = ()
 
 
+def _orphan_skill_dirs(target: Path, bundle: dict[str, str]) -> list[Path]:
+    """Marker-carrying ``aelf-*`` dirs under ``target`` absent from ``bundle``.
+
+    One definition of "orphan", two callers: `install_codex_skills` prunes
+    exactly these, `orphaned_codex_skills` reports exactly these. Factored
+    out rather than restated so the set doctor names cannot drift from the
+    set setup removes — the drift #1486 is about ran the other way, with the
+    prune loop knowing about renamed-away commands while the only scanner
+    doctor had, `modified_codex_skills`, iterates bundled names and could
+    not see them at all.
+
+    Both halves of the predicate are load-bearing. Name-membership alone
+    would sweep in every current skill; the marker gate alone would sweep in
+    a user's hand-authored ``aelf-*`` skill, which on the prune path means
+    deleting it.
+    """
+    return [
+        child
+        for child in sorted(target.glob(f"{_SKILL_PREFIX}*"))
+        if child.name not in bundle and _is_owned_skill_dir(child)
+    ]
+
+
 def _remove_owned_skill_dir(
     child: Path, pruned: list[str], failed: list[str],
 ) -> None:
@@ -1191,11 +1214,8 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
 
     # Prune orphans: marker-carrying aelf-* dirs no longer in the bundle
     # (handles renames/removals). Non-aelfrice skills are never touched.
-    for child in sorted(target.glob(f"{_SKILL_PREFIX}*")):
-        if child.name in bundle:
-            continue
-        if _is_owned_skill_dir(child):
-            _remove_owned_skill_dir(child, pruned, failed)
+    for child in _orphan_skill_dirs(target, bundle):
+        _remove_owned_skill_dir(child, pruned, failed)
 
     return CodexSkillsResult(
         dest_dir=target,
@@ -1342,6 +1362,32 @@ def modified_codex_skills(dest_dir: Path | None = None) -> list[str]:
         if actual != expected:
             modified.append(skill_name)
     return modified
+
+
+def orphaned_codex_skills(dest_dir: Path | None = None) -> list[str]:
+    """Installed ``$aelf-*`` skills this build no longer ships (#1486).
+
+    `modified_codex_skills` iterates the bundle, so a marker-carrying
+    ``aelf-*`` directory for a command that was renamed or removed is never
+    examined — while `count_installed_codex_skills` globs the same directory
+    and counts it. Doctor therefore reported one more installed skill than it
+    judged, and a slash command dropped from the build stayed invokable by
+    the model until the next ``aelf setup --host codex`` pruned it.
+
+    The orphan predicate is `_orphan_skill_dirs`, shared with that prune
+    loop, so the set doctor names is by construction the set setup removes.
+
+    The window is narrow — it opens on a release that renames or removes a
+    command and closes on the next setup run — which is why this reports
+    rather than deletes: doctor is read-only.
+    """
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
+    if not target.is_dir():
+        return []
+    return [
+        child.name
+        for child in _orphan_skill_dirs(target, _bundled_codex_skills())
+    ]
 
 
 def doctor_codex(
