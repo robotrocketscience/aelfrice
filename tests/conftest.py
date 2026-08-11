@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -70,32 +71,85 @@ def _corpus_root() -> Path | None:
     return p if p.is_dir() else None
 
 
+# A corpus module that exists but holds nothing skips with its own reason,
+# distinct from the whole-tier one above. `load_corpus_module` writes both.
+_MODULE_SKIP_RE = re.compile(
+    r"corpus module '(?P<module>[^']+)' (?P<why>missing|empty) under "
+)
+
+
+def _skip_reason(rep: object) -> str:
+    """The reason text of a skip report, or '' if it has none."""
+    longrepr = getattr(rep, "longrepr", None)
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        return str(longrepr[2])
+    return ""
+
+
 def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untyped-def]
-    """State the bench-gate skip count as its own line (#1456 AC2).
+    """Report the bench-gate tier per module, executed against skipped.
 
-    Without this the tier's skips are indistinguishable from every other
-    skip in a `N passed, M skipped` tail, and a reader checking whether the
-    quality gates ran sees a green run and concludes they did. They did not:
-    they were never executed.
+    #1456 AC2 got the aggregate count: without it the tier's skips are
+    indistinguishable from every other skip in a `N passed, M skipped`
+    tail, and a reader checking whether the quality gates ran sees a
+    green run and concludes they did.
 
-    Counted by matching the shared reason prefix, not by re-deriving the
-    marker, so a test that skips for an unrelated reason is not folded in.
+    An aggregate is not enough once a corpus exists, which is #1477 AC3.
+    The corpus covers 3 of the modules scaffolded in `tests/corpus/`, so
+    a lab-side run with `AELFRICE_CORPUS_ROOT` set reports a healthy
+    "N passed" while most of the tier skipped for want of rows — the
+    same misreading one level in. The three states are therefore
+    reported separately and by name:
+
+    * the whole tier skipped, because no corpus root is set at all;
+    * a named module skipped, because it is missing or holds no rows;
+    * a bench-gated test actually executed.
+
+    Classification is by skip *reason*, not by re-deriving which tests
+    carry the marker, so an unrelated skip inside a bench-gated module
+    is not folded in. Executed tests are counted off the marker, which
+    is the only place that signal survives to summary time.
     """
-    skipped = terminalreporter.stats.get("skipped", [])
-    n = sum(
+    stats = terminalreporter.stats
+    tier_skips = 0
+    by_module: dict[tuple[str, str], int] = {}
+    for rep in stats.get("skipped", []):
+        reason = _skip_reason(rep)
+        if CORPUS_ENV_VAR in reason:
+            tier_skips += 1
+            continue
+        m = _MODULE_SKIP_RE.search(reason)
+        if m:
+            key = (m.group("module"), m.group("why"))
+            by_module[key] = by_module.get(key, 0) + 1
+
+    executed = sum(
         1
-        for rep in skipped
-        if CORPUS_ENV_VAR in str(getattr(rep, "longrepr", ("", "", ""))[2])
+        for outcome in ("passed", "failed")
+        for rep in stats.get(outcome, [])
+        if "bench_gated" in getattr(rep, "keywords", {})
     )
-    if not n:
+
+    if not (tier_skips or by_module or executed):
         return
+
     terminalreporter.write_sep("-", "bench-gate tier")
-    terminalreporter.write_line(
-        f"{n} bench-gate tests skipped: lab corpus absent by design "
-        f"(#1420 §3). These are the retrieval / compression / clustering "
-        f"quality gates; they did NOT run. Set {CORPUS_ENV_VAR} to a corpus "
-        f"root to execute them."
-    )
+    if tier_skips:
+        terminalreporter.write_line(
+            f"{tier_skips} bench-gate tests skipped: lab corpus absent by "
+            f"design (#1420 §3). These are the retrieval / compression / "
+            f"clustering quality gates; they did NOT run. Set "
+            f"{CORPUS_ENV_VAR} to a corpus root to execute them."
+        )
+    if executed:
+        terminalreporter.write_line(
+            f"{executed} bench-gate tests executed against the corpus."
+        )
+    for (module, why), n in sorted(by_module.items()):
+        terminalreporter.write_line(
+            f"  module {module!r}: {n} test(s) skipped — the corpus module "
+            f"is {why}. This module's gate has no verdict."
+        )
 
 
 @pytest.fixture(scope="session")
