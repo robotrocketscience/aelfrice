@@ -1,0 +1,151 @@
+name: push-trigger-heartbeat
+
+# #1423 AC4 — notice when post-merge runs stop, instead of finding out by
+# archaeology 666 commits later.
+#
+# The failure this detects has already happened once. `merge-train.yml`
+# fast-forwards `main` with `secrets.GITHUB_TOKEN`, GitHub raises no workflow
+# runs from that token, and so every `on: push: branches: [main]` workflow
+# silently stopped on 2026-07-21 — including `release-drafter.yml` and
+# `flag-stale-open-prs.yml`, which have no other trigger and were therefore not
+# running at all. Nothing objected, because "no run" is an absence and every
+# signal in the system was an absence test.
+#
+# So this asserts presence. For each workflow that declares `push:
+# branches: [main]` — enumerated by `scripts/push_trigger_workflows.py`, the
+# same source `merge-train.yml` dispatches from, so the two can never disagree
+# about the set — take the newest run on `main` that arrived by `push` or by
+# `workflow_dispatch` and compare it against the newest commit on `main`.
+#
+# Both events, not just the dispatch the train currently fires: if the root
+# cause is ever fixed the other way (a PAT or App token re-arming `on: push`),
+# this must keep passing rather than start crying.
+#
+# Neither `schedule` nor `pull_request` runs count. They are precisely the
+# masking that made this invisible for `codeql.yml` and `zizmor.yml`, whose
+# weekly cron kept producing recent runs on `main` while the post-merge arm was
+# dead.
+#
+# The staleness comparison is against `main`'s head commit rather than against
+# `now`, so a genuinely quiet fortnight does not open an issue: the condition
+# is "`main` moved and this workflow did not follow", which is the defect.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: push-trigger-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Report push:main workflows that main has outrun
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Days `main` may move without a workflow following before this is a
+          # defect rather than a slow week. The observed outage ran 20+ days
+          # before anyone noticed; 14 catches the next one inside one window.
+          MAX_LAG_DAYS: '14'
+          TITLE: 'ci: post-merge workflow runs have stopped on main'
+        run: |
+          set -euo pipefail
+
+          head_date=$(gh api "repos/${REPO}/commits/main" \
+              --jq '.commit.committer.date')
+          head_ts=$(date -u -d "${head_date}" +%s)
+          echo "main head committed ${head_date}"
+
+          workflows=$(python3 scripts/push_trigger_workflows.py --branch main)
+          if [ -z "${workflows}" ]; then
+              echo "::error::no push:main workflows enumerated — the heartbeat" \
+                   "would pass vacuously (#1423)"
+              exit 1
+          fi
+
+          rows=""
+          for wf in ${workflows}; do
+              newest=""
+              for ev in push workflow_dispatch; do
+                  created=$(gh api \
+                      "repos/${REPO}/actions/workflows/${wf}/runs?branch=main&event=${ev}&per_page=1" \
+                      --jq '.workflow_runs[0].created_at // ""')
+                  # ISO-8601 UTC sorts lexicographically, so `>` is a date
+                  # comparison here without another `date` call.
+                  if [ -n "${created}" ] \
+                      && { [ -z "${newest}" ] || [ "${created}" \> "${newest}" ]; }; then
+                      newest="${created}"
+                  fi
+              done
+
+              if [ -z "${newest}" ]; then
+                  echo "STALE ${wf}: no push or workflow_dispatch run on main, ever"
+                  rows="${rows}| \`${wf}\` | never | n/a |"$'\n'
+                  continue
+              fi
+
+              run_ts=$(date -u -d "${newest}" +%s)
+              lag=$(( (head_ts - run_ts) / 86400 ))
+              if [ "${lag}" -gt "${MAX_LAG_DAYS}" ]; then
+                  echo "STALE ${wf}: last ran ${newest}, main is ${lag}d ahead"
+                  rows="${rows}| \`${wf}\` | ${newest} | ${lag} |"$'\n'
+              else
+                  echo "ok ${wf}: last ran ${newest} (${lag}d behind main head)"
+              fi
+          done
+
+          if [ -z "${rows}" ]; then
+              echo "every push:main workflow has followed main within ${MAX_LAG_DAYS} days."
+              exit 0
+          fi
+
+          {
+              echo "\`main\` has moved more than ${MAX_LAG_DAYS} days ahead of the last"
+              echo "post-merge run of the workflows below. Their \`on: push\` arm is"
+              echo "either dead again or never fired, so whatever they check is not"
+              echo "being checked on \`main\`."
+              echo ""
+              echo "| workflow | newest \`push\`/\`workflow_dispatch\` run on \`main\` | days behind head |"
+              echo "|---|---|---|"
+              printf '%s' "${rows}"
+              echo ""
+              echo "\`main\` head: \`${head_date}\`"
+              echo ""
+              echo "First thing to check is the \`[6b/6] dispatching post-merge workflows\`"
+              echo "step in the most recent \`merge-train\` run: it is non-fatal by design,"
+              echo "so a failing dispatch logs a warning and lets the merge land."
+              echo ""
+              echo "Opened by \`.github/workflows/push-trigger-heartbeat.yml\` (#1423)."
+          } > /tmp/heartbeat.md
+
+          existing=$(gh issue list --repo "${REPO}" --state open --limit 200 \
+              --json number,title \
+              | jq -r --arg t "${TITLE}" \
+                  'map(select(.title == $t)) | .[0].number // ""')
+
+          if [ -n "${existing}" ]; then
+              echo "updating existing tracking issue #${existing}"
+              gh issue comment "${existing}" --repo "${REPO}" \
+                  --body-file /tmp/heartbeat.md
+          else
+              gh issue create --repo "${REPO}" --title "${TITLE}" \
+                  --label bug --body-file /tmp/heartbeat.md
+          fi
