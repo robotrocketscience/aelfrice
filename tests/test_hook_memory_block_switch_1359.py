@@ -1103,10 +1103,12 @@ def test_the_switch_suppresses_cadence_resume_and_spares_cadence_checkpoint(
     the resume block past the switch left the single-arm version of this
     test green.
 
-    The control arm matters as much as the assertion: with the switch ON,
-    *both* halves must appear. Without it the suppression arm passes on a
-    fixture where the cadence stubs never fired at all, which is the same
-    output a correctly-suppressed run produces for the wrong reason.
+    The control arm is what stops the resume half's absence assertion
+    passing vacuously: `<cadence-resume>` not in `off` is the only
+    assertion about that half a never-fired stub would satisfy, so the ON
+    arm is what proves the stub fires at all. The checkpoint half needs no
+    such help -- it is asserted positively on the suppression arm, so a
+    dead checkpoint fixture reds that arm on its own.
 
     Falsifiable in both directions -- move the `<cadence-checkpoint>` write
     inside the envelope and the suppression arm fails; gate the
