@@ -311,3 +311,93 @@ def test_classifier_and_inventory_agree(
     assert inventoried is with_receipt
     assert classified == inventoried
     assert (lifecycle.upgrade_advice().context == "uv_tool") == inventoried
+
+
+# --- the auto-install gate stays shut on Windows -------------------------
+
+
+def _windows_uv_tool_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Make this process look like a default-layout Windows uv-tool install."""
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.setattr(lifecycle, "_is_windows", lambda: True)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    tool_env = (
+        tmp_path / "Roaming" / "uv" / "data" / "tools" / "aelfrice"
+    )
+    _receipt(tool_env)
+    monkeypatch.setattr(sys, "prefix", str(tool_env))
+    monkeypatch.setattr(
+        sys, "executable", str(tool_env / "Scripts" / "python.exe"),
+    )
+
+
+def test_auto_install_gate_stays_shut_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Operator ruling on #1431: fix the classifier, keep the gate shut.
+
+    The pairing is the whole point. `lifecycle._running_from_uv_tool()`
+    returning True is the classifier working — that is the fix. The gate
+    reading False on the *same* state is the ruling: correcting the
+    classifier would otherwise let `aelf` start rewriting
+    `~/.claude/settings.json` on a platform where it never has, because
+    the hook commands it writes resolve through a `bin` literal that is a
+    no-op on Windows.
+
+    A test that only asserted the gate is False would pass on a broken
+    classifier too, which is why both halves are asserted together.
+    """
+    from aelfrice import auto_install
+
+    _windows_uv_tool_process(monkeypatch, tmp_path)
+    monkeypatch.setattr(auto_install, "_is_windows", lambda: True)
+
+    assert lifecycle._running_from_uv_tool() is True
+    assert auto_install.is_running_from_uv_tool_install() is False
+
+
+def test_auto_install_gate_is_open_for_the_same_state_on_posix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The platform short-circuit, and only it, is what shuts the gate.
+
+    Identical process state; flip only the platform probe. Without this
+    the previous test is satisfied by a gate wired shut for any reason.
+    """
+    from aelfrice import auto_install
+
+    _windows_uv_tool_process(monkeypatch, tmp_path)
+    monkeypatch.setattr(auto_install, "_is_windows", lambda: False)
+
+    assert lifecycle._running_from_uv_tool() is True
+    assert auto_install.is_running_from_uv_tool_install() is True
+
+
+def test_auto_install_at_cli_entry_does_not_merge_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The gate is the only thing between that state and a settings write.
+
+    `auto_install_at_cli_entry` returns early on exactly three conditions:
+    the env opt-out, the host opt-out, and this gate. With the first two
+    unset, a merge attempt here is a real `~/.claude/settings.json`
+    rewrite on Windows.
+    """
+    from aelfrice import auto_install
+
+    _windows_uv_tool_process(monkeypatch, tmp_path)
+    monkeypatch.setattr(auto_install, "_is_windows", lambda: True)
+    monkeypatch.delenv("AELFRICE_NO_AUTO_INSTALL", raising=False)
+    monkeypatch.setattr(auto_install, "read_host_opt_outs", lambda _p: set())
+
+    called: list[str] = []
+
+    def _boom(*, installed_version: str) -> None:
+        called.append(installed_version)
+        raise AssertionError("auto-install merged on Windows")
+
+    monkeypatch.setattr(auto_install, "maybe_install_manifest", _boom)
+    auto_install.auto_install_at_cli_entry("9.9.9")
+    assert called == []

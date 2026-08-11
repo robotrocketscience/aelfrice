@@ -818,8 +818,37 @@ def is_disabled_via_env(env: dict[str, str] | None = None) -> bool:
     return bool(src.get(NO_AUTO_INSTALL_ENV, "").strip())
 
 
+def _is_windows() -> bool:
+    """Whether this process is running on Windows, read at call time.
+
+    A probe rather than a `windows: bool = os.name == "nt"` parameter
+    default: a default binds once at definition time, which makes the
+    branch permanently unreachable from a test and has shipped inert in
+    this repo before (#1489, #1412 review). Tests patch this function —
+    patching `os.name` itself is not an option, because `pathlib.Path()`
+    dispatches on it and a POSIX runner claiming to be Windows raises
+    `UnsupportedOperation` on the next `Path(...)`.
+    """
+    return os.name == "nt"
+
+
 def is_running_from_uv_tool_install() -> bool:
     """True iff the running aelfrice is the user's installed `uv tool` copy.
+
+    **Shut on Windows regardless**, per the operator ruling on #1431:
+    "Fix the classifier; keep the auto-install gate shut on Windows
+    behind an explicit `os.name` check." Before #1431 the classifier
+    hard-coded the POSIX tools root, so a Windows uv-tool install never
+    reached this gate and auto-install has never once run there. Making
+    the classifier correct would open it for the first time, and `aelf`
+    would begin rewriting `~/.claude/settings.json` on a platform where
+    the hook commands it writes resolve through `setup.py`'s `bin`
+    literal — a no-op on Windows, leaving `shutil.which` as the only
+    resolver: workable for user scope, silently wrong for project scope.
+    A patch that stops routing Windows users through a `pip uninstall`
+    migration must not simultaneously start writing their global
+    settings on an untested platform. Opening the gate is a follow-up
+    once `setup.py` is portable.
 
     Auto-install rewrites `~/.claude/settings.json`, which is a global
     user-config file. Invoking `uv run aelf` (or `python -m aelfrice.cli`)
@@ -845,6 +874,8 @@ def is_running_from_uv_tool_install() -> bool:
     invoke `aelf setup` explicitly. The `AELFRICE_NO_AUTO_INSTALL`
     env override remains the symmetric escape hatch for uv-tool users.
     """
+    if _is_windows():
+        return False
     # Local import keeps `auto_install` importable when `lifecycle` has
     # not yet been imported by the caller (e.g. during early CLI bootstrap).
     from aelfrice.lifecycle import _running_from_uv_tool
