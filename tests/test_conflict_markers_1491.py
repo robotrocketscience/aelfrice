@@ -57,11 +57,36 @@ def test_the_v4_incident_shape_is_caught() -> None:
     assert found[2][1].startswith(CLOSE)
 
 
-def test_diff3_style_base_marker_is_caught() -> None:
-    """`merge.conflictStyle=diff3` writes a fourth marker."""
-    text = "\n".join([f"{OPEN} HEAD", "a", BASE, "base", SEP, "b", f"{CLOSE} x"])
+@pytest.mark.parametrize("ancestor", [
+    BASE,
+    f"{BASE} merged common ancestors",
+    f"{BASE} main",
+])
+def test_diff3_style_base_marker_is_caught(ancestor: str) -> None:
+    """`merge.conflictStyle=diff3` writes a fourth marker.
+
+    Bare from `git merge-file`, labelled from a merge or a
+    `--conflict=diff3` checkout. The labelled forms are the ones a real
+    merge produces, so a rule matching only the bare line would miss
+    every marker this repo could actually acquire.
+    """
+    text = "\n".join([f"{OPEN} HEAD", "a", ancestor, "base", SEP, "b",
+                      f"{CLOSE} x"])
 
     assert [n for n, _ in find_markers(text)] == [1, 3, 5, 7]
+
+
+def test_a_markdown_table_row_of_empty_cells_is_not_a_conflict() -> None:
+    """The control for the ancestor marker, and why it is conditional.
+
+    Seven `|` is a table row of six empty cells. It is legal Markdown
+    and would be reported by an unconditional rule — so the ancestor
+    marker, like the separator, counts only beside an open or close
+    marker.
+    """
+    table = "\n".join(["| a | b |", "| - | - |", BASE, "| c | d |"])
+
+    assert find_markers(table) == []
 
 
 def test_a_setext_underline_alone_is_not_a_conflict() -> None:
@@ -99,6 +124,54 @@ def test_scan_skips_binary_without_counting_it(tmp_path: Path) -> None:
 
     assert read == 1, "the binary must not be counted as scanned"
     assert findings == []
+
+
+def test_a_symlink_is_read_as_its_target_string(tmp_path: Path) -> None:
+    """git stores a symlink's target, so that is what gets scanned.
+
+    Following the link would scan whatever it points at — content that
+    may be outside the repository and tracked by nobody — and would
+    report findings against a path whose committed blob is clean.
+    """
+    outside = tmp_path / "outside.md"
+    outside.write_text(_conflicted("x", "y"), encoding="utf-8")
+    link = tmp_path / "link.md"
+    link.symlink_to(outside)
+
+    read, findings = scan([link])
+
+    assert read == 1
+    assert findings == [], "the link's own content is a path, not residue"
+
+
+def test_a_broken_symlink_is_read_rather_than_skipped(tmp_path: Path) -> None:
+    """A dangling link still has content: the target string git stored."""
+    link = tmp_path / "dangling.md"
+    link.symlink_to(tmp_path / "does-not-exist.md")
+
+    read, findings = scan([link])
+
+    assert read == 1, "a broken link must not silently shrink the scan"
+    assert findings == []
+
+
+def test_an_unreadable_file_fails_the_scan_instead_of_shrinking_it(
+    tmp_path: Path,
+) -> None:
+    """The hole a bare `except OSError: continue` leaves.
+
+    A skip is indistinguishable from a clean file in the summary, so a
+    path that cannot be read would quietly reduce coverage while the
+    check went on reporting success. It raises instead, and `main`
+    turns that into exit 2 rather than exit 0.
+    """
+    missing = tmp_path / "vanished.md"
+
+    with pytest.raises(check_conflict_markers.UnreadableFile) as caught:
+        scan([missing])
+
+    assert "vanished.md" in str(caught.value)
+    assert check_conflict_markers.main(["prog", str(missing)]) == 2
 
 
 def test_scan_reports_the_file_and_line(tmp_path: Path) -> None:
