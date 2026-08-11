@@ -161,6 +161,14 @@ jobs:
       # has rebased on top of it.
       - name: CHANGELOG entries are distinct
         run: python3 scripts/check_changelog_dupes.py CHANGELOG/*.md CHANGELOG.md
+      # #1491 — also every-PR, and repo-wide rather than changelog-shaped.
+      # Markers reached main in CHANGELOG/v4.md and, in the #1362/#1378
+      # rebase, in a design doc; a guard scoped to whichever file was hit
+      # last is a guard for the previous incident. pytest asserts the same
+      # thing, but this reports it as a file annotation on the offending
+      # line rather than as a test failure the author has to locate.
+      - name: No merge-conflict markers are committed
+        run: python3 scripts/check_conflict_markers.py
       - name: Detect release PR and verify docs
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
