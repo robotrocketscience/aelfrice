@@ -24,6 +24,9 @@ on:
       - 'tests/test_doctor_windows_prune_1412.py'
       - '.github/workflows/windows-smoke.yml'
       - 'pyproject.toml'
+      # #1493 — the wheel job packages the tree, so a lock change can move
+      # what it installs without touching src/ or pyproject.toml.
+      - 'uv.lock'
 
 permissions:
   contents: read
@@ -167,3 +170,110 @@ jobs:
           assert d.is_dir()
           print('encoded ->', encoded)
           "
+
+  # -------------------------------------------------------------------------
+  # #1493 / #1417 — the same host, but the artifact users install.
+  #
+  # The job above answers "does the source tree run on Windows". This one
+  # answers "does the wheel", which is a different question and the one
+  # #1417 is actually about: that issue reproduces against `aelfrice==4.2.0`
+  # from PyPI, and the evidence that `main` fixes it is a source-checkout
+  # run. Nothing had ever exercised the packaged artifact on this platform.
+  #
+  # Everything here runs from `$RUNNER_TEMP`, not the checkout. With a
+  # `src/` layout a cwd import cannot reach the package anyway, but the
+  # distinction is the whole point of the job and is worth being structural
+  # rather than incidental — a future flat-layout or a stray `conftest.py`
+  # would otherwise let the working tree satisfy the assertions.
+  wheel:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Install that wheel into a clean environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/wheelenv"
+          # Exactly one wheel, named. A glob passed straight to `uv pip
+          # install` would install whatever it matched and say nothing if
+          # the build had produced two.
+          mapfile -t wheels < <(ls dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one wheel, got: ${wheels[*]}"
+            exit 1
+          fi
+          uv pip install --python "$RUNNER_TEMP/wheelenv/Scripts/python.exe" "${wheels[0]}"
+
+      - name: The installed console script starts
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/wheelenv/Scripts/aelf.exe" --version
+
+      - name: doctor reads the Codex host without crashing
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_HOME"
+          # doctor exits non-zero on structural failure, which is the
+          # correct outcome on a host with nothing installed. Only an
+          # import-time or path-handling crash fails this step.
+          out=$("$RUNNER_TEMP/wheelenv/Scripts/aelf.exe" doctor --host codex 2>&1) || true
+          echo "$out"
+          if grep -qiE 'ModuleNotFoundError|ImportError|Traceback' <<<"$out"; then
+            echo "::error::aelf doctor --host codex crashed on the installed wheel"
+            exit 1
+          fi
+
+      # #1412: setup was not idempotent on native Windows — every hook group
+      # doubled on a second run. Both runs exit 0, so the exit code proves
+      # nothing; the assertion has to be on a count. doctor prints one:
+      # `aelfrice_handlers=N`.
+      - name: setup is idempotent, and unsetup removes what it installed
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-idem
+        run: |
+          set -euo pipefail
+          AELF="$RUNNER_TEMP/wheelenv/Scripts/aelf.exe"
+          mkdir -p "$CODEX_HOME"
+
+          handlers() {
+            "$AELF" doctor --host codex 2>&1 \
+              | grep -oE 'aelfrice_handlers=[0-9]+' \
+              | head -1 | cut -d= -f2
+          }
+
+          "$AELF" setup --host codex
+          first="$(handlers)"
+          if [ -z "$first" ] || [ "$first" -eq 0 ]; then
+            echo "::error::setup installed nothing (aelfrice_handlers=${first:-<absent>})"
+            exit 1
+          fi
+
+          "$AELF" setup --host codex
+          second="$(handlers)"
+          if [ "$second" != "$first" ]; then
+            echo "::error::setup is not idempotent: $first handlers became $second"
+            exit 1
+          fi
+          echo "idempotent at $first handlers"
+
+          "$AELF" unsetup --host codex
+          after="$(handlers)"
+          if [ "${after:-0}" -ne 0 ]; then
+            echo "::error::unsetup left $after handler(s) behind"
+            exit 1
+          fi
