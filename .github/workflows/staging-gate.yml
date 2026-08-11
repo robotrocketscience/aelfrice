@@ -247,7 +247,18 @@ jobs:
           # both — never collated, never reported stranded. Broader
           # means the only way to satisfy this step is a directory the
           # collator has genuinely emptied.
-          leftover=$(find CHANGELOG/unreleased -mindepth 1 ! -path 'CHANGELOG/unreleased/README.md' 2>/dev/null | sort)
+          # The directory is checked before the scan, not by the scan.
+          # This block opens `set -euo pipefail`, so a missing directory
+          # makes `find` exit 1 and the assignment itself terminates the
+          # step — with `2>/dev/null` eating the only diagnostic, and the
+          # README and ROADMAP checks below never reached. The other two
+          # call sites already name the missing directory by path; this
+          # one now does too.
+          if [ ! -d CHANGELOG/unreleased ]; then
+            echo "::error::CHANGELOG/unreleased is missing. It is a tracked directory (it holds README.md); restore it rather than removing the convention."
+            exit 1
+          fi
+          leftover=$(find CHANGELOG/unreleased -mindepth 1 ! -path 'CHANGELOG/unreleased/README.md' | sort)
           if [ -n "$leftover" ]; then
             echo "::error file=${changelog_file}::Release PR detected (${base_ver} -> ${head_ver}) but CHANGELOG/unreleased/ is not empty. Collate the entries: python3 scripts/collate_changelog.py --version ${head_ver} --date YYYY-MM-DD. Anything listed below that the collator will not collect (a suffix other than '.md', a subdirectory) it also refuses by name — rename or remove it."
             printf '%s\n' "$leftover" | sed 's/^/  /'

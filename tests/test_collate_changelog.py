@@ -22,6 +22,7 @@ parser it is checking.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -552,24 +553,53 @@ _WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
 
 
 def _leftover_command() -> str:
-    """The workflow's own `leftover=$(...)` scan, as written."""
-    for line in _WORKFLOW.read_text(encoding="utf-8").split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("leftover=$(") and "unreleased" in stripped:
-            return stripped
+    """The workflow's drain check, from its directory guard onward.
+
+    The guard is part of the predicate, not preamble: the step opens
+    `set -euo pipefail`, so without it a missing directory makes `find`
+    exit 1 and the assignment itself kills the step. Extracting the
+    assignment alone would leave that invisible to every test here.
+    """
+    lines = _WORKFLOW.read_text(encoding="utf-8").split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith("if [ ! -d CHANGELOG/unreleased ]"):
+            start = i
+        if line.strip().startswith("leftover=$(") and "unreleased" in line:
+            assert start is not None, (
+                "the drain check lost its directory guard; under "
+                "`set -e` the assignment becomes the failure"
+            )
+            body = lines[start:i + 1]
+            indent = len(body[0]) - len(body[0].lstrip())
+            return "\n".join(ln[indent:] for ln in body)
     raise AssertionError(
         "release-docs-check has no CHANGELOG/unreleased drain check"
     )
 
 
-def _run_leftover(root: Path) -> list[str]:
-    import subprocess
+def _run_leftover(root: Path) -> subprocess.CompletedProcess[str]:
+    """Run the predicate in the shell the workflow actually gives it.
 
-    proc = subprocess.run(
-        ["sh", "-c", _leftover_command() + '\nprintf "%s\\n" "$leftover"'],
-        cwd=root, capture_output=True, text=True, check=True,
+    `set -euo pipefail` is the step's first line. Running without it was
+    what hid the missing-directory abort: the harness returned 0 and an
+    empty list where the shipped step exits 1.
+    """
+    return subprocess.run(
+        [
+            "sh", "-c",
+            "set -euo pipefail\n"
+            + _leftover_command()
+            + '\nprintf "%s\\n" "$leftover"',
+        ],
+        cwd=root, capture_output=True, text=True, check=False,
         timeout=20,
     )
+
+
+def _leftovers(root: Path) -> list[str]:
+    proc = _run_leftover(root)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
     return [line for line in proc.stdout.split("\n") if line]
 
 
@@ -580,7 +610,7 @@ def test_the_release_gate_lists_a_stranded_entry_file(tmp_path: Path) -> None:
     (directory / "README.md").write_text("note\n", encoding="utf-8")
     (directory / "1475-slug.md").write_text("### Fixed\n", encoding="utf-8")
 
-    assert _run_leftover(tmp_path) == ["CHANGELOG/unreleased/1475-slug.md"]
+    assert _leftovers(tmp_path) == ["CHANGELOG/unreleased/1475-slug.md"]
 
 
 @pytest.mark.timeout(30)
@@ -590,7 +620,28 @@ def test_the_release_gate_ignores_the_directory_note(tmp_path: Path) -> None:
     directory.mkdir(parents=True)
     (directory / "README.md").write_text("note\n", encoding="utf-8")
 
-    assert _run_leftover(tmp_path) == []
+    assert _leftovers(tmp_path) == []
+
+
+@pytest.mark.timeout(30)
+def test_the_release_gate_names_a_missing_entry_directory(
+    tmp_path: Path,
+) -> None:
+    """The third call site now names the path the other two already do.
+
+    Without the guard this is not a nicer message, it is a different
+    step: `find` exits 1 on a missing directory, `set -euo pipefail`
+    turns the assignment into the step's failure, and `2>/dev/null`
+    swallows the one diagnostic — so the README roadmap check and the
+    ROADMAP warning below it never run either.
+    """
+    (tmp_path / "CHANGELOG").mkdir()
+
+    proc = _run_leftover(tmp_path)
+
+    assert proc.returncode == 1
+    assert "CHANGELOG/unreleased" in proc.stdout + proc.stderr
+    assert "::error" in proc.stdout + proc.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +728,6 @@ def test_the_three_call_sites_see_the_same_paths(tmp_path: Path) -> None:
     )
 
     entries, stray = scan_entry_dir(directory)
-    assert sorted(_run_leftover(tmp_path)) == sorted(
+    assert sorted(_leftovers(tmp_path)) == sorted(
         str(p.relative_to(tmp_path)) for p in entries + stray
     )
