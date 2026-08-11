@@ -12,6 +12,13 @@ on:
       - '.github/actions/**'
   schedule:
     - cron: '0 12 * * 1'
+  # #1423: the `push` arm above cannot fire — the merge train FF-pushes with
+  # `secrets.GITHUB_TOKEN` and GitHub raises no workflow runs from that token.
+  # `merge-train.yml` dispatches this workflow after a successful FF. `paths:`
+  # filters do not apply to a dispatch, so a dispatched run scans on every
+  # merge rather than only on merges that touched `.github/` — a uvx run, and
+  # the alternative is teaching the train which filters to honour.
+  workflow_dispatch:
 
 permissions:
   contents: read

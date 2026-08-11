@@ -38,6 +38,13 @@ on:
       - '.github/workflows/e2e.yml'
   push:
     branches: [main]
+  # #1423: the merge train FF-pushes with `secrets.GITHUB_TOKEN`, and GitHub
+  # raises no workflow runs from that token, so the `push` arm above has not
+  # fired since 2026-07-21. `merge-train.yml` dispatches this workflow after a
+  # successful FF instead. `paths:` filters do not apply to a dispatch, so a
+  # dispatched run always executes the full matrix — intended here, since the
+  # point is a post-merge run of `main`.
+  workflow_dispatch:
 
 permissions:
   contents: read

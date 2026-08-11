@@ -43,6 +43,13 @@ on:
       - 'uv.lock'
   push:
     branches: [main]
+  # #1423: the `push` arm above cannot fire — the merge train FF-pushes with
+  # `secrets.GITHUB_TOKEN` and GitHub raises no workflow runs from that token,
+  # so the "re-asserts post-merge" half of the surface described above has been
+  # inert since 2026-07-21. `merge-train.yml` dispatches this after a successful
+  # FF; the step summary records `workflow_dispatch` as the event instead of
+  # `push`.
+  workflow_dispatch:
 
 permissions:
   contents: read
