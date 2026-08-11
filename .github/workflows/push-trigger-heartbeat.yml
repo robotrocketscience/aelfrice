@@ -1,7 +1,7 @@
 name: push-trigger-heartbeat
 
 # #1423 AC4 — notice when post-merge runs stop, instead of finding out by
-# archaeology 666 commits later.
+# archaeology 942 commits later.
 #
 # The failure this detects has already happened once. `merge-train.yml`
 # fast-forwards `main` with `secrets.GITHUB_TOKEN`, GitHub raises no workflow

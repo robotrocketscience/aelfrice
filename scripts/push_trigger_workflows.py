@@ -7,7 +7,7 @@ and GitHub does not start workflow runs from events raised by that token —
 the documented recursion guard. So since the merge train became the merge
 path, **no** `on: push: branches: [main]` workflow has run: the newest
 push-event run across seven of them is `3421cd73`, 2026-07-21, and `main` has
-moved 666+ commits since. Two of the seven (`release-drafter.yml`,
+moved 942 commits since (measured 2026-08-11). Two of the seven (`release-drafter.yml`,
 `flag-stale-open-prs.yml`) have no other trigger at all, so they were not
 running late — they were not running.
 

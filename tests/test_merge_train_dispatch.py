@@ -5,7 +5,7 @@
 GitHub raises no workflow runs from events made with that token — the
 documented recursion guard, whose only exceptions are `workflow_dispatch` and
 `repository_dispatch`. So every `on: push: branches: [main]` workflow in this
-repo stopped on 2026-07-21 and `main` moved 666+ commits with none of them
+repo stopped on 2026-07-21 and `main` moved 942 commits with none of them
 firing. Two of them (`release-drafter`, `flag-stale-open-prs`) have no second
 trigger, so they were not late — they were off.
 
@@ -397,7 +397,7 @@ def test_the_heartbeat_ignores_schedule_and_pull_request_runs() -> None:
 
     `codeql.yml` and `zizmor.yml` both carry a weekly cron, so their newest run
     on `main` stayed recent through the entire outage. A heartbeat that counted
-    it would have reported them healthy for 666 commits.
+    it would have reported them healthy for all 942 of them.
     """
     code = "\n".join(_code_lines(_HEARTBEAT))
     assert "event=${ev}" in code, (
