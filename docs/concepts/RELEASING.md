@@ -35,9 +35,34 @@ Semver in force. Current line: v4.x. The historical `0.x.y` milestones on the v1
    uv run aelf --help              # spot-check CLI
    uv build                        # wheels build clean
    ```
-7. Open PR `release: vX.Y.Z`. Body = CHANGELOG entries.
-8. `staging-gate` must be green — its jobs are `secrets-scan`, `pattern-scan`, `history-scan`, `release-docs-check`, and the commit-msg / PR-title / PR-body prefix checks — and the `pytest` jobs in the separate `ci.yml` workflow (Python 3.12 / 3.13) must pass.
-9. Merge — linear history, no merge commits.
+7. **Run the bench-gate tier and paste its output into the release PR** (#1477).
+
+   ```bash
+   scripts/run_bench_gate.sh          # defaults AELFRICE_CORPUS_ROOT to the lab corpus
+   ```
+
+   This is the only scheduled run the quality tier gets, and it is mandatory
+   rather than advisory. The retrieval, compression and clustering gates skip
+   on every public CI run by design (#1420 §3), so a green `pytest` says
+   nothing about them — several defaults are held OFF pending exactly these
+   verdicts, and a default parked on a measurement nobody takes is parked
+   forever.
+
+   Read the `bench-gate tier` summary block, not the pass count. It reports
+   three separate states, and only the first is a verdict: tests **executed**
+   against the corpus, tests skipped because a named corpus **module** is
+   missing or empty, and the whole tier skipped because no corpus root was
+   set at all. The corpus covers a minority of the scaffolded modules, so a
+   run that reports "N passed" while most modules skipped is the normal case
+   and must be recorded as such — paste the block verbatim rather than
+   summarising it.
+
+   If the tier could not run at all, say so in the PR body and name the
+   reason. Do not cut on a silent skip.
+
+8. Open PR `release: vX.Y.Z`. Body = CHANGELOG entries + the bench-gate block.
+9. `staging-gate` must be green — its jobs are `secrets-scan`, `pattern-scan`, `history-scan`, `release-docs-check`, and the commit-msg / PR-title / PR-body prefix checks — and the `pytest` jobs in the separate `ci.yml` workflow (Python 3.12 / 3.13) must pass.
+10. Merge — linear history, no merge commits.
 
 ## Tag and publish
 

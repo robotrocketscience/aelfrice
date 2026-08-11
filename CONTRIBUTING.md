@@ -128,6 +128,23 @@ label gate on fork PRs) are all real, but they amount to a standing security
 commitment taken on to move one quality signal earlier. Not worth it at this
 repository's size.
 
+**Where it does run: at the release cut, and nowhere else** (#1477, operator
+ruling 2026-08-11). `docs/concepts/RELEASING.md` step 7 makes
+`scripts/run_bench_gate.sh` a mandatory step whose output is pasted into the
+release PR. There is no cron and no lab-side CI job — the private repository
+has no CI at all, so "runs lab-side" was never true of anything, and a job
+built there today would exercise a minority of the tier because the corpus
+covers only some of the scaffolded modules. The release cut is the moment the
+verdicts are actually consumed, and a checklist step that blocks the cut is the
+one schedule that cannot die unnoticed.
+
+So read the tier's own summary block, not the pass count. It separates three
+states: tests that **executed** against the corpus, tests skipped because a
+named corpus **module** is missing or empty, and the whole tier skipped for
+want of a corpus root. Only the first is a verdict. A run reporting "N passed"
+while most modules skipped is the normal case today, and the block says which
+is which.
+
 If you are changing retrieval ranking, compression, or clustering behaviour,
 say so in the PR body and expect the quality evidence to come from a
 corpus-bearing run rather than from CI being green.
