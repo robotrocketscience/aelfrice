@@ -143,6 +143,45 @@ def load_corpus_module(root: Path, module: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# #1431 — keep the suite out of the contributor's ambient uv/XDG config.
+# ---------------------------------------------------------------------------
+
+# uv-tool detection is env-first: `UV_TOOL_DIR` wins outright, then
+# `XDG_DATA_HOME` / `APPDATA` select the platform default
+# (`lifecycle._uv_tool_dir`). Every test that builds a fake tools tree under
+# a sandbox home is therefore only correct on a machine where none of these
+# are exported — green on CI, red for any contributor who sets one, and
+# `UV_TOOL_DIR` is the very override #1431 added. Measured on the #1431
+# branch before this fixture: `XDG_DATA_HOME=/tmp/xdgfake pytest
+# tests/test_uv_tool_layout_1431.py tests/test_upgrade_ux.py
+# tests/test_auto_install.py` gave 10 failed / 65 passed against 75 passed
+# with the variable unset.
+#
+# Cleared session-wide rather than per-module: any future consumer of uv's
+# layout inherits the isolation, and a test that *wants* one of these sets
+# it explicitly with its own function-scoped monkeypatch.
+_AMBIENT_LAYOUT_ENV_VARS: tuple[str, ...] = (
+    "UV_TOOL_DIR",
+    "UV_TOOL_BIN_DIR",
+    "XDG_DATA_HOME",
+    "XDG_BIN_HOME",
+    "APPDATA",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clear_ambient_layout_env() -> Iterator[None]:
+    """Unset uv/XDG layout variables for the whole suite (#1431)."""
+    mp = pytest.MonkeyPatch()
+    try:
+        for name in _AMBIENT_LAYOUT_ENV_VARS:
+            mp.delenv(name, raising=False)
+        yield
+    finally:
+        mp.undo()
+
+
+# ---------------------------------------------------------------------------
 # #1320 — keep the suite out of the contributor's real home directory.
 # ---------------------------------------------------------------------------
 
