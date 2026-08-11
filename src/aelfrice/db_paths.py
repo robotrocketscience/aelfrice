@@ -187,6 +187,12 @@ def _seed_identity_sidecar(store_dir: Path, sidecar: Path, path_derived: str) ->
             os.link(tmp, sidecar)
             return path_derived
         except OSError:
+            # The seed lost a race, or the filesystem has no hard links.
+            # Both mean "someone else may already have named this repo",
+            # and the answer to that is the read two lines down, not an
+            # error: whatever is on disk wins, and if nothing is, the
+            # `os.replace` below seeds it anyway. Raising here would make
+            # a second concurrent open fail rather than agree.
             pass
         existing = _first_sidecar_entry(sidecar)
         if existing is not None:
@@ -252,6 +258,12 @@ def _durable_identity(
                 with sidecar.open("a", encoding="utf-8") as fh:
                     fh.write(f"{terminator}{path_derived}\n")
             except OSError:
+                # The alias line is a record of which spellings have been
+                # seen, read by nobody but a human debugging an identity
+                # mismatch. `canonical` is already resolved and returned
+                # below, so failing to append costs a diagnostic and
+                # nothing else — a read-only checkout must not lose its
+                # identity over it.
                 pass
         return canonical
 
