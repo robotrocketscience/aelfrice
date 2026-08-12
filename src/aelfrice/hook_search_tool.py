@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Final, cast
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 QUERY_TOKEN_LIMIT: Final[int] = 5
 """Maximum number of tokens joined into the FTS5 OR query.
@@ -834,6 +834,7 @@ def main(
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    ensure_utf8_streams((sout, serr))
     try:
         payload = _read_payload(sin, serr)
         if payload is None:

@@ -43,7 +43,7 @@ import sys
 import traceback
 from typing import IO, Final, cast
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 MESSAGE_BYTE_CAP: Final[int] = 4096
 """Truncate commit messages above this many bytes before extraction.
@@ -255,6 +255,7 @@ def main(
     """Hook entry point. Always returns 0 (non-blocking contract)."""
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
+    ensure_utf8_streams((serr,))
     try:
         payload = _read_payload(sin, serr)
         if payload is None:

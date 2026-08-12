@@ -46,7 +46,7 @@ import sys
 import traceback
 from typing import IO, Final, cast
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 AGENT_TOOL_NAMES: Final[tuple[str, ...]] = ("Agent", "Task")
 """Exact tool names treated as a subagent dispatch. "Agent" is the
@@ -269,6 +269,7 @@ def main(
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    ensure_utf8_streams((sout, serr))
     try:
         payload = _read_payload(sin, serr)
         if payload is None:

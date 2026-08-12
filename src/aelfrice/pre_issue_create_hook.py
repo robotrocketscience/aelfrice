@@ -49,7 +49,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -445,6 +445,7 @@ def run_guard(
 
 def main() -> None:
     """Entry point for the ``aelf-pre-issue-hook`` console script."""
+    ensure_utf8_streams()
     raw = read_payload_text(sys.stdin, sys.stderr) or ""
     if not raw.strip():
         sys.exit(0)

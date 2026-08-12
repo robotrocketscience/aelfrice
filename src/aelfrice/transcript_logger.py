@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Callable, Final, cast
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 # Imported lazily to keep module import fast for the hook hot path.
 # `_git_common_dir` is reused from cli.py; if that import is ever
@@ -823,6 +823,7 @@ def main(
     """Hook entry point. Always returns 0 (non-blocking contract)."""
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
+    ensure_utf8_streams((serr,))
     try:
         payload = _read_payload(sin, serr)
         if payload is None:

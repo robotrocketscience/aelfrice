@@ -59,7 +59,7 @@ import sys
 import traceback
 from typing import IO, Final, cast
 
-from aelfrice.stream_encoding import read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 # Tools whose successful invocation can land a memory fact file on disk.
 _WRITE_TOOLS: Final[frozenset[str]] = frozenset({"Write", "Edit", "MultiEdit"})
@@ -163,6 +163,7 @@ def main(
     """Hook entry point. Always returns 0 (non-blocking contract)."""
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
+    ensure_utf8_streams((serr,))
     try:
         payload = _read_payload(sin, serr)
         if payload is None:
