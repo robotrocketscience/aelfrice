@@ -72,7 +72,7 @@ from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
 from aelfrice.auto_install import auto_install_at_cli_entry
-from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
+from aelfrice.stream_encoding import ensure_utf8_stdin, ensure_utf8_streams
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
@@ -465,12 +465,20 @@ def _cmd_onboard_accept_classifications(
         return 2
     try:
         if src == "-":
-            # The file branch below already pins utf-8; the pipe branch
-            # used the process locale, so the same JSON parsed one way
-            # from a path and another way through a pipe (#1426).
-            raw = read_payload_text(sys.stdin, sys.stderr) or ""
+            # The branch below already pins utf-8; this one used the
+            # process locale, so the same JSON parsed one way from a path
+            # and another way through a pipe (#1426). `main()` now pins
+            # stdin itself, which fixes this read where it is rather than
+            # bypassing the text layer the rest of the CLI shares.
+            raw = sys.stdin.read()
         else:
             raw = Path(src).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"aelf onboard --accept-classifications: {src} is not valid UTF-8.",
+            file=sys.stderr,
+        )
+        return 1
     except OSError as exc:
         print(
             f"aelf onboard --accept-classifications: cannot read {src}: {exc}",
@@ -5128,26 +5136,27 @@ def _read_password(args: argparse.Namespace) -> str | None:
     Never accepts password on argv (would leak via ps/proc/cmdline).
     """
     if args.password_stdin:
-        # Read bytes, not locale-decoded text (#1426). `lifecycle` derives
-        # the scrypt key from `password.encode("utf-8")`, so a non-ASCII
-        # password decoded through cp1252 derives a *different* key and the
-        # archive can never be opened from a UTF-8 host. Refusing loudly is
-        # the only safe failure here: the alternative is an archive that
-        # encrypts fine today and is undecryptable forever.
-        buffer: Any = getattr(sys.stdin, "buffer", None)
-        if buffer is None:
+        # Stays on the text layer. `main()` has already pinned stdin to
+        # strict UTF-8 (#1426), which is what makes this read correct; the
+        # confirmation `input()` two statements up the caller has already
+        # drawn from this same wrapper, so reading `.buffer` here would
+        # find an empty pipe.
+        #
+        # Strict matters: `lifecycle` derives the scrypt key from
+        # `password.encode("utf-8")`, so a password mangled on the way in
+        # encrypts against a key that cannot be reproduced from a UTF-8
+        # host. Refusing is the only safe failure — the alternative is an
+        # archive that writes fine today and never opens again.
+        try:
             line = sys.stdin.readline()
-        else:
-            try:
-                line = bytes(buffer.readline()).decode("utf-8")
-            except UnicodeDecodeError:
-                print(
-                    "aelf: the password on stdin is not valid UTF-8. "
-                    "Re-send it as UTF-8 bytes; a locale-decoded password "
-                    "would derive a key this archive could not be opened with.",
-                    file=sys.stderr,
-                )
-                return None
+        except UnicodeDecodeError:
+            print(
+                "aelf: the password on stdin is not valid UTF-8. "
+                "Re-send it as UTF-8 bytes; a locale-decoded password "
+                "would derive a key this archive could not be opened with.",
+                file=sys.stderr,
+            )
+            return None
         return line.rstrip("\n\r")
     import getpass
 
@@ -10625,6 +10634,9 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     the argv, and always results in help being printed then a clean exit (0).
     """
     ensure_utf8_streams()
+    # Pinned here, at entry, because `TextIOWrapper.reconfigure` refuses
+    # to change the encoding once anything has read from the stream.
+    ensure_utf8_stdin()
     if out is None:
         out = sys.stdout
 

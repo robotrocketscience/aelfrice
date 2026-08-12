@@ -73,6 +73,42 @@ def ensure_utf8_streams(streams: tuple[IO[str], ...] | None = None) -> None:
             continue
 
 
+def ensure_utf8_stdin() -> None:
+    """Pin `sys.stdin` to strict UTF-8, for programs that read it as text.
+
+    The hook path does not use this — a hook reads its payload once and
+    `read_payload_text` handles it at the byte layer. The CLI cannot do
+    that: `aelf uninstall --archive --password-stdin` calls `input()` for
+    the confirmation and *then* reads the password, and those two reads
+    have to come off the same layer. Reading one through the text wrapper
+    and the next through `.buffer` loses everything the wrapper already
+    pulled into its decode buffer, which is a whole pipe when the input is
+    a pipe.
+
+    So the CLI pins the decoder instead of bypassing it. Must be called
+    before anything reads stdin: `TextIOWrapper.reconfigure` refuses to
+    change the encoding once reading has started.
+
+    Strict, not `replace`: the values arriving here are a password that
+    derives an encryption key and a JSON document. A silently substituted
+    character in either is worse than a refusal.
+    """
+    stream = sys.stdin
+    if stream is None:
+        return
+    reconfigure: Any = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    if _is_utf8(getattr(stream, "encoding", None)):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="strict")
+    except (OSError, ValueError):
+        # Detached, closed, or already read from. Nothing to do; the
+        # read that follows will fail on its own terms.
+        return
+
+
 def read_payload_text(
     stdin: IO[str] | None,
     stderr: IO[str] | None = None,
@@ -145,4 +181,4 @@ def _report_undecodable(exc: UnicodeDecodeError, stderr: IO[str] | None) -> None
         pass
 
 
-__all__ = ["ensure_utf8_streams", "read_payload_text"]
+__all__ = ["ensure_utf8_stdin", "ensure_utf8_streams", "read_payload_text"]
