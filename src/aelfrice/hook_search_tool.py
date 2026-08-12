@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Final, cast
 
+from aelfrice.stream_encoding import read_payload_text
+
 QUERY_TOKEN_LIMIT: Final[int] = 5
 """Maximum number of tokens joined into the FTS5 OR query.
 Bounds query complexity; longer patterns rarely add useful signal."""
@@ -486,9 +488,12 @@ def read_telemetry(path: Path) -> list[dict[str, object]]:
     return records
 
 
-def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
-    if not raw.strip():
+def _read_payload(
+    stdin: IO[str],
+    stderr: IO[str] | None = None,
+) -> dict[str, object] | None:
+    raw = read_payload_text(stdin, stderr)
+    if raw is None or not raw.strip():
         return None
     try:
         parsed = json.loads(raw)  # pyright: ignore[reportAny]
@@ -830,7 +835,7 @@ def main(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     try:
-        payload = _read_payload(sin)
+        payload = _read_payload(sin, serr)
         if payload is None:
             return 0
         _do_search(payload, sout, stderr=serr)

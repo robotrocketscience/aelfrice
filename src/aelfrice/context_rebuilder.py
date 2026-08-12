@@ -73,6 +73,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, IO, cast
 
+from aelfrice.stream_encoding import read_payload_text
+
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_USER, Belief
 from aelfrice.query_understanding import (
@@ -1691,7 +1693,7 @@ def main(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     try:
-        raw = sin.read()
+        raw = read_payload_text(sin, serr) or ""
         payload = _parse_payload(raw)
         if payload is None:
             return 0

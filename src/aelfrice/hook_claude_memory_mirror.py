@@ -59,12 +59,17 @@ import sys
 import traceback
 from typing import IO, Final, cast
 
+from aelfrice.stream_encoding import read_payload_text
+
 # Tools whose successful invocation can land a memory fact file on disk.
 _WRITE_TOOLS: Final[frozenset[str]] = frozenset({"Write", "Edit", "MultiEdit"})
 
-def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
-    if not raw.strip():
+def _read_payload(
+    stdin: IO[str],
+    stderr: IO[str] | None = None,
+) -> dict[str, object] | None:
+    raw = read_payload_text(stdin, stderr)
+    if raw is None or not raw.strip():
         return None
     try:
         parsed = json.loads(raw)
@@ -159,7 +164,7 @@ def main(
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
     try:
-        payload = _read_payload(sin)
+        payload = _read_payload(sin, serr)
         if payload is None:
             return 0
         _do_mirror(payload)

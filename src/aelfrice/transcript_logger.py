@@ -41,6 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Callable, Final, cast
 
+from aelfrice.stream_encoding import read_payload_text
+
 # Imported lazily to keep module import fast for the hook hot path.
 # `_git_common_dir` is reused from cli.py; if that import is ever
 # heavy at import time the hook caller still pays it once per event.
@@ -154,9 +156,12 @@ def _new_turn_id() -> str:
     return f"{_utc_compact_ts()}-{secrets.token_hex(4)}"
 
 
-def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
-    if not raw.strip():
+def _read_payload(
+    stdin: IO[str],
+    stderr: IO[str] | None = None,
+) -> dict[str, object] | None:
+    raw = read_payload_text(stdin, stderr)
+    if raw is None or not raw.strip():
         return None
     try:
         payload = json.loads(raw)  # pyright: ignore[reportAny]
@@ -819,7 +824,7 @@ def main(
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
     try:
-        payload = _read_payload(sin)
+        payload = _read_payload(sin, serr)
         if payload is None:
             return 0
         event = payload.get("hook_event_name")

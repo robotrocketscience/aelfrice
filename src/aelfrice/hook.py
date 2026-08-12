@@ -47,7 +47,7 @@ from aelfrice.config_discovery import (
     config_discovery_scope,
     discover_config,
 )
-from aelfrice.stream_encoding import ensure_utf8_streams
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 try:
     from aelfrice.db_paths import active_project_context, db_path
@@ -1056,7 +1056,7 @@ def user_prompt_submit(
             maybe_check_for_update_async()
         except Exception:
             pass
-        raw = sin.read()
+        raw = read_payload_text(sin, serr) or ""
         prompt = _extract_prompt(raw)
         if prompt is None:
             return 0
@@ -3586,7 +3586,7 @@ def pre_compact(
         )
         return 0
     try:
-        raw = sin.read()
+        raw = read_payload_text(sin, serr) or ""
         payload = _parse_pre_compact_payload(raw)
         if payload is None:
             return 0
@@ -3796,7 +3796,7 @@ def session_start(
         # rebuild path needs.
         raw = ""
         try:
-            raw = sin.read()
+            raw = read_payload_text(sin, serr) or ""
         except Exception:  # non-blocking: log but continue
             # A read failure drops both `session_id` (audit) and the
             # `source`/`cwd` fields the compact-rebuild path needs, so
@@ -4310,7 +4310,7 @@ def stop(
     if not _IMPORTS_OK:
         return 0
     try:
-        raw = sin.read()
+        raw = read_payload_text(sin, serr) or ""
         if not raw or not raw.strip():
             return 0
         try:
