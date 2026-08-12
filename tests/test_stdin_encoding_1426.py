@@ -439,8 +439,10 @@ def test_a_password_that_is_not_utf8_is_refused_not_guessed(
             "-c",
             _READ_PASSWORD_DRIVER.format(prelude=""),
         ],
-        # 0xff is not valid UTF-8 in any position.
-        input=b"caf\xff-passphrase\n",
+        # The valid password with one byte corrupted: 0xff is not legal
+        # UTF-8 in any position, so this is the same string the other
+        # arms use, made undecodable at exactly one place.
+        input=PASSWORD.encode("utf-8").replace(b"\xc3\xa9", b"\xff") + b"\n",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -490,8 +492,9 @@ def test_the_cli_entry_point_pins_stdin_itself(tmp_path: Path) -> None:
     UTF-8" and never reaches the session lookup.
     """
     payload = (
-        b'[{"index":0,"belief_type":"fact","persist":true,'
-        b'"note":"caf\xc3\xa9 \xe6\x9d\xb1\xe4\xba\xac"}]'
+        b'[{"index":0,"belief_type":"fact","persist":true,"note":"'
+        + PAYLOAD_UTF8
+        + b'"}]'
     )
     env = dict(os.environ)
     env.update(CP1252)
