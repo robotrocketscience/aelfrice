@@ -92,6 +92,13 @@ def ensure_utf8_stdin() -> None:
     Strict, not `replace`: the values arriving here are a password that
     derives an encryption key and a JSON document. A silently substituted
     character in either is worse than a refusal.
+
+    The error handler is half the contract, so the early-out checks both.
+    UTF-8 mode gives `sys.stdin` `encoding="utf-8"` with
+    `errors="surrogateescape"` — an encoding test alone returns early and
+    leaves the substituting handler in place, so `caf\\xff` arrives as
+    `'caf\\udcff'`. That regime is not hypothetical: `PYTHONUTF8=1` is the
+    workaround this defect's own issue tells users to reach for.
     """
     stream = sys.stdin
     if stream is None:
@@ -99,7 +106,10 @@ def ensure_utf8_stdin() -> None:
     reconfigure: Any = getattr(stream, "reconfigure", None)
     if reconfigure is None:
         return
-    if _is_utf8(getattr(stream, "encoding", None)):
+    if (
+        _is_utf8(getattr(stream, "encoding", None))
+        and getattr(stream, "errors", None) == "strict"
+    ):
         return
     try:
         reconfigure(encoding="utf-8", errors="strict")
