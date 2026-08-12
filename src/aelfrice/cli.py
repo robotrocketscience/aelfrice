@@ -72,7 +72,7 @@ from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
 from aelfrice.auto_install import auto_install_at_cli_entry
-from aelfrice.stream_encoding import ensure_utf8_streams
+from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
@@ -465,7 +465,10 @@ def _cmd_onboard_accept_classifications(
         return 2
     try:
         if src == "-":
-            raw = sys.stdin.read()
+            # The file branch below already pins utf-8; the pipe branch
+            # used the process locale, so the same JSON parsed one way
+            # from a path and another way through a pipe (#1426).
+            raw = read_payload_text(sys.stdin, sys.stderr) or ""
         else:
             raw = Path(src).read_text(encoding="utf-8")
     except OSError as exc:
@@ -5125,7 +5128,26 @@ def _read_password(args: argparse.Namespace) -> str | None:
     Never accepts password on argv (would leak via ps/proc/cmdline).
     """
     if args.password_stdin:
-        line = sys.stdin.readline()
+        # Read bytes, not locale-decoded text (#1426). `lifecycle` derives
+        # the scrypt key from `password.encode("utf-8")`, so a non-ASCII
+        # password decoded through cp1252 derives a *different* key and the
+        # archive can never be opened from a UTF-8 host. Refusing loudly is
+        # the only safe failure here: the alternative is an archive that
+        # encrypts fine today and is undecryptable forever.
+        buffer: Any = getattr(sys.stdin, "buffer", None)
+        if buffer is None:
+            line = sys.stdin.readline()
+        else:
+            try:
+                line = bytes(buffer.readline()).decode("utf-8")
+            except UnicodeDecodeError:
+                print(
+                    "aelf: the password on stdin is not valid UTF-8. "
+                    "Re-send it as UTF-8 bytes; a locale-decoded password "
+                    "would derive a key this archive could not be opened with.",
+                    file=sys.stderr,
+                )
+                return None
         return line.rstrip("\n\r")
     import getpass
 
