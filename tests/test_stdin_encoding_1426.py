@@ -32,6 +32,11 @@ from pathlib import Path
 
 import pytest
 
+# Each behavioural test spawns a real console script under a forced
+# locale, which the suite's 5s default reports as a hang rather than as
+# contention (#1307). Sized for the slowest arm — the ten-script sweep.
+pytestmark = pytest.mark.timeout(120)
+
 SRC = Path(__file__).resolve().parents[1] / "src" / "aelfrice"
 
 # A string that exercises three widths of the problem at once: Latin-1 with
@@ -116,7 +121,11 @@ def _payload(event: str = "UserPromptSubmit") -> bytes:
 def repo(tmp_path: Path) -> Path:
     """A throwaway git repo — `transcript_logger` writes under `.git/`."""
     subprocess.run(
-        ["git", "init", "-q"], cwd=str(tmp_path), check=True, capture_output=True
+        ["git", "init", "-q"],
+        cwd=str(tmp_path),
+        check=True,
+        capture_output=True,
+        timeout=60,
     )
     return tmp_path
 
@@ -165,8 +174,6 @@ def test_the_regimes_that_do_not_fail(repo: Path) -> None:
     the distinction survives the issue being closed.
     """
     for regime in ({}, {"PYTHONUTF8": "0"}):
-        for row in list(_turns(repo)):
-            del row
         log = repo / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
         if log.exists():
             log.unlink()
