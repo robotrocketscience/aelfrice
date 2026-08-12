@@ -22,6 +22,7 @@ on:
       - 'tests/test_windows_launcher_1412.py'
       - 'tests/test_codex_windows_ownership_1412.py'
       - 'tests/test_doctor_windows_prune_1412.py'
+      - 'tests/test_stdin_encoding_1426.py'
       - '.github/workflows/windows-smoke.yml'
       - 'pyproject.toml'
       # #1493 — the wheel job packages the tree, so a lock change can move
@@ -73,6 +74,14 @@ jobs:
 
       - name: portability suite
         run: uv run pytest tests/test_windows_portability_1329.py -q
+
+      # #1426. The blocking gate for this is the POSIX cp1252 simulation in
+      # ci.yml — this workflow is deliberately not required, per the header.
+      # This arm is the native confirmation the simulation stands in for:
+      # a real Windows console, a real redirected stdin, real console
+      # scripts installed into Scripts/.
+      - name: stdin utf-8 boundary (native confirmation)
+        run: uv run pytest tests/test_stdin_encoding_1426.py -q
 
       - name: launcher and Codex ownership suites
         run: >
