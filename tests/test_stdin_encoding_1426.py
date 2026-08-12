@@ -86,11 +86,17 @@ def _script(name: str) -> Path:
     resolves on the first candidate.
     """
     scripts_dir = Path(sys.executable).parent
-    for suffix in ("", ".exe", ".cmd", ".bat"):
-        candidate = scripts_dir / f"{name}{suffix}"
-        if candidate.exists():
-            return candidate
-    pytest.skip(f"console script {name} is not installed in {scripts_dir}")
+    found = next(
+        (
+            candidate
+            for suffix in ("", ".exe", ".cmd", ".bat")
+            if (candidate := scripts_dir / f"{name}{suffix}").exists()
+        ),
+        None,
+    )
+    if found is None:
+        pytest.skip(f"console script {name} is not installed in {scripts_dir}")
+    return found
 
 
 def test_the_console_scripts_actually_resolve() -> None:
@@ -456,8 +462,67 @@ def test_a_password_that_is_not_utf8_is_refused_not_guessed(
     assert got_hex == "", (
         f"a non-utf8 password was accepted rather than refused: {got_hex!r}"
     )
+    # An empty stdout is also what a traceback produces, so the empty-hex
+    # assertion alone is satisfied by a crash. These two separate a clean
+    # refusal from one.
+    assert result.returncode == 0, (
+        f"the refusal must be a clean abort, not a crash: {message[-600:]}"
+    )
+    for marker in _CODEC_FAILURE_MARKERS:
+        assert marker not in message, f"[{marker}]: {message[-600:]}"
     assert "not valid UTF-8" in message, (
         f"the refusal was silent; the user gets no reason: {message[:400]}"
+    )
+
+
+def test_utf8_mode_does_not_leave_a_substituting_error_handler(
+    tmp_path: Path,
+) -> None:
+    """`encoding == "utf-8"` is only half the contract; the handler is the rest.
+
+    UTF-8 mode gives `sys.stdin` `encoding="utf-8"` with
+    `errors="surrogateescape"`. An early-out that tests the encoding alone
+    returns without touching it, and undecodable bytes then arrive as lone
+    surrogates rather than being refused — which for a password means a
+    KDF input that is neither what the user typed nor an error.
+
+    This regime is the one users are most likely to be in: `PYTHONUTF8=1`
+    is the workaround this issue's own report recommends.
+    """
+    driver = (
+        "import sys\n"
+        "from aelfrice.stream_encoding import ensure_utf8_stdin\n"
+        "before = (sys.stdin.encoding, sys.stdin.errors)\n"
+        "ensure_utf8_stdin()\n"
+        "after = (sys.stdin.encoding, sys.stdin.errors)\n"
+        "try:\n"
+        "    got = repr(sys.stdin.readline())\n"
+        "except UnicodeDecodeError:\n"
+        "    got = 'REFUSED'\n"
+        "print('BEFORE', before, 'AFTER', after, 'GOT', got)\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", driver],
+        input=PASSWORD.encode("utf-8").replace(b"\xc3\xa9", b"\xff") + b"\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=str(tmp_path),
+        timeout=60,
+    )
+    out = result.stdout.decode("utf-8", "backslashreplace")
+
+    assert result.returncode == 0, result.stderr.decode("utf-8", "backslashreplace")
+    assert "surrogateescape" in out.split("AFTER")[0], (
+        f"expected the surrogateescape regime to be reproduced: {out}"
+    )
+    assert "'strict'" in out.split("AFTER")[1].split("GOT")[0], (
+        f"the pin left a substituting error handler in place: {out}"
+    )
+    assert "GOT REFUSED" in out, (
+        f"undecodable bytes were substituted rather than refused: {out}"
     )
 
 
@@ -499,7 +564,13 @@ def test_the_cli_entry_point_pins_stdin_itself(tmp_path: Path) -> None:
     )
     env = dict(os.environ)
     env.update(CP1252)
+    # `aelf onboard` opens a store, and opening a MemoryStore is a WRITE
+    # (DDL plus migrations). `cwd` is not a git repo so the path falls
+    # back to `$HOME/.aelfrice`, but AELFRICE_DB is inherited from the
+    # parent environment and would win — pin both rather than relying on
+    # the fallback.
     env["HOME"] = str(tmp_path)
+    env["AELFRICE_DB"] = str(tmp_path / "store" / "memory.db")
     result = subprocess.run(
         [
             str(_script("aelf")),
