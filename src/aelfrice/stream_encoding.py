@@ -96,8 +96,9 @@ def ensure_utf8_stdin() -> None:
     The error handler is half the contract, so the early-out checks both.
     UTF-8 mode gives `sys.stdin` `encoding="utf-8"` with
     `errors="surrogateescape"` — an encoding test alone returns early and
-    leaves the substituting handler in place, so `caf\\xff` arrives as
-    `'caf\\udcff'`. That regime is not hypothetical: `PYTHONUTF8=1` is the
+    leaves the substituting handler in place, so an undecodable byte
+    arrives as a lone surrogate in the U+DC80-U+DCFF range instead of
+    being refused. That regime is not hypothetical: `PYTHONUTF8=1` is the
     workaround this defect's own issue tells users to reach for.
     """
     stream = sys.stdin
