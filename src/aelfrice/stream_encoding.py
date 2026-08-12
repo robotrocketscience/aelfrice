@@ -31,6 +31,12 @@ from typing import IO, Any
 
 _UTF8_ALIASES = frozenset({"utf8", "utf_8"})
 
+# Bound on the diagnostic emitted for an undecodable payload. The stream we
+# are writing to may itself be a legacy code page, so the message is built
+# from ASCII only and truncated — a hook must not turn one bad payload into
+# a second encoding failure on the way out.
+_DIAGNOSTIC_MAX_CHARS = 200
+
 
 def _is_utf8(encoding: str | None) -> bool:
     if not encoding:
@@ -67,4 +73,76 @@ def ensure_utf8_streams(streams: tuple[IO[str], ...] | None = None) -> None:
             continue
 
 
-__all__ = ["ensure_utf8_streams"]
+def read_payload_text(
+    stdin: IO[str] | None,
+    stderr: IO[str] | None = None,
+) -> str | None:
+    """Read a hook's JSON payload from `stdin` as UTF-8, not as locale text.
+
+    `ensure_utf8_streams` fixes the way out; this fixes the way in (#1426).
+    Python decodes a redirected stdin with the process locale, so on a
+    Windows console defaulting to `cp1252` a payload containing
+    `café — 東京 🙂` either raises `UnicodeDecodeError` at the read or
+    decodes through `surrogateescape` into text that explodes later at the
+    UTF-8 write. Both paths lose the user's turn while the hook returns 0
+    under its fail-open contract, so nothing surfaces: compaction
+    reconstruction and belief extraction then run on incomplete history.
+
+    The protocol is UTF-8 by definition, so we read `stdin.buffer` and
+    decode it ourselves. Streams without a `.buffer` — `io.StringIO`, which
+    every hook's injectable test interface uses — are read as text
+    unchanged, which is what makes this a drop-in at each call site.
+
+    Returns the decoded payload, `""` for an empty stream, or `None` when
+    the bytes are not UTF-8. `None` is distinct from `""` so a caller can
+    tell "nothing was sent" from "something was sent and we could not read
+    it"; callers that do not care can spell it `read_payload_text(...) or ""`.
+
+    Decoding is strict on purpose. `errors="replace"` would store something
+    that differs from what the user typed, and `errors="surrogateescape"`
+    only defers the failure to the next write. Read errors other than a
+    decode failure (notably pytest's captured-stdin `OSError`) propagate
+    exactly as they did before this helper existed.
+    """
+    if stdin is None:
+        return ""
+    buffer: Any = getattr(stdin, "buffer", None)
+    if buffer is None:
+        # StringIO and friends: already text, and never went through a
+        # charmap codec on the way in.
+        return stdin.read()
+    raw: Any = buffer.read()
+    if isinstance(raw, str):
+        # A text-like stand-in that exposes `.buffer` as itself. Nothing
+        # was decoded by us, so there is nothing to correct.
+        return raw
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        _report_undecodable(exc, stderr)
+        return None
+
+
+def _report_undecodable(exc: UnicodeDecodeError, stderr: IO[str] | None) -> None:
+    """Emit a bounded ASCII-only note that a payload could not be decoded.
+
+    Deliberately says nothing about the payload's content: the bytes are
+    by definition not text we can render, and echoing them is how a
+    diagnostic becomes a second crash.
+    """
+    if stderr is None:
+        return
+    message = (
+        f"aelfrice: hook payload is not valid UTF-8 "
+        f"(byte 0x{exc.object[exc.start]:02x} at offset {exc.start}); "
+        f"the payload was discarded."
+    )[:_DIAGNOSTIC_MAX_CHARS]
+    try:
+        print(message.encode("ascii", "replace").decode("ascii"), file=stderr)
+    except Exception:
+        # Fail open: a hook that cannot report its own failure still must
+        # not take the turn down with it.
+        pass
+
+
+__all__ = ["ensure_utf8_streams", "read_payload_text"]
