@@ -343,9 +343,10 @@ def test_undecodable_returns_none_distinctly_from_empty() -> None:
 
 # Deliberately chosen so cp1252 can decode it *without raising*. Every
 # byte of "café".encode("utf-8") (63 61 66 c3 a9) is assigned in cp1252,
-# so the wrong decode succeeds and yields "cafÃ©" — a different password,
-# silently. A test that only asserted "no exception" would pass on the
-# unfixed tree.
+# so the wrong decode succeeds and silently yields a two-character
+# spelling (U+00C3 U+00A9) where the single é was — a different password
+# that no exception announces. A test asserting only "no exception" would
+# pass on the unfixed tree.
 PASSWORD = "café-passphrase"
 
 # `main()` pins stdin at entry; a driver that imports `_read_password`
