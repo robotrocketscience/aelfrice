@@ -10,6 +10,20 @@ permissions:
   attestations: write
   contents: write  # write needed for `gh release create` below
 
+env:
+  # #1472. tests/conftest.py scales every pytest-timeout budget by this
+  # factor so a loaded developer machine does not lose tests that have no
+  # defect. CI runs on a dedicated runner and wants the unscaled budgets:
+  # a 4x-looser timeout is 4x longer to notice a hang, and neither this
+  # workflow's `pytest` step nor `publish.yml`'s carries a
+  # `timeout-minutes` backstop.
+  #
+  # Pinned per workflow, and not inferred from `CI` being set: `CI` is
+  # commonly exported in local shells, so the implicit form would change
+  # local behaviour silently. tests/test_timeout_scale_1472.py asserts
+  # every one of these five files carries this line.
+  AELF_TEST_TIMEOUT_SCALE: "1"
+
 jobs:
   publish:
     runs-on: ubuntu-latest
