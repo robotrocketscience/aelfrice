@@ -275,4 +275,4 @@ The following were previously listed here and have since shipped:
 - Read-only cross-project federation → **shipped v3.0** (#650 / #655 / #688)
 - Eval-harness LLM-judge + Cohen's-κ calibration → **shipped v3.0** (#592 / #600 / #687)
 - Type-aware compression A2 bench gate → **shipped v3.0** (#434)
-- `query_strategy` stack-r1-r3 default → **shipped v3.0** (#718)
+- `query_strategy` stack-r1-r3 default → **shipped v3.0** (#718), **reverted to legacy-bm25** (#1501)

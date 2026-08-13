@@ -10,7 +10,7 @@ A single optional TOML file at the root of a project (or any ancestor). It expos
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
 - `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `bm25f_per_field` + `bm25_b_anchor` (the #1180 two-field BM25F scorer — content and anchor normalised separately instead of concatenated, default off pending its bench), `use_heat_kernel` (authority scoring lane, default **off** again since #1162 — the lane needs an eigenbasis no production caller builds, so a default-on flag was reporting a lane that cannot fire; `LaneTelemetry.heat_used` now says at runtime whether it did), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1 — live on the production `retrieve()` path via the #1107 Phase-5 cutover; marker-routed, a no-op fall-through on non-marker queries), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0 — live on the production `retrieve()` path via the #1107 Phase-4 cutover), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default **on**/32 since v4.0 — live on the production `retrieve()` path via the #1107 cutover; pairs with `[ingest] write_temporal_spine`), `use_entity_persist_demote` (the #1096 entity-persistence demotion / organic-sink rerank modifier, default **on** since v4.0 — live on the production `retrieve()` path via the #1107 cutover), `use_origin_tiebreak` (the #1089 origin-priority within-tier tie-break, default off — **no TOML tier, and the kwarg tier is unreachable from `retrieve()`; the env var does reach it**; see its section below), `use_supersession_demote` + `supersession_treatment` + `supersession_demote_factor` (the #1187 supersession lane — demote or exclude beliefs a `SUPERSEDES` edge retires, default off/`demote`/0.5, pending the three-arm bench). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
-- `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
+- `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `legacy-bm25`; `stack-r1-r3` was the default from v3.0 until #1501). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
@@ -239,13 +239,12 @@ max_candidate_pairs = 5000
 provenance_render = false
 
 [rebuilder]
-# v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
-# the context rebuilder. Default `"stack-r1-r3"` since v3.0; runs
-# entity expansion + per-store IDF clipping via aelfrice.query_understanding.
-# Set to `"legacy-bm25"` for the v1.4-byte-identical escape hatch.
-# `"legacy-bm25"` remains available as an escape hatch; its removal
-# (PR-4 of #291) is deferred and currently unscheduled.
-query_strategy = "stack-r1-r3"
+# v1.7+ / #291. Selects the query-rewriting stack used by the context
+# rebuilder. Default `"legacy-bm25"`: the raw query is passed through.
+# `"stack-r1-r3"` runs entity expansion + per-store IDF clipping via
+# aelfrice.query_understanding. It was the default from v3.0 (#718)
+# and was reverted under #1501 — see that entry below before selecting it.
+query_strategy = "legacy-bm25"
 
 [rebuild_floor]
 # v1.7+ (#289 / #364). Token-budget composite-score floors applied
@@ -936,14 +935,14 @@ Malformed values (wrong type, out-of-range, unrecognised strategy string) in eit
 
 ### `query_strategy`
 
-String, one of `"stack-r1-r3"` or `"legacy-bm25"`. Default `"stack-r1-r3"` since v3.0 (#718, PR #719).
+String, one of `"legacy-bm25"` or `"stack-r1-r3"`. Default `"legacy-bm25"`. It was `"stack-r1-r3"` from v3.0 (#718, PR #719) until #1501 reverted it.
 
 | Value | Effect |
 |---|---|
-| `"stack-r1-r3"` (default since v3.0) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. Bench evidence (2026-05-12, 30-row corpus): mean NDCG@k 0.3006 → 0.5858 (+0.2851 absolute). |
-| `"legacy-bm25"` | Byte-identical to the v1.4 raw-BM25 path. Opt-in escape hatch for operators who need the exact pre-v3.0 retrieval shape. Removal (PR-4 of #291) is deferred and currently unscheduled; the escape hatch remains available. |
+| `"stack-r1-r3"` (default v3.0 → #1501) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. Selecting it now costs recall on most stores. It raised recall only while the FTS5 MATCH was conjunctive; #1177 made that MATCH disjunctive, so the clip now deletes query terms without widening anything. Same 30-row corpus, measured across that one commit: legacy-bm25 0.3006 → 0.9553, stack-r1-r3 0.5858 → 0.8229, uplift +0.2851 → −0.1324. |
+| `"legacy-bm25"` (default) | Byte-identical to the v1.4 raw-BM25 path: the query reaches `retrieve()` unchanged. |
 
-Unrecognised values trace to stderr and fall back to `"stack-r1-r3"`.
+Unrecognised values trace to stderr and fall back to `"legacy-bm25"`.
 
 ### `[rebuild_floor] session`
 
