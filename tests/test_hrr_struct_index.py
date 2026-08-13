@@ -681,7 +681,7 @@ def test_make_hrr_struct_cache_env_one_overrides_persist_false(
 # --- AC6 / AC7 (perf-gated) ----------------------------------------------
 
 
-# The global `timeout = 5` in pyproject.toml is sized for unit tests and
+# The global `timeout = 30` in pyproject.toml is sized for unit tests and
 # is smaller than these tests' own wall-clock budgets, so it — not the
 # assertion — decided the outcome (#1160). Overridden per the convention
 # pyproject.toml:125-127 documents, generously: each test asserts its own

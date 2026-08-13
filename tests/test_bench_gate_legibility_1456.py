@@ -10,7 +10,7 @@ So two things are pinned here — the skip reason names the deciding issue, and
 the run states the count on its own line.
 
 Both tests drive pytest in a subprocess and therefore carry an explicit
-`@pytest.mark.timeout`. The project sets a global `timeout = 5` sized for a
+`@pytest.mark.timeout`. The project sets a global `timeout = 30` sized for a
 dedicated CI runner; a subprocess-driven test inheriting it fails from machine
 contention rather than from anything it asserts (#1472).
 """

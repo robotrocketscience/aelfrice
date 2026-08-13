@@ -18,7 +18,7 @@ import sys
 
 import pytest
 
-# One interpreter start per seed. The suite's 5s default is sized for
+# One interpreter start per seed. The suite's base timeout is sized for
 # in-process unit tests, so under parallel load this would report as a
 # hang rather than as slowness (#1307).
 _SUBPROCESS_TIMEOUT_S = 120

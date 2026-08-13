@@ -30,11 +30,17 @@ from benchmarks.metric_status import (
 )
 
 # Importing the adapter pulls `aelfrice.retrieval`, and with it a cold
-# scipy import that alone can exceed the 5 s global timeout in
-# `pyproject.toml`. Whichever test imports first pays that cost, so the
+# scipy import. Whichever test imports first pays that cost, so the
 # override has to cover the module rather than one named test. The
 # assertions here are in-memory and finish in milliseconds; 30 s still
 # catches a genuine hang.
+#
+# The marker no longer raises the budget — #1472 moved the base to the
+# same 30 s — and it is kept deliberately. It states this module's own
+# requirement, so it survives a future change to the base, and the
+# import cost that motivated it is unmeasured, so replacing the old
+# "can exceed 5 s" claim with a number for 30 s would be inventing
+# one.
 pytestmark = pytest.mark.timeout(30)
 
 

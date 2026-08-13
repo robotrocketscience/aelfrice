@@ -177,7 +177,7 @@ def test_blocking_calls_are_not_reached_through_aliases() -> None:
         # Hoisted out of the node loop deliberately: it is a per-file
         # fact, and computing it per AST node made this test ~6x slower
         # than its sibling over the identical file list (3.47s vs 0.57s
-        # locally) and pushed it past the 5s default on CI — the exact
+        # locally) and pushed it past the then-current 5s default on CI — the exact
         # failure mode this module exists to prevent.
         rel = path.relative_to(TESTS_ROOT.parent)
         for node in ast.walk(tree):

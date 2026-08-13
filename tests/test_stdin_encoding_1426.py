@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 # Each behavioural test spawns a real console script under a forced
-# locale, which the suite's 5s default reports as a hang rather than as
+# locale, which the suite's base timeout reports as a hang rather than as
 # contention (#1307). Sized for the slowest arm — the ten-script sweep.
 pytestmark = pytest.mark.timeout(120)
 

@@ -1,6 +1,6 @@
 """#1307: a subprocess-driven test must carry its own wall-clock budget.
 
-`pyproject.toml` sets `timeout = 5` for the whole suite, sized for unit
+`pyproject.toml` sets `timeout = 30` for the whole suite, sized for unit
 and property tests. A test that spawns a child process is not that: it
 pays interpreter startup, a `uv` resolve, and whatever the child does,
 and under CI contention that routinely exceeds five seconds. When it

@@ -11,14 +11,20 @@ Two independent ways the latency benchmarks were unreachable before
    module. `pytest --run-perf` failed with `unrecognized arguments`
    (exit 4), so the tests were reachable only by editing the guard.
 
-2. **The harness outranked the assertion.** `pyproject.toml` sets a
-   global `timeout = 5` sized for unit tests. Every one of these tests
-   asserts its own, larger wall-clock budget — `test_eigsolve_under_
-   budget_n10k` allows 30s and measures 6.76s — so once the flag
-   worked, pytest-timeout killed it at 5.0s and the test could never
-   pass. A per-test `@pytest.mark.timeout` override, the convention
-   `pyproject.toml:125-127` documents, restores the assertion as the
-   judge.
+2. **The harness outranked the assertion.** `pyproject.toml` then set
+   a global `timeout = 5` sized for unit tests. Every one of these
+   tests asserts its own, larger wall-clock budget —
+   `test_eigsolve_under_budget_n10k` allows 30s and measures 6.76s — so
+   once the flag worked, pytest-timeout killed it at 5.0s and the test
+   could never pass. A per-test `@pytest.mark.timeout` override
+   restores the assertion as the judge.
+
+   The base is 30 now (#1472), which does not retire the override or
+   this test: the assertion below is `>`, not `>= 5`, so it holds
+   against whatever the base becomes. That is the point — a guard
+   written against the literal 5 would have gone green on the raise
+   while the tests it protects went back to being decided by the
+   harness.
 
 Fixing only (1) ships a guaranteed-failing opt-in, which is why the
 second test here is not merely cosmetic.

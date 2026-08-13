@@ -259,7 +259,7 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
 
 
 # The census tests below are whole-package static analysis, not unit
-# tests, and the global `timeout = 5` in pyproject.toml is calibrated for
+# tests, and the global `timeout = 30` in pyproject.toml is calibrated for
 # unit tests. Measured on this tree: 124 files / 74,452 lines cost ~1.0 s
 # to parse and ~1.0 s per full `ast.walk`, and each census performs
 # several walks. `_parsed_tree` removes the redundant re-parsing (#1383)
