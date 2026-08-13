@@ -371,10 +371,11 @@ def rebuild_v14(
     are unaffected.
 
     v1.7 (#291 PR-2): `query_strategy` selects the query rewriter.
-    Default `stack-r1-r3` (since #291 PR-3 / #718) runs the ratified
-    R1 entity-expansion + R3 per-store IDF-clip stack from
-    `aelfrice.query_understanding`. `legacy-bm25` is byte-identical
-    to the v1.4 path and remains opt-in until PR-4 removes it.
+    Default `legacy-bm25` — byte-identical to the v1.4 path, the raw
+    query passed through. `stack-r1-r3` runs the R1 entity-expansion
+    + R3 per-store IDF-clip stack from `aelfrice.query_understanding`;
+    it was the default from v3.0 (#718) and was reverted in #1501.
+    See `query_understanding.strategy.DEFAULT_STRATEGY` for why.
     """
     # #798: resolve compression flag once, thread through pack accounting
     # so rebuild_v14's trim matches retrieve()'s trim under the same flag.
@@ -677,11 +678,11 @@ class RebuilderConfig:
     in a follow-up after #288 phase-1b."""
     query_strategy: str = DEFAULT_QUERY_STRATEGY
     """v1.7 (#291 PR-2) selector for the R1+R3 query-understanding
-    stack. Default `stack-r1-r3` (since #291 PR-3 / #718, v3.0)
-    runs entity expansion + per-store IDF clipping; `legacy-bm25`
-    is the v1.4-byte-identical opt-in escape hatch (removal
-    sequenced as PR-4). Operator-tunable via `[rebuilder]
-    query_strategy` in .aelfrice.toml."""
+    stack. Default `legacy-bm25`, the v1.4-byte-identical raw-query
+    path; `stack-r1-r3` runs entity expansion + per-store IDF
+    clipping and was the default from v3.0 (#718) until #1501
+    reverted it. Operator-tunable via `[rebuilder] query_strategy`
+    in .aelfrice.toml."""
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:

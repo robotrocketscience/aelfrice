@@ -53,8 +53,13 @@ work around. On the 30-row labelled corpus, across that one commit:
 
 R3 raised recall by deleting a term so the AND-set would widen. With no
 AND-set left to widen, the deletion only removes candidates, and it
-removes a lot of them. Measured on a 16,454-belief store: of 1,859
-terms entering the clip, 1,284 (69.1%) are dropped.
+removes a lot of them. Measured on a 16,454-belief store over 200
+in-domain queries — the first six tokens of every twentieth active
+belief, sampled by `id` so the draw is reproducible — of the 1,859
+terms reaching the clip, 1,284 (69.1%) are dropped. The population is
+stated because the figure is not otherwise re-derivable: query terms
+come from real text and skew common, so the drop rate is far above the
+24.7% of the *vocabulary* that sits below the cutoff.
 
 The boost half cannot compensate, because it cannot fire. A term is
 boosted only when its IDF is *strictly* above the 75th percentile, and
