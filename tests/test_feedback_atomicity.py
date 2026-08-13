@@ -11,8 +11,9 @@ The race tests below run real OS threads on separate store handles, with
 a barrier to maximise overlap. Each worker's `busy_timeout` is set
 explicitly and the per-test wall-clock budget is set well above it, so a
 lost-update regression fails on the conservation assertion rather than
-being masked by — or confused with — the suite-wide 5 s timeout that
-happens to equal SQLite's default `busy_timeout` (#1168 AC5).
+being masked by — or confused with — SQLite's default `busy_timeout`
+(#1168 AC5), which the suite-wide timeout equalled at the 5 s base this
+suite used before #1472.
 """
 from __future__ import annotations
 
@@ -29,7 +30,12 @@ from aelfrice.store import MemoryStore
 _WORKERS = 8
 _PER_WORKER = 15  # 120 events total — fast, but far more than enough to race
 
-# Distinct from the 5 s suite default so a hang is attributable.
+# Chosen to be distinct from the suite default so a hang is
+# attributable. #1472 raised that default from 5 to 30, so the two are
+# now equal and the distinction is gone: a death at 30 s no longer says
+# which budget ended it. Left at 30 rather than moved, because raising a
+# race budget to preserve a diagnostic changes what the test tolerates;
+# whoever needs the attribution back should raise this deliberately.
 _RACE_BUDGET_SECONDS = 30
 # Well under _RACE_BUDGET_SECONDS: contention must resolve as a wait, not
 # as a test timeout.

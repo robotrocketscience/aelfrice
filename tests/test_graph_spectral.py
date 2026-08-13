@@ -390,7 +390,7 @@ def test_start_vector_is_derived_from_graph_content() -> None:
 # The global `timeout = 30` in pyproject.toml is sized for unit tests and
 # is smaller than these tests' own wall-clock budgets, so it — not the
 # assertion — decided the outcome (#1160). Overridden per the convention
-# pyproject.toml:125-127 documents, generously: each test asserts its own
+# the `timeout` comment in pyproject.toml documents, generously: each test asserts its own
 # budget, and this bound exists only to catch a hang.
 _PERF_TIMEOUT_S = 120
 

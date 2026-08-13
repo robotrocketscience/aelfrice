@@ -27,9 +27,10 @@ from aelfrice.hook_search_tool import read_telemetry
 _WORKERS = 8
 _PER_WORKER = 25  # 200 total, well under the 1000 ring cap
 
-# These tests contend on an advisory file lock, so they need more than the
-# 5 s suite default; every blocking call below has its own ceiling under
-# this budget, so the test ends on an assertion rather than on a timeout.
+# These tests contend on an advisory file lock, so they carry their own
+# budget rather than relying on the suite default; every blocking call
+# below has its own ceiling under this budget, so the test ends on an
+# assertion rather than on a timeout.
 _RACE_BUDGET_SECONDS = 30
 _BARRIER_TIMEOUT_SECONDS = 10
 _JOIN_TIMEOUT_SECONDS = 15

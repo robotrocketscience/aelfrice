@@ -69,7 +69,7 @@ def test_build_makes_one_store_call_per_belief_not_n_squared() -> None:
     The wall-clock budget (5 s at N=10k) is achievable only because `build`
     walks the store linearly: one `list_belief_ids`, then one `edges_from`
     per belief. Any re-read inside the per-belief loop turns the build
-    quadratic, which no 30-second budget would survive at scale but which a
+    quadratic, which no 5-second budget would survive at scale but which a
     small fixture would hide.
 
     Mutation that turns this red: call `store.edges_from(bid)` twice in the

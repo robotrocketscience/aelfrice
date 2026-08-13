@@ -192,7 +192,7 @@ def _calls_by_attr() -> dict[str, tuple[tuple[Path, ast.Call], ...]]:
     """Index every attribute call in the package by its attribute name.
 
     Parsed once for the whole module: the package is large enough that
-    re-walking it per parametrized case exceeds the suite's 5s per-test
+    re-walking it per parametrized case exceeds the suite's per-test
     timeout on a loaded machine.
     """
     index: dict[str, list[tuple[Path, ast.Call]]] = {}

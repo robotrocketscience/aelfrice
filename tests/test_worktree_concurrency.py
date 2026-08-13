@@ -32,7 +32,7 @@ from aelfrice.store import MemoryStore
 
 # Number of beliefs each worktree writes. Picked to:
 # - exceed any plausible WAL checkpoint without forcing one
-# - run in well under the 5s pytest timeout per test
+# - run in well under the base pytest timeout per test
 # - exercise enough sequential commits to surface contention if it exists
 _WRITES_PER_WORKER: int = 20
 

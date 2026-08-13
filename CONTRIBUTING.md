@@ -106,6 +106,28 @@ Conventions:
 - Tests required for every behavioral change.
 - `pyright --strict` must pass.
 
+### Your local test budgets are 4x CI's
+
+Every wall-clock timeout in the suite is multiplied at collection by
+`AELF_TEST_TIMEOUT_SCALE`, which defaults to **4** locally and is pinned to
+**1** in every workflow that runs pytest (#1472). A loaded laptop was failing
+tests that had no defect, and because `aelf-pr-open.sh` runs pytest with `-x`,
+the first such loss ended the run.
+
+The consequence to know: **a timing failure you cannot reproduce locally is
+expected**, because CI is running the same test on a quarter of your budget.
+To reproduce CI exactly:
+
+```bash
+AELF_TEST_TIMEOUT_SCALE=1 uv run pytest tests/ -x -q
+```
+
+A malformed value — non-numeric, zero, negative, or absurdly large — falls
+back to the default rather than raising. Zero is the one that matters:
+`pytest-timeout` reads a timeout of 0 as *disabled*, so a scale that
+multiplied through would silently remove every budget in the suite while
+every test still passed.
+
 ### The bench-gate tier does not run here
 
 A green `pytest tests/` on this repository does **not** mean the quality gates

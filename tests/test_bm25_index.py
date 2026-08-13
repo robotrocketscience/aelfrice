@@ -173,7 +173,7 @@ def test_vocab_shift_recovery_with_w3() -> None:
 # The global `timeout = 30` in pyproject.toml is sized for unit tests and
 # is smaller than these tests' own wall-clock budgets, so it — not the
 # assertion — decided the outcome (#1160). Overridden per the convention
-# pyproject.toml:125-127 documents, generously: each test asserts its own
+# the `timeout` comment in pyproject.toml documents, generously: each test asserts its own
 # budget, and this bound exists only to catch a hang.
 _PERF_TIMEOUT_S = 120
 
@@ -182,7 +182,7 @@ _PERF_TIMEOUT_S = 120
 def test_score_latency_under_5ms_n50k(request: pytest.FixtureRequest) -> None:
     """AC5: median sparse-matvec score latency <= 5ms at N=50k.
 
-    Skipped by default to keep CI under the per-test 5s wall-clock cap.
+    Skipped by default to keep CI under the per-test wall-clock cap.
     Run it with `pytest --run-perf`, registered in `tests/conftest.py`
     since #1160 — before that the option existed nowhere, so this test
     was reachable only by editing the guard.
@@ -211,7 +211,7 @@ def test_score_latency_under_5ms_n50k(request: pytest.FixtureRequest) -> None:
 def test_build_under_1s_at_n10k() -> None:
     """AC6: index rebuild completes in <= 1s at N=10k. Run inline
     (not perf-gated) since 10k inserts + build still finishes well
-    under the per-test 5s timeout."""
+    under the per-test timeout."""
     s = MemoryStore(":memory:")
     n = 10_000
     for i in range(n):
