@@ -35,6 +35,102 @@ The summary prints whatever tests attach under this key, so the numbers
 land in the same block that already says which modules ran.
 """
 
+TIMEOUT_SCALE_ENV_VAR = "AELF_TEST_TIMEOUT_SCALE"
+"""Multiplier applied to every resolved pytest-timeout budget (#1472)."""
+
+DEFAULT_TIMEOUT_SCALE = 4.0
+"""Headroom for a loaded developer machine. CI pins this to 1.
+
+Sized from the #1472 census rather than picked: the three tests that lost
+the PR gate ran in 1.48 s, 0.43 s and 0.17 s unloaded against a 5 s budget,
+and failed it at load ~30. A gate that a 3x slowdown defeats is measuring
+the machine. 4x is one binding step past the observed spread and still
+leaves a 30 s unit test terminating inside two minutes.
+"""
+
+
+def _timeout_scale() -> float:
+    """Resolve the scale from the environment, falling back to the default.
+
+    Never raises and never returns a non-positive value. A malformed
+    setting must not decide how long the suite is allowed to run, and a
+    scale of zero would disable pytest-timeout outright — which is the
+    one outcome worse than a timeout that is too tight.
+    """
+    raw = os.environ.get(TIMEOUT_SCALE_ENV_VAR)
+    if raw is None:
+        return DEFAULT_TIMEOUT_SCALE
+    try:
+        scale = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SCALE
+    return scale if scale > 0 else DEFAULT_TIMEOUT_SCALE
+
+
+def _resolved_timeout(item: pytest.Item, env_timeout: object) -> float | None:
+    """The budget pytest-timeout would apply to `item`, before scaling.
+
+    Mirrors `pytest_timeout._get_item_settings`: the closest `timeout`
+    marker wins, and only in its absence does the ini/CLI value apply.
+    That order is the whole reason this hook exists — raising the ini
+    `timeout`, or passing `--timeout`, provably cannot reach the 179
+    per-test markers, because the marker is consulted first.
+
+    Returns `None` when there is nothing to scale: no marker and no ini
+    value, a non-numeric marker argument, or a value of zero, which
+    pytest-timeout reads as "disabled".
+    """
+    marker = item.get_closest_marker("timeout")
+    value: object = None
+    if marker is not None:
+        if marker.args:
+            value = marker.args[0]
+        elif "timeout" in marker.kwargs:
+            value = marker.kwargs["timeout"]
+    if value is None:
+        value = env_timeout
+    try:
+        resolved = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return resolved if resolved > 0 else None
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Scale every test's wall-clock timeout by `AELF_TEST_TIMEOUT_SCALE`.
+
+    #1472. The global budget is sized for an idle machine, so a developer
+    running the suite under real load loses tests that have no defect —
+    twelve PR-gate attempts went that way, and `aelf-pr-open.sh` runs
+    pytest with `-x`, so the first such loss ends the run.
+
+    Scaling at collection is what reaches the whole population. The ini
+    value governs only unmarked tests; 179 tests carry their own marker
+    and a further handful carry one built from a module constant, which
+    a static census misses entirely. Re-adding the marker with
+    `append=False` puts it where `get_closest_marker` looks first, so it
+    wins over the test's own — that is the load-bearing detail, and
+    flipping it to `append=True` makes the scale silently inert for
+    every marked test while still passing for unmarked ones.
+
+    CI pins the scale to 1, per workflow. The suite there runs on a
+    dedicated runner, and a 4x-looser budget would weaken hang detection
+    in `ci.yml` and `publish.yml`, neither of which carries a
+    `timeout-minutes` backstop.
+    """
+    scale = _timeout_scale()
+    if scale == 1.0:
+        return
+    env_timeout = getattr(config, "_env_timeout", None)
+    for item in items:
+        resolved = _resolved_timeout(item, env_timeout)
+        if resolved is None:
+            continue
+        item.add_marker(pytest.mark.timeout(resolved * scale), append=False)
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register `--run-perf`, the opt-in for the latency benchmarks.
