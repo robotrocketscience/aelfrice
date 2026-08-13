@@ -130,7 +130,7 @@ Ordering from here:
 - [ ] **Confirm Path A as the iteration target.** If no, name an alternative (B, C, or a new path) before any code change.
 - [ ] **Confirm head-position lexical anchors for the prefix filter.** The 16 verbs listed are reconstructed from typical session-task prefixes; the gate scores whatever lands in `directive_detector.py`, but the choice is worth ratifying so the verb bank does not drift quietly.
 - [ ] **Confirm the rule-marker connective list** (`so that`, `as a rule`, `from now on`, …) that re-enables directive classification when an imperative coding-task prefix is present. Default: empty (i.e., coding-task prefix always wins). Conservative; revisit after first corpus run.
-- [ ] **Lab-side action: open `tests/corpus/v2_0/directive_detection/v0_1.jsonl` PR against lab `main`** (currently on branch `exp/issue-374-directive-corpus-v0_1`). The gate harness in PR #377 cannot fire end-to-end until the corpus is on the canonical lab path (`AELFRICE_CORPUS_ROOT/directive_detection/v0_1.jsonl`). Without that merge, every public-tree session that reads `aelf-scan` and lands on #374 will continue to bounce.
+- [x] **Lab-side action: land the corpus on lab `main`.** Done. `v0_1.jsonl` and `v0_2.jsonl` are both on the canonical lab path, so the harness fires end-to-end and the tier reads the 510-row union.
 
 ## Out of scope
 
@@ -155,6 +155,8 @@ H1 reopens for implementation when:
 - ≥0.60 recall on the same corpus.
 - **The corpus defeats the one-token baseline** — `test_directive_corpus_defeats_a_first_token_baseline` green. Added 2026-08-05 (#1341); without it the two thresholds above can be met by a lookup table. This condition is new and is not a re-decision of the gate, which § H1 fixes; it is the precondition under which the gate's numbers mean what § H1 intends.
 - A reproducible bench-gate run is recorded on the closing PR (lab `pytest -q tests/bench_gate/test_directive_detection.py` output; numbers cited in PR body).
+
+**Read the polarity before running it.** Since #1502 the check is a tripwire: `test_h1_reentry_bar_is_still_unmet` is **green while H1 stays deferred** and **red when the bar is met**. So a green run is not evidence that H1 can reopen — it is evidence of the opposite. The numbers themselves are printed on every run, green or red, in the `bench-gate tier` summary block; read those rather than inferring anything from pass or fail.
 
 Path B (deontic-anchor partition) is the next candidate once the corpus is valid. Path C stays out of scope until the determinism property is explicitly re-decided.
 
