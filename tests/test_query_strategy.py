@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import context_rebuilder as context_rebuilder_module
 from aelfrice.context_rebuilder import (
     RebuilderConfig,
     RecentTurn,
@@ -263,10 +264,34 @@ def test_config_explicit_legacy_value_loads(tmp_path: Path) -> None:
 # --- rebuild_v14 plumbing ---------------------------------------------------
 
 
-def test_rebuild_default_query_strategy_is_stack_r1_r3(tmp_path: Path) -> None:
-    """Calling rebuild_v14 with no `query_strategy` argument is
-    byte-identical to calling it with `query_strategy='stack-r1-r3'`
-    after the #291 PR-3 default flip."""
+def test_rebuild_with_no_strategy_argument_uses_the_shipped_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-arg `rebuild_v14` call must reach `transform_query` as
+    `legacy-bm25` (#1501).
+
+    Asserted on the argument, not on the rendered block. The block was
+    the old assertion — `rebuild_v14(turns, store)` byte-identical to
+    `rebuild_v14(..., query_strategy="stack-r1-r3")` — and it
+    distinguished nothing: at any fixture size cheap enough for a unit
+    test the whole store fits the token budget, so every belief is packed
+    and the strategy never reaches the output. That test passed both
+    before and after the default was reverted, while its name told a
+    reader the opposite of the shipped behaviour.
+
+    The literal is asserted here for the same reason as in
+    `test_transform_default_is_legacy_bm25`: reading `DEFAULT_STRATEGY`
+    back would pass on either value.
+    """
+    seen: list[str] = []
+    real = context_rebuilder_module.transform_query
+
+    def spy(raw_query: str, store: MemoryStore, strategy: str) -> str:
+        seen.append(strategy)
+        return real(raw_query, store, strategy)
+
+    monkeypatch.setattr(context_rebuilder_module, "transform_query", spy)
+
     store = _seed(
         tmp_path / "m.db",
         [_mk(
@@ -276,9 +301,15 @@ def test_rebuild_default_query_strategy_is_stack_r1_r3(tmp_path: Path) -> None:
     )
     try:
         turns = [RecentTurn(role="user", text="Tell me about the Rebuilder")]
-        without_arg = rebuild_v14(turns, store)
-        with_stack = rebuild_v14(turns, store, query_strategy=STACK_R1_R3_STRATEGY)
-        assert without_arg == with_stack
+        rebuild_v14(turns, store)
+        assert seen == [LEGACY_STRATEGY]
+        assert seen == ["legacy-bm25"]
+
+        seen.clear()
+        rebuild_v14(turns, store, query_strategy=STACK_R1_R3_STRATEGY)
+        assert seen == [STACK_R1_R3_STRATEGY], (
+            "an explicit strategy must still override the default"
+        )
     finally:
         store.close()
 
