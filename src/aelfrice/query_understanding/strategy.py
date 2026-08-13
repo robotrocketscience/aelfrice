@@ -1,19 +1,19 @@
-"""Query-strategy dispatcher: stack-r1-r3 (default) vs legacy-bm25.
+"""Query-strategy dispatcher: legacy-bm25 (default) vs stack-r1-r3.
 
 The rebuilder calls `transform_query(raw_query, store, strategy)` to
 produce the final query string fed to `retrieve()`. Two strategies
 exist at v1.7 (#291):
 
-* `stack-r1-r3` -- the ratified R1+R3 stack: capitalised-token
-  entity expansion, then per-store IDF-quantile clipping, against
-  the cached `BM25Index` for the store. Returns the rewritten term
-  list joined with spaces (FTS5 MATCH consumes the whitespace-
-  separated form; duplicated terms boost their effective query
-  frequency the same way the lab campaign measured). Default since
-  #291 PR-3 (v3.0) after the bench gate cleared on the lab corpus.
 * `legacy-bm25` -- the v1.4-era query string is passed through
-  unchanged. Retained as an opt-in escape hatch; removal is
-  sequenced as PR-4 one minor release after the flip.
+  unchanged. The default again, after #1177 removed the recall
+  cliff that made the v3.0 flip away from it pay (#1501; see
+  `DEFAULT_STRATEGY`).
+* `stack-r1-r3` -- the R1+R3 stack: capitalised-token entity
+  expansion, then per-store IDF-quantile clipping, against the
+  cached `BM25Index` for the store. Returns the rewritten term list
+  joined with spaces (FTS5 MATCH consumes the whitespace-separated
+  form; duplicated terms boost their effective query frequency the
+  same way the lab campaign measured). Selectable, not default.
 
 This module owns no state; the per-store BM25Index + quantile cache
 lives in `query_understanding.store_cache`.
@@ -38,7 +38,36 @@ STACK_R1_R3_STRATEGY: Final[str] = "stack-r1-r3"
 VALID_STRATEGIES: Final[frozenset[str]] = frozenset(
     {LEGACY_STRATEGY, STACK_R1_R3_STRATEGY},
 )
-DEFAULT_STRATEGY: Final[str] = STACK_R1_R3_STRATEGY
+
+DEFAULT_STRATEGY: Final[str] = LEGACY_STRATEGY
+"""Reverted from `stack-r1-r3` (#1501, ratified 2026-08-13).
+
+The stack did not get worse. The baseline got better, and overtook it.
+`4db6744d` (#1177) replaced the conjunctive FTS5 MATCH with a
+disjunction over the rarest tokens, which is the change R3 existed to
+work around. On the 30-row labelled corpus, across that one commit:
+
+    legacy-bm25  0.3006 -> 0.9553
+    stack-r1-r3  0.5858 -> 0.8229
+    uplift      +0.2851 -> -0.1324
+
+R3 raised recall by deleting a term so the AND-set would widen. With no
+AND-set left to widen, the deletion only removes candidates, and it
+removes a lot of them. Measured on a 16,454-belief store: of 1,859
+terms entering the clip, 1,284 (69.1%) are dropped.
+
+The boost half cannot compensate, because it cannot fire. A term is
+boosted only when its IDF is *strictly* above the 75th percentile, and
+on that same store the 75th percentile and the maximum IDF are the same
+value (9.3029) — the top quartile is one degenerate point. So the stack
+reduces to a term-deleter on any store with that shape.
+
+`stack-r1-r3` stays selectable, and both R-modules stay under test. This
+reverses the #718 flip on evidence, so it is left reversible the same
+way. `tests/bench_gate/test_query_strategy.py` pins the direction: it
+goes red if the default is re-flipped or if the disjunctive MATCH
+regresses.
+"""
 
 
 def transform_query(

@@ -88,8 +88,16 @@ def test_transform_legacy_returns_query_unchanged(tmp_path: Path) -> None:
         store.close()
 
 
-def test_transform_default_is_stack_r1_r3() -> None:
-    assert DEFAULT_STRATEGY == STACK_R1_R3_STRATEGY
+def test_transform_default_is_legacy_bm25() -> None:
+    """#1501: the shipped default, pinned by value.
+
+    Reverted from `stack-r1-r3` after #1177's disjunctive MATCH removed
+    the recall cliff R3 worked around. Asserting the literal is the
+    point — a test written against `DEFAULT_STRATEGY` alone passes on
+    either value and pins nothing.
+    """
+    assert DEFAULT_STRATEGY == LEGACY_STRATEGY
+    assert DEFAULT_STRATEGY == "legacy-bm25"
 
 
 def test_transform_stack_lowercases_capitalised(tmp_path: Path) -> None:
@@ -202,9 +210,11 @@ def test_cache_quantile_args_passed_through(tmp_path: Path) -> None:
 # --- RebuilderConfig --------------------------------------------------------
 
 
-def test_config_default_query_strategy_is_stack_r1_r3() -> None:
+def test_config_default_query_strategy_is_legacy_bm25() -> None:
+    """#1501. Pinned by literal for the same reason as the module default."""
     cfg = RebuilderConfig()
-    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
+    assert cfg.query_strategy == LEGACY_STRATEGY
+    assert cfg.query_strategy == "legacy-bm25"
 
 
 def test_config_loads_query_strategy_override(tmp_path: Path) -> None:
@@ -222,7 +232,10 @@ def test_config_invalid_query_strategy_falls_back_to_default(
         '[rebuilder]\nquery_strategy = "nonsense"\n'
     )
     cfg = load_rebuilder_config(tmp_path)
-    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
+    # Tracks the default rather than a literal: the value pin lives in
+    # `test_config_default_query_strategy_is_legacy_bm25`, and what this
+    # test owns is the fallback path, not which value it falls back to.
+    assert cfg.query_strategy == DEFAULT_STRATEGY
     err = capsys.readouterr().err
     assert "query_strategy" in err
     assert "nonsense" not in err  # don't echo the bad value verbatim
@@ -235,7 +248,7 @@ def test_config_non_string_query_strategy_falls_back(
         '[rebuilder]\nquery_strategy = 42\n'
     )
     cfg = load_rebuilder_config(tmp_path)
-    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
+    assert cfg.query_strategy == DEFAULT_STRATEGY
     assert "query_strategy" in capsys.readouterr().err
 
 
