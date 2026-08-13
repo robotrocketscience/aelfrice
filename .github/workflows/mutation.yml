@@ -40,6 +40,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # #1472. mutmut drives pytest in-process, so every wall-clock budget in
+  # the suite applies to its runs. Pinned to the unscaled value for the
+  # same reason as the other pytest workflows: CI runs on a dedicated
+  # runner and a looser budget is slower hang detection, not headroom.
+  AELF_TEST_TIMEOUT_SCALE: "1"
+
 concurrency:
   group: mutation-${{ github.ref }}
   cancel-in-progress: true
