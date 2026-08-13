@@ -48,17 +48,42 @@ _PIN = "AELF_TEST_TIMEOUT_SCALE"
 #
 # `mutmut` counts. It drives pytest in-process, so every budget in the
 # suite applies to its runs too.
-# Command position, not merely the word. `post-release-docs-issue.yml`
-# writes an issue body inside a `run:` heredoc, and that body contains
-# the prose "pytest count comment" — a substring match calls that an
-# invocation and demands a pin for a workflow that runs no tests.
-_PYTEST_INVOCATION = re.compile(
-    r"(?:^|[;&|(]\s*|\$\(\s*|&&\s*|\|\|\s*"
-    r"|\buv\s+run\s+(?:--[\w-]+(?:[= ]\S+)?\s+)*"
-    r"|\buvx\s+"
-    r"|\bpython[0-9.]*\s+-m\s+)"
-    r"(?:pytest|mutmut)\b"
-)
+# A command "invokes pytest" when a `pytest` or `mutmut` token stands in
+# command position — first, or preceded only by a runner and its flags.
+#
+# Tokens rather than one regex, deliberately. The regex form of this
+# needed a nested quantifier for `uv run`'s flags, and CodeQL flagged it
+# as exponential-backtracking on input like `--- ---`. A guard that can
+# hang the security scan is not worth the compactness.
+#
+# `mutmut` counts: it drives pytest in-process, so every budget in the
+# suite applies to its runs.
+#
+# Command position is what keeps `post-release-docs-issue.yml` out. That
+# workflow writes an issue body inside a `run:` heredoc, and the body
+# contains the prose "pytest count comment"; a substring match calls that
+# an invocation and demands a pin for a workflow that runs no tests.
+_TEST_RUNNERS = frozenset({"pytest", "mutmut"})
+_LAUNCHERS = frozenset({
+    "uv", "uvx", "run", "tool", "python", "python3", "poetry", "hatch",
+    "-m", "exec", "sudo", "time", "xvfb-run",
+})
+
+
+def _invokes_pytest(command: str) -> bool:
+    for segment in re.split(r"[;&|()]+", command):
+        tokens = segment.split()
+        for i, token in enumerate(tokens):
+            if token not in _TEST_RUNNERS:
+                continue
+            if all(
+                t.startswith("-") or t in _LAUNCHERS
+                for t in tokens[:i]
+            ):
+                return True
+    return False
+
+
 _RUN_KEY = re.compile(r"^(?P<indent>\s*)(?:-\s+)?run:\s*(?P<inline>.*)$")
 
 _SUBPROCESS_BUDGET_S = 60
@@ -287,7 +312,7 @@ def _pytest_workflows() -> list[Path]:
     return [
         p for p in _workflow_files()
         if any(
-            _PYTEST_INVOCATION.search(cmd)
+            _invokes_pytest(cmd)
             for cmd in _run_commands(p.read_text(encoding="utf-8"))
         )
     ]
