@@ -939,7 +939,7 @@ String, one of `"legacy-bm25"` or `"stack-r1-r3"`. Default `"legacy-bm25"`. It w
 
 | Value | Effect |
 |---|---|
-| `"stack-r1-r3"` (default v3.0 → #1501) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. Selecting it now costs recall on most stores. It raised recall only while the FTS5 MATCH was conjunctive; #1177 made that MATCH disjunctive, so the clip now deletes query terms without widening anything. Same 30-row corpus, measured across that one commit: legacy-bm25 0.3006 → 0.9553, stack-r1-r3 0.5858 → 0.8229, uplift +0.2851 → −0.1324. |
+| `"stack-r1-r3"` (default v3.0 → #1501) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. It raised recall only while the FTS5 MATCH was conjunctive; #1177 made that MATCH disjunctive, so the clip now deletes query terms without widening anything. Measured across that one commit on the same 30-row labelled corpus: legacy-bm25 0.3006 → 0.9553, stack-r1-r3 0.5858 → 0.8229, uplift +0.2851 → −0.1324. On one 16,454-belief store, its clip dropped 1,284 of the 1,859 terms reaching it over 200 in-domain queries. Those two measurements are the whole evidence base; how it behaves on a store of a different size or shape is not measured. |
 | `"legacy-bm25"` (default) | Byte-identical to the v1.4 raw-BM25 path: the query reaches `retrieve()` unchanged. |
 
 Unrecognised values trace to stderr and fall back to `"legacy-bm25"`.
