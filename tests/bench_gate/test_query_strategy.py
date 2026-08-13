@@ -21,11 +21,32 @@ directory-of-origin rule (labelled corpus lives only in
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
+from aelfrice.query_understanding import (
+    DEFAULT_STRATEGY,
+    LEGACY_STRATEGY,
+    STACK_R1_R3_STRATEGY,
+)
 from tests.conftest import load_corpus_module
+
+
+def _corpus_digest(root: Path) -> str:
+    """Return a short digest over the query_strategy corpus files.
+
+    Stamped into the failure text so a red gate records *which* corpus
+    produced the number. Computed rather than pinned: a literal here
+    would assert the corpus never changes, which is a different contract
+    from the one this gate is for, and it would go red on an intended
+    re-label instead of on a retrieval change.
+    """
+    h = hashlib.sha256()
+    for p in sorted((root / "query_strategy").glob("*.jsonl")):
+        h.update(p.read_bytes())
+    return h.hexdigest()[:12]
 
 
 @pytest.mark.bench_gated
@@ -42,14 +63,26 @@ def test_query_strategy_uplift(aelfrice_corpus_root: Path) -> None:
     )
 
     results = runner_mod.run_query_strategy_uplift(rows)
+    scores = {
+        LEGACY_STRATEGY: results.mean_ndcg_off,
+        STACK_R1_R3_STRATEGY: results.mean_ndcg_on,
+    }
+    other = next(s for s in scores if s != DEFAULT_STRATEGY)
     detail = (
         f"  NDCG_legacy_bm25={results.mean_ndcg_off:.4f} "
         f"NDCG_stack_r1_r3={results.mean_ndcg_on:.4f} "
-        f"uplift={results.uplift:+.4f}"
+        f"uplift={results.uplift:+.4f}\n"
+        f"  default={DEFAULT_STRATEGY} rows={len(rows)} "
+        f"corpus_sha256={_corpus_digest(aelfrice_corpus_root)}"
     )
-    assert results.uplift > 0, (
-        f"query-strategy uplift not strictly positive on "
-        f"{len(rows)} rows:\n{detail}"
+    assert scores[DEFAULT_STRATEGY] >= scores[other], (
+        f"the shipped default ({DEFAULT_STRATEGY}) is not the winning arm "
+        f"on the labelled corpus:\n{detail}\n"
+        f"  Two ways to reach this. Either the default was re-flipped "
+        f"without a re-measure, or the disjunctive MATCH (#1177, "
+        f"4db6744d) regressed and the AND recall cliff is back — that "
+        f"cliff is what made stack-r1-r3 win in v3.0 (#718). Find out "
+        f"which before changing this assertion."
     )
 
 
