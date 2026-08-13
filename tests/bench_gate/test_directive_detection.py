@@ -1,13 +1,25 @@
 """Bench gate for #374 — H1 directive detection re-entry.
 
-Per `docs/design/v2_enforcement.md` § H1, H1 unblocks for implementation only when
-the candidate detector hits ≥80% precision and ≥60% recall on ≥200 labeled
-coding prompts. This test scores `aelfrice.directive_detector.detect_directive`
-against the lab-side corpus and asserts the gate.
+Per `docs/design/v2_enforcement.md` § H1, H1 unblocks for implementation only
+when the candidate detector hits ≥80% precision and ≥60% recall on ≥200
+labeled coding prompts. This test scores
+`aelfrice.directive_detector.detect_directive` against the lab-side corpus.
+
+**It is a tripwire, not a gate (#1502).** The bar above is the *reopening*
+criterion for work that `v2_enforcement.md` § H1 documents as deferred. So
+"unmet" is the expected, correct, shipped state — and a test asserting
+`precision >= 0.80` was therefore red by design, at every release cut, in the
+one tier that is now the project's only scheduled quality signal (#1477). A
+permanently red check is indistinguishable from a broken one, and it trains a
+reader to skip the reds next to it.
+
+Inverted, it fires on the event that actually matters: the detector *clearing*
+the bar, which is the evidence that reopens H1. Until then it is green and
+records the current numbers, so the deferral is measured rather than assumed.
 
 Skips cleanly when `AELFRICE_CORPUS_ROOT` is unset (public CI), when the
 `directive_detection/` module dir is missing, or when the corpus has fewer
-than 200 rows (the gate requires a 200-row floor before it can fire).
+than 200 rows (the bar requires a 200-row floor before it means anything).
 """
 from __future__ import annotations
 
@@ -50,6 +62,21 @@ PARTITION_SWEEP_K = 200
 _HEAD_WORD = re.compile(r"^\s*[-*\d.)\s]*([A-Za-z']+)")
 
 
+def _corpus_digest(root: Path) -> str:
+    """Short digest over the directive_detection corpus files.
+
+    Computed, not pinned. A literal would assert the corpus never changes,
+    which is a different contract from this module's, and it would go red on
+    an intended re-label instead of on a detector change. Its job is to record
+    *which* corpus produced a number, since this one is now a union of v0.1
+    and v0.2 and the two score differently.
+    """
+    h = hashlib.sha256()
+    for path in sorted((root / "directive_detection").glob("*.jsonl")):
+        h.update(path.read_bytes())
+    return h.hexdigest()[:12]
+
+
 def _bucket(row_id: str, salt: str = "") -> int:
     return int(hashlib.sha1((salt + row_id).encode()).hexdigest(), 16) % 100
 
@@ -60,12 +87,27 @@ def _head_word(prompt: str) -> str:
 
 
 @pytest.mark.bench_gated
-def test_directive_detection_gate(aelfrice_corpus_root: Path) -> None:
+def test_h1_reentry_bar_is_still_unmet(aelfrice_corpus_root: Path) -> None:
+    """Fire when `detect_directive` clears H1's reopening bar.
+
+    Red here is good news and means one thing: go reopen #374. It does not
+    mean fix this test, and it does not mean lower the bar.
+
+    The assertion is the conjunction, because that is how
+    `v2_enforcement.md` § H1 states the criterion — precision **and** recall.
+    Either one alone clearing is not re-entry evidence.
+
+    Only meaningful while `test_directive_corpus_defeats_a_first_token_baseline`
+    is green. If the corpus separates its classes by opening vocabulary, a
+    detector keyed on head position clears the bar for free, and this tripwire
+    would fire on an artefact. Read that guard's verdict before acting on this
+    one.
+    """
     rows = load_corpus_module(aelfrice_corpus_root, "directive_detection")
 
     if len(rows) < MIN_ROWS:
         pytest.skip(
-            f"directive_detection corpus has {len(rows)} rows; gate requires "
+            f"directive_detection corpus has {len(rows)} rows; the bar requires "
             f"≥{MIN_ROWS} per docs/design/v2_enforcement.md § H1"
         )
 
@@ -86,16 +128,22 @@ def test_directive_detection_gate(aelfrice_corpus_root: Path) -> None:
 
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
-
-    assert precision >= PRECISION_GATE, (
-        f"directive_detection precision {precision:.3f} below "
-        f"{PRECISION_GATE} gate (TP={tp}, FP={fp}, FN={fn}, TN={tn}, "
-        f"n={len(rows)}); H1 stays deferred per docs/design/v2_enforcement.md § H1"
+    measured = (
+        f"precision={precision:.3f} (gate {PRECISION_GATE}) "
+        f"recall={recall:.3f} (gate {RECALL_GATE}) "
+        f"TP={tp} FP={fp} FN={fn} TN={tn} n={len(rows)} "
+        f"corpus_sha256={_corpus_digest(aelfrice_corpus_root)}"
     )
-    assert recall >= RECALL_GATE, (
-        f"directive_detection recall {recall:.3f} below {RECALL_GATE} gate "
-        f"(TP={tp}, FP={fp}, FN={fn}, TN={tn}, n={len(rows)}); "
-        f"H1 stays deferred per docs/design/v2_enforcement.md § H1"
+
+    assert not (precision >= PRECISION_GATE and recall >= RECALL_GATE), (
+        f"`detect_directive` now clears H1's re-entry bar: {measured}.\n"
+        f"  This is the tripwire firing, not a failure. H1 is deferred in "
+        f"docs/design/v2_enforcement.md § H1 on the grounds that the bar was "
+        f"unmet; it is met. Reopen #374 and decide whether to ship H1, then "
+        f"replace this tripwire with whatever gate the shipped feature needs.\n"
+        f"  Check test_directive_corpus_defeats_a_first_token_baseline first. "
+        f"If that guard is also red, the corpus separates its classes by "
+        f"opening vocabulary and this number is an artefact."
     )
 
 
