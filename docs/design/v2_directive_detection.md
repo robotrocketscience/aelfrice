@@ -71,7 +71,9 @@ Not more rows — **minimal pairs that break the head-word/class correlation**: 
 | baseline pooled precision | 0.9381 | 0.6108 |
 | real detector | P=0.706 / R=0.937 | **P=0.665 / R=0.636** |
 
-The validity guard goes green on the union. The gate itself stays red, now for a real reason: the detector genuinely does not clear P≥0.80 on a corpus that cannot be solved by memorising opening vocabulary. **H1 remains deferred, and its number now means what § H1 intends.**
+The validity guard goes green on the union, and the detector genuinely does not clear P≥0.80 on a corpus that cannot be solved by memorising opening vocabulary. **H1 remains deferred, and its number now means what § H1 intends.**
+
+The check that reports this is a **tripwire, not a gate** (#1502). Asserting P≥0.80 directly made it red at every release cut — correctly red, on a bar that is the *reopening* criterion for deferred work, which is to say red as its permanent shipped state. A check that can never be green cannot be told from a broken one, and it sits in the tier that is now the project's only scheduled quality signal (#1477). Inverted, it is green while H1 stays deferred and fires on the event that matters: the detector clearing the bar. Red there means reopen #374, not fix the test.
 
 Labels were authored per bucket, then reproduced by two independent passes with labels stripped, row ids replaced by opaque hashes, and rows reshuffled — 225/225 agreement, κ=1.000, zero unclear. Two caveats bound that: both passes are the same model family, and minimal pairs stay recognisable by topic however the ids are scrambled. It bounds label noise; it is not proof of independence.
 
