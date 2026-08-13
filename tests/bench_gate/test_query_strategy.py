@@ -1,19 +1,29 @@
-"""Bench gate for #291 query-strategy uplift (sub-issue #527).
+"""Bench gate for the shipped query strategy (#291 sub-issue #527, #1501).
 
-#291 § Bench gates ratifies a real-corpus uplift contract:
+Two arms over the same `retrieve()`: `transform_query(raw, store,
+"legacy-bm25")` passes the raw query through, and `transform_query(raw,
+store, "stack-r1-r3")` runs the R1 capitalised-token entity expand plus
+the R3 per-store IDF-quantile clip.
 
-    NDCG@k(stack-r1-r3) > NDCG@k(legacy-bm25)
+**The contract is that the shipped default is the winning arm**, not that
+the uplift is positive. #291 § Bench gates ratified `NDCG@k(stack-r1-r3)
+> NDCG@k(legacy-bm25)` as the ship trigger for flipping the default, and
+that flip shipped in v3.0 (#718). #1501 reverted it: #1177 replaced the
+conjunctive FTS5 MATCH with a disjunction over the rarest tokens, which
+is the recall cliff R3 existed to work around, and across that one commit
+the same 30 rows moved from +0.2851 to −0.1324 — because `legacy-bm25`
+gained 0.65 while `stack-r1-r3` gained 0.24.
 
-The OFF arm runs `transform_query(raw, store, "legacy-bm25")` (raw
-passthrough) into `retrieve()`. The ON arm runs `transform_query(raw,
-store, "stack-r1-r3")` (R1 capitalised-token entity expand + R3 per-
-store IDF-quantile clip) into the same `retrieve()`. Strictly positive
-uplift is the ship trigger; zero or negative uplift fails the gate.
+So a fixed direction is the wrong shape for this gate. Asserted against
+`DEFAULT_STRATEGY`, it goes red on a re-flip without a re-measure, and on
+a regression of the disjunctive MATCH — which would restore the cliff and
+put `stack-r1-r3` back in front.
 
-The +0.05 absolute P@10 floor from #291 body is the *flip-default*
-trigger evaluated lab-side once the labelled corpus exists; the gate
-asserted here is the simpler `> 0` shape so PR-2.6 (corpus seeding) and
-PR-3 (default flip) can land independently.
+A comparison alone is not enough, and the floor above it is load-bearing:
+a breakage that zeroes both arms is a tie, and a tie satisfies `>=`.
+
+The +0.05 absolute P@10 floor in #291's body was the flip-default trigger,
+evaluated lab-side. It is moot: the default is `legacy-bm25` again.
 
 Public CI skips when ``AELFRICE_CORPUS_ROOT`` is unset, per the
 directory-of-origin rule (labelled corpus lives only in
@@ -74,6 +84,21 @@ def test_query_strategy_uplift(aelfrice_corpus_root: Path) -> None:
         f"uplift={results.uplift:+.4f}\n"
         f"  default={DEFAULT_STRATEGY} rows={len(rows)} "
         f"corpus_sha256={_corpus_digest(aelfrice_corpus_root)}"
+    )
+    # The floor comes first, and it is not redundant with the comparison
+    # below. A comparison between two arms is silent about a breakage that
+    # zeroes *both* — that is a tie, and a tie satisfies `>=`. Emptying the
+    # FTS5 MATCH expression does exactly that: every row retrieves nothing,
+    # both arms score 0.0, and a gate written only as a comparison reports
+    # green at the release cut, which is the only place this tier runs.
+    # These rows carry labelled `expected_top_k`, so a non-zero score is a
+    # statement that retrieval happened at all.
+    assert scores[DEFAULT_STRATEGY] > 0.0, (
+        f"the shipped default ({DEFAULT_STRATEGY}) retrieved nothing "
+        f"scoreable on any of {len(rows)} labelled rows:\n{detail}\n"
+        f"  This is retrieval being broken, not a strategy comparison. "
+        f"Look at the FTS5 MATCH builder before anything else — an empty "
+        f"match expression produces exactly this."
     )
     assert scores[DEFAULT_STRATEGY] >= scores[other], (
         f"the shipped default ({DEFAULT_STRATEGY}) is not the winning arm "
