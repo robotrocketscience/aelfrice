@@ -12,6 +12,7 @@ See `tests/corpus/v2_0/README.md` for the schema contract.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Iterator
@@ -37,6 +38,16 @@ land in the same block that already says which modules ran.
 
 TIMEOUT_SCALE_ENV_VAR = "AELF_TEST_TIMEOUT_SCALE"
 """Multiplier applied to every resolved pytest-timeout budget (#1472)."""
+
+MAX_TIMEOUT_SCALE = 1000.0
+"""Upper bound on the scale, above which it is treated as malformed.
+
+Not a policy on how patient anyone may be. `pytest.mark.timeout` is
+handed the product, and a large enough one reaches `inf` or a value
+`signal.setitimer` refuses, which aborts the whole session with
+INTERNALERROR rather than failing one test. A typo in an environment
+variable must not be able to do that.
+"""
 
 DEFAULT_TIMEOUT_SCALE = 4.0
 """Headroom for a loaded developer machine. CI pins this to 1.
@@ -64,7 +75,9 @@ def _timeout_scale() -> float:
         scale = float(raw)
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT_SCALE
-    return scale if scale > 0 else DEFAULT_TIMEOUT_SCALE
+    if not math.isfinite(scale) or scale <= 0 or scale > MAX_TIMEOUT_SCALE:
+        return DEFAULT_TIMEOUT_SCALE
+    return scale
 
 
 def _resolved_timeout(item: pytest.Item, env_timeout: object) -> float | None:
@@ -120,6 +133,12 @@ def pytest_collection_modifyitems(
     dedicated runner, and a 4x-looser budget would weaken hang detection
     in `ci.yml` and `publish.yml`, neither of which carries a
     `timeout-minutes` backstop.
+
+    One deliberate side effect: an item that carried no `timeout` marker
+    gains one, so it starts matching `-m timeout` and stops matching
+    `-m "not timeout"`. Nothing in the suite selects on that marker, and
+    the alternative — leaving the ini population unscaled — would give a
+    loaded machine headroom on 179 tests and none on the rest.
     """
     scale = _timeout_scale()
     if scale == 1.0:
@@ -129,7 +148,19 @@ def pytest_collection_modifyitems(
         resolved = _resolved_timeout(item, env_timeout)
         if resolved is None:
             continue
-        item.add_marker(pytest.mark.timeout(resolved * scale), append=False)
+        # Carry the marker's other keywords through. `pytest-timeout`
+        # takes `method`, `func_only` and `disable_debugger_detection`
+        # alongside the budget, and re-adding a bare
+        # `pytest.mark.timeout(N)` in front of one that set them would
+        # silently drop them — turning a test that needs the thread
+        # method into one that does not have it. No marker in the suite
+        # uses them today; that is exactly why this would go unnoticed.
+        marker = item.get_closest_marker("timeout")
+        kwargs = dict(marker.kwargs) if marker is not None else {}
+        kwargs.pop("timeout", None)
+        item.add_marker(
+            pytest.mark.timeout(resolved * scale, **kwargs), append=False,
+        )
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
