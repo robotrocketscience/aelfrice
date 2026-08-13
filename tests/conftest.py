@@ -21,6 +21,20 @@ import pytest
 
 CORPUS_ENV_VAR = "AELFRICE_CORPUS_ROOT"
 
+BENCH_MEASUREMENT_PROPERTY = "bench_measurement"
+"""`record_property` key a bench-gate test uses to report its numbers.
+
+A gate that only prints on failure records nothing on the runs that
+matter most — the green ones at a release cut, which are the only
+evidence that the measurement was taken at all and the only place a
+drift between cuts would show. Inverted checks make this acute: a
+tripwire is *expected* to be green, so a message built solely inside its
+assertion is dead code in the shipped path.
+
+The summary prints whatever tests attach under this key, so the numbers
+land in the same block that already says which modules ran.
+"""
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register `--run-perf`, the opt-in for the latency benchmarks.
@@ -123,12 +137,16 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
             key = (m.group("module"), m.group("why"))
             by_module[key] = by_module.get(key, 0) + 1
 
-    executed = sum(
-        1
-        for outcome in ("passed", "failed")
-        for rep in stats.get(outcome, [])
-        if "bench_gated" in getattr(rep, "keywords", {})
-    )
+    executed = 0
+    measurements: list[str] = []
+    for outcome in ("passed", "failed"):
+        for rep in stats.get(outcome, []):
+            if "bench_gated" not in getattr(rep, "keywords", {}):
+                continue
+            executed += 1
+            for key, value in getattr(rep, "user_properties", ()):
+                if key == BENCH_MEASUREMENT_PROPERTY:
+                    measurements.append(str(value))
 
     if not (tier_skips or by_module or executed):
         return
@@ -150,6 +168,8 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
             f"  module {module!r}: {n} test(s) skipped — the corpus module "
             f"is {why}. This module's gate has no verdict."
         )
+    for line in sorted(measurements):
+        terminalreporter.write_line(f"  {line}")
 
 
 @pytest.fixture(scope="session")

@@ -26,11 +26,12 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import load_corpus_module
+from tests.conftest import BENCH_MEASUREMENT_PROPERTY, load_corpus_module
 
 PRECISION_GATE = 0.80
 RECALL_GATE = 0.60
@@ -87,7 +88,10 @@ def _head_word(prompt: str) -> str:
 
 
 @pytest.mark.bench_gated
-def test_h1_reentry_bar_is_still_unmet(aelfrice_corpus_root: Path) -> None:
+def test_h1_reentry_bar_is_still_unmet(
+    aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
+) -> None:
     """Fire when `detect_directive` clears H1's reopening bar.
 
     Red here is good news and means one thing: go reopen #374. It does not
@@ -96,6 +100,9 @@ def test_h1_reentry_bar_is_still_unmet(aelfrice_corpus_root: Path) -> None:
     The assertion is the conjunction, because that is how
     `v2_enforcement.md` § H1 states the criterion — precision **and** recall.
     Either one alone clearing is not re-entry evidence.
+
+    The constants keep the name `..._GATE`: the *bar* is H1's gate, and
+    it is unchanged. What this PR inverted is the *check* that reads it.
 
     Only meaningful while `test_directive_corpus_defeats_a_first_token_baseline`
     is green. If the corpus separates its classes by opening vocabulary, a
@@ -129,11 +136,17 @@ def test_h1_reentry_bar_is_still_unmet(aelfrice_corpus_root: Path) -> None:
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     measured = (
-        f"precision={precision:.3f} (gate {PRECISION_GATE}) "
-        f"recall={recall:.3f} (gate {RECALL_GATE}) "
+        f"directive_detection: precision={precision:.3f} "
+        f"(bar {PRECISION_GATE}) recall={recall:.3f} (bar {RECALL_GATE}) "
         f"TP={tp} FP={fp} FN={fn} TN={tn} n={len(rows)} "
-        f"corpus_sha256={_corpus_digest(aelfrice_corpus_root)}"
+        f"corpus_sha256[:12]={_corpus_digest(aelfrice_corpus_root)}"
     )
+    # Recorded before the assertion, so the green path records it too.
+    # A tripwire is expected to be green, so numbers built only inside an
+    # assertion message are dead code in the shipped path — H1's only
+    # recurring measurement would vanish from the release record exactly
+    # when it is behaving as designed.
+    record_property(BENCH_MEASUREMENT_PROPERTY, measured)
 
     assert not (precision >= PRECISION_GATE and recall >= RECALL_GATE), (
         f"`detect_directive` now clears H1's re-entry bar: {measured}.\n"
