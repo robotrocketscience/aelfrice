@@ -1410,9 +1410,10 @@ def user_prompt_submit(
             # the one the formatter and the ledger write both see.
             #
             # Every failure inside read_rendered returns the empty set, which
-            # renders everything verbatim — today's behaviour. The mechanism
-            # can only ever over-inject, never suppress a belief the model has
-            # not been shown, and that asymmetry is why it ships default-ON.
+            # renders everything verbatim. Note that this is a property of the
+            # READ path only: a boundary that never fires leaves stale ids
+            # live, which is why the feature is opt-in rather than default-on
+            # (see injection_ledger's module docstring).
             already_rendered: frozenset[str] = frozenset()
             if _turn_differential_enabled():
                 from aelfrice.injection_ledger import (  # noqa: PLC0415
@@ -1572,8 +1573,9 @@ def user_prompt_submit(
             # a claim that the text is in the context window. A suppressed
             # fire put nothing in the window, so recording it would make the
             # next turn emit a `seen` reference to content the model was never
-            # shown. That is the one way this feature can under-inject, and
-            # the default-ON ruling rests on it being impossible.
+            # shown. It is one of the ways this feature can under-inject; the
+            # others are epoch boundaries that never fire, which is why the
+            # feature is opt-in rather than default-on.
             #
             # `_verbatim_ids` is passed the same `already_rendered` the
             # renderer used, so a belief that rendered as a reference this
@@ -3979,25 +3981,30 @@ def session_start(
             if token_budget is not None
             else DEFAULT_SESSION_START_TOKEN_BUDGET
         )
+        # #1382: this fire is the epoch boundary — the event after which
+        # earlier verbatim text can no longer be assumed present in the window.
+        #
+        # Cleared to EMPTY **before** the store read, not after it, and that
+        # ordering is the correctness argument. `_retrieve_baseline_with_block`
+        # opens the store, which is a write (DDL plus migrations), so it can
+        # raise; the whole body shares one `except` below. Reset afterwards and
+        # any failure in the read skips the boundary, leaving the previous
+        # epoch's ledger live under an unchanged `session_id` — which is the
+        # under-injection this feature must not have. The same applies if the
+        # hook is killed at its timeout mid-retrieve, which on a large store is
+        # likelier than an exception.
+        #
+        # Clearing first is safe in the other direction too: the worst outcome
+        # is an empty ledger, which renders everything verbatim.
+        _begin_injection_epoch(session_id)
         retrieve_start = time.monotonic()
         hits, body = _retrieve_baseline_with_block(budget)
-        # #1382: this fire is the epoch boundary. It is the event after which
-        # earlier verbatim text can no longer be assumed present in the window
-        # — a fresh or compacted context does not carry it.
-        #
-        # OUTSIDE the `if body:` guard, and that placement is the whole
-        # correctness argument. An empty baseline (a store with no locked
-        # beliefs) renders nothing, but the window is new all the same. Reset
-        # only on a non-empty render and the previous epoch's ledger survives
-        # under the same `session_id`, so every later turn emits `seen <id>`
-        # for text that was in the discarded window — the belief is then
-        # permanently a one-line stub the model was never shown.
-        #
-        # `begin_epoch` REPLACES rather than unions, for the same reason.
-        _begin_injection_epoch(session_id, hits)
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
+            # Now that the baseline is on stdout, record what it showed
+            # verbatim. Only reachable once the bytes are written.
+            _begin_injection_epoch(session_id, hits)
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(

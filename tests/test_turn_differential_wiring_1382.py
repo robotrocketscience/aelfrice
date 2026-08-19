@@ -16,9 +16,10 @@ one of the three wiring edges and a named test here goes red:
   * UserPromptSubmit writes the ledger   -> `test_a_fire_records_what_it_...`
   * SessionStart opens the epoch         -> `test_session_start_replaces_...`
 
-The remaining tests pin the two properties the default-ON ruling of
-2026-08-11 rests on: the failure direction is one-way, and a suppressed block
-records nothing.
+The remaining tests pin the switch and the safety properties: the feature is
+off by default (2026-08-19, reversing the 2026-08-11 default-on ruling), a
+suppressed block records nothing, and every epoch boundary actually resets —
+including the ones a store-read failure or an empty baseline used to skip.
 """
 from __future__ import annotations
 
@@ -421,3 +422,43 @@ def test_pre_compact_resets_the_epoch(wired: Path) -> None:
         "PreCompact did not reset the epoch"
     )
     assert '<belief id="HIT01"' in _fire(session_id="sess-A")
+
+
+def test_a_failed_baseline_read_still_resets_the_epoch(
+    wired: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boundary must not depend on the store read succeeding.
+
+    `_retrieve_baseline_with_block` opens the store, which is a write (DDL
+    plus migrations), so it can raise — and `session_start` wraps its whole
+    body in one `except`. Reset after the read and any failure there skips the
+    boundary, leaving the previous epoch live under an unchanged `session_id`.
+    That is the same under-injection the empty-baseline case produced, by a
+    different route, and it is likelier in practice: on a large store the hook
+    is more often killed at its timeout mid-retrieve than raised out of.
+    """
+    _fire(session_id="sess-A")
+    assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
+
+    import aelfrice.hook as hook_mod
+
+    def boom(_budget: int) -> tuple[list[Belief], str]:
+        raise RuntimeError("store open failed")
+
+    original = hook_mod._retrieve_baseline_with_block
+    monkeypatch.setattr(hook_mod, "_retrieve_baseline_with_block", boom)
+    _fire_session_start(session_id="sess-A")
+
+    assert "HIT01" not in (_ledger(wired) or {}).get("rendered", []), (
+        "a failed baseline read skipped the epoch reset; the previous epoch's "
+        "ids are still live"
+    )
+
+    # Restore the one attribute, NOT monkeypatch.undo(): `wired` sets
+    # AELFRICE_DB and the feature flag through this same monkeypatch instance,
+    # so undo() would point the next fire at a different store entirely and
+    # the assertion below would report on the wrong tree.
+    monkeypatch.setattr(hook_mod, "_retrieve_baseline_with_block", original)
+    assert '<belief id="HIT01"' in _fire(session_id="sess-A"), (
+        "after the reset the belief must render verbatim again"
+    )
