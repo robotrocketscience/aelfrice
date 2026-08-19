@@ -71,22 +71,35 @@ def _env_override() -> bool | None:
 
 
 def is_turn_differential_enabled(explicit: bool | None = None) -> bool:
-    """Resolve the turn-differential flag. Precedence: env > explicit > on.
+    """Resolve the turn-differential flag. Precedence: env > explicit > off.
 
-    Default-**on**, unlike #1326's provenance render. Two reasons. The prize is
-    already measured rather than speculative, and a default-off flag would bank
-    none of it. And the change is information-preserving in a way #1326's was
-    not: a differential line still names the belief and its topic, and the
-    verbatim text it replaces is by construction already present earlier in the
-    same context window. #1326 rewrote every line's shape for a model that had
-    never seen the alternative; this one elides a duplicate.
+    Default-**off**, ratified 2026-08-19. The 2026-08-11 ruling shipped this
+    default-on on one argument — that the failure direction is one-way, so a
+    broken ledger can only cost redundant tokens. Two measurements retired it:
+
+    1. **The one-way claim was false.** `begin_epoch` sat inside a
+       `if body:` guard in `session_start`, so a baseline that rendered
+       nothing (a store with no locked beliefs) never opened an epoch. The
+       pre-compaction ledger survived under the same `session_id` and later
+       turns emitted `seen <id>` for text the window no longer held. That is
+       fixed — the reset is unconditional and PreCompact resets too — but the
+       argument was load-bearing for the default, not just for the code.
+
+    2. **The prize is negative at the median.** A `seen` entry forces the
+       `<aelfrice-locks-manifest>` wrapper open on blocks that emitted none,
+       a fixed ~237 characters. Break-even is roughly 310 characters for a
+       single-belief block; the recorded candidate distribution has p50 = 86.
+       Small blocks of short beliefs — the modal case — get bigger.
+
+    So it stays behind the flag until the wrapper cost is addressed and the
+    saving is measured on a real store rather than asserted.
     """
     env = _env_override()
     if env is not None:
         return env
     if explicit is not None:
         return explicit
-    return True
+    return False
 
 
 def ledger_path() -> Path | None:
@@ -173,6 +186,28 @@ def begin_epoch(
     _write(session_id, frozenset(ids), path)
 
 
+def invalidate(*, path: Path | None = None) -> None:
+    """Drop the ledger entirely — no epoch can be scoped, so suppress nothing.
+
+    Called at an epoch boundary whose `session_id` is unknown (an absent id in
+    the payload, or a payload that failed to parse). `begin_epoch` returns
+    early on a falsy id, which would leave the PREVIOUS epoch's file in place
+    under an id the next fire may well match — and that is an under-injection
+    path, not a fail-soft one. Removing the file makes the next `read_rendered`
+    return the empty set, i.e. render everything verbatim.
+    """
+    p = path if path is not None else ledger_path()
+    if p is None:
+        return
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        # Cannot remove it. The stale file may still suppress content, so this
+        # is the one failure here that is not benign; the caller cannot do
+        # better, but it must not be silently reported as a reset.
+        return
+
+
 def record_rendered(
     session_id: str | None, ids: frozenset[str], *, path: Path | None = None
 ) -> None:
@@ -188,6 +223,7 @@ def record_rendered(
 
 __all__ = [
     "LEDGER_FILENAME",
+    "invalidate",
     "TURN_DIFFERENTIAL_ENV_VAR",
     "begin_epoch",
     "is_turn_differential_enabled",

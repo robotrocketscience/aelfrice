@@ -2487,6 +2487,35 @@ def _turn_differential_enabled() -> bool:
         return False
 
 
+def _begin_injection_epoch(
+    session_id: str | None, hits: list[Belief] | None = None
+) -> None:
+    """Open a new #1382 injection epoch at a context boundary.
+
+    Called from SessionStart and PreCompact. Both mean the same thing: text
+    injected before this point can no longer be assumed present in the window.
+
+    A falsy `session_id` **invalidates** rather than no-ops. `begin_epoch`
+    returns early on a falsy id, which would leave the previous epoch's file in
+    place under an id the next fire may match — the one under-injection path
+    this feature must not have. Removing the file renders everything verbatim.
+    """
+    if not _turn_differential_enabled():
+        return
+    try:
+        from aelfrice.injection_ledger import (  # noqa: PLC0415
+            begin_epoch,
+            invalidate,
+        )
+
+        if session_id:
+            begin_epoch(session_id, _verbatim_ids(hits or []))
+        else:
+            invalidate()
+    except Exception:  # fail-soft: costs a repeat, never a drop
+        pass
+
+
 def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
     """The one manifest-vs-verbatim predicate (#1382 AC4).
 
@@ -3714,6 +3743,18 @@ def pre_compact(
         return 0
     try:
         raw = read_payload_text(sin, serr) or ""
+        # #1382: compaction discards the window, so nothing injected before
+        # this point can be assumed present afterwards. Reset the epoch to
+        # empty — the post-compaction turns must render verbatim again.
+        #
+        # This runs BEFORE every early return below, and deliberately so.
+        # Compaction happens whatever the rebuilder's `trigger_mode` is, and an
+        # unparseable payload does not un-compact the window; skipping the
+        # reset on either would leave the pre-compaction ledger live under a
+        # `session_id` the next fire matches. SessionStart(source="compact")
+        # resets it too, but only when its baseline renders — a store with no
+        # locked beliefs emits nothing there, which is the hole this closes.
+        _begin_injection_epoch(_extract_session_id(raw))
         payload = _parse_pre_compact_payload(raw)
         if payload is None:
             return 0
@@ -3940,27 +3981,23 @@ def session_start(
         )
         retrieve_start = time.monotonic()
         hits, body = _retrieve_baseline_with_block(budget)
+        # #1382: this fire is the epoch boundary. It is the event after which
+        # earlier verbatim text can no longer be assumed present in the window
+        # — a fresh or compacted context does not carry it.
+        #
+        # OUTSIDE the `if body:` guard, and that placement is the whole
+        # correctness argument. An empty baseline (a store with no locked
+        # beliefs) renders nothing, but the window is new all the same. Reset
+        # only on a non-empty render and the previous epoch's ledger survives
+        # under the same `session_id`, so every later turn emits `seen <id>`
+        # for text that was in the discarded window — the belief is then
+        # permanently a one-line stub the model was never shown.
+        #
+        # `begin_epoch` REPLACES rather than unions, for the same reason.
+        _begin_injection_epoch(session_id, hits)
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
-            # #1382: this fire is the epoch boundary. It is the only event
-            # that unconditionally re-emits every locked belief verbatim, and
-            # the only one after which earlier verbatim text can no longer be
-            # assumed present in the window — a fresh or compacted context
-            # does not carry it.
-            #
-            # `begin_epoch` REPLACES rather than unions, so the previous
-            # epoch's ids cannot suppress content this window has never seen.
-            # It is written only when `body` was actually emitted, because an
-            # unwritten baseline put nothing in the window.
-            if _turn_differential_enabled():
-                try:
-                    from aelfrice.injection_ledger import (  # noqa: PLC0415
-                        begin_epoch,
-                    )
-                    begin_epoch(session_id, _verbatim_ids(hits))
-                except Exception:  # fail-soft: costs a repeat, never a drop
-                    pass
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
