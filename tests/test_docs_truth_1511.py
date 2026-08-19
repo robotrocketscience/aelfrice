@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
 ARCHITECTURE = REPO / "docs" / "concepts" / "ARCHITECTURE.md"
@@ -116,4 +118,26 @@ def test_architecture_counts_match_the_tree() -> None:
     assert stated_files == _py_file_count(), (
         f"ARCHITECTURE.md says {stated_files} `.py` files; the tree holds "
         f"{_py_file_count()}"
+    )
+
+
+def test_exploration_ships_and_is_off_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PHILOSOPHY said exploration would ship "in a future version". It ships.
+
+    The paragraph now says the slot exists and is off by default. Both halves
+    are pinned: the module must be importable, and the resolver must return
+    False with no environment override and no TOML file.
+    """
+    from aelfrice import exploration, retrieval
+
+    assert exploration.DEFAULT_EXPLORATION_SLOTS >= 1, (
+        "exploration module no longer declares a slot count — PHILOSOPHY "
+        "claims the mechanism ships"
+    )
+    monkeypatch.delenv("AELFRICE_EXPLORATION", raising=False)
+    assert retrieval.is_exploration_enabled(start=tmp_path) is False, (
+        "exploration resolved default-ON; PHILOSOPHY says it is off by "
+        "default. Update the paragraph in the same change as the flip."
     )
