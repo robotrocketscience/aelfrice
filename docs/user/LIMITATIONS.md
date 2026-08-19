@@ -4,7 +4,7 @@ This page lists what aelfrice does not do yet. The project tracks these limitati
 
 ## The big one: feedback doesn't drive ranking (lifted at v1.3.0, partially)
 
-Through v1.2.x, `apply_feedback` updates `(α, β)`. `apply_feedback` also writes an audit row. Through v1.2.x, `aelf stats` and the Model Context Protocol (MCP) show the posterior mean. But L1 retrieval orders the hits by `bm25(beliefs_fts)` alone. L1 retrieval does not order the hits by the posterior. If you mark a belief `harmful`, `apply_feedback` lowers the posterior mean of that belief. The next retrieval that matches the keywords of that belief still surfaces it.
+Through v1.2.x, `apply_feedback` updates `(α, β)`. `apply_feedback` also writes an audit row. Through v1.2.x, `aelf stats` and the Model Context Protocol (MCP) showed the posterior mean. The MCP surface no longer exists: #1422 removed it, and `src/aelfrice/mcp_cleanup.py` is the shim that stays behind to remove its installed entries. But L1 retrieval orders the hits by `bm25(beliefs_fts)` alone. L1 retrieval does not order the hits by the posterior. If you mark a belief `harmful`, `apply_feedback` lowers the posterior mean of that belief. The next retrieval that matches the keywords of that belief still surfaces it.
 
 The benchmark harness shipped at v1.0 as the measurement instrument. The harness was not yet a proof of the feedback claim. Three changes closed that gap in steps:
 
