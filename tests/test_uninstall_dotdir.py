@@ -590,29 +590,51 @@ def test_many_strays_are_each_reported_once(tmp_path: Path) -> None:
     assert strays == sorted(strays), "ordering must survive the dedup"
 
 
-def test_dotdir_plan_scales_linearly(tmp_path: Path) -> None:
+def test_dotdir_plan_dedupes_without_rescanning(tmp_path: Path) -> None:
     """`unrecognised` deduped against itself as a *list* — O(n^2) (#1202).
 
-    Asserts the shape of the curve rather than a wall-clock budget, so
-    the result does not depend on how fast this machine is: doubling the
-    input roughly doubles a linear walk and roughly quadruples a
-    quadratic one. Measured 3.9x before the fix and ~2.0x after, so 3.0x
-    separates them with margin on both sides. `min` of repeated runs
-    because a load spike can only ever make a sample slower.
-    """
-    def best(n: int) -> float:
-        home = tmp_path / f"dot{n}" / ".aelfrice"
-        _fill_logs(home, n)
-        samples = []
-        for _ in range(3):
-            start = time.perf_counter()
-            lifecycle.dotdir_plan(home, include_data=True)
-            samples.append(time.perf_counter() - start)
-        return min(samples)
+    Counts path comparisons instead of timing them (#1473). The previous
+    version asserted the shape of the wall-clock curve — doubling the input
+    roughly doubles a linear walk — taking `min` of repeated samples on the
+    reasoning that load can only make a sample slower. That reasoning holds
+    for one measurement and fails for a *ratio* of two: under contention the
+    larger case's floor inflates more than the smaller one's, so the ratio
+    drifts upward. Measured 2026-08-19 under sustained load, this test failed
+    3 runs in 5 while the other nine default-run clock assertions all held.
 
-    small, large = best(1000), best(2000)
-    ratio = large / small
-    assert ratio < 3.0, (
-        f"dotdir_plan scaled {ratio:.1f}x for 2x the input "
-        f"({small:.4f}s -> {large:.4f}s); expected ~2x for a linear walk"
+    The comparison count has no such failure mode. `stray not in <list>`
+    calls `PurePath.__eq__` once per element already collected, so the
+    quadratic version reaches ~n^2/2 calls, while the shipped set-based dedup
+    reaches **zero** — a hash lookup that does not collide never compares. The
+    bound below therefore sits three orders of magnitude clear of the
+    regression it guards, and reads the same on an idle and a loaded box.
+    """
+    import pathlib as _pathlib
+
+    home = tmp_path / "dot" / ".aelfrice"
+    n = 2000
+    _fill_logs(home, n)
+
+    original_eq = _pathlib.PurePath.__eq__
+    calls = 0
+
+    def counting_eq(self: Any, other: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original_eq(self, other)
+
+    _pathlib.PurePath.__eq__ = counting_eq  # type: ignore[method-assign]
+    try:
+        _, _, unrecognised = lifecycle.dotdir_plan(home, include_data=True)
+    finally:
+        _pathlib.PurePath.__eq__ = original_eq  # type: ignore[method-assign]
+
+    assert len(unrecognised) >= n, (
+        f"expected at least {n} strays to classify, got {len(unrecognised)} "
+        "— the fixture is not exercising the dedup"
+    )
+    assert calls < n, (
+        f"dotdir_plan made {calls} path comparisons for {n} strays. A "
+        f"set-based dedup makes ~0; a list rescan makes ~{n * n // 2}. This "
+        "is the #1202 quadratic walk returning."
     )
