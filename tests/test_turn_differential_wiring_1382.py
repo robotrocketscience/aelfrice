@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.hook import session_start, user_prompt_submit
+from aelfrice import hook as hook_mod
 from aelfrice.injection_ledger import LEDGER_FILENAME
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
@@ -77,7 +77,7 @@ def _seed(db: Path, beliefs: list[Belief]) -> None:
 
 def _fire(prompt: str = _PROMPT, session_id: str = "sess-A") -> str:
     sout = io.StringIO()
-    rc = user_prompt_submit(
+    rc = hook_mod.user_prompt_submit(
         stdin=io.StringIO(
             json.dumps(
                 {
@@ -98,7 +98,7 @@ def _fire(prompt: str = _PROMPT, session_id: str = "sess-A") -> str:
 
 def _fire_session_start(session_id: str = "sess-A") -> str:
     sout = io.StringIO()
-    rc = session_start(
+    rc = hook_mod.session_start(
         stdin=io.StringIO(
             json.dumps(
                 {
@@ -385,7 +385,7 @@ def test_a_boundary_without_a_session_id_invalidates_the_ledger(
     assert (wired / LEDGER_FILENAME).exists()
 
     sout = io.StringIO()
-    session_start(
+    hook_mod.session_start(
         stdin=io.StringIO(
             json.dumps({"cwd": "/tmp", "hook_event_name": "SessionStart"})
         ),
@@ -400,12 +400,10 @@ def test_a_boundary_without_a_session_id_invalidates_the_ledger(
 
 def test_pre_compact_resets_the_epoch(wired: Path) -> None:
     """PreCompact is the event actually guaranteed to precede compaction."""
-    from aelfrice.hook import pre_compact
-
     _fire(session_id="sess-A")
     assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
 
-    pre_compact(
+    hook_mod.pre_compact(
         stdin=io.StringIO(
             json.dumps(
                 {
@@ -440,8 +438,6 @@ def test_a_failed_baseline_read_still_resets_the_epoch(
     _fire(session_id="sess-A")
     assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
 
-    import aelfrice.hook as hook_mod
-
     def boom(_budget: int) -> tuple[list[Belief], str]:
         raise RuntimeError("store open failed")
 
@@ -461,4 +457,37 @@ def test_a_failed_baseline_read_still_resets_the_epoch(
     monkeypatch.setattr(hook_mod, "_retrieve_baseline_with_block", original)
     assert '<belief id="HIT01"' in _fire(session_id="sess-A"), (
         "after the reset the belief must render verbatim again"
+    )
+
+
+def test_a_failed_invalidate_is_reported_not_swallowed(
+    wired: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale ledger that cannot be removed goes on suppressing content.
+
+    Every other write here fails benignly — the cost is a redundant verbatim
+    injection. This one does not, so it must not pass silently as a completed
+    reset. The hook contract forbids raising, so `invalidate` returns whether
+    the ledger is gone and the caller surfaces a failure on stderr.
+    """
+    import aelfrice.injection_ledger as ledger_mod
+
+    monkeypatch.setattr(ledger_mod, "invalidate", lambda **_kw: False)
+    serr = io.StringIO()
+    hook_mod._begin_injection_epoch(None, stderr=serr)
+
+    assert "injection ledger" in serr.getvalue(), (
+        "a failed invalidate was swallowed; an un-removable stale ledger must "
+        f"be reported. stderr was: {serr.getvalue()!r}"
+    )
+
+
+def test_a_successful_invalidate_stays_quiet(
+    wired: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warning must not fire on the normal path, or it is noise."""
+    serr = io.StringIO()
+    hook_mod._begin_injection_epoch(None, stderr=serr)
+    assert serr.getvalue() == "", (
+        f"a successful reset wrote to stderr: {serr.getvalue()!r}"
     )

@@ -206,7 +206,7 @@ def begin_epoch(
     _write(session_id, frozenset(ids), path)
 
 
-def invalidate(*, path: Path | None = None) -> None:
+def invalidate(*, path: Path | None = None) -> bool:
     """Drop the ledger entirely — no epoch can be scoped, so suppress nothing.
 
     Called at an epoch boundary whose `session_id` is unknown (an absent id in
@@ -215,17 +215,23 @@ def invalidate(*, path: Path | None = None) -> None:
     under an id the next fire may well match — and that is an under-injection
     path, not a fail-soft one. Removing the file makes the next `read_rendered`
     return the empty set, i.e. render everything verbatim.
+
+    **Returns whether the ledger is now gone**, unlike the other writers here,
+    which return None because their failure mode is benign (a redundant
+    verbatim injection). This one is not: a stale file that cannot be removed
+    goes on suppressing content, so a caller that reported "epoch reset" on a
+    failed unlink would be asserting the opposite of what happened. The hook
+    contract forbids raising, so the signal is a return value and the caller
+    surfaces it on stderr.
     """
     p = path if path is not None else ledger_path()
     if p is None:
-        return
+        return True  # nothing to remove: no on-disk ledger can suppress
     try:
         p.unlink(missing_ok=True)
     except OSError:
-        # Cannot remove it. The stale file may still suppress content, so this
-        # is the one failure here that is not benign; the caller cannot do
-        # better, but it must not be silently reported as a reset.
-        return
+        return False
+    return True
 
 
 def record_rendered(

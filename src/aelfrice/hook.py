@@ -2490,7 +2490,10 @@ def _turn_differential_enabled() -> bool:
 
 
 def _begin_injection_epoch(
-    session_id: str | None, hits: list[Belief] | None = None
+    session_id: str | None,
+    hits: list[Belief] | None = None,
+    *,
+    stderr: IO[str] | None = None,
 ) -> None:
     """Open a new #1382 injection epoch at a context boundary.
 
@@ -2512,8 +2515,16 @@ def _begin_injection_epoch(
 
         if session_id:
             begin_epoch(session_id, _verbatim_ids(hits or []))
-        else:
-            invalidate()
+        elif not invalidate():
+            # The one failure here that is not benign: a stale ledger that
+            # cannot be removed goes on suppressing content. Never blocks the
+            # hook, but it must not pass silently as a completed reset.
+            print(
+                "aelfrice: could not clear the injection ledger at an epoch "
+                "boundary; a stale entry may suppress a belief this session. "
+                "Remove it by hand, or set AELFRICE_TURN_DIFFERENTIAL=0.",
+                file=stderr if stderr is not None else sys.stderr,
+            )
     except Exception:  # fail-soft: costs a repeat, never a drop
         pass
 
@@ -3756,7 +3767,7 @@ def pre_compact(
         # `session_id` the next fire matches. SessionStart(source="compact")
         # resets it too, but only when its baseline renders — a store with no
         # locked beliefs emits nothing there, which is the hole this closes.
-        _begin_injection_epoch(_extract_session_id(raw))
+        _begin_injection_epoch(_extract_session_id(raw), stderr=serr)
         payload = _parse_pre_compact_payload(raw)
         if payload is None:
             return 0
@@ -3996,7 +4007,7 @@ def session_start(
         #
         # Clearing first is safe in the other direction too: the worst outcome
         # is an empty ledger, which renders everything verbatim.
-        _begin_injection_epoch(session_id)
+        _begin_injection_epoch(session_id, stderr=serr)
         retrieve_start = time.monotonic()
         hits, body = _retrieve_baseline_with_block(budget)
         if body:
