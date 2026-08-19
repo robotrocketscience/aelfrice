@@ -2614,8 +2614,30 @@ def _manifest_block_lines(manifest_lines: list[str]) -> list[str]:
     return [LOCKS_MANIFEST_OPEN_TAG, *manifest_lines, LOCKS_MANIFEST_CLOSE_TAG]
 
 
-def _format_hits(hits: list[Belief]) -> str:
-    belief_lines, manifest_lines = _split_belief_lines(hits)
+def _verbatim_ids(
+    hits: list[Belief], already_rendered: frozenset[str] = frozenset()
+) -> frozenset[str]:
+    """Ids of `hits` that render as full content rather than a manifest line.
+
+    This is what the ledger records, and it must be derived from the same
+    predicate the renderer used (#1382 AC4) — a second, independent derivation
+    is how the ledger and the block drift apart.
+
+    A hit that rendered as a manifest entry is deliberately excluded: a `ref`
+    line is not the belief's text, so recording it would claim the model was
+    shown content it never saw, and the next epoch would suppress it forever.
+    """
+    return frozenset(
+        h.id for h in hits if not _renders_as_manifest(h, already_rendered)
+    )
+
+
+def _format_hits(
+    hits: list[Belief], *, already_rendered: frozenset[str] = frozenset()
+) -> str:
+    belief_lines, manifest_lines = _split_belief_lines(
+        hits, already_rendered=already_rendered
+    )
     lines: list[str] = [OPEN_TAG, _framing_header_for(hits)]
     lines.extend(belief_lines)
     lines.extend(_manifest_block_lines(manifest_lines))
@@ -3387,14 +3409,19 @@ def _build_session_start_subblock(
 
 
 def _format_hits_with_session_start(
-    hits: list["Belief"], session_start_block: str
+    hits: list["Belief"],
+    session_start_block: str,
+    *,
+    already_rendered: frozenset[str] = frozenset(),
 ) -> str:
     """Format the <aelfrice-memory> envelope with an embedded session-start.
 
     When session_start_block is non-empty it is inserted after the framing
     header and before the per-turn retrieval beliefs.
     """
-    belief_lines, manifest_lines = _split_belief_lines(hits)
+    belief_lines, manifest_lines = _split_belief_lines(
+        hits, already_rendered=already_rendered
+    )
     lines: list[str] = [OPEN_TAG, _framing_header_for(hits)]
     if session_start_block:
         lines.append(session_start_block)
