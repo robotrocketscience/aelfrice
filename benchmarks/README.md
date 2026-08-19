@@ -79,6 +79,50 @@ uv run python -m benchmarks.verify_clean /tmp/lme_smoke.json
 uv run aelf bench all --smoke --out /tmp/bench-smoke.json
 ```
 
+## What these harnesses measure, and what they do not
+
+**Agreement is not quality.** Read this before you quote a number out of any
+harness in this directory.
+
+Some of these instruments report how much two rankers agree: top-10 movement
+rate, Jaccard overlap at k, Kendall tau, "N of M queries changed". Every one of
+those is a **change** statistic. It tells you the two configurations return
+different results. It tells you nothing about which of them is right.
+
+A movement rate becomes a **quality** statistic only against labelled
+relevance — a judgement, external to both rankers, about which documents the
+query should have returned. Without labels, a large movement and a small
+movement are equally consistent with an improvement, a regression, and noise.
+
+Two failure modes follow, and both have occurred here:
+
+1. **Reporting a movement rate as if it were an uplift.** "This change moved
+   47% of top-10s" reads as an effect. It is not one.
+2. **Treating agreement between two approximations as validation.** If neither
+   arm scores what production scores, their agreement measures the shared
+   approximation, not the production behaviour.
+
+The second is why this section exists. Commit
+[`848dbf83`](https://github.com/robotrocketscience/aelfrice/commit/848dbf83aab6e2c5198b1bc5b0f70ebcc7f11ea9)
+— *"revert(bench): stop calling the recorded query the production population"* —
+retracted a published table for exactly this reason. The recorded
+`extracted_query` was handed to `retrieve()` by **neither** caller: 97.7% of
+recorded rows come from `user_prompt_submit`, which scores a conversation-aware
+composition built in `hook.py` that the context rebuilder never sees. Both arms
+were relabelled as approximations, and neither is quoted as production.
+
+So, when you run anything here:
+
+- Say whether your figure is a change statistic or a quality statistic. If you
+  cannot name the labels, it is a change statistic.
+- Name the population the arm actually scored, not the population you wanted it
+  to score.
+- Stamp the corpus identity with the result, following the
+  `benchmarks/scan_admission_funnel.py` precedent.
+- If the population is too small to support the claim, report that and stop.
+  Measuring anyway and qualifying it in prose is how a retracted number gets
+  quoted a second time.
+
 ## Protocol
 
 See [`docs/concepts/BENCHMARKS.md`](../docs/concepts/BENCHMARKS.md) for the run protocol (retrieval-only, contamination check, reader generation, scoring, audit record). The protocol is stable across phases; only the activation status of individual adapters changes.
