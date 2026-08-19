@@ -35,6 +35,14 @@ The file is one optional TOML file at the root of a project. An ancestor directo
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more tables. They hold the scoring of the feedback cadence, the deferred feedback for retrieval exposure, and the audit log of the hook for each turn. This file recognises the three tables. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — the opt-in keys for the feedback lanes. `sentiment_from_prose` (default `false`) connects the sentiment-feedback detector to `UserPromptSubmit` (#606).
 - `[belief_categories]` (v4.x+) — the belief categories that a keyword triggers. `enabled` (default `false`) connects the category-injection lane to `UserPromptSubmit` (#1126). Manage the categories with `aelf category`.
+- `AELFRICE_TURN_DIFFERENTIAL` (v4.x+, #1382) — an environment variable with no TOML key. The default is on. When a belief was already written into the context of this session **verbatim**, a later turn writes a one-line `seen <id>: "<topic>"` reference in the locks manifest instead of the same block again. The text is already above in the same window, so the reference points at it. Export `AELFRICE_TURN_DIFFERENTIAL=0` to write every belief verbatim on every turn, which is the behaviour before v4.x.
+
+  Each SessionStart starts a new epoch and resets the record, because a new context window or a compacted context window does not hold the earlier text. A change of session identifier does the same.
+
+  The failure direction is one-way by design. A missing, unreadable, damaged or foreign record gives "nothing written yet", so the block goes out verbatim. The mechanism can write a belief two times. The mechanism cannot hide a belief that the agent did not see. aelfrice keeps no record for a turn whose block the `[memory_block]` switch suppressed, for the same reason.
+
+  The saving comes from the bound on the reference line, and not from the removal of the `<belief>` tags. A belief shorter than the 80-character topic cap saves only the tags. A long belief becomes a line of approximately 100 characters.
+
 - `[memory_block]` (v4.x+, #1359) — the switch that turns off the injected `<aelfrice-memory>` block. The key is `enabled` (default `true`). Set the key to `false`, or export `AELFRICE_MEMORY_BLOCK=0`, to stop `UserPromptSubmit` writing the block to your prompt. The environment variable overrides the TOML key in both directions. `AELFRICE_MEMORY_BLOCK=1` re-enables the block for a project that disabled it. The switch stops the whole `<aelfrice-memory>` envelope. That envelope includes two sub-blocks, and they stop with it:
   - the session-start sub-block of the first prompt (`<locked>`, `<core>`, `<recent-work>` — #578);
   - the `<cadence-resume>` "pick up where you left off" block (#871).
