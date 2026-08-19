@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice import hook as hook_mod
-from aelfrice.injection_ledger import LEDGER_FILENAME
+from aelfrice import injection_ledger as ledger_mod
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
@@ -117,7 +117,7 @@ def _fire_session_start(session_id: str = "sess-A") -> str:
 
 
 def _ledger(tmp_path: Path) -> dict[str, object] | None:
-    p = tmp_path / LEDGER_FILENAME
+    p = tmp_path / ledger_mod.LEDGER_FILENAME
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
@@ -231,7 +231,7 @@ def test_session_start_replaces_the_epoch(
     monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
     monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
 
-    (tmp_path / LEDGER_FILENAME).write_text(
+    (tmp_path / ledger_mod.LEDGER_FILENAME).write_text(
         json.dumps({"session_id": "sess-A", "rendered": ["GHOST"]}),
         encoding="utf-8",
     )
@@ -322,7 +322,7 @@ def test_the_off_switch_restores_verbatim_rendering(
 def test_a_corrupt_ledger_renders_verbatim(wired: Path) -> None:
     """Fail-soft direction: unreadable state costs tokens, never content."""
     _fire()
-    (wired / LEDGER_FILENAME).write_text("{ not json", encoding="utf-8")
+    (wired / ledger_mod.LEDGER_FILENAME).write_text("{ not json", encoding="utf-8")
     assert '<belief id="HIT01"' in _fire(), (
         "a corrupt ledger suppressed content; every failure path must render "
         "verbatim"
@@ -382,7 +382,7 @@ def test_a_boundary_without_a_session_id_invalidates_the_ledger(
     path, because the next fire may well match that id.
     """
     _fire(session_id="sess-A")
-    assert (wired / LEDGER_FILENAME).exists()
+    assert (wired / ledger_mod.LEDGER_FILENAME).exists()
 
     sout = io.StringIO()
     hook_mod.session_start(
@@ -392,7 +392,7 @@ def test_a_boundary_without_a_session_id_invalidates_the_ledger(
         stdout=sout,
         stderr=io.StringIO(),
     )
-    assert not (wired / LEDGER_FILENAME).exists(), (
+    assert not (wired / ledger_mod.LEDGER_FILENAME).exists(), (
         "an un-scopeable epoch boundary left the previous epoch's ledger live"
     )
     assert '<belief id="HIT01"' in _fire(session_id="sess-A")
@@ -470,8 +470,6 @@ def test_a_failed_invalidate_is_reported_not_swallowed(
     reset. The hook contract forbids raising, so `invalidate` returns whether
     the ledger is gone and the caller surfaces a failure on stderr.
     """
-    import aelfrice.injection_ledger as ledger_mod
-
     monkeypatch.setattr(ledger_mod, "invalidate", lambda **_kw: False)
     serr = io.StringIO()
     hook_mod._begin_injection_epoch(None, stderr=serr)
