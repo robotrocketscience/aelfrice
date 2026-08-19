@@ -33,7 +33,15 @@ from aelfrice.injection_ledger import LEDGER_FILENAME
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
-_CONTENT = "the cellar door is full of barrels and casks"
+# MUST exceed retrieval._LOCK_TOPIC_MAX (80). Below the cap,
+# `seen_manifest_line` embeds the WHOLE content, so `assert _CONTENT in out`
+# is satisfied by the reference line and every verbatim-vs-reference assertion
+# built on it is vacuous. Three tests in this file were vacuous for exactly
+# that reason until the adversarial review of PR #1515 caught it.
+_CONTENT = (
+    "the cellar door is full of oak barrels and copper casks, and the north "
+    "aisle inventory is recounted every quarter by the night warden"
+)
 
 # `retrieval._LOCK_TOPIC_MAX` (80) plus the `seen <id>: ""` wrapper and the
 # two-space manifest indent. Stated as a bound, not the exact width, so the
@@ -120,7 +128,8 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db = tmp_path / "memory.db"
     _seed(db, [_mk("HIT01", _CONTENT)])
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.delenv("AELFRICE_TURN_DIFFERENTIAL", raising=False)
+    # Default-OFF since 2026-08-19, so the feature must be switched ON here.
+    monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
     monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
     return tmp_path
 
@@ -181,7 +190,7 @@ def test_the_reference_is_bounded_where_the_saving_comes_from(
     db = tmp_path / "memory.db"
     _seed(db, [_mk("HIT01", long_content)])
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.delenv("AELFRICE_TURN_DIFFERENTIAL", raising=False)
+    monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
     monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
 
     q = "how many barrels and casks are in the cellar door inventory"
@@ -218,7 +227,7 @@ def test_session_start_replaces_the_epoch(
     db = tmp_path / "memory.db"
     _seed(db, [_mk("LOCK01", "never push directly to main", LOCK_USER)])
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.delenv("AELFRICE_TURN_DIFFERENTIAL", raising=False)
+    monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
     monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
 
     (tmp_path / LEDGER_FILENAME).write_text(
@@ -239,7 +248,7 @@ def test_session_start_replaces_the_epoch(
 
 
 # --------------------------------------------------------------------------
-# The properties the default-ON ruling rests on
+# The switch, and the safety properties
 # --------------------------------------------------------------------------
 
 
@@ -250,12 +259,12 @@ def test_a_suppressed_block_records_nothing(
 
     A suppressed fire puts no text in the context window. Recording it would
     make the next turn emit a reference to content the model was never shown —
-    the one way this feature can under-inject.
+    one of the ways this feature can under-inject.
     """
     db = tmp_path / "memory.db"
     _seed(db, [_mk("HIT01", _CONTENT)])
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.delenv("AELFRICE_TURN_DIFFERENTIAL", raising=False)
+    monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
     monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
 
     out = _fire()
@@ -266,16 +275,45 @@ def test_a_suppressed_block_records_nothing(
     )
 
 
+def test_the_feature_is_off_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ratified default-OFF, 2026-08-19.
+
+    With the variable unset, two identical fires must both render verbatim.
+    This is the assertion that catches a default flip, so it must not be
+    weakened to "the second fire is smaller".
+    """
+    db = tmp_path / "memory.db"
+    _seed(db, [_mk("HIT01", _CONTENT)])
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_TURN_DIFFERENTIAL", raising=False)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+
+    assert '<belief id="HIT01"' in _fire()
+    assert '<belief id="HIT01"' in _fire(), (
+        "the turn-differential is ON by default; the 2026-08-19 ruling is OFF"
+    )
+
+
 def test_the_off_switch_restores_verbatim_rendering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """An explicit 0 renders verbatim even if the default later flips on.
+
+    Asserted on the `<belief>` element, not on the content string: `_CONTENT`
+    used to be shorter than `_LOCK_TOPIC_MAX`, which made `_CONTENT in out`
+    true of the `seen` line as well and left this test unable to detect a
+    deleted off-switch at all.
+    """
     db = tmp_path / "memory.db"
     _seed(db, [_mk("HIT01", _CONTENT)])
     monkeypatch.setenv("AELFRICE_DB", str(db))
     monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "0")
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
 
-    assert _CONTENT in _fire()
-    assert _CONTENT in _fire(), (
+    assert '<belief id="HIT01"' in _fire()
+    assert '<belief id="HIT01"' in _fire(), (
         "the off switch did not restore pre-#1382 verbatim rendering"
     )
 
@@ -284,7 +322,7 @@ def test_a_corrupt_ledger_renders_verbatim(wired: Path) -> None:
     """Fail-soft direction: unreadable state costs tokens, never content."""
     _fire()
     (wired / LEDGER_FILENAME).write_text("{ not json", encoding="utf-8")
-    assert _CONTENT in _fire(), (
+    assert '<belief id="HIT01"' in _fire(), (
         "a corrupt ledger suppressed content; every failure path must render "
         "verbatim"
     )
@@ -293,6 +331,93 @@ def test_a_corrupt_ledger_renders_verbatim(wired: Path) -> None:
 def test_a_foreign_session_renders_verbatim(wired: Path) -> None:
     """A ledger written under another session is not ours to trust."""
     _fire(session_id="sess-A")
-    assert _CONTENT in _fire(session_id="sess-B"), (
+    assert '<belief id="HIT01"' in _fire(session_id="sess-B"), (
         "a ledger from a different session suppressed content"
     )
+
+
+# --------------------------------------------------------------------------
+# The under-injection holes found by adversarial review of PR #1515
+# --------------------------------------------------------------------------
+
+
+def test_compaction_resets_the_epoch_even_with_an_empty_baseline(
+    wired: Path,
+) -> None:
+    """The hole that falsified the "can only ever over-inject" claim.
+
+    `begin_epoch` used to sit inside `if body:` in `session_start`. A store
+    with no LOCKED beliefs renders an empty baseline, so the epoch never
+    reset, the pre-compaction ledger survived under the same `session_id`, and
+    every later turn emitted `seen <id>` for text the window no longer held —
+    permanently reducing the belief to an 80-character stub the model was
+    never shown.
+
+    The fixture store holds one unlocked belief, so the SessionStart baseline
+    is empty by construction. That is the case, not an accident of it.
+    """
+    assert '<belief id="HIT01"' in _fire(), "turn 1 did not render verbatim"
+    assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
+
+    body = _fire_session_start()
+    assert body == "", (
+        "the baseline rendered something; this fixture must have no locked "
+        "beliefs for the test to exercise the empty-baseline path"
+    )
+
+    assert '<belief id="HIT01"' in _fire(), (
+        "after compaction the belief was referenced but never shown — the "
+        "epoch did not reset on an empty baseline"
+    )
+
+
+def test_a_boundary_without_a_session_id_invalidates_the_ledger(
+    wired: Path,
+) -> None:
+    """`begin_epoch` returns early on a falsy id; that must not leave state.
+
+    A SessionStart whose payload carries no `session_id` cannot scope an
+    epoch. Leaving the previous epoch's file in place is an under-injection
+    path, because the next fire may well match that id.
+    """
+    _fire(session_id="sess-A")
+    assert (wired / LEDGER_FILENAME).exists()
+
+    sout = io.StringIO()
+    session_start(
+        stdin=io.StringIO(
+            json.dumps({"cwd": "/tmp", "hook_event_name": "SessionStart"})
+        ),
+        stdout=sout,
+        stderr=io.StringIO(),
+    )
+    assert not (wired / LEDGER_FILENAME).exists(), (
+        "an un-scopeable epoch boundary left the previous epoch's ledger live"
+    )
+    assert '<belief id="HIT01"' in _fire(session_id="sess-A")
+
+
+def test_pre_compact_resets_the_epoch(wired: Path) -> None:
+    """PreCompact is the event actually guaranteed to precede compaction."""
+    from aelfrice.hook import pre_compact
+
+    _fire(session_id="sess-A")
+    assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
+
+    pre_compact(
+        stdin=io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "sess-A",
+                    "cwd": "/tmp",
+                    "hook_event_name": "PreCompact",
+                }
+            )
+        ),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert "HIT01" not in (_ledger(wired) or {}).get("rendered", []), (
+        "PreCompact did not reset the epoch"
+    )
+    assert '<belief id="HIT01"' in _fire(session_id="sess-A")
