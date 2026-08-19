@@ -457,7 +457,7 @@ There is a trade-off against `exclude_words`. A phrase match is a literal substr
 
 ### `[onboard.llm]` (v1.3.0+)
 
-The host-driven large language model (LLM) classifier for onboard ingest. It replaces the default regex path `classify_sentence` with the Task tool of the host model. The Task tool path requires no API key. The `[onboard-llm]` extra gates the fallback to the direct API. The default at v1.5.1+ (#238) is on (`enabled = true`). The classifier falls back softly to the regex classifier when it can reach no host Task tool. Boundary policy: [`docs/design/llm_classifier.md`](../design/llm_classifier.md). Privacy: [`docs/user/PRIVACY.md § Optional outbound calls`](PRIVACY.md#optional-outbound-calls).
+The host-driven large language model (LLM) classifier for onboard ingest. It replaces the default regex path `classify_sentence` with the Task tool of the host model. The Task tool path requires no API key. The `[onboard-llm]` extra gates the fallback to the direct API. The default at v1.5.1+ (#238) is on (`enabled = true`). The classifier falls back softly to the regex classifier when it can reach no host Task tool. Boundary policy: [`docs/design/llm_classifier.md`](../design/llm_classifier.md). Privacy: [`docs/user/PRIVACY.md § Onboard-time outbound call`](PRIVACY.md#onboard-time-outbound-call).
 
 | Key | Type | Default | Effect |
 |---|---|---|---|

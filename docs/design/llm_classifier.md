@@ -3,7 +3,7 @@
 Design memo for the v1.3.0 milestone. Tracking issue: [#145](https://github.com/robotrocketscience/aelfrice/issues/145).
 
 Cross-references: [ROADMAP.md § v1.3.0](../concepts/ROADMAP.md#v130--retrieval-wave),
-[PRIVACY.md § Optional outbound calls](../user/PRIVACY.md#optional-outbound-calls),
+[PRIVACY.md § Onboard-time outbound call](../user/PRIVACY.md#onboard-time-outbound-call),
 [`src/aelfrice/classification.py`](../../src/aelfrice/classification.py),
 [`src/aelfrice/scanner.py`](../../src/aelfrice/scanner.py),
 [CONFIG.md](../user/CONFIG.md), [COMMANDS.md](../user/COMMANDS.md#memory-operations).

@@ -136,7 +136,7 @@ These thresholds intentionally undersell what real feedback can do. They guard a
 
 The README (post-1.2 invisibility-led rewrite) does not currently carry the BM25-only caveat in the headline section — it points at LIMITATIONS for that. The implementation PR for v1.3.0 should:
 
-1. Update [`docs/user/LIMITATIONS.md § "The big one: feedback doesn't drive ranking"`](../user/LIMITATIONS.md#the-big-one-feedback-doesnt-drive-ranking) to:
+1. Update [`docs/user/LIMITATIONS.md § "The big one: feedback doesn't drive ranking"`](../user/LIMITATIONS.md#the-big-one-feedback-doesnt-drive-ranking-lifted-at-v130-partially) to:
 
    > **Feedback drives ranking, partially (v1.3.0+).** `apply_feedback` updates `(α, β)`, and L1 retrieval consumes the posterior log-additively at weight 0.5. The full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0. See [`docs/design/bayesian_ranking.md`](bayesian_ranking.md) for the partial contract.
 

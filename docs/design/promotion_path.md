@@ -6,7 +6,7 @@ the v1.1.0 deliverable is the schema field plus this memo. Reviewer
 reads this to decide whether the proposed surface is the one v1.2.0
 should ship.
 
-Cross-references: [LIMITATIONS.md § Onboarding](../user/LIMITATIONS.md#onboarding--v101--v110)
+Cross-references: [LIMITATIONS.md § Onboarding scope](../user/LIMITATIONS.md#onboarding-scope)
 (the gap), [`src/aelfrice/contradiction.py`](../../src/aelfrice/contradiction.py)
 (the precedence ordering this slots into), [`src/aelfrice/feedback.py`](../../src/aelfrice/feedback.py)
 (the audit-row format and `apply_feedback` semantics).
@@ -57,7 +57,7 @@ Add one column to `beliefs`. Recommended: `origin TEXT NOT NULL DEFAULT 'unknown
 | `unknown` | default for migration | v1.0.x rows whose origin can't be reconstructed. |
 
 Forward compatibility: per the v1.x compatibility commitment
-([ROADMAP.md § Compatibility commitment](../concepts/ROADMAP.md#compatibility-commitment)),
+([ROADMAP.md § Compatibility](../concepts/ROADMAP.md#compatibility)),
 v1.1.0 adds the column with a default; v1.0.x rows read forward as
 `origin='unknown'` until backfilled.
 
@@ -101,7 +101,7 @@ Three implicit paths suggest themselves and all three are rejected:
    posterior > 0.8?) would be tuning-required without a benchmark.
 2. **Promote on retrieval count.** Hook retrievals already write
    audit rows tagged `source='hook'` with valence 0.1 per
-   [LIMITATIONS.md § Hook layer](../user/LIMITATIONS.md#hook-layer--v101).
+   [LIMITATIONS.md § Sharp edges](../user/LIMITATIONS.md#sharp-edges).
    Re-using that as a promotion trigger means a belief promotes
    purely because the user happens to ask similar questions. That's
    selection bias, not validation.
@@ -131,7 +131,7 @@ Naming rationale, against the existing surface:
 | Name | Existing usage | Why not |
 |---|---|---|
 | `lock` | [`cli.py:151`](../../src/aelfrice/cli.py) — α=9.0, β=0.5, lock_level=user | Wrong tier. Lock is non-negotiable; validate is "yes, correct." |
-| `confirm` | reserved for v2.0.0 ([ROADMAP.md § v2.0.0](../concepts/ROADMAP.md#v200--feature-parity-and-reproducibility)) | Already claimed by the wonder/reason/core/unlock/delete/confirm tranche. |
+| `confirm` | reserved for v2.0.0 ([ROADMAP.md § v2.0.0](../concepts/ROADMAP.md#v200--feature-parity-and-reproducibility-shipped)) | Already claimed by the wonder/reason/core/unlock/delete/confirm tranche. |
 | `accept` | unused | Acceptable alternative. Lukewarm — it reads like one-shot triage rather than a state change. TBD. |
 | `validate` | unused | Verb matches `user_validated` literal. Recommended. |
 | `endorse` | unused | Reads odd in CLI. Rejected. |
@@ -150,7 +150,7 @@ no implicit state change. `aelf validate` mirrors that surface shape.
 
 No bulk operation in v1.2.0 — bulk validate is parked under the
 "No bulk operations" sharp-edge in
-[LIMITATIONS.md § Surface limits at v1.0](../user/LIMITATIONS.md#surface-limits-at-v10).
+[LIMITATIONS.md § Sharp edges](../user/LIMITATIONS.md#sharp-edges).
 Lift if usage justifies.
 
 ## 3. Effect on confidence (α/β)
@@ -549,7 +549,7 @@ Marked `TBD` for items that need implementation feedback to settle.
   Confirm during v1.2.0 implementation.
 - **TBD: exit code for the data-inconsistency case** (origin already
   `user_stated` without lock). Lean toward 1; arguable for 2.
-- **TBD: interaction with [LIMITATIONS.md § harness conflict](../user/LIMITATIONS.md#harness-conflict--claude-code-auto-memory-write-path).**
+- **TBD: interaction with [LIMITATIONS.md](../user/LIMITATIONS.md).**
   At v1.2.0 the MCP write path is documented but not canonical. Does
   `aelf:validate` offer the user a path to graduate harness-side
   beliefs into the MCP store? Probably no — the harness store and
