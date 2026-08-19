@@ -1404,11 +1404,29 @@ def user_prompt_submit(
                 )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
+            # #1382: beliefs already rendered verbatim earlier in this session
+            # epoch become a one-line reference instead of the identical block
+            # again. Read here, immediately before the render, so the set is
+            # the one the formatter and the ledger write both see.
+            #
+            # Every failure inside read_rendered returns the empty set, which
+            # renders everything verbatim — today's behaviour. The mechanism
+            # can only ever over-inject, never suppress a belief the model has
+            # not been shown, and that asymmetry is why it ships default-ON.
+            already_rendered: frozenset[str] = frozenset()
+            if _turn_differential_enabled():
+                from aelfrice.injection_ledger import (  # noqa: PLC0415
+                    read_rendered,
+                )
+                already_rendered = read_rendered(session_id)
             # #578: inject session-start sub-block on first prompt.
             if session_start_block:
-                body = _format_hits_with_session_start(hits, session_start_block)
+                body = _format_hits_with_session_start(
+                    hits, session_start_block,
+                    already_rendered=already_rendered,
+                )
             else:
-                body = _format_hits(hits)
+                body = _format_hits(hits, already_rendered=already_rendered)
             # #1126: label the rerank. When categories fired, the boosted
             # rules lead the block above; the note tells the model why they
             # are first and to treat them as the active rules for this
@@ -1546,6 +1564,31 @@ def user_prompt_submit(
                     stderr=serr,
                     store=ups_store,
                 )
+            # #1382: record what this fire rendered VERBATIM, so the next
+            # turn can reference it instead of repeating it.
+            #
+            # Gated on `emit_memory_block` for the same reason the exposure
+            # writes above are, and the reason is sharper here: the ledger is
+            # a claim that the text is in the context window. A suppressed
+            # fire put nothing in the window, so recording it would make the
+            # next turn emit a `seen` reference to content the model was never
+            # shown. That is the one way this feature can under-inject, and
+            # the default-ON ruling rests on it being impossible.
+            #
+            # `_verbatim_ids` is passed the same `already_rendered` the
+            # renderer used, so a belief that rendered as a reference this
+            # turn is not re-recorded and one suppressed this turn stays in
+            # the ledger through the union inside record_rendered.
+            if emit_memory_block and _turn_differential_enabled():
+                try:
+                    from aelfrice.injection_ledger import (  # noqa: PLC0415
+                        record_rendered,
+                    )
+                    record_rendered(
+                        session_id, _verbatim_ids(hits, already_rendered)
+                    )
+                except Exception:  # fail-soft: costs a repeat, never a drop
+                    pass
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
             # (no-op per its early-return guard on empty hits_pre_dedup).
@@ -2426,6 +2469,22 @@ def _filter_session_exclusions(
         return [h for h in hits if not is_excluded(h.content, patterns)]
     except Exception:
         return hits
+
+
+def _turn_differential_enabled() -> bool:
+    """#1382 off-switch, resolved fail-soft.
+
+    An import or resolver failure returns False, i.e. render everything
+    verbatim. The safe direction for this feature is always "inject more".
+    """
+    try:
+        from aelfrice.injection_ledger import (  # noqa: PLC0415
+            is_turn_differential_enabled,
+        )
+
+        return is_turn_differential_enabled()
+    except Exception:
+        return False
 
 
 def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
@@ -3884,6 +3943,24 @@ def session_start(
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
+            # #1382: this fire is the epoch boundary. It is the only event
+            # that unconditionally re-emits every locked belief verbatim, and
+            # the only one after which earlier verbatim text can no longer be
+            # assumed present in the window — a fresh or compacted context
+            # does not carry it.
+            #
+            # `begin_epoch` REPLACES rather than unions, so the previous
+            # epoch's ids cannot suppress content this window has never seen.
+            # It is written only when `body` was actually emitted, because an
+            # unwritten baseline put nothing in the window.
+            if _turn_differential_enabled():
+                try:
+                    from aelfrice.injection_ledger import (  # noqa: PLC0415
+                        begin_epoch,
+                    )
+                    begin_epoch(session_id, _verbatim_ids(hits))
+                except Exception:  # fail-soft: costs a repeat, never a drop
+                    pass
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
