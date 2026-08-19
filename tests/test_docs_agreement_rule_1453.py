@@ -5,13 +5,19 @@ agreement between two approximations as validation. The retraction commit is
 the evidence, so a note that cites a SHA which no longer resolves is worse than
 no note — it reads as sourced while pointing at nothing.
 
-Two things are pinned, and deliberately only two:
+Three things are pinned:
 
-  1. The note is where a person running a retrieval measurement would open it.
-  2. The SHA it cites resolves in this repository.
+  1. The section exists, in the file a person running a retrieval measurement
+     would open.
+  2. It still distinguishes a *change* statistic from a *quality* one, and
+     still says a quality claim needs labelled relevance.
+  3. The SHA it cites is well formed, and resolves wherever history reaches it.
 
-Not pinned: the note's wording. A text match on prose breaks on rephrasing and
-says nothing about whether the rule is still stated.
+**Not pinned: the wording.** A sentence-level match breaks on rephrasing and
+says nothing about whether the rule survives. An earlier version of (2) did
+assert the literal phrase "Agreement is not quality", which contradicted this
+paragraph; review of PR #1517 caught it. The terms, not the sentence, are the
+rule — rewrite the prose freely and this file stays quiet.
 """
 from __future__ import annotations
 
@@ -29,16 +35,43 @@ RETRACTION_SHA = "848dbf83aab6e2c5198b1bc5b0f70ebcc7f11ea9"
 
 
 def test_the_rule_lives_next_to_the_harnesses() -> None:
-    """A rule filed where nobody looks is not a landed rule."""
+    """A rule filed where nobody looks is not a landed rule.
+
+    Pins the section's **existence** and the concepts it must distinguish, not
+    a sentence. An earlier version asserted the literal phrase "Agreement is
+    not quality", which contradicted this file's own stated intent: rewording
+    the rule without changing its meaning would have broken the test. Review
+    of PR #1517 caught the contradiction.
+
+    So the assertions are: the section heading is present (a structural
+    anchor, and the target of cross-file links), and the two terms whose
+    distinction *is* the rule both appear inside it. Rephrase freely; delete
+    the distinction and this fails.
+    """
     assert NOTE.exists(), f"{NOTE} is gone; the rule lost its home"
     text = NOTE.read_text(encoding="utf-8")
-    assert "Agreement is not quality" in text, (
-        "benchmarks/README.md no longer states the agreement-is-not-quality "
-        "rule (#1453 §1)"
+
+    heading = "## What these harnesses measure, and what they do not"
+    assert heading in text, (
+        "benchmarks/README.md no longer carries the measurement-caveat "
+        "section (#1453 §1)"
     )
-    assert RETRACTION_SHA[:8] in text, (
-        f"the note no longer cites {RETRACTION_SHA[:8]}, the retraction that "
-        "motivates it"
+    section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    # Collapse whitespace: the prose is hard-wrapped, so a two-word term is
+    # split across a newline as often as not. Matching the raw text makes the
+    # assertion depend on where the line breaks fall.
+    flat = " ".join(section.split()).lower()
+
+    for term in ("change", "quality", "labelled relevance"):
+        assert term in flat, (
+            f"the section no longer mentions {term!r}. The rule is the "
+            "distinction between a change statistic and a quality statistic, "
+            "and that a quality claim needs labelled relevance; a version "
+            "that drops one of those terms is not stating it."
+        )
+    assert RETRACTION_SHA[:8] in flat, (
+        f"the section no longer cites {RETRACTION_SHA[:8]}, the retraction "
+        "that motivates it"
     )
 
 
