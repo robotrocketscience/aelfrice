@@ -175,6 +175,94 @@ def _load(tdir: str) -> tuple[list[str], list[str]]:
     return prompts, sentences
 
 
+# --------------------------------------------------------------------------
+# #1490 — what KIND of sentence the filter rescues
+# --------------------------------------------------------------------------
+#
+# `rescued_distinct` says how many sentences the relaxation admits. It does
+# not say whether admitting them is good, and the three kinds behave very
+# differently once stored: a durable policy statement earns its slot, an
+# ephemeral session-status line ("No failures yet.") is true of one run and
+# of nothing after it, yet both enter at the same undeflated
+# `user_transcript` prior of 0.75 and compete for the same injection slots.
+#
+# First match wins, so reordering changes the split without changing the
+# total — the same property `scan_admission_funnel.NOISE_BUCKETS` documents.
+#
+# These are REPORTING heuristics. Nothing here reaches the ingest write path,
+# and nothing here decides what is stored; a wrong bucket produces a wrong
+# number in a manually-run report, never a dropped belief. The shape detector
+# that WOULD have touched ingest was rejected twice (2026-08-11, 2026-08-12)
+# as "the same widening #1371 §1 just narrowed".
+#
+# `unclassified` is the point of the exercise, not a leftover. CI can never
+# watch this number — the corpus is an untracked local archive — so a growing
+# `unclassified` count is the only signal that the closed set of three has
+# stopped describing what the filter actually admits.
+RESCUE_BUCKETS = (
+    "ephemeral_status",
+    "operator_directive",
+    "durable_policy",
+    "unclassified",
+)
+
+# "true when written, false later": an explicit temporal hedge, or a report of
+# what has happened so far.
+_EPHEMERAL_MARKERS = (
+    " yet",
+    "so far",
+    "to date",
+    "as of now",
+    "currently",
+    "at this point",
+)
+_EPHEMERAL_REPORT = re.compile(
+    r"\b(attempted|tried|observed|encountered|reproduced|detected|"
+    r"triggered|fired|reported|seen)\b",
+    re.IGNORECASE,
+)
+
+# A statement about the product's standing behaviour or configuration.
+_POLICY_TOKENS = re.compile(
+    r"\b(aelf|aelfrice|telemetry|network calls?|accounts?|by default|"
+    r"default|config|configuration|setup|install)\b",
+    re.IGNORECASE,
+)
+
+# A terse instruction or prohibition addressed to whoever is working.
+_DIRECTIVE = re.compile(
+    r"^(no|do not|don't|never|always|avoid|use|prefer)\b", re.IGNORECASE
+)
+
+
+def _rescue_bucket(sentence: str) -> str:
+    """Which `RESCUE_BUCKETS` member `sentence` falls in. Never returns None.
+
+    Total by construction: the final branch is `unclassified`, so a sentence
+    matching no rule is counted rather than dropped. A silent drop here would
+    make the buckets sum to less than `rescued_distinct` and hide exactly the
+    novel shape this split exists to surface.
+    """
+    lowered = sentence.lower()
+    if any(m in lowered for m in _EPHEMERAL_MARKERS):
+        return "ephemeral_status"
+    if _EPHEMERAL_REPORT.search(sentence):
+        return "ephemeral_status"
+    if _POLICY_TOKENS.search(sentence):
+        return "durable_policy"
+    if _DIRECTIVE.match(sentence.strip()):
+        return "operator_directive"
+    return "unclassified"
+
+
+def _bucket_counts(sentences: list[str]) -> dict[str, int]:
+    """Every declared bucket present, so a zero column reads as measured."""
+    counts = {b: 0 for b in RESCUE_BUCKETS}
+    for s in sentences:
+        counts[_rescue_bucket(s)] += 1
+    return counts
+
+
 def measure(tdir: str) -> dict[str, Any]:
     prompts, sentences = _load(tdir)
     old = [s for s in sentences if _old_is_transcript_noise(s)]
@@ -209,6 +297,14 @@ def measure(tdir: str) -> dict[str, Any]:
         "admission_rate_after": round(1 - len(new) / max(1, len(sentences)), 6),
         "rescued_total": len(rescued),
         "rescued_distinct": len(set(rescued)),
+        # #1490: the buckets partition each set exactly — see
+        # test_transcript_noise_buckets_1490.
+        "rescue_buckets_distinct": _bucket_counts(sorted(set(rescued))),
+        "rescue_buckets_rows": _bucket_counts(rescued),
+        "rescue_bucket_examples": {
+            b: sorted({s[:120] for s in set(rescued) if _rescue_bucket(s) == b})[:5]
+            for b in RESCUE_BUCKETS
+        },
         "newly_discarded": len(newly),
         "newly_discarded_distinct": len(set(newly)),
         "newly_discarded_examples": sorted({s[:120] for s in newly})[:10],

@@ -287,6 +287,34 @@ _TRANSCRIPT_ACK_BARE_RE: Final[re.Pattern[str]] = re.compile(
 # session status is its own change, not a clause bolted onto a punctuation
 # test. An eleventh rescued sentence *was* a pure acknowledgement; it is
 # now a member of `_TRANSCRIPT_ACK_PHRASES` below.
+#
+# #1490 — the split above is stamped, and it is NOT reproducible today.
+#
+#   measurement of record   6 distinct / 9 rows, 17,628 sentences
+#                           corpus_sha256 3ad68670ef811ff62ba885c68356d12a
+#                                         4241fa6aa8730779e8ee796bc2fac2eb
+#                           tree c6f0c0c3, dirty=false, 2026-08-12
+#   re-run 2026-08-19       0 distinct / 0 rows, 18 sentences
+#                           corpus_sha256 cffcf5572f2c7da57041734d4071990a
+#                                         6bd44f0047d3dd680e1edda69217c6fa
+#
+# Both are recorded because the second does not supersede the first. The
+# transcript archive behind the 17,628-sentence corpus was removed from disk
+# around 2026-08-13 — not by rotation; `transcript_logger` contains no
+# pruning code — so the figure of record cannot be re-derived, and today's
+# 18-sentence archive is too small to say anything. Quoting only the fresh
+# run would report a degenerate corpus as the finding; quoting only the old
+# one would imply it is still checkable.
+#
+# The population was flat across corpus growth before the loss (6 distinct at
+# both 17,592 and 17,628 sentences), which is the reason this stayed a
+# disclosure rather than becoming a filter.
+#
+# `benchmarks/transcript_noise_admission.py` now reports the rescued set split
+# by kind (`rescue_buckets_distinct`). CI can never watch that number, because
+# the corpus is an untracked local archive, so its `unclassified` column is
+# the only growth signal available: a rise there means the three classes above
+# have stopped describing what the filter admits.
 _TRANSCRIPT_PROSE_END_RE: Final[re.Pattern[str]] = re.compile(r"[\w)\"']\.$")
 
 # Genuine acknowledgements that *do* carry terminal punctuation, so the
