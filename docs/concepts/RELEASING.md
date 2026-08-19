@@ -31,7 +31,7 @@ This project uses semantic versioning (semver). The current line is v4.x. The pr
 6. Run these commands on your machine:
    ```bash
    uv run pytest tests/ -x -q     # track the actual count in CI
-   uv run pyright src/             # strict
+   uv run python scripts/check_pyright_baseline.py  # no file may regress
    uv run aelf --help              # spot-check CLI
    uv build                        # wheels build clean
    ```

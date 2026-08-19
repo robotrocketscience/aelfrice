@@ -28,7 +28,7 @@ v1.0 has shipped. Issues and PRs are open. Please align on approach via an issue
 ## Verification
 
 - [ ] `uv run pytest tests/ -x -q` — all green
-- [ ] `uv run pyright src/` — strict, no new errors
+- [ ] `uv run python scripts/check_pyright_baseline.py` — no file's pyright count rose
 - [ ] `uv run aelf --help` — surface unchanged (or change documented)
 - [ ] CHANGELOG entry added as a file under `CHANGELOG/unreleased/` (if user-visible)
 - [ ] Docs updated (if surface or behavior changed)

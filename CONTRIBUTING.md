@@ -95,7 +95,7 @@ git clone https://github.com/robotrocketscience/aelfrice.git
 cd aelfrice
 uv sync --all-groups
 uv run pytest tests/ -x -q
-uv run pyright src/
+uv run python scripts/check_pyright_baseline.py
 ```
 
 Conventions:
@@ -103,7 +103,7 @@ Conventions:
 - Use a conventional-commit prefix: `feat:`, `fix:`, `perf:`, `refactor:`, `test:`, `docs:`, `build:`, `ci:`, `style:`, `revert:`, `exp:`, `chore:`, `release:`, `gate:`, `audit:`.
 - Make atomic commits. Each commit moves the tree from one tested green state to the next tested green state.
 - Every change of behaviour needs a test.
-- `pyright --strict` must pass.
+- **`pyright --strict` does not pass, and no file may get worse.** `pyright src/` reports 987 errors over 76 files. `scripts/check_pyright_baseline.py` holds a per-file baseline and the `pyright-ratchet` workflow fails a pull request that raises any file's count. Drive a file down and regenerate the baseline with `--update`, then commit the lower numbers with the fix. A repo-wide total is deliberately not used: it lets a fix in one module pay for a regression in another. `tests/` is not gated — `pyproject.toml` includes it, which puts the count at 6,938, and freezing that today would make every test edit fight the ratchet.
 
 ### Your local test budgets are 4 times the CI budgets
 
