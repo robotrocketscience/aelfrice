@@ -62,7 +62,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, cast
 
 LEDGER_FILENAME: Final[str] = "session_injection_ledger.json"
 
@@ -151,7 +151,7 @@ def read_rendered(
     if p is None or not p.exists():
         return frozenset()
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data: Any = json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         # ValueError, not JSONDecodeError: non-UTF-8 bytes raise
         # UnicodeDecodeError out of read_text, a sibling of JSONDecodeError
@@ -159,12 +159,19 @@ def read_rendered(
         return frozenset()
     if not isinstance(data, dict):
         return frozenset()
-    if data.get("session_id") != session_id:
+    # Annotated rather than inferred: `json.loads` returns `Any`, so every
+    # `.get` off it is partially unknown under strict type checking and the
+    # module lands four errors in the #1503 baseline. A new module should not
+    # add to that. The cast asserts nothing the isinstance guard above has not
+    # already established.
+    obj = cast(dict[str, object], data)
+    if obj.get("session_id") != session_id:
         return frozenset()  # a different epoch's ledger is not ours to trust
-    raw = data.get("rendered")
+    raw = obj.get("rendered")
     if not isinstance(raw, list):
         return frozenset()
-    return frozenset(s for s in raw if isinstance(s, str) and s)
+    items = cast(list[object], raw)
+    return frozenset(s for s in items if isinstance(s, str) and s)
 
 
 def _write(session_id: str, ids: frozenset[str], path: Path | None) -> None:
