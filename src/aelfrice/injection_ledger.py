@@ -2,36 +2,55 @@
 
 Records which beliefs have already been rendered **verbatim** into the context
 of the current session epoch, so a later turn can emit a one-line reference
-instead of the identical block again. Measured prize: 32% of injected block
-tokens as-is, 43% against the post-#1344 baseline.
+instead of the identical block again.
 
-## The epoch boundary is a SessionStart fire
+**Opt-in.** `AELFRICE_TURN_DIFFERENTIAL=1` turns it on; see
+`is_turn_differential_enabled` for why the default is off.
 
-`#1382` rules out `source == "compact"` as the boundary, and the code says why:
-`hook.session_start` calls `_retrieve_baseline_with_block()` — which renders the
-full verbatim baseline — **before** it ever reads `source`. So `source` is
-neither necessary nor sufficient; it does not participate in the decision that
-puts the bytes on stdout.
+## No prize figure is quoted here
 
-What *is* necessary and sufficient is the SessionStart fire itself. It is the
-only event that unconditionally re-emits every locked belief verbatim into a
-context window, and it is the only event after which prior verbatim injections
-can no longer be relied on to still be in context (a fresh or compacted window
-does not carry them). Every SessionStart therefore opens a new epoch and the
-ledger resets to exactly what that baseline rendered.
+An earlier version of this docstring published "32% of injected block tokens
+as-is, 43% against the post-#1344 baseline". Those numbers were measured on a
+different corpus, nothing in this tree re-derives them, and the second is
+contradicted by direct measurement: a `seen` entry opens the
+`<aelfrice-locks-manifest>` wrapper on a block that had none, a fixed ~237
+characters, so a single-belief block must carry more than ~310 characters of
+content before the change saves anything at all. Recorded median content
+length is 86. The saving is real for long or many-belief blocks and negative
+for the modal small one.
 
-A `session_id` change is treated as an epoch boundary too, for the case where a
-SessionStart was missed entirely (hook not installed for that event, crash
-between fires). Reading a ledger written under a different session yields the
-empty set, which degrades to today's behaviour: render everything verbatim.
+## The epoch boundary
 
-## Fail-soft direction
+A boundary is any event after which text already injected can no longer be
+assumed present in the window. Two fire it:
 
-Every failure path returns "nothing has been rendered yet", so the block is
-emitted verbatim exactly as it is today. A missing, unreadable, malformed or
-foreign ledger costs redundant tokens; it can never *suppress* a belief the
-model has not already been shown. That asymmetry is deliberate — the opposite
-default would silently drop content on a corrupt file.
+- **SessionStart**, which re-emits the baseline into a fresh or compacted
+  window. The reset runs *before* the store read, because that read can raise
+  or be killed at the hook timeout, and a boundary skipped on failure leaves
+  the previous epoch live under an unchanged `session_id`.
+- **PreCompact**, before every early return in that hook. **This hook is
+  opt-in** (`aelf setup --rebuilder`) and is absent from the default manifest,
+  so on a default install SessionStart is the only reset.
+
+A `session_id` change is a boundary too: reading a ledger written under a
+different session yields the empty set. A boundary that carries *no*
+`session_id` calls `invalidate`, because returning early would leave the
+previous epoch live under an id the next fire may match.
+
+## Fail-soft direction, and its one exception
+
+Every read failure returns "nothing rendered yet", so the block is emitted
+verbatim. A missing, unreadable, malformed or foreign ledger costs redundant
+tokens.
+
+**This is not the same as "the mechanism can never suppress".** That stronger
+claim was made for the 2026-08-11 default-ON ruling and is false: a boundary
+that does not fire — a store read that raises, a host that compacts without
+firing either hook, `aelf setup --no-session-start` — leaves stale ids live,
+and the beliefs they name render as one-line stubs the model was never shown.
+The boundaries above close the cases that were reachable in this codebase.
+They do not turn the guarantee into a property of the design, which is the
+second reason the default is off.
 
 Storage is a separate file from `session_first_prompt.json` on purpose. That
 file already serves two consumers with different update rules (the first-fire
@@ -48,8 +67,9 @@ from typing import Final
 LEDGER_FILENAME: Final[str] = "session_injection_ledger.json"
 
 TURN_DIFFERENTIAL_ENV_VAR: Final[str] = "AELFRICE_TURN_DIFFERENTIAL"
-"""Set to a falsy value (0/false/no/off) to render every belief verbatim on
-every turn, i.e. the pre-#1382 behaviour."""
+"""Set to a truthy value (1/true/yes/on) to enable the turn-differential; the
+default is off. A falsy value (0/false/no/off) pins the pre-#1382 behaviour
+explicitly, which also survives a future flip of the default."""
 
 _TRUE: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _FALSE: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})

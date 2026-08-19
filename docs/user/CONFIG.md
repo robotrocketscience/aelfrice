@@ -37,7 +37,9 @@ The file is one optional TOML file at the root of a project. An ancestor directo
 - `[belief_categories]` (v4.x+) — the belief categories that a keyword triggers. `enabled` (default `false`) connects the category-injection lane to `UserPromptSubmit` (#1126). Manage the categories with `aelf category`.
 - `AELFRICE_TURN_DIFFERENTIAL` (v4.x+, #1382) — an environment variable with no TOML key. **The default is off.** Export `AELFRICE_TURN_DIFFERENTIAL=1` to turn it on. When on, and when a belief was already written into the context of this session **verbatim**, a later turn writes a one-line `seen <id>: "<topic>"` reference in the locks manifest instead of the same block again. The text is already above in the same window, so the reference points at it.
 
-  Each SessionStart and each PreCompact starts a new epoch and clears the record, because a new context window or a compacted context window does not hold the earlier text. A boundary that carries no session identifier deletes the record instead, because aelfrice cannot know which epoch it belongs to.
+  A new epoch starts, and the record clears, at each SessionStart. A new context window or a compacted context window does not hold the earlier text. The PreCompact hook also starts a new epoch, **but that hook is opt-in** (`aelf setup --rebuilder`) and a default install does not have it. On a default install the SessionStart hook is therefore the only reset. A boundary that carries no session identifier deletes the record instead, because aelfrice cannot know which epoch it belongs to.
+
+  Two configurations remove the last reset, and you must not turn this feature on with either of them. The first is `aelf setup --no-session-start`. The second is a host that compacts the context and starts no new session. In both cases the record stays, and a belief in it stays a one-line reference for the remainder of the session.
 
   **The default is off for two reasons, and both are measurements.**
 
