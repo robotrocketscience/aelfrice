@@ -250,8 +250,21 @@ def test_the_flag_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_env_var_can_disable_it(
     monkeypatch: pytest.MonkeyPatch, raw: str
 ) -> None:
+    """`explicit=True` is what makes this assertion mean anything.
+
+    Since the default flipped to off (2026-08-19), `is_turn_differential_enabled()`
+    returns False whether the falsy value was parsed or ignored entirely —
+    deleting the whole `_FALSE` branch of `_env_override` left every test in
+    both #1382 files green. Passing `explicit=True` puts the resolver in a
+    state where only a *parsed* falsy env value can produce False, so the
+    off-switch is distinguishable from the default again.
+    """
     monkeypatch.setenv(injection_ledger.TURN_DIFFERENTIAL_ENV_VAR, raw)
     assert injection_ledger.is_turn_differential_enabled() is False
+    assert injection_ledger.is_turn_differential_enabled(explicit=True) is False, (
+        f"{raw!r} did not override an explicit True — the env var's falsy "
+        "branch is not being parsed"
+    )
 
 
 def test_unset_env_does_not_override_an_explicit_argument(
