@@ -152,7 +152,7 @@ aelfrice hook. Both entries fire on every event. The only symptom is
 that prompts become slower for no visible reason. Nothing is broken.
 Both paths resolve. Every check passes.
 
-`aelf doctor` now reports these entries. `--prune` collapses them:
+`aelf doctor` now reports these entries. `--fix` collapses them:
 
 ```bash
 aelf doctor hooks              # reports duplicates (read-only)
