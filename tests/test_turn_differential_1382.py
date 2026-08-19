@@ -235,9 +235,15 @@ def test_an_empty_session_id_is_a_no_op(tmp_path: Path) -> None:
 # --- the flag -------------------------------------------------------------
 
 
-def test_the_flag_defaults_on(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_flag_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default-OFF, ratified 2026-08-19 (was ON in the 2026-08-11 ruling).
+
+    Flipped because the argument for ON — that the failure direction is
+    one-way — was falsified, and because the wrapper cost makes the block
+    larger for a small block of short beliefs.
+    """
     monkeypatch.delenv(injection_ledger.TURN_DIFFERENTIAL_ENV_VAR, raising=False)
-    assert injection_ledger.is_turn_differential_enabled() is True
+    assert injection_ledger.is_turn_differential_enabled() is False
 
 
 @pytest.mark.parametrize("raw", ["0", "false", "NO", " off "])
