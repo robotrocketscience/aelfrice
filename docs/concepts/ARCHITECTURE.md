@@ -41,8 +41,8 @@ reimplements the constituent-key hash of `wonder.lifecycle` inline, and the comm
 understates how often the code works around the ordering. The converse is also true: not every deferred
 import is an inversion. `store.py` defers `federation` only for the cost of the import. The comment at that
 site records that `federation` is a leaf module and imports nothing from `store`. That deferral keeps
-`subprocess` and `json` out of every consumer of the store. The table is also a curated subset. It holds 31
-modules against the 117 `.py` files under `src/aelfrice/`. The table is not an exhaustive map.
+`subprocess` and `json` out of every consumer of the store. The table is also a curated subset. It holds 32
+modules against the 127 `.py` files under `src/aelfrice/`. The table is not an exhaustive map.
 
 | Module | Responsibility |
 |---|---|
