@@ -5,7 +5,7 @@
 - Python 3.12 or 3.13. (`uv` manages the Python version for you. You do not have to install Python separately.)
 - [`uv`](https://docs.astral.sh/uv/). This is the supported install channel (#730). If you do not have `uv`, run `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any agent that can spawn a hook on `UserPromptSubmit`.
-- Linux, macOS or Windows. Linux and macOS run the full test suite on every pull request. A smoke job covers Windows. See [LIMITATIONS.md § Compatibility](LIMITATIONS.md#compatibility) for what the smoke job asserts and what it does not assert.
+- Linux, macOS or Windows. Linux runs the full test suite on every pull request. A smoke job covers Windows. No workflow tests macOS automatically. See [LIMITATIONS.md § Compatibility](LIMITATIONS.md#compatibility) for what the smoke job asserts and what it does not assert.
 
 ## 1. Install the package
 

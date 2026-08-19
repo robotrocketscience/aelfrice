@@ -115,7 +115,7 @@ Only one DB writes at a time. The beliefs written in project A are not *written*
 ## Compatibility
 
 - Python 3.12 or 3.13.
-- The project tests macOS and Linux routinely. The full suite runs on both platforms on every pull request.
+- The full suite runs on Linux on every pull request (`ci.yml`, `ubuntu-latest`, Python 3.12 and 3.13). No workflow uses a macOS runner. aelfrice is expected to run on macOS, and it is developed there, but no automatic test asserts that.
 - aelfrice supports Windows at a narrower level. This page states the difference
   plainly, because the page previously said "should work but is not exercised on
   every release". That statement was wrong. Until
