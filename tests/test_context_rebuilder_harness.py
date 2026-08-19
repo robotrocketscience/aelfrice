@@ -214,17 +214,21 @@ def test_clear_injection_out_of_range_silently_no_ops() -> None:
 # --------------------------------------------------------------------- #
 
 
-def test_hook_latency_ms_is_non_negative() -> None:
-    """`hook_latency_ms(start)` always returns >= 0.0.
+def test_hook_latency_ms_floors_a_future_stamp_at_zero() -> None:
+    """`hook_latency_ms` floors at 0.0 rather than returning a negative.
 
-    The measurement primitive floors at 0.0 to absorb clock jitter
-    when the same monotonic reading is consumed across forks.
+    The primitive absorbs clock jitter when the same monotonic reading is
+    consumed across forks.
+
+    The old `assert hook_latency_ms(t0) >= 0.0` is gone (#1473). Nothing can
+    make it fail — a duration is non-negative by construction — so it was in
+    the wall-clock census by shape while asserting nothing. The future-stamp
+    case below is the real property: it is the branch that would return a
+    negative if the floor were removed, and it is load-immune, because it
+    compares against a value this function constructs rather than against a
+    budget.
     """
     t0 = time.monotonic()
-    # Synthetic gap.
-    elapsed = hook_latency_ms(t0)
-    assert elapsed >= 0.0
-    # Future-stamp: still floors at 0.0, never goes negative.
     future = t0 + 1.0
     assert hook_latency_ms(future) == 0.0
 
