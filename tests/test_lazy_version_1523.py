@@ -31,6 +31,64 @@ def test_version_is_cached_after_first_access() -> None:
     assert aelfrice.__version__ is first
 
 
+@pytest.mark.timeout(30)
+def test_dir_lists_the_lazy_names_before_they_are_read() -> None:
+    """PEP 562 `__getattr__` is invisible to `dir()`; `__dir__` restores it.
+
+    Asserted in a subprocess so the names have provably not been accessed
+    yet — reading them in this process would populate globals and mask a
+    missing `__dir__`.
+    """
+    code = (
+        "import aelfrice; names = dir(aelfrice); "
+        "assert '__version__' in names, '__version__ missing from dir()'; "
+        "assert 'PackageNotFoundError' in names, 'PackageNotFoundError missing from dir()'; "
+        "print('ok')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
+@pytest.mark.timeout(30)
+def test_package_not_found_error_is_still_importable() -> None:
+    """The eager block bound this name; removing it would break callers.
+
+    No in-repo caller imports it, but it was reachable from the package
+    namespace, so it stays reachable — lazily.
+
+    The `from aelfrice import ...` form is exercised in a subprocess rather
+    than here: it is the form an external consumer actually writes, and
+    running it as a source string keeps this module on a single import
+    style (CodeQL flags mixing `import x` with `from x import y`).
+    """
+    import aelfrice
+    from importlib.metadata import PackageNotFoundError as expected
+
+    assert aelfrice.PackageNotFoundError is expected
+
+    code = (
+        "from aelfrice import PackageNotFoundError; "
+        "from importlib.metadata import PackageNotFoundError as expected; "
+        "assert PackageNotFoundError is expected; print('ok')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_unknown_attribute_still_raises() -> None:
     import aelfrice
 
