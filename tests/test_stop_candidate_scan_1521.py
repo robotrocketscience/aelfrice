@@ -121,12 +121,14 @@ def test_the_scan_reads_only_this_session() -> None:
     """
     with tempfile.TemporaryDirectory() as td:
         s = _seeded_store(Path(td) / "m.db", mine=10, theirs=500)
+        # Bound before anything that can raise, so the `finally` restore
+        # cannot mask a setup failure with an UnboundLocalError.
+        real_get = s.get_belief
         try:
             listed = s.list_lock_candidate_ids(_SESSION)
             whole_store = s.list_belief_ids_newest_first()
 
             fetched: list[str] = []
-            real_get = s.get_belief
 
             def counting_get(bid: str, **kw: object) -> Belief | None:
                 fetched.append(bid)
