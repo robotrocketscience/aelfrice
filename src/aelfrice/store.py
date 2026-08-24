@@ -3013,6 +3013,39 @@ class MemoryStore:
         cur = self._conn.execute("SELECT id FROM beliefs ORDER BY rowid DESC")
         return [str(r["id"]) for r in cur.fetchall()]
 
+    def list_lock_candidate_ids(self, session_id: str) -> list[str]:
+        """Ids of `session_id`'s active, not-user-locked beliefs, newest first.
+
+        The Stop hook's candidate predicate opens with two cheap conjuncts —
+        same session, not already user-locked — and everything failing either
+        one was previously fetched and discarded, once per assistant turn
+        (#1521). Those two, plus the lifecycle filter `get_belief` applies
+        anyway, are expressible in SQL; `idx_beliefs_session` serves the
+        first. Correction-class and directive classification stay in Python,
+        where they need the whole `Belief`.
+
+        `rowid DESC` for the same reason as
+        :meth:`list_belief_ids_newest_first`, whose contract this shares:
+        `created_at` does not discriminate, and the cap in
+        `_format_stop_prompt` takes the head, so the order is what the user
+        sees. The rowid-stability caveat documented there applies here too.
+
+        `lock_level` is `TEXT NOT NULL`, so the inequality cannot silently
+        drop rows to SQL's NULL semantics.
+
+        This narrows *which rows are read*, never which qualify: every id it
+        omits is one the caller's predicate would have rejected, so the
+        candidate list — and the withheld count #1442 derives from its
+        length — is unchanged.
+        """
+        cur = self._conn.execute(
+            "SELECT id FROM beliefs "
+            "WHERE session_id = ? AND valid_to IS NULL AND lock_level != ? "
+            "ORDER BY rowid DESC",
+            (session_id, LOCK_USER),
+        )
+        return [str(r["id"]) for r in cur.fetchall()]
+
     def list_canonical_orphans(
         self,
         limit: int | None = None,

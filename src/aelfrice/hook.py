@@ -4285,15 +4285,23 @@ def _collect_lock_candidates(
     groups on this repo's store and the worst session shares one
     timestamp across all 6,427 of its beliefs.
 
-    Every belief is still visited: the total is needed for the withheld
-    count, so there is no early exit once the cap is reached.
+    Every *candidate* is still visited: the total is needed for the
+    withheld count, so there is no early exit once the cap is reached.
 
-    Cost: one id listing + one `get_belief()` per id. For small stores
-    (<1k beliefs, the typical case at session-end) this is sub-100ms.
-    A focused SQL query is a future optimisation when stores grow.
+    Cost: one indexed id listing + one `get_belief()` per row of this
+    session. It used to list every id in the store and fetch each one,
+    which made a per-turn hook linear in total store size rather than in
+    session size — 466 ms at 45k beliefs, against 1.7 ms at 200 (#1521).
+    `list_lock_candidate_ids` pushes the session, lifecycle and lock
+    conjuncts into SQL; the classification arms of
+    `_belief_is_lock_candidate` stay here because they need the `Belief`.
+
+    The predicate is still applied in full. The narrowed listing can only
+    omit rows it would have rejected, so this is a cost change, not a
+    behaviour change.
     """
     candidates: list[Belief] = []
-    for bid in store.list_belief_ids_newest_first():
+    for bid in store.list_lock_candidate_ids(session_id):
         b = store.get_belief(bid)
         if b is None:
             continue
