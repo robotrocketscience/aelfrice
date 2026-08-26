@@ -71,10 +71,16 @@ to cite. CHANGELOG/v4.md carries the same relabel.
 
 The pooled rate above is an average over a population that is not
 homogeneous. Bucketed by whether a scored fire is the first one carrying its
-`session_id`, the 2026-08-19 sample separated completely: 5/13 = 38.5% on
-session-FIRST fires against 0/26 = 0.0% on every later fire. The cost is a
-session-first tail, and a single pooled number hides it — which is why the
-`BY POSITION WITHIN THE SESSION` section prints two rates and never one.
+`session_id`, the two halves do not resemble each other:
+
+    2026-08-19, n=39 scored   session-FIRST 5/13 = 38.5%   LATER 0/26 = 0.0%
+    2026-08-26, n=123 scored  session-FIRST 6/26 = 23.1%   LATER 1/97 = 1.0%
+
+The magnitude moved as the sample grew, which the #1513 issue predicted; the
+sign did not. The cost is a session-first tail, and a single pooled number
+hides it — which is why the `BY POSITION WITHIN THE SESSION` section prints
+two rates and never one. Read the LATER bucket alongside it: a "fix" that
+merely defers the rebuild shows up as that number rising.
 
 Rows with no `session_id` have no position. They are reported as their own
 count and kept out of BOTH buckets: sweeping them into LATER is the same
