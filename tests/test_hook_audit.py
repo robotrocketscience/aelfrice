@@ -25,6 +25,7 @@ from aelfrice.hook import (
 from aelfrice.hook_audit import (
     AUDIT_ROTATION_HOOK,
     _append_audit,
+    _scan_audit_file,
     audit_window,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -983,8 +984,6 @@ def test_audit_window_survives_an_unreadable_file(
     else. Monkeypatched rather than chmod'd because a chmod test is a
     no-op for root, which is how this suite runs in CI.
     """
-    import aelfrice.hook_audit as ha
-
     good = tmp_path / AUDIT_FILENAME
     bad = tmp_path / (AUDIT_FILENAME + AUDIT_ROTATED_SUFFIX)
     for path in (good, bad):
@@ -993,16 +992,23 @@ def test_audit_window_survives_an_unreadable_file(
             encoding="utf-8",
         )
 
-    real_scan = ha._scan_audit_file
+    real_scan = _scan_audit_file
 
     def _raise_on_bad(path: Path):
         if path == bad:
             raise PermissionError(f"denied: {path}")
         return real_scan(path)
 
-    monkeypatch.setattr(ha, "_scan_audit_file", _raise_on_bad)
+    # Patched by dotted path rather than through a second `import
+    # aelfrice.hook_audit as ha`: importing the module both ways in one
+    # file is a CodeQL finding, and `audit_window` resolves
+    # `_scan_audit_file` as a module global, so patching the attribute
+    # reaches it either way.
+    monkeypatch.setattr(
+        "aelfrice.hook_audit._scan_audit_file", _raise_on_bad,
+    )
 
-    window = ha.audit_window([good, bad])
+    window = audit_window([good, bad])
     # The readable file's rows still land — no exception, no zeroed window.
     assert window.records == 3
     assert window.first_ts == "2026-08-26T00:00:00Z"
