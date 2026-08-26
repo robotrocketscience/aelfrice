@@ -74,6 +74,17 @@ With no arguments this globs `hook_audit.jsonl*`, which includes **rotated**
 logs (`hook_audit.jsonl.1`, ...). The totals it prints are therefore across all
 rotations, not the single live file — pass an explicit path for a single-file
 count.
+
+## The window, printed alongside the rate (#1528)
+
+Rotation is single-slot: the second rollover overwrites the first `.1` and
+that history is gone. A rate over a truncated window is a rate over "whatever
+the recent period looked like", and until #1528 nothing in the output said so.
+`audit_window` reads the rotation markers and this script now prints the ts
+range it actually covered, whether a `.1` was present, and a WINDOW TRUNCATED
+line when generations have been discarded. A log with no markers — rotated
+before #1528, or never rotated — reads as generation 1 with nothing discarded,
+which is the only claim such a file supports.
 """
 from __future__ import annotations
 
@@ -82,6 +93,8 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+
+from aelfrice.hook_audit import AUDIT_ROTATION_HOOK, audit_window
 
 OUTCOMES = ("fresh", "incremental", "full_rebuild")
 
@@ -126,6 +139,11 @@ def main() -> int:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if rec.get("hook") == AUDIT_ROTATION_HOOK:
+                # #1528 bookkeeping about the FILE, not a fire in it.
+                # Counting it under "non-UPS rows" would quietly inflate a
+                # number this script prints as a row census.
                 continue
             if rec.get("hook") != "user_prompt_submit":
                 non_ups += 1
@@ -188,9 +206,55 @@ def main() -> int:
     all_fires_measured = all_fires - unmeasured
     retrieval_fires_measured = all_fires_measured - gate_skipped
 
+    window = audit_window(logs)
+
     print("#1407 — BM25 sidecar outcome per user_prompt_submit fire")
     for p in logs:
         print(f"  log                            {p}")
+    # #1528: the window this rate is over, printed before the rate itself.
+    # `first_ts`/`last_ts` are over every row in the files, not only the
+    # UPS rows scored below, so this is the coverage of the INPUT.
+    print(f"  window first row               {window.first_ts or '(none)'}")
+    print(f"  window last row                {window.last_ts or '(none)'}")
+    print(f"  rotated .1 present             {window.rotated_present}")
+    print(f"  rotation generation            {window.generation}")
+    if window.truncated:
+        print(
+            f"  WINDOW TRUNCATED               {window.discarded_generations} "
+            "rotation generation(s) discarded"
+        )
+        print(
+            "    Single-slot rotation overwrote older archives. Every rate "
+            "below is"
+        )
+        print(
+            "    over the surviving tail only, and is biased toward whatever "
+            "the recent"
+        )
+        print("    period looked like. Do not read it as a long-horizon rate.")
+    elif not window.rotated_present:
+        print("  window complete                no rotation has occurred")
+    elif window.generation == 1:
+        # A `.1` beside a live file that carries NO marker rotated before
+        # #1528 shipped. One rollover discards nothing, but a second one
+        # discarded the first archive and left no record either way, so
+        # this case is unknown rather than clean. Saying "complete" here
+        # would be the exact unearned claim the marker exists to prevent.
+        print(
+            "  WINDOW UNKNOWN                 rotated before the #1528 marker;"
+        )
+        print(
+            "    a `.1` exists with no generation stamp. One rollover "
+            "discards nothing,"
+        )
+        print(
+            "    a second discards the first archive, and this file cannot "
+            "say which."
+        )
+    else:
+        # Generation 2 with a `.1` beside it is a COMPLETE history: the
+        # first rollover fills an empty slot and destroys nothing.
+        print("  window complete                nothing discarded by rotation")
     print(f"  user_prompt_submit fires       {all_fires}")
     print(f"  non-UPS rows (ignored)         {non_ups}")
     print(f"  fires with an outcome (scored) {scored}")

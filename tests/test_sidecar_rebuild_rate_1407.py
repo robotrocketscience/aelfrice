@@ -28,9 +28,9 @@ def _row(
     return json.dumps(rec)
 
 
-def _run(log: Path) -> str:
+def _run(*logs: Path) -> str:
     proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), str(log)],
+        [sys.executable, str(_SCRIPT), *(str(p) for p in logs)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -148,3 +148,124 @@ def test_the_no_measurement_early_return_still_holds(
 
     assert "NO MEASUREMENT YET" in out, out
     assert "FULL-REBUILD RATE" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# #1528: the script must state the window it actually covered
+# ---------------------------------------------------------------------------
+
+def _marker(generation: int, discarded: int) -> str:
+    return json.dumps(
+        {
+            "hook": "audit_rotation",
+            "ts": "2026-08-05T00:00:00Z",
+            "generation": generation,
+            "discarded_generations": discarded,
+            "rotated_from": {
+                "generation": generation - 1,
+                "records": 999,
+                "first_ts": "2026-08-01T00:00:00Z",
+                "last_ts": "2026-08-04T23:59:59Z",
+            },
+        }
+    )
+
+
+@pytest.mark.timeout(90)
+def test_output_names_the_window_and_flags_truncation(tmp_path: Path) -> None:
+    """A truncated input must be visible in the output beside the rate.
+
+    Before #1528 a benchmark reading `hook_audit.jsonl*` could not tell a
+    short history from one whose older generations had been destroyed by
+    single-slot rotation, so a long-horizon rate silently became a rate
+    over the recent tail.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    rotated.write_text(
+        _marker(2, 0)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-06T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    live.write_text(
+        _marker(3, 1)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-07T00:{i:02d}:00Z", outcome="full_rebuild")
+            for i in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(live, rotated)
+
+    assert "WINDOW TRUNCATED" in out, out
+    assert "1 rotation generation(s) discarded" in out, out
+    assert "window first row               2026-08-06T00:00:00Z" in out, out
+    assert "window last row                2026-08-07T00:04:00Z" in out, out
+    assert "rotated .1 present             True" in out, out
+    # The marker rows are bookkeeping about the files, not fires in them.
+    assert "user_prompt_submit fires       10" in out, out
+    assert "non-UPS rows (ignored)         0" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_unrotated_log_is_reported_complete_not_truncated(
+    tmp_path: Path,
+) -> None:
+    """The truncation line must stay quiet when nothing was discarded.
+
+    A warning that fires on every log is not a signal. This is the
+    distinguishing half of the test above.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            _row(f"2026-08-05T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(log)
+
+    assert "WINDOW TRUNCATED" not in out, out
+    assert "window complete                no rotation has occurred" in out, out
+    assert "rotated .1 present             False" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_pre_1528_rotated_pair_is_reported_unknown(tmp_path: Path) -> None:
+    """A `.1` with no marker cannot support a completeness claim.
+
+    Logs already rotated in the wild have no generation stamp. One
+    rollover discards nothing and a second discards the first archive;
+    the files cannot say which, so the honest output is UNKNOWN — not
+    "complete", which would be the exact unearned claim #1528 is about.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    for path, hour in ((rotated, 0), (live, 1)):
+        path.write_text(
+            "\n".join(
+                _row(f"2026-08-05T{hour:02d}:{i:02d}:00Z", outcome="fresh")
+                for i in range(3)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    out = _run(live, rotated)
+
+    assert "WINDOW UNKNOWN" in out, out
+    assert "window complete" not in out, out
+    assert "WINDOW TRUNCATED" not in out, out
+    # And the legacy files still parse into the ordinary counts.
+    assert "user_prompt_submit fires       6" in out, out
