@@ -62,19 +62,28 @@ try:
     # working after the #968 extraction into aelfrice.hook_audit.
     from aelfrice.hook_audit import AUDIT_DEFAULT_MAX_BYTES  # noqa: F401
     from aelfrice.hook_audit import AUDIT_FILENAME  # noqa: F401
-    from aelfrice.context_rebuilder import (
+    # #1527: the rebuilder config, the trigger modes and `RecentTurn` come
+    # from `aelfrice.rebuild_log`, the leaf module they were extracted into,
+    # NOT from `aelfrice.context_rebuilder`. They are read on the
+    # prompt-shape-gate skip path -- `load_rebuilder_config` decides whether
+    # the rebuild_log is enabled at all -- so sourcing them from
+    # `context_rebuilder` made a skipping fire import `retrieval`,
+    # `triple_extractor`, `clustering`, `bfs_multihop`, `correction`,
+    # `derivation*`, `doc_linker*`, `exploration`, `compression` and
+    # `np_pattern` in order to decide it was going to do nothing.
+    from aelfrice.rebuild_log import (
         TRIGGER_MODE_DYNAMIC,
         TRIGGER_MODE_MANUAL,
         TRIGGER_MODE_THRESHOLD,
         RecentTurn,
-        find_aelfrice_log,
         load_rebuilder_config,
-        read_recent_turns_aelfrice,
-        read_recent_turns_claude_transcript,
-        rebuild_v14,
     )
+    # `query_understanding` stays eager: `_rebuild_and_format`'s
+    # `query_strategy` default argument binds `DEFAULT_STRATEGY` at def time,
+    # and measured on this tree the whole package costs 5 modules / ~1.0 ms
+    # against the ~31 ms the deferrals below are worth. Buying that 1 ms
+    # would cost a `None` sentinel in a public signature.
     from aelfrice.query_understanding import DEFAULT_STRATEGY
-    from aelfrice.hook_search import search_for_prompt
     from aelfrice.models import (
         BELIEF_CORRECTION,
         BELIEF_SCOPE_PROJECT,
@@ -86,7 +95,6 @@ try:
         ORIGIN_USER_STATED,
         Belief,
     )
-    from aelfrice.retrieval import retrieve
     from aelfrice.session_ring import append_ids as _ring_append_ids
     from aelfrice.store import MemoryStore
 
@@ -95,6 +103,73 @@ try:
 except ImportError as _e:
     _IMPORTS_OK = False
     _IMPORT_ERR = _e
+
+# ---------------------------------------------------------------------------
+# Deferred retrieval-subtree names (#1527)
+# ---------------------------------------------------------------------------
+#
+# `retrieve`, `search_for_prompt` and the four `context_rebuilder` entry points
+# are the only names this module took from the retrieval subtree, and every one
+# of them is reached from a lane that has already decided to retrieve. Binding
+# them at module scope made `import aelfrice.hook` cost 61.4 ms and 35 aelfrice
+# modules where the rest of the eager set costs 30.6 ms and 16 -- a bill every
+# hook process pays, including the ~32% of `UserPromptSubmit` fires the
+# prompt-shape gate refuses and every `Stop` / `PreToolUse` / `PostToolUse`
+# fire, none of which retrieve at all.
+#
+# Ten test modules monkeypatch `aelfrice.hook.<name>`, so the resolver has to
+# keep that working. Two properties do it. `_lazy` reads `globals()` before it
+# imports, which is exactly where `monkeypatch.setattr(aelfrice.hook, ...)`
+# writes, so a patch always wins over the real module. And `__getattr__` below
+# answers for a name nothing has resolved yet, so
+# `monkeypatch.setattr(..., raising=True)` -- which reads the old value first --
+# and `from aelfrice.hook import retrieve` both still work.
+#
+# `_lazy` does not write its result back. Caching would be safe for patching
+# (the globals read still comes first), but it would make this module's
+# attribute surface depend on which lanes had run, and re-resolving is one
+# `sys.modules` lookup on a path that then opens a SQLite store.
+_LAZY_RETRIEVAL_NAMES: Final[dict[str, str]] = {
+    "find_aelfrice_log": "aelfrice.context_rebuilder",
+    "read_recent_turns_aelfrice": "aelfrice.context_rebuilder",
+    "read_recent_turns_claude_transcript": "aelfrice.context_rebuilder",
+    "rebuild_v14": "aelfrice.context_rebuilder",
+    "retrieve": "aelfrice.retrieval",
+    "search_for_prompt": "aelfrice.hook_search",
+}
+
+
+def _lazy(name: str) -> Any:
+    """Resolve one deferred retrieval-subtree name (#1527).
+
+    A binding already present in this module's globals -- which is what a
+    `monkeypatch.setattr(aelfrice.hook, name, ...)` installs -- wins over the
+    real import, so patching keeps working unchanged.
+    """
+    patched = globals().get(name)
+    if patched is not None:
+        return patched
+    import importlib  # noqa: PLC0415
+
+    return getattr(
+        importlib.import_module(_LAZY_RETRIEVAL_NAMES[name]), name,
+    )
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 fallback for the deferred names (#1527).
+
+    Without this, `from aelfrice.hook import retrieve` and
+    `monkeypatch.setattr(hook, "search_for_prompt", ...)` -- which reads the
+    old value before it writes -- would raise AttributeError on a module that
+    has not resolved the name yet.
+    """
+    if name in _LAZY_RETRIEVAL_NAMES:
+        return _lazy(name)
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )
+
 
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
 """Conservative default budget for hook-injected context.
@@ -2285,7 +2360,12 @@ def _emit_user_prompt_submit_rebuild_log(
     """
     serr = stderr if stderr is not None else sys.stderr
     try:
-        from aelfrice.context_rebuilder import (  # noqa: PLC0415
+        # #1527: `aelfrice.rebuild_log`, not `aelfrice.context_rebuilder`.
+        # The gate-skip branch calls this function unconditionally, above the
+        # `session_id` and `:memory:` guards below, so this one import decided
+        # what a skipping fire loads. `load_rebuilder_config` is why the call
+        # cannot simply be gated on config: it *is* the config read.
+        from aelfrice.rebuild_log import (  # noqa: PLC0415
             _rebuild_log_dir_for_db,
             load_rebuilder_config,
             record_user_prompt_submit_log,
@@ -2442,14 +2522,15 @@ def _retrieve(
     fire whose block is suppressed retrieved these beliefs but never
     showed them.
     """
+    search = _lazy("search_for_prompt")
     if store is not None:
-        return search_for_prompt(
+        return search(
             store, prompt, token_budget=token_budget,
             record_exposure=record_exposure,
         )
     owned = _open_store()
     try:
-        return search_for_prompt(
+        return search(
             owned, prompt, token_budget=token_budget,
             record_exposure=record_exposure,
         )
@@ -3904,17 +3985,25 @@ def _read_recent_for_pre_compact(
     if isinstance(cwd_obj, str) and cwd_obj.strip():
         try:
             cwd = Path(cwd_obj)
-            log_path = find_aelfrice_log(cwd)
+            log_path = _lazy("find_aelfrice_log")(cwd)
         except OSError:
             log_path = None
         if log_path is not None and log_path.exists():
-            return read_recent_turns_aelfrice(log_path, n=n_recent_turns)
+            return cast(
+                "list[RecentTurn]",
+                _lazy("read_recent_turns_aelfrice")(
+                    log_path, n=n_recent_turns,
+                ),
+            )
     tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
     if isinstance(tp_obj, str) and tp_obj.strip():
         tp = Path(tp_obj)
         if tp.exists():
-            return read_recent_turns_claude_transcript(
-                tp, n=n_recent_turns
+            return cast(
+                "list[RecentTurn]",
+                _lazy("read_recent_turns_claude_transcript")(
+                    tp, n=n_recent_turns,
+                ),
             )
     return []
 
@@ -3938,8 +4027,8 @@ def _rebuild_and_format(
     """
     from aelfrice.context_rebuilder import (  # noqa: PLC0415
         _latest_session_id,
-        _rebuild_log_dir_for_db,
     )
+    from aelfrice.rebuild_log import _rebuild_log_dir_for_db  # noqa: PLC0415
 
     store = _open_store()
     p = db_path()
@@ -3948,7 +4037,7 @@ def _rebuild_and_format(
     if str(p) != ":memory:" and sid:
         log_path = _rebuild_log_dir_for_db(p) / f"{sid}.jsonl"
     try:
-        return rebuild_v14(
+        return cast("str", _lazy("rebuild_v14")(
             recent,
             store,
             token_budget=token_budget,
@@ -3958,7 +4047,7 @@ def _rebuild_and_format(
             floor_session=floor_session,
             floor_l1=floor_l1,
             query_strategy=query_strategy,
-        )
+        ))
     finally:
         store.close()
 
@@ -4181,9 +4270,12 @@ def _retrieve_baseline_with_block(
     try:
         # #1016-B: SessionStart renders reference-tier locks as a manifest,
         # so budget them at manifest size (byte-identical until demotion).
-        hits = retrieve(
-            store, "", token_budget=token_budget,
-            manifest_reference_locks=True,
+        hits = cast(
+            "list[Belief]",
+            _lazy("retrieve")(
+                store, "", token_budget=token_budget,
+                manifest_reference_locks=True,
+            ),
         )
     finally:
         store.close()
@@ -5300,7 +5392,7 @@ def _maybe_log_cadence_shadow_tick(
         would_fire_p3_substantive,
         would_fire_p3_velocity,
     )
-    from aelfrice.context_rebuilder import _rebuild_log_dir_for_db  # noqa: PLC0415
+    from aelfrice.rebuild_log import _rebuild_log_dir_for_db  # noqa: PLC0415
     from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
 
     try:
@@ -5485,7 +5577,7 @@ def _cadence_resume_cache_path() -> Path | None:
     Returns None when the brain-graph DB is in-memory (test runs) so
     callers can skip the cache step cleanly.
     """
-    from aelfrice.context_rebuilder import _rebuild_log_dir_for_db  # noqa: PLC0415
+    from aelfrice.rebuild_log import _rebuild_log_dir_for_db  # noqa: PLC0415
 
     p = db_path()
     if str(p) == ":memory:":
