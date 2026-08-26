@@ -26,6 +26,7 @@ import pytest
 
 from aelfrice.hook_search_tool import BASH_FIRE_CAP_PER_TURN
 from aelfrice.session_ring import (
+    BASH_STATE_MAX_SESSIONS,
     SESSION_RING_FILENAME,
     read_bash_fire_state,
     record_bash_fire,
@@ -56,7 +57,9 @@ def hook_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-def _fire(env: dict[str, str], token: str, cwd: Path) -> bool:
+def _fire(
+    env: dict[str, str], token: str, cwd: Path, session: str = SESSION_ID,
+) -> bool:
     """Run one PreToolUse Bash fire in its own process.
 
     Returns True when the hook emitted an `additionalContext` block.
@@ -66,7 +69,7 @@ def _fire(env: dict[str, str], token: str, cwd: Path) -> bool:
         "tool_name": "Bash",
         "tool_input": {"command": f"rg {token} src/"},
         "cwd": str(cwd),
-        "session_id": SESSION_ID,
+        "session_id": session,
     })
     proc = subprocess.run(
         [sys.executable, "-m", "aelfrice.hook_search_tool"],
@@ -88,13 +91,15 @@ def _fire(env: dict[str, str], token: str, cwd: Path) -> bool:
     return True
 
 
-def _submit_prompt(env: dict[str, str], cwd: Path) -> None:
+def _submit_prompt(
+    env: dict[str, str], cwd: Path, session: str = SESSION_ID,
+) -> None:
     """Run the real UserPromptSubmit hook — the shipped turn stamp."""
     payload = json.dumps({
         "hook_event_name": "UserPromptSubmit",
         "prompt": "next turn please",
         "cwd": str(cwd),
-        "session_id": SESSION_ID,
+        "session_id": session,
     })
     proc = subprocess.run(
         [sys.executable, "-m", "aelfrice.hook"],
@@ -149,6 +154,74 @@ def test_new_turn_resets_the_cap(
         for t in ("alphatwo", "bravotwo", "charlietwo", "deltatwo")
     ]
     assert turn_two == [True, True, True, False], turn_two
+
+
+@pytest.mark.timeout(300)
+def test_cap_binds_when_two_sessions_share_a_checkout(
+    hook_env: dict[str, str], tmp_path: Path,
+) -> None:
+    """Two sessions on one repo checkout each keep their own budget.
+
+    Every git worktree of a repo shares one
+    `<git-common-dir>/aelfrice/session_injected_ids.json`, and the
+    operator's normal configuration is several concurrent sessions
+    against it. The #740 dedup ring is one record per repo keyed by a
+    single `session_id`, so a fire from session B rewrites the record
+    for session A. If the fire counters live in that record, B's single
+    fire zeroes A's count and A gets an unbounded budget: the reviewer's
+    A,A,A,B,A,A,A interleave emitted 7 of 7 blocks, six of them A's,
+    against a cap of 3.
+
+    The sequence below is that interleave. A's fourth through sixth
+    fires must stay suppressed across B's, and B must still get its own
+    full cap — the failure this guards against is fail-soft in the
+    "no cap" direction, so an assertion that only counted A's would
+    also pass a fix that simply capped everyone to three per repo.
+    """
+    sess_a, sess_b = "cap-1522-worktree-A", "cap-1522-worktree-B"
+    interleave = [
+        (sess_a, "alphazero"), (sess_a, "alphaone"), (sess_a, "alphatwo"),
+        (sess_b, "bravozero"),
+        (sess_a, "alphathree"), (sess_a, "alphafour"), (sess_a, "alphafive"),
+        (sess_b, "bravoone"), (sess_b, "bravotwo"), (sess_b, "bravothree"),
+    ]
+    emitted = [
+        _fire(hook_env, token, tmp_path, session=sid)
+        for sid, token in interleave
+    ]
+    by_session: dict[str, list[bool]] = {sess_a: [], sess_b: []}
+    for (sid, _token), fired in zip(interleave, emitted, strict=True):
+        by_session[sid].append(fired)
+    assert by_session[sess_a] == [True, True, True, False, False, False]
+    assert by_session[sess_b] == [True, True, True, False]
+    assert sum(emitted) == 2 * BASH_FIRE_CAP_PER_TURN
+
+
+@pytest.mark.timeout(300)
+def test_a_second_sessions_turn_stamp_leaves_the_first_capped(
+    hook_env: dict[str, str], tmp_path: Path,
+) -> None:
+    """Session B starting a new turn does not re-open session A's budget.
+
+    `stamp_bash_turn` fires from `UserPromptSubmit`, which is per
+    session, not per repo. A turn boundary in one session must not be
+    read as a turn boundary in another — otherwise a busy neighbour
+    hands session A a fresh cap on every prompt it submits.
+    """
+    sess_a, sess_b = "cap-1522-stamp-A", "cap-1522-stamp-B"
+    first = [
+        _fire(hook_env, t, tmp_path, session=sess_a)
+        for t in ("sa0", "sa1", "sa2", "sa3")
+    ]
+    assert first == [True, True, True, False], first
+
+    _submit_prompt(hook_env, tmp_path, session=sess_b)
+
+    assert _fire(hook_env, "sa4", tmp_path, session=sess_a) is False
+    assert _fire(hook_env, "sb0", tmp_path, session=sess_b) is True
+
+    _submit_prompt(hook_env, tmp_path, session=sess_a)
+    assert _fire(hook_env, "sa5", tmp_path, session=sess_a) is True
 
 
 @pytest.mark.timeout(300)
@@ -212,10 +285,63 @@ def test_bool_ring_fields_read_as_the_default(
     ring_path.write_text(
         json.dumps({
             "session_id": SESSION_ID,
-            "bash_turn_id": True,
-            "bash_fires": True,
-            "bash_fires_turn_id": True,
+            "bash": {
+                SESSION_ID: {
+                    "turn_id": True,
+                    "fires": True,
+                    "fires_turn_id": True,
+                    "seq": True,
+                },
+            },
         }),
         encoding="utf-8",
     )
     assert read_bash_fire_state(SESSION_ID) == {"turn_id": 0, "fires": 0}
+
+
+def test_bash_state_survives_a_ring_reset_by_another_session(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dedup ring resets on a session switch; the Bash map does not.
+
+    This is the unit-level statement of the multi-session defect: a
+    write under session B rewrites the ring record wholesale, and A's
+    fire count has to come through it intact.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    other = SESSION_ID + "-neighbour"
+    assert record_bash_fire(SESSION_ID) == {"turn_id": 0, "fires": 1}
+    assert record_bash_fire(SESSION_ID) == {"turn_id": 0, "fires": 2}
+
+    assert record_bash_fire(other) == {"turn_id": 0, "fires": 1}
+    ring = json.loads(
+        (Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME)
+        .read_text(encoding="utf-8")
+    )
+    assert ring["session_id"] == other, "the dedup ring did switch session"
+
+    assert read_bash_fire_state(SESSION_ID) == {"turn_id": 0, "fires": 2}
+    assert stamp_bash_turn(other) is True
+    assert read_bash_fire_state(SESSION_ID) == {"turn_id": 0, "fires": 2}
+
+
+def test_bash_state_map_is_bounded(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-session map evicts least-recently-touched beyond the cap.
+
+    One ring file serves a whole machine's worth of sessions over time,
+    so the map that survives session switches has to be bounded or it
+    grows without limit.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    sessions = [f"bounded-{i:02d}" for i in range(BASH_STATE_MAX_SESSIONS + 3)]
+    for sid in sessions:
+        assert record_bash_fire(sid) == {"turn_id": 0, "fires": 1}
+    ring = json.loads(
+        (Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME)
+        .read_text(encoding="utf-8")
+    )
+    assert sorted(ring["bash"]) == sessions[-BASH_STATE_MAX_SESSIONS:]
+    # Eviction is fail-soft in the "no cap" direction, never a phantom cap.
+    assert read_bash_fire_state(sessions[0]) == {}

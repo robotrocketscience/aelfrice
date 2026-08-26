@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Final
+from typing import IO, Any, Final, cast
 
 from aelfrice.db_paths import db_path
 from aelfrice.file_lock import (
@@ -65,6 +65,23 @@ about.
 
 RING_MAX_ENV: Final[str] = "AELFRICE_INJECTION_RING_MAX"
 """Env var overriding the rolling-window cap. Must parse as a positive int."""
+
+BASH_STATE_MAX_SESSIONS: Final[int] = 8
+"""How many sessions' Bash fire-cap records the ring file keeps (#1522).
+
+The dedup ring proper is one record per repo: a fire from a second
+session rewrites it wholesale. The Bash fire counters cannot live in
+that record, because every git worktree of a repo shares one ring file
+and the operator's normal configuration is several concurrent sessions
+against it — a single fire from a neighbour would zero the count and
+hand the first session an unbounded budget. They live in a separate
+per-session map that survives a session switch, bounded here so the
+file cannot grow without limit across a machine's lifetime. Eight
+covers the concurrent-session width with room to spare, at 100 JSON
+bytes an entry for a UUID session id (800 for a full map); the least
+recently touched entry is evicted first, and evicting a live session's
+entry costs it one turn of a reset cap, never a wrong suppression.
+"""
 
 
 def _resolve_ring_max() -> int:
@@ -279,6 +296,73 @@ def _coerce_counter(value: Any) -> int:
     return value
 
 
+_EMPTY_BASH_ENTRY: Final[dict[str, int]] = {
+    "turn_id": 0, "fires": 0, "fires_turn_id": 0, "seq": 0,
+}
+"""Defaults for a session with no Bash fire-cap record yet (#1522).
+
+Copied, never mutated in place — callers do ``dict(bash.get(sid,
+_EMPTY_BASH_ENTRY))``.
+"""
+
+
+def _normalize_bash_state(raw: Any) -> dict[str, dict[str, int]]:
+    """Return the per-session Bash fire-cap map, coerced and bounded (#1522).
+
+    Shape: ``{session_id: {"turn_id", "fires", "fires_turn_id", "seq"}}``.
+    Anything that is not a str -> dict entry is dropped, every counter
+    is coerced through :func:`_coerce_counter`, and the map is trimmed
+    to :data:`BASH_STATE_MAX_SESSIONS` least-recently-touched-first so a
+    hand-edited or hostile ring file cannot make it unbounded.
+
+    Deliberately *not* keyed off the ring's ``session_id``: this map
+    outlives the session switch that resets the dedup ring, which is
+    the whole point of holding the counters here rather than beside it.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, dict[str, int]] = {}
+    for sid, entry in cast("dict[Any, Any]", raw).items():
+        if not isinstance(sid, str) or not sid or not isinstance(entry, dict):
+            continue
+        fields = cast("dict[Any, Any]", entry)
+        clean[sid] = {
+            "turn_id": _coerce_counter(fields.get("turn_id")),
+            "fires": _coerce_counter(fields.get("fires")),
+            "fires_turn_id": _coerce_counter(fields.get("fires_turn_id")),
+            "seq": _coerce_counter(fields.get("seq")),
+        }
+    _evict_bash_state(clean)
+    return clean
+
+
+def _evict_bash_state(bash: dict[str, dict[str, int]]) -> None:
+    """Trim `bash` to :data:`BASH_STATE_MAX_SESSIONS` entries in place.
+
+    Lowest ``seq`` (least recently touched) goes first, ties broken on
+    session_id so the outcome is deterministic. Bounded by the map size
+    rather than looping on the predicate alone.
+    """
+    for _ in range(len(bash)):
+        if len(bash) <= BASH_STATE_MAX_SESSIONS:
+            return
+        victim = min(bash, key=lambda s: (bash[s]["seq"], s))
+        del bash[victim]
+
+
+def _touch_bash_entry(
+    bash: dict[str, dict[str, int]], session_id: str, entry: dict[str, int],
+) -> None:
+    """Store `entry` under `session_id` as the most recently touched.
+
+    ``seq`` is one past the largest in the map, so the freshly written
+    entry is never the eviction victim.
+    """
+    entry["seq"] = max((e["seq"] for e in bash.values()), default=0) + 1
+    bash[session_id] = entry
+    _evict_bash_state(bash)
+
+
 def _normalize_for_session(
     data: dict[str, Any], session_id: str, ring_max: int
 ) -> dict[str, Any]:
@@ -294,7 +378,14 @@ def _normalize_for_session(
     we default them on read so backward-compat is automatic — no
     schema migration needed.
     """
-    stored_sid = data.get("session_id") if isinstance(data, dict) else None
+    raw = data if isinstance(data, dict) else {}
+    stored_sid = raw.get("session_id")
+    # #1522: the Bash fire-cap map is read once, before the session
+    # comparison below, because it is the one field a session switch
+    # must NOT wipe. Every worktree of a repo shares this file, so the
+    # neighbouring session whose fire triggers a fresh ring still owns a
+    # live per-turn budget.
+    bash = _normalize_bash_state(raw.get("bash"))
     if not isinstance(stored_sid, str) or stored_sid != session_id:
         return {
             "session_id": session_id,
@@ -311,9 +402,7 @@ def _normalize_for_session(
             "phantom_init": False,
             "promotion_fires": 0,
             "promotion_dedup": [],
-            "bash_turn_id": 0,
-            "bash_fires": 0,
-            "bash_fires_turn_id": 0,
+            "bash": bash,
         }
     ring = data.get("ring")
     if not isinstance(ring, list):
@@ -391,16 +480,14 @@ def _normalize_for_session(
         if isinstance(promotion_dedup_raw, list)
         else []
     )
-    # Bash per-turn fire-cap state (#1522) — the turn counter the
-    # UserPromptSubmit hook stamps, the fire count inside a turn, and the
-    # turn that count belongs to. Three fields rather than two: the count
-    # has to name its own turn so a reader can tell "3 fires this turn"
-    # from "3 fires two turns ago", which is what makes the cap reset on a
-    # turn boundary instead of becoming a permanent per-session cap.
-    # Default 0 for pre-#1522 rings, no migration.
-    bash_turn_id = _coerce_counter(data.get("bash_turn_id"))
-    bash_fires = _coerce_counter(data.get("bash_fires"))
-    bash_fires_turn_id = _coerce_counter(data.get("bash_fires_turn_id"))
+    # `bash` (#1522) was read at the top of this function, before the
+    # session comparison. Per entry: the turn counter the
+    # UserPromptSubmit hook stamps, the fire count inside a turn, and
+    # the turn that count belongs to. Three counters rather than two:
+    # the count has to name its own turn so a reader can tell "3 fires
+    # this turn" from "3 fires two turns ago", which is what makes the
+    # cap reset on a turn boundary instead of becoming a permanent
+    # per-session cap. Empty for pre-#1522 rings, no migration.
     return {
         "session_id": session_id,
         "ring": [e for e in ring if isinstance(e, dict) and isinstance(e.get("id"), str)],
@@ -416,9 +503,7 @@ def _normalize_for_session(
         "phantom_init": phantom_init,
         "promotion_fires": promotion_fires,
         "promotion_dedup": promotion_dedup,
-        "bash_turn_id": bash_turn_id,
-        "bash_fires": bash_fires,
-        "bash_fires_turn_id": bash_fires_turn_id,
+        "bash": bash,
     }
 
 
@@ -1006,12 +1091,21 @@ def stamp_bash_turn(
     consequence of the comparison rather than a second write that a
     crash between the two could skip.
 
+    Scoped to ``session_id``'s own entry in the ring's Bash map: a
+    prompt submitted in a neighbouring session sharing this repo
+    checkout must not re-open this session's budget.
+
     Fail-soft: returns False on any error, and a missed stamp costs one
     turn of a stale cap, never a raised exception in a hook.
     """
+    if not session_id:
+        return False
 
     def _apply(data: dict[str, Any]) -> None:
-        data["bash_turn_id"] = _coerce_counter(data.get("bash_turn_id")) + 1
+        bash = data["bash"]
+        entry = dict(bash.get(session_id, _EMPTY_BASH_ENTRY))
+        entry["turn_id"] = entry["turn_id"] + 1
+        _touch_bash_entry(bash, session_id, entry)
 
     return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
 
@@ -1033,14 +1127,17 @@ def record_bash_fire(
     check the cap *before* calling; this only counts.
     """
     captured: dict[str, int] = {}
+    if not session_id:
+        return {}
 
     def _apply(data: dict[str, Any]) -> None:
-        turn = _coerce_counter(data.get("bash_turn_id"))
-        fires = _coerce_counter(data.get("bash_fires"))
-        if _coerce_counter(data.get("bash_fires_turn_id")) != turn:
-            fires = 0
-        data["bash_fires_turn_id"] = turn
-        data["bash_fires"] = fires + 1
+        bash = data["bash"]
+        entry = dict(bash.get(session_id, _EMPTY_BASH_ENTRY))
+        turn = entry["turn_id"]
+        fires = entry["fires"] if entry["fires_turn_id"] == turn else 0
+        entry["fires_turn_id"] = turn
+        entry["fires"] = fires + 1
+        _touch_bash_entry(bash, session_id, entry)
         captured["turn_id"] = turn
         captured["fires"] = fires + 1
 
@@ -1059,16 +1156,31 @@ def read_bash_fire_state(session_id: str | None) -> dict[str, int]:
     check runs ahead of the hook's lazy imports where a lock is not
     worth its latency.
 
-    Returns ``{}`` when the ring is absent, cross-session or malformed.
-    Callers must read that as "no cap", never as "cap reached".
+    Reads the Bash map directly rather than through
+    :func:`read_ring_state`, which returns ``{}`` as soon as the ring's
+    own ``session_id`` names a different session. That gate is right for
+    the dedup ring and wrong here: the counters are per session by
+    construction, and honouring it would mean any neighbour's fire
+    erased this session's budget.
+
+    Returns ``{}`` when the ring is absent or malformed, or when this
+    session has no entry yet. Callers must read that as "no cap", never
+    as "cap reached".
     """
-    state = read_ring_state(session_id)
-    if not state:
+    if not session_id:
         return {}
-    turn = _coerce_counter(state.get("bash_turn_id"))
-    fires = _coerce_counter(state.get("bash_fires"))
-    if _coerce_counter(state.get("bash_fires_turn_id")) != turn:
-        fires = 0
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return {}
+    try:
+        data = _read_ring_unlocked(ring_path)
+    except Exception:
+        return {}
+    entry = _normalize_bash_state(data.get("bash")).get(session_id)
+    if entry is None:
+        return {}
+    turn = entry["turn_id"]
+    fires = entry["fires"] if entry["fires_turn_id"] == turn else 0
     return {"turn_id": turn, "fires": fires}
 
 
