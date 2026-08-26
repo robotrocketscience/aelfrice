@@ -1658,6 +1658,18 @@ def user_prompt_submit(
             # rather than a gap. `rendered_block` is "" because nothing was
             # rendered: there were no hits to format. Nothing else changes on
             # this path; the row is the whole edit.
+            #
+            # SCOPE of the zero, so nobody over-reads it: `hits` is empty
+            # here for either of two reasons, and the row cannot tell them
+            # apart. BM25 returned nothing, or it returned something that
+            # `_filter_by_project_context` / `_filter_session_exclusions` /
+            # `_apply_category_boost` above then emptied. Both are a fire
+            # that injected nothing, which is what the denominator of a hit
+            # rate or a fires-per-session rate needs. Neither is "retrieval
+            # has no candidates for this prompt" — separating those would
+            # need a pre-filter count, which is a wider change than #1528
+            # and belongs with the lane telemetry that already carries
+            # per-lane counts.
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,

@@ -635,3 +635,67 @@ def test_a_gate_skipped_fire_still_records_a_rebuild_it_paid_for(
         "shape gate, so this row has a real outcome and the benchmark must "
         "not have to treat it as unmeasurable."
     )
+
+
+def test_a_zero_hit_fire_carries_the_outcome_and_the_order_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1528's new audit write must pass the field too. Third call site.
+
+    `user_prompt_submit` writes its audit row from three branches now:
+    `if hits:`, `elif gate_skip:`, and #1528's `else:` for a fire where
+    retrieval ran and returned nothing. The first two are pinned above --
+    this file exists to pin `sidecar_outcome=` per PRODUCTION CALL SITE,
+    because that is what a regression drops, one site at a time.
+
+    The third site shipped without an assertion. Measured before adding
+    this: deleting BOTH `sidecar_outcome=_last_sidecar_outcome(),` and
+    `order_policy=_audit_order_policy(),` from that `else` branch left
+    `pytest tests/ -k "audit or rebuild_rate or hook_audit or sidecar"`
+    fully green, while the identical deletion at the gate-skip site is
+    caught by the test directly above.
+
+    The consequence is the same one #1407 was filed about, and #1528 is a
+    fix for: a zero-hit fire can still have paid a full rebuild -- the
+    BM25 sidecar is built by retrieval whether or not retrieval finds
+    anything -- and that is precisely the fire #1380 is priced on. Without
+    the field the row lands in `benchmarks/sidecar_rebuild_rate.py`'s
+    permanently-unmeasured bucket, so recording the zero-hit population at
+    all would buy nothing. `order_policy` rides the same call for the same
+    reason: #1274's ordering A/B reads it off these rows.
+
+    The prompt shares no term with the seeded corpus ("belief number N
+    about retrieval and indexing"), so BM25 returns nothing, and it is far
+    over the triviality threshold, so the shape gate does not refuse it.
+    Both facts are asserted rather than assumed -- on the `if hits:` or
+    `elif gate_skip:` branch this test would be a third copy of a test
+    that already exists.
+    """
+    row = _drive_ups(
+        tmp_path,
+        "photosynthesis chlorophyll absorbs sunlight inside plant "
+        "chloroplast membranes during the calvin cycle",
+        monkeypatch,
+    )
+
+    assert row.get("n_beliefs") == 0, (
+        f"retrieval returned {row.get('n_beliefs')} hits, so this row came "
+        "from the `if hits:` branch; the test says nothing about the branch "
+        "it exists for"
+    )
+    assert "prompt_shape_gate_skip" not in row, (
+        "the fixture prompt was gate-skipped, so this row came from the "
+        "`elif gate_skip:` branch rather than #1528's zero-hit `else:`"
+    )
+
+    assert "sidecar_outcome" in row, (
+        "the zero-hit call site stopped passing sidecar_outcome. A zero-hit "
+        "fire that paid a full rebuild is now indistinguishable from one "
+        "that never touched the index, which is the exact hole #1407 closed "
+        "at the other two sites."
+    )
+    assert row["sidecar_outcome"] in SIDECAR_OUTCOMES
+    assert "order_policy" in row, (
+        "the zero-hit call site stopped passing order_policy; #1274's "
+        "ordering A/B reads it off these rows"
+    )
