@@ -82,9 +82,15 @@ that history is gone. A rate over a truncated window is a rate over "whatever
 the recent period looked like", and until #1528 nothing in the output said so.
 `audit_window` reads the rotation markers and this script now prints the ts
 range it actually covered, whether a `.1` was present, and a WINDOW TRUNCATED
-line when generations have been discarded. A log with no markers — rotated
-before #1528, or never rotated — reads as generation 1 with nothing discarded,
-which is the only claim such a file supports.
+line when generations have been discarded.
+
+The verdict is three-valued, and the third value is the point. A log that has
+never rotated is complete. A log whose markers account for every generation is
+complete or truncated by an exact count. A log rotated before #1528 shipped —
+a `.1` with no generation stamp — is neither: one rollover discards nothing, a
+second discards the first archive, and the files cannot say which. That prints
+WINDOW UNKNOWN. Once such a log rolls over again the marker records "at least
+one discarded" rather than pretending to a count it cannot have.
 """
 from __future__ import annotations
 
@@ -217,10 +223,20 @@ def main() -> int:
     print(f"  window first row               {window.first_ts or '(none)'}")
     print(f"  window last row                {window.last_ts or '(none)'}")
     print(f"  rotated .1 present             {window.rotated_present}")
-    print(f"  rotation generation            {window.generation}")
+    generation_label = (
+        f"{window.generation} (at least)"
+        if window.discarded_unknown
+        else str(window.generation)
+    )
+    print(f"  rotation generation            {generation_label}")
+    # Three-valued by construction (`AuditWindow.truncated` / `.complete`).
+    # Collapsing it to truncated-or-complete is how a false completeness
+    # claim ships: the pre-#1528 population reads as neither.
     if window.truncated:
+        atleast = "at least " if window.discarded_unknown else ""
         print(
-            f"  WINDOW TRUNCATED               {window.discarded_generations} "
+            f"  WINDOW TRUNCATED               {atleast}"
+            f"{window.discarded_generations} "
             "rotation generation(s) discarded"
         )
         print(
@@ -232,28 +248,42 @@ def main() -> int:
             "the recent"
         )
         print("    period looked like. Do not read it as a long-horizon rate.")
-    elif not window.rotated_present:
+        if window.discarded_unknown:
+            print(
+                "    The destroyed history carried no #1528 marker, so the "
+                "count above"
+            )
+            print(
+                "    is a floor. How much more was discarded is not "
+                "recoverable."
+            )
+    elif not window.complete:
+        # Unknown: a `.1` whose generation nothing in this input can
+        # state. Either the live file predates the marker, or no live file
+        # was passed at all and the archives cannot see the loss their own
+        # rotation caused. Saying "complete" here would be the exact
+        # unearned claim the marker exists to prevent.
+        print(
+            "  WINDOW UNKNOWN                 a `.1` with no generation stamp"
+        )
+        print(
+            "    Rotated before the #1528 marker, or handed in without its "
+            "live file."
+        )
+        print(
+            "    One rollover discards nothing, a second discards the first "
+            "archive,"
+        )
+        print("    and this input cannot say which. Treat as possibly short.")
+    elif window.generation == 1 and not window.rotated_present:
         print("  window complete                no rotation has occurred")
-    elif window.generation == 1:
-        # A `.1` beside a live file that carries NO marker rotated before
-        # #1528 shipped. One rollover discards nothing, but a second one
-        # discarded the first archive and left no record either way, so
-        # this case is unknown rather than clean. Saying "complete" here
-        # would be the exact unearned claim the marker exists to prevent.
-        print(
-            "  WINDOW UNKNOWN                 rotated before the #1528 marker;"
-        )
-        print(
-            "    a `.1` exists with no generation stamp. One rollover "
-            "discards nothing,"
-        )
-        print(
-            "    a second discards the first archive, and this file cannot "
-            "say which."
-        )
     else:
-        # Generation 2 with a `.1` beside it is a COMPLETE history: the
-        # first rollover fills an empty slot and destroys nothing.
+        # Generation >= 2 with nothing discarded: the first rollover fills
+        # an empty slot and destroys nothing. Gated on the GENERATION, not
+        # on `.1` being in `paths` -- a marked live file passed on its own
+        # has provably rotated even though no `.1` was handed in, and
+        # printing "no rotation has occurred" under "generation 2" was a
+        # self-contradiction.
         print("  window complete                nothing discarded by rotation")
     print(f"  user_prompt_submit fires       {all_fires}")
     print(f"  non-UPS rows (ignored)         {non_ups}")

@@ -269,3 +269,146 @@ def test_pre_1528_rotated_pair_is_reported_unknown(tmp_path: Path) -> None:
     assert "WINDOW TRUNCATED" not in out, out
     # And the legacy files still parse into the ordinary counts.
     assert "user_prompt_submit fires       6" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_a_first_rotation_pair_is_reported_complete(tmp_path: Path) -> None:
+    """Generation 2 beside a `.1`: a complete history, and it must say so.
+
+    The first rollover fills an empty slot and destroys nothing, so this
+    is the one rotated shape that has earned the word "complete". It is
+    also the branch that separates "rotated" from "truncated" -- without
+    it the truncation warning could be firing on the mere presence of a
+    `.1` and every test above would still pass.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    # The `.1` is the retired generation 1: it never had a predecessor to
+    # stamp it, so it legitimately carries no marker.
+    rotated.write_text(
+        "\n".join(
+            _row(f"2026-08-06T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    live.write_text(
+        _marker(2, 0)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-07T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(live, rotated)
+
+    assert "window complete                nothing discarded by rotation" in out, out
+    assert "WINDOW TRUNCATED" not in out, out
+    assert "WINDOW UNKNOWN" not in out, out
+    assert "rotated .1 present             True" in out, out
+    assert "rotation generation            2" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_a_marked_live_file_alone_never_says_no_rotation_occurred(
+    tmp_path: Path,
+) -> None:
+    """The script must not contradict its own generation line.
+
+    Passing an explicit path is the documented usage in the script's
+    docstring, so handing it the live half of a rotated pair is ordinary.
+    `rotated .1 present` is then False -- the `.1` was not passed -- and
+    gating the completeness wording on THAT printed "no rotation has
+    occurred" directly under "rotation generation 2". A marked live file
+    has provably rotated; only the generation can decide that sentence.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    live.write_text(
+        _marker(2, 0)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-07T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(live)
+
+    assert "rotated .1 present             False" in out, out
+    assert "rotation generation            2" in out, out
+    assert "no rotation has occurred" not in out, out
+    assert "window complete                nothing discarded by rotation" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_the_archive_alone_is_unknown_not_complete(tmp_path: Path) -> None:
+    """A `.1` handed in without its live file cannot claim completeness.
+
+    Each file records what had been lost when it was CREATED, so an
+    archive is blind to the loss caused by the rotation that archived it.
+    The `.1` of a twice-rotated pair carries `generation 2, discarded 0`
+    and, read alone, used to print "nothing discarded by rotation" -- for
+    a file whose successor discarded exactly one generation.
+    """
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    rotated.write_text(
+        _marker(2, 0)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-06T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(rotated)
+
+    assert "WINDOW UNKNOWN" in out, out
+    assert "window complete" not in out, out
+
+
+@pytest.mark.timeout(90)
+def test_a_bound_is_printed_as_a_bound_not_a_count(tmp_path: Path) -> None:
+    """A pre-#1528 log that has since rolled over reports "at least N".
+
+    This is the write-side half of #1528's load-bearing case, seen
+    through the output a human reads. The rotation that destroyed an
+    unmarked archive knows one generation died and cannot know how many
+    died before it, so the count is a floor. Printing it bare would let a
+    reader treat "1" as the whole loss when the real figure is unbounded.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    marker = json.loads(_marker(3, 1))
+    marker["discarded_unknown"] = True
+    rotated.write_text(
+        "\n".join(
+            _row(f"2026-08-06T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    live.write_text(
+        json.dumps(marker)
+        + "\n"
+        + "\n".join(
+            _row(f"2026-08-07T00:{i:02d}:00Z", outcome="fresh")
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(live, rotated)
+
+    assert "WINDOW TRUNCATED               at least 1 " in out, out
+    assert "rotation generation            3 (at least)" in out, out
+    assert "is a floor" in out, out
