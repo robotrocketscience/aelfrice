@@ -18,13 +18,19 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "benchmarks" / "sidecar_rebuild_
 
 
 def _row(
-    ts: str, *, outcome: str | None = None, gate_skip: str | None = None
+    ts: str,
+    *,
+    outcome: str | None = None,
+    gate_skip: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     rec: dict[str, object] = {"hook": "user_prompt_submit", "ts": ts}
     if outcome is not None:
         rec["sidecar_outcome"] = outcome
     if gate_skip is not None:
         rec["prompt_shape_gate_skip"] = gate_skip
+    if session_id is not None:
+        rec["session_id"] = session_id
     return json.dumps(rec)
 
 
@@ -37,6 +43,21 @@ def _run(*logs: Path) -> str:
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
+
+
+def _bucket_lines(out: str) -> tuple[str, str]:
+    """Return the (session-FIRST, LATER) report lines, or fail loudly.
+
+    Reading the whole stdout with `in` would let the pooled rate printed
+    higher up satisfy a bucket assertion, which is precisely the collapse
+    #1513's AC3 exists to forbid. Every bucketing assertion below is made
+    against these two lines alone.
+    """
+    first = [ln for ln in out.splitlines() if "session-FIRST fires" in ln]
+    later = [ln for ln in out.splitlines() if "LATER" in ln and "fires" in ln]
+    assert len(first) == 1, f"expected one session-FIRST line\n{out}"
+    assert len(later) == 1, f"expected one LATER line\n{out}"
+    return first[0], later[0]
 
 
 @pytest.mark.timeout(90)
@@ -412,3 +433,137 @@ def test_a_bound_is_printed_as_a_bound_not_a_count(tmp_path: Path) -> None:
     assert "WINDOW TRUNCATED               at least 1 " in out, out
     assert "rotation generation            3 (at least)" in out, out
     assert "is a floor" in out, out
+
+
+# ---- #1513: the session-first vs later split ---------------------------
+
+
+@pytest.mark.timeout(90)
+def test_the_session_position_split_cannot_collapse_into_one_number(
+    tmp_path: Path,
+) -> None:
+    """#1513 AC3. The two buckets must be reported separately.
+
+    Three sessions, each opening with a `full_rebuild` and then running nine
+    `fresh` fires. The truth is 3/3 = 100.0% on session-FIRST against
+    0/27 = 0.0% on LATER — a complete separation. Pooled, the same rows read
+    3/30 = 10.00%, which is the number that hides a session-first tail.
+
+    The distinguishing assertion is the negative one: a script that pooled
+    the buckets would print `10.0%` on both bucket lines and still satisfy a
+    test that merely looked for `100.0%` somewhere in stdout.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    lines: list[str] = []
+    for s in range(3):
+        lines.append(
+            _row(
+                f"2026-08-1{s}T00:00:00Z",
+                outcome="full_rebuild",
+                session_id=f"sess-{s}",
+            )
+        )
+        lines += [
+            _row(
+                f"2026-08-1{s}T00:{i:02d}:00Z",
+                outcome="fresh",
+                session_id=f"sess-{s}",
+            )
+            for i in range(1, 10)
+        ]
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    out = _run(log)
+    first_line, later_line = _bucket_lines(out)
+
+    assert "3/3 = 100.0%" in first_line, out
+    assert "0/27 = 0.0%" in later_line, out
+    assert "10.0%" not in first_line, (
+        "the session-first bucket is reporting the POOLED rate; that is the "
+        f"collapse AC3 forbids.\n{out}"
+    )
+    assert "10.0%" not in later_line, out
+    # The pooled rate is still reported — it is a different question, not a
+    # replacement. Losing it would be its own regression.
+    assert "3/30 = 10.00%" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_a_row_with_no_session_id_lands_in_neither_bucket(
+    tmp_path: Path,
+) -> None:
+    """A fire with no position must not be swept into LATER.
+
+    Sweeping it there drags the session-first rate toward zero exactly the
+    way folding an unmeasured row into a denominator does, one axis over.
+    Here one session (1 rebuild + 1 fresh) plus two session-less rebuilds:
+    the buckets must stay 1/1 and 0/1, and the two loose rows must be named.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row(
+                    "2026-08-05T00:00:00Z",
+                    outcome="full_rebuild",
+                    session_id="sess-a",
+                ),
+                _row(
+                    "2026-08-05T00:01:00Z", outcome="fresh", session_id="sess-a"
+                ),
+                _row("2026-08-05T00:02:00Z", outcome="full_rebuild"),
+                _row("2026-08-05T00:03:00Z", outcome="full_rebuild"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(log)
+    first_line, later_line = _bucket_lines(out)
+
+    assert "1/1 = 100.0%" in first_line, out
+    assert "0/1 = 0.0%" in later_line, (
+        "the two session-less rebuilds were folded into LATER\n" + out
+    )
+    assert "no session_id            2" in out, out
+
+
+@pytest.mark.timeout(90)
+def test_position_follows_the_timestamp_not_the_file_order(
+    tmp_path: Path,
+) -> None:
+    """Rotated logs are globbed newest-first; position is not read that way.
+
+    `_default_logs` sorts by name, so `hook_audit.jsonl` (the live file)
+    comes before `hook_audit.jsonl.1` (the older rotation). Walking rows in
+    that order would mark the session's LAST fire as its first. Here the
+    session's opening `full_rebuild` is in the rotated file and its later
+    `fresh` fire is in the live one: if position followed file order the
+    buckets would invert to 0/1 and 1/1.
+    """
+    live = tmp_path / "hook_audit.jsonl"
+    rotated = tmp_path / "hook_audit.jsonl.1"
+    live.write_text(
+        _row("2026-08-05T09:00:00Z", outcome="fresh", session_id="sess-a")
+        + "\n",
+        encoding="utf-8",
+    )
+    rotated.write_text(
+        _row(
+            "2026-08-05T08:00:00Z",
+            outcome="full_rebuild",
+            session_id="sess-a",
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(live, rotated)
+    first_line, later_line = _bucket_lines(out)
+
+    assert "1/1 = 100.0%" in first_line, (
+        "the rebuild was read as a LATER fire; position followed the glob "
+        f"order rather than the timestamp.\n{out}"
+    )
+    assert "0/1 = 0.0%" in later_line, out

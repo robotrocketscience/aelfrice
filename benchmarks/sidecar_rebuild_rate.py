@@ -67,6 +67,20 @@ branch's code while installed hooks run the released package, so every
 reports NO MEASUREMENT YET before any rate is printed. There is no live ratio
 to cite. CHANGELOG/v4.md carries the same relabel.
 
+## Position within the session is a separate axis (#1513)
+
+The pooled rate above is an average over a population that is not
+homogeneous. Bucketed by whether a scored fire is the first one carrying its
+`session_id`, the 2026-08-19 sample separated completely: 5/13 = 38.5% on
+session-FIRST fires against 0/26 = 0.0% on every later fire. The cost is a
+session-first tail, and a single pooled number hides it — which is why the
+`BY POSITION WITHIN THE SESSION` section prints two rates and never one.
+
+Rows with no `session_id` have no position. They are reported as their own
+count and kept out of BOTH buckets: sweeping them into LATER is the same
+bias as scoring an unmeasured fire as not-a-rebuild, applied to this axis
+instead of to the denominators above.
+
 Usage:
     uv run python benchmarks/sidecar_rebuild_rate.py [AUDIT_LOG ...]
 
@@ -136,6 +150,12 @@ def main() -> int:
     gate_skipped = 0
     unkeyed: list[str | None] = []
     scored_ts: list[str] = []
+    # #1513: (ts, read-order, session_id, outcome) per scored fire, so the
+    # session-first vs later split below can be recovered. Read order is
+    # carried as the tie-break because `ts` is second-resolution and two
+    # fires in one second are common.
+    scored_rows: list[tuple[str | None, int, str | None, str]] = []
+    seq = 0
 
     for path in logs:
         for line in path.open("r", encoding="utf-8"):
@@ -175,6 +195,16 @@ def main() -> int:
             ts = rec.get("ts")
             if ts is not None:
                 scored_ts.append(str(ts))
+            sid = rec.get("session_id")
+            scored_rows.append(
+                (
+                    str(ts) if ts is not None else None,
+                    seq,
+                    str(sid) if sid else None,
+                    str(outcome),
+                )
+            )
+            seq += 1
 
     scored = sum(counts.values())
     # Derive the field's arrival from the data rather than hardcoding a date:
@@ -344,6 +374,8 @@ def main() -> int:
     print("  fires — the scored-fires figure excludes the gate-skipped majority")
     print("  and reads higher for that reason alone.")
 
+    _print_session_position_split(scored_rows)
+
     if pre_field is not None and pre_field > scored:
         print()
         print(f"  NOTE: {pre_field} pre-#1407 rows against {scored} scored. They are")
@@ -351,6 +383,75 @@ def main() -> int:
         print("  biased by them — but the measured sample is the smaller of the")
         print("  two, so treat it as provisional until the scored count grows.")
     return 0
+
+
+def bucket_by_session_position(
+    scored_rows: list[tuple[str | None, int, str | None, str]],
+) -> tuple[Counter[str], Counter[str], int]:
+    """Split scored fires into session-FIRST, LATER, and unattributed (#1513).
+
+    A fire is session-FIRST when it is the earliest *scored* fire carrying
+    its `session_id`. That is the definition the #1513 measurement used, and
+    it is the one the fix targets: the sidecar warm is spawned at
+    `SessionStart`, so the fire it can spare is the first one.
+
+    Rows carrying no `session_id` have no position and are returned as a
+    third count rather than folded into either bucket. Folding them into
+    LATER would drag the session-first rate toward zero exactly the way the
+    module docstring forbids for unmeasured rows — the same bias, applied to
+    a different axis.
+
+    Ordering is `(ts, read-order)` with missing timestamps sorted last, so a
+    rotated-log set is walked in the order the fires happened rather than in
+    the order the files were globbed.
+    """
+    ordered = sorted(scored_rows, key=lambda r: (r[0] is None, r[0] or "", r[1]))
+    first: Counter[str] = Counter()
+    later: Counter[str] = Counter()
+    unattributed = 0
+    seen: set[str] = set()
+    for _ts, _seq, sid, outcome in ordered:
+        if sid is None:
+            unattributed += 1
+            continue
+        if sid in seen:
+            later[outcome] += 1
+        else:
+            seen.add(sid)
+            first[outcome] += 1
+    return first, later, unattributed
+
+
+def _print_session_position_split(
+    scored_rows: list[tuple[str | None, int, str | None, str]],
+) -> None:
+    """Report the #1513 split. Two rates, never one."""
+    first, later, unattributed = bucket_by_session_position(scored_rows)
+    n_first = sum(first.values())
+    n_later = sum(later.values())
+    print()
+    print("  BY POSITION WITHIN THE SESSION (#1513).")
+    print("  The cost is a session-first tail, not an average: a rate pooled")
+    print("  over both buckets hides it. These two lines must never collapse")
+    print("  into one number.")
+    for label, bucket, total in (
+        ("session-FIRST", first, n_first),
+        ("LATER        ", later, n_later),
+    ):
+        detail = "  ".join(f"{name} {bucket[name]}" for name in OUTCOMES)
+        if total:
+            rate = f"{bucket['full_rebuild']}/{total} = {bucket['full_rebuild'] / total:.1%}"
+        else:
+            rate = "no scored fires in this bucket"
+        print(f"    {label} fires   {detail}   ->  {rate}")
+    if unattributed:
+        print(
+            f"    no session_id            {unattributed}   <- no position; "
+            "excluded from BOTH buckets above, never folded into LATER"
+        )
+    # Exactly one session-FIRST fire per session that has any scored fire,
+    # so this is the session count, printed so the two are read together.
+    print(f"    sessions with a scored fire   {n_first}")
 
 
 if __name__ == "__main__":
