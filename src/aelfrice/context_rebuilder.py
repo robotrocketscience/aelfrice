@@ -83,55 +83,64 @@ from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 
 # Re-exported, not re-implemented (#1527). The rebuilder config and the
-# phase-1a rebuild_log moved into `aelfrice.rebuild_log`, a module that
-# imports no part of the retrieval subtree, so `hook.py`'s prompt-shape gate
-# can resolve them on a skipped fire without loading the very thing it is
-# skipping. Every name below kept its old spelling and behaviour; this block
-# exists so `from aelfrice.context_rebuilder import ...` keeps working for the
-# benchmarks, the CLI and the existing tests.
-from aelfrice.rebuild_log import (  # noqa: F401
-    DEFAULT_FLOOR_L1,
-    DEFAULT_FLOOR_SESSION,
-    DEFAULT_QUERY_ENTITY_CAP,
-    DEFAULT_QUERY_STRATEGY,
-    DEFAULT_REBUILD_LOG_ENABLED,
-    DEFAULT_REBUILDER_TOKEN_BUDGET,
-    DEFAULT_THRESHOLD_FRACTION,
-    DEFAULT_TRIGGER_MODE,
-    DEFAULT_TURN_WINDOW_N,
-    MIN_QUERY_TOKEN_LENGTH,
-    QUERY_STRATEGY_KEY,
-    REBUILD_FLOOR_L1_KEY,
-    REBUILD_FLOOR_SECTION,
-    REBUILD_FLOOR_SESSION_KEY,
-    REBUILD_LOG_DIRNAME,
-    REBUILD_LOG_ENABLED_KEY,
-    REBUILD_LOG_ENV,
-    REBUILD_LOG_MAX_BYTES,
-    REBUILD_LOG_SECTION,
-    REBUILDER_SECTION,
-    THRESHOLD_FRACTION_KEY,
-    TOKEN_BUDGET_KEY,
-    TRIGGER_MODE_DYNAMIC,
-    TRIGGER_MODE_KEY,
-    TRIGGER_MODE_MANUAL,
-    TRIGGER_MODE_THRESHOLD,
-    TURN_WINDOW_KEY,
-    VALID_TRIGGER_MODES,
-    RebuilderConfig,
-    RecentTurn,
-    _append_rebuild_log_record,
-    _belief_lock_level_for_log,
-    _build_rebuild_log_record,
-    _empty_scores,
-    _extracted_entities_for_log,
-    _query_for_recent_turns,
-    _query_tokens,
-    _rebuild_log_dir_for_db,
-    _rebuild_log_disabled_via_env,
-    _recent_turns_hash,
-    load_rebuilder_config,
-    record_user_prompt_submit_log,
+# phase-1a rebuild_log moved into `aelfrice.rebuild_log`, a module that imports
+# no part of the retrieval subtree, so `hook.py`'s prompt-shape gate can
+# resolve them on a skipped fire without loading the very thing it is skipping.
+# Every name kept its old spelling and behaviour; this block exists so
+# `from aelfrice.context_rebuilder import ...` keeps working for the CLI, the
+# benchmarks and the existing tests. Written in the redundant-alias form,
+# which is how a type checker is told an import is a deliberate re-export
+# rather than a dead one.
+from aelfrice.rebuild_log import (
+    DEFAULT_FLOOR_L1 as DEFAULT_FLOOR_L1,
+    DEFAULT_FLOOR_SESSION as DEFAULT_FLOOR_SESSION,
+    DEFAULT_QUERY_ENTITY_CAP as DEFAULT_QUERY_ENTITY_CAP,
+    DEFAULT_QUERY_STRATEGY as DEFAULT_QUERY_STRATEGY,
+    DEFAULT_REBUILD_LOG_ENABLED as DEFAULT_REBUILD_LOG_ENABLED,
+    DEFAULT_REBUILDER_TOKEN_BUDGET as DEFAULT_REBUILDER_TOKEN_BUDGET,
+    DEFAULT_THRESHOLD_FRACTION as DEFAULT_THRESHOLD_FRACTION,
+    DEFAULT_TRIGGER_MODE as DEFAULT_TRIGGER_MODE,
+    DEFAULT_TURN_WINDOW_N as DEFAULT_TURN_WINDOW_N,
+    MIN_QUERY_TOKEN_LENGTH as MIN_QUERY_TOKEN_LENGTH,
+    QUERY_STRATEGY_KEY as QUERY_STRATEGY_KEY,
+    REBUILD_FLOOR_L1_KEY as REBUILD_FLOOR_L1_KEY,
+    REBUILD_FLOOR_SECTION as REBUILD_FLOOR_SECTION,
+    REBUILD_FLOOR_SESSION_KEY as REBUILD_FLOOR_SESSION_KEY,
+    REBUILD_LOG_DIRNAME as REBUILD_LOG_DIRNAME,
+    REBUILD_LOG_ENABLED_KEY as REBUILD_LOG_ENABLED_KEY,
+    REBUILD_LOG_ENV as REBUILD_LOG_ENV,
+    REBUILD_LOG_MAX_BYTES as REBUILD_LOG_MAX_BYTES,
+    REBUILD_LOG_SECTION as REBUILD_LOG_SECTION,
+    REBUILDER_SECTION as REBUILDER_SECTION,
+    THRESHOLD_FRACTION_KEY as THRESHOLD_FRACTION_KEY,
+    TOKEN_BUDGET_KEY as TOKEN_BUDGET_KEY,
+    TRIGGER_MODE_DYNAMIC as TRIGGER_MODE_DYNAMIC,
+    TRIGGER_MODE_KEY as TRIGGER_MODE_KEY,
+    TRIGGER_MODE_MANUAL as TRIGGER_MODE_MANUAL,
+    TRIGGER_MODE_THRESHOLD as TRIGGER_MODE_THRESHOLD,
+    TURN_WINDOW_KEY as TURN_WINDOW_KEY,
+    VALID_TRIGGER_MODES as VALID_TRIGGER_MODES,
+    RebuilderConfig as RebuilderConfig,
+    RecentTurn as RecentTurn,
+    load_rebuilder_config as load_rebuilder_config,
+    record_user_prompt_submit_log as record_user_prompt_submit_log,
+)
+
+# The private half. `rebuild_v14` and the floor path below still call these,
+# so they are imports this module uses, not just re-exports -- but a leading
+# underscore across a module boundary is what `reportPrivateUsage` exists to
+# flag, and it cannot tell a leaked internal from a subsystem deliberately
+# split across two files. Suppressed per name so a genuinely new private
+# import still has to justify itself.
+from aelfrice.rebuild_log import (
+    _append_rebuild_log_record as _append_rebuild_log_record,  # pyright: ignore[reportPrivateUsage]
+    _belief_lock_level_for_log as _belief_lock_level_for_log,  # pyright: ignore[reportPrivateUsage]
+    _build_rebuild_log_record as _build_rebuild_log_record,  # pyright: ignore[reportPrivateUsage]
+    _empty_scores as _empty_scores,  # pyright: ignore[reportPrivateUsage]
+    _query_for_recent_turns as _query_for_recent_turns,  # pyright: ignore[reportPrivateUsage]
+    _query_tokens as _query_tokens,  # pyright: ignore[reportPrivateUsage]
+    _rebuild_log_dir_for_db as _rebuild_log_dir_for_db,  # pyright: ignore[reportPrivateUsage]
+    _rebuild_log_disabled_via_env as _rebuild_log_disabled_via_env,  # pyright: ignore[reportPrivateUsage]
 )
 
 if TYPE_CHECKING:

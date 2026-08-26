@@ -60,6 +60,55 @@ from aelfrice.query_understanding import VALID_STRATEGIES
 if TYPE_CHECKING:
     from aelfrice.models import Belief
 
+__all__ = [
+    "DEFAULT_FLOOR_L1",
+    "DEFAULT_FLOOR_SESSION",
+    "DEFAULT_QUERY_ENTITY_CAP",
+    "DEFAULT_QUERY_STRATEGY",
+    "DEFAULT_REBUILDER_TOKEN_BUDGET",
+    "DEFAULT_REBUILD_LOG_ENABLED",
+    "DEFAULT_THRESHOLD_FRACTION",
+    "DEFAULT_TRIGGER_MODE",
+    "DEFAULT_TURN_WINDOW_N",
+    "MIN_QUERY_TOKEN_LENGTH",
+    "QUERY_STRATEGY_KEY",
+    "REBUILDER_SECTION",
+    "REBUILD_FLOOR_L1_KEY",
+    "REBUILD_FLOOR_SECTION",
+    "REBUILD_FLOOR_SESSION_KEY",
+    "REBUILD_LOG_DIRNAME",
+    "REBUILD_LOG_ENABLED_KEY",
+    "REBUILD_LOG_ENV",
+    "REBUILD_LOG_MAX_BYTES",
+    "REBUILD_LOG_SECTION",
+    "RebuilderConfig",
+    "RecentTurn",
+    "THRESHOLD_FRACTION_KEY",
+    "TOKEN_BUDGET_KEY",
+    "TRIGGER_MODE_DYNAMIC",
+    "TRIGGER_MODE_KEY",
+    "TRIGGER_MODE_MANUAL",
+    "TRIGGER_MODE_THRESHOLD",
+    "TURN_WINDOW_KEY",
+    "VALID_TRIGGER_MODES",
+    "load_rebuilder_config",
+    "record_user_prompt_submit_log",
+    # Underscore-prefixed but genuinely cross-module: `context_rebuilder`
+    # calls all of these, and `hook.py` calls `_rebuild_log_dir_for_db` from
+    # four places. Named here so a checker does not read them as dead code
+    # inside this file, which is where none of their callers live.
+    "_append_rebuild_log_record",
+    "_belief_lock_level_for_log",
+    "_build_rebuild_log_record",
+    "_empty_scores",
+    "_extracted_entities_for_log",
+    "_query_for_recent_turns",
+    "_query_tokens",
+    "_rebuild_log_dir_for_db",
+    "_rebuild_log_disabled_via_env",
+    "_recent_turns_hash",
+]
+
 # --- Query-construction constants -----------------------------------------
 
 MIN_QUERY_TOKEN_LENGTH: Final[int] = 4
