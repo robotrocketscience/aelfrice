@@ -125,6 +125,49 @@ def test_the_warm_makes_the_next_fire_fresh(
     assert _outcome_of_a_retrieval_fire(db) == "fresh"
 
 
+def test_the_warm_also_covers_the_stale_sidecar_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production shape, which the missing-sidecar case is not.
+
+    A session-first fire usually finds a sidecar that *exists* and is stale:
+    the previous session's Stop hook ingested beliefs, so the generation
+    stamp moved. Whether the warm then pays an `incremental` or a
+    `full_rebuild` is not the contract — the contract is that the fire after
+    it is `fresh`. Asserted here without pinning which of the two the warm
+    paid, because #1199's incremental path decides that and is out of scope.
+    """
+    from aelfrice.sidecar_warm import warm_sidecar
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    assert warm_sidecar() == "full_rebuild"
+
+    # A sibling write between sessions: the stamp moves, the blob stays.
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk("L4", "a belief written between sessions"))
+    finally:
+        store.close()
+    assert _sidecar(db).exists()
+    assert _outcome_of_a_retrieval_fire(db) != "fresh", (
+        "the store mutation did not stale the sidecar, so this test is "
+        "measuring the same thing as the missing-sidecar case"
+    )
+
+    # Re-stale it the same way, then warm rather than fire.
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk("L5", "and another one between sessions"))
+    finally:
+        store.close()
+
+    assert warm_sidecar() in {"incremental", "full_rebuild"}
+    assert _outcome_of_a_retrieval_fire(db) == "fresh"
+
+
 # ---- AC4: failure is silent-safe ---------------------------------------
 
 
