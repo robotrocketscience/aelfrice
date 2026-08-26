@@ -8,7 +8,10 @@ Acceptance-criteria coverage from `docs/design/search_tool_hook.md
         `test_random_garbage_never_fires`
 - AC2 — per-command parser tests below
 - AC4 — `test_no_fall_through_to_arbitrary_bash`
-- AC5 — `test_per_turn_fire_cap_holds`
+- AC5 — `test_per_turn_fire_cap_holds`. In-process, so it can only
+        show the decision logic; the cap's substrate is cross-process
+        and cross-session by nature, and the assertions that bind it
+        live in `test_search_tool_hook_bash_cap_1522.py` (#1522).
 - AC6 — `test_bash_block_carries_source_attribute`,
         `test_grep_block_unchanged_no_source_attribute`
 
@@ -29,7 +32,6 @@ from aelfrice.hook_search_tool import (
     BASH_FIRE_CAP_PER_TURN,
     _extract_bash_query,
     _parse_bash_command,
-    _reset_bash_fire_state,
     main,
 )
 from aelfrice.session_ring import SESSION_RING_FILENAME
@@ -220,7 +222,6 @@ def test_unknown_tool_name_silent_skip() -> None:
 
 def test_per_turn_fire_cap_holds() -> None:
     """3 fires within one session emit blocks; the 4th silent-skips."""
-    _reset_bash_fire_state()
     fired_count = 0
     for i in range(BASH_FIRE_CAP_PER_TURN + 2):
         out = _run_hook(_payload_bash(
@@ -235,8 +236,16 @@ def test_per_turn_fire_cap_holds() -> None:
 
 
 def test_fire_cap_independent_per_session() -> None:
-    """Two distinct session_ids each get the full cap."""
-    _reset_bash_fire_state()
+    """Two distinct session_ids each get the full cap.
+
+    Before #1522 this passed for the wrong reason twice over: against a
+    process-global counter it was keyed per session anyway, and against
+    a single counter on the ring record session B's first fire simply
+    zeroed session A's — a clobber, read here as independence. It binds
+    now because the ring keys the count per session; the interleaved
+    form that tells independence from clobbering apart needs separate
+    processes and lives in `test_search_tool_hook_bash_cap_1522.py`.
+    """
     for sid in ("session-A", "session-B"):
         for i in range(BASH_FIRE_CAP_PER_TURN):
             out = _run_hook(_payload_bash(
@@ -249,7 +258,6 @@ def test_fire_cap_independent_per_session() -> None:
 
 
 def test_bash_block_carries_source_attribute() -> None:
-    _reset_bash_fire_state()
     out = _run_hook(_payload_bash("rg searchterm src/", session_id="src-test"))
     assert out
     envelope = cast(dict[str, object], json.loads(out))
@@ -321,9 +329,13 @@ def _hook_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def _reset_state(
     _hook_db: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reset both fire-cap layers between tests: the process-local map
-    and the on-disk session ring (#1522)."""
+    """Point the fire cap at a throwaway ring and clear it (#1522).
+
+    The cap's only state is the session ring beside the store, so a
+    fresh ring per test is the whole reset. Without the env var
+    `db_path()` resolves to the contributor's own repo store and these
+    tests would count fires against a live session's budget.
+    """
     monkeypatch.setenv("AELFRICE_DB", str(_hook_db))
     ring = _hook_db.parent / SESSION_RING_FILENAME
     ring.unlink(missing_ok=True)
-    _reset_bash_fire_state()

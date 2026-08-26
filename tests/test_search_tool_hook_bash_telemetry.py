@@ -23,7 +23,6 @@ import pytest
 from aelfrice.hook_search_tool import (
     TELEMETRY_RING_CAP,
     _append_telemetry,
-    _reset_bash_fire_state,
     read_telemetry,
 )
 
@@ -191,9 +190,7 @@ def test_hook_writes_telemetry_to_db_adjacent_path(
     We monkeypatch AELFRICE_DB so db_path() returns a path under tmp_path.
     The telemetry file must appear at <db_parent>/telemetry/search_tool_hook.jsonl.
     """
-    from aelfrice.hook_search_tool import main, _reset_bash_fire_state
-
-    _reset_bash_fire_state()
+    from aelfrice.hook_search_tool import main
 
     # Create a fake DB file so the "not yet onboarded" guard doesn't fire.
     db_dir = tmp_path / "aelfrice"
@@ -212,5 +209,3 @@ def test_hook_writes_telemetry_to_db_adjacent_path(
     # We just verify no crash and that read_telemetry is importable.
     rc = main(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-
-    _reset_bash_fire_state()

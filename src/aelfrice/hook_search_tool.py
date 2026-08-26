@@ -72,10 +72,10 @@ _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 BASH_INJECTED_TOKEN_BUDGET: Final[int] = 300
 BASH_INJECTED_L1_LIMIT: Final[int] = 5
 
-# Per-turn fire cap. State lives in the session ring, keyed by
-# session_id and reset when the UserPromptSubmit hook stamps a new turn
-# (#1522). Prevents pipeline storms (e.g. a `for` loop running `rg` ten
-# times). Spec § Per-turn fire cap.
+# Per-turn fire cap. State lives in the session ring's per-session Bash
+# map, and resets when the UserPromptSubmit hook stamps a new turn for
+# that session (#1522). Prevents pipeline storms (e.g. a `for` loop
+# running `rg` ten times). Spec § Per-turn fire cap.
 BASH_FIRE_CAP_PER_TURN: Final[int] = 3
 
 # Truncated `cmd` attribute on the emitted block. Keeps the
@@ -142,16 +142,6 @@ _BASH_ALLOWLIST: Final[dict[str, frozenset[str]]] = {
     "fd":       _FD_FLAGS_WITH_ARG,
     "fdfind":   _FD_FLAGS_WITH_ARG,
 }
-
-# Same-process fire counter, keyed by (session_id, turn_id). The
-# cross-process counter is the session ring (#1522) — this hook is a
-# `"type": "command"` hook, so the host spawns one process per fire and
-# this dict is empty at the start of every deployed fire. It is kept
-# for hosts that drive `main()` in a single process, and carries
-# turn_id in its key so it resets on a turn boundary exactly as the
-# ring counter does. Not thread-safe; the hook process is short-lived
-# and single-threaded by the host's contract.
-_BASH_FIRE_STATE: dict[tuple[str, int | None], int] = {}
 
 
 def _is_abort_token(token: str) -> bool:
@@ -351,75 +341,68 @@ def _extract_bash_query(
     return fts5_query, cmd_name, truncated
 
 
-def _read_bash_ring_state(session_id: str | None) -> tuple[int | None, int]:
-    """Return `(turn_id, fires)` from the session ring. Fail-soft.
+def _read_bash_ring_fires(session_id: str | None) -> int:
+    """Return this session's fire count for the current turn. Fail-soft.
 
-    `(None, 0)` means "the ring has nothing to say" — no session_id, an
-    in-memory DB, an absent / cross-session / malformed ring, or an
-    import failure on a partial install. Every one of those degrades to
-    "no cap", never to "cap reached": a hook that suppressed retrieval
-    because it could not read a file would be a worse defect than the
-    unbounded firing this cap exists to bound.
+    `0` means "the ring has nothing to say" — no session_id, an
+    in-memory DB, an absent / malformed ring, no record for this
+    session yet, or an import failure on a partial install. Every one of
+    those degrades to "no cap", never to "cap reached": a hook that
+    suppressed retrieval because it could not read a file would be a
+    worse defect than the unbounded firing this cap exists to bound.
     """
     if not session_id:
-        return (None, 0)
+        return 0
     try:
         from aelfrice.session_ring import (  # noqa: PLC0415
             read_bash_fire_state as _read_bash_fire_state,
         )
         state = _read_bash_fire_state(session_id)
     except Exception:
-        return (None, 0)
-    turn_id = state.get("turn_id")
+        return 0
     fires = state.get("fires")
-    if not isinstance(turn_id, int) or not isinstance(fires, int):
-        return (None, 0)
-    return (turn_id, fires)
+    if not isinstance(fires, int) or isinstance(fires, bool) or fires < 0:
+        return 0
+    return fires
 
 
 def _bash_fire_cap_reached(session_id: str | None) -> bool:
     """Return True if `session_id` has hit BASH_FIRE_CAP_PER_TURN
     within the current turn.
 
-    The authoritative counter lives in the session ring (#1522): this
-    hook is registered as a `"type": "command"` hook, so the host
-    spawns one OS process per fire and a process-global dict is empty
-    on every fire. `_BASH_FIRE_STATE` is kept as a same-process layer
-    for hosts that call `main()` in a loop, keyed by turn so it cannot
-    outlive the turn it counted either.
+    The counter lives in the session ring (#1522), keyed by session_id
+    inside it. It cannot be a module-level dict: this hook is registered
+    as a `"type": "command"` hook, so the host spawns one OS process per
+    fire and a process-global counter is empty on every one of them.
+    Nor can it be a plain field on the ring record, which is one record
+    per repo checkout — every git worktree of a repo shares one ring
+    file, so a neighbouring session's fire would zero this session's
+    count.
 
-    A session_id of `None` (missing from payload) has no cross-process
-    substrate at all and falls back to the process layer alone.
+    A `session_id` of `None` (missing from the payload) has no
+    substrate to count in and is therefore uncapped. That is the
+    fail-soft direction, and it already described the deployed
+    behaviour: the process-global counter it replaces was empty on
+    every fire regardless of session_id.
     """
-    turn_id, ring_fires = _read_bash_ring_state(session_id)
-    key = (session_id or "<no-session>", turn_id)
-    count = max(_BASH_FIRE_STATE.get(key, 0), ring_fires)
-    return count >= BASH_FIRE_CAP_PER_TURN
+    return _read_bash_ring_fires(session_id) >= BASH_FIRE_CAP_PER_TURN
 
 
 def _record_bash_fire(session_id: str | None) -> None:
-    """Count one fire in the ring and in the process-local layer."""
-    recorded: dict[str, int] = {}
-    if session_id:
-        try:
-            from aelfrice.session_ring import (  # noqa: PLC0415
-                record_bash_fire as _ring_record_bash_fire,
-            )
-            recorded = _ring_record_bash_fire(session_id)
-        except Exception:
-            recorded = {}
-    turn_id = recorded.get("turn_id")
-    key = (session_id or "<no-session>", turn_id)
-    _BASH_FIRE_STATE[key] = max(
-        _BASH_FIRE_STATE.get(key, 0) + 1, recorded.get("fires", 0),
-    )
+    """Count one retrieval-performing fire against this session's budget.
 
-
-def _reset_bash_fire_state() -> None:
-    """Test-only helper. Clears the process-local layer only — the ring
-    is per-session on disk and a test that needs it clean points
-    `AELFRICE_DB` at a fresh path. Not part of the public API."""
-    _BASH_FIRE_STATE.clear()
+    Fail-soft: a ring that cannot be written leaves the count where it
+    was, which costs an uncapped lane, never a wrongly suppressed one.
+    """
+    if not session_id:
+        return
+    try:
+        from aelfrice.session_ring import (  # noqa: PLC0415
+            record_bash_fire as _ring_record_bash_fire,
+        )
+        _ring_record_bash_fire(session_id)
+    except Exception:
+        return
 
 
 # --- Telemetry (v1.5.0 #155 AC3 prerequisite) ----------------------------
