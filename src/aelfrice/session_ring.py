@@ -1085,8 +1085,8 @@ def stamp_bash_turn(
 
     Called once per turn from the ``UserPromptSubmit`` hook — the only
     hook the host guarantees fires exactly once per turn. It bumps
-    ``bash_turn_id`` and nothing else; the fire count is *not* zeroed
-    here. :func:`read_bash_fire_state` reports 0 fires as soon as the
+    this session's ``turn_id`` and nothing else; the fire count is
+    *not* zeroed here. :func:`read_bash_fire_state` reports 0 fires as soon as the
     stamped turn and the counted turn disagree, so the reset is a
     consequence of the comparison rather than a second write that a
     crash between the two could skip.
