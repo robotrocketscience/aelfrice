@@ -332,9 +332,13 @@ def _rotation_marker(
     The scan parses every row because `first_ts`/`last_ts` are a true
     min/max — concurrent hook processes append to this file, so taking
     the first and last LINE instead would be an ordering assumption
-    rather than a measurement. A byte-oriented newline count over the
-    same file runs in 5.4 ms but yields only the row count, which is why
-    it was not used.
+    rather than a measurement. A byte-oriented newline count is roughly
+    an order of magnitude cheaper — 3.7 ms against 31.2 ms over a
+    synthetic 10.00 MiB file of 9,939 rows, medians of 7 — but it yields
+    only the row count, which is why it was not used. Both absolutes
+    track row CONTENT, not just file size, so they move with the corpus
+    as well as with the cap; the order of magnitude between them is the
+    part that holds.
     """
     scan = _scan_audit_file(audit_path)
     if scan.marker_present:
@@ -437,7 +441,9 @@ def audit_window(paths: Iterable[Path]) -> AuditWindow:
       destroyed at some earlier rollover);
     * a `.1` is present but the live file carries no marker — the
       pre-#1528 pair, where one rollover discarded nothing and a second
-      discarded the first archive, and the files cannot say which;
+      discarded the first archive, and the files cannot say which. A `.1`
+      counts as present when it is on disk beside a live path handed in,
+      whether or not the caller also handed in the `.1` itself;
     * a `.1` is present but no live file was handed in at all. Each file
       states what had been lost when it was CREATED, so a set holding only
       archives cannot see the loss its own rotation caused.
@@ -454,6 +460,15 @@ def audit_window(paths: Iterable[Path]) -> AuditWindow:
         is_rotated = path.name.endswith(AUDIT_ROTATED_SUFFIX)
         if is_rotated:
             rotated_present = rotated_present or path.is_file()
+        else:
+            # Probe the sibling rather than infer "never rotated" from the
+            # caller's argument list. Handing in the live path alone is the
+            # documented single-file invocation, and every log already
+            # rotated in the wild is unmarked -- so inferring from the
+            # arguments reports the pre-#1528 population, the one this
+            # module exists for, as exactly complete.
+            sibling = path.with_name(path.name + AUDIT_ROTATED_SUFFIX)
+            rotated_present = rotated_present or sibling.is_file()
         if not path.is_file():
             continue
         try:

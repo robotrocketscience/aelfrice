@@ -410,12 +410,19 @@ def test_rotation_at_max_bytes(
     # 1000 → 1500 when #1016 enlarged the _FRAMING_HEADER, then 1500 →
     # 2048 when #1528 added the rotation marker.
     #
-    # Measured on this branch: one fire 1283 B, two fires 2557 B, marker
-    # 275 B. The cap has to clear THREE bounds, and the third is new: the
-    # post-rotation live file is marker + fire-3 = 1558 B, so 1500 made
+    # Measured on this branch: one fire ~1283 B, two fires ~2557 B,
+    # marker 275 B. The fire sizes are approximate BY NATURE, not by
+    # sloppiness: every row carries `latency_ms`, a wall-clock integer
+    # (hook.py:862), so the digit count moves a few bytes run to run.
+    # Do not "correct" them to a fresh exact reading — the next reading
+    # will differ again.
+    #
+    # The cap has to clear THREE bounds, and the third is new: the
+    # post-rotation live file is marker + fire-3, ~1555 B, so 1500 made
     # fire-3 rotate again and left a live file holding a marker and no
-    # fire at all. 2048 sits 490 B above that floor and 509 B below the
-    # two-fire ceiling.
+    # fire at all. 2048 sits ~490 B above that floor and ~510 B below
+    # the two-fire ceiling — margins wide enough that the byte-level
+    # jitter cannot reorder them, which is the property the test needs.
     (tmp_path / ".aelfrice.toml").write_text(
         "[hook_audit]\nmax_bytes = 2048\n", encoding="utf-8",
     )
@@ -809,6 +816,44 @@ def test_a_never_rotated_log_is_complete_not_unknown(tmp_path: Path) -> None:
     assert window.truncated is False
     assert window.discarded_unknown is False
     assert window.complete is True
+
+
+def test_an_unmarked_live_log_handed_alone_still_sees_its_archive(
+    tmp_path: Path,
+) -> None:
+    """The `.1` bounds the window whether or not the caller passed it.
+
+    `benchmarks/sidecar_rebuild_rate.py` documents the single-file
+    invocation, and every log already rotated in the wild is unmarked. So
+    the population this module exists for reaches `audit_window` as one
+    live path with a 10 MiB archive sitting beside it on disk. Inferring
+    "never rotated" from the argument list reports exactly that population
+    as complete — the same unearned claim as the pair above, reached by a
+    different route.
+
+    Paired with `test_a_never_rotated_log_is_complete_not_unknown`: same
+    single-path call, and the only difference is whether the sibling
+    exists, so neither test can pass by ignoring the probe.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    rotated.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3)),
+        encoding="utf-8",
+    )
+    audit_path.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3, 6)),
+        encoding="utf-8",
+    )
+
+    window = audit_window([audit_path])
+
+    assert window.rotated_present is True
+    assert window.discarded_unknown is True
+    assert window.complete is False
+    # The archive was not handed in, so its rows are not counted. The
+    # window is bounded, not measured — which is the whole claim.
+    assert window.records == 3
 
 
 def test_rotating_a_pre_1528_log_records_the_archive_it_destroys(
