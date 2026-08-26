@@ -541,6 +541,27 @@ def test_a_marker_quoted_as_inline_code_publishes_nothing(repo: Path) -> None:
     assert cdf.parse_markers(repo / "CHANGELOG" / "v9.md", (repo / "CHANGELOG" / "v9.md").read_text()) == []
 
 
+def test_a_multiline_code_span_does_not_shift_the_reported_line(
+    repo: Path,
+) -> None:
+    """Blanking a citation must keep its newlines.
+
+    A `` ` `` span straddles lines all over `src/`, and blanking one to spaces
+    ate its newlines: every marker after it reported two lines early, which
+    sends the reader -- and the `::error` annotation -- to the wrong place.
+    """
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** A span `over\ntwo lines` and more text.\n"
+        "\n"
+        "- **Second.** The cap is 20.\n"
+        f"  {_marker('benchmarks/p.py#cap', 20)}\n"
+    )
+    text = (repo / "CHANGELOG" / "v9.md").read_text()
+    markers = cdf.parse_markers(repo / "CHANGELOG" / "v9.md", text)
+    assert [m.line for m in markers] == [5]
+    assert text.splitlines()[4].strip().startswith("<!-- derived:")
+
+
 def test_an_unmarked_figure_beside_a_marked_one_stays_grandfathered(
     repo: Path,
 ) -> None:

@@ -164,6 +164,7 @@ OVERCLAIM_RES: tuple[re.Pattern[str], ...] = (
 # Double-backtick spans first: a citation of the sentence has to be able to
 # contain a backtick, because the sentence itself names a script in code font.
 _INLINE_CODE_RE = re.compile(r"``.*?``|`[^`]*`", re.S)
+_NON_NEWLINE_RE = re.compile(r"[^\n]")
 
 
 def _uncited(text: str) -> str:
@@ -180,7 +181,10 @@ def _uncited_inplace(text: str) -> str:
     CHANGELOG entry that *introduces* the marker was itself parsed as carrying
     one, so documenting the format published a figure.
     """
-    return _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), text)
+    # Newlines are kept, not blanked with the rest. A code span can straddle
+    # lines, and eating its newlines shifts every reported line number after it
+    # -- `src/aelfrice/hook.py` markers came back two lines early.
+    return _INLINE_CODE_RE.sub(lambda m: _NON_NEWLINE_RE.sub(" ", m.group(0)), text)
 
 
 # Figure extraction. Applied only inside an entry that carries an overclaim
