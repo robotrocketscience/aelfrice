@@ -435,13 +435,61 @@ unit-tested per-command (§ Test plan).
 
 The Bash matcher introduces a fire cap of **3 fires per session
 turn** to prevent pipeline storms (e.g., a `for` loop that runs
-`rg` ten times). State is stored in a per-process counter keyed
-by `session_id` from the hook payload. Once the cap is reached
-the matcher silent-skips for the rest of the turn.
+`rg` ten times). Once the cap is reached the matcher silent-skips
+for the rest of the turn.
 
 The 3-cap is conservative; can be raised after telemetry. The
 cap does NOT apply to the existing `Grep|Glob` matcher (which
 fires once per direct tool call and rarely loops).
+
+**Where the count lives (#1522).** In the session ring
+(`session_ring.py`), under a `bash` map keyed by `session_id`:
+`{turn_id, fires, fires_turn_id, seq}` per session. Two earlier
+shapes are both wrong and both shipped or nearly shipped:
+
+- *A module-level counter* — the shape v1.5.0 shipped and the
+  defect #1522 reports. `aelf-search-tool-hook` is registered as
+  a `"type": "command"` hook, so the host spawns one OS process
+  per fire; the counter was empty at the start of every one of
+  them and the cap could never be reached in any deployed
+  configuration.
+- *A plain field on the ring record* — the ring is one record per
+  repo checkout, keyed by a single `session_id`, and a write from
+  a different session replaces it wholesale (§ #740). Every git
+  worktree of a repo shares one ring file, so a single fire from
+  a concurrent session would zero the count and hand the first
+  session an unbounded budget.
+
+Hence the per-session map, which survives the record reset, and
+which is bounded to `BASH_STATE_MAX_SESSIONS` entries
+(least-recently-touched evicted first) so one file serving a
+machine's worth of sessions cannot grow without limit.
+
+`UserPromptSubmit` stamps the turn boundary — it is the only
+hook the host guarantees fires exactly once per turn — by bumping
+that session's `turn_id`. A reader reports 0 fires as soon as
+`fires_turn_id` and `turn_id` disagree, so the per-turn reset is
+a consequence of the comparison rather than a second write that a
+crash between the two could skip.
+
+Every failure of that substrate (ring absent, malformed,
+unwritable, no record yet, no `session_id` in the payload)
+degrades to **no cap**, never to "cap reached": a hook that
+suppressed retrieval because it could not read a file would be a
+worse defect than the unbounded firing the cap bounds. Two
+consequences worth stating: a payload with no `session_id` is
+uncapped, and the read is lock-free, so Bash calls dispatched in
+parallel can each see the same count and the cap is exceedable by
+that parallel width. Both are bounded overshoots in the
+fail-soft direction.
+
+The turn, not the cap, is the part that has aged. `UserPromptSubmit`
+fires once, when the user submits a prompt, and not again for any
+nested work the assistant does inside that turn. A long turn that
+fans its work out into several tool-heavy helpers therefore spends
+the whole budget inside the first of them. That is "per turn" as
+specified, but a turn is far longer now than when the cap was
+written.
 
 ### Token budget
 
