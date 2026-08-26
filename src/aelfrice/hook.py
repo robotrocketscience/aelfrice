@@ -1063,6 +1063,15 @@ def user_prompt_submit(
         if prompt is None:
             return 0
         session_id = _extract_session_id(raw)
+        # #1522: stamp the turn boundary the PreToolUse search hook's
+        # per-turn Bash fire cap resets on. This hook is the only one
+        # guaranteed to fire exactly once per turn. Fail-soft.
+        try:
+            from aelfrice.session_ring import stamp_bash_turn  # noqa: PLC0415
+
+            stamp_bash_turn(session_id, stderr=serr)
+        except Exception:
+            pass
         # #887: thread the UserPromptSubmit payload's cwd through to
         # the session-start builder so the <recent-work> sub-block
         # resolves against the project the user is in, not the hook

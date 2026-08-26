@@ -72,9 +72,10 @@ _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 BASH_INJECTED_TOKEN_BUDGET: Final[int] = 300
 BASH_INJECTED_L1_LIMIT: Final[int] = 5
 
-# Per-turn fire cap. State is keyed by session_id and reset when a
-# new session_id appears. Prevents pipeline storms (e.g. a `for` loop
-# running `rg` ten times). Spec § Per-turn fire cap.
+# Per-turn fire cap. State lives in the session ring, keyed by
+# session_id and reset when the UserPromptSubmit hook stamps a new turn
+# (#1522). Prevents pipeline storms (e.g. a `for` loop running `rg` ten
+# times). Spec § Per-turn fire cap.
 BASH_FIRE_CAP_PER_TURN: Final[int] = 3
 
 # Truncated `cmd` attribute on the emitted block. Keeps the
@@ -142,10 +143,15 @@ _BASH_ALLOWLIST: Final[dict[str, frozenset[str]]] = {
     "fdfind":   _FD_FLAGS_WITH_ARG,
 }
 
-# Per-process per-turn fire counter. Keyed by session_id; on a new
-# session_id, the counter resets. Not thread-safe; the hook process
-# is short-lived and single-threaded by Claude Code's contract.
-_BASH_FIRE_STATE: dict[str, int] = {}
+# Same-process fire counter, keyed by (session_id, turn_id). The
+# cross-process counter is the session ring (#1522) — this hook is a
+# `"type": "command"` hook, so the host spawns one process per fire and
+# this dict is empty at the start of every deployed fire. It is kept
+# for hosts that drive `main()` in a single process, and carries
+# turn_id in its key so it resets on a turn boundary exactly as the
+# ring counter does. Not thread-safe; the hook process is short-lived
+# and single-threaded by the host's contract.
+_BASH_FIRE_STATE: dict[tuple[str, int | None], int] = {}
 
 
 def _is_abort_token(token: str) -> bool:
@@ -345,25 +351,74 @@ def _extract_bash_query(
     return fts5_query, cmd_name, truncated
 
 
-def _bash_fire_cap_reached(session_id: str | None) -> bool:
-    """Return True if `session_id` has hit BASH_FIRE_CAP_PER_TURN.
+def _read_bash_ring_state(session_id: str | None) -> tuple[int | None, int]:
+    """Return `(turn_id, fires)` from the session ring. Fail-soft.
 
-    A session_id of `None` (missing from payload) collapses to a
-    sentinel key and shares the cap with other untagged calls in
-    the same process. Conservative: caps still apply.
+    `(None, 0)` means "the ring has nothing to say" — no session_id, an
+    in-memory DB, an absent / cross-session / malformed ring, or an
+    import failure on a partial install. Every one of those degrades to
+    "no cap", never to "cap reached": a hook that suppressed retrieval
+    because it could not read a file would be a worse defect than the
+    unbounded firing this cap exists to bound.
     """
-    key = session_id or "<no-session>"
-    count = _BASH_FIRE_STATE.get(key, 0)
+    if not session_id:
+        return (None, 0)
+    try:
+        from aelfrice.session_ring import (  # noqa: PLC0415
+            read_bash_fire_state as _read_bash_fire_state,
+        )
+        state = _read_bash_fire_state(session_id)
+    except Exception:
+        return (None, 0)
+    turn_id = state.get("turn_id")
+    fires = state.get("fires")
+    if not isinstance(turn_id, int) or not isinstance(fires, int):
+        return (None, 0)
+    return (turn_id, fires)
+
+
+def _bash_fire_cap_reached(session_id: str | None) -> bool:
+    """Return True if `session_id` has hit BASH_FIRE_CAP_PER_TURN
+    within the current turn.
+
+    The authoritative counter lives in the session ring (#1522): this
+    hook is registered as a `"type": "command"` hook, so the host
+    spawns one OS process per fire and a process-global dict is empty
+    on every fire. `_BASH_FIRE_STATE` is kept as a same-process layer
+    for hosts that call `main()` in a loop, keyed by turn so it cannot
+    outlive the turn it counted either.
+
+    A session_id of `None` (missing from payload) has no cross-process
+    substrate at all and falls back to the process layer alone.
+    """
+    turn_id, ring_fires = _read_bash_ring_state(session_id)
+    key = (session_id or "<no-session>", turn_id)
+    count = max(_BASH_FIRE_STATE.get(key, 0), ring_fires)
     return count >= BASH_FIRE_CAP_PER_TURN
 
 
 def _record_bash_fire(session_id: str | None) -> None:
-    key = session_id or "<no-session>"
-    _BASH_FIRE_STATE[key] = _BASH_FIRE_STATE.get(key, 0) + 1
+    """Count one fire in the ring and in the process-local layer."""
+    recorded: dict[str, int] = {}
+    if session_id:
+        try:
+            from aelfrice.session_ring import (  # noqa: PLC0415
+                record_bash_fire as _ring_record_bash_fire,
+            )
+            recorded = _ring_record_bash_fire(session_id)
+        except Exception:
+            recorded = {}
+    turn_id = recorded.get("turn_id")
+    key = (session_id or "<no-session>", turn_id)
+    _BASH_FIRE_STATE[key] = max(
+        _BASH_FIRE_STATE.get(key, 0) + 1, recorded.get("fires", 0),
+    )
 
 
 def _reset_bash_fire_state() -> None:
-    """Test-only helper. Not part of the public API."""
+    """Test-only helper. Clears the process-local layer only — the ring
+    is per-session on disk and a test that needs it clean points
+    `AELFRICE_DB` at a fresh path. Not part of the public API."""
     _BASH_FIRE_STATE.clear()
 
 
@@ -671,10 +726,19 @@ def _do_search(
         # only to this lane; Grep|Glob fires once per direct tool
         # call and is not capped.
         t0 = time.perf_counter()
-        if _bash_fire_cap_reached(session_id):
-            return
+        # Extraction first, cap second (#1522). The cap now consults the
+        # session ring, and importing `session_ring` pulls `db_paths` ->
+        # `store`: +17.6 ms median on a whole hook process. Ordered the
+        # other way that landed on every Bash call in the session, the
+        # overwhelming majority of which are not searches at all and
+        # abort inside `_extract_bash_query` — which is pure regex over
+        # the command string and imports nothing. So only a call that
+        # would otherwise perform a full retrieval pays to ask whether
+        # it may.
         bash_extracted = _extract_bash_query(payload)
         if bash_extracted is None:
+            return
+        if _bash_fire_cap_reached(session_id):
             return
         query, cmd_name, raw_cmd = bash_extracted
         bash_source = (cmd_name, raw_cmd)

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -31,6 +32,8 @@ from aelfrice.hook_search_tool import (
     _reset_bash_fire_state,
     main,
 )
+from aelfrice.session_ring import SESSION_RING_FILENAME
+from aelfrice.store import MemoryStore
 
 
 def _payload_bash(command: str, session_id: str | None = "s1") -> str:
@@ -300,7 +303,27 @@ def test_extract_bash_query_returns_none_for_non_bash() -> None:
     assert _extract_bash_query(payload) is None
 
 
+@pytest.fixture(scope="module")
+def _hook_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A real, empty store in a throwaway directory.
+
+    Without it `db_path()` resolves to the contributor's own repo store
+    and the session ring beside it — which the fire cap now writes to
+    (#1522), so the suite would reset a live session's dedup ring. Built
+    once per module: opening a store replays the whole schema battery.
+    """
+    db = tmp_path_factory.mktemp("bash_hook_store") / "memory.db"
+    MemoryStore(str(db)).close()
+    return db
+
+
 @pytest.fixture(autouse=True)
-def _reset_state() -> None:
-    """Reset the per-process fire-state map between tests."""
+def _reset_state(
+    _hook_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reset both fire-cap layers between tests: the process-local map
+    and the on-disk session ring (#1522)."""
+    monkeypatch.setenv("AELFRICE_DB", str(_hook_db))
+    ring = _hook_db.parent / SESSION_RING_FILENAME
+    ring.unlink(missing_ok=True)
     _reset_bash_fire_state()
