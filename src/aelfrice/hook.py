@@ -1644,6 +1644,37 @@ def user_prompt_submit(
                 sidecar_outcome=_last_sidecar_outcome(),
                 stderr=serr,
             )
+        else:
+            # #1528: retrieval RAN and returned zero hits, and the shape gate
+            # did not fire. Neither branch above matches, so before this the
+            # fire wrote no audit row at all — a silent hole in exactly the
+            # population an analysis wants most, the prompts where retrieval
+            # did full work and found nothing. Every rate derived from this
+            # log (hit rate, fires per session, #1407's cold rate) had that
+            # class missing from its denominator with nothing in the file
+            # indicating the absence.
+            #
+            # Same shape as its siblings, `n_beliefs: 0` — a measured zero
+            # rather than a gap. `rendered_block` is "" because nothing was
+            # rendered: there were no hits to format. Nothing else changes on
+            # this path; the row is the whole edit.
+            latency_ms = int((time.monotonic() - retrieve_start) * 1000)
+            _write_hook_audit_record(
+                hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                prompt=prompt,
+                rendered_block="",
+                n_beliefs=0,
+                n_locked=0,
+                session_id=session_id,
+                beliefs=[],
+                latency_ms=latency_ms,
+                order_policy=_audit_order_policy(),
+                # Carried for the same reason the gate-skip branch carries
+                # it: a zero-hit fire can still have paid a full rebuild,
+                # and that is the fire #1380 is priced on.
+                sidecar_outcome=_last_sidecar_outcome(),
+                stderr=serr,
+            )
         # #980 trigger-driven phantom generation: surface a
         # phantom-opportunity note when a deterministic trigger fires and
         # the opt-in flag is on. Skipped on gate_skip turns — a prompt the

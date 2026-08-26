@@ -204,9 +204,18 @@ def test_user_prompt_submit_audit_records_locked_count(
     assert rec["n_beliefs"] >= 1
 
 
-def test_user_prompt_submit_no_audit_when_no_hits(
+def test_user_prompt_submit_audits_zero_hit_fire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """#1528: a fire where retrieval ran and returned nothing writes a row.
+
+    Before #1528 this test asserted the opposite — that the file stayed
+    empty. That absence was the defect: the audit write lived inside
+    `if hits:` and `elif gate_skip:`, so the one population an analysis
+    most wants (retrieval did full work and found nothing) matched neither
+    branch and left no trace. Every rate derived from the log had that
+    class missing from its denominator with nothing indicating the gap.
+    """
     db = tmp_path / "memory.db"
     _seed_db(db, [_mk("F1", "totally unrelated content")])
     _set_db(monkeypatch, db)
@@ -216,7 +225,22 @@ def test_user_prompt_submit_no_audit_when_no_hits(
     sout = io.StringIO()
     user_prompt_submit(stdin=sin, stdout=sout)
     audit_path = _audit_path_for_db(db)
-    assert not audit_path.exists() or read_hook_audit(audit_path) == []
+    records = read_hook_audit(audit_path)
+    assert len(records) == 1, records
+    rec = records[0]
+    assert rec["hook"] == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    # A MEASURED zero, not a gap: the count is present and it is 0.
+    assert rec["n_beliefs"] == 0
+    assert rec["n_locked"] == 0
+    assert rec["beliefs"] == []
+    # Not the gate-skip population — the shape gate did not fire here, and
+    # conflating the two would put a full-retrieval fire in the benchmark's
+    # permanently-excluded bucket.
+    assert "prompt_shape_gate_skip" not in rec or (
+        rec["prompt_shape_gate_skip"] is None
+    )
+    # Nothing was rendered, so the block is empty rather than absent.
+    assert rec["rendered_block"] == ""
 
 
 def test_prompt_shape_gate_audit_records_skip_reason(
