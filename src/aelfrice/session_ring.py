@@ -268,6 +268,17 @@ def exclusive_file_lock(
                 pass
 
 
+def _coerce_counter(value: Any) -> int:
+    """Return ``value`` when it is a non-negative int, else 0.
+
+    `bool` is excluded explicitly: it is an `int` subclass, and a ring
+    field that arrived as `true` must read as the default 0, not as 1.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return 0
+    return value
+
+
 def _normalize_for_session(
     data: dict[str, Any], session_id: str, ring_max: int
 ) -> dict[str, Any]:
@@ -300,6 +311,9 @@ def _normalize_for_session(
             "phantom_init": False,
             "promotion_fires": 0,
             "promotion_dedup": [],
+            "bash_turn_id": 0,
+            "bash_fires": 0,
+            "bash_fires_turn_id": 0,
         }
     ring = data.get("ring")
     if not isinstance(ring, list):
@@ -377,6 +391,16 @@ def _normalize_for_session(
         if isinstance(promotion_dedup_raw, list)
         else []
     )
+    # Bash per-turn fire-cap state (#1522) — the turn counter the
+    # UserPromptSubmit hook stamps, the fire count inside a turn, and the
+    # turn that count belongs to. Three fields rather than two: the count
+    # has to name its own turn so a reader can tell "3 fires this turn"
+    # from "3 fires two turns ago", which is what makes the cap reset on a
+    # turn boundary instead of becoming a permanent per-session cap.
+    # Default 0 for pre-#1522 rings, no migration.
+    bash_turn_id = _coerce_counter(data.get("bash_turn_id"))
+    bash_fires = _coerce_counter(data.get("bash_fires"))
+    bash_fires_turn_id = _coerce_counter(data.get("bash_fires_turn_id"))
     return {
         "session_id": session_id,
         "ring": [e for e in ring if isinstance(e, dict) and isinstance(e.get("id"), str)],
@@ -392,6 +416,9 @@ def _normalize_for_session(
         "phantom_init": phantom_init,
         "promotion_fires": promotion_fires,
         "promotion_dedup": promotion_dedup,
+        "bash_turn_id": bash_turn_id,
+        "bash_fires": bash_fires,
+        "bash_fires_turn_id": bash_fires_turn_id,
     }
 
 
@@ -804,7 +831,7 @@ def _locked_phantom_mutate(
         except Exception as exc:
             _warn(
                 stderr,
-                f"session_ring: phantom mutate failed (non-fatal): {exc}",
+                f"session_ring: locked mutate failed (non-fatal): {exc}",
             )
             return False
         finally:
@@ -962,6 +989,87 @@ def read_promotion_state(session_id: str | None) -> dict[str, Any]:
         else []
     )
     return {"promotion_fires": fires, "promotion_dedup": dedup}
+
+
+def stamp_bash_turn(
+    session_id: str | None,
+    *,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Advance the Bash-fire turn boundary for ``session_id`` (#1522).
+
+    Called once per turn from the ``UserPromptSubmit`` hook — the only
+    hook the host guarantees fires exactly once per turn. It bumps
+    ``bash_turn_id`` and nothing else; the fire count is *not* zeroed
+    here. :func:`read_bash_fire_state` reports 0 fires as soon as the
+    stamped turn and the counted turn disagree, so the reset is a
+    consequence of the comparison rather than a second write that a
+    crash between the two could skip.
+
+    Fail-soft: returns False on any error, and a missed stamp costs one
+    turn of a stale cap, never a raised exception in a hook.
+    """
+
+    def _apply(data: dict[str, Any]) -> None:
+        data["bash_turn_id"] = _coerce_counter(data.get("bash_turn_id")) + 1
+
+    return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
+
+
+def record_bash_fire(
+    session_id: str | None,
+    *,
+    stderr: IO[str] | None = None,
+) -> dict[str, int]:
+    """Count one retrieval-performing Bash fire in the current turn (#1522).
+
+    Read-modify-write under the ring's advisory lock, so the count is
+    shared across the one-OS-process-per-fire hook deployment that made
+    the process-global counter in ``hook_search_tool`` unreachable.
+
+    Returns ``{"turn_id": int, "fires": int}`` — the turn the fire was
+    counted in and the new count within it — or ``{}`` when the ring is
+    unavailable (no session_id, in-memory DB, unwritable ring). Callers
+    check the cap *before* calling; this only counts.
+    """
+    captured: dict[str, int] = {}
+
+    def _apply(data: dict[str, Any]) -> None:
+        turn = _coerce_counter(data.get("bash_turn_id"))
+        fires = _coerce_counter(data.get("bash_fires"))
+        if _coerce_counter(data.get("bash_fires_turn_id")) != turn:
+            fires = 0
+        data["bash_fires_turn_id"] = turn
+        data["bash_fires"] = fires + 1
+        captured["turn_id"] = turn
+        captured["fires"] = fires + 1
+
+    if not _locked_phantom_mutate(session_id, _apply, stderr=stderr):
+        return {}
+    return captured
+
+
+def read_bash_fire_state(session_id: str | None) -> dict[str, int]:
+    """Return ``{"turn_id": int, "fires": int}`` for ``session_id`` (#1522).
+
+    ``fires`` is 0 whenever the recorded turn differs from the stamped
+    one, which is what makes the cap per-turn rather than per-session.
+    Read-only and lock-free — the ring is written through
+    ``os.replace``, so a reader never sees a torn file, and the cap
+    check runs ahead of the hook's lazy imports where a lock is not
+    worth its latency.
+
+    Returns ``{}`` when the ring is absent, cross-session or malformed.
+    Callers must read that as "no cap", never as "cap reached".
+    """
+    state = read_ring_state(session_id)
+    if not state:
+        return {}
+    turn = _coerce_counter(state.get("bash_turn_id"))
+    fires = _coerce_counter(state.get("bash_fires"))
+    if _coerce_counter(state.get("bash_fires_turn_id")) != turn:
+        fires = 0
+    return {"turn_id": turn, "fires": fires}
 
 
 def read_ring_state(session_id: str | None) -> dict[str, Any]:
