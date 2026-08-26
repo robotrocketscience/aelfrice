@@ -738,6 +738,8 @@ When you disable the path:
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_BM25F=0`/`1` > explicit Python kwarg `use_bm25f_anchors=<bool>` > TOML `[retrieval] use_bm25f_anchors` > default `true`.
 
+The BM25F path keeps its index in a sidecar file next to the database. The SessionStart hook starts a separate background process that builds the sidecar (#1513). The background process runs before your first prompt. This keeps the build off the first prompt of the session, which is where the audit log showed the cost. The hook does not wait for the background process. A failure of the background process changes nothing: the next prompt builds the index as before. To stop the background process, set `AELF_NO_SIDECAR_WARM=1`.
+
 ### `use_heat_kernel`
 
 Boolean, default `false` since #1162. This key enables the heat-kernel authority-scoring lane (#150).

@@ -477,6 +477,13 @@ def _sandbox_real_home(
         # `aelf setup` integration tests rewriting ~/.aelfrice.
         mp.setenv("HOME", str(home))
         mp.setenv("AELF_NO_UPDATE_CHECK", "1")
+        # #1513, and for the same reason: the SessionStart sidecar warm
+        # spawns a detached interpreter that recomputes `db_path()` for
+        # itself, so no `setattr` in this process can steer it. Off by
+        # default here so the ~100 tests that call `session_start()` do not
+        # each fork a process that opens some other store; the #1513 tests
+        # re-enable it with a function-scoped monkeypatch.
+        mp.setenv("AELF_NO_SIDECAR_WARM", "1")
         for mod_name, attr, relpath in _HOME_PINS:
             target = home / relpath
             if attr in _PRECREATED_SENTINELS:

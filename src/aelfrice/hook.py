@@ -3978,6 +3978,22 @@ def _build_rebuild_block_from_payload(payload: dict[str, object]) -> str:
     )
 
 
+def _spawn_sidecar_warm() -> bool:
+    """Fire the #1513 detached BM25 sidecar warm. Never raises.
+
+    Import is local so a gate-skipped or lane-off process never pays for it
+    (#1351), and the import itself is inside the `try`: the contract this
+    helper owes `session_start` is that a warm which cannot even be reached
+    leaves the hook behaving exactly as it does today.
+    """
+    try:
+        from aelfrice.sidecar_warm import spawn_sidecar_warm  # noqa: PLC0415
+
+        return spawn_sidecar_warm()
+    except Exception:
+        return False
+
+
 def session_start(
     *,
     stdin: IO[str] | None = None,
@@ -4013,6 +4029,10 @@ def session_start(
             file=serr,
         )
         return 0
+    # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
+    # the whole of this hook's own work plus the user's first typing pause
+    # to build in. Never blocks and never raises; see `sidecar_warm`.
+    _spawn_sidecar_warm()
     try:
         # Drain stdin so the hook protocol is honored. We read the
         # session_id (audit cross-reference) and, on a post-compaction
