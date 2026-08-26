@@ -211,6 +211,16 @@ def test_unmarked_figures_are_enumerable(repo: Path, capsys: pytest.CaptureFixtu
     assert "2 unmarked figures" in out
 
 
+def test_a_figure_inside_a_double_backtick_span_is_code_not_a_figure() -> None:
+    """Both paths share one inline-code regex. They did not at first: figure
+    extraction used the single-backtick form and claim detection the
+    double-aware one, so a number quoted inside a citation counted as a
+    published figure in one path and not the other."""
+    assert cdf.extract_figures("- **Entry.** See ``foo 1234 bar`` and 11,508.\n") == [
+        "11,508"
+    ]
+
+
 def test_issue_refs_versions_dates_and_code_are_not_figures() -> None:
     """A false positive here makes the overclaim check unsatisfiable, which is
     the same as deleting it."""

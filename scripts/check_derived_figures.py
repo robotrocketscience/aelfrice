@@ -169,7 +169,7 @@ def _uncited(text: str) -> str:
 # section refs, and the markers themselves.
 _MASKS: tuple[re.Pattern[str], ...] = (
     re.compile(r"<!--.*?-->", re.S),
-    re.compile(r"`[^`]*`"),
+    _INLINE_CODE_RE,
     re.compile(r"\[[^\]]*\]\([^)]*\)"),
     re.compile(r"https?://\S+"),
     re.compile(r"#\d+"),
