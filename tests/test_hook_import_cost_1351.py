@@ -335,3 +335,219 @@ def test_a_gate_skipped_fire_does_not_import_the_numeric_stack(tmp_path) -> None
         "  python -X importtime -c 'import aelfrice.hook'\n"
         "and check for an above-the-gate import inside user_prompt_submit."
     )
+
+
+# ---------------------------------------------------------------------------
+# How many aelfrice modules a gate-skipped fire loads (#1527)
+# ---------------------------------------------------------------------------
+#
+# The test above asks whether the *numeric* stack loads. It went green while a
+# gate-skipped fire still imported 40 aelfrice modules, because the thing it
+# was importing -- `retrieval`, `context_rebuilder`, `hook_search` and the
+# subtree behind them -- is numpy-free since #1351. The skip branch called
+# `_emit_user_prompt_submit_rebuild_log` unconditionally, and that function
+# reached into `context_rebuilder` for `load_rebuilder_config` ABOVE its own
+# `session_id` and `:memory:` early returns. So the fire whose entire purpose
+# was to skip retrieval loaded the retrieval subtree in order to skip it.
+#
+# The counts below are pinned literals, measured on this tree, not a
+# before/after comparison inside one process -- a relative assertion is
+# satisfied trivially by any pair of numbers, and an in-process one cannot see
+# an import that pytest already paid for. They are ceilings rather than
+# equalities so that a further reduction passes and only a regression fails.
+
+_MAX_AELFRICE_MODULES_AT_IMPORT = 18
+"""`import aelfrice.hook` was 35 before #1527; 18 after. Deterministic -- no
+lane resolver runs at import."""
+
+_MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE = 26
+"""The whole fire was 40 before #1527; 26 after. Above the import-time figure
+because the cadence, lifecycle, relevance and sentiment lanes run on a skipped
+fire and legitimately import at their call sites."""
+
+# Every one of these was loaded by a gate-skipped fire before #1527. None of
+# them has anything to do with a fire that does not retrieve.
+_RETRIEVAL_SUBTREE = (
+    "aelfrice.bfs_multihop",
+    "aelfrice.clustering",
+    "aelfrice.compression",
+    "aelfrice.context_rebuilder",
+    "aelfrice.correction",
+    "aelfrice.derivation",
+    "aelfrice.doc_linker",
+    "aelfrice.exploration",
+    "aelfrice.hook_search",
+    "aelfrice.retrieval",
+    "aelfrice.scoring",
+    "aelfrice.triple_extractor",
+)
+
+_MODULE_COUNT_PROBE = '''
+import os
+import sys
+
+# Same env pinning as the probes above: the lane resolvers are env-first, and
+# opening a MemoryStore is a write, so an unpinned run would both change which
+# modules load and mutate the developer's real store.
+for _k in [k for k in os.environ if k.startswith(("AELFRICE_", "AELF_"))]:
+    del os.environ[_k]
+
+_tmp = %(tmp)r
+os.environ["HOME"] = _tmp
+os.environ["AELFRICE_DOTDIR"] = os.path.join(_tmp, ".aelfrice")
+os.environ["AELFRICE_DB"] = os.path.join(_tmp, "memory.db")
+os.environ["AELF_NO_UPDATE_CHECK"] = "1"
+os.chdir(_tmp)
+
+import io
+import json
+import pathlib
+
+
+def _mods():
+    return sorted(
+        m for m in sys.modules
+        if m == "aelfrice" or m.startswith("aelfrice.")
+    )
+
+
+import aelfrice.hook as hook
+
+at_import = _mods()
+print("imports_ok:%%d" %% int(hook._IMPORTS_OK))
+print("n_import:%%d" %% len(at_import))
+rc = hook.user_prompt_submit(
+    stdin=io.StringIO(
+        json.dumps({"prompt": %(prompt)r, "session_id": "s1", "cwd": _tmp})
+    ),
+    stdout=io.StringIO(),
+    stderr=io.StringIO(),
+)
+after = _mods()
+print("n_fire:%%d" %% len(after))
+print("rc:%%d" %% rc)
+
+rows = []
+for _p in sorted(pathlib.Path(_tmp).rglob("*.jsonl")):
+    for _line in _p.read_text(encoding="utf-8").splitlines():
+        if not _line.strip():
+            continue
+        _rec = json.loads(_line)
+        if _rec.get("hook") == "user_prompt_submit":
+            rows.append(_rec)
+print("rows:%%d" %% len(rows))
+print("gate:" + (str(rows[-1].get("prompt_shape_gate_skip") or "") if rows else ""))
+print("modules:" + ",".join(after))
+'''
+
+
+def _run_module_count_probe(tmp_path, prompt: str) -> dict[str, str]:
+    observed = _probe(
+        _MODULE_COUNT_PROBE % {"tmp": str(tmp_path), "prompt": prompt}
+    )
+    out: dict[str, str] = {}
+    for line in observed.splitlines():
+        key, _, value = line.partition(":")
+        out[key] = value
+    return out
+
+
+@pytest.mark.timeout(90)
+def test_a_gate_skipped_fire_does_not_load_the_retrieval_subtree(
+    tmp_path,
+) -> None:
+    """The #1527 gate. A driven skipped fire, counted in a subprocess.
+
+    `"ok"` is under `_MIN_PROMPT_LEN`, so `_should_skip_bm25` returns
+    `trivial:short` and no retrieval runs. Three readings have to hold before
+    the counts mean anything, for the same reasons the #1407 test above spells
+    out: `_IMPORTS_OK` must be true (or the fire returns at its second
+    statement), the gate reason must be the skip reason (or this is not the
+    skipped path), and exactly one audit row must exist (or the fire died
+    early, which also imports nothing).
+
+    Falsifiable by restoring the eager `from aelfrice.context_rebuilder import
+    ...` block at the top of `hook.py`, or by pointing
+    `_emit_user_prompt_submit_rebuild_log` back at `context_rebuilder`. Either
+    puts the subtree back and takes the count from 18/26 to 35/40.
+    """
+    r = _run_module_count_probe(tmp_path, "ok")
+
+    assert r["imports_ok"] == "1", (
+        "the hook's runtime deps did not import, so the fire returned at the "
+        "_IMPORTS_OK guard and never reached the code under test"
+    )
+    assert r["rc"] == "0", r["rc"]
+    assert r["rows"] == "1", (
+        f"expected exactly one user_prompt_submit audit row, got {r['rows']}; "
+        "the fire did not run to completion and imports little for that reason"
+    )
+    assert r["gate"] == "trivial:short", (
+        f"the fixture prompt was not gate-skipped ({r['gate']}); this test "
+        "only says anything about the skipped path"
+    )
+
+    loaded = set(r["modules"].split(","))
+    leaked = sorted(m for m in _RETRIEVAL_SUBTREE if m in loaded)
+    assert not leaked, (
+        f"a gate-skipped UserPromptSubmit fire loaded {leaked}. The whole "
+        "point of the prompt-shape gate is that this fire does no retrieval; "
+        "importing the retrieval subtree to decide that is the cost the gate "
+        "exists to avoid. The usual cause is a new module-scope import in "
+        "hook.py, or a helper on the skip path reaching into "
+        "aelfrice.context_rebuilder for something aelfrice.rebuild_log "
+        "already re-exports."
+    )
+
+    n_import = int(r["n_import"])
+    assert n_import <= _MAX_AELFRICE_MODULES_AT_IMPORT, (
+        f"import aelfrice.hook now loads {n_import} aelfrice modules, over "
+        f"the {_MAX_AELFRICE_MODULES_AT_IMPORT} pinned by #1527. Every hook "
+        "process pays this, including every Stop / PreToolUse / PostToolUse "
+        "fire and the ~32% of UserPromptSubmit fires the shape gate refuses. "
+        "Find the new eager edge with:\n"
+        "  python -X importtime -c 'import aelfrice.hook'"
+    )
+
+    n_fire = int(r["n_fire"])
+    assert n_fire <= _MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE, (
+        f"a gate-skipped fire now loads {n_fire} aelfrice modules, over the "
+        f"{_MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE} pinned by #1527. The "
+        "extra import is at a call site on the skip path, not at module "
+        "scope, so the import-time count above will not show it."
+    )
+
+
+@pytest.mark.timeout(90)
+def test_a_retrieving_fire_still_loads_the_retrieval_subtree(tmp_path) -> None:
+    """Guard the guard: the subtree was deferred, not deleted.
+
+    Without this, the absence assertion above passes just as well if
+    `aelfrice.retrieval` were misspelled in `_RETRIEVAL_SUBTREE`, if
+    `_lazy()` had dropped a name, or if `search_for_prompt` stopped being
+    called at all. An empty set is not evidence that anything is deferred
+    until the same names are shown loading on the path that needs them.
+
+    The prompt is long, lowercase and carries no harness tag, so
+    `_should_skip_bm25` returns None and the retrieval lane runs.
+    """
+    r = _run_module_count_probe(
+        tmp_path,
+        "where does the quokka telemetry pipeline shard its tenant records",
+    )
+
+    assert r["imports_ok"] == "1", r["imports_ok"]
+    assert r["rc"] == "0", r["rc"]
+    assert r["gate"] == "", (
+        f"the fixture prompt was gate-skipped ({r['gate']}), so this run says "
+        "nothing about the retrieving path"
+    )
+
+    loaded = set(r["modules"].split(","))
+    for name in ("aelfrice.retrieval", "aelfrice.hook_search"):
+        assert name in loaded, (
+            f"{name} did not load on a retrieving fire. A deferred import was "
+            "dropped rather than moved, or the retrieval lane stopped "
+            "running -- either way the absence assertion in the test above "
+            "proves nothing."
+        )

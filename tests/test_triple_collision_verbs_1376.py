@@ -215,22 +215,32 @@ def _extract_triples_calls(module: object) -> list[ast.Call]:
     ]
 
 
-def test_context_rebuilder_does_not_pass_the_constraint() -> None:
+def test_the_rebuilder_read_path_does_not_pass_the_constraint() -> None:
     """The read-path call site must stay byte-identical (ruling 2026-08-06).
 
     Asserted against the source text rather than by calling it, because the
     rebuilder's own call is buried behind a store and a query, and a test
     that drove it would not fail for the reason this one is named after.
-    """
-    import aelfrice.context_rebuilder as cr
 
-    calls = _extract_triples_calls(cr)
-    assert calls, "extract_triples call site vanished from context_rebuilder"
+    The call lives in `aelfrice.rebuild_log` since #1527 —
+    `_query_for_recent_turns` moved there whole, along with the rest of the
+    rebuilder config and the phase-1a log, so a gate-skipped hook fire stops
+    importing the retrieval subtree. `context_rebuilder` re-exports it and
+    calls it unchanged. The module named here has to be the one that holds
+    the call: an AST walk over a module that re-exports the function finds no
+    `Call` node, so leaving this pointed at `context_rebuilder` would turn the
+    guard below into an unconditional failure, and dropping the `assert calls`
+    line to fix that would make the whole test vacuous.
+    """
+    import aelfrice.rebuild_log as rl
+
+    calls = _extract_triples_calls(rl)
+    assert calls, "extract_triples call site vanished from rebuild_log"
     for call in calls:
         passed = {kw.arg for kw in call.keywords}
         assert "constrain_collision_verbs" not in passed, (
             "the read path opted into the write-path constraint at "
-            f"context_rebuilder.py:{call.lineno} — every prompt would be "
+            f"rebuild_log.py:{call.lineno} — every prompt would be "
             "filtered, which the 2026-08-06 ruling forbids"
         )
 
