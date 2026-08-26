@@ -269,3 +269,74 @@ def test_discovery_finds_both_store_layouts(tmp_path: Path) -> None:
     assert repo_logs.resolve() in found
     assert home_logs.resolve() in found
     assert len(sqc.jsonl_files(found)) == 2
+
+
+@pytest.mark.timeout(30)
+def test_a_malformed_row_falls_out_instead_of_aborting_the_census() -> None:
+    """`input` is written as an object, but the census must not assume it.
+
+    The module's contract is that a bad row drops out of the count, the way
+    `_day` drops a torn timestamp -- a census that dies on one malformed line
+    reports nothing at all about the other four thousand.
+    """
+    rows: list[dict] = [
+        {"ts": "2026-08-13T00:00:00Z", "input": "oops"},
+        {"ts": "2026-08-13T00:00:00Z", "input": []},
+        {"ts": "2026-08-13T00:00:00Z", "input": 7},
+        {"ts": "2026-08-13T00:00:00Z"},
+        _row("2026-08-13T00:00:00Z", "real"),
+    ]
+    counts = sqc.census(rows)
+    assert counts["rows_scanned"] == 5
+    assert counts["rows_with_scored_query"] == 1
+    assert counts["distinct_scored_queries"] == 1
+
+
+@pytest.mark.timeout(30)
+def test_surrounding_whitespace_does_not_split_one_query_into_three() -> None:
+    """Blankness is judged on the stripped form, so identity must be too.
+
+    Otherwise `"q"`, `" q"` and `"q "` are three distinct queries and the
+    number checked against #1516's 500-query bound is inflated by however
+    often the writer's whitespace differs.
+    """
+    rows = [
+        _row("2026-08-13T00:00:00Z", "same query"),
+        _row("2026-08-13T01:00:00Z", " same query"),
+        _row("2026-08-13T02:00:00Z", "same query\n"),
+    ]
+    counts = sqc.census(rows)
+    assert counts["rows_with_scored_query"] == 3
+    assert counts["distinct_scored_queries"] == 1
+    assert counts["per_day"][0]["distinct"] == 1
+
+
+@pytest.mark.timeout(30)
+def test_one_directory_named_twice_is_read_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both flags are repeatable, so one directory can arrive twice.
+
+    `jsonl_files` dedupes by resolved path, so the corpus identity would keep
+    saying "one file" while `load_rows` read the directory once per spelling
+    and doubled every row count -- and the row counts are what a coverage
+    claim is a ratio of.
+    """
+    logs = tmp_path / "logs"
+    _write(logs, "s.jsonl", [
+        _row("2026-08-13T00:00:00Z", "a"),
+        _row("2026-08-13T01:00:00Z", "b"),
+        _row("2026-08-14T00:00:00Z", "c"),
+    ])
+    # The same physical directory, spelled two ways.
+    detour = logs / ".." / logs.name
+    assert detour.is_dir() and str(detour) != str(logs)
+
+    assert sqc.main(["--logs", str(logs), "--logs", str(detour), "--json"]) == 3
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["corpus"]["n_log_dirs"] == 1
+    assert payload["corpus"]["n_files"] == 1
+    assert payload["counts"]["rows_scanned"] == 3
+    assert payload["counts"]["rows_with_scored_query"] == 3
+    assert payload["counts"]["distinct_scored_queries"] == 3

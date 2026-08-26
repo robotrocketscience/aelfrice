@@ -169,11 +169,22 @@ def _scored_query(row: dict[str, Any]) -> str | None:
 
     Both the absent key (rows predating #1405) and an explicit null (the
     default when a caller passes nothing) mean the same thing here: this row
-    contributes no query to the population.
+    contributes no query to the population. So does a row whose `input` is not
+    a mapping at all: like `_day`, a malformed row falls out of the count
+    rather than aborting the census with a traceback.
+
+    The **stripped** form is returned, not the raw one, because it is also the
+    form blankness is judged on. Keying identity on the raw value while
+    judging blankness on the stripped one would count `"q"`, `" q"` and `"q "`
+    as three distinct queries, inflating the exact number #1516's 500-query
+    bound is checked against.
     """
-    value = (row.get("input") or {}).get("scored_query")
+    inner = row.get("input")
+    if not isinstance(inner, dict):
+        return None
+    value = inner.get("scored_query")
     if isinstance(value, str) and value.strip():
-        return value
+        return value.strip()
     return None
 
 
@@ -378,7 +389,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.discover and not args.logs:
         log_dirs.append(Path(".git") / "aelfrice" / REBUILD_LOG_DIRNAME)
 
-    log_dirs = sorted({d for d in log_dirs if d.is_dir()})
+    # Resolved before de-duplication: `jsonl_files` dedupes files by their
+    # resolved path, so a directory reachable by two spellings (a relative
+    # `--logs`, a symlink, `~`) would otherwise survive this set, be read
+    # twice by `load_rows`, and double every row count under a corpus
+    # identity that still reported one file.
+    log_dirs = sorted(
+        {d for d in (x.expanduser().resolve() for x in log_dirs) if d.is_dir()}
+    )
     if not log_dirs:
         print("no rebuild_log directory resolved", file=sys.stderr)
         return 2
