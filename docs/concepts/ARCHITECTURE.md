@@ -41,7 +41,7 @@ reimplements the constituent-key hash of `wonder.lifecycle` inline, and the comm
 understates how often the code works around the ordering. The converse also holds: not every deferred import
 is an inversion. `store.py` defers `federation` only for the cost of the import, and the comment at that site
 records that `federation` is a leaf module that imports nothing from `store`. That deferral keeps
-`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 32
+`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 33
 modules against the 129 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
 
 | Module | Responsibility |
@@ -66,6 +66,7 @@ modules against the 129 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `hook_search.py` | The retrieval helper for UserPromptSubmit. It records every hit as a `feedback_history` row tagged `source='hook'`, audit-only since #1086 (v4.0). The row logs exposure and recurrence, but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α or β. Set `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` to restore the legacy behavior that promotes on exposure. |
 | `triple_extractor.py` | Extracts `(subject, relation, object)` triples with regex alone, over six relation families. Both the commit-ingest lane and the transcript-ingest lane use it. |
 | `context_rebuilder.py` | The rebuilder that runs after compaction, surfacing the aelfrice retrieval again once the harness has written its summary. The block is delivered on `SessionStart(source="compact")` (#1031). |
+| `rebuild_log.py` | The `[rebuilder]` and `[rebuild_log]` configuration resolution, and the phase-1a diagnostic log. It is held apart from `context_rebuilder.py` so that neither one reaches the retrieval subtree. `hook.py` calls `load_rebuilder_config` on the prompt-shape-gate skip path, where deciding whether the log is enabled is itself the configuration read, so the split is what lets a skipping fire avoid importing the code it is skipping ([#1527](https://github.com/robotrocketscience/aelfrice/issues/1527)). It is the same remedy `sidecar_outcome.py` applies for `bm25`. `context_rebuilder.py` re-exports every name. |
 | `benchmark.py` | A deterministic synthetic harness over 16 beliefs and 16 queries. `BenchmarkReport` is frozen. |
 | `cli.py` | The argparse-based CLI, with many subcommands behind the `aelf` entry point. `aelf --help` shows the everyday surface; `aelf --help --advanced` shows the full one, which adds the diagnostic, hook, and lifecycle verbs. |
 | `federation.py` | (v3.0+) Read-only federation with a peer DB. `load_peer_deps()` parses `knowledge_deps.json`, and `open_peer_connection(path)` opens a peer SQLite database in `mode=ro`, honoring the peer's WAL and falling back to `immutable=1` for read-only media. `ForeignBeliefError` rejects a mutation against a foreign belief id at the API surface. See [sharing, sync, or federation in the limitations list](../user/LIMITATIONS.md). |
