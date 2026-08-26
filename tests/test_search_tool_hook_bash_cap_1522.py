@@ -1,15 +1,21 @@
-"""#1522 — the Bash per-turn fire cap must bind across OS processes.
+"""#1522 — the Bash per-turn fire cap must bind across processes *and*
+across the sessions that share one repo checkout.
 
 `aelf-search-tool-hook` is registered as a `"type": "command"` hook, so
 the host spawns one process per fire. A process-global counter is empty
 at the start of every fire and `BASH_FIRE_CAP_PER_TURN` could never be
-reached in any deployed configuration.
+reached in any deployed configuration. Moving it onto the session ring
+*record* fixes that and introduces the second defect: the record is one
+per repo, keyed by a single `session_id`, and every git worktree of a
+repo shares one ring file, so any concurrent session's fire zeroed the
+count — A,A,A,B,A,A,A emitted 7 of 7.
 
 Every cap assertion here is therefore driven through **subprocesses** —
 one `python -m aelfrice.hook_search_tool` per fire, exactly as the host
-runs it. An in-process test structurally cannot observe this defect: it
-passes against the dead process-global counter and against the wired
-ring alike, which is what let the cap ship non-functional.
+runs it. An in-process test structurally cannot observe either defect:
+it passes against the dead process-global counter and against the wired
+ring alike, which is what let the cap ship non-functional, and it
+cannot interleave two sessions against one ring file at all.
 
 Each fire carries a distinct search token, so the #740 session-ring
 content dedup cannot be what suppresses a block.
