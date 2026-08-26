@@ -61,13 +61,7 @@ def _sidecar(db: Path) -> Path:
 def _outcome_of_a_retrieval_fire(db: Path) -> str | None:
     """Run the L1 lane exactly as a fresh hook process would, and report the
     sidecar outcome it paid."""
-    from aelfrice.retrieval import (
-        _store_scoped_bm25f_cache,
-        resolve_bm25_b_anchor,
-        resolve_bm25_k3,
-        resolve_bm25f_anchor_weight_with_meta,
-        resolve_bm25f_per_field,
-    )
+    from aelfrice.retrieval import bm25f_cache_for_lane
     from aelfrice.sidecar_outcome import (
         last_sidecar_outcome,
         reset_sidecar_outcome,
@@ -76,15 +70,7 @@ def _outcome_of_a_retrieval_fire(db: Path) -> str | None:
     reset_sidecar_outcome()
     store = MemoryStore(str(db))
     try:
-        cache = _store_scoped_bm25f_cache(
-            store,
-            anchor_weight=resolve_bm25f_anchor_weight_with_meta(
-                store, now_ts=1_756_000_000
-            ),
-            k3=resolve_bm25_k3(),
-            per_field=resolve_bm25f_per_field(),
-            b_anchor=resolve_bm25_b_anchor(),
-        )
+        cache = bm25f_cache_for_lane(store, now_ts=1_756_000_000)
         cache.get()
     finally:
         store.close()
@@ -166,6 +152,90 @@ def test_the_warm_also_covers_the_stale_sidecar_case(
 
     assert warm_sidecar() in {"incremental", "full_rebuild"}
     assert _outcome_of_a_retrieval_fire(db) == "fresh"
+
+
+# ---- the shared-parameter invariant ------------------------------------
+
+
+def test_the_lane_helper_passes_exactly_the_four_resolved_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`bm25f_cache_for_lane` must not resolve anything of its own.
+
+    The four values decide what documents the index describes. A sidecar
+    built under different ones is rejected as describing different
+    documents, so the warm's whole benefit rests on this call matching the
+    lane's. Pinned against the resolvers rather than against literals: a
+    literal would pass while both sides drifted together to a wrong value.
+
+    This closes a real gap. Flipping `per_field` here survives the entire
+    533-test retrieval/bm25 selection — nothing else in the suite reads
+    what the lane passes.
+    """
+    import aelfrice.retrieval as r
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    seen: dict[str, object] = {}
+
+    def _record(store: object, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(r, "_store_scoped_bm25f_cache", _record)
+
+    store = MemoryStore(str(db))
+    try:
+        r.bm25f_cache_for_lane(store, now_ts=1_756_000_000)
+        expected = {
+            "anchor_weight": r.resolve_bm25f_anchor_weight_with_meta(
+                store, now_ts=1_756_000_000
+            ),
+            "k3": r.resolve_bm25_k3(),
+            "per_field": r.resolve_bm25f_per_field(),
+            "b_anchor": r.resolve_bm25_b_anchor(),
+        }
+    finally:
+        store.close()
+
+    assert seen == expected, (
+        "the lane helper is not passing the resolvers' values; a sidecar "
+        "built through it would describe different documents than the lane "
+        f"reads.\npassed={seen!r}\nresolvers={expected!r}"
+    )
+
+
+def test_the_l1_lane_routes_through_the_shared_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And the lane must actually use it, or the invariant guards nothing.
+
+    A retrieval call with the BM25F lane on has to reach
+    `bm25f_cache_for_lane`. Without this the test above pins a helper the
+    shipped path could stop calling.
+    """
+    import aelfrice.retrieval as r
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    monkeypatch.setenv("AELFRICE_BM25F", "1")
+
+    calls: list[int] = []
+    real = r.bm25f_cache_for_lane
+
+    def _spy(store: object, *, now_ts: int) -> object:
+        calls.append(now_ts)
+        return real(store, now_ts=now_ts)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(r, "bm25f_cache_for_lane", _spy)
+
+    store = MemoryStore(str(db))
+    try:
+        r.retrieve(store, "sidecar warm bm25 anchors", token_budget=2000)
+    finally:
+        store.close()
+
+    assert calls, "the L1 lane did not go through bm25f_cache_for_lane"
 
 
 # ---- AC4: failure is silent-safe ---------------------------------------

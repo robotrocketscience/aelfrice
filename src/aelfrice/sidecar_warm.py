@@ -101,23 +101,20 @@ def warm_sidecar() -> str | None:
     be read against the fires it is meant to spare — or None when there was
     nothing to do (the L1 BM25F lane is off) or when anything failed.
 
-    The index is built through the *same* helper and the *same* resolvers
-    that the L1 lane in `retrieval` uses. That is load-bearing rather than
+    The index is built through `retrieval.bm25f_cache_for_lane`, which is
+    the *same* call the L1 lane makes. That is load-bearing rather than
     tidy: a sidecar written under different tokenisation parameters is
     rejected by `_load_sidecar` as describing different documents, so a warm
     that resolved its own parameters would pay the whole expensive build and
-    still leave the next fire rebuilding.
+    still leave the next fire rebuilding. Sharing the call makes the two
+    unable to drift apart rather than merely asking them not to.
     """
     try:
         import time  # noqa: PLC0415
 
         from aelfrice.db_paths import db_path  # noqa: PLC0415
         from aelfrice.retrieval import (  # noqa: PLC0415
-            _store_scoped_bm25f_cache,
-            resolve_bm25_b_anchor,
-            resolve_bm25_k3,
-            resolve_bm25f_anchor_weight_with_meta,
-            resolve_bm25f_per_field,
+            bm25f_cache_for_lane,
             resolve_use_bm25f_anchors,
         )
         from aelfrice.sidecar_outcome import (  # noqa: PLC0415
@@ -137,15 +134,7 @@ def warm_sidecar() -> str | None:
         reset_sidecar_outcome()
         store = MemoryStore(str(p))
         try:
-            cache = _store_scoped_bm25f_cache(
-                store,
-                anchor_weight=resolve_bm25f_anchor_weight_with_meta(
-                    store, now_ts=int(time.time()),
-                ),
-                k3=resolve_bm25_k3(),
-                per_field=resolve_bm25f_per_field(),
-                b_anchor=resolve_bm25_b_anchor(),
-            )
+            cache = bm25f_cache_for_lane(store, now_ts=int(time.time()))
             cache.get()
         finally:
             store.close()

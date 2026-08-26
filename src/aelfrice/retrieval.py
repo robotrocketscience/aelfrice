@@ -3858,6 +3858,31 @@ def _store_scoped_bm25f_cache(
     return cache
 
 
+def bm25f_cache_for_lane(store: MemoryStore, *, now_ts: int) -> BM25IndexCache:
+    """The L1 lane's index cache, under the lane's own resolved parameters.
+
+    The four values below decide what documents the index describes, and a
+    sidecar written under different ones is rejected by `_load_sidecar` as
+    describing different documents. Resolving them in one place makes that
+    invariant structural: `sidecar_warm.warm_sidecar` (#1513) builds the
+    sidecar out of band, and a warm that resolved its own parameters would
+    pay the whole build and still leave the next fire rebuilding.
+
+    `now_ts` is passed rather than read here so the caller keeps its single
+    wall-clock read (#1143): the anchor-weight resolver and the
+    `bm25_l0_ratio` signal write in the lane must see the same timestamp.
+    """
+    return _store_scoped_bm25f_cache(
+        store,
+        anchor_weight=resolve_bm25f_anchor_weight_with_meta(
+            store, now_ts=now_ts,
+        ),
+        k3=resolve_bm25_k3(),
+        per_field=resolve_bm25f_per_field(),
+        b_anchor=resolve_bm25_b_anchor(),
+    )
+
+
 # #1187 exclusion-arm refetch. The candidate limit is applied by the
 # search (SQL `LIMIT` on the FTS5 path, `top_k` on BM25F), so filtering
 # superseded beliefs afterwards SHRINKS the pack instead of backfilling
@@ -4050,15 +4075,9 @@ def _l1_hits(
         # long-running processes; with the sidecar (bm25.py) a fresh
         # hook process loads the persisted index instead of building.
         if bm25f_cache is None:
-            cache = _store_scoped_bm25f_cache(
-                store,
-                anchor_weight=resolve_bm25f_anchor_weight_with_meta(
-                    store, now_ts=effective_now_ts,
-                ),
-                k3=resolve_bm25_k3(),
-                per_field=resolve_bm25f_per_field(),
-                b_anchor=resolve_bm25_b_anchor(),
-            )
+            # #1513: the same call the out-of-band sidecar warm makes, so
+            # the two cannot resolve different tokenisation parameters.
+            cache = bm25f_cache_for_lane(store, now_ts=effective_now_ts)
         else:
             cache = bm25f_cache
         index = cache.get()
