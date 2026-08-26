@@ -103,3 +103,33 @@ jobs:
         run: uv run pytest tests/ --ignore=tests/e2e -q
       - if: steps.filter.outputs.code != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No code paths changed; reporting pass for docs-only PR."
+
+  # #1469 — the store-free half of the published-figure gate. Runs the
+  # producers named in `<!-- derived: ... -->` markers and hard-fails on any
+  # difference between what a producer emits and what the prose published.
+  #
+  # Its own job rather than a step on `pytest`, for two reasons. `pytest` is
+  # matrix'd and path-gated, so a CHANGELOG-only PR takes the `echo` branch —
+  # and a PR that changes only the CHANGELOG is precisely the one that ships a
+  # figure. And the gate must never report a pass it did not run: no
+  # `paths-filter` here, no conditional steps, so the check is either green
+  # because it ran or red (#1160).
+  #
+  # Store-backed producers are not executed. They read a real belief store, a
+  # public runner has none, and the lab corpus does not go there (#1456);
+  # running them would fail for a reason that has nothing to do with the
+  # figure, and the gate would be switched off within a week.
+  derived-figures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev
+      - run: uv run python scripts/check_derived_figures.py --mode all --github

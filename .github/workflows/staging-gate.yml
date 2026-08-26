@@ -175,6 +175,15 @@ jobs:
       # line rather than as a test failure the author has to locate.
       - name: No merge-conflict markers are committed
         run: python3 scripts/check_conflict_markers.py
+      # #1469 — every-PR, and deliberately in the stdlib-only job. This half
+      # of the gate reads text: marker grammar, the self-consistency rule that
+      # would have caught #1449's 44,683-against-44,687 without any store, the
+      # advisory staleness stamp, and the overclaim sentence. None of it needs
+      # the package, so it reports on a CHANGELOG-only PR — which is exactly
+      # the PR shape that ships a figure. The half that re-runs the store-free
+      # producers needs the package and lives in ci.yml.
+      - name: Published figures agree with their producers
+        run: python3 scripts/check_derived_figures.py --mode text --github
       - name: Detect release PR and verify docs
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
