@@ -584,7 +584,7 @@ def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
 # here without adding its names to FLOOR_NAMES fails too.
 _FLOOR_SOURCES: dict[str, frozenset[str]] = {
     "bench-smoke.yml": frozenset({"bench-smoke"}),
-    "ci.yml": frozenset({"pytest (3.12)", "pytest (3.13)"}),
+    "ci.yml": frozenset({"derived-figures", "pytest (3.12)", "pytest (3.13)"}),
     "label-docs.yml": frozenset({"label"}),
     "migration-policy-check.yml": frozenset({"migration-policy-check"}),
     "pr-metadata.yml": frozenset({"pr-body-issue-link", "pr-title-prefix"}),

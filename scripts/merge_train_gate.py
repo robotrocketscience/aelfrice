@@ -130,6 +130,7 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 FLOOR_NAMES: frozenset[str] = frozenset({
     "bench-smoke",              # bench-smoke.yml
     "commit-msg-prefix",        # staging-gate.yml
+    "derived-figures",          # ci.yml
     "history-scan",             # staging-gate.yml
     "label",                    # label-docs.yml
     "migration-policy-check",   # migration-policy-check.yml
