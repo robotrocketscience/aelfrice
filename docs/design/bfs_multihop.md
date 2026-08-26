@@ -55,7 +55,7 @@ structure for BFS to find non-trivial chains.
 - Cycle detection via per-query visited-set.
 - Integration with the unified retrieval token budget.
 - ~~Cache invalidation rule for `RetrievalCache` extended to cover
-  edge mutations (already covered by the v1.0.1 wipe-on-write
+  edge mutations (already covered by the v1.0.3 wipe-on-write
   policy — see [§ Cache invalidation](#cache-invalidation)).~~
   **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)**
   — `RetrievalCache` never acquired a production caller and was deleted;
@@ -404,7 +404,7 @@ and for benchmark scoring.
 
 ## Cache invalidation
 
-The v1.0.1 `RetrievalCache` is keyed on `(canonicalized_query,
+The v1.0.3 `RetrievalCache` is keyed on `(canonicalized_query,
 token_budget, l1_limit)` and is wiped on any belief or edge
 mutation. BFS expands the cached value (the result list) but does
 **not** change the key, because:
@@ -427,11 +427,14 @@ identical query will re-run the full pipeline including BFS, and
 the new edge will participate.
 
 This was the load-bearing reason `RetrievalCache` was specified
-with edge mutators in the invalidation set at v1.0.1 — see
+with edge mutators in the invalidation set — see
 [lru_query_cache.md § Invalidation](historical/lru_query_cache.md#invalidation).
-The v1.0.1 spec said: "A finer-grained policy ... is a later
-optimization. v1.0.1 ships the wipe-on-write version." v1.3.0
-inherits that decision.
+That spec targeted v1.0.1 and said: "A finer-grained policy ... is a
+later optimization. v1.0.1 ships the wipe-on-write version." The class
+slipped two patch releases and first shipped at **v1.0.3**: `class
+RetrievalCache` is absent at v1.0.2 and present at v1.0.3, added by
+`0c27a937`. The spec's own version literal is quoted as written and is
+not the ship date (#1469). v1.3.0 inherits the decision.
 
 The v1.3 BFS kwargs (`bfs_max_depth`, `bfs_nodes_per_hop`,
 `bfs_total_budget_nodes`, `bfs_min_path_score`) **are not added to
@@ -594,7 +597,7 @@ output exactly — same beliefs, same order. BFS is gated.
   and benefits from dense edge population, but does not read
   `anchor_text` directly at v1.3 (anchor-aware re-ranking is
   follow-up work).
-- **v1.0.1 RetrievalCache** — already shipped. The wipe-on-write
+- **v1.0.3 RetrievalCache** — already shipped. The wipe-on-write
   policy is what makes the v1.3 cache correctness story
   zero-effort.
 - **#143 (entity-index) — soft.** BFS layers on top of L2.5 hits.
@@ -638,6 +641,6 @@ output exactly — same beliefs, same order. BFS is gated.
 | Cycle detection — visited-set or LIMIT?          | Visited-set, per-query. See [§ Cycle detection](#cycle-detection). |
 | Temporal coherence — fix at v1.3 or document?    | Document, fix at v2.0. See [§ Open question: temporal coherence](#open-question-temporal-coherence). |
 | BFS budget shared with L0/L1/L2.5 or separate?   | Shared. See [§ Budget allocation](#budget-allocation). |
-| Cache invalidation rule?                         | No cache-key change; v1.0.1 wipe-on-write covers it. See [§ Cache invalidation](#cache-invalidation). |
+| Cache invalidation rule?                         | No cache-key change; v1.0.3 wipe-on-write covers it. See [§ Cache invalidation](#cache-invalidation). |
 | Default-on or default-off at v1.3?               | Default-off. Default-on candidate at v2.0 with benchmark uplift. |
 | `IMPLEMENTS` edge type?                          | Shipped as a v2.0 Track A edge (#385) at weight 0.65. `THREADS_TO` remains out of scope. |
