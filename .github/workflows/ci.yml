@@ -91,6 +91,14 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv sync --frozen --group dev --extra archive
+      # The uninstall `--archive` tests guard themselves with
+      # `pytest.importorskip("cryptography")` (#1529), so a CI job that lost the
+      # `[archive]` extra would report green while silently skipping six tests
+      # instead of failing. `cryptography` importing is the guards' only
+      # condition, so asserting it here proves none of them can skip.
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        name: The [archive] extra must be present, or the archive tests skip
+        run: uv run python -c "import cryptography"
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q
       - if: steps.filter.outputs.code != 'true' && github.event_name != 'workflow_dispatch'

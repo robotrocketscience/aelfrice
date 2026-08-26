@@ -142,6 +142,9 @@ def test_archive_gate_says_the_extras_are_deleted_not_encrypted(
     they type a password, that the remaining artifacts are being deleted
     rather than folded into the archive.
     """
+    pytest.importorskip(
+        "cryptography", reason="[archive] extra required for --archive"
+    )
     archive = tmp_path / "backup.enc"
 
     code, text = _run(_args(
