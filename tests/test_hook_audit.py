@@ -407,22 +407,28 @@ def test_rotation_at_max_bytes(
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     # Threshold tuned so one record fits, two records exceed. Bumped
     # 500 → 1000 when #321 added beliefs[]/latency_ms/tokens fields, then
-    # 1000 → 1500 when #1016 enlarged the _FRAMING_HEADER (one fire is now
-    # ~1100B, two ~2200B).
+    # 1000 → 1500 when #1016 enlarged the _FRAMING_HEADER, then 1500 →
+    # 2048 when #1528 added the rotation marker.
+    #
+    # Measured on this branch: one fire 1283 B, two fires 2557 B, marker
+    # 275 B. The cap has to clear THREE bounds, and the third is new: the
+    # post-rotation live file is marker + fire-3 = 1558 B, so 1500 made
+    # fire-3 rotate again and left a live file holding a marker and no
+    # fire at all. 2048 sits 490 B above that floor and 509 B below the
+    # two-fire ceiling.
     (tmp_path / ".aelfrice.toml").write_text(
-        "[hook_audit]\nmax_bytes = 1500\n", encoding="utf-8",
+        "[hook_audit]\nmax_bytes = 2048\n", encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     audit_path = _audit_path_for_db(db)
     rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
-    # Fire once: live has one record, well under 500 B; no rotation yet.
+    # Fire once: live has one record, under the cap; no rotation yet.
     sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     user_prompt_submit(stdin=sin, stdout=io.StringIO())
     assert audit_path.exists()
     assert not rotated.exists()
-    first_size = audit_path.stat().st_size
-    # Fire again: post-write size > 500 B → rotate to .1 → fresh live file
-    # is created by the next fire.
+    # Fire again: post-write size > cap → rotate to .1 → fresh live file
+    # opens with the marker and takes fire-3.
     sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     user_prompt_submit(stdin=sin, stdout=io.StringIO())
     sin = io.StringIO(_payload("how many bananas are in the kitchen"))
@@ -435,13 +441,18 @@ def test_rotation_at_max_bytes(
     # longer the right probe: #1528 opens each rotated generation with one
     # `audit_rotation` marker row, so the file legitimately carries a
     # header as well as fire-3. Count the fires instead.
-    if audit_path.exists():
-        live = read_hook_audit(audit_path)
-        fires = [
-            r for r in live
-            if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
-        ]
-        assert len(fires) == 1, live
+    #
+    # Unconditional: before #1528 the live file did not reappear until the
+    # next append, so this assertion had to be guarded by `if
+    # audit_path.exists()` and could pass by never running. The marker is
+    # written at rotation time, so the file exists from that moment.
+    assert audit_path.exists()
+    live = read_hook_audit(audit_path)
+    fires = [
+        r for r in live
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    assert len(fires) == 1, live
 
 
 # ---------------------------------------------------------------------------
@@ -747,8 +758,10 @@ def test_existing_rotated_log_without_a_marker_still_parses(
     """Logs rotated before #1528 carry no marker. They must still read.
 
     Degradation has to be to the only claim such a file supports:
-    generation 1, nothing KNOWN discarded — never an invented count and
-    never an exception.
+    UNKNOWN. Never an invented count, never an exception, and — the part
+    that matters — never `complete`. A `.1` with no generation stamp could
+    be the first rollover, which discarded nothing, or the fifth, which
+    discarded four archives, and nothing on disk can settle it.
     """
     audit_path = tmp_path / AUDIT_FILENAME
     rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
@@ -763,13 +776,191 @@ def test_existing_rotated_log_without_a_marker_still_parses(
     window = audit_window([audit_path, rotated])
     assert window.generation == 1
     assert window.discarded_generations == 0
+    # Nothing is PROVABLY gone, so the truncation warning stays quiet...
     assert window.truncated is False
+    # ...but the window must not read as clean either. These two together
+    # are the tri-state; either one alone is a two-valued answer to a
+    # three-valued question.
+    assert window.discarded_unknown is True
+    assert window.complete is False
     assert window.records == 6
     assert window.first_ts == "2026-08-26T00:00:00Z"
     assert window.last_ts == "2026-08-26T00:00:05Z"
     assert window.rotated_present is True
     # And the ordinary reader is unaffected by the absence.
     assert len(read_hook_audit(audit_path)) == 3
+
+
+def test_a_never_rotated_log_is_complete_not_unknown(tmp_path: Path) -> None:
+    """The distinguishing half of the test above.
+
+    Absence of a marker is only unknown when a `.1` is there to be
+    destroyed. A log that has never rotated has an exact, provable answer,
+    and reporting it unknown would make the flag fire on every fresh
+    install — no signal at all.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    audit_path.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3)),
+        encoding="utf-8",
+    )
+    window = audit_window([audit_path])
+    assert window.rotated_present is False
+    assert window.truncated is False
+    assert window.discarded_unknown is False
+    assert window.complete is True
+
+
+def test_rotating_a_pre_1528_log_records_the_archive_it_destroys(
+    tmp_path: Path,
+) -> None:
+    """The population #1528 was filed about, rolled over once. THE fix.
+
+    The reporter's machine had three logs already sitting at a 10.5 MB
+    `.1` with no marker. The first post-#1528 rollover `os.replace`s the
+    live file onto that archive and destroys it. The live file scans as
+    generation 1 — it has no marker — so a writer that trusted the scan
+    alone stamped `generation: 2, discarded_generations: 0` on the very
+    rotation that discarded 10.5 MB of history, and the benchmark then
+    printed "window complete / nothing discarded by rotation". That is a
+    false completeness claim, strictly worse than the silence it replaced
+    and worse than the UNKNOWN the unrotated pair already reported.
+
+    The `.1`'s existence, read before the replace, is the only evidence
+    that anything is being destroyed. The honest answer is a LOWER BOUND —
+    at least one archive gone, true count unknowable — and this test pins
+    both halves: the bound is >= 1, and the unknown flag is set so no
+    reader mistakes the bound for a count.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    # Pre-existing UNMARKED history: rows in the archive, rows live.
+    archived = [_fire_row(i) for i in range(5)]
+    rotated.write_text(
+        "".join(json.dumps(r) + "\n" for r in archived), encoding="utf-8",
+    )
+    audit_path.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(5, 10)),
+        encoding="utf-8",
+    )
+
+    before = audit_window([audit_path, rotated])
+    assert before.complete is False, "the pre-state was already dishonest"
+
+    # One rollover under the new writer.
+    _append_until_rotations(audit_path, 1, start=10)
+
+    # The old archive is provably gone: its rows are in no surviving file.
+    surviving: set[object] = set()
+    for path in sorted(tmp_path.glob(AUDIT_FILENAME + "*")):
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            surviving.add(json.loads(raw).get("ts"))
+    assert not {r["ts"] for r in archived} & surviving, (
+        "the archive survived; this test is not exercising a destructive "
+        "rotation and proves nothing"
+    )
+
+    marker = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+    assert marker["hook"] == AUDIT_ROTATION_HOOK
+    assert marker["discarded_generations"] >= 1, (
+        "the rotation that destroyed an unmarked archive claimed to have "
+        "discarded nothing"
+    )
+    assert marker["discarded_unknown"] is True, (
+        "the bound was stamped as an exact count; a reader cannot tell "
+        "'at least one' from 'exactly one'"
+    )
+
+    window = audit_window(sorted(tmp_path.glob(AUDIT_FILENAME + "*")))
+    assert window.truncated is True
+    assert window.complete is False
+    assert window.discarded_unknown is True
+    assert window.discarded_generations >= 1
+
+
+def test_the_unknown_flag_propagates_through_later_rotations(
+    tmp_path: Path,
+) -> None:
+    """A lower bound never becomes an exact count again.
+
+    Once an unmarked history is destroyed the true generation count is
+    unrecoverable forever. If the flag stopped propagating, the SECOND
+    post-#1528 rollover would read its own well-formed marker and report
+    an exact `discarded_generations` that is really a floor.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    rotated.write_text(json.dumps(_fire_row(0)) + "\n", encoding="utf-8")
+    audit_path.write_text(json.dumps(_fire_row(1)) + "\n", encoding="utf-8")
+
+    _append_until_rotations(audit_path, 2, start=2)
+
+    marker = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+    assert marker["discarded_unknown"] is True
+    assert marker["generation"] >= 4
+    assert marker["discarded_generations"] >= 2
+    assert audit_window([audit_path]).discarded_unknown is True
+
+
+def test_only_the_archive_cannot_claim_completeness(tmp_path: Path) -> None:
+    """A `.1` handed in without its live file is a lower bound.
+
+    Each file states what had been lost when it was CREATED, so an archive
+    cannot see the loss caused by the rotation that made it an archive.
+    Reading the `.1` of a twice-rotated pair on its own and printing
+    "nothing discarded" is the same unearned claim in a different dress.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    _append_until_rotations(audit_path, 2)
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    assert rotated.exists()
+
+    window = audit_window([rotated])
+    assert window.rotated_present is True
+    assert window.complete is False
+    assert window.discarded_unknown is True
+
+    # Control: with the live file in hand the answer is exact, so the
+    # flag above is about the missing input and not set unconditionally.
+    full = audit_window([audit_path, rotated])
+    assert full.discarded_unknown is False
+    assert full.truncated is True
+
+
+def test_audit_window_survives_an_unreadable_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fail-soft guard, exercised rather than asserted in prose.
+
+    `audit_window` is a diagnostic printed beside a rate. A file that
+    `is_file()` but raises on read — a permissions change, a vanished NFS
+    mount — must cost the caller the unreadable file's rows and nothing
+    else. Monkeypatched rather than chmod'd because a chmod test is a
+    no-op for root, which is how this suite runs in CI.
+    """
+    import aelfrice.hook_audit as ha
+
+    good = tmp_path / AUDIT_FILENAME
+    bad = tmp_path / (AUDIT_FILENAME + AUDIT_ROTATED_SUFFIX)
+    for path in (good, bad):
+        path.write_text(
+            "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3)),
+            encoding="utf-8",
+        )
+
+    real_scan = ha._scan_audit_file
+
+    def _raise_on_bad(path: Path):
+        if path == bad:
+            raise PermissionError(f"denied: {path}")
+        return real_scan(path)
+
+    monkeypatch.setattr(ha, "_scan_audit_file", _raise_on_bad)
+
+    window = ha.audit_window([good, bad])
+    # The readable file's rows still land — no exception, no zeroed window.
+    assert window.records == 3
+    assert window.first_ts == "2026-08-26T00:00:00Z"
 
 
 def test_marker_row_is_inert_to_hook_filtering_readers(
