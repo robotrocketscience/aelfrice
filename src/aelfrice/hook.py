@@ -4210,11 +4210,15 @@ STOP_PROMPT_CLOSE_TAG: Final[str] = "</aelfrice-session-end>"
 # A cap of 20 leaves the median session whole and truncates 33% of
 # sessions; 10 would truncate 47%. Unbounded, the worst session rendered
 # 3,448,428 bytes every turn; bounded, that worst case is 11,508.
+# <!-- derived: benchmarks/published_constants.py#stop_prompt_max_items = 20 -->
+# <!-- derived: benchmarks/stop_prompt_block_bounds.py#post_1315.rendered_bytes_bounded.max = 11508 corpus=repo-local-store/44687@2026-08-10 producer-sha=9ea133fd794a -->
+# <!-- derived: benchmarks/stop_prompt_block_bounds.py#post_1315.rendered_bytes_unbounded.max = 3448428 corpus=repo-local-store/44687@2026-08-10 producer-sha=9ea133fd794a -->
 STOP_PROMPT_MAX_ITEMS: Final[int] = 20
 # Candidate content length: p50=86, p90=367, p95=605, p99=1,479,
 # max=14,360. 1,000 withholds the command for 2.05% of candidates — the
 # tail that is prose or captured data rather than a rule anyone would
 # lock.
+# <!-- derived: benchmarks/published_constants.py#stop_prompt_max_content = 1000 -->
 STOP_PROMPT_MAX_CONTENT: Final[int] = 1000
 
 # Origins that flag a belief as a candidate for end-of-session lock prompt.

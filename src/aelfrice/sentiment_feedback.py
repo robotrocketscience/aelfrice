@@ -23,7 +23,15 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     in long pastes.
   * **Pattern provenance.** Twelve positive patterns and twelve negative
     patterns ported from the research-line `agentmemory/sentiment_feedback.py`
-    per the v2.0 ratification. Two strong-amplifier subsets
+    per the v2.0 ratification. Those two counts and the length guard
+    above are store-free figures: `benchmarks/published_constants.py`
+    re-derives them by importing this module, and CI hard-fails if a
+    pattern is added or dropped without this prose moving with it
+    (#1469).
+    <!-- derived: benchmarks/published_constants.py#sentiment_positive_patterns = 12 -->
+    <!-- derived: benchmarks/published_constants.py#sentiment_negative_patterns = 12 -->
+    <!-- derived: benchmarks/published_constants.py#sentiment_max_prompt_chars = 200 -->
+    Two strong-amplifier subsets
     (STRONG_POSITIVE, STRONG_NEGATIVE) escalate `confidence` when the
     matched pattern carries higher signal-to-noise than the base set.
   * **Audit row source.** All apply_feedback calls from this module use
