@@ -51,6 +51,16 @@ def _marker(ident: str, value: object, *attrs: str) -> str:
     return f"<!-- derived: {ident} = {value}{tail} -->"
 
 
+def _published(ident: str, value: object, *attrs: str) -> str:
+    """A marker together with the sentence it annotates.
+
+    A bare marker is a hard failure now: a value that appears in no surrounding
+    text is guarding nothing. A fixture exercising some *other* rule therefore
+    has to publish the figure as well, which is what a real file does anyway.
+    """
+    return f"The measured figure is {value}.\n{_marker(ident, value, *attrs)}\n"
+
+
 @pytest.fixture()
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A throwaway tree the scanner treats as the repo root."""
@@ -128,24 +138,37 @@ def test_normalise_keeps_distinct_figures_distinct() -> None:
 
 def test_one_key_published_with_two_values_is_a_hard_failure(repo: Path) -> None:
     """#1449 exactly: 44,683 in one file, 44,687 in four others, one PR."""
-    (repo / "a.md").write_text(_marker("benchmarks/p.py#n", 44683, CORPUS, SHA))
-    (repo / "b.md").write_text(_marker("benchmarks/p.py#n", 44687, CORPUS, SHA))
+    (repo / "a.md").write_text(_published("benchmarks/p.py#n", 44683, CORPUS, SHA))
+    (repo / "b.md").write_text(_published("benchmarks/p.py#n", 44687, CORPUS, SHA))
     report = _run(repo, "a.md", "b.md")
     assert len(report.hard) == 2
     assert all("one figure, one value" in h for h in report.hard)
 
 
 def test_one_key_published_with_one_value_twice_is_clean(repo: Path) -> None:
-    (repo / "a.md").write_text(_marker("benchmarks/p.py#n", 44687, CORPUS, SHA))
-    (repo / "b.md").write_text(_marker("benchmarks/p.py#n", "44,687", CORPUS, SHA))
+    (repo / "a.md").write_text(_published("benchmarks/p.py#n", 44687, CORPUS, SHA))
+    (repo / "b.md").write_text(_published("benchmarks/p.py#n", "44,687", CORPUS, SHA))
     report = _run(repo, "a.md", "b.md")
     assert report.hard == []
 
 
 def test_a_marker_naming_a_producer_that_does_not_exist_fails(repo: Path) -> None:
-    (repo / "a.md").write_text(_marker("benchmarks/gone.py#n", 1))
+    (repo / "a.md").write_text(_published("benchmarks/gone.py#n", 1))
     report = _run(repo, "a.md")
     assert any("does not exist" in h for h in report.hard)
+
+
+@pytest.mark.parametrize("producer", ["/bin/sh", "../../../../bin/sh"])
+def test_a_producer_outside_the_repository_is_rejected(
+    repo: Path, producer: str
+) -> None:
+    """`REPO_ROOT / producer` is not containment: an absolute path discards
+    REPO_ROOT and `..` walks out. `--mode producers` execs the result under
+    `sys.executable`, so the marker is committed input to a subprocess argv."""
+    (repo / "a.md").write_text(_published(f"{producer}#n", 1))
+    report = _run(repo, "a.md")
+    assert any("not inside the repository" in h for h in report.hard)
+    assert cdf.producer_path(producer) is None
 
 
 # --- staleness is advisory, never hard -----------------------------------
@@ -154,7 +177,7 @@ def test_a_marker_naming_a_producer_that_does_not_exist_fails(repo: Path) -> Non
 def test_a_moved_producer_warns_and_does_not_fail(repo: Path) -> None:
     """A producer edit does not prove the figure moved, and re-measuring needs
     a store no public runner has (#1456). Advisory is the honest verdict."""
-    (repo / "a.md").write_text(_marker("benchmarks/p.py#n", 5, CORPUS, SHA))
+    (repo / "a.md").write_text(_published("benchmarks/p.py#n", 5, CORPUS, SHA))
     report = _run(repo, "a.md")
     assert report.hard == []
     assert len(report.advisory) == 1
@@ -163,7 +186,7 @@ def test_a_moved_producer_warns_and_does_not_fail(repo: Path) -> None:
 
 def test_a_current_stamp_does_not_warn(repo: Path) -> None:
     sha = cdf.producer_sha("benchmarks/p.py")
-    (repo / "a.md").write_text(_marker("benchmarks/p.py#n", 5, CORPUS, f"producer-sha={sha}"))
+    (repo / "a.md").write_text(_published("benchmarks/p.py#n", 5, CORPUS, f"producer-sha={sha}"))
     report = _run(repo, "a.md")
     assert report.advisory == [] and report.hard == []
 
@@ -308,6 +331,230 @@ def test_an_unmarked_entry_without_the_sentence_is_clean(repo: Path) -> None:
     assert report.hard == []
 
 
+# --- entry scoping: the rule has to be able to see the line --------------
+#
+# The first splitter put a whole file into changelog-bullet mode on a single
+# `- ` line anywhere in it, and in that mode discarded everything above the
+# first bullet. 228 of the 929 scanned files went that way, and the overclaim
+# rule -- the one hard non-producer check -- silently did not run on any of
+# them. A check that reports green because it never looked is the #1160 defect
+# this repo has already paid for once.
+
+
+def _docstring_module(list_line: str) -> str:
+    """A module whose docstring overclaims, plus one line of the caller's."""
+    return (
+        '"""A module.\n'
+        "\n"
+        f"The bound is 11,508 bytes and the share is 93.7%. {OVERCLAIM_PLAIN}.\n"
+        "\n"
+        f"{list_line}\n"
+        '"""\n'
+    )
+
+
+def test_a_dash_line_in_a_python_docstring_does_not_switch_the_rule_off(
+    repo: Path,
+) -> None:
+    """The reviewer's live replay, in miniature.
+
+    Inserting the same #1445 sentence into two benchmark docstrings gave exit 1
+    on one and exit 0 on the other. The only difference between the files was
+    that the silent one contained a `- ` line somewhere in it -- and it was one
+    of the three producers this feature's own CHANGELOG entry names.
+    """
+    (repo / "benchmarks" / "x.py").write_text(_docstring_module("- a list item"))
+    report = _run(repo, "benchmarks/x.py")
+    assert len(report.hard) == 1, "the claim is in the file; the rule must see it"
+    assert "carry no marker" in report.hard[0]
+    assert "93.7%" in report.hard[0] and "11,508" in report.hard[0]
+
+
+def test_the_same_module_without_the_dash_line_fails_identically(
+    repo: Path,
+) -> None:
+    """The distinguishing arm: identical text, identical unmarked figures, and
+    the verdict must not depend on an unrelated list item three lines down."""
+    (repo / "benchmarks" / "x.py").write_text(_docstring_module("* a list item"))
+    with_dash = _run(repo, "benchmarks/x.py")
+    (repo / "benchmarks" / "x.py").write_text(_docstring_module("- a list item"))
+    without = _run(repo, "benchmarks/x.py")
+    assert with_dash.hard == without.hard
+
+
+def test_a_markdown_claim_above_the_first_bullet_is_checked(repo: Path) -> None:
+    """Case 1 of the same bug: in a `.md` file the old splitter dropped every
+    paragraph above the first bullet, which is most of `docs/` and all of
+    `README.md`."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "## Heading\n"
+        "\n"
+        f"The share is 93.7%. {OVERCLAIM_PLAIN}.\n"
+        "\n"
+        "- **A bullet.** Nothing to see.\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert len(report.hard) == 1 and "93.7%" in report.hard[0]
+
+
+def test_markdown_bullets_are_still_scoped_one_entry_at_a_time(repo: Path) -> None:
+    """Paragraph coverage must not cost the bullet scoping: a CHANGELOG entry
+    is still the unit, or a neighbour's unmarked figures sink a clean claim."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        f"- **Clean.** The bound is 11,508 bytes. {OVERCLAIM}.\n"
+        f"  {_marker('benchmarks/p.py#bounded_max', 11508, CORPUS, SHA)}\n"
+        "\n"
+        "- **Neighbour.** 44,687 beliefs, unmarked and unclaimed.\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert report.hard == []
+
+
+def test_a_dash_line_in_a_python_file_is_not_a_changelog_entry(repo: Path) -> None:
+    """Bullet scoping is markdown-only. In a `.py` file the unit is always the
+    paragraph, so the list item is scoped with the text around it."""
+    body = "- an item\n\n  and 44,687 more.\n"
+    src = repo / "benchmarks" / "x.py"
+    src.write_text(f'"""D.\n\n{body}"""\n')
+    md = repo / "CHANGELOG" / "v9.md"
+    md.write_text(body)
+    py = dict(cdf.split_entries(src, src.read_text()))
+    entries_md = dict(cdf.split_entries(md, md.read_text()))
+    assert sorted(py) == [1, 3, 5], "a `.py` list item does not open a changelog entry"
+    assert "44,687" not in py[3], "the item is scoped as a paragraph, not a bullet"
+    assert sorted(entries_md) == [1], "markdown bullets still absorb their continuation"
+    assert "44,687" in entries_md[1]
+
+
+@pytest.mark.timeout(120)
+def test_every_non_blank_line_of_the_corpus_lands_in_exactly_one_entry() -> None:
+    """The invariant the splitter's docstring claims, asserted rather than
+    claimed. `--list-unmarked` and the overclaim rule both iterate entries, so
+    a line in no entry is a line neither of them can ever guard."""
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    assert len(files) > 100, "an empty scan would pass this test vacuously"
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        seen: dict[int, int] = {}
+        for start, block in cdf.split_entries(path, text):
+            for off in range(block.count("\n") + 1):
+                seen[start + off] = seen.get(start + off, 0) + 1
+        for idx, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            assert seen.get(idx, 0) == 1, f"{path}:{idx} is in {seen.get(idx, 0)} entries"
+
+
+# --- binding: the marker's value is the figure the prose publishes -------
+#
+# The link the rest of the gate does not make. Producer checks bind the
+# producer to the marker; self-consistency binds markers to each other. The
+# number a reader sees is the prose, and before this rule nothing compared the
+# two -- so #1445's failure mode was reproducible straight through #1469's own
+# gate.
+
+
+def test_editing_a_published_figure_and_leaving_its_marker_is_a_hard_failure(
+    repo: Path,
+) -> None:
+    """Reproduced on the live tree: changing `**3,448,428 bytes**` in
+    `CHANGELOG/v4.md` to `**9,999,999 bytes**` while leaving the marker at
+    3448428 printed the marker count and exited 0."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** Unbounded, the worst session rendered **9,999,999 bytes**.\n"
+        f"  {_marker('benchmarks/p.py#unbounded_max', 3448428, CORPUS, SHA)}\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert len(report.hard) == 1
+    assert "no figure reading 3448428 appears" in report.hard[0]
+
+
+def test_a_marker_sitting_against_its_figure_is_clean(repo: Path) -> None:
+    """The distinguishing arm: the same entry with the published figure intact
+    passes, so the rule is reading the number and not the shape."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** Unbounded, the worst session rendered **3,448,428 bytes**.\n"
+        f"  {_marker('benchmarks/p.py#unbounded_max', 3448428, CORPUS, SHA)}\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert report.hard == []
+
+
+def test_bumping_every_marker_and_leaving_the_prose_is_a_hard_failure(
+    repo: Path,
+) -> None:
+    """The repair path a producer move opens, and the reason this rule is hard.
+
+    When the constant legitimately changes, an author can satisfy the producer
+    check by editing the marker values alone -- leaving every surrounding
+    sentence reading the old number. Green CI, false published figure, which is
+    #1445 again through the new gate.
+    """
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** A cap of 20 leaves the median session whole.\n"
+        f"  {_marker('benchmarks/p.py#cap', 21)}\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert len(report.hard) == 1 and "no figure reading 21 appears" in report.hard[0]
+
+
+def test_a_comment_marker_is_held_to_its_comment_not_the_statement_below(
+    repo: Path,
+) -> None:
+    """Reproduced on the live tree: editing `# A cap of 20 leaves the median
+    session whole` to read 25, with the constant and all four markers untouched,
+    left `--mode all` at exit 0 and the suite at 33 passed.
+
+    The assignment below is what the producer already re-runs. The sentence is
+    the figure a reader sees, so the comment run is the scope.
+    """
+    (repo / "benchmarks" / "x.py").write_text(
+        "# A cap of 25 leaves the median session whole.\n"
+        f"# {_marker('benchmarks/p.py#cap', 20)}\n"
+        "CAP = 20\n"
+    )
+    report = _run(repo, "benchmarks/x.py")
+    assert len(report.hard) == 1 and "no figure reading 20 appears" in report.hard[0]
+
+
+def test_a_comment_marker_agreeing_with_its_comment_is_clean(repo: Path) -> None:
+    """The distinguishing arm for the narrowing."""
+    (repo / "benchmarks" / "x.py").write_text(
+        "# A cap of 20 leaves the median session whole.\n"
+        f"# {_marker('benchmarks/p.py#cap', 20)}\n"
+        "CAP = 20\n"
+    )
+    report = _run(repo, "benchmarks/x.py")
+    assert report.hard == []
+
+
+def test_a_marker_quoted_as_inline_code_publishes_nothing(repo: Path) -> None:
+    """Same convention as the overclaim sentence: inline code is a citation.
+    Without it, the CHANGELOG entry that documents the marker syntax parses as
+    carrying a marker, and documenting the format publishes a figure."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** A marker reads "
+        f"`{_marker('benchmarks/p.py#cap', 20)}` and names its producer.\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert report.hard == []
+    assert cdf.parse_markers(repo / "CHANGELOG" / "v9.md", (repo / "CHANGELOG" / "v9.md").read_text()) == []
+
+
+def test_an_unmarked_figure_beside_a_marked_one_stays_grandfathered(
+    repo: Path,
+) -> None:
+    """The direction is marker -> prose, never prose -> marker. Requiring the
+    reverse would fail on the whole existing corpus, and the gate would be off
+    within a day -- the reason grandfathering exists at all."""
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** The bound is 11,508 bytes and the share is 93.7%.\n"
+        f"  {_marker('benchmarks/p.py#bounded_max', 11508, CORPUS, SHA)}\n"
+    )
+    report = _run(repo, "CHANGELOG/v9.md")
+    assert report.hard == []
+
+
 # --- the producer protocol -----------------------------------------------
 
 
@@ -318,7 +565,7 @@ def test_a_producer_emitting_a_different_value_is_a_hard_failure(
     (repo / "benchmarks" / "emitter.py").write_text(
         "import json, sys\nprint(json.dumps({'k': 21}))\n"
     )
-    (repo / "a.md").write_text(_marker("benchmarks/emitter.py#k", 20))
+    (repo / "a.md").write_text(_published("benchmarks/emitter.py#k", 20))
     report = cdf.Report(github=False)
     markers = cdf.check_text([repo / "a.md"], report)
     cdf.check_producers(markers, report)
@@ -331,7 +578,7 @@ def test_a_store_backed_marker_is_never_executed(repo: Path) -> None:
     none, and the lab corpus must not go there (#1456). Running one would fail
     for the wrong reason and the gate would be turned off."""
     (repo / "benchmarks" / "emitter.py").write_text("raise SystemExit('needs a store')\n")
-    (repo / "a.md").write_text(_marker("benchmarks/emitter.py#k", 20, CORPUS, SHA))
+    (repo / "a.md").write_text(_published("benchmarks/emitter.py#k", 20, CORPUS, SHA))
     report = cdf.Report(github=False)
     markers = cdf.check_text([repo / "a.md"], report)
     cdf.check_producers(markers, report)
@@ -343,7 +590,7 @@ def test_a_producer_missing_the_key_is_a_hard_failure(repo: Path) -> None:
     (repo / "benchmarks" / "emitter.py").write_text(
         "import json\nprint(json.dumps({'other': 1}))\n"
     )
-    (repo / "a.md").write_text(_marker("benchmarks/emitter.py#k", 20))
+    (repo / "a.md").write_text(_published("benchmarks/emitter.py#k", 20))
     report = cdf.Report(github=False)
     markers = cdf.check_text([repo / "a.md"], report)
     cdf.check_producers(markers, report)

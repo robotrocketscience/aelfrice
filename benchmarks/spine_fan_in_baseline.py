@@ -29,23 +29,25 @@ under the corrected denominator it reports **94.86%** (38,789 / 40,892). Those
 two come from one `spine_divergence()` call on one store, which is the only
 pair it is meaningful to subtract — and the change is the correction, not a
 movement in fidelity, so do not compare them silently either.
+<!-- derived: benchmarks/spine_fan_in_baseline.py#n_reproduced = 39335 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=b61172e8595c -->
+<!-- derived: benchmarks/spine_fan_in_baseline.py#n_shipped = 41984 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=b61172e8595c -->
+<!-- derived: benchmarks/spine_fan_in_baseline.py#n_eligible_reproduced = 38789 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=b61172e8595c -->
+<!-- derived: benchmarks/spine_fan_in_baseline.py#n_eligible_shipped = 40892 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=b61172e8595c -->
 
 The **93.68%** published in #1336 is a *different* measurement: 39,280 / 41,929,
 on a snapshot with 55 fewer shipped edges. It is not this store's before-figure
 and must not be paired with the 94.86% as though it were.
 
-The four counts above carry #1469 markers, repeated verbatim in the CHANGELOG
-entry that quotes them. Nothing here can re-run in public CI -- these need a
-real belief store and the lab corpus does not go to a public runner (#1456) --
-so the marker records the corpus and the day instead, and CI holds the pair to
-agreeing with each other rather than to a value it cannot recompute. That is
-the check #1449 needed: one PR published 44,683 in one file and 44,687 in four
-others, and no store was required to see it.
-
-<!-- derived: benchmarks/spine_fan_in_baseline.py#n_reproduced = 39335 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=394834f4af9a -->
-<!-- derived: benchmarks/spine_fan_in_baseline.py#n_shipped = 41984 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=394834f4af9a -->
-<!-- derived: benchmarks/spine_fan_in_baseline.py#n_eligible_reproduced = 38789 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=394834f4af9a -->
-<!-- derived: benchmarks/spine_fan_in_baseline.py#n_eligible_shipped = 40892 corpus=repo-local-store/41984-edges@2026-08-05 producer-sha=394834f4af9a -->
+The four counts carry #1469 markers, sitting against the sentence that
+publishes them and repeated verbatim in the CHANGELOG entry that quotes them.
+Nothing here can re-run in public CI -- these need a real belief store and the
+lab corpus does not go to a public runner (#1456) -- so the marker records the
+corpus and the day instead, and CI holds the pair to agreeing with each other
+rather than to a value it cannot recompute. That is the check #1449 needed: one
+PR published 44,683 in one file and 44,687 in four others, and no store was
+required to see it. It is the check, not the repair -- neither of those two
+figures carries a marker yet, so the #1449 instance itself is still only in
+`--list-unmarked`.
 
 Usage:
 

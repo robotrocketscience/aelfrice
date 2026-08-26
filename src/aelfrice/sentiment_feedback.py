@@ -1,7 +1,7 @@
 """Implicit sentiment-from-prose feedback (#193, v2.0 opt-in).
 
-Reads each user prompt, regex-matches against twelve positive and
-twelve negative sentiment patterns, and emits a `SentimentSignal`.
+Reads each user prompt, regex-matches against 12 positive and
+12 negative sentiment patterns, and emits a `SentimentSignal`.
 The signal is split equally across the previous turn's retrieved
 beliefs via `apply_sentiment_to_pending`, which calls
 `feedback.apply_feedback` once per *live* pending belief id with 1/N of
@@ -21,7 +21,7 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     assumed task content, not user feedback. `detect_sentiment` returns
     `None` for these so the regex bank does not match incidental phrases
     in long pastes.
-  * **Pattern provenance.** Twelve positive patterns and twelve negative
+  * **Pattern provenance.** 12 positive patterns and 12 negative
     patterns ported from the research-line `agentmemory/sentiment_feedback.py`
     per the v2.0 ratification. Those two counts and the length guard
     above are store-free figures: `benchmarks/published_constants.py`

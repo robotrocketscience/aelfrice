@@ -8,13 +8,22 @@ it; none by CI. This is the gate that changes that.
 ## The marker
 
 A published figure carries a machine-readable marker naming its producer, the
-key that producer emits it under, and the value that was published:
-
+key that producer emits it under, and the value that was published -- here, the
+session-end lock prompt's item cap of 20:
     <!-- derived: benchmarks/published_constants.py#stop_prompt_max_items = 20 -->
 
-In a Python file the identical marker is written inside a comment:
-
+In a Python file the identical marker is written inside a comment, where it is
+held to the comment run it sits in and not to the statement below it:
+    # A cap of 20 leaves the median session whole
     # <!-- derived: benchmarks/published_constants.py#stop_prompt_max_items = 20 -->
+    STOP_PROMPT_MAX_ITEMS: Final[int] = 20
+
+A marker's value must also *be* a figure in the text around it. Producer checks
+bind the producer to the marker and self-consistency binds markers to each
+other; neither reads the number a reader sees, so before this rule an author
+could publish one number in prose and a different one in its marker and stay
+green. The direction is marker -> prose only: an unmarked figure is still
+grandfathered.
 
 The syntax is the same everywhere so one scanner reads both surfaces. Six of
 the seven #1469 instances shipped in source as well as in the CHANGELOG, and
@@ -80,6 +89,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -161,6 +171,18 @@ def _uncited(text: str) -> str:
     return _INLINE_CODE_RE.sub(" ", text)
 
 
+def _uncited_inplace(text: str) -> str:
+    """`_uncited`, but same length, so offsets still give the right line.
+
+    Marker parsing uses this rather than `_uncited`: a marker quoted inside
+    backticks is a citation of the syntax, not a published figure, and the same
+    convention already governs the overclaim sentence. Before this, the
+    CHANGELOG entry that *introduces* the marker was itself parsed as carrying
+    one, so documenting the format published a figure.
+    """
+    return _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), text)
+
+
 # Figure extraction. Applied only inside an entry that carries an overclaim
 # sentence, or under --list-unmarked.
 #
@@ -219,7 +241,7 @@ class Marker:
         return self.corpus is not None
 
 
-def normalise(value: str) -> str:
+def normalise(value: object) -> str:
     """Canonical form for comparing a published rendering to an emitted value.
 
     `11,508`, `11508` and `11_508` are one figure; so are `299.7x` and `299.7`,
@@ -264,8 +286,9 @@ def parse_markers(path: Path, text: str) -> list[Marker]:
     worse than no marker at all.
     """
     markers: list[Marker] = []
-    for match in MARKER_RE.finditer(text):
-        line = text.count("\n", 0, match.start()) + 1
+    scanned = _uncited_inplace(text)
+    for match in MARKER_RE.finditer(scanned):
+        line = scanned.count("\n", 0, match.start()) + 1
         attrs: dict[str, str] = {}
         errors: list[str] = []
         for name, val in ATTR_RE.findall(match.group("attrs") or ""):
@@ -323,60 +346,91 @@ def parse_markers(path: Path, text: str) -> list[Marker]:
 _SHA_STRIP_RE = re.compile(rb"producer-sha=[0-9a-f]{12}")
 
 
+def producer_path(producer: str) -> Path | None:
+    """`producer` resolved under the repo, or None if it escapes it.
+
+    `REPO_ROOT / producer` is not containment: an absolute `producer` discards
+    REPO_ROOT entirely (`Path('/repo') / '/bin/sh'` is `/bin/sh`), and `..`
+    walks out. `--mode producers` execs this path under `sys.executable`, so a
+    marker is committed input to a subprocess argv and has to be bounded.
+    """
+    if producer.startswith("/") or producer.startswith("\\"):
+        return None
+    path = (REPO_ROOT / producer).resolve()
+    if not path.is_relative_to(REPO_ROOT.resolve()):
+        return None
+    return path
+
+
 def producer_sha(producer: str) -> str | None:
     """First 12 hex of sha256 over the producer's bytes, or None if missing.
 
     Every `producer-sha=` value in the file is blanked first; see above.
     """
-    path = REPO_ROOT / producer
-    if not path.is_file():
+    path = producer_path(producer)
+    if path is None or not path.is_file():
         return None
     body = _SHA_STRIP_RE.sub(b"producer-sha=", path.read_bytes())
     return hashlib.sha256(body).hexdigest()[:12]
 
 
 def split_entries(path: Path, text: str) -> list[tuple[int, str]]:
-    """Split a file into the units the overclaim claim is scoped to.
+    """Split a file into the units a claim -- and a marker -- is scoped to.
 
-    A CHANGELOG entry is a top-level `- ` bullet plus its indented continuation
-    lines -- the unit a reader reads as one claim, and the unit
-    `CHANGELOG/unreleased/` stores one per file. Anywhere else the unit is a
-    blank-line-delimited paragraph, which is the widest scope a comment block
-    can reasonably be held to.
+    A CHANGELOG entry is a top-level `- ` bullet plus its continuation lines --
+    the unit a reader reads as one claim, and the unit `CHANGELOG/unreleased/`
+    stores one per file. Anywhere else the unit is a blank-line-delimited
+    paragraph, which is the widest scope a comment block can reasonably be held
+    to.
 
-    Returns `(first_line_number, block_text)` pairs.
+    Two properties this has to hold, both of which the first version broke:
+
+    * **Bullet scoping is markdown-only.** That version switched a whole file
+      into bullet mode on a single `- ` line anywhere in it, so one docstring
+      list turned every paragraph in the file into "not an entry" and the
+      overclaim rule silently stopped running on 228 of the 929 scanned files.
+      A `- ` inside a Python docstring is a list item, not a changelog entry.
+    * **Every non-blank line lands in exactly one entry.** That version dropped
+      everything above the first bullet and everything after a heading. A rule
+      that cannot see a line cannot guard it and reports green while doing so,
+      which is worse than not running at all. The invariant is not a claim
+      here: `test_derived_figures_1469.py` asserts it over every scanned file.
+
+    Returns `(first_line_number, block_text)` pairs, in file order.
     """
     lines = text.splitlines()
+    bulleted = path.suffix == ".md"
     entries: list[tuple[int, str]] = []
-    if any(line.startswith("- ") for line in lines):
-        start: int | None = None
-        buf: list[str] = []
-        for idx, line in enumerate(lines, start=1):
-            if line.startswith("- "):
-                if start is not None:
-                    entries.append((start, "\n".join(buf)))
-                start, buf = idx, [line]
-            elif line.startswith("#") or line.startswith("## "):
-                if start is not None:
-                    entries.append((start, "\n".join(buf)))
-                start, buf = None, []
-            elif start is not None:
-                buf.append(line)
-        if start is not None:
+    start: int | None = None
+    buf: list[str] = []
+    in_bullet = False
+
+    def flush() -> None:
+        nonlocal start, buf, in_bullet
+        if start is not None and any(line.strip() for line in buf):
             entries.append((start, "\n".join(buf)))
-        return entries
-    start = 1
-    buf = []
+        start, buf, in_bullet = None, [], False
+
     for idx, line in enumerate(lines, start=1):
+        if bulleted and line.startswith("- "):
+            flush()
+            start, buf, in_bullet = idx, [line], True
+            continue
+        if in_bullet:
+            # A bullet entry runs through blank and indented continuation
+            # lines; it ends at the next top-level bullet, at a heading, or at
+            # any other dedent to column zero.
+            if not line.strip() or line[:1].isspace():
+                buf.append(line)
+                continue
+            flush()
         if line.strip():
-            if not buf:
+            if start is None:
                 start = idx
             buf.append(line)
-        elif buf:
-            entries.append((start, "\n".join(buf)))
-            buf = []
-    if buf:
-        entries.append((start, "\n".join(buf)))
+        else:
+            flush()
+    flush()
     return entries
 
 
@@ -395,6 +449,37 @@ def extract_figures(block: str) -> list[str]:
         seen.add(norm)
         out.append(raw)
     return out
+
+
+# A marker written as a Python comment annotates the comment it sits in, not
+# the statement underneath it.
+_PY_COMMENT_RE = re.compile(r"^\s*#")
+
+
+def binding_block(path: Path, start: int, block: str, line: int) -> str:
+    """The text a marker on `line` is held to, narrowed from its entry.
+
+    In a Python file a comment marker is narrowed to the run of comment lines
+    it belongs to -- the second example in this module's docstring. Without the
+    narrowing, the `STOP_PROMPT_MAX_ITEMS` assignment two lines below satisfies
+    the marker no matter what the sentence above it says: edit the comment to
+    read 25 and the enclosing paragraph still contains a 20. The assignment is
+    what the producer already re-runs; the sentence is the figure a reader
+    actually sees, and it is the one this scope holds.
+    """
+    if path.suffix != ".py":
+        return block
+    lines = block.split("\n")
+    idx = line - start
+    if not (0 <= idx < len(lines)) or not _PY_COMMENT_RE.match(lines[idx]):
+        return block
+    lo = idx
+    while lo > 0 and _PY_COMMENT_RE.match(lines[lo - 1]):
+        lo -= 1
+    hi = idx
+    while hi + 1 < len(lines) and _PY_COMMENT_RE.match(lines[hi + 1]):
+        hi += 1
+    return "\n".join(lines[lo : hi + 1])
 
 
 def rel(path: Path) -> str:
@@ -429,8 +514,58 @@ class Report:
             print(f"::warning file={rel(path)},line={line}::{message}")
 
 
+def check_binding(files: list[Path], markers: list[Marker], report: Report) -> None:
+    """Every marker's value must be the figure the surrounding text publishes.
+
+    This is the link the rest of the gate does not make. Producer checks bind
+    the producer to the marker; self-consistency binds markers to each other.
+    Neither of them looks at the number a reader sees, so both stay green while
+    the prose says something else -- which is the whole failure mode #1469 was
+    filed for, reproduced through #1469's own gate.
+
+    Two ways it bites. Editing a published figure and leaving its marker alone
+    (`**3,448,428 bytes**` -> `**9,999,999 bytes**`) now fails, because 3448428
+    is no longer in the block. And the repair path when a producer legitimately
+    moves -- bump the six markers to 21 and leave every sentence around them
+    reading 20 -- now fails at all six sites for the same reason.
+
+    The direction is marker -> text, not text -> marker: an unmarked figure
+    stays grandfathered (see `--list-unmarked`), and only the overclaim
+    sentence buys out of that.
+    """
+    by_path: dict[Path, list[Marker]] = {}
+    for marker in markers:
+        by_path.setdefault(marker.path, []).append(marker)
+    for path, group in sorted(by_path.items(), key=lambda kv: str(kv[0])):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        entries = split_entries(path, text)
+        for marker in group:
+            block = next(
+                (
+                    binding_block(path, start, body, marker.line)
+                    for start, body in entries
+                    if start <= marker.line <= start + body.count("\n")
+                ),
+                None,
+            )
+            figures = [] if block is None else extract_figures(block)
+            want = normalise(marker.value)
+            if want in {normalise(f) for f in figures}:
+                continue
+            shown = ", ".join(figures[:8]) if figures else "none"
+            report.fail(
+                marker.path,
+                marker.line,
+                f"{marker.ident} is published as {marker.value}, but no figure "
+                f"reading {marker.value} appears in the text it annotates "
+                f"(figures there: {shown}). A marker whose value is in no "
+                "surrounding sentence guards nothing: move it beside the "
+                "figure, or correct one of the two.",
+            )
+
+
 def check_text(files: list[Path], report: Report) -> list[Marker]:
-    """Grammar, self-consistency, staleness and the overclaim sentence."""
+    """Grammar, binding, self-consistency, staleness and the overclaim."""
     markers: list[Marker] = []
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -440,12 +575,22 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
     for marker in markers:
         for err in marker.errors:
             report.fail(marker.path, marker.line, f"malformed marker: {err}")
-        if not (REPO_ROOT / marker.producer).is_file():
+        resolved = producer_path(marker.producer)
+        if resolved is None:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"producer {marker.producer!r} is not inside the repository; a "
+                "marker names a repo-relative path and nothing else",
+            )
+        elif not resolved.is_file():
             report.fail(
                 marker.path,
                 marker.line,
                 f"producer {marker.producer!r} does not exist",
             )
+
+    check_binding(files, markers, report)
 
     # Self-consistency: one producer#key, one published value, everywhere.
     by_ident: dict[str, list[Marker]] = {}
@@ -512,8 +657,8 @@ def check_producers(markers: list[Marker], report: Report) -> None:
         by_producer.setdefault(marker.producer, []).append(marker)
 
     for producer, group in sorted(by_producer.items()):
-        path = REPO_ROOT / producer
-        if not path.is_file():
+        path = producer_path(producer)
+        if path is None or not path.is_file():
             continue  # already reported by check_text
         proc = subprocess.run(
             [sys.executable, str(path), "--emit-figures"],
@@ -532,8 +677,9 @@ def check_producers(markers: list[Marker], report: Report) -> None:
                     f"--emit-figures: {proc.stderr.strip()[:400]}",
                 )
             continue
+        decoded: object
         try:
-            emitted = json.loads(proc.stdout)
+            decoded = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:
             for marker in group:
                 report.fail(
@@ -542,15 +688,16 @@ def check_producers(markers: list[Marker], report: Report) -> None:
                     f"producer {producer} did not emit JSON on stdout ({exc})",
                 )
             continue
-        if not isinstance(emitted, dict):
+        if not isinstance(decoded, dict):
             for marker in group:
                 report.fail(
                     marker.path,
                     marker.line,
-                    f"producer {producer} emitted {type(emitted).__name__}, "
+                    f"producer {producer} emitted {type(decoded).__name__}, "
                     "expected a JSON object of key -> value",
                 )
             continue
+        emitted = cast("dict[str, object]", decoded)
         for marker in group:
             if marker.key not in emitted:
                 report.fail(
@@ -626,7 +773,7 @@ def list_unmarked(files: list[Path]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument(
         "--mode",
         choices=("text", "producers", "all"),
