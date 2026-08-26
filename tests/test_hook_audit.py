@@ -22,6 +22,11 @@ from aelfrice.hook import (
     session_start,
     user_prompt_submit,
 )
+from aelfrice.hook_audit import (
+    AUDIT_ROTATION_HOOK,
+    _append_audit,
+    audit_window,
+)
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
@@ -402,9 +407,17 @@ def test_rotation_at_max_bytes(
     # Rotated content was the post-fire-2 file (single-slot rotation).
     rotated_records = read_hook_audit(rotated)
     assert len(rotated_records) >= 1
-    # Live file is fresh after rotation (fire-3 wrote to it).
+    # Live file is fresh after rotation (fire-3 wrote to it). Size is no
+    # longer the right probe: #1528 opens each rotated generation with one
+    # `audit_rotation` marker row, so the file legitimately carries a
+    # header as well as fire-3. Count the fires instead.
     if audit_path.exists():
-        assert audit_path.stat().st_size <= first_size + 50  # only fire-3
+        live = read_hook_audit(audit_path)
+        fires = [
+            r for r in live
+            if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+        ]
+        assert len(fires) == 1, live
 
 
 # ---------------------------------------------------------------------------
@@ -581,3 +594,195 @@ def test_audit_record_omits_order_policy_when_unset(
         n_locked=0,
     )
     assert "order_policy" not in read_hook_audit(_audit_path_for_db(db))[-1]
+
+
+# ---------------------------------------------------------------------------
+# #1528: rotation is still destructive, but it is now DETECTABLE
+# ---------------------------------------------------------------------------
+
+_ROTATE_CAP = 1000
+"""Byte cap for the rotation tests. Small enough to roll over quickly."""
+
+_APPEND_LIMIT = 500
+"""Hard bound on the drive loop below, so a regression cannot hang it."""
+
+
+def _fire_row(n: int) -> dict[str, object]:
+    """One ordinary UPS row with a lexicographically sortable ts."""
+    return {
+        "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        "ts": f"2026-08-26T00:{n // 60:02d}:{n % 60:02d}Z",
+        "n_beliefs": 0,
+    }
+
+
+def _append_until_rotations(
+    audit_path: Path, target: int, *, start: int = 0,
+) -> int:
+    """Append fire rows until `target` rollovers have happened.
+
+    Two things this deliberately does NOT do. It does not count appends:
+    the serialised row size is not pinned here, so "N rows rotates once"
+    would be a guess that drifts silently when a field is added. And it
+    does not watch the generation stamp, which would make every test below
+    circular — a stamp that stopped being written would stall this loop and
+    fail on the bound instead of failing the assertion about truncation
+    that the test actually makes. Rotation is detected by the live file's
+    inode changing, the same marker-independent probe `aelf tail` uses.
+
+    Returns the next unused row index. Bounded loop; raises, never hangs.
+    """
+    seen = 0
+    i = start
+    ino: int | None = None
+    for _ in range(_APPEND_LIMIT):
+        if seen >= target:
+            return i
+        _append_audit(audit_path, _fire_row(i), _ROTATE_CAP)
+        i += 1
+        if not audit_path.exists():
+            # Rotated away and not recreated yet — the pre-#1528 shape,
+            # where the fresh file appears only on the next append.
+            seen += 1
+            ino = None
+            continue
+        now = audit_path.stat().st_ino
+        if ino is not None and now != ino:
+            seen += 1
+        ino = now
+    raise AssertionError(
+        f"only {seen} of {target} rotations in {_APPEND_LIMIT} appends"
+    )
+
+
+def test_first_rotation_loses_nothing_and_says_so(tmp_path: Path) -> None:
+    """One rollover fills an empty `.1`. That is a COMPLETE history.
+
+    The marker must not cry truncation here, or the signal is worthless:
+    a warning that fires on every rotated log tells a reader nothing.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    _append_until_rotations(audit_path, 1)
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    assert rotated.exists()
+    window = audit_window(sorted(tmp_path.glob(AUDIT_FILENAME + "*")))
+    assert window.generation == 2
+    assert window.discarded_generations == 0
+    assert window.truncated is False
+    assert window.rotated_present is True
+
+
+def test_second_rotation_is_detectable_as_truncation(tmp_path: Path) -> None:
+    """Rotate twice: the first archive is destroyed, and a reader can tell.
+
+    This is the whole point of #1528. `os.replace` into the single `.1`
+    slot leaves nothing behind, so no amount of reading the surviving
+    files can recover the discarded generation — the count has to be
+    carried forward at rotation time or it is gone.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    nxt = _append_until_rotations(audit_path, 2)
+    # One more fire so the live generation has content of its own.
+    _append_audit(audit_path, _fire_row(nxt), _ROTATE_CAP)
+    logs = sorted(tmp_path.glob(AUDIT_FILENAME + "*"))
+    window = audit_window(logs)
+    assert window.truncated is True
+    assert window.discarded_generations >= 1
+    assert window.generation >= 3
+    # The window it DOES cover is reported, so the rate has a stated scope.
+    assert window.first_ts is not None
+    assert window.last_ts is not None
+    assert window.first_ts <= window.last_ts
+    # The surviving window starts after the beginning of history — that is
+    # exactly the bias a long-horizon rate would otherwise hide.
+    assert window.first_ts > "2026-08-26T00:00:00Z"
+
+
+def test_rotation_marker_summarises_the_retired_generation(
+    tmp_path: Path,
+) -> None:
+    """The marker carries the retired file's fire-count and ts range."""
+    audit_path = tmp_path / AUDIT_FILENAME
+    rows = _append_until_rotations(audit_path, 1)
+    marker = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
+    assert marker["hook"] == AUDIT_ROTATION_HOOK
+    assert marker["generation"] == 2
+    assert marker["discarded_generations"] == 0
+    prev = marker["rotated_from"]
+    assert prev["generation"] == 1
+    # Every row written so far went into the retired generation, so the
+    # stamped count is exact rather than merely non-zero.
+    assert prev["records"] == rows
+    assert prev["first_ts"] == "2026-08-26T00:00:00Z"
+    assert prev["last_ts"] == _fire_row(rows - 1)["ts"]
+
+
+def test_existing_rotated_log_without_a_marker_still_parses(
+    tmp_path: Path,
+) -> None:
+    """Logs rotated before #1528 carry no marker. They must still read.
+
+    Degradation has to be to the only claim such a file supports:
+    generation 1, nothing KNOWN discarded — never an invented count and
+    never an exception.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    rotated.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3)),
+        encoding="utf-8",
+    )
+    audit_path.write_text(
+        "".join(json.dumps(_fire_row(i)) + "\n" for i in range(3, 6)),
+        encoding="utf-8",
+    )
+    window = audit_window([audit_path, rotated])
+    assert window.generation == 1
+    assert window.discarded_generations == 0
+    assert window.truncated is False
+    assert window.records == 6
+    assert window.first_ts == "2026-08-26T00:00:00Z"
+    assert window.last_ts == "2026-08-26T00:00:05Z"
+    assert window.rotated_present is True
+    # And the ordinary reader is unaffected by the absence.
+    assert len(read_hook_audit(audit_path)) == 3
+
+
+def test_marker_row_is_inert_to_hook_filtering_readers(
+    tmp_path: Path,
+) -> None:
+    """The marker must not be counted as a fire by any existing reader.
+
+    Every consumer filters on a specific `hook` value, so a marker row
+    carrying `hook: audit_rotation` is skipped without any of them
+    changing. If it were counted, the fix for a measurement defect would
+    itself corrupt the measurement.
+    """
+    audit_path = tmp_path / AUDIT_FILENAME
+    nxt = _append_until_rotations(audit_path, 1)
+    _append_audit(audit_path, _fire_row(nxt), _ROTATE_CAP)
+    all_rows = read_hook_audit(audit_path)
+    fires = [
+        r for r in all_rows
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    assert any(r.get("hook") == AUDIT_ROTATION_HOOK for r in all_rows)
+    assert len(fires) == len(all_rows) - 1
+    # The marker is not counted as a record by the window reader either.
+    assert audit_window([audit_path]).records == len(fires)
+
+
+def test_audit_window_ignores_missing_and_corrupt(tmp_path: Path) -> None:
+    """A diagnostic must not raise on a half-written or absent file."""
+    audit_path = tmp_path / AUDIT_FILENAME
+    audit_path.write_text(
+        json.dumps(_fire_row(1)) + "\n"
+        + "{not json\n"
+        + "[1, 2, 3]\n"
+        + "\n"
+        + json.dumps(_fire_row(2)) + "\n",
+        encoding="utf-8",
+    )
+    window = audit_window([audit_path, tmp_path / "absent.jsonl"])
+    assert window.records == 2
+    assert window.truncated is False
