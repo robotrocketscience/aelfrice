@@ -313,6 +313,79 @@ def test_discovery_finds_both_store_layouts(tmp_path: Path) -> None:
     assert len(sqc.jsonl_files(found)) == 2
 
 
+def test_discovery_follows_a_linked_worktrees_gitdir_file(
+    tmp_path: Path,
+) -> None:
+    """In a linked work-tree `.git` is a FILE, not a directory.
+
+    So probing `<d>/.git/aelfrice/rebuild_logs` for a directory finds
+    nothing there, and a census rooted at a work-tree reports an empty
+    population while the logs sit in the repo's common dir. The logs live
+    under the COMMON dir, which is what `commondir` names — the
+    per-worktree gitdir is the wrong answer and holds no logs.
+    """
+    repo = tmp_path / "repo"
+    common = repo / ".git"
+    logs = common / "aelfrice" / "rebuild_logs"
+    _write(logs, "a.jsonl", [_row("2026-08-13T00:00:00Z", "shared query")])
+
+    # The shape `git worktree add` writes.
+    wt_gitdir = common / "worktrees" / "wt1"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    worktree = tmp_path / "wt1"
+    worktree.mkdir()
+    (worktree / ".git").write_text(
+        f"gitdir: {wt_gitdir}\n", encoding="utf-8",
+    )
+
+    found = sqc.discover_log_dirs(worktree)
+
+    assert logs.resolve() in found
+    assert len(sqc.jsonl_files(found)) == 1
+
+
+def test_discovery_recognises_a_root_that_is_already_a_log_dir(
+    tmp_path: Path,
+) -> None:
+    """"At or under `root`" has to include `root`.
+
+    Pointing `--discover` straight at a `rebuild_logs` directory otherwise
+    reports no directory at all, because only the two nested shapes were
+    ever probed.
+    """
+    logs = tmp_path / "rebuild_logs"
+    _write(logs, "a.jsonl", [_row("2026-08-13T00:00:00Z", "direct query")])
+
+    found = sqc.discover_log_dirs(logs)
+
+    assert found == [logs.resolve()]
+
+
+def test_an_unreadable_log_dir_is_a_census_failure_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exit 2 is "could not census", and this is that case.
+
+    A directory that resolved a moment ago can be unreadable by the time
+    it is read. The caller reads the exit code to decide whether a
+    population figure exists at all, so an `OSError` escaping `main` would
+    be indistinguishable from a crash.
+    """
+    logs = tmp_path / "rebuild_logs"
+    _write(logs, "a.jsonl", [_row("2026-08-13T00:00:00Z", "q")])
+
+    def _raise(_d: Path) -> list[dict]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(sqc, "load_rows", _raise)
+
+    rc = sqc.main(["--logs", str(logs)])
+
+    assert rc == 2
+    assert "cannot read" in capsys.readouterr().err
+
+
 @pytest.mark.timeout(30)
 def test_a_malformed_row_falls_out_instead_of_aborting_the_census() -> None:
     """`input` is written as an object, but the census must not assume it.

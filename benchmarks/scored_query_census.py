@@ -102,24 +102,77 @@ _PRUNE_DIRNAMES: Final[frozenset[str]] = frozenset({
 _DEFAULT_MAX_DEPTH: Final[int] = 4
 
 
+def _git_common_dir(here: Path) -> Path | None:
+    """`here`'s git common directory, or None if `here` is not a work-tree.
+
+    In an ordinary checkout `.git` is a directory and is itself the answer.
+    In a LINKED WORK-TREE `.git` is a plain file reading `gitdir: <path>`,
+    and that path is the per-worktree gitdir, not the common one; the
+    common dir is named by the `commondir` file beside it. Resolved the
+    same way `db_paths` does, because the audit and rebuild logs live
+    under the COMMON dir and are therefore shared by every linked
+    work-tree of a repo.
+
+    Read off the filesystem rather than by shelling out to `git
+    rev-parse`, so a census over a large tree does not fork once per
+    visited directory.
+    """
+    dot_git = here / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if not dot_git.is_file():
+        return None
+    try:
+        text = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text[len("gitdir:"):].strip())
+    if not gitdir.is_absolute():
+        gitdir = (here / gitdir).resolve()
+    commondir = gitdir / "commondir"
+    if not commondir.is_file():
+        return gitdir
+    try:
+        rel = commondir.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return gitdir
+    if not rel:
+        return gitdir
+    common = Path(rel)
+    return common if common.is_absolute() else (gitdir / common).resolve()
+
+
 def discover_log_dirs(root: Path, max_depth: int = _DEFAULT_MAX_DEPTH) -> list[Path]:
     """Every rebuild-log directory at or under `root`, sorted.
 
-    Two shapes are checked at each visited directory: `<d>/.git/aelfrice/
-    rebuild_logs` (the repo-local store, which is where essentially all of the
-    corpus is) and `<d>/.aelfrice/rebuild_logs` (the home fallback used when
-    cwd is outside any work-tree). `.git` itself is pruned from the descent so
-    the walk does not wander into object storage.
+    Three shapes are checked at each visited directory: `<git-common-dir>/
+    aelfrice/rebuild_logs` (the repo-local store, which is where essentially
+    all of the corpus is), `<d>/.aelfrice/rebuild_logs` (the home fallback
+    used when cwd is outside any work-tree), and `<d>` itself when it is
+    already named `rebuild_logs`, so that pointing `--discover` straight at
+    a log directory does what "at or under `root`" says. `.git` itself is
+    pruned from the descent so the walk does not wander into object storage.
+
+    The git-common-dir resolution is not decoration: in a linked work-tree
+    `.git` is a FILE, so testing `<d>/.git/aelfrice/...` for a directory
+    silently finds nothing there. Results are de-duplicated by resolved
+    path, so the many linked work-trees of one repo contribute their
+    shared common dir once rather than once each.
     """
     root = root.expanduser()
     found: set[Path] = set()
     root_depth = len(root.resolve().parts)
     for dirpath, dirnames, _files in os.walk(root, followlinks=False):
         here = Path(dirpath)
-        for candidate in (
-            here / ".git" / "aelfrice" / REBUILD_LOG_DIRNAME,
-            here / ".aelfrice" / REBUILD_LOG_DIRNAME,
-        ):
+        if here.name == REBUILD_LOG_DIRNAME:
+            found.add(here.resolve())
+        candidates = [here / ".aelfrice" / REBUILD_LOG_DIRNAME]
+        common = _git_common_dir(here)
+        if common is not None:
+            candidates.append(common / "aelfrice" / REBUILD_LOG_DIRNAME)
+        for candidate in candidates:
             if candidate.is_dir():
                 found.add(candidate.resolve())
         if len(here.resolve().parts) - root_depth >= max_depth:
@@ -412,7 +465,16 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[dict[str, Any]] = []
     for d in log_dirs:
-        rows.extend(load_rows(d))
+        # A directory that resolved a moment ago can be unreadable now — a
+        # permissions change, an unmounted share, a worktree pruned by a
+        # concurrent session. That is a census failure (2), the same class
+        # as resolving no directory at all, not a traceback: the caller
+        # reads the exit code to decide whether a population figure exists.
+        try:
+            rows.extend(load_rows(d))
+        except OSError as exc:
+            print(f"cannot read {d}: {exc}", file=sys.stderr)
+            return 2
     if not rows:
         print(
             f"no parseable rebuild_log rows across {len(log_dirs)} directories",
