@@ -104,7 +104,7 @@ def test_architecture_counts_match_the_tree() -> None:
     """
     text = ARCHITECTURE.read_text(encoding="utf-8")
     m = re.search(
-        r"It holds (\d+)\s*\n?\s*modules against the (\d+) `\.py` files", text
+        r"(\d+)\s*\n?\s*modules against the (\d+) `\.py` files", text
     )
     assert m, (
         "could not find the module/file count sentence in ARCHITECTURE.md — "
