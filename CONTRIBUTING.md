@@ -265,17 +265,22 @@ catches two PRs that restate the same fix in two files.
 
 ### Documentation style
 
-The documentation uses ASD-STE100, which is Simplified Technical English.
-Apply these rules when you write or change a documentation file:
+The documentation follows the [Google developer documentation style
+guide](https://developers.google.com/style). Apply these rules when you write
+or change a documentation file:
 
-- Write one idea in each sentence.
+- Address the reader as "you", and write in the present tense.
 - Write in the active voice, and name the actor.
-- Use the imperative for an instruction.
-- Use no idiom and no metaphor.
+- Use the imperative for an instruction, and state the condition before it:
+  "To rebuild the index, run `aelf doctor`."
+- Write one idea in each sentence, and keep sentences short.
+- Use sentence case for every heading.
+- Use no idiom and no metaphor. The audience is global.
 - Use one term for one concept, and use the term that the code uses.
 - Spell out an acronym at its first use in the file.
-- Write instructions of 20 words or fewer, and descriptions of 25 words or
-  fewer.
+- Use serial commas, US spelling, and link text that names its destination.
+- Check anything you are unsure of against the [word
+  list](https://developers.google.com/style/word-list).
 
 Two rules protect the meaning, and they matter more than the rules above:
 
