@@ -5,7 +5,7 @@ cadences.
 
 | Surface | Location | Purpose | Runtime | Cost | Cadence |
 |---|---|---|---|---|---|
-| Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 | Every PR (CI) |
+| Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval and scoring regressions | <1s | $0 | Every PR (CI) |
 | Academic suite | `benchmarks/` | Reproduce published numbers against external benchmarks | minutes–hours | LLM API spend | Nightly (bench-canonical cron) + per-PR smoke (bench-smoke) + manual dispatch |
 
 The synthetic harness is a measurement instrument, **not** a proof of the
@@ -13,7 +13,7 @@ central feedback claim. Through v1.2 the posterior did not drive ranking. v1.3
 added the partial Bayesian re-rank. v1.6 added the eval harness and the
 heat-kernel composition wiring. v1.7 made BM25F default-on. v2.1 made
 `use_heat_kernel` and `use_hrr_structural` default-on. For the caveats, see
-[LIMITATIONS](../user/LIMITATIONS.md).
+[the limitations list](../user/LIMITATIONS.md).
 
 The academic suite is the reproducibility deliverable, and it has five
 adapters: MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench. At v1.0 all
@@ -99,7 +99,7 @@ those figures are not what the canonical JSON contains. Everything in
 `benchmarks/results/*.json` falls into one of two families, and the distinction
 decides how much a movement is worth (#1160):
 
-- **Reader-dependent** — `f1`, `substring_exact_match`, LoCoMo's `overall_f1` and `category_f1`. These metrics hand the joined retrieval context to a scorer that was written for a model's *answer*. Token-F1 between about 2000 tokens of context and a three-token gold answer has precision around 3/2000. The number therefore moves with the **token budget** as much as with the ranking. If you halve the budget, the reported F1 roughly doubles, and retrieval returns strictly less. Treat a gain here as a lead to investigate, not as a result.
+- **Reader-dependent** — `f1`, `substring_exact_match`, and LoCoMo's `overall_f1` and `category_f1`. These metrics hand the joined retrieval context to a scorer that was written for a model's *answer*. Token-F1 between about 2000 tokens of context and a three-token gold answer has precision around 3/2000. The number therefore moves with the **token budget** as much as with the ranking. If you halve the budget, the reported F1 roughly doubles, and retrieval returns strictly less. Treat a gain here as a lead to investigate, not as a result.
 - **Reader-independent** — `retrieval_quality.mrr` and `retrieval_quality.recall_at_k`. Every adapter that scores a blob reports these two metrics. They read the *ordering* of the retrieved list. Retrieval fills the budget in rank order. A smaller budget truncates the tail, so it can only lower these two metrics. To move them, you must rank a relevant belief higher. That is the thing the benchmark exists to measure.
 
 Some metrics belong to neither family, because the harness cannot compute them
@@ -108,8 +108,8 @@ harness records the reason under the `_not_applicable` key of the same object:
 
 | Metric | Why `n/a` |
 | --- | --- |
-| `exact_match` (MAB, LongMemEval, AMA-Bench) | This metric compares the prediction to the gold answer as whole normalised strings. The prediction is the retrieved context. The retrieved context is never one short answer. |
-| `locomo.category_f1.5` | The adversarial category scores a refusal. Nothing in this path can refuse. The harness also excludes this category from `overall_f1`. `overall_f1` is now the mean over the categories that were scored. `scored_qa` reports how many questions were scored, beside the unchanged `total_qa`. |
+| `exact_match` (MAB, LongMemEval, AMA-Bench) | Compares the prediction to the gold answer as whole normalized strings. The prediction is the retrieved context, which is never a single short answer. |
+| `locomo.category_f1.5` | The adversarial category scores a refusal, and nothing in this path can refuse. The harness also excludes this category from `overall_f1`, so `overall_f1` is now the mean over the categories that were scored. `scored_qa` reports how many questions were scored, beside the unchanged `total_qa`. |
 
 `benchmarks/tolerance.py` records an `n/a` leaf as `NOT_APPLICABLE`: it tallies
 the leaf, prints it, and excludes it from the rollup. Unlike a `pass`, a
@@ -120,9 +120,9 @@ canonical file read as a total retrieval failure, and a tolerance band around
 `0.0` turned any genuine fix into a band excursion.
 
 That distinction is also why the LongMemEval multi-session aggregation gap
-(see [LIMITATIONS](../user/LIMITATIONS.md#out-of-scope)) shows up as a low
-number on a topical-relevance benchmark, and why the project does *not* treat
-the gap as a v1.x defect.
+(see [out of scope in the limitations list](../user/LIMITATIONS.md#out-of-scope))
+shows up as a low number on a topical-relevance benchmark, and why the project
+does *not* treat the gap as a v1.x defect.
 
 ## Contamination protocol
 
@@ -238,8 +238,8 @@ real but measure nothing:
 
 | Benchmark | Dataset | Metric | Notes |
 |---|---|---|---|
-| MAB FactConsolidation | `ai-hyz/MemoryAgentBench` Conflict_Resolution | substring exact match (paper's normalisation) | The adapter uses 4,096-token chunks. It splits the text with NLTK `sent_tokenize`. The prompt must state the rule for conflict resolution by serial number. |
-| LoCoMo | `locomo10.json` | token-F1 with Porter stemming | The adapter preserves the session boundaries on ingest. Category 5 is forced-choice. |
+| MAB FactConsolidation | `ai-hyz/MemoryAgentBench` Conflict_Resolution | substring exact match (paper's normalization) | The adapter uses 4,096-token chunks and splits the text with NLTK `sent_tokenize`. The prompt must state the rule for resolving conflicts by serial number. |
+| LoCoMo | `locomo10.json` | token-F1 with Porter stemming | The adapter preserves session boundaries on ingest. Category 5 is forced-choice. |
 | LongMemEval | `xiaowu0162/longmemeval-cleaned` oracle | GPT-4o binary judge (paper) | The adapter passes question_date to retrieval for temporal grounding. |
 | StructMemEval | yandex-research/StructMemEval | LLM judge binary | The adapter uses synthetic timestamps and temporal_sort. You must disclose both. |
 | AMA-Bench | `AMA-bench/AMA-bench` test | LLM judge accuracy (paper: Qwen3-32B) | You must disclose an alternative judge. |
@@ -249,7 +249,7 @@ real but measure nothing:
 LLM-judge benchmarks collapse to noise if the judge isn't reproducible:
 LongMemEval, StructMemEval, AMA-Bench, and the context-rebuilder eval harness at
 `benchmarks/context-rebuilder/` all depend on one. aelfrice is locked on a
-deterministic narrow surface ([PHILOSOPHY](PHILOSOPHY.md), #605), and a
+deterministic narrow surface ([the design philosophy](PHILOSOPHY.md), #605), and a
 single-run judge verdict does not establish that the *eval* itself is
 deterministic enough to gate a release on.
 
@@ -260,8 +260,8 @@ independent judge invocations over the same `(expected, actual)` pairs.
 
 | Measure | What it captures | Threshold |
 |---|---|---|
-| **Inter-judge κ** (run vs run, pairwise) | Judge reproducibility — same pair, same verdict across independent calls | **≥ 0.70** (gate) |
-| **Judge-vs-baseline κ** (judge run vs `score_substring_exact_match`) | How much semantic lift the judge adds over the zero-LLM baseline | reported, not gated |
+| **Inter-judge κ** (run versus run, pairwise) | Judge reproducibility — same pair, same verdict across independent calls | **≥ 0.70** (gate) |
+| **Judge-vs-baseline κ** (judge run versus `score_substring_exact_match`) | How much semantic lift the judge adds over the zero-LLM baseline | reported, not gated |
 
 Inter-judge κ ≥ 0.70 is "substantial agreement" on the Landis-Koch scale, and
 0.70 is where the gate sits. Below 0.70, the judge's per-run verdicts are within
@@ -467,9 +467,9 @@ that touches `benchmarks/`.
 
 | Adapter | Reason |
 |---|---|
-| LongMemEval | An LLM judge produces the final "score" as a binary verdict. The verdict-aggregation logic (`longmemeval_score.py`) is a trivial counter. `tests/test_longmemeval_scoring.py` already covers that counter.  Oracle-checking the judge call itself requires a live model. |
-| StructMemEval | The same reason applies. The judge is per-task. `test_structmemeval_*` tests the aggregation logic. |
-| AMA-Bench | There is no end-to-end oracle check. The MAB fixture covers the shared `qa_scoring.score_multi_answer` helper only. |
+| LongMemEval | An LLM judge produces the final "score" as a binary verdict. The verdict-aggregation logic (`longmemeval_score.py`) is a trivial counter, and `tests/test_longmemeval_scoring.py` already covers it. Oracle-checking the judge call itself requires a live model. |
+| StructMemEval | The same reason applies: the judge is per-task, and `test_structmemeval_*` tests the aggregation logic. |
+| AMA-Bench | There's no end-to-end oracle check. The MAB fixture covers only the shared `qa_scoring.score_multi_answer` helper. |
 
 ### Adding an oracle fixture for a new adapter
 
@@ -529,4 +529,4 @@ record does not enter `benchmarks/results/`.
 
 - [`src/aelfrice/benchmark.py`](../../src/aelfrice/benchmark.py) — synthetic harness source.
 - [`benchmarks/README.md`](../../benchmarks/README.md) — per-adapter activation status.
-- [ROADMAP § v2.0.0](ROADMAP.md) — the shipped milestone at which the academic suite reproduces every headline number.
+- [v2.0.0 in the roadmap](ROADMAP.md) — the shipped milestone at which the academic suite reproduces every headline number.

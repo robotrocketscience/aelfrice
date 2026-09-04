@@ -92,14 +92,14 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 
 **The shipped aelfrice package has six outbound-capable paths. Two of these paths are on by default.** This page counts paths, not calls, because either LLM path can issue several batched requests in one run.
 
-| path | default | transmits |
+| Path | Default | Transmits |
 |---|---|---|
-| Update notifier — a TTL-gated GET to `https://pypi.org/pypi/aelfrice/json`. Disable it with `AELF_NO_UPDATE_CHECK=1`. | **on** | nothing; the path only reads |
-| Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create`. Disable it with `AELFRICE_NO_PRE_ISSUE_GUARD=1`. Bypass it one time with `ALLOW_DUP_ISSUE=1`. To never install it, use `aelf setup --no-pre-issue-guard`. | **on** since v3.4.0 | **yes** — the tokens come from the issue title you typed |
-| `aelf onboard --llm-classify` | opt-in, consent-gated | extracted candidate sentences |
-| `aelf doctor --classify-orphans` | opt-in, consent-gated | content of stored beliefs |
-| `aelf gate list` — `gh issue list` and `gh issue view` against the repo that aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, and hidden from `--help` | the repo identity and the label filters; no belief content |
-| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request itself |
+| Update notifier — a TTL-gated GET to `https://pypi.org/pypi/aelfrice/json`. To disable it, set `AELF_NO_UPDATE_CHECK=1`. | **on** | nothing; the notifier only reads |
+| Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create`. To disable it, set `AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass it once, set `ALLOW_DUP_ISSUE=1`. To never install it, run `aelf setup --no-pre-issue-guard`. | **on** since v3.4.0 | **yes** — the tokens come from the issue title you typed |
+| `aelf onboard --llm-classify` | opt-in, consent-gated | candidate sentences the onboard scanner extracts |
+| `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
+| `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
+| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request |
 
 Of the two default-on paths, only the notifier transmits nothing; the pre-issue guard does transmit. An audit is most likely to miss the pre-issue guard, because the guard reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
@@ -120,7 +120,7 @@ grep -rn "llm-classify\|onboard\.llm\|llm_classify" src/aelfrice/
 
 ## No accounts
 
-aelfrice has no sign-in, no API key, and no sync server. Everything lives in one local SQLite file, so to make a backup, copy that file. aelfrice ships no mechanism to sync or distribute the memory contents between users or machines. **v3.0 ships read-only cross-project federation** (#650 / #655 / #688): a project can declare peer DB paths in a local `knowledge_deps.json`, and it then surfaces the `global` and `shared:<name>` beliefs of those peers in full-text search version 5 (FTS5) and breadth-first search (BFS). This operation uses the local filesystem only. It makes no network call, and it sends no telemetry. The local DB is the sole writer for its own rows, and a mutation against a foreign belief ID raises `ForeignBeliefError` at the API surface. See [LIMITATIONS § Sharing, sync, or distributed-write federation](LIMITATIONS.md#sharing-sync-or-distributed-write-federation).
+aelfrice has no sign-in, no API key, and no sync server. Everything lives in one local SQLite file, so to make a backup, copy that file. aelfrice ships no mechanism to sync or distribute the memory contents between users or machines. **v3.0 ships read-only cross-project federation** (#650 / #655 / #688): a project can declare peer DB paths in a local `knowledge_deps.json`, and it then surfaces the `global` and `shared:<name>` beliefs of those peers in full-text search version 5 (FTS5) and breadth-first search (BFS). This operation uses the local filesystem only. It makes no network call, and it sends no telemetry. The local DB is the sole writer for its own rows, and a mutation against a foreign belief ID raises `ForeignBeliefError` at the API surface. See [Sharing, sync, or distributed-write federation in the limitations list](LIMITATIONS.md#sharing-sync-or-distributed-write-federation).
 
 ## Per-project isolation
 
@@ -139,7 +139,7 @@ Resolution order:
 - aelfrice inserts the new beliefs from `onboard` and from the ingest hooks unlocked. Only an explicit `aelf lock` or `/aelf:lock` marks a belief permanent. The one exception is `AELF_AUTOLOCK_CORRECTIONS=1`, which you have to opt into: it lets the Stop hook auto-lock the session corrections at the end of a turn.
 - The lock prior is `(α, β) = (9.0, 0.5)`, which is durable. Passive feedback doesn't move a lock; aelfrice audits the event and holds the posterior ([#1168](https://github.com/robotrocketscience/aelfrice/issues/1168)). `aelf confirm` is an explicit affirmation, and it is exempt from that rule. The same behavior holds at v3.x, because [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote. To change a lock, run `aelf unlock`, `aelf delete`, or `aelf demote`.
 - `aelf demote` removes a lock immediately. The belief itself remains, and you can also delete that belief through the store API.
-- Every Bayesian update writes one `feedback_history` audit row. The explicit signals write that row through `apply_feedback`. The manual sweep of deferred retrieval exposure writes that row through its own atomic update and insert. Automatic retrieval *exposure* is audit-only by default since #1086: it writes a `feedback_history` row for the recurrence record, but it doesn't move the posterior, as [LIMITATIONS](LIMITATIONS.md) describes. You can query the provenance in both cases.
+- Every Bayesian update writes one `feedback_history` audit row. The explicit signals write that row through `apply_feedback`. The manual sweep of deferred retrieval exposure writes that row through its own atomic update and insert. Automatic retrieval *exposure* is audit-only by default since #1086: it writes a `feedback_history` row for the recurrence record, but it doesn't move the posterior, as [the limitations list](LIMITATIONS.md) describes. You can query the provenance in both cases.
 
 ## Optional inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up)
 
@@ -199,4 +199,4 @@ aelfrice uses no external database, no vector DB, and no cloud storage. It uses 
 
 ## Reporting
 
-See [SECURITY.md](../../SECURITY.md). aelfrice treats a privacy issue as a security issue.
+See [the security policy](../../SECURITY.md). aelfrice treats a privacy issue as a security issue.

@@ -5,7 +5,7 @@
 - Python 3.12 or 3.13. `uv` manages the Python version for you, so you don't have to install Python separately.
 - [`uv`](https://docs.astral.sh/uv/), the supported install channel (#730). If you don't have `uv`, run `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any agent that can spawn a hook on `UserPromptSubmit`.
-- Linux, macOS, or Windows. Linux runs the full test suite on every pull request, a smoke job covers Windows, and no workflow tests macOS automatically. For what the smoke job asserts and what it doesn't, see [the compatibility notes in LIMITATIONS.md](LIMITATIONS.md#compatibility).
+- Linux, macOS, or Windows. Linux runs the full test suite on every pull request, a smoke job covers Windows, and no workflow tests macOS automatically. For what the smoke job asserts and what it doesn't, see [the compatibility notes in the limitations list](LIMITATIONS.md#compatibility).
 
 ## 1. Install the package
 
@@ -77,7 +77,7 @@ aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 
 `aelf setup --host codex` writes the hook set to the Codex configuration home (#1052). The same command installs the `/aelf:*` slash-command bundle as `$aelf-*` agent skills under `~/.agents/skills/` (v4.1.0+). aelfrice generates both surfaces from one source bundle, so the two never differ. To install the hooks only, pass `--no-codex-skills`. The default is `--codex-skills`.
 
-The skill install is idempotent and removes orphan skills. It touches only the skills aelfrice generated, because an `AELFRICE-CODEX-SKILL` marker controls replacement and removal. For the full detail — the invocation, the generation transform, and the approval warnings specific to Codex — see [the Codex host section of SLASH_COMMANDS](SLASH_COMMANDS.md#codex-host-aelf--skills).
+The skill install is idempotent and removes orphan skills. It touches only the skills aelfrice generated, because an `AELFRICE-CODEX-SKILL` marker controls replacement and removal. For the full detail — the invocation, the generation transform, and the approval warnings specific to Codex — see [the Codex host section of the slash-command reference](SLASH_COMMANDS.md#codex-host-aelf--skills).
 
 #### `$CODEX_HOME` (unreleased)
 
@@ -250,16 +250,16 @@ Bare `aelf setup` installs the v1.2.0 auto-capture pipeline, together with the r
 | Hook | Event(s) | Default | What it does |
 |---|---|---|---|
 | UserPromptSubmit retrieval | `UserPromptSubmit` | always | injects the matched beliefs as an `<aelfrice-memory>` block |
-| transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a JSONL file for each project. PreCompact rotates the file. PreCompact then ingests the file into beliefs and edges |
+| transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL file. PreCompact rotates that file, then ingests it into beliefs and edges |
 | commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
 | session-start | `SessionStart` | **on** | new sessions open with the L0 locked beliefs already injected |
-| stop-lock-prompt | `Stop` | **on** | prompts you to lock the correction-class beliefs (#582) and the directive beliefs (#1315) from this session |
+| stop-lock-prompt | `Stop` | **on** | prompts you to lock this session's correction-class (#582) and directive (#1315) beliefs |
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | checks the belief store before the agent's own Grep or Glob fires |
-| search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | checks the belief store before a shell grep, rg, find, fd or ack fires |
+| search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | checks the belief store before a shell grep, rg, find, fd, or ack fires |
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or a shipped commit at 0.5 Jaccard or above (#941) |
-| claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | mirrors the fact-file writes of the host claude-memory into the belief graph in one direction (#985). `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables the hook. Since v4.0 (#1089) the per-project consent sentinel also enables it. The one-shot reconcile writes that sentinel at the first `aelf setup`. A project that is set up therefore mirrors by default. An explicit env `0` or TOML `false` always wins over the sentinel. That is the opt-out |
-| agent-context | `PreToolUse:Agent` / `Task` | **on** | dispatched subagents inherit the L0 locked beliefs and the task-relevant beliefs by prompt injection. The hook is a fail-open passthrough. To disable the injection, set `AELFRICE_AGENT_CONTEXT=0`. To opt out, pass `--no-agent-context` (#1068) |
-| rebuilder | `PreCompact` (installed) — block ships on `SessionStart(source="compact")` | off | the retrieval-curated context rebuilder (augment-mode, v1.4 alpha). `--rebuilder` installs a `PreCompact` entry. That hook does the trigger-mode bookkeeping only. That hook injects nothing. The block itself ships *after* the compaction, on the default-on `SessionStart` hook that is already present ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)) |
+| claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | mirrors the host claude-memory fact-file writes one-way into the belief graph (#985). Either `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables the hook, and since v4.0 (#1089) so does the per-project consent sentinel, which the one-shot reconcile writes at the first `aelf setup`. A project that's set up therefore mirrors by default. An explicit env `0` or TOML `false` always wins over the sentinel; that's the opt-out |
+| agent-context | `PreToolUse:Agent` / `Task` | **on** | dispatched subagents inherit the L0 locked beliefs and the task-relevant ones through prompt injection. The hook is a fail-open passthrough. Set `AELFRICE_AGENT_CONTEXT=0` to disable the injection, or pass `--no-agent-context` to opt out (#1068) |
+| rebuilder | `PreCompact` (installed) — block ships on `SessionStart(source="compact")` | off | the retrieval-curated context rebuilder (augment-mode, v1.4 alpha). `--rebuilder` installs a `PreCompact` entry that does the trigger-mode bookkeeping only and injects nothing. The block itself ships *after* the compaction, on the default-on `SessionStart` hook that's already present ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)) |
 
 To opt out of one hook, use the matching option. The opt-out persists across upgrades in `~/.aelfrice/opt-out-hooks.json`.
 
@@ -316,7 +316,7 @@ aelf setup --no-stop-hook           # disable one hook; persists across upgrades
 
 `aelf doctor` doesn't reconcile settings.json against the manifest. That's why `aelf doctor` doesn't flag the newer manifest hooks, search-tool and pre-issue-guard, when they're absent. The auto-installer is the reconciliation path.
 
-> **Privacy note.** transcript-ingest is on by default, so every turn that you type goes into the per-project SQLite DB at the `PreCompact` rotation. The DB is local-only: it uses no network and sends no telemetry. See § "What you get for free" in the README and [PRIVACY.md](PRIVACY.md).
+> **Privacy note.** transcript-ingest is on by default, so every turn that you type goes into the per-project SQLite DB at the `PreCompact` rotation. The DB is local-only: it uses no network and sends no telemetry. See § "What you get for free" in the README and [the privacy documentation](PRIVACY.md).
 >
 > The JSONL file has no PII scrubber. If you paste secrets, customer data, or anything else that you don't want indexed in the chat, opt out with `--no-transcript-ingest`. Then use `aelf lock` or `aelf onboard` for explicit ingestion only.
 
@@ -563,9 +563,9 @@ To remove the directory entirely, first check
 
 | Symptom | Fix |
 |---|---|
-| `aelf: command not found` | Confirm that `~/.local/bin`, the shim directory of the uv tool, is on `$PATH`. `uv tool update-shell` adds it for you. |
+| `aelf: command not found` | Confirm that `~/.local/bin`, the uv tool shim directory, is on `$PATH`. `uv tool update-shell` adds it for you. |
 | Hook fires but no `<aelfrice-memory>` block appears | Run `aelf doctor`. Usually the hook command points at a deleted script. |
 | `aelf doctor` says "skipped (shell metacharacters)" on a hook line | The install is stale. `aelf setup` rewrites the hook in place. |
-| Two worktrees of the same repo see the same beliefs | This is the designed behaviour. The two worktrees share `--git-common-dir`. Pin one of them with `AELFRICE_DB`. |
+| Two worktrees of the same repo see the same beliefs | This is the designed behavior. The two worktrees share `--git-common-dir`. Pin one of them with `AELFRICE_DB`. |
 | `aelf search` returns "store is empty" | Run `aelf onboard .` from the project root. |
 | `SQLite database is locked` under heavy concurrent writes | v1.1.0+ uses WAL and `busy_timeout=5000`. If you still see this error, file an issue with the repro. |

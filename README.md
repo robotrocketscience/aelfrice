@@ -29,7 +29,7 @@ aelf lock "never push directly to main; use scripts/publish.sh"
 
 That is the whole setup. The next prompt that mentions "push" already carries the rule, and aelfrice asks nothing of you after that: no command to remember, no file to keep current.
 
-If you use the Codex CLI, run `aelf setup --host codex`. That command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`, and it installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For the details, read [INSTALL § Codex host](docs/user/INSTALL.md).
+If you use the Codex CLI, run `aelf setup --host codex`. That command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`, and it installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For the details, read [the Codex host section of the installation guide](docs/user/INSTALL.md).
 
 ## What you'll see
 
@@ -58,7 +58,7 @@ All the data stays on your computer, in a single SQLite file. There is no cloud 
 
 ## Why not a rules file?
 
-A rules file is advice that the agent *might* read. aelfrice is context that the model *has already read*. By [Leonard Lin's standard](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is also not a memory system. A memory system has to answer these questions: *who wrote this, when, through what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars directly: provenance, write gates, conflict handling, and reversibility. [COMPARISON.md](docs/concepts/COMPARISON.md) compares aelfrice against hand-maintained rules files and vector stores.
+A rules file is advice that the agent *might* read. aelfrice is context that the model *has already read*. By [Leonard Lin's standard](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is also not a memory system. A memory system has to answer these questions: *who wrote this, when, through what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars directly: provenance, write gates, conflict handling, and reversibility. A [side-by-side comparison](docs/concepts/COMPARISON.md) compares aelfrice with hand-maintained rules files and vector stores.
 
 ## Day-to-day
 
@@ -76,7 +76,7 @@ aelf stale --older-than 90 --cold-for 30   # surface forgotten beliefs (v3.5+)
 aelf review --generate               # weekly keep / remove / lock checkpoint (v3.5+)
 ```
 
-`aelf --help` shows the everyday commands, and `aelf --help --advanced` lists the rest. [COMMANDS](docs/user/COMMANDS.md) is the full reference. aelfrice offers the same operations as `/aelf:*` slash commands, which call the same library. For those, read [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
+`aelf --help` shows the everyday commands, and `aelf --help --advanced` lists the rest. The [full command reference](docs/user/COMMANDS.md) documents all of them. aelfrice offers the same operations as `/aelf:*` slash commands, which call the same library. For those, read [the slash command reference](docs/user/SLASH_COMMANDS.md).
 
 ## How it works
 
@@ -102,7 +102,7 @@ The query that reaches BM25 is your raw prompt. From v3.0, the default was a `st
 this repository**, so you cannot reproduce either figure from a public clone. The gate in this repository is
 [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py), and it skips without
 `AELFRICE_CORPUS_ROOT`. When the gate does run, it asserts that the shipped default is the winning arm rather than checking a
-quoted number. For figures you can reproduce on HEAD, read the scripts under [`benchmarks/`](benchmarks/). [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval) gives the full wiring of the lanes, the composition, and the federation peer databases.
+quoted number. For figures you can reproduce on HEAD, read the scripts under [`benchmarks/`](benchmarks/). [The retrieval section of the architecture guide](docs/concepts/ARCHITECTURE.md#retrieval) gives the full wiring of the lanes, the composition, and the federation peer databases.
 
 ## Memory model
 
@@ -110,14 +110,14 @@ Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the
 
 | You run | aelfrice stores |
 |---|---|
-| `aelf lock "never commit .env files"` | A permanent rule. aelfrice returns it on every retrieval. |
-| `aelf onboard .` | The `aelf onboard` command walks the project. The command reads the git log, the headings in the prose and the structure of the code. The command then ingests the structural facts as `agent_inferred` beliefs with the deterministic regular-expression classifier. |
-| `/aelf:onboard` | The same scan, with a higher-quality classification. In-session subagents drive the classification. No API key and no billing are necessary. `/aelf:onboard` is the preferred path in an agent. The `aelf onboard` command alone is the deterministic fallback. |
-| `aelf feedback <id> used` | `α += 1`. The command strengthens the posterior of the belief. |
-| `aelf feedback <id> harmful` | `β += 1`. The command weakens the posterior of the belief. A lock resists passive feedback, by design. To change a lock, run `aelf unlock` or `aelf delete`. |
-| `aelf promote <id>` | The `aelf promote` command flips `origin` from `agent_inferred` to `user_validated`. With `--to-scope <SCOPE>`, the command also moves the federation visibility to `project`, `global` or `shared:<name>`. |
-| `/aelf:wonder <topic>` | The `/aelf:wonder` command researches the topic. The command writes the findings as `speculative` phantoms. The `/aelf:reason <topic>` command can then walk those phantoms. |
-| _(passive — no command)_ | Passive capture is on by default. aelfrice logs each turn of prompt and response. aelfrice ingests each turn at compaction. aelfrice also ingests each successful `git commit` event. To opt out of one hook, use one of these options: `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`, `--no-stop-hook`, `--no-sessionstart-recap`, `--no-search-tool`, `--no-search-tool-bash`, `--no-pre-issue-guard`, `--no-claude-memory-mirror`, `--no-agent-context`. For more data, read [INSTALL § default-on hooks](docs/user/INSTALL.md). |
+| `aelf lock "never commit .env files"` | A permanent rule that aelfrice returns on every retrieval. |
+| `aelf onboard .` | The `aelf onboard` command walks the project, reading the git log, the prose headings, and the structure of the code, then ingests the structural facts as `agent_inferred` beliefs with the deterministic regular-expression classifier. |
+| `/aelf:onboard` | The same scan with higher-quality classification, driven by in-session subagents. No API key or billing needed. `/aelf:onboard` is the preferred path inside an agent, and the `aelf onboard` command alone is the deterministic fallback. |
+| `aelf feedback <id> used` | `α += 1`. Strengthens the belief's posterior. |
+| `aelf feedback <id> harmful` | `β += 1`. Weakens the belief's posterior. A lock resists passive feedback by design, so to change one, run `aelf unlock` or `aelf delete`. |
+| `aelf promote <id>` | `aelf promote` flips `origin` from `agent_inferred` to `user_validated`. With `--to-scope <SCOPE>`, it also moves the federation visibility to `project`, `global`, or `shared:<name>`. |
+| `/aelf:wonder <topic>` | `/aelf:wonder` researches the topic and writes the findings as `speculative` phantoms. `/aelf:reason <topic>` can then walk those phantoms. |
+| _(passive — no command)_ | Passive capture is on by default: aelfrice logs each turn of prompt and response, ingests each turn at compaction, and ingests each successful `git commit` event. To opt out of one hook, use one of these options: `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`, `--no-stop-hook`, `--no-sessionstart-recap`, `--no-search-tool`, `--no-search-tool-bash`, `--no-pre-issue-guard`, `--no-claude-memory-mirror`, `--no-agent-context`. For the details, read [default-on hooks in the installation guide](docs/user/INSTALL.md). |
 
 Each belief has an `origin` column that ties the belief to the action that wrote it. The value is one of `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative`, or `unknown`. The store is a single SQLite file, and you can open it in any browser. Nothing is hidden.
 
@@ -129,7 +129,7 @@ Two slash commands let the agent query the belief graph during a turn, beyond th
 
 **`/aelf:reason <query>`** is the structured-walk surface. It walks the belief graph from starting points that BM25 seeds, and it emits a typed reasoning trace. The trace holds the hops, each carrying its edge type. It holds a `VERDICT` of `SUFFICIENT`, `PARTIAL`, `UNCERTAIN`, `INSUFFICIENT`, or `CONTRADICTORY`. It holds `IMPASSES`, which are typed gaps, ties, or constraint failures. It holds `SUGGESTED UPDATES`, each one a `(belief_id, direction, note)` row. Those fields map straight onto `aelf feedback`, so the conclusion closes the loop on the beliefs that fed it. The host agent dispatches each impasse to a role-tagged worker: Verifier, Gap-filler, or Fork-resolver. aelfrice annotates a peer hop in a foreign federation scope with `[scope:<name>]`.
 
-Use the two surfaces in that order. `/aelf:wonder` adds new research results to the graph, and `/aelf:reason` then draws conclusions across the graph. Both surfaces are deterministic in the aelfrice layer: the verdict classification, the impasse derivation, the axis generation, and the suggested-update mapping. The only calls to a large language model (LLM) happen when the host agent dispatches one worker for each impasse or research axis, and those calls run under the host's credentials, not aelfrice's. The specifications are [COMMANDS § `wonder`](docs/user/COMMANDS.md) and [COMMANDS § `reason`](docs/user/COMMANDS.md).
+Use the two surfaces in that order. `/aelf:wonder` adds new research results to the graph, and `/aelf:reason` then draws conclusions across the graph. Both surfaces are deterministic in the aelfrice layer: the verdict classification, the impasse derivation, the axis generation, and the suggested-update mapping. The only calls to a large language model (LLM) happen when the host agent dispatches one worker for each impasse or research axis, and those calls run under the host's credentials, not aelfrice's. The specifications are the [`wonder` command reference](docs/user/COMMANDS.md) and the [`reason` command reference](docs/user/COMMANDS.md).
 
 ## What you get for free
 
@@ -149,9 +149,9 @@ These features run in the background, and none of them need anything from you af
 
   The claude-memory mirror works like this. Since v4.0, in #1089, the one-shot reconcile at your first `aelf setup` records the consent for each project, and the mirror runs from then on. To opt out of the mirror at any time, set `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `[memory] mirror_claude_memory = false`. Both of those always win over the consent sentinel.
 
-  The `PreToolUse:Agent` hook injects the worker context, so a dispatched worker inherits your locked beliefs and the task-relevant beliefs. To opt out of the worker-context injection, use `--no-agent-context`. Session activity flows into the belief graph, and you don't have to type `aelf` to make that happen. To opt out of any one hook, read [INSTALL § default-on hooks](docs/user/INSTALL.md).
+  The `PreToolUse:Agent` hook injects the worker context, so a dispatched worker inherits your locked beliefs and the task-relevant beliefs. To opt out of the worker-context injection, use `--no-agent-context`. Session activity flows into the belief graph, and you don't have to type `aelf` to make that happen. To opt out of any one hook, read [default-on hooks in the installation guide](docs/user/INSTALL.md).
 - **Determinism.** aelfrice runs on SQLite and a deterministic numeric stack: numpy, scipy, and snowballstemmer. It uses no GPU and no network. It uses no embeddings, no learned re-rankers, and no LLM in the retrieval path. Every result traces back to the action that wrote it.
-- **Local-only.** aelfrice keeps the SQLite file at `<git-common-dir>/aelfrice/memory.db`. Two outbound calls are on by default. The first is the update notifier, which makes a read-only GET request to `https://pypi.org/pypi/aelfrice/json` under a time-to-live (TTL) gate and transmits nothing. To disable the notifier, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title. The guard runs only when you run `gh issue create`. To disable the guard, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. There is no telemetry and there are no accounts. The memory and retrieval path never touches the network. The LLM dispatches in the `/aelf:wonder` and `/aelf:reason` flows do reach the network, under the host agent's credentials rather than aelfrice's, and the retrieval path stays local. Each project is isolated by construction, and cross-project federation is read-only through `knowledge_deps.json`: aelfrice opens a peer database read-only, and it rejects a mutation of a foreign identifier at the API surface. Read [PRIVACY.md](docs/user/PRIVACY.md).
+- **Local-only.** aelfrice keeps the SQLite file at `<git-common-dir>/aelfrice/memory.db`. Two outbound calls are on by default. The first is the update notifier, which makes a read-only GET request to `https://pypi.org/pypi/aelfrice/json` under a time-to-live (TTL) gate and transmits nothing. To disable the notifier, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title. The guard runs only when you run `gh issue create`. To disable the guard, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. There is no telemetry and there are no accounts. The memory and retrieval path never touches the network. The LLM dispatches in the `/aelf:wonder` and `/aelf:reason` flows do reach the network, under the host agent's credentials rather than aelfrice's, and the retrieval path stays local. Each project is isolated by construction, and cross-project federation is read-only through `knowledge_deps.json`: aelfrice opens a peer database read-only, and it rejects a mutation of a foreign identifier at the API surface. Read [the privacy details](docs/user/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the database to a file and then deletes the database. The `--purge` option removes all the data.
 
 ## Obsidian export
@@ -164,7 +164,7 @@ The command has three scopes. `--scope all` exports everything, up to the cap th
 
 ## Status
 
-The latest stable version is **v4.3.0** (2026-08-13). [CHANGELOG § 4.3.0](CHANGELOG/v4.md) gives the detail for each entry. [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md) gives the history for each version, and [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md) gives the known limits.
+The latest stable version is **v4.3.0** (2026-08-13). The [4.3.0 changelog entry](CHANGELOG/v4.md) gives the detail for each change. [The roadmap](docs/concepts/ROADMAP.md) gives the history for each version, and [the limitations list](docs/user/LIMITATIONS.md) gives the known limits.
 
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->
@@ -190,4 +190,4 @@ The latest stable version is **v4.3.0** (2026-08-13). [CHANGELOG § 4.3.0](CHANG
 }
 ```
 
-[MIT](LICENSE)
+[MIT license](LICENSE)

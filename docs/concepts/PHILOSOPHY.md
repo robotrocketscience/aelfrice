@@ -79,7 +79,7 @@ aelfrice has no exploration term in the default retrieval path. The research lin
 
 An exploration slot does ship, and it is **off by default**. `src/aelfrice/exploration.py` holds the mechanism, and `retrieval.py` resolves the `[retrieval] exploration_enabled` flag ([#1279](https://github.com/robotrocketscience/aelfrice/issues/1279), [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176) proposal 5). The default stays off because the slot changes what goes into a live conversation, which is the determinism cost described earlier. The slot exists for coverage, not for ranking: most of the store has never been injected, so it can never earn evidence, and the slot is the intervention that breaks that loop. Changing the default is a separate operator decision, gated on measured coverage growth rather than on a relevance score.
 
-> Historical note: at v1.0–v1.2 aelfrice computed and stored the posterior, but L1 retrieval ranked by Best Matching 25 (BM25) alone. The v1.3 retrieval wave connected the posterior to the ranking. v1.7 made BM25F default-on, v3.0 made intentional clustering default-on, and v3.3 made type-aware compression default-on. Feedback now changes what the agent sees, from end to end. See [LIMITATIONS](../user/LIMITATIONS.md).
+> Historical note: at v1.0–v1.2 aelfrice computed and stored the posterior, but L1 retrieval ranked by Best Matching 25 (BM25) alone. The v1.3 retrieval wave connected the posterior to the ranking. v1.7 made BM25F default-on, v3.0 made intentional clustering default-on, and v3.3 made type-aware compression default-on. Feedback now changes what the agent sees, from end to end. See [the limitations list](../user/LIMITATIONS.md).
 
 ## Locks, not just decay
 
@@ -185,7 +185,7 @@ aelfrice keeps your corrections in one SQLite file on your machine. There is no 
 
 The 2,400-token default of the retrieval API is a calibrated choice, not an arbitrary one. The research line proposed this hypothesis: focused context gives better results than exhaustive context. A retrieval of approximately 2.4K tokens that selects the right beliefs should match or exceed a 10K-token dump of the full memory on response quality, and that retrieval also uses approximately 4× fewer tokens for the memory mechanism. The v2.0 reproducibility cut re-measured that curve against the public retrieval pipeline. The 2,400-token budget is the default after v1.3, and you configure it per call.
 
-See [PRIVACY.md](../user/PRIVACY.md) for verifiable specifics.
+See [the privacy documentation](../user/PRIVACY.md) for verifiable specifics.
 
 ## Small surface, on purpose
 
@@ -218,11 +218,11 @@ aelfrice is a memory substrate, not an LLM. This table gives the honest decompos
 | Tier | Mechanism | Guarantee |
 |---|---|---|
 | 1. Storage | SQLite write-ahead log (WAL) + locked belief | aelfrice writes the rule durably and never loses it. |
-| 2. Injection | L0 always-loaded into every prompt | The rule is in the context of the model on every retrieval. |
-| 3. Compression survival | Per-prompt L0 re-injection. The locks re-enter the context on the first prompt after a compaction. The opt-in post-compaction rebuilder (`aelf setup --rebuilder`) strengthens the mechanism. The host runs the rebuilder on `SessionStart(source="compact")` ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)). | The rule survives a compaction of the context window. |
+| 2. Injection | L0 always-loaded into every prompt | The rule is in the model's context on every retrieval. |
+| 3. Compression survival | Per-prompt L0 re-injection: the locks re-enter the context on the first prompt after a compaction. The opt-in post-compaction rebuilder (`aelf setup --rebuilder`) strengthens that mechanism, and the host runs it on `SessionStart(source="compact")` ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)). | The rule survives context-window compaction. |
 | 4. Violation detection | Not implemented | — |
 | 5. Violation blocking | Not implemented | — |
-| 6. LLM compliance | The model actually obeys the injected rule | **Not under aelfrice's control.** |
+| 6. LLM compliance | The model's own obedience to the injected rule | **Not under aelfrice's control.** |
 
 Tiers 1–3 hold mechanically. Tiers 4–5 are post-execution detection and pre-execution blocking. Both are research-line capabilities, and neither has a current roadmap entry. Tier 6 is the LLM's own training and decoding, which aelfrice can't constrain. If the model ignores an injected lock, the failure mode is in the model, not in aelfrice. That distinction is no comfort to a user whose agent just ran `git push` despite a clear directive.
 

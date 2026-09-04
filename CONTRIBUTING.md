@@ -6,9 +6,9 @@ defend?
 
 ## Status
 
-For the current line, read [CHANGELOG.md](CHANGELOG.md), which gives the
-latest release. For the landing record, read the
-[ROADMAP](docs/concepts/ROADMAP.md). Issues are welcome, and the author
+For the current line, read [the changelog](CHANGELOG.md), which gives the
+latest release. For the landing record, read
+[the roadmap](docs/concepts/ROADMAP.md). Issues are welcome, and the author
 evaluates each pull request (PR) case by case. The bar is that the
 change moves the system measurably forward and justifies itself with a test.
 
@@ -91,10 +91,10 @@ re-evaluating it.
 
 ## Where to look for work
 
-The [ROADMAP](docs/concepts/ROADMAP.md) carries the version-by-version landing
-record and the current active line. [LIMITATIONS](docs/user/LIMITATIONS.md)
-lists the known gaps against current HEAD. The issue tracker is the canonical
-source of the work in flight.
+The [roadmap](docs/concepts/ROADMAP.md) carries the version-by-version landing
+record and the current active line. The [list of known
+limitations](docs/user/LIMITATIONS.md) lists the gaps against current HEAD. The
+issue tracker is the canonical source of the work in flight.
 
 The contributions with the largest effect tend to land in three places:
 
@@ -105,8 +105,9 @@ The contributions with the largest effect tend to land in three places:
   blockers have since closed. Surface the status flip instead of an
   implementation.
 - **Stale-documentation fixes.** Fix any place where the documentation makes
-  a false statement about the code at current HEAD. A documentation audit lives in
-  [docs/audits/](docs/audits/), and the latest pass lists what is outstanding.
+  a false statement about the code at current HEAD. A documentation audit lives
+  in [the audits directory](docs/audits/), and the latest pass lists what is
+  outstanding.
 
 ## What the project will not do
 
@@ -255,8 +256,8 @@ entries as files.
 
 **At release time**, `scripts/collate_changelog.py` folds the block and
 the files into the dated section of `CHANGELOG/v<major>.md`. It then
-empties the directory; for the release procedure, read
-[docs/concepts/RELEASING.md](docs/concepts/RELEASING.md).
+empties the directory; for the full release sequence, read
+[the release procedure](docs/concepts/RELEASING.md).
 `release-docs-check` fails a release PR that leaves the block or the
 directory undrained. `scripts/check_changelog_dupes.py` compares the
 entry files against each other and against the block, so it still
@@ -284,7 +285,7 @@ Two rules protect the meaning, and they matter more than the rules above:
   `must`.
 - **Keep the connective that carries the argument.** A short sentence is
   worth less than a correct one. When you split `X, because Y` into two
-  sentences, the reason disappears and the paragraph states two unrelated
+  sentences, the reason disappears, and the paragraph states two unrelated
   facts. A two-clause causal sentence is better than that.
 
 `scripts/check_doc_preservation.py` verifies a rewrite of a documentation
@@ -535,10 +536,10 @@ Shipped as part of #1436.
 
 ## Code of Conduct
 
-Read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). The short version: be
+Read [the code of conduct](CODE_OF_CONDUCT.md). The short version: be
 respectful, focus on the work, and do not harass anybody.
 
 ## Security
 
-Read [SECURITY.md](SECURITY.md). The project treats a privacy bug as a
+Read [the security policy](SECURITY.md). The project treats a privacy bug as a
 security bug.

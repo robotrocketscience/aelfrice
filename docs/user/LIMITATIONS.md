@@ -20,13 +20,13 @@ The benchmark harness shipped at v1.0 as the measurement instrument, not yet as 
 
 **At #1162:** `use_heat_kernel` returns to default-off. The lane needs a `GraphEigenbasisCache` that no production caller constructs, so the on-default described a lane that could not fire. The flip doesn't change the ranking. `LaneTelemetry.heat_used` now reports the reachability at runtime.
 
-For the v1.3 contract, see [`docs/design/bayesian_ranking.md`](../design/bayesian_ranking.md).
+For the v1.3 contract, see [the Bayesian ranking design](../design/bayesian_ranking.md) (`docs/design/bayesian_ranking.md`).
 
 ## No semantic similarity
 
 Retrieval is Best Matching 25 (BM25) keyword search over full-text search version 5 (FTS5), with porter unicode61 stemming. Since v1.7.0, retrieval uses BM25F with anchor-text augmentation by default. The query "deploy" doesn't find "publish to prod" without a tokenizable substring overlap.
 
-This is a deliberate scope choice, not a roadmap item. Adding embeddings would break determinism along the full path — see [PHILOSOPHY § Determinism is the property](../concepts/PHILOSOPHY.md#determinism-is-the-property). For a fuzzy semantic recall query, pair aelfrice with a separate tool. Don't blend embeddings into the retrieval path.
+This is a deliberate scope choice, not a roadmap item. Adding embeddings would break determinism along the full path — see [determinism as the property, in the philosophy doc](../concepts/PHILOSOPHY.md#determinism-is-the-property). For a fuzzy semantic recall query, pair aelfrice with a separate tool. Don't blend embeddings into the retrieval path.
 
 ## Onboarding scope
 
@@ -44,7 +44,7 @@ The research line shipped a larger set of extractors:
 - A linkage between a test and its implementation, taken from the filename patterns and the import patterns.
 - A directive detector that captured imperative user statements as TODO beliefs.
 
-These extractors stay deferred from the scope. The directive-detection path has consequences for the architecture. If that path lands, it lands together with the violation-detection tier of [PHILOSOPHY § What we can and can't guarantee](../concepts/PHILOSOPHY.md#what-we-can-and-cant-guarantee).
+These extractors stay deferred from the scope. The directive-detection path has consequences for the architecture. If that path lands, it lands together with the violation-detection tier of [what aelfrice can and can't guarantee, in the philosophy doc](../concepts/PHILOSOPHY.md#what-we-can-and-cant-guarantee).
 
 Classification on the CLI path uses regex-based priors by default. Three paths give classification of higher quality:
 
@@ -76,9 +76,9 @@ The default retrieval mode is recall, not audit, and the latest-serial-per-hop r
 - **There is no edit operation.** To correct a wrong belief, insert a new belief with a `SUPERSEDES` edge. The original belief stays in the store.
 - **Graph visualization is available at the CLI only.** `aelf graph` ([#629](https://github.com/robotrocketscience/aelfrice/issues/629)) emits DOT subgraphs and JSON subgraphs. The edges carry color codes, and the nodes carry shades for the lock state and for the posterior: a locked node is cyan, a high posterior is green, and a low posterior is red. For image output, pipe the result through Graphviz (`dot -Tpng`). There is no graphical user interface (GUI). For raw inspection, run `sqlite3 "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"`.
 - **The JSONL batch ingest has no scrubber for personally identifiable information (PII).** `aelf ingest-transcript --batch ~/.claude/projects/` pulls whatever you typed in the chat into the local belief graph. Before you backfill the material, review it.
-- **Hook framing relies on the model to honor the trust boundary.** The `UserPromptSubmit` hook ships three structural defenses: the framing tag, the escape of a tag substring at render time, and the per-turn audit log. See [the hook hardening design](../design/hook_hardening.md) and [PHILOSOPHY § Trust boundary at the hook surface](../concepts/PHILOSOPHY.md#trust-boundary-at-the-hook-surface). The user-turn text next to the block can name session artifacts, and the hook can't force the model to verify those artifacts. The hook also can't guarantee that the model treats `<belief>`-wrapped content as data rather than as instruction. A model that ignores the framing is a failure of the model layer, not a failure of the hook layer. The `hook_audit.jsonl` log is the recovery surface: that log records what aelfrice injected, so a human can review it after the fact.
+- **Hook framing relies on the model to honor the trust boundary.** The `UserPromptSubmit` hook ships three structural defenses: the framing tag, the escape of a tag substring at render time, and the per-turn audit log. See [the hook hardening design](../design/hook_hardening.md) and [the trust boundary at the hook surface, in the philosophy doc](../concepts/PHILOSOPHY.md#trust-boundary-at-the-hook-surface). The user-turn text next to the block can name session artifacts, and the hook can't force the model to verify those artifacts. The hook also can't guarantee that the model treats `<belief>`-wrapped content as data rather than as instruction. A model that ignores the framing is a failure of the model layer, not a failure of the hook layer. The `hook_audit.jsonl` log is the recovery surface: that log records what aelfrice injected, so a human can review it after the fact.
 
-- **The model honors locks, but nothing enforces them. Put a true prohibition in a hook.** aelfrice injects a locked belief as high-trust context. Since v3.7, the provenance-aware framing ([#1016-A](https://github.com/robotrocketscience/aelfrice/issues/1016)) presents user locks as standing instructions, and capable models follow locked rules in practice. But that compliance is a *behavior of the model layer*, never a hard gate, and the trust-boundary caveat from the previous item applies here too. Put a **must-never** constraint in a **`PreToolUse` enforcement hook**, not in a lock. Examples of such a constraint are "never push to prod", "never `rm -rf` the data dir", and "never commit secrets". The hook blocks the action deterministically (exit 2), whatever the model does. Use a lock for a ground-truth fact and for a standing preference you want the agent to follow. Use a hook for an action that must be *impossible*. aelfrice ships one such gate as a pattern: `aelf-pre-issue-hook` (`PreToolUse:Bash`) blocks a duplicate `gh issue create` call. See [ARCHITECTURE § hooks](../concepts/ARCHITECTURE.md). This is also why lock injection is bounded rather than unlimited (v3.7 #1016-B layered locks). Locks are advisory context with a budget, not an enforcement substrate.
+- **The model honors locks, but nothing enforces them. Put a true prohibition in a hook.** aelfrice injects a locked belief as high-trust context. Since v3.7, the provenance-aware framing ([#1016-A](https://github.com/robotrocketscience/aelfrice/issues/1016)) presents user locks as standing instructions, and capable models follow locked rules in practice. But that compliance is a *behavior of the model layer*, never a hard gate, and the trust-boundary caveat from the previous item applies here too. Put a **must-never** constraint in a **`PreToolUse` enforcement hook**, not in a lock. Examples of such a constraint are "never push to prod", "never `rm -rf` the data dir", and "never commit secrets". The hook blocks the action deterministically (exit 2), whatever the model does. Use a lock for a ground-truth fact and for a standing preference you want the agent to follow. Use a hook for an action that must be *impossible*. aelfrice ships one such gate as a pattern: `aelf-pre-issue-hook` (`PreToolUse:Bash`) blocks a duplicate `gh issue create` call. See [hooks in the architecture overview](../concepts/ARCHITECTURE.md). This is also why lock injection is bounded rather than unlimited (v3.7 #1016-B layered locks). Locks are advisory context with a budget, not an enforcement substrate.
 
 ## Out of scope
 
@@ -116,7 +116,7 @@ Only one DB writes at a time. The beliefs written in project A are not *written*
 ## Compatibility
 
 - Python 3.12 or 3.13.
-- The full suite runs on Linux on every pull request (`ci.yml`, `ubuntu-latest`, Python 3.12 and 3.13). No workflow uses a macOS runner. aelfrice is expected to run on macOS, and the project develops it there, but no automatic test asserts that.
+- The full suite runs on Linux on every pull request (`ci.yml` on `ubuntu-latest`, Python 3.12 and 3.13). No workflow uses a macOS runner. aelfrice is expected to run on macOS, and the project develops it there, but no automatic test asserts that.
 - aelfrice supports Windows at a narrower level. This page states the difference
   plainly, because the page previously said "should work but is not exercised on
   every release". That statement was wrong. Until

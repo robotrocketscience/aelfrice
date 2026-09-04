@@ -4,12 +4,12 @@ This document describes how aelfrice fits together, and it maps directly to the 
 
 ## Principles
 
-1. **Determinism end to end.** Every retrieval result is bit-identical for the same write log and the same code, and every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property). **The `edges` are the standing exception.** The code as shipped writes the edges outside the log, so two stores with identical `ingest_log` content can hold different graphs, and the L3 edge-walk lane can then return different results ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
+1. **Determinism end to end.** Every retrieval result is bit-identical for the same write log and the same code, and every result traces to named beliefs and named rules. See [determinism is the property, in the philosophy document](PHILOSOPHY.md#determinism-is-the-property). **The `edges` are the standing exception.** The code as shipped writes the edges outside the log, so two stores with identical `ingest_log` content can hold different graphs, and the L3 edge-walk lane can then return different results ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
 2. **SQLite plus a small numeric stack.** The hot path has no vector DB, no embeddings, and no large language model (LLM). Beyond the standard library, aelfrice requires `numpy`, `scipy`, and `snowballstemmer`. `numpy` and `scipy` (added v1.5.0, #148) serve the sparse matrix-vector (matvec) lane for Best Matching 25 (BM25), and the lane for holographic reduced representations (HRR) and the spectral-graph lane now use them too. `snowballstemmer` (added v1.7.0, #154) does the Porter stemming. Three extras are optional:
     - `[onboard-llm]` — the software development kit (SDK) for the direct-API onboard classifier, used by `aelf onboard --llm-classify`.
     - `[archive]` — cryptography, used by `aelf uninstall --archive`.
     - `[benchmarks]` — the adapters on the development side.
-3. **Confidence is Bayesian.** Confidence is `α / (α + β)`, and every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. For what the partial ranking covers and does not cover, see [LIMITATIONS](../user/LIMITATIONS.md).
+3. **Confidence is Bayesian.** Confidence is `α / (α + β)`, and every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. For what the partial ranking covers and does not cover, see [the limitations list](../user/LIMITATIONS.md).
 4. **`apply_feedback` is the central endpoint.** It's the one writer of `(α, β)`, and each successful update writes one audit row.
 5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay, a mechanism that doesn't run at present; see the note on posterior decay below. To correct a lock, overwrite it with `aelf lock`. That correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
 
@@ -46,38 +46,38 @@ modules against the 128 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 
 | Module | Responsibility |
 |---|---|
-| `models.py` | Holds the `Belief`, `Edge`, `FeedbackEvent` and `OnboardSession` dataclasses. Holds the constants for type, lock and origin. Does no input and no output. |
-| `scoring.py` | Holds `posterior_mean`, `partial_bayesian_score` and the gamma and zeta posterior rerank scorers. Retrieval imports these functions. This module also defines `decay`, `type_half_life` and `TYPE_HALF_LIFE_SECONDS` (a lock-floor short-circuit, with the Jeffreys `(0.5, 0.5)` target). **No module under `src/` calls those three names.** The posterior decay is designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)). The disposition is tracked under [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162). |
-| `store.py` | SQLite with write-ahead logging (WAL), full-text search version 5 (FTS5) and the create, read, update and delete (CRUD) operations. `propagate_valence` runs a breadth-first search (BFS) with attenuation by broker confidence. `apply_feedback` fires it on every direct feedback event. To disable it, set `AELFRICE_VALENCE_PROPAGATION=0`. |
-| `retrieval.py` | `retrieve(store, query, token_budget=2400)`. The lanes are L0, L2.5, L1 and L3. L0 holds the locked beliefs. L2.5 is the entity index (v1.3+). L1 is the FTS5 lane with BM25 or BM25F, and BM25F is default-on since v1.7.0. L1 also applies Bayesian log-additive reranking (v1.3+). L3 is the BFS multi-hop lane (v1.3+, default-off) over the seed set of L0, L2.5 and L1. L0 is never trimmed. |
-| `feedback.py` | `apply_feedback(store, belief_id, valence, source)`. This is the only path for a Bayesian update. It writes `feedback_history`. |
-| `contradiction.py` | `resolve_contradiction` picks a winner by precedence. It inserts `SUPERSEDES` and writes an audit row. It backs `aelf resolve`. |
-| `correction.py` | A heuristic detector for corrections. It uses no LLM. |
-| `classification.py` | Type priors with a regex fallback. The polymorphic state machine for the onboard path. |
-| `noise_filter.py` | `is_noise(text, config)` filters out markdown headings, checklist blocks, three-word fragments and license boilerplate. You tune it in `.aelfrice.toml`. See [CONFIG](../user/CONFIG.md). |
-| `scanner.py` | `scan_repo` runs three extractors: the filesystem, the git log and the Python abstract syntax tree (AST). It is idempotent on `content_hash`. |
-| `health.py` | The v1.0 regime classifier (`supersede`, `ignore`, `mixed`, `insufficient_data`). `aelf regime` surfaces it. |
-| `auditor.py` | A structural auditor. It checks orphan threads, FTS5 synchronisation, locked contradictions and corpus volume. It backs `aelf health`. It is read-only. |
-| `migrate.py` | A one-shot port from the legacy global DB into the per-project DB. It reads the source with SQLite `mode=ro`. It backs `aelf migrate`. |
-| `doctor.py` | A linter for the settings. It walks every `command` in `settings.json` and verifies that the command resolves. It handles a `bash <script>` wrapper as a special case. It backs `aelf doctor`. |
-| `lifecycle.py` | The update notifier (a background check against PyPI), the uninstall code and the archive encryption. |
-| `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). It writes one JSONL line per turn under `<git-common-dir>/aelfrice/transcripts/`. |
-| `hook_commit_ingest.py` | The `PostToolUse:Bash` hook. It ingests a commit message after `git commit`. |
-| `hook_search.py` | The retrieval helper for UserPromptSubmit. It records every hit as a `feedback_history` row tagged `source='hook'`. The row is audit-only since #1086 (v4.0). The row logs the exposure and the recurrence, but `record_retrieval` passes `update_posterior=False` by default. A surfacing therefore does **not** move α or β. Set `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` to restore the legacy behaviour that promotes on exposure. |
-| `triple_extractor.py` | Extraction of `(subject, relation, object)` triples with regex only, over six relation families. The commit-ingest lane and the transcript-ingest lane use it. |
-| `context_rebuilder.py` | The rebuilder that runs after compaction. It surfaces the aelfrice retrieval again after the harness writes its summary. The block is delivered on `SessionStart(source="compact")` (#1031). |
-| `benchmark.py` | A deterministic synthetic harness with 16 beliefs and 16 queries. The `BenchmarkReport` is frozen. |
-| `cli.py` | The CLI with many subcommands, built on argparse. The entry point is `aelf`. `aelf --help` shows the everyday surface. `aelf --help --advanced` shows the full surface, which adds the diagnostic verbs, the hook verbs and the lifecycle verbs. |
-| `federation.py` | (v3.0+) Read-only federation with a peer DB. `load_peer_deps()` parses `knowledge_deps.json`. `open_peer_connection(path)` opens a peer SQLite database in `mode=ro`. It honours the WAL of the peer, and it falls back to `immutable=1` for read-only media. `ForeignBeliefError` rejects a mutation against a foreign belief id at the API surface. See [LIMITATIONS § Sharing, sync, or federation](../user/LIMITATIONS.md). |
-| `clamp_ghosts.py` | (v3.0+) The repair tool `clamp_ghost_alphas(store, target_alpha, dry_run)`. It clamps α on the belief rows that have inflated posteriors with no support in the audit trail. The tool targets only the artifacts from before the migration. The tool writes a negative-valence audit row inside the same transaction, so you can reverse the repair. It backs `aelf clamp-ghosts` (hidden). |
-| `reason.py` | (v2.0+, expanded v3.0) Reasoning by graph walk over the graph of belief edges. v3.0 (#645, #658) adds the Verdict and ImpasseKind classifiers. It adds the `ConsequencePath` deriver, which forks on CONTRADICTS. It adds `dispatch_policy()`, which maps an impasse to the Verifier role, the Gap-filler role or the Fork-resolver role. It adds `suggested_updates()`, which derives the close-the-loop feedback rows. It backs `aelf reason` and `/aelf:reason`. |
-| `wonder/` | (v2.0+, expanded v3.0) The wonder lifecycle. It holds the gap analysis (`dispatch.py`) and the generation of the research axes. It holds the phantom ingest and the garbage collection (`wonder_ingest`, `wonder_gc`). It holds the integration of subagents at the Skill layer (`skill_integration.py`, per #552). It holds the structured `WonderResult` dataclass (#656). |
+| `models.py` | Defines the `Belief`, `Edge`, `FeedbackEvent`, and `OnboardSession` dataclasses, along with the constants for type, lock, and origin. Does no I/O. |
+| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma and zeta posterior rerank scorers, all imported by retrieval. It also defines `decay`, `type_half_life`, and `TYPE_HALF_LIFE_SECONDS` (a lock-floor short-circuit, with the Jeffreys `(0.5, 0.5)` target), but **no module under `src/` calls those three names**: posterior decay is designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)), and its disposition is tracked under [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162). |
+| `store.py` | SQLite with write-ahead logging (WAL), full-text search version 5 (FTS5), and the create, read, update, and delete (CRUD) operations. `propagate_valence` runs a breadth-first search (BFS) attenuated by broker confidence, and `apply_feedback` fires it on every direct feedback event. To turn it off, set `AELFRICE_VALENCE_PROPAGATION=0`. |
+| `retrieval.py` | `retrieve(store, query, token_budget=2400)`. The lanes are L0, L2.5, L1, and L3. L0 holds the locked beliefs and is never trimmed. L2.5 is the entity index (v1.3+). L1 is the FTS5 lane with BM25 or BM25F — BM25F is default-on since v1.7.0 — and it also applies Bayesian log-additive reranking (v1.3+). L3 is the BFS multi-hop lane (v1.3+, default-off) over the seed set of L0, L2.5, and L1. |
+| `feedback.py` | `apply_feedback(store, belief_id, valence, source)`, the only path to a Bayesian update. Writes `feedback_history`. |
+| `contradiction.py` | `resolve_contradiction` picks a winner by precedence, inserts `SUPERSEDES`, and writes an audit row. Backs `aelf resolve`. |
+| `correction.py` | A heuristic correction detector. No LLM involved. |
+| `classification.py` | Type priors with a regex fallback, plus the polymorphic state machine for the onboard path. |
+| `noise_filter.py` | `is_noise(text, config)` filters out markdown headings, checklist blocks, three-word fragments, and license boilerplate. Tune it in `.aelfrice.toml`; see [the configuration reference](../user/CONFIG.md). |
+| `scanner.py` | `scan_repo` runs three extractors: the filesystem, the git log, and the Python abstract syntax tree (AST). Idempotent on `content_hash`. |
+| `health.py` | The v1.0 regime classifier (`supersede`, `ignore`, `mixed`, `insufficient_data`), surfaced by `aelf regime`. |
+| `auditor.py` | A read-only structural auditor. It checks orphan threads, FTS5 synchronization, locked contradictions, and corpus volume, and it backs `aelf health`. |
+| `migrate.py` | A one-shot port from the legacy global DB into the per-project DB. Reads the source with SQLite `mode=ro`. Backs `aelf migrate`. |
+| `doctor.py` | A settings linter. It walks every `command` in `settings.json`, verifies that each one resolves, and special-cases a `bash <script>` wrapper. Backs `aelf doctor`. |
+| `lifecycle.py` | The update notifier (a background check against PyPI), the uninstall code, and the archive encryption. |
+| `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). Writes one JSONL line per turn under `<git-common-dir>/aelfrice/transcripts/`. |
+| `hook_commit_ingest.py` | The `PostToolUse:Bash` hook. Ingests a commit message after `git commit`. |
+| `hook_search.py` | The retrieval helper for UserPromptSubmit. It records every hit as a `feedback_history` row tagged `source='hook'`, audit-only since #1086 (v4.0). The row logs exposure and recurrence, but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α or β. Set `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` to restore the legacy behavior that promotes on exposure. |
+| `triple_extractor.py` | Extracts `(subject, relation, object)` triples with regex alone, over six relation families. Both the commit-ingest lane and the transcript-ingest lane use it. |
+| `context_rebuilder.py` | The rebuilder that runs after compaction, surfacing the aelfrice retrieval again once the harness has written its summary. The block is delivered on `SessionStart(source="compact")` (#1031). |
+| `benchmark.py` | A deterministic synthetic harness over 16 beliefs and 16 queries. `BenchmarkReport` is frozen. |
+| `cli.py` | The argparse-based CLI, with many subcommands behind the `aelf` entry point. `aelf --help` shows the everyday surface; `aelf --help --advanced` shows the full one, which adds the diagnostic, hook, and lifecycle verbs. |
+| `federation.py` | (v3.0+) Read-only federation with a peer DB. `load_peer_deps()` parses `knowledge_deps.json`, and `open_peer_connection(path)` opens a peer SQLite database in `mode=ro`, honoring the peer's WAL and falling back to `immutable=1` for read-only media. `ForeignBeliefError` rejects a mutation against a foreign belief id at the API surface. See [sharing, sync, or federation in the limitations list](../user/LIMITATIONS.md). |
+| `clamp_ghosts.py` | (v3.0+) The repair tool `clamp_ghost_alphas(store, target_alpha, dry_run)`. It clamps α on belief rows whose inflated posteriors have no support in the audit trail, and it targets only pre-migration artifacts. Because it writes a negative-valence audit row inside the same transaction, the repair is reversible. Backs `aelf clamp-ghosts` (hidden). |
+| `reason.py` | (v2.0+, expanded v3.0) Reasoning by graph walk over the belief-edge graph. v3.0 (#645, #658) adds the Verdict and ImpasseKind classifiers; the `ConsequencePath` deriver, which forks on CONTRADICTS; `dispatch_policy()`, which maps an impasse to the Verifier, Gap-filler, or Fork-resolver role; and `suggested_updates()`, which derives the close-the-loop feedback rows. Backs `aelf reason` and `/aelf:reason`. |
+| `wonder/` | (v2.0+, expanded v3.0) The wonder lifecycle: gap analysis (`dispatch.py`) and research-axis generation; phantom ingest and garbage collection (`wonder_ingest`, `wonder_gc`); subagent integration at the Skill layer (`skill_integration.py`, per #552); and the structured `WonderResult` dataclass (#656). |
 | `sentiment_feedback.py` | (v2.0 module, v3.0 hook wired) A regex sentiment detector. v3.0 (#606) wires it into `UserPromptSubmit`, behind `[feedback] sentiment_from_prose = true`. |
-| `auto_install.py` | (v3.0+, #623) The merger for the version-stamped manifest. The first `aelf <cmd>` after a wheel upgrade merges the new default-on hooks from `data/hook_manifest.json` into `~/.claude/settings.json`. The merge takes an `fcntl` lock. It honors `~/.aelfrice/opt-out-hooks.json`. |
-| `working_state.py` | (v3.0+, #587) The projector that writes `<working-state>` after compaction. It reports the current branch, a bounded `git status`, the last HEAD log entries, the last K user prompts and the commits of the session. Each git invocation has a 1.5s timeout, and it returns empty on that timeout. |
-| `setup.py` | An idempotent install and uninstall of all the hooks and of the statusline. It writes atomically with a tempfile and `os.replace`. |
-| `hook.py` | `aelfrice.hook:main` — process Claude Code spawns on each prompt. Reads stdin, calls `retrieve()`, emits `<aelfrice-memory>` on stdout. Non-blocking. Entry: `aelf-hook`. |
-| `slash_commands/` | One markdown file for each CLI subcommand that `/aelf:*` surfaces. |
+| `auto_install.py` | (v3.0+, #623) The merger for the version-stamped manifest. The first `aelf <cmd>` after a wheel upgrade merges the new default-on hooks from `data/hook_manifest.json` into `~/.claude/settings.json`. The merge takes an `fcntl` lock and honors `~/.aelfrice/opt-out-hooks.json`. |
+| `working_state.py` | (v3.0+, #587) The projector that writes `<working-state>` after compaction. It reports the current branch, a bounded `git status`, the last HEAD log entries, the last K user prompts, and the session's commits. Each git invocation has a 1.5s timeout and returns empty when that timeout fires. |
+| `setup.py` | Idempotent install and uninstall of every hook and of the statusline. Writes atomically with a tempfile and `os.replace`. |
+| `hook.py` | `aelfrice.hook:main`, the process Claude Code spawns on each prompt. Reads stdin, calls `retrieve()`, and emits `<aelfrice-memory>` on stdout. Non-blocking. Entry point: `aelf-hook`. |
+| `slash_commands/` | One markdown file per CLI subcommand that `/aelf:*` surfaces. |
 
 ## Data model
 
@@ -105,7 +105,7 @@ modules against the 128 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `RESOLVES` | 0.0 | structural; closes a `CONTRADICTS` thread |
 | `CONTRADICTS` | -0.5 | half negative |
 
-A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387). It's deliberately absent from `EDGE_TYPES`, so it takes no part in valence propagation. The research line carried 17 edge types: the additional speculative and causal markers are `SPECULATES`, `DEPENDS_ON`, and `HIBERNATED`, and the additional structural extractors are `CALLS`, `CO_CHANGED`, `CONTAINS`, and `COMMIT_TOUCHES`. Both groups stay parked until the extractors that produce them ship. The current set of ten types covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x link between code and test (`IMPLEMENTS`, `TESTS`). For the deferred set, see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory).
+A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387). It's deliberately absent from `EDGE_TYPES`, so it takes no part in valence propagation. The research line carried 17 edge types: the additional speculative and causal markers are `SPECULATES`, `DEPENDS_ON`, and `HIBERNATED`, and the additional structural extractors are `CALLS`, `CO_CHANGED`, `CONTAINS`, and `COMMIT_TOUCHES`. Both groups stay parked until the extractors that produce them ship. The current set of ten types covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x link between code and test (`IMPLEMENTS`, `TESTS`). For the deferred set, see [the recovery inventory in the roadmap](ROADMAP.md#recovery-inventory).
 
 **Core SQLite tables include:**
 
@@ -168,9 +168,9 @@ Both modifiers are deterministic (#605), and both give byte-identical results to
 
 The token estimate is `(len(content) + 3) // 4`. An empty query returns L0 only, and L0 always wins an overflow.
 
-The specification documents are [entity_index.md](../design/entity_index.md) (L2.5), [bfs_multihop.md](../design/bfs_multihop.md) (L3), and [bayesian_ranking.md](../design/bayesian_ranking.md) (L1 Bayesian reranking).
+The specification documents are [the entity-index spec](../design/entity_index.md) (L2.5), [the BFS multi-hop spec](../design/bfs_multihop.md) (L3), and [the Bayesian-ranking spec](../design/bayesian_ranking.md) (L1 Bayesian reranking).
 
-**A caveat on the temporal coherence of BFS.** L3 resolves each hop to the globally latest serial of its target belief. For a recall query that behavior is correct. An audit query asks what the agent believed at decision-time, and for an audit query a supersession that landed after the seed can appear in the middle of the chain. The fix for temporal coherence was first targeted at v2.0.0. It slipped, and it isn't scheduled on a current milestone. See [LIMITATIONS § BFS multi-hop temporal coherence](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
+**A caveat on the temporal coherence of BFS.** L3 resolves each hop to the globally latest serial of its target belief. For a recall query that behavior is correct. An audit query asks what the agent believed at decision-time, and for an audit query a supersession that landed after the seed can appear in the middle of the chain. The fix for temporal coherence was first targeted at v2.0.0. It slipped, and it isn't scheduled on a current milestone. See [BFS multi-hop temporal coherence in the limitations list](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
 
 ## Onboarding
 
@@ -189,7 +189,7 @@ Classification uses the priors, with a regex fallback, and the scan is idempoten
 - the `--llm-classify` flag is set, or the `[onboard.llm].enabled` TOML key is set;
 - a one-time interactive consent prompt is answered, and a sentinel file records the answer.
 
-`--dry-run` previews the candidates and calls no API. The specification is [llm_classifier.md](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [PRIVACY § Onboard-time outbound call](../user/PRIVACY.md#onboard-time-outbound-call).
+`--dry-run` previews the candidates and calls no API. The specification is [the LLM-classifier spec](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [the onboard-time outbound call in the privacy document](../user/PRIVACY.md#onboard-time-outbound-call).
 
 ## Claude Code hook
 
@@ -219,18 +219,18 @@ prompt. Two qualifications apply. Both are deliberate, and both are reachable to
 
 | Hook | Event | Purpose | Default since |
 |---|---|---|---|
-| `aelf-hook` | `UserPromptSubmit` | Injects the retrieval results. This is the core mechanism. | v1.0 |
-| `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | Writes one JSONL line for each conversation turn. On PreCompact it rotates the file and ingests it again. | v2.1 (#529) |
+| `aelf-hook` | `UserPromptSubmit` | Injects the retrieval results. The core mechanism. | v1.0 |
+| `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | Writes one JSONL line per conversation turn. On PreCompact it rotates the file and ingests it again. | v2.1 (#529) |
 | `aelf-commit-ingest` | `PostToolUse:Bash` | After a `git commit`, ingests the commit message with the triple extractor. | v2.1 (#529) |
-| `aelf-session-start-hook` | `SessionStart` | Injects the locked beliefs as `<aelfrice-baseline>` once per session. Emits the `<recent-work>` sub-block (#887). | v2.1 (#529) |
-| `aelf-stop-hook` | `Stop` | The lock prompt at the end of the session. It surfaces the unlocked beliefs of the session scope as `<aelfrice-session-end>`, with pre-filled `aelf lock` commands. Those beliefs are of the correction class (#582) and of the directive class (#1315). A directive command carries `--for` when a memory verb governs a stated window. This hook also hosts the cadence checkpoint dispatch, which is default-off (#749 / #871 / #876). | v3.0 |
-| `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surfaces the relevant beliefs next to a tool-driven search (#674). | v3.0.1 (#738) |
-| `aelf-search-tool-hook` | `PreToolUse:Bash` | The same entry point, with a separate matcher in settings.json, for a bash search invocation. | v3.0.1 (#738) |
-| `aelf-pre-issue-hook` | `PreToolUse:Bash` | A guard that detects a duplicate before `gh issue create`. It blocks with exit 2 when the Jaccard overlap of the title is ≥ 0.5 against the open issues and the shipped commits (#941). | v3.5.0 |
-| `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | A one-way mirror. It copies the writes to the host claude-memory fact files into the belief graph (#985). A consent gates it since v4.0 (#1089). It runs once the reconcile at first setup records the consent for the project. It also runs when `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables it explicitly. An explicit falsy value is the opt-out. | v3.7.0 |
-| `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Injects the context for a worker. A dispatched worker inherits the L0 locked beliefs and the task-relevant beliefs through the harness `updatedInput` channel. The passthrough fails open. The kill switch is `AELFRICE_AGENT_CONTEXT=0` (#1068). | v4.0.0 |
-| `aelf-pre-compact-hook` | `PreCompact` | Does the bookkeeping for the trigger mode of the rebuilder, and nothing else. It never injects (#1031). Opt in with `--rebuilder`. The default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
-| `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction. This is the channel that the harness honors (#1031). | opt-in |
+| `aelf-session-start-hook` | `SessionStart` | Injects the locked beliefs as `<aelfrice-baseline>` once per session, and emits the `<recent-work>` sub-block (#887). | v2.1 (#529) |
+| `aelf-stop-hook` | `Stop` | The end-of-session lock prompt. It surfaces the session scope's unlocked beliefs as `<aelfrice-session-end>` with pre-filled `aelf lock` commands. Those beliefs are of the correction class (#582) and the directive class (#1315), and a directive command carries `--for` when a memory verb governs a stated window. The hook also hosts the cadence checkpoint dispatch, which is default-off (#749 / #871 / #876). | v3.0 |
+| `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surfaces relevant beliefs next to a tool-driven search (#674). | v3.0.1 (#738) |
+| `aelf-search-tool-hook` | `PreToolUse:Bash` | The same entry point for a bash search invocation, reached through a separate matcher in settings.json. | v3.0.1 (#738) |
+| `aelf-pre-issue-hook` | `PreToolUse:Bash` | A duplicate guard that runs before `gh issue create`. It blocks with exit 2 when the title's Jaccard overlap against the open issues and the shipped commits is ≥ 0.5 (#941). | v3.5.0 |
+| `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | A one-way mirror that copies writes to the host claude-memory fact files into the belief graph (#985). Consent has gated it since v4.0 (#1089): it runs once the reconcile at first setup records consent for the project, and it also runs when `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables it explicitly. An explicit falsy value is the opt-out. | v3.7.0 |
+| `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Injects context for a worker. A dispatched worker inherits the L0 locked beliefs and the task-relevant ones through the harness `updatedInput` channel. The passthrough fails open, and the kill switch is `AELFRICE_AGENT_CONTEXT=0` (#1068). | v4.0.0 |
+| `aelf-pre-compact-hook` | `PreCompact` | Bookkeeping for the rebuilder's trigger mode, and nothing else; it never injects (#1031). Opt in with `--rebuilder`. The default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
+| `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction. This is the channel the harness honors (#1031). | opt-in |
 
 To opt out of any lane, run `aelf setup --no-<lane>`. All the lanes exit 0 on failure, with the two
 qualifications stated under the non-blocking contract above. `aelf-pre-issue-hook` exits `2` on a duplicate
@@ -240,7 +240,7 @@ The `PostToolUseFailure:<tool_name>` namespace of event names inside
 `~/.aelfrice/hook-activity.jsonl` is reserved for the raw observation
 of a tool failure from a hook on the HOME side. That hook is tracked
 separately. For the schema of the fields, see
-[hook_activity_schema](../design/hook_activity_schema.md), which also
+[the hook-activity schema](../design/hook_activity_schema.md), which also
 warns about dedupe by fingerprint on the consumer side.
 
 ## Post-compaction rebuilder
@@ -271,15 +271,15 @@ emitted as additionalContext — the aelfrice block lands in the
 new context alongside the harness's own summary (augment mode)
 ```
 
-`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually, and it prints the block to stdout. To install it, run `aelf setup --rebuilder`. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [context_rebuilder.md](../design/context_rebuilder.md), and the policy for the eval fixtures is [eval_fixture_policy.md](../design/eval_fixture_policy.md).
+`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually, and it prints the block to stdout. To install it, run `aelf setup --rebuilder`. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [the context-rebuilder spec](../design/context_rebuilder.md), and the policy for the eval fixtures is [the eval-fixture policy](../design/eval_fixture_policy.md).
 
 ## Tests
 
 | Layer | Marker | Coverage |
 |---|---|---|
 | Unit | default | One property per test. Pyright runs in strict mode. |
-| Property | default | The pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, the token-budget invariant and broker attenuation. |
-| Regression | `@pytest.mark.regression` | The scenarios that cross modules: the retrieval round-trip, the feedback loop, the onboarding, the setup→hook→unsetup sequence and `aelf bench` end to end. |
+| Property | default | The pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, the token-budget invariant, and broker attenuation. |
+| Regression | `@pytest.mark.regression` | Scenarios that cross modules: the retrieval round-trip, the feedback loop, onboarding, the setup→hook→unsetup sequence, and `aelf bench` end to end. |
 
 Run `uv run pytest`. The suite holds 7,300+ tests at v4.2.0.
 
@@ -294,12 +294,12 @@ substrate as of that measurement. The README badge currently reads `partial (6/1
 11/11 as the evidence that stood at the time of the flip, not as the present state of the harness.
 
 The following items were listed here in the past, and they have since shipped:
-- Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [bayesian_ranking.md](../design/bayesian_ranking.md))
-- BFS multi-hop graph retrieval → **shipped v1.3.0** ([bfs_multihop.md](../design/bfs_multihop.md))
-- Entity index and named-entity recognition (NER) → **shipped v1.3.0** ([entity_index.md](../design/entity_index.md))
-- LLM in the hot path (the optional onboard classifier) → **shipped v1.3.0** ([llm_classifier.md](../design/llm_classifier.md))
+- Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [the Bayesian-ranking spec](../design/bayesian_ranking.md))
+- BFS multi-hop graph retrieval → **shipped v1.3.0** ([the BFS multi-hop spec](../design/bfs_multihop.md))
+- Entity index and named-entity recognition (NER) → **shipped v1.3.0** ([the entity-index spec](../design/entity_index.md))
+- LLM in the hot path (the optional onboard classifier) → **shipped v1.3.0** ([the LLM-classifier spec](../design/llm_classifier.md))
 - BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154). The uplift is +0.6650 in normalized discounted cumulative gain at k (NDCG@k) on the v0.1 retrieve_uplift fixture.
-- HRR primitives and the structural lane → **shipped v1.7.0**, default-on as of v2.1 ([feature-hrr-integration.md](../design/feature-hrr-integration.md)). The source is at `src/aelfrice/hrr_index.py`. This closes three items: the vocabulary-gap-recovery claim, the #154 composition tracker, and the #437 reproducibility-harness at 11/11 (the v2.1.0 cut, 2026-05-08). See the note above on the current badge.
+- HRR primitives and the structural lane → **shipped v1.7.0**, default-on as of v2.1 ([the HRR integration design](../design/feature-hrr-integration.md)). The source is at `src/aelfrice/hrr_index.py`. This closes three items: the vocabulary-gap-recovery claim, the #154 composition tracker, and the #437 reproducibility-harness at 11/11 (the v2.1.0 cut, 2026-05-08). See the note above on the current badge.
 - Heat-kernel authority scorer → **shipped v1.6.0** (opt-in), default-on as of v2.1 (the #154 composition tracker)
 - HRR persistence (save and load in the split format `.npy` and `.npz`, default-on) → **shipped v3.0** (#553)
 - Wonder lifecycle (the graph walk, the axes dispatch, and the phantom promotion of Surfaces A and B) → **shipped v2.0/v3.0** ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella)

@@ -66,7 +66,7 @@ installed statusline in <project>/.claude/settings.json
 - session-start injection
 - the other default hooks
 
-The set covers capture as well as retrieval. To opt out of one lane, pass the option for that lane, such as `--no-transcript-ingest` or `--no-commit-ingest`. See [INSTALL § default-on hooks](INSTALL.md).
+The set covers capture as well as retrieval. To opt out of one lane, pass the option for that lane, such as `--no-transcript-ingest` or `--no-commit-ingest`. See [default-on hooks in the installation guide](INSTALL.md).
 
 Restart Claude Code. Your next prompt that mentions "deploy" or "push" arrives with the locked rule injected as `<aelfrice-memory>` above your message.
 
@@ -107,7 +107,7 @@ applied harmful to 91e02d3c: alpha 0.600->0.600, beta 1.000->2.000
 
 `used` increases α, and `harmful` increases β. Locks resist passive feedback by design. [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote mechanism at v3.2. To change a wrong lock, use `aelf unlock` or `aelf delete`. You can also lock the corrected statement again.
 
-> The partial Bayesian re-rank shipped at v1.3, and BM25F became default-on at v1.7. For the parts that are still partial, see [LIMITATIONS](LIMITATIONS.md).
+> The partial Bayesian re-rank shipped at v1.3, and BM25F became default-on at v1.7. For the parts that are still partial, see [the limitations list](LIMITATIONS.md).
 
 ## Next
 

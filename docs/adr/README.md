@@ -10,7 +10,7 @@ Each architecture decision record (ADR) documents one technical decision: the co
 
 ## Format
 
-ADRs follow a lightweight Nygard-style template, shown in [template.md](template.md). Numbering is monotonic. File names use the pattern `NNNN-kebab-case-title.md`.
+ADRs follow a lightweight Nygard-style template. See [the ADR template](template.md). Numbering is monotonic. File names use the pattern `NNNN-kebab-case-title.md`.
 
 ## When to write one
 

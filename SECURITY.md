@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Send an email to security@robotrocketscience.com. If you prefer the GitHub flow, open a GitHub Security Advisory instead. Do **not** open a public issue for a security bug or a privacy bug.
+Send an email to **security@robotrocketscience.com**. If you prefer the GitHub flow, open a GitHub Security Advisory instead. Do **not** open a public issue for a security bug or a privacy bug.
 
 In your report, include:
 
@@ -11,7 +11,7 @@ In your report, include:
 - The version of aelfrice you run (`aelf --version`).
 - Your environment: the operating system, the Python version, and the host agent, if relevant.
 
-We acknowledge receipt within 48 hours, and we aim to send an initial assessment within 5 business days.
+We acknowledge receipt within **48 hours**, and we aim to send an initial assessment within **5 business days**.
 
 ## Scope
 
@@ -30,11 +30,11 @@ Out of scope:
 
 ## What aelfrice promises
 
-- **No telemetry.** The shipped package contains no network code in the retrieval, scoring, scanner, store, or feedback paths. By default, two outbound calls are enabled. The first is the update notifier (`lifecycle.py`), which a time-to-live (TTL) gate controls. The notifier sends one GET request to `https://pypi.org/pypi/aelfrice/json`, and that request carries no user data. To turn the notifier off, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title, and only when you run `gh issue create`. To turn the guard off, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. For the details, see [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
+- **No telemetry.** The shipped package contains no network code in the retrieval, scoring, scanner, store, or feedback paths. By default, two outbound calls are enabled. The first is the update notifier (`lifecycle.py`), which a time-to-live (TTL) gate controls. The notifier sends one GET request to `https://pypi.org/pypi/aelfrice/json`, and that request carries no user data. To turn the notifier off, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title, and only when you run `gh issue create`. To turn the guard off, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. For the details, see [the privacy reference](docs/user/PRIVACY.md).
 - **All data is local.** Your beliefs live in a single SQLite file, and `src/aelfrice/db_paths.py` resolves its path: `$AELFRICE_DB` if you set it, otherwise the per-project path `<git-common-dir>/aelfrice/memory.db`, otherwise `~/.aelfrice/memory.db` as a legacy fallback when the current directory isn't in a git repository. aelfrice doesn't back this file up, doesn't sync it, and doesn't transmit any part of it.
 - **Auditable update mathematics.** Every Bayesian update runs through one function (`apply_feedback`, about 60 lines), and production retrieval gets its ordering from one function (`retrieve` in `src/aelfrice/retrieval.py`). Both are pure Python, and neither does any input or output beyond the local SQLite file, so you can review both.
 
-For details you can verify, see [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
+For details you can verify, see [the privacy reference](docs/user/PRIVACY.md).
 
 ## Disclosure
 
@@ -49,4 +49,4 @@ We don't currently run a paid bug bounty.
 
 ## Credit for reporters
 
-We add entries here as we publish advisories.
+We list reporter credits here as advisories go out.

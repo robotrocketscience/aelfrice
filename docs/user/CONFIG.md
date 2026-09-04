@@ -1,6 +1,6 @@
 # Configuration: `.aelfrice.toml`
 
-Most users never need this file. The defaults are tuned, and `uv tool install aelfrice && aelf onboard .` gives you correct behaviour without it.
+Most users never need this file. The defaults are tuned, and `uv tool install aelfrice && aelf onboard .` gives you correct behavior without it.
 
 This document is the reference for power users. Reach for it when your project has a documentation idiom, or a naming convention, that the default filter handles incorrectly.
 
@@ -15,7 +15,7 @@ This document is the reference for power users. Reach for it when your project h
   - `posterior_weight` — partial Bayesian-weighted L1 ranking.
   - `l1_limit` and `token_budget` — the #1045 keys for wide retrieval. `l1_limit` caps the Best Matching 25 (BM25) candidate set, and `token_budget` caps the tokens. The defaults are 50 and 2400. Raise both together for multi-hop recall.
   - `use_bm25f_anchors` — the BM25F path with anchor text, since v1.7.
-  - `bm25f_per_field` and `bm25_b_anchor` — the #1180 two-field BM25F scorer. It normalises the content and the anchor text separately instead of concatenating them. The default is off, pending its bench.
+  - `bm25f_per_field` and `bm25_b_anchor` — the #1180 two-field BM25F scorer. It normalizes the content and the anchor text separately instead of concatenating them. The default is off, pending its bench.
   - `use_heat_kernel` — the authority-scoring lane. The default is **off** again since #1162: the lane needs an eigenbasis, no production caller builds one, and a default-on flag therefore advertised a lane that can't fire. `LaneTelemetry.heat_used` now reports at runtime whether the lane fired.
   - `use_hrr_structural` — the structural-query lane that uses a holographic reduced representation (HRR). The default is on since v2.1, and the #1107 Phase-5 cutover put the lane on the production `retrieve()` path. The lane is marker-routed, so on a query without a marker it falls through and does nothing.
   - `hrr_persist` — on-disk persistence of the HRR structural index. The default is on since v3.0.
@@ -29,10 +29,10 @@ This document is the reference for power users. Reach for it when your project h
   - `use_origin_tiebreak` — the #1089 tie-break on origin priority inside one tier. The default is off. **This key has no TOML tier, and the kwarg tier is unreachable from `retrieve()`. The environment variable does reach it.** See its section below.
   - `use_supersession_demote`, `supersession_treatment`, and `supersession_demote_factor` — the #1187 supersession lane. The lane demotes or excludes the beliefs that a `SUPERSEDES` edge retires. The defaults are off, `demote`, and 0.5, pending the three-arm bench.
 
-  aelfrice also recognises two placeholder flags: `use_signed_laplacian` and `use_posterior_ranking`. Setting either one emits a deprecation warning, and neither lane has shipped yet.
+  aelfrice also recognizes two placeholder flags: `use_signed_laplacian` and `use_posterior_ranking`. Setting either one emits a deprecation warning, and neither lane has shipped yet.
 - `[rebuilder]` (v1.4+) — the context rebuilder's keys: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `legacy-bm25`). `stack-r1-r3` was the `query_strategy` default from v3.0 until #1501. `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped belief lane and the L1 belief lane, through the keys `[rebuild_floor] session` and `[rebuild_floor] l1`.
 - `[onboard.llm]` (v1.3.0+) — the gate for the onboard classifier that calls the direct API. For the full table, see [Keys § `[onboard.llm]`](#onboardllm-v130) below.
-- `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more recognised tables. They hold the feedback-cadence scoring, the deferred feedback for retrieval exposure, and the per-turn hook audit log. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
+- `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more recognized tables. They hold the feedback-cadence scoring, the deferred feedback for retrieval exposure, and the per-turn hook audit log. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — the opt-in keys for the feedback lanes. `sentiment_from_prose` (default `false`) connects the sentiment-feedback detector to `UserPromptSubmit` (#606).
 - `[belief_categories]` (v4.x+) — the belief categories that a keyword triggers. `enabled` (default `false`) connects the category-injection lane to `UserPromptSubmit` (#1126). Manage the categories with `aelf category`.
 - `AELFRICE_TURN_DIFFERENTIAL` (v4.x+, #1382) — an environment variable with no TOML key. **The default is off.** To turn it on, export `AELFRICE_TURN_DIFFERENTIAL=1`. Once it is on, and once a belief has gone into this session's context **verbatim**, a later turn writes a one-line `seen <id>: "<topic>"` reference in the locks manifest instead of repeating the block. The text is already above in the same window, so the reference points at it.
@@ -83,9 +83,9 @@ This document is the reference for power users. Reach for it when your project h
   A 70-day-old belief that retrieval returned yesterday under a suppressed block reads `70d cold`, not `1d cold`. With the block off permanently, the checkpoint therefore opens with exactly the beliefs that retrieval still finds, and the remove box is one keystroke away. Confirm each entry before you tick it, or leave the block on.
 
   Flipping the switch *in the middle of a session* has one more consequence. `is_session_first_prompt` runs before aelfrice resolves the switch, so a suppressed fire consumes the session's first-prompt slot. That is deliberate, because `aelf scope-out` resolves against the `session_id` key of the same file. Flipping back to on part-way through a session therefore does not restore the #578 session-start sub-block for that session; start a new session to get it.
-- `[user_prompt_submit_hook]` (v3.0+) — the UPS hook's keys. `prompt_shape_gate_enabled` (default `true`) controls the short-circuits for a trivial prompt and for a system envelope, which run before BM25 retrieval (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query, so a follow-up that uses a paraphrase, a pronoun, or a numeric reference still surfaces the thread that carries the answer. Two keys tune this behaviour: `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
+- `[user_prompt_submit_hook]` (v3.0+) — the UPS hook's keys. `prompt_shape_gate_enabled` (default `true`) controls the short-circuits for a trivial prompt and for a system envelope, which run before BM25 retrieval (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query, so a follow-up that uses a paraphrase, a pronoun, or a numeric reference still surfaces the thread that carries the answer. Two keys tune this behavior: `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
-This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behaviour, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, and `[hook_audit]`.
+This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, and `[hook_audit]`.
 
 `scan_repo` walks up from the scan root looking for `.aelfrice.toml`, and the first file it finds is the one that applies. The walk stops at the filesystem root. There is no global configuration and no per-user configuration.
 
@@ -438,12 +438,12 @@ aelfrice ignores unknown keys and unknown tables. The file is forward-compatible
 
 | Token | Disables | Effect |
 |---|---|---|
-| `headings` | the "every line is a markdown heading" filter | pure heading blocks pass through |
-| `checklists` | the "every line is `- [ ]`" filter | task-list items become belief candidates |
-| `fragments` | the `min_words` short-paragraph filter | short labels like `DRAFT` pass to the classifier |
-| `license` | the seven-signature license-preamble filter | LICENSE.md text becomes belief candidates |
+| `headings` | The "every line is a markdown heading" filter | Pure heading blocks pass through |
+| `checklists` | The "every line is `- [ ]`" filter | Task-list items become belief candidates |
+| `fragments` | The `min_words` short-paragraph filter | Short labels like `DRAFT` pass to the classifier |
+| `license` | The seven-signature license-preamble filter | LICENSE.md text becomes belief candidates |
 
-A disabled category is silent: `ScanResult.skipped_noise` counts nothing from it, and the other categories still fire. aelfrice ignores an unrecognised token without reporting it.
+A disabled category is silent: `ScanResult.skipped_noise` counts nothing from it, and the other categories still fire. aelfrice ignores an unrecognized token without reporting it.
 
 ### `min_words`
 
@@ -453,7 +453,7 @@ Integer, default `4`. aelfrice drops any paragraph shorter than this value.
 |---|---|
 | `4` (default) | Most projects. |
 | `3` or lower | You lock terse rules ("prefer composition", "no global state"). |
-| `0` | Disables the check entirely. |
+| `0` | Nothing should be dropped for length. |
 
 aelfrice rejects a non-integer value, writes a warning to stderr, and applies the default.
 
@@ -473,9 +473,9 @@ The host-driven large language model (LLM) classifier for onboard ingest. It rep
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `enabled` | bool | `true` (since v1.5.1, #238; was `false` v1.3.0–v1.5.0) | Turns on the LLM path when you pass no `--llm-classify` flag. The CLI flag overrides this key. Pass `--llm-classify=false` to force the regex path when this key is `true`. |
-| `max_tokens` | int | `200_000` | A hard cap on the total of the input tokens and the output tokens for each onboard run. The classifier stops in mid-stream when a run goes above the cap. The candidates that the classifier already classified stay in the store. The belief id is deterministic, so a re-run resumes idempotently. `0` disables the cap. This setting is for power users. |
-| `model` | str | `"claude-haiku-4-5-20251001"` | Anthropic model id. Pinned by default. Override only if you have a reason — classification recall and the few-shot block are calibrated against the pinned model. |
+| `enabled` | bool | `true` (since v1.5.1, #238; was `false` v1.3.0–v1.5.0) | Turns on the LLM path when you don't pass a `--llm-classify` flag. The CLI flag overrides this key, so pass `--llm-classify=false` to force the regex path while this key is `true`. |
+| `max_tokens` | int | `200_000` | Hard cap on the combined input and output tokens for each onboard run. If a run goes over the cap, the classifier stops mid-stream, and whatever it already classified stays in the store. Belief ids are deterministic, so a re-run resumes idempotently. `0` turns the cap off. For power users. |
+| `model` | str | `"claude-haiku-4-5-20251001"` | Anthropic model id, pinned by default. Override it only if you have a reason: classification recall and the few-shot block are calibrated against the pinned model. |
 
 All three keys are optional, and a missing key takes its default.
 
@@ -552,7 +552,7 @@ score = log(-bm25_raw) + posterior_weight * log(posterior_mean(α, β))
 
 `-bm25_raw` flips the signed score of SQLite full-text search version 5 (FTS5) to a positive number: in SQLite, a negative score of smaller magnitude is the better score, so aelfrice negates it before taking `log`. `posterior_mean(α, β) = α / (α+β)` reuses the existing scoring helper, which uses the Jeffreys prior and reads `0.5` for an unobserved belief.
 
-Behaviour at the boundaries:
+Behavior at the boundaries:
 
 - **`0.0`** — the score becomes `log(-bm25_raw)`, an ordering byte-identical to the v1.0.x `ORDER BY bm25(beliefs_fts)` ordering. Use this value for diff tooling and bisection.
 - **`0.5`** (default) — the optimum on the synthetic graph from the v1.3 calibration. The posterior moves the rank without overwhelming BM25.
@@ -572,7 +572,7 @@ Boolean, default `true` in `retrieve_v2` since v4.0 ([#1096](https://github.com/
 
 For each candidate that carries an entity, the lane reads a grounding score `S1 = durable / (durable + transient + 1)` from the `belief_entities` index, in one batched query over the whole candidate set. It then applies the penalty `min(0, log(S1 + ε))`. Some beliefs ground only to *transient* coordination tokens, such as a bare pull-request number, a bare issue number, a version tag, or a branch tag; the lane demotes those below the beliefs that ground to *durable* entities, such as a file path, an error code, or a symbol identifier. The lane is a **pure demotion**: a well-grounded belief stays neutral, and the lane never boosts it. It touches only the candidates that carry an entity, so durable content without one, such as a docstring or a formula, is never penalised.
 
-Measurement on a hand-labelled set of 118 beliefs gave this separation: mean S1 was 0.56 for durable beliefs and 0.06 for ephemeral ones, and the ranking area under the curve (AUC) for durable above ephemeral rose from 0.48 to 0.87.
+Measurement on a hand-labeled set of 118 beliefs gave this separation: mean S1 was 0.56 for durable beliefs and 0.06 for ephemeral ones, and the ranking area under the curve (AUC) for durable above ephemeral rose from 0.48 to 0.87.
 
 The sink is **content-referential, not temporal**. Measurement showed that a decay sink keyed on time or recency is empirically inert for this workload, because the junk is *hot* rather than stale. The organic sink is therefore this lane, not cold hibernation. The lane is deterministic per #605, because it is an entity-index join and uses no embeddings. Its output is byte-identical when you leave the flag unset.
 
@@ -586,10 +586,10 @@ Without this lane, retrieval has no concept of supersession. Consider this seque
 
 Two arms, selected by `supersession_treatment`:
 
-| Value | Behaviour |
+| Value | Behavior |
 |---|---|
 | `demote` (default) | Adds `log(supersession_demote_factor)` to the candidate's rerank score. |
-| `exclude` | Drops the superseded belief from the candidate set entirely, before the heat-kernel seeds are computed. |
+| `exclude` | Drops the superseded belief from the candidate set entirely, before aelfrice computes the heat-kernel seeds. |
 
 `demote` is the default because it is the recoverable arm. The triple extractor can write a `SUPERSEDES` edge from prose that only *looks* like a supersession, and a wrong exclusion then hides a belief with no ranking signal left to make it visible again. Exclusion is the stronger reading of "the user retired this claim". **A three-arm bench gates the choice of default**, across demote, exclusion, and control. Unlike the #1170 BFS-direction fix, this lane changes the output of `retrieve()` on the default path, so both arms ship behind the flag and neither is presumed.
 
@@ -599,7 +599,7 @@ Calibration note if you run the bench: at `factor = 0.5` the penalty is `-0.69`.
 
 The lane runs one batched query per retrieval: `SELECT DISTINCT dst … WHERE type = 'SUPERSEDES'` over the candidate set. With the flag off, aelfrice skips that query completely. The lane is deterministic per #605, because it is an edge join that reads no clock and no embeddings.
 
-Precedence for all three keys (the first decisive tier applies): the environment variables > the explicit Python kwarg on `retrieve_v2()` > the TOML keys > the defaults. The environment variables are `AELFRICE_SUPERSESSION_DEMOTE=1`/`0`, `AELFRICE_SUPERSESSION_TREATMENT=demote|exclude`, and `AELFRICE_SUPERSESSION_FACTOR=<float>`. The TOML keys are `[retrieval] use_supersession_demote` / `supersession_treatment` / `supersession_demote_factor`, with defaults `false` / `demote` / `0.5`. An unrecognised treatment traces to stderr and falls through to the default, and a non-numeric factor does the same. Neither one raises.
+Precedence for all three keys (the first decisive tier applies): the environment variables > the explicit Python kwarg on `retrieve_v2()` > the TOML keys > the defaults. The environment variables are `AELFRICE_SUPERSESSION_DEMOTE=1`/`0`, `AELFRICE_SUPERSESSION_TREATMENT=demote|exclude`, and `AELFRICE_SUPERSESSION_FACTOR=<float>`. The TOML keys are `[retrieval] use_supersession_demote` / `supersession_treatment` / `supersession_demote_factor`, with defaults `false` / `demote` / `0.5`. An unrecognized treatment traces to stderr and falls through to the default, and a non-numeric factor does the same. Neither one raises.
 
 ### `order_policy`
 
@@ -607,11 +607,11 @@ String, default `lane` (v4.3+, [#1274](https://github.com/robotrocketscience/ael
 
 Without this key, a belief's position in the block is a side effect of lane concatenation (`locked + l25 + l1 + hrr + spine + bfs`). Nobody chose that order as a policy, which makes it untestable. Named policies turn the question into a configuration change.
 
-| Value | Behaviour |
+| Value | Behavior |
 |---|---|
 | `lane` (default) | Identity permutation — the block is byte-identical to pre-#1274 output. |
 | `locks_last` | Non-locked hits first, the user-locked tier last. |
-| `score_desc` | The user-locked tier first, then the non-locked hits in order of descending rerank score. **This key cannot reach that policy today.** See below. |
+| `score_desc` | The user-locked tier first, then the non-locked hits in descending rerank-score order. **This key cannot reach that policy today.** See below. |
 
 Every policy is a **stable and total** permutation, with ties broken on the hit's original index. The rendered order is therefore a pure function of the hits, the policy, and the scores, and a replay reproduces it exactly. No policy adds a hit, and none drops one.
 
@@ -626,13 +626,13 @@ Two cautions apply if you measure this key, both from the #1274 pre-flight over 
 - **A policy that relocates the locks is not attention-neutral.** Position 1 holds a user lock in 100% of the live blocks, and a median of 50 locks comes before the first non-locked belief. Score any arm that moves the locked tier on lock-following, not on answer accuracy alone.
 - **The benchmark harness has no lock tier.** `benchmarks/longmemeval_adapter.py` retrieves with `include_locked=False`, and every bench adapter ingests at `LOCK_NONE`. `lane`, `locks_last`, and `score_desc` are therefore the *same permutation* in that harness, so a null from it shows an inert instrument, not a null result.
 
-Precedence (the first decisive tier applies): environment variable `AELFRICE_ORDER_POLICY=lane|locks_last|score_desc` > explicit argument > TOML `[retrieval] order_policy` > default `lane`. An unrecognised value traces to stderr and falls through to the default; it does not raise.
+Precedence (the first decisive tier applies): environment variable `AELFRICE_ORDER_POLICY=lane|locks_last|score_desc` > explicit argument > TOML `[retrieval] order_policy` > default `lane`. An unrecognized value traces to stderr and falls through to the default; it does not raise.
 
 ### `use_origin_tiebreak`
 
 Boolean, default `false` (v4.0+, [#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)). This key enables the **origin-priority tie-break**: when two ranked candidates tie on relevance, the *origin* with the higher trust takes the higher rank. For example, when two such candidates tie, a belief curated from a `user` or `feedback` fact file outranks a belief captured automatically from a chat transcript.
 
-This is a **tie-break** inside one tier, never a primary rerank term. The origin key sits *between* the relevance score and the id tie-break, so relevance always dominates and the behaviour stays byte-identical when the flag is off. The tie-break applies in both ranked tiers: the L1 FTS rerank and the L2.5 entity-index overlap. It is deliberately *not* an origin *rerank lane*; #1013 refuted that lane on LoCoMo, because the failure there was a BM25 recall limit, and a rerank cannot fix a recall limit. The tie-break is deterministic per #605.
+This is a **tie-break** inside one tier, never a primary rerank term. The origin key sits *between* the relevance score and the id tie-break, so relevance always dominates and the behavior stays byte-identical when the flag is off. The tie-break applies in both ranked tiers: the L1 FTS rerank and the L2.5 entity-index overlap. It is deliberately *not* an origin *rerank lane*; #1013 refuted that lane on LoCoMo, because the failure there was a BM25 recall limit, and a rerank cannot fix a recall limit. The tie-break is deterministic per #605.
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_ORIGIN_TIEBREAK=1` > explicit Python kwarg `use_origin_tiebreak=<bool>` > default `false`. **There is no TOML tier.** Unlike every sibling resolver, `is_origin_tiebreak_enabled` does not read `.aelfrice.toml`, so aelfrice accepts a `[retrieval] use_origin_tiebreak` key in silence and that key has no effect.
 
@@ -657,7 +657,7 @@ With the flag on, a belief scores `A_i = Σ_j ln((N + 1) / (fan_j + 1))` over th
 
 The returned tuples keep their shape: the second element is still the overlap count, and the row **count** is `min(pool, limit)` either way. The **order** differs, and under truncation a different order means a different returned **set**. At a top-*k*, at a token budget, or at any `[:n]`, *which* beliefs you get depends on whether this lane ran. The [#1434](https://github.com/robotrocketscience/aelfrice/issues/1434) fixture verified this element for element: the counts were identical at every limit, the sets disagreed from limit 1 through 6, and they converged at 7. If you truncate, treat the selected set as dependent on the lane ([#1462](https://github.com/robotrocketscience/aelfrice/issues/1462)).
 
-The lane needs no new table and no migration. It counts the fan inline over the query's own keys, and takes the logarithm in Python, because SQL `LN()` requires `SQLITE_ENABLE_MATH_FUNCTIONS` and the support matrix doesn't guarantee that option. The cost is at parity with the lane it replaces: 0.039 ms at p50 against 0.045 ms. Parity holds because `store_generation()` memoises the count of active beliefs; recomputing that count for each query costs 1.315 ms, which dominates everything else. The lane is deterministic per #605: the activation sum iterates the entities in sorted key order, so two beliefs carrying the same entity set land on bit-identical activations.
+The lane needs no new table and no migration. It counts the fan inline over the query's own keys, and takes the logarithm in Python, because SQL `LN()` requires `SQLITE_ENABLE_MATH_FUNCTIONS` and the support matrix doesn't guarantee that option. The cost is at parity with the lane it replaces: 0.039 ms at p50 against 0.045 ms. Parity holds because `store_generation()` memoizes the count of active beliefs; recomputing that count for each query costs 1.315 ms, which dominates everything else. The lane is deterministic per #605: the activation sum iterates the entities in sorted key order, so two beliefs carrying the same entity set land on bit-identical activations.
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_FAN_EFFECT=1`/`0` > explicit Python kwarg `use_fan_effect=<bool>` > default `false`. There is no TOML tier yet; one should arrive with any flip of the default. **The kwarg tier exists on `retrieve_v2()` and `retrieve_with_tiers()` only. `retrieve()` takes no `use_fan_effect` argument.** On the production entry point, the environment variable is therefore the only control. **The default stays off until the A/B runs.** The kill gate cleared, and the cost is lower than that of the lane this one replaces, but whether the reorder ranks *better* is a separate measurement. Flipping the default is an operator call.
 
@@ -695,13 +695,13 @@ Precedence (the first decisive tier applies): environment variable `AELFRICE_EXP
 
 Float, default `0.0` (v4.x+, [#1174](https://github.com/robotrocketscience/aelfrice/issues/1174)). This key sets the weight of the **document prior for utterance against knowledge** in the L1 rerank. The prior is a term that doesn't depend on the query, and it demotes a belief that looks like *something someone said* rather than *something that is true*.
 
-The prior is a naive-Bayes log-odds over two classes, which aelfrice reads directly from `ingest_log`: the transcript rows form one class, and the filesystem and git rows form the other. It therefore uses no hand labels and no embeddings. It targets a measured failure: the store ingests its own query log, so the nearest lexical neighbour of a query is frequently an earlier query.
+The prior is a naive-Bayes log-odds over two classes, which aelfrice reads directly from `ingest_log`: the transcript rows form one class, and the filesystem and git rows form the other. It therefore uses no hand labels and no embeddings. It targets a measured failure: the store ingests its own query log, so the nearest lexical neighbor of a query is frequently an earlier query.
 
-The penalty is **log-additive, and aelfrice clamps it at 0**, so knowledge-shaped content stays neutral and the lane never promotes it. The rerank score is a log-domain quantity and routinely negative, so an unclamped term would reorder the documents the lane has no opinion about. `score()` returns a *mean* over the document's known stems rather than a sum, so the term doesn't scale with document length, which the per-field normalisation of BM25F already handles. The lane is deterministic per #605, because the mean sums the stems in sorted order.
+The penalty is **log-additive, and aelfrice clamps it at 0**, so knowledge-shaped content stays neutral and the lane never promotes it. The rerank score is a log-domain quantity and routinely negative, so an unclamped term would reorder the documents the lane has no opinion about. `score()` returns a *mean* over the document's known stems rather than a sum, so the term doesn't scale with document length, which the per-field normalization of BM25F already handles. The lane is deterministic per #605, because the mean sums the stems in sorted order.
 
-At `0.0` the lane short-circuits and **nothing reads the ingest log**, so the behaviour is byte-identical to running without the flag. A malformed value falls through to `0.0`, and so does a negative value; neither inverts the lane. aelfrice builds the prior once per store and caches it.
+At `0.0` the lane short-circuits and **nothing reads the ingest log**, so the behavior is byte-identical to running without the flag. A malformed value falls through to `0.0`, and so does a negative value; neither inverts the lane. aelfrice builds the prior once per store and caches it.
 
-Precedence (the first decisive tier applies): environment variable `AELFRICE_UTTERANCE_PRIOR_WEIGHT=<float>` > explicit Python kwarg > default `0.0`. There is no TOML tier yet. As with `use_fan_effect`, the kwarg tier exists on `retrieve_v2()` and `retrieve_with_tiers()` only: `retrieve()` exposes no `utterance_prior_weight` parameter and honours the environment variable alone, and passing that parameter to `retrieve()` raises `TypeError`.
+Precedence (the first decisive tier applies): environment variable `AELFRICE_UTTERANCE_PRIOR_WEIGHT=<float>` > explicit Python kwarg > default `0.0`. There is no TOML tier yet. As with `use_fan_effect`, the kwarg tier exists on `retrieve_v2()` and `retrieve_with_tiers()` only: `retrieve()` exposes no `utterance_prior_weight` parameter and honors the environment variable alone, and passing that parameter to `retrieve()` raises `TypeError`.
 
 **The default stays off until the W-sweep runs.** Proving that a non-zero weight ranks *better* needs a relevance gold set, and the store's observed-utility signal cannot supply one, because it holds 5 positives across 16,355 resolved `injection_events`. Score the sweep below the locked block: aelfrice injects the L0 locks ahead of the ranked candidates and never trims them, so a top-k metric measures the lock tier and stays constant in this weight.
 
@@ -722,7 +722,7 @@ When you disable the tier (the v1.3.0 default):
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_BFS=1`/`0` > explicit Python kwarg > TOML > default `false`.
 
-The flag ships default-OFF at v1.3.0, because nobody has calibrated the default edge weights from the literature against the v1.2 corpus. A v1.3.x patch might tune those weights again, and the default flips to on only once a benchmark confirms an uplift. For the full specification, including the limitation on temporal coherence, see [bfs_multihop.md](../design/bfs_multihop.md).
+The flag ships default-OFF at v1.3.0, because nobody has calibrated the default edge weights from the literature against the v1.2 corpus. A v1.3.x patch might tune those weights again, and the default flips to on only once a benchmark confirms an uplift. For the full specification, including the limitation on temporal coherence, see [the BFS multi-hop design note](../design/bfs_multihop.md).
 
 ### `use_bm25f_anchors`
 
@@ -731,7 +731,7 @@ Boolean, default `true` since v1.7.0 (#154 bench gate). This key enables the BM2
 When you enable the path (the v1.7.0+ default):
 - L1 retrieval uses the BM25F implementation in `retrieval.py`, which indexes the belief text together with its anchor terms: the entity mentions, the source paths, and the identifier captures.
 - `LaneTelemetry.bm25f_used = True` for the call.
-- The composition-tracker bench (#154) measured an uplift of **+0.6650 in normalised discounted cumulative gain at k (NDCG@k)** against the baseline with all the flags off. That bench ran on the lab fixture `tests/corpus/v2_0/retrieve_uplift/v0_1.jsonl`, which holds 30 rows in 6 categories.
+- The composition-tracker bench (#154) measured an uplift of **+0.6650 in normalized discounted cumulative gain at k (NDCG@k)** against the baseline with all the flags off. That bench ran on the lab fixture `tests/corpus/v2_0/retrieve_uplift/v0_1.jsonl`, which holds 30 rows in 6 categories.
 
 When you disable the path:
 - L1 falls back to the FTS5-BM25 path of v1.5 and v1.6, and `LaneTelemetry.bm25f_used = False`.
@@ -760,17 +760,17 @@ query string -> parse_structural_marker
               miss: textual lane (BM25F + heat-kernel + BFS)
 ```
 
-A marker is a leading uppercase edge-type token, followed by `:` and a non-empty target belief id. The recognised kinds match `aelfrice.models.EDGE_TYPES`, and the current set is `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`, `RELATES_TO`, `DERIVED_FROM`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `TESTS`, `RESOLVES`. Treat that constant as the source of truth. The match is case-sensitive, so `contradicts:b/abc` does not match and falls through to the textual lane on the literal string. aelfrice preserves whitespace inside the target, and strips leading and trailing whitespace on the query.
+A marker is a leading uppercase edge-type token, followed by `:` and a non-empty target belief id. The recognized kinds match `aelfrice.models.EDGE_TYPES`, and the current set is `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`, `RELATES_TO`, `DERIVED_FROM`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `TESTS`, `RESOLVES`. Treat that constant as the source of truth. The match is case-sensitive, so `contradicts:b/abc` does not match and falls through to the textual lane on the literal string. aelfrice preserves whitespace inside the target, and strips leading and trailing whitespace on the query.
 
 Examples:
 
 | Query | Routes to | Returns |
 |---|---|---|
-| `CONTRADICTS:b/abc` | structural lane | beliefs whose outgoing edge of kind `CONTRADICTS` targets `b/abc`, ranked by HRR probe score |
-| `SUPPORTS:b/xyz` | structural lane | beliefs that `SUPPORTS` `b/xyz` |
-| `contradicts everything` | textual lane | BM25 over the literal string |
-| `CONTRADICTS: ` (empty target) | textual lane (marker rejected by regex) | BM25 over the literal string |
-| `CONTRADICTS:nonexistent_id` | textual lane (marker parsed but probe finds no edges) | BM25 over the literal string |
+| `CONTRADICTS:b/abc` | Structural lane | Beliefs whose outgoing edge of kind `CONTRADICTS` targets `b/abc`, ranked by HRR probe score |
+| `SUPPORTS:b/xyz` | Structural lane | Beliefs that `SUPPORTS` `b/xyz` |
+| `contradicts everything` | Textual lane | BM25 over the literal string |
+| `CONTRADICTS: ` (empty target) | Textual lane; the regex rejects the marker | BM25 over the literal string |
+| `CONTRADICTS:nonexistent_id` | Textual lane; the marker parses, but the probe finds no edges | BM25 over the literal string |
 
 On a hit in the structural lane, the locked beliefs pin to the head of the result when `include_locked=True`, bypassing the budget as the existing public-API contract requires. aelfrice then appends the HRR-ranked beliefs in order of descending score until the token budget is exhausted, removing from the HRR tail any belief already in the locked set.
 
@@ -817,7 +817,7 @@ v4.0.0+ (#1064). Defaults `true` and `32`. These two keys control the
 temporal-spine retrieval lane, an additive source of candidates after
 L1. The lane traverses the chronological `TEMPORAL_NEXT` chains from the
 top-5 packed L1 seeds, in both directions, at depth 1, and appends the
-neighbours without displacing L1 before the packing. The mechanism
+neighbors without displacing L1 before the packing. The mechanism
 complements lexical matching: a gold belief that shares no salient term
 with the question becomes reachable through its chronological adjacency
 to a belief that does match.
@@ -829,13 +829,13 @@ variables → the explicit kwarg → TOML → the default. The default is
 **ON** since the #1107 Phase-2 cutover, so the lane is live on the
 production `retrieve()` hook path, not only on `retrieve_v2`. That
 cutover followed every pre-registered gate in
-[docs/design/feature-temporal-spine.md](../design/feature-temporal-spine.md).
+[the temporal-spine feature design note](../design/feature-temporal-spine.md).
 To opt out, set `AELFRICE_TEMPORAL_SPINE=0` or `[retrieval]
 use_temporal_spine = false`.
 
 ### Placeholder flags
 
-#154 reserves `use_signed_laplacian` and `use_posterior_ranking`, and neither one's lane has shipped. `warn_placeholder_flags()` recognises both, so writing either in `.aelfrice.toml` raises no error. Setting either to `true` emits one deprecation warning to stderr and does nothing else. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
+#154 reserves `use_signed_laplacian` and `use_posterior_ranking`, and neither one's lane has shipped. `warn_placeholder_flags()` recognizes both, so writing either in `.aelfrice.toml` raises no error. Setting either to `true` emits one deprecation warning to stderr and does nothing else. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
 
 ## `[ingest]` (v4.0.0+)
 
@@ -871,12 +871,12 @@ reach of each key. The consumers are:
 
 | Key | Type | Default | Ingest write path | `aelf doctor` audits |
 |---|---|---|---|---|
-| `auto_detect` | bool | `false` | **honoured** — the on/off switch | not read (the flag gates ingest only) |
-| `jaccard_min` | float `[0.0, 1.0]` | `0.4` | **honoured** (since [#1299](https://github.com/robotrocketscience/aelfrice/issues/1299); silently ignored before) | **honoured**, `--relationships-jaccard` overrides |
-| `confidence_min` | float `[0.0, 1.0]` | `0.5` | **honoured** (since #1299; silently ignored before) | **honoured**, `--relationships-confidence` overrides |
-| `max_candidate_pairs` | int `>= 1` | `5000` | **honoured** (since #1299; silently ignored before) | **honoured**, `--relationships-max-pairs` overrides |
-| `residual_overlap_min` | — | `0.4` | **no TOML key** — not parsed anywhere | **no TOML key** |
-| `max_edges_per_belief` | — | `8` | **no TOML key** by design (Exp-48 write-gate, caller kwarg only) | n/a (audits do not write `CONTRADICTS`) |
+| `auto_detect` | bool | `false` | **honored** — the on/off switch | Not read; the flag gates ingest only |
+| `jaccard_min` | float `[0.0, 1.0]` | `0.4` | **honored** (since [#1299](https://github.com/robotrocketscience/aelfrice/issues/1299); ignored without warning before that) | **honored**; `--relationships-jaccard` overrides it |
+| `confidence_min` | float `[0.0, 1.0]` | `0.5` | **honored** (since #1299; ignored without warning before that) | **honored**; `--relationships-confidence` overrides it |
+| `max_candidate_pairs` | int `>= 1` | `5000` | **honored** (since #1299; ignored without warning before that) | **honored**; `--relationships-max-pairs` overrides it |
+| `residual_overlap_min` | — | `0.4` | **No TOML key** — nothing parses it | **No TOML key** |
+| `max_edges_per_belief` | — | `8` | **No TOML key** by design (the Exp-48 write gate takes a caller kwarg only) | Not applicable; the audits never write `CONTRADICTS` |
 
 The section therefore still doesn't mean exactly one thing for every key. The
 last two rows are module constants with no configuration surface. #1299
@@ -903,11 +903,11 @@ With the key off, every belief renders as `<belief id="…" lock="user|none">`,
 plus the `speculative="1"` marker from #1171. With the key on, aelfrice groups
 the block:
 
-| section | membership | what the framing tells the model |
+| Section | Membership | What the framing tells the model |
 |---|---|---|
-| `<user-locked>` | `lock_level == 'user'`, whatever the origin | standing instructions; verify factual claims against the project first |
-| `<observed>` | `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `document_recent` | recorded from what the user said or the repo contains; weigh by `n` and `mu` |
-| `<inferred>` | `agent_inferred`, `agent_remembered`, `speculative`, `unknown` | the system's own hypotheses; check them, never treat as fact |
+| `<user-locked>` | `lock_level == 'user'`, whatever the origin | Standing instructions; verify factual claims against the project first |
+| `<observed>` | `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `document_recent` | Recorded from what the user said, or from what the repo contains; weigh by `n` and `mu` |
+| `<inferred>` | `agent_inferred`, `agent_remembered`, `speculative`, `unknown` | The system's own hypotheses; check them, and never treat them as fact |
 
 A non-locked line gains four attributes: `origin`, `n` (= `alpha + beta`),
 `mu` (the posterior, to 3 decimal places), and `seen` (the corroboration
@@ -923,7 +923,7 @@ ranker has to collapse that spread, but a model that sees the number can
 weigh it against the question you asked.
 
 Membership is a **total** function of `lock_level` and `origin`, and every
-`models.ORIGIN_*` constant has a classification. An unrecognised origin falls
+`models.ORIGIN_*` constant has a classification. An unrecognized origin falls
 back to `<inferred>` rather than being dropped. That direction is deliberate:
 nobody classified such an origin, so nobody established its trustworthiness.
 A test enumerates the constants from `models`, so a new origin without a
@@ -1045,7 +1045,7 @@ did run.
 
 ## `[rebuilder]` and `[rebuild_floor]` (v1.7+)
 
-A malformed value in either section falls back to the field's default and writes an `aelfrice rebuilder: ignoring …` trace to stderr. A malformed value is one of the wrong type, out of range, or an unrecognised strategy string. The rebuild never raises on a bad configuration value.
+A malformed value in either section falls back to the field's default and writes an `aelfrice rebuilder: ignoring …` trace to stderr. A malformed value is one of the wrong type, out of range, or an unrecognized strategy string. The rebuild never raises on a bad configuration value.
 
 ### `query_strategy`
 
@@ -1053,10 +1053,10 @@ String, one of `"legacy-bm25"` or `"stack-r1-r3"`, defaulting to `"legacy-bm25"`
 
 | Value | Effect |
 |---|---|
-| `"stack-r1-r3"` (default v3.0 → #1501) | Runs the R1+R3 query-understanding stack: entity expansion, then per-store IDF clipping. See `aelfrice.query_understanding` for the contract of the rewriter. The stack raised recall only while the FTS5 MATCH was conjunctive. #1177 made that MATCH disjunctive, so the clip now deletes query terms and widens nothing. Measurement across that one commit, on the same 30-row labelled corpus: legacy-bm25 0.3006 → 0.9553, stack-r1-r3 0.5858 → 0.8229, uplift +0.2851 → −0.1324. On one store of 16,454 beliefs, the clip dropped 1,284 of the 1,859 terms that reached it over 200 in-domain queries. Those two measurements are the whole evidence base. Nobody has measured the behaviour on a store of a different size or a different shape. |
+| `"stack-r1-r3"` (default v3.0 → #1501) | Runs the R1+R3 query-understanding stack: entity expansion, then per-store IDF clipping. See `aelfrice.query_understanding` for the contract of the rewriter. The stack raised recall only while the FTS5 MATCH was conjunctive. #1177 made that MATCH disjunctive, so the clip now deletes query terms and widens nothing. Measurement across that one commit, on the same 30-row labeled corpus: legacy-bm25 0.3006 → 0.9553, stack-r1-r3 0.5858 → 0.8229, uplift +0.2851 → −0.1324. On one store of 16,454 beliefs, the clip dropped 1,284 of the 1,859 terms that reached it over 200 in-domain queries. Those two measurements are the whole evidence base. Nobody has measured the behavior on a store of a different size or a different shape. |
 | `"legacy-bm25"` (default) | Byte-identical to the v1.4 raw-BM25 path: the query reaches `retrieve()` unchanged. |
 
-An unrecognised value traces to stderr and falls back to `"legacy-bm25"`.
+An unrecognized value traces to stderr and falls back to `"legacy-bm25"`.
 
 ### `[rebuild_floor] session`
 
@@ -1079,17 +1079,17 @@ One flag and one per-session budget cover three signals, which aelfrice combines
 
 ### `enabled`
 
-Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_PHANTOM_GENERATION=1`/`0` (aelfrice normalises the truthy and falsy values) > explicit Python kwarg > TOML `[phantom_generation] enabled` > default `false`. The resolver has the same shape as the `bfs_enabled` resolver, and a fresh install is unaffected.
+Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_PHANTOM_GENERATION=1`/`0` (aelfrice normalizes the truthy and falsy values) > explicit Python kwarg > TOML `[phantom_generation] enabled` > default `false`. The resolver has the same shape as the `bfs_enabled` resolver, and a fresh install is unaffected.
 
 ### `max_fires_per_session`
 
-Integer ≥ 1, default `3`. This key caps the opportunity notes for each session. All three signals share the cap, and the `session_ring` state tracks it. Each signal also removes its own duplicates, which stops the same opportunity from appearing twice inside one session; the deduplication key is the normalised prompt topic for gap, the entity string for new_entity, and the sorted pair of belief ids for contradiction. This key is TOML-only, with no environment override, matching the precedent of the cadence configuration.
+Integer ≥ 1, default `3`. This key caps the opportunity notes for each session. All three signals share the cap, and the `session_ring` state tracks it. Each signal also removes its own duplicates, which stops the same opportunity from appearing twice inside one session; the deduplication key is the normalized prompt topic for gap, the entity string for new_entity, and the sorted pair of belief ids for contradiction. This key is TOML-only, with no environment override, matching the precedent of the cadence configuration.
 
 ### `auto_dispatch`
 
 Boolean, default `false`. With `false` (the default) the note is passive: it states the opportunity, and you or the agent then decide what to do. With `true` the note instructs the agent to run the `/aelf:wonder` dispatch on the listed topics. This key is TOML-only.
 
-aelfrice skips the trigger on a turn that the prompt-shape gate stopped (#674). The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [phantom_trigger_generation.md](../design/phantom_trigger_generation.md).
+aelfrice skips the trigger on a turn that the prompt-shape gate stopped (#674). The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [the phantom-generation trigger design note](../design/phantom_trigger_generation.md).
 
 ## `[phantom_promotion]` (v4.x+)
 
@@ -1099,7 +1099,7 @@ The detector answers a finding of the #1125 census, which found that phantoms ar
 
 ### `enabled`
 
-Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_PHANTOM_PROMOTION=1`/`0` (aelfrice normalises the truthy and falsy values) > explicit Python kwarg > TOML `[phantom_promotion] enabled` > default `false`. The resolver has the same shape as the `[phantom_generation]` resolver, and a fresh install is unaffected.
+Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_PHANTOM_PROMOTION=1`/`0` (aelfrice normalizes the truthy and falsy values) > explicit Python kwarg > TOML `[phantom_promotion] enabled` > default `false`. The resolver has the same shape as the `[phantom_generation]` resolver, and a fresh install is unaffected.
 
 ### `max_fires_per_session`
 
@@ -1109,21 +1109,21 @@ Integer ≥ 1, default `3`. This key caps the promotion-opportunity notes for ea
 
 Integers ≥ 1, defaults `3` / `2`. aelfrice surfaces a phantom only when three conditions hold together: the phantom has at least `min_corroborations` corroborations; those corroborations come from at least `min_sessions` distinct sessions, excluding the NULL sessions; and the phantom has no inbound CONTRADICTS edge. These thresholds have the same shape as those in the retention-promotion rule (`belief_retention_class.md` §4). To surface fewer candidates at a higher confidence, raise the two keys. Both are TOML-only.
 
-aelfrice skips the trigger on a turn that the prompt-shape gate stopped. The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [phantom_generation_sources.md](../design/phantom_generation_sources.md) §6 (issue #1132).
+aelfrice skips the trigger on a turn that the prompt-shape gate stopped. The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [the phantom-generation sources design note](../design/phantom_generation_sources.md) §6 (issue #1132).
 
 ## `[belief_categories]` (v4.x+)
 
 Opt-in belief categories that a keyword triggers (#1126). A *category* groups beliefs, such as repo-rules, git-workflow, and prose-and-docs, and binds them to an activation trigger. A category fires when it is always-on, or when one of its keyword phrases appears in the prompt. When the lane is enabled and a category fires, the `UserPromptSubmit` hook does three things: it **reranks the retrieval output**, so that category's member rules lead the `<aelfrice-memory>` block; it adds a one-line `<category-focus>` note in front, naming the categories that fired; and it surfaces a bounded set of members that retrieval missed. This lane is the conditional complement to a static `CLAUDE.md` / `AGENTS.md`, because it brings the right rule at the right moment.
 
-The lane **reranks the output rather than injecting a second block**. The #1126 research found that a separate block injects a second copy of what retrieval (L0 + BM25) already returns, and that the category members are almost always already in the tail of the retrieval output. The value is therefore prioritising and labelling the one block, not adding content.
+The lane **reranks the output rather than injecting a second block**. The #1126 research found that a separate block injects a second copy of what retrieval (L0 + BM25) already returns, and that the category members are almost always already in the tail of the retrieval output. The value is therefore prioritizing and labeling the one block, not adding content.
 
 The lane is **advisory, not enforcement**: it never blocks a tool call. Under the enforcement history (#199) and the #605 determinism boundary, the matching uses the standard library only: it is case-insensitive, respects word boundaries, matches a literal phrase, and uses no embeddings and no model call. The hook is fail-soft, so any error leaves the hits unchanged and returns exit 0. Because the lane reorders existing hits, a locked member is still injected exactly once, with its L0 ground-truth framing; the lane only lifts it to the top.
 
 ### `enabled`
 
-Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_BELIEF_CATEGORIES=1`/`0` (aelfrice normalises the truthy and falsy values) > TOML `[belief_categories] enabled` > default `false`. A fresh install is unaffected until you enable the lane.
+Boolean, default `false`. This key is the top-level opt-in. Precedence (the first decisive tier applies): environment variable `AELFRICE_BELIEF_CATEGORIES=1`/`0` (aelfrice normalizes the truthy and falsy values) > TOML `[belief_categories] enabled` > default `false`. A fresh install is unaffected until you enable the lane.
 
-Manage the categories and their membership with the `aelf category` CLI (`init`/`add`/`list`/`show`/`set-trigger`/`assign`/`unassign`/`delete`), or with `aelf lock "<rule>" --category <name>`. `aelf category init` creates a starter set of 5 categories: repo-rules, git-workflow, secrets-and-safety, prose-and-docs, and testing. You drive every category assignment; there is no automatic classification. For the full specification, see [belief_categories.md](../design/belief_categories.md).
+Manage the categories and their membership with the `aelf category` CLI (`init`/`add`/`list`/`show`/`set-trigger`/`assign`/`unassign`/`delete`), or with `aelf lock "<rule>" --category <name>`. `aelf category init` creates a starter set of 5 categories: repo-rules, git-workflow, secrets-and-safety, prose-and-docs, and testing. You drive every category assignment; there is no automatic classification. For the full specification, see [the belief-categories design note](../design/belief_categories.md).
 
 ## `[memory]` (v3.7.0+)
 
@@ -1133,7 +1133,7 @@ When the resolved value is off, the hook returns after three cheap checks — th
 
 ### `mirror_claude_memory`
 
-Boolean. Precedence (the first decisive tier applies): environment variable `AELFRICE_MIRROR_CLAUDE_MEMORY` > explicit caller kwarg > TOML `[memory] mirror_claude_memory` > the #1089 per-project consent sentinel > default `false`. aelfrice normalises the truthy and falsy values of that environment variable, and a present sentinel means `true`. **Opt-out:** the environment and TOML tiers outrank the sentinel, so an explicit `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `mirror_claude_memory = false` disables the mirror even after a consent. The sentinel lives beside the belief store, so an uninstall or a rebuild removes it with the store, and a fresh store asks for consent again at its next `aelf setup`. When the mirror is enabled, a `metadata.type` of `user` or `feedback` ingests as `origin=user_validated` with an undeflated prior, while a `metadata.type` of `project` or `reference`, or an absent `metadata.type`, ingests as `origin=agent_inferred` with a deflated prior. The belief ids come from the content, so a byte-identical rewrite corroborates a belief rather than duplicating it.
+Boolean. Precedence (the first decisive tier applies): environment variable `AELFRICE_MIRROR_CLAUDE_MEMORY` > explicit caller kwarg > TOML `[memory] mirror_claude_memory` > the #1089 per-project consent sentinel > default `false`. aelfrice normalizes the truthy and falsy values of that environment variable, and a present sentinel means `true`. **Opt-out:** the environment and TOML tiers outrank the sentinel, so an explicit `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `mirror_claude_memory = false` disables the mirror even after a consent. The sentinel lives beside the belief store, so an uninstall or a rebuild removes it with the store, and a fresh store asks for consent again at its next `aelf setup`. When the mirror is enabled, a `metadata.type` of `user` or `feedback` ingests as `origin=user_validated` with an undeflated prior, while a `metadata.type` of `project` or `reference`, or an absent `metadata.type`, ingests as `origin=agent_inferred` with a deflated prior. The belief ids come from the content, so a byte-identical rewrite corroborates a belief rather than duplicating it.
 
 ## When changes apply
 
@@ -1150,7 +1150,7 @@ For a less destructive cleanup, query the store with `sqlite3` and `DELETE` the 
 
 ## What this file does not do
 
-- The `[noise]` table does not affect retrieval. The noise filter runs at onboard time only; the `[retrieval]`, `[rebuilder]`, and `[user_prompt_submit_hook]` tables above control the behaviour at retrieval time.
+- The `[noise]` table does not affect retrieval. The noise filter runs at onboard time only; the `[retrieval]`, `[rebuilder]`, and `[user_prompt_submit_hook]` tables above control the behavior at retrieval time.
 - This file does not affect `aelf lock` or `aelf:lock`. A belief you assert manually bypasses the noise filter.
 - This file does not redefine the four built-in categories. You can disable a category, but you cannot change what it matches. Use `exclude_words` or `exclude_phrases` for your own rules.
 - This file does not load values from `pyproject.toml`, from environment variables, or from CLI flags.
@@ -1159,19 +1159,19 @@ For a less destructive cleanup, query the store with `sqlite3` and `DELETE` the 
 
 The file can be malformed, unreadable, or hold values of the wrong type. In each of those cases the filter degrades to the defaults in silence and the onboard does not fail. Every failure traces to stderr.
 
-| Failure | Behaviour |
+| Failure | Behavior |
 |---|---|
-| Malformed TOML | defaults loaded, `malformed TOML in <path>` to stderr |
-| Wrong-typed field | that field defaults, `ignoring [noise] <field>` to stderr |
-| Non-string entry in a list field | that entry skipped, list still loads |
-| Unknown field | silently ignored (forward-compat) |
-| Missing file | defaults loaded, no warning |
+| Malformed TOML | Defaults load, and `malformed TOML in <path>` goes to stderr |
+| Wrong-typed field | That field takes its default, and `ignoring [noise] <field>` goes to stderr |
+| Non-string entry in a list field | That entry is skipped, and the list still loads |
+| Unknown field | Ignored without warning, for forward compatibility |
+| Missing file | Defaults load, with no warning |
 
 ## See also
 
-- [COMMANDS § `onboard`](COMMANDS.md) — the CLI surface.
-- [ARCHITECTURE § Modules](../concepts/ARCHITECTURE.md) — where `noise_filter.py` sits.
-- [LIMITATIONS § Onboarding scope](LIMITATIONS.md) — what is still to come for onboard behaviour.
+- [The `onboard` command reference](COMMANDS.md) — the CLI surface.
+- [The modules section of the architecture overview](../concepts/ARCHITECTURE.md) — where `noise_filter.py` sits.
+- [Onboarding scope in the limitations list](LIMITATIONS.md) — what is still to come for onboard behavior.
 
 ## Pre-issue-create guard (`aelf-pre-issue-hook`, v3.5.0+)
 

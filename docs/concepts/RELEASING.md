@@ -128,7 +128,7 @@ uv tool install --pre aelfrice==3.4.0rc1
 The public repo protects `main` with two mechanisms:
 
 - the merge-train workflow, which makes fast-forward-only pushes at concurrency 1 and verifies the signature (see `.github/workflows/merge-train.yml`)
-- the required checks, which are the staging-gate jobs (`secrets-scan`, `pattern-scan`, `history-scan`, `release-docs-check`) and the `pytest` matrix from the separate `ci.yml` workflow
+- the required checks, which are the staging-gate jobs (`secrets-scan`, `pattern-scan`, `history-scan`, and `release-docs-check`) and the `pytest` matrix from the separate `ci.yml` workflow
 
 You can also configure GitHub's native branch-protection APIs. To read the current state, run `gh api repos/robotrocketscience/aelfrice/branches/main/protection`.
 

@@ -17,12 +17,12 @@ stores live in different places, and different mechanisms write them.
 
 | | Claude Code auto-memory | aelfrice |
 |---|---|---|
-| Storage | The `~/.claude/projects/<slug>/memory/*.md` files and the `MEMORY.md` index | One `<git-common-dir>/aelfrice/memory.db` (SQLite) for each project. `~/.aelfrice/memory.db` only outside a git working tree |
-| Format | Markdown files with YAML frontmatter | Beliefs indexed with full-text search version 5 (FTS5), with α/β posteriors and typed edges |
-| Write path | A harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | An explicit `aelf lock`, `aelf:lock` or `aelf onboard` call. The default-on capture hooks of v2.1+ also write (transcript-ingest, commit-ingest) |
-| Read path | Auto-loaded into every prompt by Claude Code itself | The `UserPromptSubmit` hook injects retrieval results above each prompt |
-| Determinism | None. The large language model (LLM) decides what to write and when to write it | Reproducible at bit level. A replay of the write log reconstructs every *belief* state. **The edges are an exception.** The code as shipped writes them outside the log ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)) |
-| Apply feedback | No | Yes. An explicit `used` or `harmful` signal moves the posteriors. The *exposure* from retrieval is audit-only by default (#1086), and it is recorded as recurrence rather than as evidence. A contradiction resolves through a tie-breaker |
+| Storage | The `~/.claude/projects/<slug>/memory/*.md` files, plus the `MEMORY.md` index | One `<git-common-dir>/aelfrice/memory.db` (SQLite) per project. It falls back to `~/.aelfrice/memory.db` only outside a git working tree |
+| Format | Markdown files with YAML frontmatter | Beliefs indexed with full-text search version 5 (FTS5), carrying α/β posteriors and typed edges |
+| Write path | A harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | An explicit `aelf lock`, `aelf:lock`, or `aelf onboard` call. The default-on capture hooks in v2.1+ also write (transcript-ingest and commit-ingest) |
+| Read path | Claude Code loads the files into every prompt automatically | The `UserPromptSubmit` hook injects retrieval results above each prompt |
+| Determinism | None. The large language model (LLM) decides what to write and when | Reproducible at bit level. Replaying the write log reconstructs every *belief* state. **The edges are an exception.** The shipped code writes them outside the log ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)) |
+| Apply feedback | No | Yes. An explicit `used` or `harmful` signal moves the posteriors. Retrieval *exposure* is audit-only by default (#1086), recorded as recurrence rather than as evidence. A contradiction resolves through a tie-breaker |
 
 The two stores capture different things by design, and they don't merge. There's
 one deliberate exception, and it runs one way only: the claude-memory mirror
@@ -40,17 +40,17 @@ The capture paths that use hooks shipped in v1.2 and went default-on in v2.1
 ([#529](https://github.com/robotrocketscience/aelfrice/issues/529)). Those paths
 close the original limitation, so you don't have to work against the harness:
 
-- **`SessionStart`** ([hook_hardening.md](../design/hook_hardening.md)).
+- **`SessionStart`** ([the hook-hardening design note](../design/hook_hardening.md)).
   Injects the L0 locked beliefs at session open, under the
   `<aelfrice-baseline>` tag. This injection happens before any user prompt
   fires.
 - **`UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact`
-  transcript-ingest** ([transcript_ingest.md](../design/transcript_ingest.md)).
+  transcript-ingest** ([the transcript-ingest design note](../design/transcript_ingest.md)).
   The hook appends every conversation turn to
   `<git-common-dir>/aelfrice/transcripts/turns.jsonl`. On compaction the JSONL
   file rotates, and `aelf ingest-transcript` then turns the rotated file into
   beliefs and edges in the brain graph.
-- **`PostToolUse:Bash` commit-ingest** ([commit_ingest_hook.md](../design/commit_ingest_hook.md)).
+- **`PostToolUse:Bash` commit-ingest** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
   After every successful `git commit` call through Bash, the hook runs the
   triple extractor on the body of the commit message, then inserts the resulting
   beliefs and edges under a deterministic session id,
@@ -169,15 +169,15 @@ in v1.7.0 (#391), and the `--to-scope` re-scoping arrived in v3.0
 
 ## Decision matrix
 
-| Want | Use |
+| Goal | Use |
 |---|---|
-| Install it and have it work with no more steps | Mode 1 (default) |
-| One canonical answer to "what is remembered" | Mode 2 |
-| Pure aelfrice, no harness `.md` files | Mode 3 (after migration) |
-| Save something the agent must never forget | `aelf:lock` |
-| Acknowledge an onboard belief without locking it | `aelf:promote` |
-| See what aelfrice currently holds | `aelf search "<query>"` or `aelf:search` |
-| See what auto-memory currently holds | `cat ~/.claude/projects/<slug>/memory/MEMORY.md` |
+| Install it and have it work, with nothing more to do | Mode 1 (default) |
+| A single canonical answer to "what is remembered" | Mode 2 |
+| Only aelfrice, with no harness `.md` files | Mode 3 (after migration) |
+| Save a fact the agent must never forget | `aelf:lock` |
+| Acknowledge a belief from an onboard run without locking it | `aelf:promote` |
+| Check what aelfrice holds right now | `aelf search "<query>"` or `aelf:search` |
+| Check what auto-memory holds right now | `cat ~/.claude/projects/<slug>/memory/MEMORY.md` |
 
 ## What this does not address
 
@@ -186,7 +186,7 @@ in v1.7.0 (#391), and the `--to-scope` re-scoping arrived in v3.0
   `~/.claude/projects/`, and they aren't synced either, unless you set up your
   own dotfiles repository. Neither store handles sync across machines. That work
   stays out of scope as of v3.5 (see
-  [LIMITATIONS § Sharing, sync, or distributed-write federation](../user/LIMITATIONS.md)).
+  [Sharing, sync, or distributed-write federation in the limitations list](../user/LIMITATIONS.md)).
 - **Cross-project federation.** Each git project gets its own aelfrice store,
   and auto-memory keeps its own directory for each project. v3.0 shipped
   *read-only* cross-project federation through `knowledge_deps.json`
@@ -227,13 +227,13 @@ virtual-environment mismatch or a missing `aelf-*` console script.
 
 ## See also
 
-- [LIMITATIONS.md § harness conflict](../user/LIMITATIONS.md) — the v1.0/v1.1
+- [the limitations list](../user/LIMITATIONS.md) — the v1.0/v1.1
   harness-conflict limitation that this document closed. That entry was removed
   from that file in v1.2.
-- [transcript_ingest.md](../design/transcript_ingest.md) — the capture pipeline
+- [the transcript-ingest design note](../design/transcript_ingest.md) — the capture pipeline
   for each turn.
-- [commit_ingest_hook.md](../design/commit_ingest_hook.md) — the capture
+- [the commit-ingest hook design note](../design/commit_ingest_hook.md) — the capture
   pipeline for a git commit.
-- [promotion_path.md](../design/promotion_path.md) — the
+- [the promotion-path design note](../design/promotion_path.md) — the
   `agent_inferred → user_validated` mechanism. It lets you tier imported `.md`
   content explicitly.
