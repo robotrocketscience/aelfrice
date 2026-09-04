@@ -307,3 +307,52 @@ def test_wrong_argument_count_is_a_usage_error(tmp_path: Path) -> None:
         capture_output=True, text=True, check=False, timeout=30,
     )
     assert result.returncode == 2
+
+
+class TestBacktickRuns:
+    """A literal ``` inside prose is not two delimiters and a leftover.
+
+    The span scanner used to pair backticks one at a time, so a table cell
+    containing a literal triple backtick produced a span plus a stray tick, and
+    the stray swallowed the text up to the next real span. `docs/user/CONFIG.md`
+    then reported a phantom loss of the token `fences) +`, and that cell could
+    not be reworded at all: every rewrite of it failed a check that was wrong.
+
+    The mutation half matters more than the happy path here. A scanner that
+    returned an empty Counter would satisfy "no phantom token", so each test
+    below also pins a span the scanner must still find.
+    """
+
+    def test_a_literal_triple_backtick_yields_no_phantom_token(self) -> None:
+        cell = "| `snapshot` | First sentence (split outside ``` fences) + `…`. |"
+        spans = inline_code(cell)
+        assert "fences) +" not in spans, (
+            "the leftover backtick paired with the next span's opener"
+        )
+        assert spans["snapshot"] == 1
+        assert spans["…"] == 1
+
+    def test_rewording_around_a_literal_triple_backtick_is_not_a_loss(self) -> None:
+        before = "# T\n\n| a | split outside ``` fences) + `…`. |\n"
+        after = "# T\n\n| a | split outside ``` fences, plus `…`. |\n"
+        losses, _notes = compare(before, after)
+        assert losses == []
+
+    def test_a_genuinely_dropped_span_is_still_a_loss(self) -> None:
+        """The fix must not buy its silence by counting nothing."""
+        before = "# T\n\n| a | split outside ``` fences) + `…`. |\n"
+        after = "# T\n\n| a | split outside ``` fences, plus nothing. |\n"
+        losses, _notes = compare(before, after)
+        assert any("…" in loss for loss in losses)
+
+    def test_a_run_closes_only_on_a_run_of_its_own_length(self) -> None:
+        """``x`` holds a literal backtick; one tick must not close it."""
+        assert inline_code("a ``code with ` tick`` b")["code with ` tick"] == 1
+
+    def test_a_span_still_survives_one_reflowed_line_break(self) -> None:
+        assert inline_code("use `aelf\nlock` now")["aelf lock"] == 1
+
+    def test_an_unpartnered_run_does_not_run_away_across_paragraphs(self) -> None:
+        text = "``` alone\n\nparagraph two\n\nand `real` span\n"
+        assert inline_code(text)["real"] == 1
+        assert len(inline_code(text)) == 1

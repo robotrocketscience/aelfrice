@@ -59,12 +59,11 @@ FENCE_RE = re.compile(
     r"(?P<body>.*?)^[ \t]*(?P=fence)[ \t]*$",
     re.MULTILINE | re.DOTALL,
 )
-# A code span may wrap across a line break -- markdown renders the break as a
-# space. Matching only within one line makes the opening backtick pair with the
-# NEXT span's backtick instead, which yields junk tokens on both sides and can
-# mask a genuine loss. At most one newline is allowed, so the pattern stays
-# linear and cannot run away across paragraphs.
-INLINE_CODE_RE = re.compile(r"`([^`\n]*(?:\n[^`\n]*)?)`")
+# Inline code spans are scanned by _code_spans() rather than matched by a
+# regex, because the delimiter is a RUN of backticks and only a run of equal
+# length closes it. A single-backtick pattern splits ``` into a pair plus a
+# stray, and that stray then pairs with the next real span's backtick -- which
+# reports junk tokens as losses and can bury a real one. See _code_spans.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$", re.MULTILINE)
 URL_RE = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 MD_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)")
@@ -81,6 +80,53 @@ BRACE_ANCHOR_RE = re.compile(r"\{#([^}]+)\}")
 def _strip_code(text: str) -> str:
     """Drop fenced blocks so their contents are not counted twice."""
     return FENCE_RE.sub("\n", text)
+
+
+def _code_spans(text: str) -> list[str]:
+    """Inline code spans, honouring backtick runs the way markdown does.
+
+    A run of N backticks opens a span, and only a run of exactly N backticks
+    closes it. A run with no partner of its own length is literal text, and
+    scanning resumes after it rather than inside it.
+
+    The rule matters for a literal ``` inside a table cell, which is ordinary
+    prose and not a fence. Pairing backticks one at a time turns that run into
+    a span plus a leftover backtick, and the leftover swallows everything up to
+    the next real span -- so `docs/user/CONFIG.md` reported a phantom loss of
+    the token 'fences) +' and froze that cell against any rewrite.
+
+    A span may still wrap one line break, because a conversion reflows
+    paragraphs and markdown renders the break as a space. More than one break
+    means the opener never had a partner in the same paragraph, so it is
+    treated as literal and the scan cannot run away across the document.
+    """
+    spans: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "`":
+            i += 1
+            continue
+        open_start = i
+        while i < n and text[i] == "`":
+            i += 1
+        run = i - open_start
+        body_start = i
+        j = i
+        while j < n:
+            if text[j] != "`":
+                j += 1
+                continue
+            close_start = j
+            while j < n and text[j] == "`":
+                j += 1
+            if j - close_start != run:
+                continue  # a run of another length is body text
+            body = text[body_start:close_start]
+            if body.count("\n") <= 1:
+                spans.append(body)
+                i = j
+            break
+    return spans
 
 
 def fences(text: str) -> Counter[str]:
@@ -100,7 +146,7 @@ def inline_code(text: str) -> Counter[str]:
     genuinely renamed identifier still compares unequal.
     """
     return Counter(
-        " ".join(m.split()) for m in INLINE_CODE_RE.findall(_strip_code(text))
+        " ".join(m.split()) for m in _code_spans(_strip_code(text))
     )
 
 
