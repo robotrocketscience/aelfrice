@@ -33,6 +33,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
 ARCHITECTURE = REPO / "docs" / "concepts" / "ARCHITECTURE.md"
+SECURITY = REPO / "SECURITY.md"
 SRC = REPO / "src" / "aelfrice"
 
 
@@ -140,4 +141,46 @@ def test_exploration_ships_and_is_off_by_default(
     assert retrieval.is_exploration_enabled(start=tmp_path) is False, (
         "exploration resolved default-ON; PHILOSOPHY says it is off by "
         "default. Update the paragraph in the same change as the flip."
+    )
+
+
+def _apply_feedback_lines() -> int:
+    """Lines spanned by `apply_feedback`, from its def to the next top-level one."""
+    text = (SRC / "feedback.py").read_text(encoding="utf-8").splitlines()
+    starts = [i for i, ln in enumerate(text) if ln.startswith("def apply_feedback")]
+    assert starts, "apply_feedback is gone from src/aelfrice/feedback.py"
+    start = starts[0]
+    after = [
+        i for i, ln in enumerate(text)
+        if i > start and (ln.startswith("def ") or ln.startswith("class "))
+    ]
+    return (after[0] if after else len(text)) - start
+
+
+def test_security_md_review_claim_holds() -> None:
+    """SECURITY.md's reviewability argument rests on a bound, so derive it.
+
+    The page told a reader that every Bayesian update runs through one function
+    "about 60 lines" long, and offered that as why the mathematics is auditable.
+    The function is 167 lines. The figure was typed once and never revisited,
+    which is the drift #1511 exists to stop.
+
+    The sentence now states a bound rather than a measurement, because the claim
+    it supports is "short enough to read in one sitting", not any exact count. A
+    bound survives ordinary edits and still fails if the function bloats past
+    the point where the argument stops being true.
+    """
+    text = SECURITY.read_text(encoding="utf-8")
+    m = re.search(r"`apply_feedback`, under (\d+) lines", text)
+    assert m, (
+        "could not find the apply_feedback length bound in SECURITY.md — "
+        "if it was reworded, update this test with it"
+    )
+    bound = int(m.group(1))
+    actual = _apply_feedback_lines()
+    assert actual > 0, "the extractor found no function body; the test is vacuous"
+    assert actual < bound, (
+        f"SECURITY.md claims apply_feedback is under {bound} lines; it is "
+        f"{actual}. Either shorten the function or revisit the claim that its "
+        f"length is what makes the update mathematics reviewable."
     )
