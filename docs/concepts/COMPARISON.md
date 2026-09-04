@@ -4,10 +4,10 @@
 
 > The biggest differentiator is not "vector DB vs SQLite" — it's **write correctness and governance**: provenance / audit trail, write gates / confirmation, conflict handling, reversibility (inspect / edit / delete).
 
-By that bar, "a vector store with a similarity query" is not a memory system. It
-is a search index. A memory system has to answer *who wrote this, when, via what
-ingress, what supersedes it, and how do I take it back*. This page describes how
-aelfrice meets each pillar.
+By that bar, "a vector store with a similarity query" isn't a memory system.
+It's a search index. A memory system has to answer *who wrote this, when,
+through what ingress, what supersedes it, and how do I take it back*. This page
+describes how aelfrice meets each pillar.
 
 ## The four pillars
 
@@ -18,23 +18,23 @@ aelfrice meets each pillar.
 | **Conflict handling** | Competing claims about the same thing are surfaced, not overwritten without warning. | `CONTRADICTS`, `SUPERSEDES`, and `RESOLVES` are edge types in their own right. A disagreement is a graph relation, not a vanished row. `/aelf:reason` emits a typed `VERDICT` (`SUFFICIENT` / `PARTIAL` / `UNCERTAIN` / `INSUFFICIENT` / `CONTRADICTORY`). It also emits typed `IMPASSES` (`TIE` / `GAP` / `CONSTRAINT_FAILURE` / `NO_CHANGE`). A downstream agent can therefore act on the disagreement. Per-scope version vectors preserve causal ordering across worktrees and federation peers. |
 | **Reversibility (inspect / edit / delete)** | Mutations remain auditable and partially undoable. The user controls their own memories. | `aelf delete`, `aelf unlock`, `aelf promote --to-scope`, and `aelf feedback` all write audit rows. The `ingest_log` is append-only and replay-capable. Read-only federation lets a project surface peer beliefs through `knowledge_deps.json` without taking ownership. A foreign-id mutation raises `ForeignBeliefError` at the API surface. At the top level, `aelf uninstall --archive backup.aenc` encrypts and removes the data. `--purge` wipes the data. `--keep-db` leaves the data untouched. There is no vendor lock-in. |
 
-## And vs. CLAUDE.md / hand-maintained files
+## Compared with CLAUDE.md and hand-maintained files
 
 The standard workaround for "agent keeps forgetting" is more files: `STATE.md`,
 `DECISIONS.md`, and a `CLAUDE.md` with cross-references to runbooks. Every
-cross-reference is an assumption. The assumption is that the agent reads the
-file, finds the correct section, and obeys that section. The failure modes are
-predictable:
+cross-reference rests on an assumption: that the agent reads the file, finds
+the correct section, and follows that section. That assumption fails in
+predictable ways:
 
 - The agent reads the rule and runs `git push` anyway.
 - Cross-references break without warning after compaction.
-- State files rot the moment someone forgets to update them.
+- State files go stale as soon as someone forgets to update them.
 
-Each new failure mode begets another file.
+Each new failure mode adds another file.
 
-aelfrice replaces the chain with a mechanism. The hook prepends the matched
-beliefs to the prompt before the model sees your message. The injection is not
-voluntary. The agent cannot skip it.
+aelfrice replaces the chain with a mechanism: the hook injects the matched
+beliefs into the prompt before the model sees your message. The injection isn't
+voluntary, and the agent can't skip it.
 
 | Manual approach | What breaks | aelfrice |
 |---|---|---|
@@ -44,6 +44,6 @@ voluntary. The agent cannot skip it.
 
 ## Related reading
 
-- [PHILOSOPHY.md](PHILOSOPHY.md) — design principles that lock these choices in.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — system shape, retrieval lanes, edge model.
+- [PHILOSOPHY.md](PHILOSOPHY.md) — the design principles that lock these choices in.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — system shape, retrieval lanes, and the edge model.
 - [LIMITATIONS.md](../user/LIMITATIONS.md) — what the partial ranking does and doesn't cover.

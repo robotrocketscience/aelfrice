@@ -2,16 +2,16 @@
 
 ## Reporting a vulnerability
 
-Send an email to **security@robotrocketscience.com**. If you prefer the GitHub flow, open a GitHub Security Advisory instead. Do **not** open a public issue for a security bug or a privacy bug.
+Send an email to security@robotrocketscience.com. If you prefer the GitHub flow, open a GitHub Security Advisory instead. Do **not** open a public issue for a security bug or a privacy bug.
 
-Please include:
+In your report, include:
 
-- A description of the issue and of its impact. The impact covers data exposure, integrity, and availability.
-- The steps to reproduce the issue, or a proof-of-concept.
-- The version of aelfrice that you run (`aelf --version`).
-- Your environment: the operating system, the Python version, and the host agent if the host agent is relevant.
+- A description of the issue and its impact on data exposure, integrity, and availability.
+- Steps to reproduce the issue, or a proof-of-concept.
+- The version of aelfrice you run (`aelf --version`).
+- Your environment: the operating system, the Python version, and the host agent, if relevant.
 
-We acknowledge receipt within **48 hours**. We aim to give an initial assessment within **5 business days**.
+We acknowledge receipt within 48 hours, and we aim to send an initial assessment within 5 business days.
 
 ## Scope
 
@@ -19,34 +19,34 @@ In scope:
 
 - The published Python package on PyPI (`pip index versions aelfrice`).
 - Any file in `src/aelfrice/` on `main`.
-- The argument handling of the CLI (`aelfrice.cli`).
-- The integrity of the SQLite schema and of the full-text search version 5 (FTS5) index.
+- The CLI's argument handling (`aelfrice.cli`).
+- The integrity of the SQLite schema and the full-text search version 5 (FTS5) index.
 
 Out of scope:
 
-- A vulnerability in your host agent. Report it upstream to the vendor of the host.
+- A vulnerability in your host agent. Report it upstream to the host's vendor.
 - A vulnerability in the cloud large language model (LLM) that receives your prompt.
-- A third-party tool that you use to inspect the database, such as sqlite3 or datasette.
+- A third-party tool you use to inspect the database, such as sqlite3 or datasette.
 
 ## What aelfrice promises
 
-- **No telemetry.** The shipped package contains no network code in the retrieval, scoring, scanner, store or feedback paths. Two outbound calls are on in the default configuration. The first call is the update notifier (`lifecycle.py`). A time-to-live (TTL) gate controls the notifier. The notifier makes one GET request to `https://pypi.org/pypi/aelfrice/json`, and this request transmits no user data. To disable the notifier, set `AELF_NO_UPDATE_CHECK=1`. The second call is the pre-issue duplicate guard. The guard runs `gh issue list --search` with tokens from your issue title, and it runs only when you run `gh issue create`. To disable the guard, set `AELFRICE_NO_PRE_ISSUE_GUARD=1`, or run `aelf setup --no-pre-issue-guard`. See [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
-- **All data is local.** Your beliefs live in a single SQLite file. `src/aelfrice/db_paths.py` resolves the path of that file. `$AELFRICE_DB` overrides the path. Otherwise the per-project path `<git-common-dir>/aelfrice/memory.db` applies. Otherwise `~/.aelfrice/memory.db` applies as a legacy fallback for a current directory that is not in a git repository. aelfrice does not back up this file, does not sync this file, and does not transmit any portion of it.
-- **Auditable update mathematics.** Every Bayesian update goes through one function (`apply_feedback`, about 60 lines). The ordering of production retrieval enters through one function (`retrieve` in `src/aelfrice/retrieval.py`). Both functions are pure Python. Neither function does input or output beyond the local SQLite file. You can review both functions.
+- **No telemetry.** The shipped package contains no network code in the retrieval, scoring, scanner, store, or feedback paths. By default, two outbound calls are enabled. The first is the update notifier (`lifecycle.py`), which a time-to-live (TTL) gate controls. The notifier sends one GET request to `https://pypi.org/pypi/aelfrice/json`, and that request carries no user data. To turn the notifier off, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title, and only when you run `gh issue create`. To turn the guard off, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. For the details, see [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
+- **All data is local.** Your beliefs live in a single SQLite file, and `src/aelfrice/db_paths.py` resolves its path: `$AELFRICE_DB` if you set it, otherwise the per-project path `<git-common-dir>/aelfrice/memory.db`, otherwise `~/.aelfrice/memory.db` as a legacy fallback when the current directory isn't in a git repository. aelfrice doesn't back this file up, doesn't sync it, and doesn't transmit any part of it.
+- **Auditable update mathematics.** Every Bayesian update runs through one function (`apply_feedback`, about 60 lines), and production retrieval gets its ordering from one function (`retrieve` in `src/aelfrice/retrieval.py`). Both are pure Python, and neither does any input or output beyond the local SQLite file, so you can review both.
 
-For details that you can verify, see [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
+For details you can verify, see [docs/user/PRIVACY.md](docs/user/PRIVACY.md).
 
 ## Disclosure
 
 We follow [coordinated disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure):
 
 1. You report the issue privately.
-2. We acknowledge the report. We triage the report. We develop a fix.
-3. We coordinate a release with you on a target date.
-4. We publish the release with a security advisory that describes the issue. If the reporter wants credit, we credit the reporter.
+2. We acknowledge the report, triage it, and develop a fix.
+3. We coordinate a target release date with you.
+4. We publish the release with a security advisory that describes the issue. If you want credit, we credit you.
 
-We do not currently run a paid bug bounty.
+We don't currently run a paid bug bounty.
 
 ## Credit for reporters
 
-We add entries here as advisories are published.
+We add entries here as we publish advisories.

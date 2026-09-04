@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Each ADR documents one technical decision: context, the choice made, alternatives considered, and consequences. ADRs are append-only; if a decision is later superseded, add a new ADR that links back to the one it replaces rather than editing the original.
+Each architecture decision record (ADR) documents one technical decision: the context, the choice you made, the alternatives you considered, and the consequences. ADRs are append-only. If a later decision supersedes an ADR, add a new ADR that links back to the one it replaces instead of editing the original.
 
 ## Index
 
@@ -10,14 +10,14 @@ Each ADR documents one technical decision: context, the choice made, alternative
 
 ## Format
 
-ADRs follow a lightweight Nygard-style template (see [template.md](template.md)). Numbering is monotonic. File names are `NNNN-kebab-case-title.md`.
+ADRs follow a lightweight Nygard-style template, shown in [template.md](template.md). Numbering is monotonic. File names use the pattern `NNNN-kebab-case-title.md`.
 
 ## When to write one
 
 Write an ADR when the decision:
 
 - Affects how code is structured across multiple modules.
-- Constrains future work (e.g. picks a dependency, a storage format, an API contract).
-- Was non-obvious — i.e. you considered alternatives and would forget the reasoning in six months.
+- Constrains future work, for example by picking a dependency, a storage format, or an API contract.
+- Was non-obvious, that is, you considered alternatives and would forget the reasoning in six months.
 
-Do **not** write an ADR for routine bugfixes, dependency bumps, or local refactors.
+Don't write an ADR for routine bugfixes, dependency bumps, or local refactors.

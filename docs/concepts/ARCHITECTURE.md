@@ -1,48 +1,48 @@
 # Architecture
 
-This document describes how aelfrice fits together. The document maps directly to the source code under `src/aelfrice/`.
+This document describes how aelfrice fits together, and it maps directly to the source code under `src/aelfrice/`.
 
 ## Principles
 
-1. **Determinism end to end.** Every retrieval result is bit-identical for the same write log and the same code. Every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property). **The `edges` are the standing exception.** The code as shipped writes the edges outside the log. Two stores with identical `ingest_log` content can therefore hold different graphs. The L3 edge-walk lane can then return different results ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
-2. **SQLite plus a small numeric stack.** The hot path has no vector DB, no embeddings and no large language model (LLM). The required dependencies beyond the standard library are `numpy`, `scipy` and `snowballstemmer`. `numpy` and `scipy` (added v1.5.0, #148) serve the sparse matrix-vector (matvec) lane for Best Matching 25 (BM25). The lane for holographic reduced representations (HRR) and the spectral-graph lane now also use them. `snowballstemmer` (added v1.7.0, #154) does the Porter stemming. Three extras are optional:
-    - `[onboard-llm]` — the software development kit (SDK) for the direct-API onboard classifier, for `aelf onboard --llm-classify`.
-    - `[archive]` — cryptography, for `aelf uninstall --archive`.
+1. **Determinism end to end.** Every retrieval result is bit-identical for the same write log and the same code, and every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property). **The `edges` are the standing exception.** The code as shipped writes the edges outside the log, so two stores with identical `ingest_log` content can hold different graphs, and the L3 edge-walk lane can then return different results ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
+2. **SQLite plus a small numeric stack.** The hot path has no vector DB, no embeddings, and no large language model (LLM). Beyond the standard library, aelfrice requires `numpy`, `scipy`, and `snowballstemmer`. `numpy` and `scipy` (added v1.5.0, #148) serve the sparse matrix-vector (matvec) lane for Best Matching 25 (BM25), and the lane for holographic reduced representations (HRR) and the spectral-graph lane now use them too. `snowballstemmer` (added v1.7.0, #154) does the Porter stemming. Three extras are optional:
+    - `[onboard-llm]` — the software development kit (SDK) for the direct-API onboard classifier, used by `aelf onboard --llm-classify`.
+    - `[archive]` — cryptography, used by `aelf uninstall --archive`.
     - `[benchmarks]` — the adapters on the development side.
-3. **Confidence is Bayesian.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. See [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking covers and does not cover.
-4. **`apply_feedback` is the central endpoint.** It is the one writer of `(α, β)`. Each successful update writes one audit row.
-5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay. Decay is a mechanism that does not run at present. See the note on posterior decay below. To correct a lock, the user overwrites it with `aelf lock`. This correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
+3. **Confidence is Bayesian.** Confidence is `α / (α + β)`, and every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. For what the partial ranking covers and does not cover, see [LIMITATIONS](../user/LIMITATIONS.md).
+4. **`apply_feedback` is the central endpoint.** It's the one writer of `(α, β)`, and each successful update writes one audit row.
+5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay, a mechanism that doesn't run at present; see the note on posterior decay below. To correct a lock, overwrite it with `aelf lock`. That correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
 
 ### Enrichment-step boundary
 
-The determinism contract applies to retrieval. Every read is reproducible from the inputs. Some operations on the write side include non-deterministic steps. Two examples are the LLM-driven sentence classification on the polymorphic onboard path, and the future capabilities on the research line. The boundary is explicit:
+The determinism contract applies to retrieval: every read is reproducible from the inputs. Some operations on the write side include non-deterministic steps, such as the LLM-driven sentence classification on the polymorphic onboard path and the future capabilities on the research line. The boundary is explicit:
 
-- The store records the inputs to enrichment. The inputs are the sentence and the source. The store also
+- The store records the inputs to enrichment: the sentence and the source. The store also
   records the *outputs* of the classifier (`raw_meta["route_overrides"]` — belief type, origin, alpha, beta).
-  **The store does not record the model id, the model version or the hash of the prompt template.** These
-  three values live only on the transient router object and in the telemetry on stdout. The store therefore
-  cannot answer the question "which model produced this belief's type and prior?". This limit bounds the
-  exception less than the sentence above suggests. The exception localises the non-determinism to a recorded
-  step. The exception does not make the step reproducible. The work to persist the three values into
-  `raw_meta` is tracked separately.
-- The store keeps the outputs as deterministic content with provenance. The outputs are the belief type, the prior and the derived edges. The *derived edges* carry provenance only in part. Until [#1354](https://github.com/robotrocketscience/aelfrice/issues/1354), all six `derive()` return paths emitted `edges=[]`. `ingest_log.derived_edge_ids` was therefore NULL on every row. No edge had a log row that pointed at its origin ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)). `derive()` now emits `DERIVED_FROM` for the case inside one turn. The column populates forward-only, for at most 1.93% of the live edge set. The code still writes `TEMPORAL_NEXT` (88.3%) and the detector edges outside the log.
+  **The store does not record the model id, the model version, or the hash of the prompt template.** Those
+  three values live only on the transient router object and in the telemetry on stdout, so the store can't
+  answer the question "which model produced this belief's type and prior?". This limit bounds the exception
+  less than the sentence above suggests: the exception localizes the non-determinism to a recorded step, but
+  it doesn't make the step reproducible. The work to persist the three values into `raw_meta` is tracked
+  separately.
+- The store keeps the outputs as deterministic content with provenance: the belief type, the prior, and the derived edges. The *derived edges* carry provenance only in part. Until [#1354](https://github.com/robotrocketscience/aelfrice/issues/1354), all six `derive()` return paths emitted `edges=[]`, so `ingest_log.derived_edge_ids` was NULL on every row and no edge had a log row that pointed at its origin ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)). `derive()` now emits `DERIVED_FROM` for the case inside one turn. The column populates forward-only, for at most 1.93% of the live edge set. The code still writes `TEMPORAL_NEXT` (88.3%) and the detector edges outside the log.
 - All the retrieval mathematics and all the feedback mathematics after the enriched store are deterministic.
 
-The contract is a *deterministic substrate plus a bounded, audited enrichment layer*. The contract is not "no model ever touches the data."
+The contract is a *deterministic substrate plus a bounded, audited enrichment layer*. It isn't "no model ever touches the data."
 
 ## Modules
 
-The imports are *intended* to be one-directional. A module lower in the table imports from a module higher in
-the table. This ordering is an aspiration, not an enforced invariant. A deferred import inside a function
-breaks one known inversion. `classification.py` imports from `scanner`. The comment at the import site
-names that import as circular. Duplication avoids a second inversion, rather than deferral. `store.py`
+The imports are *intended* to be one-directional: a module lower in the table imports from a module higher
+in the table. That ordering is an aspiration, not an enforced invariant. A deferred import inside a function
+breaks one known inversion, where `classification.py` imports from `scanner`, and the comment at the import
+site names that import as circular. Duplication avoids a second inversion, rather than deferral: `store.py`
 reimplements the constituent-key hash of `wonder.lifecycle` inline, and the comment there cites the cycle
-(`store` ← `wonder.lifecycle`) as one of two reasons. A count of the deferred imports alone therefore
-understates how often the code works around the ordering. The converse is also true: not every deferred
-import is an inversion. `store.py` defers `federation` only for the cost of the import. The comment at that
-site records that `federation` is a leaf module and imports nothing from `store`. That deferral keeps
-`subprocess` and `json` out of every consumer of the store. The table is also a curated subset. It holds 32
-modules against the 128 `.py` files under `src/aelfrice/`. The table is not an exhaustive map.
+(`store` ← `wonder.lifecycle`) as one of two reasons. Counting the deferred imports alone therefore
+understates how often the code works around the ordering. The converse also holds: not every deferred import
+is an inversion. `store.py` defers `federation` only for the cost of the import, and the comment at that site
+records that `federation` is a leaf module that imports nothing from `store`. That deferral keeps
+`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 32
+modules against the 128 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
 
 | Module | Responsibility |
 |---|---|
@@ -84,11 +84,11 @@ modules against the 128 `.py` files under `src/aelfrice/`. The table is not an e
 **Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, hibernation_score, activation_condition, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936)`, lock_tier` (v3.7+, #1016).
 
 - `type ∈ {factual, correction, preference, requirement, speculative}`. The v3.0 wonder lifecycle added `speculative` for phantom beliefs (#548).
-- `retention_class ∈ {fact, snapshot, transient, unknown}`. This field drives the type-aware compression (#769).
+- `retention_class ∈ {fact, snapshot, transient, unknown}` drives the type-aware compression (#769).
 - `lock_level ∈ {none, user}`
-- `lock_tier ∈ {frozen, reference}` (v3.7+, #1016-B). This field is orthogonal to `lock_level`. It has a meaning only when `lock_level = user`. A `frozen` lock is always injected verbatim, and `frozen` is the default for every lock. A `reference` lock is bounded: it is injected as a one-line manifest entry. You read its full text on demand with `aelf locked` or `aelf search`. To demote a large lock, run `aelf lock <text> --reference`.
+- `lock_tier ∈ {frozen, reference}` (v3.7+, #1016-B) is orthogonal to `lock_level`, and it means something only when `lock_level = user`. A `frozen` lock always ships verbatim, and `frozen` is the default for every lock. A `reference` lock is bounded: it ships as a one-line manifest entry, and you read its full text on demand with `aelf locked` or `aelf search`. To demote a large lock, run `aelf lock <text> --reference`.
 - `origin ∈ {user_stated, user_corrected, user_validated, user_transcript, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+). The v2.1 transcript-ingest lane added `user_transcript`. The v2.0 wonder substrate added `speculative` for phantom beliefs, and `wonder/lifecycle.py` now writes it.
-- `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default, and it stays local. `global` is surfaced to any peer DB that declares this DB in its `knowledge_deps.json`. `shared:<name>` is surfaced only to the peers that also list `shared:<name>` as a dep.
+- `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default, and it stays local. `global` is visible to any peer DB that declares this DB in its `knowledge_deps.json`. `shared:<name>` is visible only to the peers that also list `shared:<name>` as a dep.
 
 **Edge** — `src, dst, type, weight, anchor_text`. `EDGE_VALENCE` holds ten edge types:
 
@@ -105,7 +105,7 @@ modules against the 128 `.py` files under `src/aelfrice/`. The table is not an e
 | `RESOLVES` | 0.0 | structural; closes a `CONTRADICTS` thread |
 | `CONTRADICTS` | -0.5 | half negative |
 
-A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387). It is deliberately not in `EDGE_TYPES`, so it takes no part in valence propagation. The research line carried 17 edge types. The additional speculative and causal markers are `SPECULATES`, `DEPENDS_ON` and `HIBERNATED`. The additional structural extractors are `CALLS`, `CO_CHANGED`, `CONTAINS` and `COMMIT_TOUCHES`. Both groups stay parked until the extractors that produce them ship. The current set of ten types covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x link between code and test (`IMPLEMENTS`, `TESTS`). See [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory) for the deferred set.
+A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387). It's deliberately absent from `EDGE_TYPES`, so it takes no part in valence propagation. The research line carried 17 edge types: the additional speculative and causal markers are `SPECULATES`, `DEPENDS_ON`, and `HIBERNATED`, and the additional structural extractors are `CALLS`, `CO_CHANGED`, `CONTAINS`, and `COMMIT_TOUCHES`. Both groups stay parked until the extractors that produce them ship. The current set of ten types covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x link between code and test (`IMPLEMENTS`, `TESTS`). For the deferred set, see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory).
 
 **Core SQLite tables include:**
 
@@ -125,7 +125,7 @@ A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `
 - `belief_touches` (the ring on the hot path, v3.x #748)
 - `schema_meta`
 
-The `scope` column has an `idx_beliefs_scope` index. The migration runner adds the column and the index idempotently.
+The `scope` column has an `idx_beliefs_scope` index, and the migration runner adds the column and the index idempotently.
 
 ## Bayesian update
 
@@ -139,7 +139,7 @@ The `scope` column has an `idx_beliefs_scope` index. The migration runner adds t
 
 ## Retrieval
 
-L0 holds the locked beliefs. L0 is the **pool that is always injected**: every lock ships on every retrieval, with no scoring and no top-K cut. The lock count is the operator's control over the budget for the baseline context. The `frozen`-tier locks (the default) ship **in full**. The `reference`-tier locks (v3.7+, #1016-B) ship as a **one-line manifest entry**, and the budget counts them at that size. A large lock set therefore stays bounded. Demote a large lock with `aelf lock <text> --reference`. Read its full text on demand with `aelf locked` or `aelf search`. Only the pool that is not locked (L1, L2.5 and L3) gets relevance ranking and budget trim. When the locks alone approach the budget, a reserved relevance floor (#1015) keeps a part of the budget for the query-relevant results. In that condition, `aelf doctor` also gives a warning (#1016-D).
+L0 holds the locked beliefs and is the **pool that is always injected**: every lock ships on every retrieval, with no scoring and no top-K cut. The lock count is the operator's control over the budget for the baseline context. The `frozen`-tier locks (the default) ship **in full**. The `reference`-tier locks (v3.7+, #1016-B) ship as a **one-line manifest entry**, and the budget counts them at that size, so a large lock set stays bounded. To demote a large lock, run `aelf lock <text> --reference`. To read a lock's full text on demand, run `aelf locked` or `aelf search`. Only the pool that is not locked (L1, L2.5, and L3) gets relevance ranking and budget trim. When the locks alone approach the budget, a reserved relevance floor (#1015) keeps part of the budget for the query-relevant results, and `aelf doctor` warns in that condition (#1016-D).
 
 ```
 L0: store.list_locked()              always loaded; never trimmed
@@ -159,28 +159,28 @@ Dedupe L1+L2.5+L3 against L0 ids
 Trim from tail until sum(estimated_tokens) ≤ token_budget
 ```
 
-Two **rerank modifiers** refine the ranked tiers (L1 and L2.5). They add no lane. Since v4.0 the production `retrieve()` hook path is a thin adapter over `retrieve_v2` (the #1107 cutover). Both modifiers are therefore exposed on the live path. The entity-persistence demotion is **default-on and live on production**. The origin tie-break is exposed, but it is **held off** by default.
+Two **rerank modifiers** refine the ranked tiers (L1 and L2.5), and they add no lane. Since v4.0 the production `retrieve()` hook path is a thin adapter over `retrieve_v2` (the #1107 cutover), so both modifiers are exposed on the live path. The entity-persistence demotion is **default-on and live on production**. The origin tie-break is exposed, but it is **held off** by default.
 
-- **Entity-persistence demotion** (#1096, `[retrieval] use_entity_persist_demote` or `AELFRICE_ENTITY_PERSIST_DEMOTE`). This modifier is the sink for the junk-percolation problem of #1086. It is a log-additive **demotion** term `min(0, log(S1 + ε))`. The term reads `S1 = durable / (durable + transient + 1)` from the `belief_entities` index, in one batched query. The term down-weights the candidates that ground only to *transient* coordination tokens, relative to the *durable* entities. The transient tokens are bare pull-request numbers, bare issue numbers, version tags and branch tags. The durable entities are file paths, error codes and symbols. The term only demotes: a well-grounded candidate is neutral, and the term never boosts it. The term applies only to a candidate that carries an entity, so prose with no entity is untouched. The sink is **content-referential, not temporal**. A measurement found a sink on time or cold decay empirically inert here, because the junk is *recent*, not stale. This modifier is **default-ON and live on the production `retrieve()` path since v4.0**. It was flipped on once the G2 mixed-corpus eval of #1096 (#1103) cleared the no-regression gate. It then graduated onto the hook path with the #1107 cutover. To opt out, set a falsy value on the environment rung, on the keyword-argument rung or on the TOML rung.
+- **Entity-persistence demotion** (#1096, `[retrieval] use_entity_persist_demote` or `AELFRICE_ENTITY_PERSIST_DEMOTE`). This modifier is the sink for the junk-percolation problem of #1086. It's a log-additive **demotion** term `min(0, log(S1 + ε))` that reads `S1 = durable / (durable + transient + 1)` from the `belief_entities` index in one batched query. The term down-weights the candidates that ground only to *transient* coordination tokens (bare pull-request numbers, bare issue numbers, version tags, and branch tags) relative to the *durable* entities, which are file paths, error codes, and symbols. It only demotes: a well-grounded candidate is neutral, and the term never boosts it. It applies only to a candidate that carries an entity, so prose with no entity is untouched. The sink is **content-referential, not temporal**: a measurement found a sink on time or cold decay empirically inert here, because the junk is *recent*, not stale. This modifier is **default-ON and live on the production `retrieve()` path since v4.0**. It was flipped on once the G2 mixed-corpus eval of #1096 (#1103) cleared the no-regression gate, and it graduated onto the hook path with the #1107 cutover. To opt out, set a falsy value on the environment rung, on the keyword-argument rung, or on the TOML rung.
 - **Origin-priority tie-break** (#1089, `[retrieval] use_origin_tiebreak` or `AELFRICE_ORIGIN_TIEBREAK`). This is a tie-break inside a tier, not a rerank term. When two candidates tie on relevance, the *origin* with the higher trust wins. The tie-break sits between the relevance score and the id tie-break, so relevance always dominates. The result is byte-identical when the tie-break is off.
 
-Both modifiers are deterministic (#605). Both give byte-identical results to the previous pipeline when their flags resolve falsy. The origin tie-break is default-off. The entity-persistence demotion is default-on, so opt out of it explicitly for that parity.
+Both modifiers are deterministic (#605), and both give byte-identical results to the previous pipeline when their flags resolve falsy. The origin tie-break is default-off. The entity-persistence demotion is default-on, so opt out of it explicitly for that parity.
 
-The token estimate is `(len(content) + 3) // 4`. An empty query returns L0 only. L0 always wins an overflow.
+The token estimate is `(len(content) + 3) // 4`. An empty query returns L0 only, and L0 always wins an overflow.
 
-The specification documents are [entity_index.md](../design/entity_index.md) (L2.5), [bfs_multihop.md](../design/bfs_multihop.md) (L3) and [bayesian_ranking.md](../design/bayesian_ranking.md) (L1 Bayesian reranking).
+The specification documents are [entity_index.md](../design/entity_index.md) (L2.5), [bfs_multihop.md](../design/bfs_multihop.md) (L3), and [bayesian_ranking.md](../design/bayesian_ranking.md) (L1 Bayesian reranking).
 
-**A caveat on the temporal coherence of BFS.** L3 resolves each hop to the globally latest serial of its target belief. For a recall query this behaviour is correct. An audit query asks what the agent believed at decision-time. For an audit query, a supersession that landed after the seed can appear in the middle of the chain. The fix for temporal coherence was first targeted at v2.0.0. It slipped, and it is not scheduled on a current milestone. See [LIMITATIONS § BFS multi-hop temporal coherence](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
+**A caveat on the temporal coherence of BFS.** L3 resolves each hop to the globally latest serial of its target belief. For a recall query that behavior is correct. An audit query asks what the agent believed at decision-time, and for an audit query a supersession that landed after the seed can appear in the middle of the chain. The fix for temporal coherence was first targeted at v2.0.0. It slipped, and it isn't scheduled on a current milestone. See [LIMITATIONS § BFS multi-hop temporal coherence](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
 
 ## Onboarding
 
 `scan_repo(store, path)`:
 
-1. **The filesystem walk** covers `*.md`, `*.rst`, `*.txt` and `*.adoc`. It produces `factual` and `requirement` candidates.
-2. **The git log** produces `factual` candidates with the recency of the file. Since v1.1.0, `belief.created_at` is the file's most recent commit, so decay penalises old branches.
-3. **The Python AST** gives the names of the functions and classes and their docstrings. These become `factual` candidates.
+1. **The filesystem walk** covers `*.md`, `*.rst`, `*.txt`, and `*.adoc`. It produces `factual` and `requirement` candidates.
+2. **The git log** produces `factual` candidates with the recency of the file. Since v1.1.0, `belief.created_at` is the file's most recent commit, so decay penalizes old branches.
+3. **The Python AST** gives the names of the functions and classes and their docstrings, which become `factual` candidates.
 
-Classification uses the priors, with a regex fallback. The scan is idempotent on `content_hash`.
+Classification uses the priors, with a regex fallback, and the scan is idempotent on `content_hash`.
 
 **The LLM onboard classifier (v1.3+, default-OFF).** `aelf onboard --llm-classify` routes each candidate through the vendor's small model instead of through the regex path. Four consent gates enforce the privacy boundary:
 
@@ -205,15 +205,15 @@ settings.json  hooks.UserPromptSubmit: [{command: "aelf-hook"}]
                   Claude Code injects above your prompt
 ```
 
-The non-blocking contract has two parts. Every failure path exits 0. A hook problem must never block your
+The non-blocking contract has two parts: every failure path exits 0, and a hook problem must never block your
 prompt. Two qualifications apply. Both are deliberate, and both are reachable today.
 
 - **One hook blocks by design.** `aelf-pre-issue-hook` exits `2` on a successful duplicate match
-  (`pre_issue_create_hook.py`). See its row below. It never exits non-zero on an *error*. The blocking exit
+  (`pre_issue_create_hook.py`); see its row below. It never exits non-zero on an *error*. The blocking exit
   is the feature, not a failure path.
 - **Partial stdout is possible.** The UserPromptSubmit lane writes the cadence-checkpoint block before the
-  retrieval runs (`hook.py`). A failure in a later stage therefore exits 0 with that block already flushed.
-  The guarantee is "exits 0", not "emits nothing".
+  retrieval runs (`hook.py`), so a failure in a later stage exits 0 with that block already flushed. The
+  guarantee is "exits 0", not "emits nothing".
 
 ## Default-on hooks (v2.1+ / v3.0+)
 
@@ -232,23 +232,22 @@ prompt. Two qualifications apply. Both are deliberate, and both are reachable to
 | `aelf-pre-compact-hook` | `PreCompact` | Does the bookkeeping for the trigger mode of the rebuilder, and nothing else. It never injects (#1031). Opt in with `--rebuilder`. The default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 | `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction. This is the channel that the harness honors (#1031). | opt-in |
 
-You opt out of each lane with `aelf setup --no-<lane>`. All the lanes exit 0 on failure, with the two
+To opt out of any lane, run `aelf setup --no-<lane>`. All the lanes exit 0 on failure, with the two
 qualifications stated under the non-blocking contract above. `aelf-pre-issue-hook` exits `2` on a duplicate
-match by design. Partial stdout is possible when an early stage has already emitted.
+match by design, and partial stdout is possible when an early stage has already emitted.
 
 The `PostToolUseFailure:<tool_name>` namespace of event names inside
 `~/.aelfrice/hook-activity.jsonl` is reserved for the raw observation
 of a tool failure from a hook on the HOME side. That hook is tracked
-separately. See
-[hook_activity_schema](../design/hook_activity_schema.md) for the schema of the
-fields. That document also gives the warning about dedupe by fingerprint on the
-consumer side.
+separately. For the schema of the fields, see
+[hook_activity_schema](../design/hook_activity_schema.md), which also
+warns about dedupe by fingerprint on the consumer side.
 
 ## Post-compaction rebuilder
 
-> **Delivery channel (corrected by [#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)).** The rebuild block ships on **SessionStart** with `source == "compact"`, *after* compaction. It does not ship on `PreCompact`. The harness rejects `additionalContext` emitted from a `PreCompact` hook, because `PreCompact` is absent from the events that support `additionalContext`. A block written there is discarded with a validation error. `pre_compact()` therefore emits nothing on stdout. It is retained only for parity of the trigger mode. `rebuild_v14` and the content of the block are unchanged.
+> **Delivery channel (corrected by [#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)).** The rebuild block ships on **SessionStart** with `source == "compact"`, *after* compaction. It does not ship on `PreCompact`. The harness rejects `additionalContext` emitted from a `PreCompact` hook, because `PreCompact` is absent from the events that support `additionalContext`, and a block written there is discarded with a validation error. `pre_compact()` therefore emits nothing on stdout, and it is retained only for parity of the trigger mode. `rebuild_v14` and the content of the block are unchanged.
 
-Compaction is reached in two ways. The harness reaches its context limit, or the user compacts explicitly. Both ways take the same path. `PreCompact` fires. The harness compacts. `SessionStart` then fires with `source == "compact"`. The rebuilder does its bookkeeping on the first event and its injection on the last event. Do not read the flow below as a path for automatic compaction only. On a measured local corpus, 72 of 73 scoreable compactions were explicit rather than automatic ([#1252](https://github.com/robotrocketscience/aelfrice/issues/1252)). An operator who debugs the rebuilder is therefore most likely on the explicit route:
+Compaction happens in two ways: the harness reaches its context limit, or you compact explicitly. Both ways take the same path. `PreCompact` fires, the harness compacts, and `SessionStart` then fires with `source == "compact"`. The rebuilder does its bookkeeping on the first event and its injection on the last event. Don't read the flow below as a path for automatic compaction only. On a measured local corpus, 72 of 73 scoreable compactions were explicit rather than automatic ([#1252](https://github.com/robotrocketscience/aelfrice/issues/1252)). An operator who debugs the rebuilder is therefore most likely on the explicit route:
 
 ```
 PreCompact fires
@@ -272,7 +271,7 @@ emitted as additionalContext — the aelfrice block lands in the
 new context alongside the harness's own summary (augment mode)
 ```
 
-`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually. It prints the block to stdout. Install it with `aelf setup --rebuilder`. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [context_rebuilder.md](../design/context_rebuilder.md). The policy for the eval fixtures is [eval_fixture_policy.md](../design/eval_fixture_policy.md).
+`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually, and it prints the block to stdout. To install it, run `aelf setup --rebuilder`. The default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). The specification is [context_rebuilder.md](../design/context_rebuilder.md), and the policy for the eval fixtures is [eval_fixture_policy.md](../design/eval_fixture_policy.md).
 
 ## Tests
 
@@ -286,16 +285,15 @@ Run `uv run pytest`. The suite holds 7,300+ tests at v4.2.0.
 
 ## Out of scope through v1.x
 
-These items stay parked until a benchmark, an experiment or a concrete failure mode justifies them:
+These items stay parked until a benchmark, an experiment, or a concrete failure mode justifies them:
 
-- Sentence-transformer embeddings. The HRR primitives shipped at v1.7.0 as a structural lane, not as a learned-embedding lane. The PHILOSOPHY ratification at v3.0 (#605) keeps determinism as the property. No embedding lane is planned.
-- Multi-writer federation and conflict-free replicated data type (CRDT) primitives. v3.0 ships *read-only* federation (#650 / #655 / #688). A peer opens a foreign DB read-only and takes the UNION of the FTS5 results. The multi-writer extension (the CRDT primitives of #651-#654) closed WONTFIX at the v3.0 cut, per the #661 ratification.
-- The full composition tracker. It covers the 10-round uplift in mean reciprocal rank (MRR). It covers the calibration measured by the expected calibration error (ECE). It covers the composition eval of BM25F × heat-kernel × HRR-structural (#154). The heat-kernel default and the HRR-structural default flipped on at v2.1. The joint-composition bench gate as such was not run separately. But the #437 reproducibility-harness cleared 11/11 **at the v2.1.0 cut (2026-05-08)**, and it covers the
-substrate as of that measurement. The README badge currently reads `partial (6/11 adapters)`. That badge
-reports a later regression in the nightly canonical run. That reading is not a retraction of the v2.1.0 gate. Read the
-11/11 as the evidence that stood at the time of the flip. Do not read it as the present state of the harness.
+- Sentence-transformer embeddings. The HRR primitives shipped at v1.7.0 as a structural lane, not as a learned-embedding lane. The PHILOSOPHY ratification at v3.0 (#605) keeps determinism as the property, and no embedding lane is planned.
+- Multi-writer federation and conflict-free replicated data type (CRDT) primitives. v3.0 ships *read-only* federation (#650 / #655 / #688): a peer opens a foreign DB read-only and takes the UNION of the FTS5 results. The multi-writer extension (the CRDT primitives of #651-#654) closed WONTFIX at the v3.0 cut, per the #661 ratification.
+- The full composition tracker. It covers the 10-round uplift in mean reciprocal rank (MRR), the calibration measured by the expected calibration error (ECE), and the composition eval of BM25F × heat-kernel × HRR-structural (#154). The heat-kernel default and the HRR-structural default flipped on at v2.1, and the joint-composition bench gate as such was not run separately. But the #437 reproducibility-harness cleared 11/11 **at the v2.1.0 cut (2026-05-08)**, and it covers the
+substrate as of that measurement. The README badge currently reads `partial (6/11 adapters)`, which reports a later regression in the nightly canonical run rather than a retraction of the v2.1.0 gate. Read the
+11/11 as the evidence that stood at the time of the flip, not as the present state of the harness.
 
-The following items were listed here in the past. They have since shipped:
+The following items were listed here in the past, and they have since shipped:
 - Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [bayesian_ranking.md](../design/bayesian_ranking.md))
 - BFS multi-hop graph retrieval → **shipped v1.3.0** ([bfs_multihop.md](../design/bfs_multihop.md))
 - Entity index and named-entity recognition (NER) → **shipped v1.3.0** ([entity_index.md](../design/entity_index.md))

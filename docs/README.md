@@ -1,8 +1,8 @@
 # aelfrice docs
 
-aelfrice is a persistent memory layer for AI coding agents. A local SQLite store holds the beliefs. A `UserPromptSubmit` hook injects the matched beliefs into each prompt before the model reads the prompt. aelfrice is deterministic and auditable. aelfrice uses no embeddings. Read [`../README.md`](../README.md).
+aelfrice is a persistent memory layer for AI coding agents. A local SQLite store holds the beliefs, and a `UserPromptSubmit` hook injects the matched beliefs into each prompt before the model reads the prompt. aelfrice is deterministic and auditable, and it uses no embeddings. For an overview of the project, read the top-level [`../README.md`](../README.md).
 
-The table below lists the documentation. The documentation is organized by audience.
+The following table lists the documentation directories, organized by audience.
 
 | Directory                                    | What is in it                                                      |
 | -------------------------------------------- | ------------------------------------------------------------------ |
@@ -15,4 +15,4 @@ The table below lists the documentation. The documentation is organized by audie
 | [`bake_off_results/`](bake_off_results/)     | The raw JSON output of the internal benchmark comparisons. |
 | [`experiments/`](experiments/)               | The reports of the individual experiments (`EXP-NNN-...`). |
 
-The changelog for the releases is in the root directory of the repository: [`../CHANGELOG.md`](../CHANGELOG.md).
+For the release changelog, read [`../CHANGELOG.md`](../CHANGELOG.md) in the root directory of the repository.

@@ -3,7 +3,7 @@
 # aelfrice
 
 > Your AI agent stops forgetting.
-> Set up aelfrice one time. aelfrice then does not interrupt your work.
+> Set up aelfrice once. After that, it runs without interrupting your work.
 >
 > _No cloud. No account. No telemetry._
 
@@ -14,9 +14,9 @@
 
 You correct your agent. *"Got it,"* the agent says. In the next session, the agent makes the same mistake.
 
-aelfrice runs in the background. aelfrice stops this loss of memory. Write a rule one time. Each relevant prompt after that carries the rule. The rule is attached *before* the model reads your message. There is no rules file to maintain. There is nothing for the agent to skip, because the matched beliefs are in the prompt itself.
+aelfrice runs in the background and stops that memory loss. Write a rule once, and every relevant prompt after that carries it. The hook injects the rule *before* the model reads your message. There is no rules file to maintain, and nothing for the agent to skip, because the matched beliefs are in the prompt itself.
 
-aelfrice is for developers who use AI coding agents. A host that supplies a `UserPromptSubmit` hook gets full support. A tool cannot put the correct beliefs in front of the model before the model reads your message, because the model decides whether to call the tool. The hook therefore makes the guarantee possible. aelfrice is local-only by design. Embeddings, vector retrieval-augmented generation (RAG) and cloud synchronization are outside the scope. [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
+aelfrice is for developers who use AI coding agents. Any host that supplies a `UserPromptSubmit` hook gets full support. A tool cannot put the right beliefs in front of the model before the model reads your message, because the tool runs only if the model calls it, so the hook is what makes the guarantee possible. aelfrice is local-only by design, which puts embeddings, vector retrieval-augmented generation (RAG), and cloud synchronization out of scope. [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
 
 ## Install
 
@@ -27,13 +27,13 @@ aelf onboard .              # deterministic project scan (regex classifier). For
 aelf lock "never push directly to main; use scripts/publish.sh"
 ```
 
-The setup is complete. The next prompt that mentions "push" already carries the rule. After this, aelfrice does not ask for your attention. There is no command to remember. There is no file to keep current.
+That is the whole setup. The next prompt that mentions "push" already carries the rule, and aelfrice asks nothing of you after that: no command to remember, no file to keep current.
 
-Do you use the Codex CLI? Run `aelf setup --host codex`. This command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`. The command also installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For more data, read [INSTALL § Codex host](docs/user/INSTALL.md).
+If you use the Codex CLI, run `aelf setup --host codex`. That command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`, and it installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For the details, read [INSTALL § Codex host](docs/user/INSTALL.md).
 
 ## What you'll see
 
-You type a message in your agent. The hook of aelfrice operates before the model reads the message. The hook injects the matched beliefs at the start of the message, in an `<aelfrice-memory>` block:
+You type a message in your agent. The aelfrice hook runs before the model reads the message, and it injects the matched beliefs at the start of the message, in an `<aelfrice-memory>` block:
 
 ```text
 <aelfrice-memory>
@@ -46,23 +46,23 @@ The following are retrieved beliefs from the local memory store. ...
 push the release
 ```
 
-The model reads all of this as one message. Your rules arrive at each relevant prompt. The rules do not arrive only when the agent decides to read a file.
+The model reads all of this as one message. Your rules arrive with every relevant prompt, not only when the agent opens a file.
 
 ## What it does for you
 
-Lock a rule one time with `aelf lock "..."`. The rule then returns attached to each relevant prompt, in each later session. aelfrice does the reminding for you. The model cannot skip the rule, because the rule is already in the prompt when the model starts to read. The rule is not in a file that the model can decide not to read.
+Lock a rule once with `aelf lock "..."`, and aelfrice injects it into every relevant prompt in every later session. aelfrice does the reminding for you. The model cannot skip the rule, because the rule is already in the prompt when the model starts reading. It is not in a file that the model can pass over.
 
-There is also nothing to maintain. Passive capture logs each turn. Passive capture then ingests each turn. Passive capture also ingests the message of each successful `git commit`. The memory thus grows while you work. You do not have to type `aelf` to make this happen.
+There is also nothing to maintain. Passive capture logs each turn, ingests each turn, and ingests the message of each successful `git commit`. The memory grows while you work, and you don't have to type `aelf` to make that happen.
 
-All of the data stays on your computer. The data is one SQLite file. There is no cloud account and no telemetry. If you stop trusting aelfrice, `aelf uninstall` removes aelfrice with one command. The `--archive` option encrypts the database to a file first.
+All the data stays on your computer, in a single SQLite file. There is no cloud account and no telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it in one command, and the `--archive` option encrypts the database to a file first.
 
-## Why not just a rules file?
+## Why not a rules file?
 
-A rules file is advice that the agent *may* read. aelfrice is context that the model *has already read*. By [Leonard Lin's standard](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is also not a memory system. A memory system has to answer these questions: *who wrote this, when, via what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars directly. The four pillars are provenance, write gates, conflict handling and reversibility. [COMPARISON.md](docs/concepts/COMPARISON.md) gives the comparison against hand-maintained rules files and vector stores.
+A rules file is advice that the agent *might* read. aelfrice is context that the model *has already read*. By [Leonard Lin's standard](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is also not a memory system. A memory system has to answer these questions: *who wrote this, when, through what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars directly: provenance, write gates, conflict handling, and reversibility. [COMPARISON.md](docs/concepts/COMPARISON.md) compares aelfrice against hand-maintained rules files and vector stores.
 
 ## Day-to-day
 
-You rarely type `aelf` again after you run `aelf setup`. The commands for everyday use follow:
+You rarely type `aelf` again after you run `aelf setup`. These are the everyday commands:
 
 ```text
 aelf onboard .                      # once per project — deterministic scan (or /aelf:onboard for the no-key subagent flow)
@@ -76,11 +76,11 @@ aelf stale --older-than 90 --cold-for 30   # surface forgotten beliefs (v3.5+)
 aelf review --generate               # weekly keep / remove / lock checkpoint (v3.5+)
 ```
 
-The `aelf --help` command shows the commands for everyday use. The `aelf --help --advanced` command lists the other commands. [COMMANDS](docs/user/COMMANDS.md) is the full reference. aelfrice supplies the same operations as `/aelf:*` slash commands. The slash commands use the same library. Read [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
+`aelf --help` shows the everyday commands, and `aelf --help --advanced` lists the rest. [COMMANDS](docs/user/COMMANDS.md) is the full reference. aelfrice offers the same operations as `/aelf:*` slash commands, which call the same library. For those, read [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
 
 ## How it works
 
-Three retrieval lanes run on each prompt. The fourth lane, the breadth-first search (BFS) graph expansion, runs only when you enable it. aelfrice injects the best matches at the start of your prompt. The model reads all of this as one message.
+Three retrieval lanes run on every prompt. A fourth lane, breadth-first search (BFS) graph expansion, runs only when you enable it. aelfrice injects the best matches at the start of your prompt, and the model reads all of it as one message.
 
 ```text
 L0: locked beliefs   -> rules you marked permanent (always returned, never trimmed)
@@ -94,19 +94,19 @@ L3: graph walk       -> typed-edge BFS from the L0+L2.5+L1 seed set (DERIVED_FRO
 
 <p align="center"><sub><i>The figure is illustrative. The figure is not a trace of a real store. The L0 locked rules always return. A query on FTS5 and BM25 seeds L1. When you enable the L3 lane, the L3 graph walk steps along typed edges one hop at a time. The separate lane for the structural HRR (<code>retrieve_v2</code>) connects to matches that share no vocabulary with the query. The color gives the lane. The distance from the center gives the depth of the graph walk. The figure omits the L2.5 entity-index lane, to keep the figure legible. <a href="docs/assets/render_retrieval_lanes.py">render_retrieval_lanes.py</a> rendered the figure.</i></sub></p>
 
-aelfrice always returns L0. When you enable L3, aelfrice trims L1, L2.5 and L3 to the budget. Otherwise aelfrice trims L1 and L2.5. The trim runs against the merged candidate set in order of descending score. The locked beliefs win each overflow. The default budget is 1,500 tokens for each prompt that the hook injects into. The default for `aelf search` and for the library function `retrieve()` is 2,400 tokens. A separate structural-HRR lane uses the Plate-FFT bind and probe operations. This lane receives the queries that parse as structural markers in the `retrieve_v2` API. Ordinary prompts never use this lane.
+aelfrice always returns L0. When you enable L3, aelfrice trims L1, L2.5, and L3 to the budget; otherwise it trims L1 and L2.5. The trim runs against the merged candidate set in order of descending score, and the locked beliefs win every overflow. The default budget is 1,500 tokens for each prompt that the hook injects into, and 2,400 tokens for `aelf search` and for the library function `retrieve()`. A separate structural-HRR lane uses the Plate-FFT bind and probe operations. That lane takes the queries that parse as structural markers in the `retrieve_v2` API, and ordinary prompts never reach it.
 
-Your count of locks is also the budget for the baseline context. If you lock 200 statements, each session opens with all 200 statements, by design. aelfrice ranks each unlocked belief with BM25. aelfrice then trims the unlocked beliefs to the budget. The first prompt of a new session carries one extra block. That block is a `<session-start>` sub-block. The sub-block lists all of the locks. The sub-block also lists the load-bearing unlocked beliefs. A load-bearing unlocked belief has a corroboration ≥ 2, or a posterior mean ≥ ⅔ with α+β ≥ 4. The later prompts in the same session skip the sub-block.
+Your count of locks is also the budget for your baseline context. If you lock 200 statements, each session opens with all 200 statements, by design. aelfrice ranks each unlocked belief with BM25 and then trims the unlocked beliefs to the budget. The first prompt of a new session carries one extra block: a `<session-start>` sub-block that lists all your locks plus the load-bearing unlocked beliefs: those with a corroboration ≥ 2, or a posterior mean ≥ ⅔ with α+β ≥ 4. Later prompts in the same session skip the sub-block.
 
-The query that reaches BM25 is the raw prompt. A `stack-r1-r3` rewriter was the default from v3.0. That rewriter does entity expansion and per-store clipping of the inverse document frequency (IDF). The default came from a measurement of +0.2851 absolute normalized discounted cumulative gain at k (NDCG@k) on a labelled corpus. Issue #1177 replaced the conjunctive FTS5 match with a disjunction over the rarest tokens. That conjunctive match caused the drop in recall. The rewriter existed to compensate for that drop. Issue #1501 then reverted the rewriter, because the drop in recall was gone. On the same 30 rows the raw-query arm scored 0.9553, against 0.8229 for the rewriter. You can still select the rewriter with `[rebuilder] query_strategy`. **Both figures come from a labelled corpus that is not shipped in
+The query that reaches BM25 is your raw prompt. From v3.0, the default was a `stack-r1-r3` rewriter that does entity expansion and per-store clipping of the inverse document frequency (IDF). That default came from a measured +0.2851 absolute normalized discounted cumulative gain at k (NDCG@k) on a labeled corpus. Issue #1177 then replaced the conjunctive FTS5 match with a disjunction over the rarest tokens. The conjunctive match was what dropped recall, and the rewriter existed to compensate for that drop, so issue #1501 reverted the rewriter once the drop was gone. On the same 30 rows, the raw-query arm scored 0.9553, against 0.8229 for the rewriter. To select the rewriter anyway, set `[rebuilder] query_strategy`. **Both figures come from a labeled corpus that is not shipped in
 this repository**, so you cannot reproduce either figure from a public clone. The gate in this repository is
-[`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py). Without
-`AELFRICE_CORPUS_ROOT` the gate skips. When the gate does run, it asserts that the shipped default is the winning arm. The gate does not check a
-quoted number. For figures that you can reproduce on HEAD, read the scripts under [`benchmarks/`](benchmarks/). [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval) gives the full wiring of the lanes, the composition and the federation peer databases.
+[`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py), and it skips without
+`AELFRICE_CORPUS_ROOT`. When the gate does run, it asserts that the shipped default is the winning arm rather than checking a
+quoted number. For figures you can reproduce on HEAD, read the scripts under [`benchmarks/`](benchmarks/). [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval) gives the full wiring of the lanes, the composition, and the federation peer databases.
 
 ## Memory model
 
-Each belief carries a `(α, β)` Beta-Bernoulli posterior. The value `α / (α+β)` is the confidence. The value `α + β` is the quantity of evidence that backs that confidence. A new belief starts at low evidence and high variance. aelfrice can retrieve such a belief, but aelfrice discounts it. A locked belief does not decay. aelfrice pins a locked belief as ground truth.
+Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the confidence, and `α + β` is how much evidence backs that confidence. A new belief starts at low evidence and high variance: aelfrice can retrieve it, but discounts it. A locked belief does not decay, because aelfrice pins it as ground truth.
 
 | You run | aelfrice stores |
 |---|---|
@@ -119,21 +119,21 @@ Each belief carries a `(α, β)` Beta-Bernoulli posterior. The value `α / (α+�
 | `/aelf:wonder <topic>` | The `/aelf:wonder` command researches the topic. The command writes the findings as `speculative` phantoms. The `/aelf:reason <topic>` command can then walk those phantoms. |
 | _(passive — no command)_ | Passive capture is on by default. aelfrice logs each turn of prompt and response. aelfrice ingests each turn at compaction. aelfrice also ingests each successful `git commit` event. To opt out of one hook, use one of these options: `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`, `--no-stop-hook`, `--no-sessionstart-recap`, `--no-search-tool`, `--no-search-tool-bash`, `--no-pre-issue-guard`, `--no-claude-memory-mirror`, `--no-agent-context`. For more data, read [INSTALL § default-on hooks](docs/user/INSTALL.md). |
 
-Each belief has an `origin` column. That column ties the belief to the action that wrote it. The value is one of `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative` or `unknown`. The store is a single SQLite file. Open the file in any browser. Nothing is hidden.
+Each belief has an `origin` column that ties the belief to the action that wrote it. The value is one of `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative`, or `unknown`. The store is a single SQLite file, and you can open it in any browser. Nothing is hidden.
 
 ## Reasoning surfaces
 
-Two slash commands let the agent query the belief graph during a turn. The two commands go beyond the retrieval block that aelfrice injects automatically. The two commands operate together. `/aelf:wonder` grows the graph by researching. `/aelf:reason` walks the enriched graph for structured verdicts.
+Two slash commands let the agent query the belief graph during a turn, beyond the retrieval block that aelfrice injects automatically. The two work together: `/aelf:wonder` grows the graph by researching, and `/aelf:reason` walks the enriched graph for structured verdicts.
 
-**`/aelf:wonder <topic>`** is the research surface. You give a topic. aelfrice then runs a gap analysis on what the store already knows. aelfrice generates 2–6 orthogonal research axes. The axes `domain_research` and `internal_gap_analysis` are always on. The axes `contradiction_resolution`, `uncertainty_deep_dive` and `coverage_extension` are conditional. The host agent then dispatches one research task for each axis. Each task researches the axis and writes up the findings. aelfrice then persists the merged research as new speculative beliefs with `wonder_ingest`. Those phantoms sit in the graph at low evidence. Retrieval can discover them. The next `/aelf:reason <topic>` command can also discover them. The phantoms stay speculative until you promote them with `aelf promote`. If you lock the statement behind a phantom, aelfrice promotes the matching phantom automatically. aelfrice also recognises an agent-count shorthand in the query string, for example `quick 2-agent` or `deep 4-agent`. The integer sets the agent count. The words `quick` and `deep` are optional qualifiers.
+**`/aelf:wonder <topic>`** is the research surface. You give it a topic, and aelfrice runs a gap analysis on what the store already holds, then generates 2–6 orthogonal research axes. The axes `domain_research` and `internal_gap_analysis` are always on, and `contradiction_resolution`, `uncertainty_deep_dive`, and `coverage_extension` are conditional. The host agent then dispatches one research task for each axis, and each task researches its axis and writes up the findings. aelfrice persists the merged research as new speculative beliefs with `wonder_ingest`. Those phantoms sit in the graph at low evidence, where retrieval and the next `/aelf:reason <topic>` can both find them. They stay speculative until you promote them with `aelf promote`. If you lock the statement behind a phantom, aelfrice promotes the matching phantom for you. aelfrice also recognizes an agent-count shorthand in the query string, for example `quick 2-agent` or `deep 4-agent`: the integer sets the agent count, and `quick` and `deep` are optional qualifiers.
 
-**`/aelf:reason <query>`** is the structured-walk surface. The command walks the belief graph from starting points that BM25 seeds. The command emits a typed reasoning trace. The trace holds the hops. Each hop carries its edge type. The trace holds a `VERDICT`. The verdict is `SUFFICIENT`, `PARTIAL`, `UNCERTAIN`, `INSUFFICIENT` or `CONTRADICTORY`. The trace holds `IMPASSES`, which are typed gaps, ties or constraint failures. The trace holds `SUGGESTED UPDATES`. Each suggested update is a `(belief_id, direction, note)` row. The fields map straight onto `aelf feedback`. The conclusion therefore closes the loop on the beliefs that fed it. The host agent dispatches each impasse to a role-tagged worker. The roles are Verifier, Gap-filler and Fork-resolver. aelfrice annotates a peer hop in a foreign federation scope with `[scope:<name>]`.
+**`/aelf:reason <query>`** is the structured-walk surface. It walks the belief graph from starting points that BM25 seeds, and it emits a typed reasoning trace. The trace holds the hops, each carrying its edge type. It holds a `VERDICT` of `SUFFICIENT`, `PARTIAL`, `UNCERTAIN`, `INSUFFICIENT`, or `CONTRADICTORY`. It holds `IMPASSES`, which are typed gaps, ties, or constraint failures. It holds `SUGGESTED UPDATES`, each one a `(belief_id, direction, note)` row. Those fields map straight onto `aelf feedback`, so the conclusion closes the loop on the beliefs that fed it. The host agent dispatches each impasse to a role-tagged worker: Verifier, Gap-filler, or Fork-resolver. aelfrice annotates a peer hop in a foreign federation scope with `[scope:<name>]`.
 
-Use the two surfaces in that sequence. `/aelf:wonder` adds new research results to the graph. `/aelf:reason` then draws conclusions across the graph. Both surfaces are deterministic in the aelfrice layer. The deterministic parts are the verdict classification, the impasse derivation, the axis generation and the suggested-update mapping. The only calls to a large language model (LLM) happen when the host agent dispatches one worker for each impasse or research axis. Those calls run under the credentials of the host, not the credentials of aelfrice. The specifications are [COMMANDS § `wonder`](docs/user/COMMANDS.md) and [COMMANDS § `reason`](docs/user/COMMANDS.md).
+Use the two surfaces in that order. `/aelf:wonder` adds new research results to the graph, and `/aelf:reason` then draws conclusions across the graph. Both surfaces are deterministic in the aelfrice layer: the verdict classification, the impasse derivation, the axis generation, and the suggested-update mapping. The only calls to a large language model (LLM) happen when the host agent dispatches one worker for each impasse or research axis, and those calls run under the host's credentials, not aelfrice's. The specifications are [COMMANDS § `wonder`](docs/user/COMMANDS.md) and [COMMANDS § `reason`](docs/user/COMMANDS.md).
 
 ## What you get for free
 
-These functions run in the background. No action is required after `aelf setup`.
+These features run in the background, and none of them need anything from you after `aelf setup`.
 
 - **Passive capture.** Ten hooks are on by default. The hooks are:
   - the `UserPromptSubmit` retrieval,
@@ -147,24 +147,24 @@ These functions run in the background. No action is required after `aelf setup`.
   - the `PostToolUse:Write|Edit|MultiEdit` claude-memory mirror (v3.7+),
   - the `PreToolUse:Agent` injection of the worker context.
 
-  The claude-memory mirror operates as follows. Since v4.0, in #1089, the one-shot reconcile at the first `aelf setup` records the consent for each project. The mirror runs from then on. To opt out of the mirror at any time, set `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `[memory] mirror_claude_memory = false`. Both of these always win over the consent sentinel.
+  The claude-memory mirror works like this. Since v4.0, in #1089, the one-shot reconcile at your first `aelf setup` records the consent for each project, and the mirror runs from then on. To opt out of the mirror at any time, set `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `[memory] mirror_claude_memory = false`. Both of those always win over the consent sentinel.
 
-  The `PreToolUse:Agent` hook injects the worker context. A dispatched worker inherits the locked beliefs and the task-relevant beliefs. To opt out of the worker-context injection, use `--no-agent-context`. The session activity flows into the belief graph. You do not have to type `aelf` to make this happen. To opt out of one hook, read [INSTALL § default-on hooks](docs/user/INSTALL.md).
-- **Determinism.** aelfrice uses SQLite and a deterministic numeric stack. That stack is numpy, scipy and snowballstemmer. It uses no GPU and no network. aelfrice uses no embeddings, no learned re-rankers and no LLM in the retrieval path. Every result traces to the action that wrote it.
-- **Local-only.** aelfrice keeps the SQLite file at `<git-common-dir>/aelfrice/memory.db`. Two outbound calls are on by default. The first call is the update notifier. The notifier makes a read-only GET request to `https://pypi.org/pypi/aelfrice/json` under a time-to-live (TTL) gate. The notifier transmits nothing. To disable the notifier, set `AELF_NO_UPDATE_CHECK=1`. The second call is the pre-issue duplicate guard. That guard runs `gh issue list --search` with tokens from your issue title. The guard runs only when you run `gh issue create`. To disable the guard, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. There is no telemetry and there are no accounts. The path for memory and retrieval never touches the network. The LLM dispatches in the `/aelf:wonder` and `/aelf:reason` flows do reach the network. Those dispatches run under the credentials of the host agent, not the credentials of aelfrice. The retrieval path stays local. Each project is isolated by construction. Cross-project federation is read-only. Federation uses `knowledge_deps.json`. aelfrice opens a peer database read-only. aelfrice rejects a mutation of a foreign identifier at the API surface. Read [PRIVACY.md](docs/user/PRIVACY.md).
-- **Removable.** The `aelf uninstall --archive backup.aenc` command encrypts the database to a file. The command then deletes the database. The `--purge` option removes all of the data.
+  The `PreToolUse:Agent` hook injects the worker context, so a dispatched worker inherits your locked beliefs and the task-relevant beliefs. To opt out of the worker-context injection, use `--no-agent-context`. Session activity flows into the belief graph, and you don't have to type `aelf` to make that happen. To opt out of any one hook, read [INSTALL § default-on hooks](docs/user/INSTALL.md).
+- **Determinism.** aelfrice runs on SQLite and a deterministic numeric stack: numpy, scipy, and snowballstemmer. It uses no GPU and no network. It uses no embeddings, no learned re-rankers, and no LLM in the retrieval path. Every result traces back to the action that wrote it.
+- **Local-only.** aelfrice keeps the SQLite file at `<git-common-dir>/aelfrice/memory.db`. Two outbound calls are on by default. The first is the update notifier, which makes a read-only GET request to `https://pypi.org/pypi/aelfrice/json` under a time-to-live (TTL) gate and transmits nothing. To disable the notifier, set `AELF_NO_UPDATE_CHECK=1`. The second is the pre-issue duplicate guard, which runs `gh issue list --search` with tokens from your issue title. The guard runs only when you run `gh issue create`. To disable the guard, set `AELFRICE_NO_PRE_ISSUE_GUARD=1` or run `aelf setup --no-pre-issue-guard`. There is no telemetry and there are no accounts. The memory and retrieval path never touches the network. The LLM dispatches in the `/aelf:wonder` and `/aelf:reason` flows do reach the network, under the host agent's credentials rather than aelfrice's, and the retrieval path stays local. Each project is isolated by construction, and cross-project federation is read-only through `knowledge_deps.json`: aelfrice opens a peer database read-only, and it rejects a mutation of a foreign identifier at the API surface. Read [PRIVACY.md](docs/user/PRIVACY.md).
+- **Removable.** `aelf uninstall --archive backup.aenc` encrypts the database to a file and then deletes the database. The `--purge` option removes all the data.
 
 ## Obsidian export
 
-If you already use Obsidian, run `aelf export-obsidian <vault-path>`. This command emits the belief graph as one Markdown note for each belief, under `<vault>/aelfrice/`. The command puts the typed edges into the YAML front matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/). The command also writes the same edges into the body of the note as wikilinks, so the graph view has something to draw. The export is **one-way (DB → vault)**. SQLite stays the source of truth. The command deletes the `<vault>/aelfrice/` subdirectory. The command writes the subdirectory again on each run.
+If you already use Obsidian, run `aelf export-obsidian <vault-path>`. This command emits the belief graph as one Markdown note for each belief, under `<vault>/aelfrice/`. It puts the typed edges into the YAML front matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/), and it writes the same edges into the body of the note as wikilinks, so the graph view has something to draw. The export is **one-way (DB → vault)**, and SQLite stays the source of truth. Each run deletes the `<vault>/aelfrice/` subdirectory and writes it again.
 
-The command has three scopes. `--scope all` exports everything, with the cap that `--max-notes` sets. `--scope recent` exports the newest beliefs first. `--scope query "<text>"` exports the BM25 seeds and the neighbourhood at N hops. The default cap is 500 notes. The hard ceiling is 5000 notes, unless you pass `--force`.
+The command has three scopes. `--scope all` exports everything, up to the cap that `--max-notes` sets. `--scope recent` exports the newest beliefs first. `--scope query "<text>"` exports the BM25 seeds and the neighborhood at N hops. The default cap is 500 notes, and the hard ceiling is 5000 notes unless you pass `--force`.
 
-> The feature ships with two structural limits. First, the built-in graph view of Obsidian does not scale. The graph view becomes too slow to use at approximately a few thousand nodes. Bound the export with `--scope query` or `--max-notes`. As an alternative, use `aelf graph` for a query-anchored visualization at any store size. Second, the graph view is untyped. aelfrice preserves the edge types in the YAML front matter. You can query the edge types with Dataview. The graph view will not show the edge types.
+> The feature ships with two structural limits. First, the built-in graph view of Obsidian does not scale: it becomes too slow to use at roughly a few thousand nodes. Bound the export with `--scope query` or `--max-notes`, or use `aelf graph` for a query-anchored visualization at any store size. Second, the graph view is untyped. aelfrice preserves the edge types in the YAML front matter, and you can query them with Dataview, but the graph view does not show them.
 
 ## Status
 
-The latest stable version is **v4.3.0** (2026-08-13). [CHANGELOG § 4.3.0](CHANGELOG/v4.md) gives the detail for each entry. [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md) gives the history for each version. [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md) gives the known limits.
+The latest stable version is **v4.3.0** (2026-08-13). [CHANGELOG § 4.3.0](CHANGELOG/v4.md) gives the detail for each entry. [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md) gives the history for each version, and [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md) gives the known limits.
 
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->
