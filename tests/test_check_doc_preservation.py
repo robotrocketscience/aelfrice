@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -356,3 +357,45 @@ class TestBacktickRuns:
         text = "``` alone\n\nparagraph two\n\nand `real` span\n"
         assert inline_code(text)["real"] == 1
         assert len(inline_code(text)) == 1
+
+
+class TestScannerTermination:
+    """The scan advances on every path, and it does not over-advance.
+
+    Static review of this scanner read the two `break` paths that leave `i`
+    alone as non-advancing and reported an infinite loop. They do advance: the
+    opening run is consumed before the search for a closer begins, so `i` is
+    already past `open_start` at every exit.
+
+    The fix proposed alongside that report -- advance to the closing run
+    unconditionally -- terminates too, but silently drops a span. Both
+    properties are pinned here so neither can be traded for the other.
+    """
+
+    @pytest.mark.timeout(10)
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "``` alone",
+            "``` a\n\nb\n\nand `real` span",
+            "``x\n\n\ny``",
+            "a ` b",
+            "`" * 40,
+            "``` " * 200,
+        ],
+    )
+    def test_every_backtick_shape_terminates(self, text: str) -> None:
+        inline_code(text)  # a hang fails on the timeout, not on an assertion
+
+    def test_a_span_between_an_unpartnered_opener_and_its_lookalike_survives(
+        self,
+    ) -> None:
+        """Skipping to the closing run would lose `keep`.
+
+        The body between the ``-run and its partner holds three newlines, so it
+        is not a span. Resuming the scan inside it finds the real span; jumping
+        past the partner does not.
+        """
+        assert inline_code("``x\n\n\n`keep` y`` and `after`") == Counter(
+            {"keep": 1, "after": 1}
+        )

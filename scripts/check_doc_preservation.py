@@ -110,6 +110,14 @@ def _code_spans(text: str) -> list[str]:
         while i < n and text[i] == "`":
             i += 1
         run = i - open_start
+        # Termination: the loop above already moved `i` past the opening run,
+        # so `i > open_start` holds from here on whatever the search below
+        # finds. Every exit path therefore advances, including the two that
+        # leave `i` alone: no closing run of this length exists, or the only
+        # one is too far away. Both mean the opener is literal text, and the
+        # scan resumes inside it rather than past it -- which is what lets a
+        # real span sitting between an unpartnered opener and its lookalike
+        # still be found.
         body_start = i
         j = i
         while j < n:
