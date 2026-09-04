@@ -19,9 +19,17 @@ So they are checked here rather than typed there:
      against 117 `.py` files. The table had 32 rows and the tree held 127
      files. A hand-maintained count is wrong the day after it is written.
 
-Deliberately not asserting prose wording. A text match breaks on rephrasing and
-proves nothing about whether the claim is true. What is checkable is the tree
-the prose describes.
+Deliberately not asserting prose wording, with one recorded exception. A text
+match breaks on rephrasing and proves nothing about whether the claim is true.
+What is checkable is the tree the prose describes.
+
+The exception is `test_security_md_review_claim_holds`, which does match a
+phrase, because the claim it checks is a *bound* the sentence states rather
+than a fact the tree states on its own. There is nothing in the source that
+says how long `apply_feedback` is allowed to be; only the page says it. So the
+page is where the number has to be read from, and rewording that sentence has
+to fail loudly rather than silently unpin the claim. The failure message says
+so.
 """
 from __future__ import annotations
 
@@ -162,8 +170,10 @@ def test_security_md_review_claim_holds() -> None:
 
     The page told a reader that every Bayesian update runs through one function
     "about 60 lines" long, and offered that as why the mathematics is auditable.
-    The function is 167 lines. The figure was typed once and never revisited,
-    which is the drift #1511 exists to stop.
+    The function is nearly three times that. No count is repeated here, because
+    a number written into a docstring drifts exactly the way the one in the page
+    did, and review of this test caught it doing so within the hour: the figure
+    first written here was already off by one against the extractor below.
 
     The sentence now states a bound rather than a measurement, because the claim
     it supports is "short enough to read in one sitting", not any exact count. A
