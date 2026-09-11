@@ -107,12 +107,15 @@ def test_every_declared_name_is_actually_used() -> None:
 def test_a_monkeypatched_attribute_wins_over_the_real_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The property the ten patching test modules depend on.
+    """The property a patching test module depends on.
 
-    They set `aelfrice.hook.search_for_prompt` and expect the hook to call the
-    stub. `_lazy` reads `globals()` before importing, which is where that
-    write lands. Asserted here directly rather than left to be inferred from
-    whichever of those tests happens to still exercise the path.
+    `tests/test_hook_user_prompt_submit.py` sets `aelfrice.hook.search_for_prompt`
+    and expects the hook to call the stub. `_lazy` reads `globals()` before
+    importing, which is where that write lands. Asserted here directly rather
+    than left to be inferred from whichever caller happens to still exercise
+    the path. No count of such modules is pinned: an earlier draft published
+    one that no re-derivation reproduced, and the property is what this test
+    is for, not the size of the population relying on it.
     """
     sentinel = object()
     monkeypatch.setattr(hook, "search_for_prompt", sentinel)
