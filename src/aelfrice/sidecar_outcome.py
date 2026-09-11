@@ -7,8 +7,17 @@ and read the field **without importing the numeric stack**.
 
 That separation is load-bearing, not tidiness. Every hook fire is a fresh
 process, and #1351 moved numpy / scipy / snowballstemmer off the hook's import
-graph precisely because the majority of `UserPromptSubmit` fires are refused by
-the prompt-shape gate and never retrieve. The reset has to run above that gate
+graph precisely because a large share of `UserPromptSubmit` fires are refused
+by the prompt-shape gate and never retrieve.
+
+**How large is UNVERIFIED, and the tree contradicts itself about it.** This
+docstring used to say "the majority"; `rebuild_log`'s module docstring cites
+the #1527 audit-log census for "roughly a third". A third is not a majority.
+Neither figure is re-derivable from anything in this repo and nothing has
+reconciled them, so treat the share as large and unquantified rather than
+repeating one of them. The argument below is unaffected either way.
+
+The reset has to run above that gate
 (the cadence dispatch reaches `BM25IndexCache.get()` and is dispatched there),
 so importing the recorder from `aelfrice.bm25` at that point would have pulled
 all three back into every gate-skipped fire — reversing #1351 for exactly the
