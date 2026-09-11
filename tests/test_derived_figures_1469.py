@@ -244,6 +244,67 @@ def test_a_figure_inside_a_double_backtick_span_is_code_not_a_figure() -> None:
     ]
 
 
+def test_a_code_span_that_is_wholly_a_number_is_still_a_figure() -> None:
+    """The house style for a measured value is code font, so masking every
+    span put published figures outside every check the gate makes."""
+    assert cdf.extract_figures("- **E.** the share is `93.69%`.") == ["93.69%"]
+    assert cdf.extract_figures("- **E.** the share is 93.69%.") == ["93.69%"]
+
+
+def test_a_code_span_carrying_anything_else_stays_masked() -> None:
+    """The distinguishing arm. A false positive here makes the overclaim rule
+    unsatisfiable, which is the same as deleting it."""
+    for span in ("`STOP_PROMPT_MAX_ITEMS = 20`", "`[:16]`", "`93.69% of rows`"):
+        assert cdf.extract_figures(f"- **E.** {span} and 11,508.") == ["11,508"], span
+
+
+def test_backticks_do_not_buy_out_of_the_overclaim_rule(repo: Path) -> None:
+    """The hard rule was satisfiable by typing two backticks.
+
+    Byte-for-byte the same entry, the figures once bare and once in code font:
+    before the narrowing the first reported one hard failure and the second
+    reported none.
+    """
+    bare = (
+        f"- **Entry.** The bound is 11,508 bytes and the share is 93.7%. "
+        f"{OVERCLAIM}.\n"
+    )
+    fenced = (
+        f"- **Entry.** The bound is `11,508` bytes and the share is `93.7%`. "
+        f"{OVERCLAIM}.\n"
+    )
+    (repo / "CHANGELOG" / "bare.md").write_text(bare)
+    (repo / "CHANGELOG" / "fenced.md").write_text(fenced)
+    bare_report = _run(repo, "CHANGELOG/bare.md")
+    fenced_report = _run(repo, "CHANGELOG/fenced.md")
+    assert len(bare_report.hard) == 1, "\n".join(bare_report.hard)
+    assert len(fenced_report.hard) == 1, (
+        "backticking the figures cleared the hard rule: " + "\n".join(fenced_report.hard)
+    )
+    assert "93.7%" in fenced_report.hard[0] and "11,508" in fenced_report.hard[0]
+
+
+def test_mask_delta_ranks_the_three_candidate_rules(repo: Path) -> None:
+    """`--mask-delta` prices the narrowing instead of asserting its cost.
+
+    The ordering is the property: the shipped rule sees more than masking every
+    span and much less than masking none. The numbers themselves move with the
+    corpus, which is why nothing publishes them.
+    """
+    (repo / "CHANGELOG" / "v9.md").write_text(
+        "- **Entry.** The share is `93.7%`, the cap is `STOP_PROMPT_MAX = 20`, "
+        "and `retrieve(k=7)` is a call.\n"
+    )
+    files = [repo / "CHANGELOG" / "v9.md"]
+    strict = cdf.unmarked_total(files, cdf._mask_every_code_span)
+    shipped = cdf.unmarked_total(files, cdf._mask_code_spans)
+    loose = cdf.unmarked_total(files, cdf._mask_no_code_span)
+    assert strict == 0, "every figure in this fixture is inside a code span"
+    assert shipped == 1, "only the bare-number span is a figure"
+    assert loose == 3, "unmasked, the identifier and the kwarg count too"
+    assert strict < shipped < loose
+
+
 def test_issue_refs_versions_dates_and_code_are_not_figures() -> None:
     """A false positive here makes the overclaim check unsatisfiable, which is
     the same as deleting it."""

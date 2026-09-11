@@ -62,6 +62,14 @@ A figure with no marker is allowed. The annotation backlog is large and a gate
 that fails on it would be turned off within a day. `--list-unmarked` enumerates
 what is still unannotated so the backlog is countable rather than notional.
 
+Inline code is masked before a figure is extracted, with one exception: a span
+whose whole content is a number is still a figure. Without that exception the
+hard rule below was satisfiable by typing two backticks, and two published
+shares in `CHANGELOG/v4.md` were invisible to `--list-unmarked`. `--mask-delta`
+prices the alternatives against the tree it is run on. What stays invisible,
+and is documented rather than closed, is a figure inside a span that also
+carries words.
+
 The exception is the overclaim sentence, whose shape is
 ``<script> re-derives **every** figure here``. #1445 and #1447 both shipped it
 over scripts that emitted about a
@@ -74,6 +82,7 @@ is allowed; making it for free is not.
     python3 scripts/check_derived_figures.py                # text checks only
     uv run python scripts/check_derived_figures.py --mode all
     python3 scripts/check_derived_figures.py --list-unmarked CHANGELOG/v4.md
+    python3 scripts/check_derived_figures.py --mask-delta
 
 `--mode text` is stdlib-only and needs no installed package, so it runs in the
 `release-docs-check` job beside the other every-PR document gates. `--mode
@@ -88,6 +97,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -191,11 +201,11 @@ def _uncited_inplace(text: str) -> str:
 # sentence, or under --list-unmarked.
 #
 # Masked out before extraction, because none of these is a measured figure:
-# inline code, markdown links, issue refs, dotted version strings, ISO dates,
-# section refs, and the markers themselves.
+# markdown links, issue refs, dotted version strings, ISO dates, section refs,
+# and the markers themselves. Inline code is masked too, but conditionally --
+# see `_mask_code_spans`.
 _MASKS: tuple[re.Pattern[str], ...] = (
     re.compile(r"<!--.*?-->", re.S),
-    _INLINE_CODE_RE,
     re.compile(r"\[[^\]]*\]\([^)]*\)"),
     re.compile(r"https?://\S+"),
     re.compile(r"#\d+"),
@@ -203,6 +213,52 @@ _MASKS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
     re.compile(r"§\s*\d+(?:\.\d+)*"),
 )
+
+# A code span whose whole content is a number. This is the one span an author
+# reads as a published figure rather than as code, and it is this repo's house
+# style for a measured value.
+_BARE_FIGURE_SPAN_RE = re.compile(r"\A\s*\d+(?:[,_]\d{3})*(?:\.\d+)?\s*(?:%|x|×)?\s*\Z")
+
+
+def _mask_code_spans(text: str) -> str:
+    """Blank inline-code spans, keeping one that is wholly a number.
+
+    Masking every span put a published figure outside every check in this file
+    -- including the hard overclaim rule, which an author could then satisfy by
+    typing two backticks. It was not hypothetical: `CHANGELOG/v4.md`'s #1356
+    entry publishes its two headline shares as ``93.69%`` and ``94.86%`` in
+    code font, and `--list-unmarked` reported neither, which falsified this
+    gate's own claim that grandfathered is not the same as invisible.
+
+    A span that is anything else stays masked, because a false positive here
+    makes the overclaim rule unsatisfiable, which is the same as deleting it:
+    ``STOP_PROMPT_MAX_ITEMS = 20``, ``[:16]`` and ``busy_timeout=5000`` are
+    code, not figures.
+
+    The narrowing is measured rather than argued. `--mask-delta` re-derives, on
+    whatever tree it is run against, how many figures each of the three
+    candidate rules makes visible; dropping the mask entirely costs an order of
+    magnitude more than this rule does.
+
+    The residue is documented rather than closed: a figure inside a span that
+    also carries words -- ``93.69% of rows`` -- is still invisible here.
+    """
+
+    def repl(match: re.Match[str]) -> str:
+        inner = match.group(0).strip("`")
+        return f" {inner} " if _BARE_FIGURE_SPAN_RE.match(inner) else " "
+
+    return _INLINE_CODE_RE.sub(repl, text)
+
+
+def _mask_every_code_span(text: str) -> str:
+    """The rule this file shipped with. Kept for `--mask-delta` only."""
+    return _INLINE_CODE_RE.sub(" ", text)
+
+
+def _mask_no_code_span(text: str) -> str:
+    """No inline-code mask at all. Kept for `--mask-delta` only."""
+    return text
 
 # Thousands groups are matched as `,ddd` / `_ddd` rather than as a loose
 # `[\d,_]*` class, which swallowed the sentence comma after a figure and
@@ -440,9 +496,16 @@ def split_entries(path: Path, text: str) -> list[tuple[int, str]]:
     return entries
 
 
-def extract_figures(block: str) -> list[str]:
-    """Numeric figures in `block`, in order, deduplicated by normalised value."""
-    masked = block
+def extract_figures(
+    block: str, mask_spans: Callable[[str], str] = _mask_code_spans
+) -> list[str]:
+    """Numeric figures in `block`, in order, deduplicated by normalised value.
+
+    `mask_spans` is the inline-code rule. It is a parameter so `--mask-delta`
+    can price the alternatives against this tree instead of asserting a cost;
+    every caller in the gate itself takes the default.
+    """
+    masked = mask_spans(block)
     for pattern in _MASKS:
         masked = pattern.sub(" ", masked)
     seen: set[str] = set()
@@ -762,6 +825,41 @@ def restamp(files: list[Path]) -> int:
     return 0
 
 
+def unmarked_total(files: list[Path], mask_spans: Callable[[str], str]) -> int:
+    """How many figures carry no marker under a given inline-code rule."""
+    total = 0
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for start, block in split_entries(path, text):
+            published = {normalise(m.value) for m in parse_markers(path, block)}
+            total += sum(
+                1
+                for f in extract_figures(block, mask_spans)
+                if normalise(f) not in published
+            )
+    return total
+
+
+def mask_delta(files: list[Path]) -> int:
+    """Price the three candidate inline-code rules against this tree.
+
+    The middle row is what ships. The rule below it is what the gate did
+    first, and it hid published figures; the rule above it sees every code
+    identifier, which would make the hard overclaim rule unsatisfiable.
+
+    Reporting only, and the numbers move with the corpus, which is why they
+    are printed on demand rather than written into prose.
+    """
+    strict = unmarked_total(files, _mask_every_code_span)
+    shipped = unmarked_total(files, _mask_code_spans)
+    loose = unmarked_total(files, _mask_no_code_span)
+    print(f"unmarked figures over {len(files)} files, by inline-code rule:")
+    print(f"  mask every code span (pre-fix) : {strict}")
+    print(f"  mask all but a bare number     : {shipped}  (+{shipped - strict})")
+    print(f"  mask nothing                   : {loose}  (+{loose - strict})")
+    return 0
+
+
 def list_unmarked(files: list[Path]) -> int:
     """Enumerate figures that carry no marker. Reporting only; always exit 0."""
     total = 0
@@ -790,6 +888,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--list-unmarked", action="store_true")
     ap.add_argument(
+        "--mask-delta",
+        action="store_true",
+        help="report how many figures each candidate inline-code rule makes "
+        "visible on this tree. Reporting only.",
+    )
+    ap.add_argument(
         "--restamp",
         action="store_true",
         help="rewrite producer-sha= to each producer's current hash. Local "
@@ -811,6 +915,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.restamp:
         return restamp(files)
+    if args.mask_delta:
+        return mask_delta(files)
     if args.list_unmarked:
         return list_unmarked(files)
 

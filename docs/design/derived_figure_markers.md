@@ -166,3 +166,23 @@ be switched off within a day. Run
 `python3 scripts/check_derived_figures.py --list-unmarked <path>` to enumerate
 what is still unannotated in a file, so grandfathered is not the same as
 invisible.
+
+That claim was false when it was first written. Inline code was masked before
+figures were extracted, so a figure in code font — this repo's house style for
+a measured value — was in nothing the gate lists and in nothing it checks. The
+live instance was the #1356 entry in `CHANGELOG/v4.md`, whose two headline
+shares are published as `` `93.69%` `` and `` `94.86%` ``: `--list-unmarked`
+named neither, and the hard overclaim rule could be satisfied by typing two
+backticks. A code span whose whole content is a number is now a figure; a span
+carrying anything else is still masked, because a false positive there makes
+the overclaim rule unsatisfiable. Run
+`python3 scripts/check_derived_figures.py --mask-delta` to price the three
+candidate rules against the current tree rather than take a number for it.
+
+**What the gate still cannot see, stated rather than implied.** A figure inside
+a code span that also carries words — `` `93.69% of rows` `` — is masked, so
+the two-backtick bypass is narrowed and not closed. A version literal is masked
+outright (`_MASKS` strips dotted versions), which is how the over-correction
+recorded under #1450 above got past every check in this branch. And an
+enumerated count is not held to the length of the list it introduces; see
+#1451.
