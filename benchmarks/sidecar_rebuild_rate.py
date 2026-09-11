@@ -128,6 +128,23 @@ are the #1528 report on the FILES and are unaffected by `--since` /
 `--until`: they still describe what the input can cover, which is what tells
 you whether the window you asked for was present in it at all.
 
+They select rows, but the SESSION buckets below are decided over the whole
+input, not over the window. A session that began before `--since` and went on
+past it has later fires inside the window; scoring the earliest of those as
+its session-FIRST fire invents a first prompt no `SessionStart` warm in the
+window could have spared, and drags the session-FIRST rate toward the LATER
+rate, which runs materially lower. So a session's position is fixed by its
+first scored fire anywhere in the input, and the window then decides which of
+its fires are counted. Two consequences, both printed:
+
+- The session counts partition. `--until T` and `--since T` each report the
+  sessions that BEGAN on their side, and the two add up to the whole set's
+  count. Read against the whole-set run, which is the check that they do.
+- A straddling session's in-window fires are all LATER, and it contributes no
+  session-FIRST fire to that window. The `sessions carried in from earlier`
+  line counts those sessions, so a window whose rate rests on them is
+  visible rather than inferred.
+
 ## The window, printed alongside the rate (#1528)
 
 Rotation is single-slot: the second rollover overwrites the first `.1` and
@@ -234,11 +251,13 @@ def main() -> int:
     out_of_window = 0
     unkeyed: list[str | None] = []
     scored_ts: list[str] = []
-    # #1513: (ts, read-order, session_id, outcome) per scored fire, so the
-    # session-first vs later split below can be recovered. Read order is
-    # carried as the tie-break because `ts` is second-resolution and two
-    # fires in one second are common.
-    scored_rows: list[tuple[str | None, int, str | None, str]] = []
+    # #1513: (ts, read-order, session_id, outcome, in-window) per scored
+    # fire, so the session-first vs later split below can be recovered. Read
+    # order is carried as the tie-break because `ts` is second-resolution and
+    # two fires in one second are common. The last field is False for a row
+    # `--since` / `--until` excluded: such a row is counted nowhere and is
+    # kept only so a session's position is decided over the whole input.
+    scored_rows: list[tuple[str | None, int, str | None, str, bool]] = []
     seq = 0
 
     for path in logs:
@@ -258,11 +277,13 @@ def main() -> int:
             if rec.get("hook") != "user_prompt_submit":
                 non_ups += 1
                 continue
-            if not in_window(rec.get("ts"), args.since, args.until):
+            kept = in_window(rec.get("ts"), args.since, args.until)
+            if not kept:
                 out_of_window += 1
-                continue
             outcome = rec.get("sidecar_outcome")
             if outcome is None:
+                if not kept:
+                    continue
                 if rec.get("prompt_shape_gate_skip"):
                     # Refused by the shape gate AND carrying no outcome: the
                     # main retrieval never ran and the cadence dispatch above
@@ -276,19 +297,29 @@ def main() -> int:
                     unkeyed.append(str(ts) if ts is not None else None)
                 continue
             if outcome not in OUTCOMES:
-                unknown[str(outcome)] += 1
+                if kept:
+                    unknown[str(outcome)] += 1
                 continue
-            counts[str(outcome)] += 1
             ts = rec.get("ts")
-            if ts is not None:
-                scored_ts.append(str(ts))
             sid = rec.get("session_id")
+            if kept:
+                counts[str(outcome)] += 1
+                if ts is not None:
+                    scored_ts.append(str(ts))
+            # #1513 round 4: an out-of-window scored row is carried here with
+            # `kept` False. It enters no count. It is carried because
+            # `bucket_by_session_position` needs a session's first scored
+            # fire ANYWHERE in the input to decide that session's position —
+            # deciding it inside the window instead promotes a mid-session
+            # fire to session-FIRST and biases the rate the #1513 target is
+            # read on. See the module docstring.
             scored_rows.append(
                 (
                     str(ts) if ts is not None else None,
                     seq,
                     str(sid) if sid else None,
                     str(outcome),
+                    kept,
                 )
             )
             seq += 1
@@ -467,7 +498,9 @@ def main() -> int:
     print("  fires — the scored-fires figure excludes the gate-skipped majority")
     print("  and reads higher for that reason alone.")
 
-    _print_session_position_split(scored_rows)
+    _print_session_position_split(
+        scored_rows, windowed=args.since is not None or args.until is not None
+    )
 
     if pre_field is not None and pre_field > scored:
         print()
@@ -479,20 +512,38 @@ def main() -> int:
 
 
 def bucket_by_session_position(
-    scored_rows: list[tuple[str | None, int, str | None, str]],
-) -> tuple[Counter[str], Counter[str], int]:
-    """Split scored fires into session-FIRST, LATER, and unattributed (#1513).
+    scored_rows: list[tuple[str | None, int, str | None, str, bool]],
+) -> tuple[Counter[str], Counter[str], int, int]:
+    """Split scored fires into session-FIRST, LATER, unattributed, carried-in.
 
     A fire is session-FIRST when it is the earliest *scored* fire carrying
     its `session_id`. That is the definition the #1513 measurement used, and
     it is the one the fix targets: the sidecar warm is spawned at
     `SessionStart`, so the fire it can spare is the first one.
 
+    **Position is decided over every row handed in, counting happens only
+    over the in-window ones** (the fifth field). Deciding position inside
+    the window instead makes a session that began before `--since` look as
+    if it began at its first in-window fire, so a mid-session fire is
+    scored as session-FIRST. That fire is one no `SessionStart` warm in the
+    window could have spared, and LATER fires carry the lower rebuild rate,
+    so each such pseudo-first pulls the session-FIRST rate down — toward
+    satisfying a target stated as a fall in exactly that rate. It also made
+    the session counts of `--until T` and `--since T` sum to more than the
+    whole set's, which is how the bias is detectable from the output alone.
+
     Rows carrying no `session_id` have no position and are returned as a
     third count rather than folded into either bucket. Folding them into
     LATER would drag the session-first rate toward zero exactly the way the
     module docstring forbids for unmeasured rows — the same bias, applied to
-    a different axis.
+    a different axis. Out-of-window unattributed rows are not counted there
+    either: with no `session_id` they cannot position anything.
+
+    The fourth return is the number of sessions whose fires reach the window
+    but whose first scored fire does not — sessions carried in from earlier.
+    Every fire they contribute is LATER, by construction, so a window that
+    leans on them has a LATER-heavy sample and the caller is told the count
+    rather than left to infer it. It is 0 when no window was asked for.
 
     Ordering is `(ts, read-order)` with missing timestamps sorted last, so a
     rotated-log set is walked in the order the fires happened rather than in
@@ -503,23 +554,44 @@ def bucket_by_session_position(
     later: Counter[str] = Counter()
     unattributed = 0
     seen: set[str] = set()
-    for _ts, _seq, sid, outcome in ordered:
+    began_in_window: set[str] = set()
+    carried_in: set[str] = set()
+    for _ts, _seq, sid, outcome, kept in ordered:
         if sid is None:
-            unattributed += 1
+            if kept:
+                unattributed += 1
             continue
-        if sid in seen:
-            later[outcome] += 1
-        else:
-            seen.add(sid)
+        is_first = sid not in seen
+        seen.add(sid)
+        if is_first and kept:
+            began_in_window.add(sid)
+        if not kept:
+            continue
+        if is_first:
             first[outcome] += 1
-    return first, later, unattributed
+        else:
+            later[outcome] += 1
+            if sid not in began_in_window:
+                carried_in.add(sid)
+    return first, later, unattributed, len(carried_in)
 
 
 def _print_session_position_split(
-    scored_rows: list[tuple[str | None, int, str | None, str]],
+    scored_rows: list[tuple[str | None, int, str | None, str, bool]],
+    *,
+    windowed: bool,
 ) -> None:
-    """Report the #1513 split. Two rates, never one."""
-    first, later, unattributed = bucket_by_session_position(scored_rows)
+    """Report the #1513 split. Two rates, never one.
+
+    `windowed` says whether `--since` / `--until` were given. It changes
+    only what the session line is CALLED, because that is the only thing
+    the window changes about it: with a window the count is the sessions
+    that BEGAN inside it, which is not the same set as the sessions with a
+    fire inside it, and a label that said the latter would be false.
+    """
+    first, later, unattributed, carried_in = bucket_by_session_position(
+        scored_rows
+    )
     n_first = sum(first.values())
     n_later = sum(later.values())
     print()
@@ -542,9 +614,20 @@ def _print_session_position_split(
             f"    no session_id            {unattributed}   <- no position; "
             "excluded from BOTH buckets above, never folded into LATER"
         )
-    # Exactly one session-FIRST fire per session that has any scored fire,
-    # so this is the session count, printed so the two are read together.
-    print(f"    sessions with a scored fire   {n_first}")
+    # Exactly one session-FIRST fire per session whose first scored fire is
+    # in range, so this is that session count, printed so the two are read
+    # together. Under a window it counts the sessions that BEGAN in the
+    # window; `--until T` and `--since T` therefore partition the sessions
+    # the way they already partition the rows.
+    if windowed:
+        print(f"    sessions beginning in this window   {n_first}")
+        print(
+            f"    sessions carried in from earlier    {carried_in}   "
+            "<- began before the window; every fire they contribute here "
+            "is LATER"
+        )
+    else:
+        print(f"    sessions with a scored fire   {n_first}")
 
 
 if __name__ == "__main__":

@@ -701,3 +701,221 @@ def test_an_undated_fire_is_out_of_any_window_that_was_asked_for(
 
     unwindowed = _run(log)
     assert "fires with an outcome (scored) 2" in unwindowed, unwindowed
+
+
+# ---- #1513 round 4: the session buckets have to partition too ---------
+#
+# `--since` / `--until` partition the ROWS. Until this pass they did not
+# partition the SESSIONS: a session that began before the boundary and ran
+# past it had its first in-window fire promoted to session-FIRST in the
+# `--since` run, so the same session was counted as session-FIRST on both
+# sides. Over the machine-wide logs at 2026-09-01T00:00:00Z that printed 35
+# sessions for `--until`, 6 for `--since`, and 40 for the whole set.
+#
+# It is not a bookkeeping nit. The promoted fire is a mid-session prompt no
+# `SessionStart` warm inside the window could have spared, and LATER fires
+# carry the lower rebuild rate, so each pseudo-first pulls the `--since`
+# session-FIRST rate down — toward satisfying a target stated as that rate
+# falling.
+
+
+def _session_line(out: str, label: str) -> str:
+    hits = [ln for ln in out.splitlines() if label in ln]
+    assert len(hits) == 1, f"expected one {label!r} line\n{out}"
+    return hits[0]
+
+
+@pytest.mark.timeout(90)
+def test_the_two_windows_partition_the_sessions_not_only_the_rows(
+    tmp_path: Path,
+) -> None:
+    """A straddling session is counted as beginning on exactly one side.
+
+    Session `straddle` starts before the boundary and fires again after it;
+    `early` and `late` sit wholly on one side each. The whole-set run sees
+    3 sessions, so `--until` + `--since` has to be 3 as well. Before this
+    pass `--since` promoted `straddle`'s post-boundary fire to
+    session-FIRST and the two sides summed to 4.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row("2026-09-01T00:00:00Z", outcome="fresh", session_id="early"),
+                _row(
+                    "2026-09-01T00:00:01Z", outcome="fresh", session_id="straddle"
+                ),
+                _row(
+                    "2026-09-03T00:00:00Z",
+                    outcome="full_rebuild",
+                    session_id="straddle",
+                ),
+                _row("2026-09-03T00:00:01Z", outcome="fresh", session_id="late"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    boundary = "2026-09-02T00:00:00Z"
+
+    before = _run(log, window=(None, boundary))
+    after = _run(log, window=(boundary, None))
+    whole = _run(log)
+
+    assert "sessions beginning in this window   2" in before, before
+    assert "sessions beginning in this window   1" in after, after
+    assert "sessions with a scored fire   3" in whole, whole
+
+    # The rows still partition, which is what makes the session count the
+    # thing being fixed here rather than a side effect of dropping rows.
+    assert "fires with an outcome (scored) 2" in before, before
+    assert "fires with an outcome (scored) 2" in after, after
+    assert "fires with an outcome (scored) 4" in whole, whole
+
+
+@pytest.mark.timeout(90)
+def test_a_straddling_sessions_in_window_fires_are_all_later(
+    tmp_path: Path,
+) -> None:
+    """And the promoted fire does not land in the session-FIRST rate.
+
+    `straddle`'s only post-boundary fire is a `full_rebuild`. Counting it
+    as session-FIRST puts 1/1 = 100.0% on the `--since` session-FIRST line;
+    counting it as LATER — which is what it is, the session having begun
+    before the window — leaves session-FIRST holding only `late`'s `fresh`.
+    The two readings differ on both lines, so this is distinguishing.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row(
+                    "2026-09-01T00:00:00Z", outcome="fresh", session_id="straddle"
+                ),
+                _row(
+                    "2026-09-03T00:00:00Z",
+                    outcome="full_rebuild",
+                    session_id="straddle",
+                ),
+                _row("2026-09-03T00:00:01Z", outcome="fresh", session_id="late"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = _run(log, window=("2026-09-02T00:00:00Z", None))
+    first_line, later_line = _bucket_lines(out)
+
+    assert "0/1 = 0.0%" in first_line, first_line
+    assert "1/1 = 100.0%" in later_line, later_line
+    assert "100.0%" not in first_line, (
+        "the straddling session's post-boundary rebuild was scored as a "
+        f"session-FIRST fire\n{first_line}"
+    )
+
+
+@pytest.mark.timeout(90)
+def test_the_window_reports_how_many_sessions_it_carried_in(
+    tmp_path: Path,
+) -> None:
+    """The count is printed, so a LATER-heavy window is visible.
+
+    A `--since` run whose fires mostly belong to sessions that began
+    earlier is a run with few first prompts in it, and its session-FIRST
+    rate rests on a small sample. The number is reported rather than left
+    for the reader to derive by diffing session counts across two runs.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row("2026-09-01T00:00:00Z", outcome="fresh", session_id="a"),
+                _row("2026-09-03T00:00:00Z", outcome="fresh", session_id="a"),
+                _row("2026-09-01T00:00:01Z", outcome="fresh", session_id="b"),
+                _row("2026-09-03T00:00:01Z", outcome="fresh", session_id="b"),
+                _row("2026-09-03T00:00:02Z", outcome="fresh", session_id="c"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    after = _run(log, window=("2026-09-02T00:00:00Z", None))
+    assert "sessions carried in from earlier    2" in after, after
+    assert "sessions beginning in this window   1" in after, after
+
+    # With no window nothing can be carried in, and the line that would
+    # report it is not printed at all.
+    whole = _run(log)
+    assert "carried in from earlier" not in whole, whole
+    assert "sessions with a scored fire   3" in whole, whole
+
+
+@pytest.mark.timeout(90)
+def test_an_out_of_window_fire_is_counted_in_no_bucket(tmp_path: Path) -> None:
+    """Carrying the row for positioning must not also score it.
+
+    The out-of-window rows exist in `scored_rows` only so a session's
+    position can be decided over the whole input. If one leaked into a
+    counter, the `--until` and `--since` runs would double-count it and the
+    row partition the previous tests pin would break — which is why this
+    asserts the bucket totals and not only the headline `scored` count.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row(
+                    "2026-09-01T00:00:00Z",
+                    outcome="full_rebuild",
+                    session_id="a",
+                ),
+                _row("2026-09-03T00:00:00Z", outcome="fresh", session_id="a"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    after = _run(log, window=("2026-09-02T00:00:00Z", None))
+    first_line, later_line = _bucket_lines(after)
+
+    assert "fresh 0  incremental 0  full_rebuild 0" in first_line, first_line
+    assert "no scored fires in this bucket" in first_line, first_line
+    assert "fresh 1  incremental 0  full_rebuild 0" in later_line, later_line
+    assert "0/1 = 0.0%" in later_line, later_line
+    assert "fires with an outcome (scored) 1" in after, after
+    assert "UPS fires outside the window   1" in after, after
+
+
+@pytest.mark.timeout(90)
+def test_an_out_of_window_undated_fire_is_not_counted_as_unattributed(
+    tmp_path: Path,
+) -> None:
+    """A row with no `session_id` and no `ts` positions nothing.
+
+    It is carried like any other out-of-window scored row, so it has to be
+    kept out of the `no session_id` count as well — that count is a count
+    of in-window fires, and inflating it would report fires the window does
+    not contain.
+    """
+    undated = json.dumps(
+        {"hook": "user_prompt_submit", "sidecar_outcome": "full_rebuild"}
+    )
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [undated, _row("2026-09-03T00:00:00Z", outcome="fresh", session_id="a")]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    after = _run(log, window=("2026-09-02T00:00:00Z", None))
+    assert "no session_id" not in after, after
+    assert "fires with an outcome (scored) 1" in after, after
+
+    # With no window it IS in range, and then it is reported.
+    whole = _run(log)
+    assert "no session_id            1" in whole, whole
