@@ -21,19 +21,29 @@ Import discipline for this module, which is the whole point of it:
 
 * stdlib, plus `aelfrice.config_discovery` (stdlib-only), `aelfrice.models`
   (a dataclass module) and `aelfrice.query_understanding` at module scope.
-  `query_understanding` is here rather than deferred because
-  `RebuilderConfig.query_strategy`'s default and `load_rebuilder_config`'s
-  validation both bind it, and measured on this tree it costs 5 modules and
-  ~1.0 ms against the 31 ms this extraction is worth. Deferring it would need
-  a `None` sentinel in a frozen dataclass field default to buy that 1 ms.
+  #1527 asks for a stdlib-only leaf and this is a deliberate deviation from
+  that word: `RebuilderConfig.query_strategy`'s default and
+  `load_rebuilder_config`'s validation both bind `query_understanding`, so
+  deferring it would need a `None` sentinel in a frozen dataclass field
+  default. It buys nothing on the path this module exists to protect.
+  `import aelfrice.hook` loads 18 `aelfrice` modules, and only 5 of them --
+  `query_understanding` and its four submodules -- are here because of that
+  binding; `store`, `meta_beliefs` and `ulid` arrive through it but the hook
+  imports `aelfrice.store` eagerly regardless. None of the five is on the
+  retrieval path. Importing this module alone loads 12, against the 28
+  `aelfrice.context_rebuilder` loaded before the extraction.
 * `entity_extractor` and `triple_extractor` are imported **inside**
   `_extracted_entities_for_log` / `_query_for_recent_turns`. Both run only
   once a record is actually being built, which is strictly below
   `record_user_prompt_submit_log`'s early returns — so a gate-skipped fire,
   which passes an empty candidate list, never reaches them.
-* Nothing here may import `aelfrice.context_rebuilder`, `aelfrice.retrieval`,
-  `aelfrice.hook_search` or `aelfrice.store`, at module scope or otherwise.
-  `tests/test_hook_import_cost_1351.py` pins the resulting module set.
+* Nothing here may import `aelfrice.context_rebuilder`, `aelfrice.retrieval`
+  or `aelfrice.hook_search`, at module scope or otherwise. `aelfrice.store`
+  is not imported here either, but it is *in* this module's closure anyway,
+  because `query_understanding.store_cache` binds `MemoryStore` at its own
+  module scope -- so treat the rule as "no direct import", not as a claim
+  about the closure. `tests/test_hook_import_cost_1351.py` pins the module
+  set a fire actually loads, which is the assertion that matters.
 
 `aelfrice.context_rebuilder` re-exports every name below, so existing
 `from aelfrice.context_rebuilder import ...` callers are unaffected.
