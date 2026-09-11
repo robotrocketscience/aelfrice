@@ -113,28 +113,51 @@ except ImportError as _e:
 # ---------------------------------------------------------------------------
 #
 # `retrieve`, `search_for_prompt` and the four `context_rebuilder` entry points
-# are the only names this module took from the retrieval subtree, and every one
-# of them is reached from a lane that has already decided to retrieve. Binding
-# them at module scope made `import aelfrice.hook` load 35 aelfrice modules
-# where the eager set alone loads 18 -- a bill every hook process pays,
-# including every `UserPromptSubmit` fire the prompt-shape gate refuses
+# are the names this module still bound at *module scope* from the retrieval
+# subtree once the leaf extraction moved the rest of its `context_rebuilder`
+# imports to `aelfrice.rebuild_log`, and every one of them is reached from a
+# lane that has already decided to retrieve. It is not a claim about the file
+# as a whole: call sites further down import from `retrieval`, `exploration`
+# and `context_rebuilder` too, and those cost nothing until the lane holding
+# them runs. Binding the six at module scope made `import aelfrice.hook` load
+# 35 aelfrice modules where the eager set alone loads 18 -- a bill paid by
+# every process that imports this module, the `UserPromptSubmit`, `Stop`,
+# `PreCompact` and `SessionStart` entry points among them, including every
+# `UserPromptSubmit` fire the prompt-shape gate refuses
 # (a large share -- **how large is UNVERIFIED**: the audit-log census in #1527
 # says roughly a third, the `sidecar_outcome` docstring used to say the
 # majority of the same population, neither figure is re-derivable from this
-# repo, and nothing reconciles them) and every `Stop` / `PreToolUse` /
-# `PostToolUse` fire, none of which retrieve at all. Both module counts are
-# deterministic:
+# repo, and nothing reconciles them). `PreToolUse` and `PostToolUse` are
+# separate entry points: the five scripts `aelf setup` wires for those two
+# events -- `aelf-search-tool-hook`, `aelf-agent-context-hook`,
+# `aelf-pre-issue-hook`, `aelf-commit-ingest`, `aelf-claude-memory-mirror` --
+# none of them imports this module at load, so they never paid it
+# unconditionally; two of the five reach `aelfrice.hook` from a function-scope
+# call site and so can pay it on the paths that do.
+#
+# A `Stop` fire retrieves nothing *on shipped defaults* -- driven with an
+# empty `[cadence]` it asks `_lazy` for none of the six names. It is not a
+# fire that never retrieves: a `Stop` whose cadence checkpoint trips runs
+# `_run_cadence_rebuild` -> `_rebuild_and_format` -> `_lazy("rebuild_v14")`,
+# which is the retrieval lane. `resolve_cadence_enabled` defaults to False
+# (see `aelfrice/cadence.py`), so reaching it takes an operator opt-in --
+# that default is the whole reason the cheap case is the usual one.
+# Both module counts are deterministic:
 #   uv run python scripts/measure_1527_import_closure.py
 # and `tests/test_hook_import_cost_1351.py` pins the 18 as a ceiling. No
 # wall-clock figure for this change is published anywhere in the tree -- on a
 # loaded machine it did not reproduce across runs, and the module count is the
 # durable evidence.
 #
-# Test modules monkeypatch `aelfrice.hook.<name>` for these names, so the
-# resolver has to keep that working; `tests/test_hook_lazy_binding_1527.py`
-# pins it. Two properties do it. `_lazy` reads `globals()` before it
+# Test modules monkeypatch `aelfrice.hook.<name>` for these names -- today
+# only `search_for_prompt`, in `tests/test_hook_user_prompt_submit.py` and
+# `tests/test_hook_lazy_binding_1527.py`, but the resolver has to keep that
+# working for any of the six; `tests/test_hook_lazy_binding_1527.py` pins it.
+# Two properties do it. `_lazy` reads `globals()` before it
 # imports, which is exactly where `monkeypatch.setattr(aelfrice.hook, ...)`
-# writes, so a patch always wins over the real module. And `__getattr__` below
+# writes, so a patch to any non-`None` value wins over the real module --
+# `None` is the one value that falls through, since it is indistinguishable
+# from an unresolved name. And `__getattr__` below
 # answers for a name nothing has resolved yet, so
 # `monkeypatch.setattr(..., raising=True)` -- which reads the old value first --
 # and `from aelfrice.hook import retrieve` both still work.

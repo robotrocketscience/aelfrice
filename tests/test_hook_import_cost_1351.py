@@ -8,9 +8,11 @@ scipy alone — through two chains:
     aelfrice.hook -> retrieval -> graph_spectral -> scipy.sparse.linalg
 
 Half of UserPromptSubmit fires never reach the L1 lane at all (the shape gate
-skips system-generated and trivial prompts), and no `Stop` / `PreToolUse` /
-`PostToolUse` / `PreCompact` / `SessionStart` fire runs it, so those processes
-paid the whole cost for nothing.
+skips system-generated and trivial prompts), so those processes paid the whole
+cost for nothing. A `Stop` fire does not run the lane on shipped defaults
+either -- but it is not a fire that never runs it, because a cadence
+checkpoint runs the full rebuilder; `[cadence] enabled` defaults to False, so
+that is an operator opt-in. See the deferred-names comment in `hook.py`.
 
 The assertion is on the *module set*, not on wall-clock milliseconds. A timing
 budget here would be a flake generator under CI contention — #1307 is the
