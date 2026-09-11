@@ -77,10 +77,12 @@ against it — a single fire from a neighbour would zero the count and
 hand the first session an unbounded budget. They live in a separate
 per-session map that survives a session switch, bounded here so the
 file cannot grow without limit across a machine's lifetime. Eight
-covers the concurrent-session width with room to spare, at 100 JSON
-bytes an entry for a UUID session id (800 for a full map); the least
-recently touched entry is evicted first, and evicting a live session's
-entry costs it one turn of a reset cap, never a wrong suppression.
+covers the concurrent-session width with room to spare, at 99 JSON
+bytes an entry for a UUID session id and 789 bytes for a full
+eight-entry map — ``scripts/bash_fire_cap_latency.py bytes`` re-derives
+both from the file this module writes. The least recently touched entry
+is evicted first, and evicting a live session's entry costs it one turn
+of a reset cap, never a wrong suppression.
 """
 
 

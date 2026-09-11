@@ -711,8 +711,10 @@ def _do_search(
         t0 = time.perf_counter()
         # Extraction first, cap second (#1522). The cap now consults the
         # session ring, and importing `session_ring` pulls `db_paths` ->
-        # `store`: +17.6 ms median on a whole hook process. Ordered the
-        # other way that landed on every Bash call in the session, the
+        # `store`: +14.0 ms median on a whole hook process (12.1-14.0 ms
+        # over five runs), positive in 60 of 60 interleaved pairs, per
+        # `scripts/bash_fire_cap_latency.py order --pairs 60`. Ordered
+        # the other way that landed on every Bash call in the session, the
         # overwhelming majority of which are not searches at all and
         # abort inside `_extract_bash_query` — which is pure regex over
         # the command string and imports nothing. So only a call that
