@@ -184,9 +184,12 @@ result of reverting a named line and running the suite, and nothing in the
 repository emits it. What it can have is a site, which is what the original
 sentence lacked and what made the count impossible to check.
 
-Both readings were run against an 8,652-test baseline. Replacing the body of
-`command_tokens` in `src/aelfrice/launcher.py` with a bare `shlex.split` turns
-29 red. Replacing the single `launcher.command_tokens(stripped)` call in
+Both readings were run with `uv run pytest -q -p no:randomly`. The suite size
+they were taken over is deliberately not published: it moves on every merge,
+and the figure this branch first wrote for it already disagreed with the tree
+that shipped it. Replacing the body of `command_tokens` in
+`src/aelfrice/launcher.py` with a bare `shlex.split` turns 29 red. Replacing
+the single `launcher.command_tokens(stripped)` call in
 `src/aelfrice/doctor.py` turns 1 red. Neither is the 2 the entry published or
 the 3 the issue's table asserts, and the entry now publishes both counts with
 their sites.
