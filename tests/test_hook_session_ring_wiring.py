@@ -168,3 +168,37 @@ def test_ring_write_fails_soft_when_db_dir_unwritable(
     out = _fire("ember kindling forge distinct")
     # Hook still emitted its block.
     assert "EEE" in out
+
+
+def test_a_raising_turn_stamp_does_not_cost_the_prompt_its_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A #1522 turn stamp that raises must not take the handler with it.
+
+    `stamp_bash_turn` is fail-soft internally, but not unconditionally:
+    its lock-failure path prints to the stderr it was handed, so an
+    unwritable stderr raises out of it, and the lazy import itself can
+    raise on a partial install. The only other `except` on this path is
+    the function-wide one, so an unguarded raise here would skip the
+    rest of `user_prompt_submit` — the injection block included — and
+    print a traceback.
+    """
+    db = tmp_path / "memory.db"
+    _seed(db, [_mk("STAMP1", "the cellar door is full of barrels and casks")])
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    def _boom(*_args: object, **_kwargs: object) -> bool:
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("aelfrice.session_ring.stamp_bash_turn", _boom)
+
+    sout, serr = io.StringIO(), io.StringIO()
+    rc = user_prompt_submit(
+        stdin=io.StringIO(_payload("how many barrels are in the cellar door storage")),
+        stdout=sout,
+        stderr=serr,
+    )
+
+    assert rc == 0
+    assert "STAMP1" in sout.getvalue(), sout.getvalue()
+    assert "Traceback" not in serr.getvalue(), serr.getvalue()
