@@ -34,9 +34,15 @@ def _row(
     return json.dumps(rec)
 
 
-def _run(*logs: Path) -> str:
+def _run(*logs: Path, window: tuple[str | None, str | None] = (None, None)) -> str:
+    since, until = window
+    flags: list[str] = []
+    if since is not None:
+        flags += ["--since", since]
+    if until is not None:
+        flags += ["--until", until]
     proc = subprocess.run(
-        [sys.executable, str(_SCRIPT), *(str(p) for p in logs)],
+        [sys.executable, str(_SCRIPT), *flags, *(str(p) for p in logs)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -567,3 +573,131 @@ def test_position_follows_the_timestamp_not_the_file_order(
         f"order rather than the timestamp.\n{out}"
     )
     assert "0/1 = 0.0%" in later_line, out
+
+
+# ---- #1513 round 2: one log set, two windows, one comparison ------------
+#
+# The first statement of #1513's AC1 target compared a post-fix rate taken
+# on one day against a baseline taken weeks earlier over a log set that had
+# grown and rotated in between, so the two numbers were never about the same
+# population and their difference was not the fix. `--since` / `--until` cut
+# both windows out of one log set in one pair of invocations, which is what
+# makes them comparable. These tests pin that the cut partitions the input
+# and that it reaches the session-position buckets, not just the totals.
+
+
+@pytest.mark.timeout(90)
+def test_the_two_windows_partition_the_input_with_no_row_in_both(
+    tmp_path: Path,
+) -> None:
+    """Half-open, so `--until T` and `--since T` lose nothing and share nothing.
+
+    A fire exactly on the boundary must land in the later window and only
+    there. If the bound were inclusive on both sides, a baseline run and a
+    post-fix run over the same log set would double-count it, and the
+    target's two halves would overlap by however many fires sat on the
+    boundary second.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row("2026-09-01T00:00:00Z", outcome="full_rebuild", session_id="a"),
+                _row("2026-09-01T23:59:59Z", outcome="fresh", session_id="a"),
+                # Exactly the boundary: belongs to the --since side alone.
+                _row("2026-09-02T00:00:00Z", outcome="full_rebuild", session_id="b"),
+                _row("2026-09-02T00:00:01Z", outcome="fresh", session_id="b"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    boundary = "2026-09-02T00:00:00Z"
+
+    before = _run(log, window=(None, boundary))
+    after = _run(log, window=(boundary, None))
+
+    assert "fires with an outcome (scored) 2" in before, before
+    assert "fires with an outcome (scored) 2" in after, after
+    assert "UPS fires outside the window   2" in before, before
+    assert "UPS fires outside the window   2" in after, after
+
+    # The whole log carries 4 scored fires, so 2 + 2 is the partition: no
+    # row is in both windows and none was dropped by either.
+    whole = _run(log)
+    assert "fires with an outcome (scored) 4" in whole, whole
+
+
+@pytest.mark.timeout(90)
+def test_the_window_reaches_the_session_position_buckets(tmp_path: Path) -> None:
+    """The cut has to move the two numbers the #1513 target is read on.
+
+    A filter that only trimmed the totals would leave the session-FIRST and
+    LATER lines computed over the whole log, so a baseline run and a
+    post-fix run would print the same two rates and the target would be
+    unfalsifiable. Here the early window holds a session-first rebuild and
+    the late window a session-first fresh; a filter that never reached the
+    buckets would print the pre-fix 100.0% on the post-fix run too.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    log.write_text(
+        "\n".join(
+            [
+                _row("2026-09-01T00:00:00Z", outcome="full_rebuild", session_id="old"),
+                _row("2026-09-01T00:00:01Z", outcome="fresh", session_id="old"),
+                _row("2026-09-03T00:00:00Z", outcome="fresh", session_id="new"),
+                _row("2026-09-03T00:00:01Z", outcome="fresh", session_id="new"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    boundary = "2026-09-02T00:00:00Z"
+
+    first_before, later_before = _bucket_lines(_run(log, window=(None, boundary)))
+    first_after, later_after = _bucket_lines(_run(log, window=(boundary, None)))
+
+    assert "1/1 = 100.0%" in first_before, first_before
+    assert "0/1 = 0.0%" in later_before, later_before
+    assert "0/1 = 0.0%" in first_after, first_after
+    assert "0/1 = 0.0%" in later_after, later_after
+    assert "100.0%" not in first_after, (
+        "the window did not reach the session-position buckets; the "
+        f"post-fix run still carries the pre-fix rebuild\n{first_after}"
+    )
+
+
+@pytest.mark.timeout(90)
+def test_an_undated_fire_is_out_of_any_window_that_was_asked_for(
+    tmp_path: Path,
+) -> None:
+    """A row with no `ts` has no position on the time axis.
+
+    Keeping it inside a window puts a fire of unknown date into a rate the
+    caller asked to be about a specific period — the same unearned
+    attribution the script refuses for unmeasured rows, one axis over. With
+    no window asked for it is still scored, because then no claim about a
+    period is being made.
+    """
+    log = tmp_path / "hook_audit.jsonl"
+    undated = json.dumps(
+        {
+            "hook": "user_prompt_submit",
+            "sidecar_outcome": "full_rebuild",
+            "session_id": "u",
+        }
+    )
+    log.write_text(
+        "\n".join(
+            [undated, _row("2026-09-03T00:00:00Z", outcome="fresh", session_id="d")]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    windowed = _run(log, window=("2026-09-01T00:00:00Z", None))
+    assert "fires with an outcome (scored) 1" in windowed, windowed
+    assert "UPS fires outside the window   1" in windowed, windowed
+
+    unwindowed = _run(log)
+    assert "fires with an outcome (scored) 2" in unwindowed, unwindowed
