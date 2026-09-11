@@ -738,7 +738,7 @@ When you disable the path:
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_BM25F=0`/`1` > explicit Python kwarg `use_bm25f_anchors=<bool>` > TOML `[retrieval] use_bm25f_anchors` > default `true`.
 
-The BM25F path keeps its index in a sidecar file next to the database. The SessionStart hook starts a separate background process that builds the sidecar (#1513). The background process runs before your first prompt. This keeps the build off the first prompt of the session, which is where the audit log showed the cost. The hook does not wait for the background process. A failure of the background process changes nothing: the next prompt builds the index as before. To stop the background process, set `AELF_NO_SIDECAR_WARM=1`.
+The BM25F path keeps its index in a sidecar file next to the database. At `SessionStart`, the hook starts a separate background process that builds the sidecar (#1513) and returns without waiting for it. The build runs alongside the time you spend typing, so it is a head start on the first prompt of the session rather than a step that finishes before it. When the build finishes first, your first prompt reads the sidecar instead of rebuilding the index, which is where the audit log showed the cost. When you submit before the build finishes, when a write to the store lands in between, or when the background process fails, that prompt rebuilds the index exactly as it does today. To stop the background process, set `AELF_NO_SIDECAR_WARM=1`.
 
 ### `use_heat_kernel`
 
