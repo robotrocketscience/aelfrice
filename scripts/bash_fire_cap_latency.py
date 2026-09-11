@@ -35,9 +35,11 @@ The probes:
 
   interleave The A,A,A,B,A,A,A count for the shipped per-session map
              against a record-scoped counter. The record-scoped arm is
-             the shipped tree with the fresh-ring branch of
-             `_normalize_for_session` returning an empty Bash map, which
-             is what holding the counters on the ring record would do.
+             the shipped tree with two edits, which together are what
+             holding the counters on the ring record would do: the Bash
+             writes go through `_normalize_for_session` instead of
+             touching the `bash` key alone, and its fresh-ring branch
+             returns an empty Bash map.
 
 Latency figures are wall-clock on the machine that runs this, so they
 move with load and hardware. The paired deltas and the emitted/suppressed
@@ -85,6 +87,18 @@ _DROPS_BASH_MAP = (
     "        }\n"
 )
 
+_BASH_SCOPED_WRITE = (
+    "            data = _read_ring_unlocked(ring_path)\n"
+    '            bash = _normalize_bash_state(data.get("bash"))\n'
+)
+_RECORD_SCOPED_WRITE = (
+    "            data = _read_ring_unlocked(ring_path)\n"
+    "            data = _normalize_for_session(\n"
+    "                data, session_id, _resolve_ring_max()\n"
+    "            )\n"
+    '            bash = data["bash"]\n'
+)
+
 
 def _patch(path: Path, old: str, new: str) -> None:
     """Replace the single occurrence of `old` in `path`, or fail loudly."""
@@ -114,6 +128,11 @@ def _build_tree(root: Path, name: str) -> Path:
             dst / "aelfrice" / "session_ring.py",
             _KEEPS_BASH_MAP,
             _DROPS_BASH_MAP,
+        )
+        _patch(
+            dst / "aelfrice" / "session_ring.py",
+            _BASH_SCOPED_WRITE,
+            _RECORD_SCOPED_WRITE,
         )
     return dst
 
