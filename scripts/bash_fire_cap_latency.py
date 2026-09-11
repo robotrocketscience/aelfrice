@@ -172,6 +172,19 @@ def _fire(
 ) -> tuple[float, bool]:
     """Run one hook process; return its wall-clock ms and whether it spoke."""
     t0 = time.perf_counter()
+    # The scanner flags this because the first argv element is not a
+    # string literal. It is `sys.executable` — the interpreter already
+    # running this script — and every element after it is a literal.
+    # The list form is passed straight to execve: `shell=` appears
+    # nowhere in this file, so no shell parses any of it, and the rule's
+    # injection shape (a command assembled into one string) does not
+    # exist here. The Bash command under test travels on stdin
+    # (`input=`), which no shell reads. Nothing here comes from outside
+    # the repo either: the harness's whole CLI is a probe name from a
+    # fixed choice list plus an int, and neither reaches argv, `env` or
+    # `cwd`. It would become unsafe if a caller-supplied string were
+    # appended to this list, or if `shell=True` were added.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     proc = subprocess.run(
         [sys.executable, "-m", "aelfrice.hook_search_tool"],
         input=_payload(command, session, cwd),
@@ -208,6 +221,9 @@ def probe_order(work: Path, pairs: int) -> None:
     session = "order-" + uuid.uuid4().hex[:8]
     cmd = "cat notes.txt"
     for arm, env in envs.items():
+        # Same shape as `_fire` above: list-form argv, no shell, and the
+        # only non-literal element is this interpreter's own path.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         probe = subprocess.run(
             [sys.executable, "-c",
              "import aelfrice.hook_search_tool as m; print(m.__file__)"],
