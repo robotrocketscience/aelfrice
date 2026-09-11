@@ -57,8 +57,28 @@ Import discipline for this module, which is the whole point of it:
   about the closure. `tests/test_hook_import_cost_1351.py` pins the module
   set a fire actually loads, which is the assertion that matters.
 
-`aelfrice.context_rebuilder` re-exports every name below, so existing
-`from aelfrice.context_rebuilder import ...` callers are unaffected.
+`aelfrice.context_rebuilder` re-exports every name in this module's `__all__`
+except `_extracted_entities_for_log` and `_recent_turns_hash`, which nothing
+outside this file calls. That exception list is not prose: the first test in
+`tests/test_rebuild_log_reexports_1527.py` asserts it as a set equality, so
+adding or dropping a re-export fails until this sentence is rewritten with it.
+
+The re-exports keep the `from aelfrice.context_rebuilder import ...` callers
+working, and the second test in that module walks `src`, `tests`, `benchmarks`
+and `scripts` and asserts that every name any of them imports from
+`context_rebuilder` still resolves.
+
+What the re-exports do *not* buy is the namespace as a whole. `Any`,
+`LEGACY_STRATEGY`, `VALID_STRATEGIES`, `dataclass`, `datetime`,
+`discover_config`, `extract_entities`, `extract_triples`, `hashlib`, `os`,
+`timezone` and `tomllib` were reachable as `context_rebuilder.<name>` before
+#1527 and are not now -- each was an import that leaked into that namespace
+rather than surface `context_rebuilder` offered, and no caller in the tree
+asks for one of them through it. And a consumer that reads the source rather
+than the namespace is affected regardless of any re-export:
+`tests/test_triple_collision_verbs_1376.py` AST-walks the module holding the
+`extract_triples` call, that call moved here, and a re-export produces no
+`Call` node -- so it was repointed at `aelfrice.rebuild_log` by this change.
 """
 from __future__ import annotations
 
