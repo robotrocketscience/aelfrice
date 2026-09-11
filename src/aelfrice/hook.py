@@ -78,11 +78,15 @@ try:
         RecentTurn,
         load_rebuilder_config,
     )
-    # `query_understanding` stays eager: `_rebuild_and_format`'s
-    # `query_strategy` default argument binds `DEFAULT_STRATEGY` at def time,
-    # and measured on this tree the whole package costs 5 modules / ~1.0 ms
-    # against the ~31 ms the deferrals below are worth. Buying that 1 ms
-    # would cost a `None` sentinel in a public signature.
+    # `query_understanding` stays eager, and deferring it *here* would save
+    # nothing at all: `rebuild_log` above binds it too, so its closure arrives
+    # either way. Deferring it from both files would save 5 modules and cost a
+    # `None` sentinel in a public signature, because `_rebuild_and_format`'s
+    # `query_strategy` default argument and `RebuilderConfig.query_strategy`
+    # both bind `DEFAULT_STRATEGY` at def time. None of the 5 is on the
+    # retrieval path. Re-derive both figures with:
+    #   uv run python scripts/measure_1527_import_closure.py \
+    #     --ref HEAD --marginal
     from aelfrice.query_understanding import DEFAULT_STRATEGY
     from aelfrice.models import (
         BELIEF_CORRECTION,
@@ -113,16 +117,19 @@ except ImportError as _e:
 # of them is reached from a lane that has already decided to retrieve. Binding
 # them at module scope made `import aelfrice.hook` load 35 aelfrice modules
 # where the eager set alone loads 18 -- a bill every hook process pays,
-# including the 31.7% of `UserPromptSubmit` fires the prompt-shape gate refuses
-# (#1527's census of 14,348 real fires) and every `Stop` / `PreToolUse` /
-# `PostToolUse` fire, none of which retrieve at all. Those two counts are
-# deterministic, and `tests/test_hook_import_cost_1351.py` pins the 18. The
-# wall-clock saving is machine-dependent, so it is recorded once -- in the
-# changelog entry for #1527 -- rather than a second time here, where nothing
-# would catch it drifting.
+# including every `UserPromptSubmit` fire the prompt-shape gate refuses
+# (roughly a third, per the audit-log census in #1527; that census is not
+# re-derivable from this repo) and every `Stop` / `PreToolUse` / `PostToolUse`
+# fire, none of which retrieve at all. Both module counts are deterministic:
+#   uv run python scripts/measure_1527_import_closure.py
+# and `tests/test_hook_import_cost_1351.py` pins the 18 as a ceiling. No
+# wall-clock figure for this change is published anywhere in the tree -- on a
+# loaded machine it did not reproduce across runs, and the module count is the
+# durable evidence.
 #
-# Ten test modules monkeypatch `aelfrice.hook.<name>`, so the resolver has to
-# keep that working. Two properties do it. `_lazy` reads `globals()` before it
+# Test modules monkeypatch `aelfrice.hook.<name>` for these names, so the
+# resolver has to keep that working; `tests/test_hook_lazy_binding_1527.py`
+# pins it. Two properties do it. `_lazy` reads `globals()` before it
 # imports, which is exactly where `monkeypatch.setattr(aelfrice.hook, ...)`
 # writes, so a patch always wins over the real module. And `__getattr__` below
 # answers for a name nothing has resolved yet, so

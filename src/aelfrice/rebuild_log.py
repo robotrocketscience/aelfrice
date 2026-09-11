@@ -31,7 +31,10 @@ Import discipline for this module, which is the whole point of it:
   binding; `store`, `meta_beliefs` and `ulid` arrive through it but the hook
   imports `aelfrice.store` eagerly regardless. None of the five is on the
   retrieval path. Importing this module alone loads 12, against the 28
-  `aelfrice.context_rebuilder` loaded before the extraction.
+  `aelfrice.context_rebuilder` loaded before the extraction. Every count in
+  this paragraph comes back from::
+
+      uv run python scripts/measure_1527_import_closure.py --marginal
 * `entity_extractor` and `triple_extractor` are imported **inside**
   `_extracted_entities_for_log` / `_query_for_recent_turns`. Both run only
   once a record is actually being built, which is strictly below
