@@ -4,8 +4,8 @@ The measured cost is a session-first tail: bucketed by position within the
 session, `benchmarks/sidecar_rebuild_rate.py` reports a materially higher
 `full_rebuild` rate on the first scored fire of a session than on every
 later one. No magnitude is quoted, here or anywhere else on this branch —
-the audit log grows and rotates, three re-derivations moved that rate by
-more than a factor of three, and the earlier populations no longer exist.
+the audit log grows and rotates, successive re-derivations moved that rate
+substantially, and the earlier populations no longer exist.
 Run the script for the current split. The fix warms the sidecar from a
 detached child spawned at `SessionStart`.
 

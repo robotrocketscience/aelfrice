@@ -78,9 +78,9 @@ which is why the `BY POSITION WITHIN THE SESSION` section prints two rates
 and never one. Read the LATER bucket alongside it: a "fix" that merely
 defers the rebuild shows up as that number rising.
 
-**This file publishes no magnitude for that split, deliberately.** Three
-re-derivations over three weeks moved the session-FIRST rate by more than a
-factor of three while the sign never flipped, because the population is a
+**This file publishes no magnitude for that split, deliberately.**
+Successive re-derivations weeks apart moved the session-FIRST rate
+substantially while the sign never flipped, because the population is a
 live, growing, single-slot-rotating log set: the rows a run scores today are
 not the rows it scored last month, and the ones rotation dropped are gone.
 A frozen percentage here would be a number nobody can reproduce. Run the

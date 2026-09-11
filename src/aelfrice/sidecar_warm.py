@@ -7,12 +7,12 @@ materially above the rate on every later fire. That is the prompt a user is
 least willing to wait on.
 
 No rate or latency figure is quoted here, deliberately. The population is a
-live, growing, single-slot-rotating audit log, and three re-derivations over
-three weeks moved the session-first magnitude by more than a factor of three
-while the sign never flipped; the rows the earlier runs scored are gone to
-rotation, so the numbers this docstring used to carry were not reproducible
-by anyone. Re-derive the split instead — the script's own docstring gives the
-command, and says which population each form of it covers.
+live, growing, single-slot-rotating audit log; successive re-derivations
+weeks apart moved the session-first magnitude substantially while the sign
+never flipped, and the rows the earlier runs scored are gone to rotation, so
+the numbers this docstring used to carry were not reproducible by anyone.
+Re-derive the split instead — the script's own docstring gives the command,
+and says which population each form of it covers.
 
 ## Why a detached process, and not the two alternatives
 
