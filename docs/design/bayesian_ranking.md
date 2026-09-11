@@ -81,7 +81,9 @@ This matters for the cold-belief case: a fresh user-lock has `(α, β) = (9.0, 0
 
 ## Cache invalidation
 
-The v1.0.1 `RetrievalCache` is keyed on `(canonicalize_query(query), token_budget, l1_limit)`. Two changes:
+The v1.0.3 `RetrievalCache` is keyed on `(canonicalize_query(query), token_budget, l1_limit)`. Two changes:
+
+> The class first shipped at **v1.0.3**, not at the v1.0.1 its spec targeted: `class RetrievalCache` is absent from `src/` at v1.0.1 and v1.0.2 and present at v1.0.3, added by `0c27a937`. This page inherited the spec's version literal as though it were the ship date, and was corrected under [#1469](https://github.com/robotrocketscience/aelfrice/issues/1469). The store-level invalidation registry is a separate thing and genuinely did ship at v1.0.1 — `add_invalidation_callback` is present at that tag and `insert_edge`, `update_edge` and `delete_edge` all call `_fire_invalidation()` there — so the v1.0.1 literal in [`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py) is about the policy, not the wrapper, and is correct as written.
 
 ### 1. Extend the key tuple to include `posterior_weight`
 
@@ -111,7 +113,7 @@ The acceptance test for cache invalidation is therefore: after `apply_feedback`,
 
 ### Edge case: in-process concurrent retrieval during feedback
 
-If two threads share a `RetrievalCache` and one calls `apply_feedback` while the other is mid-`retrieve()`, the second can either see pre-feedback or post-feedback ordering depending on lock interleaving. v1.3 does not introduce a stronger guarantee than v1.0.1 — `RetrievalCache` is documented as agent-loop scoped, single-thread per store, and `MemoryStore` already documents WAL + `busy_timeout=5000` as the cross-process concurrency contract. Multi-threaded sharing of a single cache is not supported.
+If two threads share a `RetrievalCache` and one calls `apply_feedback` while the other is mid-`retrieve()`, the second can either see pre-feedback or post-feedback ordering depending on lock interleaving. v1.3 does not introduce a stronger guarantee than v1.0.3 — `RetrievalCache` is documented as agent-loop scoped, single-thread per store, and `MemoryStore` already documents WAL + `busy_timeout=5000` as the cross-process concurrency contract. Multi-threaded sharing of a single cache is not supported.
 
 ## Calibration on synthetic harness
 
@@ -167,7 +169,7 @@ The implementation PR must satisfy all of:
 
 ## Dependencies
 
-- **v1.0.1 `RetrievalCache`** — already shipped. Key tuple extends; invalidation path is reused unchanged.
+- **v1.0.3 `RetrievalCache`** — already shipped. Key tuple extends; invalidation path is reused unchanged.
 - **v1.0 `apply_feedback` audit** — already shipped. Feedback rows already exist; the regression test for criterion 5 just needs to call `apply_feedback` and re-`retrieve()`.
 - **`scoring.posterior_mean`** — already shipped. Implementation imports and uses it directly. Do not duplicate the formula.
 
