@@ -590,3 +590,137 @@ def test_with_the_meta_belief_flag_off_the_sidecar_pins_nothing(
 
     assert passed["anchor_weight"] == DEFAULT_ANCHOR_WEIGHT, passed
     assert peeked == [], "the flag-off path read the sidecar header"
+
+
+# ---- the load-bearing edge: the child the parent never waits on ---------
+#
+# `_CHILD_SOURCE` is the only line connecting the spawned process to the
+# work it exists to do, and every test above this point either calls
+# `warm_sidecar()` in-process or replaces `Popen` with a recorder. Neither
+# executes that string. Round 1 shipped with it uncovered: mutating it to
+# `from aelfrice.NOSUCHMODULE import main; raise SystemExit(main())` left
+# the whole file green while, in production, `Popen` still succeeded, the
+# child died rc=1 with all three streams on /dev/null, and nothing
+# downstream could tell the difference. The two tests below run the real
+# child.
+
+
+def _warm_audit_rows(db: Path) -> list[dict[str, object]]:
+    """Every `sidecar_warm` row the child left next to `db`."""
+    import json
+
+    from aelfrice.sidecar_warm import WARM_AUDIT_HOOK
+
+    log = db.parent / "hook_audit.jsonl"
+    if not log.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and rec.get("hook") == WARM_AUDIT_HOOK:
+            rows.append(rec)
+    return rows
+
+
+def _await_warm_row(db: Path, deadline_s: float = 60.0) -> dict[str, object]:
+    """Block until the detached child records its outcome, or fail.
+
+    Polling is the only option available: the child is deliberately
+    detached, `spawn_sidecar_warm` returns a bool rather than the `Popen`,
+    and there is nothing to `wait()` on. The deadline is generous against a
+    loaded machine because the assertion is on the row's CONTENT, never on
+    how long it took — this file publishes no timing figure.
+    """
+    import time
+
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        rows = _warm_audit_rows(db)
+        if rows:
+            return rows[-1]
+        time.sleep(0.05)
+    raise AssertionError(
+        "the detached warm child wrote no sidecar_warm audit row within "
+        f"{deadline_s}s. The child never reached `main()` — check "
+        "`_CHILD_SOURCE`, which is the only line that names it."
+    )
+
+
+@pytest.mark.timeout(180)
+def test_the_real_detached_child_warms_the_store_it_was_spawned_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end-to-end edge, run through a real `Popen`.
+
+    `spawn_sidecar_warm()` returning True proves only that `Popen` did not
+    raise; it is true of a child that dies on its first import. What is
+    asserted here is the child's observable effect on the store it was
+    spawned for: it records its outcome, it leaves a sidecar on disk, and
+    the fire that follows reads that sidecar instead of rebuilding.
+
+    The child recomputes `db_path()` for itself, so `AELFRICE_DB` has to be
+    in the real environment (`monkeypatch.setenv` puts it there) — no
+    `setattr` in this process can steer a separate interpreter.
+    """
+    from aelfrice.sidecar_warm import spawn_sidecar_warm
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELF_NO_SIDECAR_WARM", raising=False)
+    assert not _sidecar(db).exists()
+    assert _warm_audit_rows(db) == []
+
+    assert spawn_sidecar_warm() is True
+
+    row = _await_warm_row(db)
+    assert row.get("sidecar_outcome") == "full_rebuild", (
+        "the child ran but did not build the index it was spawned to "
+        f"build: {row!r}"
+    )
+    assert _sidecar(db).exists(), (
+        "the child reported an outcome but left no sidecar on disk"
+    )
+
+    assert _outcome_of_a_retrieval_fire(db) == "fresh", (
+        "the fire after a real spawned warm still rebuilt the index; the "
+        "session-first rate cannot move"
+    )
+
+
+def test_the_spawn_detaches_the_child_from_the_parents_session(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`start_new_session=True` is passed, so the host cannot reap the warm.
+
+    This pins the ARGUMENT, not the kernel's behaviour: the spawn returns a
+    bool rather than the `Popen`, so no caller can read the child's process
+    group back out. Stated plainly because an argument-level assertion is
+    weaker than the end-to-end test above and should not be read as more.
+
+    It is still worth pinning. Without the flag the child stays in the
+    hook's process group, and a host that signals that group on hook exit
+    kills the build mid-flight — the failure mode the module docstring
+    rejects the daemon-thread design for.
+    """
+    import subprocess
+
+    from aelfrice.sidecar_warm import spawn_sidecar_warm
+
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *a, **k: seen.append(k) or object()
+    )
+    monkeypatch.delenv("AELF_NO_SIDECAR_WARM", raising=False)
+
+    assert spawn_sidecar_warm() is True
+    assert len(seen) == 1
+    assert seen[0].get("start_new_session") is True, (
+        "the warm child shares the hook's process group; a host that "
+        f"signals it on hook exit kills the build: {seen[0]!r}"
+    )
