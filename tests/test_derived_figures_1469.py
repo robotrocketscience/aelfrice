@@ -625,7 +625,7 @@ def test_a_comment_marker_is_held_to_its_comment_not_the_statement_below(
 ) -> None:
     """Reproduced on the live tree: editing `# A cap of 20 leaves the median
     session whole` to read 25, with the constant and all four markers untouched,
-    left `--mode all` at exit 0 and the suite at 33 passed.
+    left `--mode all` at exit 0.
 
     The assignment below is what the producer already re-runs. The sentence is
     the figure a reader sees, so the comment run is the scope.
