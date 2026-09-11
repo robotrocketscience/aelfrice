@@ -726,3 +726,131 @@ def test_the_spawn_detaches_the_child_from_the_parents_session(
         "the warm child shares the hook's process group; a host that "
         f"signals it on hook exit kills the build: {seen[0]!r}"
     )
+
+
+# ---- the new writer, and the two switches that must reach it ----------
+#
+# `_record_warm_outcome` is a writer this branch adds to a process the user
+# cannot see: detached, all three streams on /dev/null, return code
+# discarded. Two properties of it were shipped unpinned, and both were
+# demonstrated unpinned by mutation against the whole suite.
+#
+# The audit opt-out. Deleting `if not cfg.enabled: return` from
+# `_record_warm_outcome` left the full suite green at 8624 passed. In
+# production a user who set `AELFRICE_HOOK_AUDIT=0`, or `enabled = false`
+# under `[hook_audit]`, would still get one row per session from a process
+# they cannot see. That check is the only thing between the writer and a
+# user who asked for no audit log.
+#
+# The `hook` label. Changing `WARM_AUDIT_HOOK` to `user_prompt_submit` also
+# left the suite green at 8624 — `_warm_audit_rows` above filters on the
+# constant, so it follows any mutation of it. The tests below assert the
+# LITERAL and the scored consequence instead.
+
+
+def _all_audit_rows(db: Path) -> list[dict[str, object]]:
+    """Every row in the audit log next to `db`, whatever its `hook`.
+
+    Deliberately unfiltered, unlike `_warm_audit_rows`: a filter keyed on
+    `WARM_AUDIT_HOOK` follows a mutation of that constant, so counting
+    through one cannot distinguish "no row was written" from "the row was
+    written under another name".
+    """
+    import json
+
+    log = db.parent / "hook_audit.jsonl"
+    if not log.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            rows.append(rec)
+    return rows
+
+
+def _audit_toml(tmp_path: Path, *, enabled: bool) -> None:
+    """Write a `.aelfrice.toml` that decides the audit for `tmp_path`.
+
+    Written in every case, enabled arm included, so the config the test
+    resolves is this file rather than whatever happens to sit above the
+    pytest temp directory on the machine running it.
+    """
+    (tmp_path / ".aelfrice.toml").write_text(
+        f"[hook_audit]\nenabled = {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+
+
+def test_the_env_opt_out_keeps_the_warm_row_out_of_the_audit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AELFRICE_HOOK_AUDIT=0` has to reach the detached child's writer.
+
+    The enabled arm runs first and is what makes this distinguishing: an
+    assertion that the log is empty passes just as well on a misdirected
+    `db_path()` or on a writer whose every exception is swallowed, neither
+    of which is the opt-out working.
+    """
+    from aelfrice.sidecar_warm import _record_warm_outcome
+
+    db = tmp_path / "memory.db"
+    monkeypatch.chdir(tmp_path)
+    _audit_toml(tmp_path, enabled=True)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+
+    _record_warm_outcome("full_rebuild")
+    assert len(_all_audit_rows(db)) == 1, (
+        "the warm wrote no row with the audit enabled, so the opt-out arm "
+        "below would pass for the wrong reason"
+    )
+
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "0")
+    _record_warm_outcome("full_rebuild")
+
+    assert len(_all_audit_rows(db)) == 1, (
+        "AELFRICE_HOOK_AUDIT=0 did not reach `_record_warm_outcome`: the "
+        "detached child appended a row for a user who opted out of the "
+        f"audit log. Rows: {_all_audit_rows(db)!r}"
+    )
+
+
+def test_the_toml_opt_out_keeps_the_warm_row_out_of_the_audit_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`[hook_audit] enabled = false` has to reach it too.
+
+    Separate from the env arm because they are separate tiers of
+    `load_hook_audit_config`: the env var short-circuits before the TOML
+    walk, so a writer that consulted only the env var would pass the test
+    above and still write through a user's `.aelfrice.toml`. Only the
+    `enabled` bit changes between the two halves.
+    """
+    from aelfrice.sidecar_warm import _record_warm_outcome
+
+    db = tmp_path / "memory.db"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    _audit_toml(tmp_path, enabled=True)
+    _record_warm_outcome("full_rebuild")
+    assert len(_all_audit_rows(db)) == 1, (
+        "the warm wrote no row with `enabled = true`, so the opt-out arm "
+        "below would pass for the wrong reason"
+    )
+
+    _audit_toml(tmp_path, enabled=False)
+    _record_warm_outcome("full_rebuild")
+
+    assert len(_all_audit_rows(db)) == 1, (
+        "`[hook_audit] enabled = false` did not reach "
+        "`_record_warm_outcome`: the detached child appended a row for a "
+        f"user who opted out of the audit log. Rows: {_all_audit_rows(db)!r}"
+    )
