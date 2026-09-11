@@ -37,6 +37,7 @@ from aelfrice.hook_search_tool import (
 from aelfrice.session_ring import (
     BASH_STATE_MAX_SESSIONS,
     SESSION_RING_FILENAME,
+    append_ids,
     read_bash_fire_state,
     record_bash_fire,
     stamp_bash_turn,
@@ -142,12 +143,15 @@ def _session_ring_imported(
 
 
 def _submit_prompt(
-    env: dict[str, str], cwd: Path, session: str = SESSION_ID,
+    env: dict[str, str],
+    cwd: Path,
+    session: str = SESSION_ID,
+    prompt: str = "next turn please",
 ) -> None:
     """Run the real UserPromptSubmit hook — the shipped turn stamp."""
     payload = json.dumps({
         "hook_event_name": "UserPromptSubmit",
-        "prompt": "next turn please",
+        "prompt": prompt,
         "cwd": str(cwd),
         "session_id": session,
     })
@@ -363,7 +367,11 @@ def test_bash_state_survives_a_ring_reset_by_another_session(
     assert record_bash_fire(SESSION_ID) == {"turn_id": 0, "fires": 1}
     assert record_bash_fire(SESSION_ID) == {"turn_id": 0, "fires": 2}
 
-    assert record_bash_fire(other) == {"turn_id": 0, "fires": 1}
+    # `append_ids` is the #740 injection write: it owns the record and
+    # reshapes it for whoever calls. A Bash counter write deliberately
+    # does not (see the co-tenant test below), so the switch has to be
+    # driven from the path that really performs one.
+    assert append_ids(other, ["neighbour-belief"]) >= 0
     ring = json.loads(
         (Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME)
         .read_text(encoding="utf-8")
@@ -477,3 +485,58 @@ def test_a_non_search_bash_call_does_not_import_the_session_ring(
     """
     assert _session_ring_imported("cat notes.txt", hook_env, tmp_path) is False
     assert _session_ring_imported("rg needle src/", hook_env, tmp_path) is True
+
+
+@pytest.mark.timeout(300)
+def test_a_turn_stamp_leaves_a_co_tenants_ring_record_intact(
+    hook_env: dict[str, str], tmp_path: Path,
+) -> None:
+    """Session A's prompt must not wipe session B's ring record.
+
+    Two sessions share one repo checkout — the configuration the whole
+    per-session map exists for. B has injected beliefs, so B owns the
+    record. A then submits a bare prompt that injects nothing.
+
+    The turn stamp runs on every `UserPromptSubmit`, so if it went
+    through the path that reshapes the record for the calling session it
+    would reset B's #740 dedup ring, `next_fire_idx` and #876 cadence
+    state on every prompt A submitted, and B would re-inject beliefs it
+    had already injected. The stamp is asserted to have landed as well,
+    so a stamp that simply stopped writing cannot pass this.
+    """
+    sess_a, sess_b = "cap-1522-tenant-A", "cap-1522-tenant-B"
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    before = {
+        "session_id": sess_b,
+        "ring": [{"id": f"tenant-b-{i}", "fire_idx": i} for i in range(4)],
+        "ring_max": 40,
+        "next_fire_idx": 4,
+        "evicted_total": 2,
+        "bytes_at_last_fire": 9999,
+        "fire_idx_at_last_fire": 3,
+        "classifications": [True, False, True],
+        "phantom_fires": 1,
+        "phantom_dedup": ["tenant-b-phantom"],
+        "phantom_contradicts": ["x|y"],
+        "phantom_init": True,
+        "promotion_fires": 1,
+        "promotion_dedup": ["tenant-b-promotion"],
+        "bash": {
+            sess_b: {
+                "turn_id": 5, "fires": 2, "fires_turn_id": 5, "seq": 1,
+            },
+        },
+    }
+    ring_path.parent.mkdir(parents=True, exist_ok=True)
+    ring_path.write_text(json.dumps(before), encoding="utf-8")
+
+    _submit_prompt(hook_env, tmp_path, session=sess_a, prompt="ok")
+
+    after = json.loads(ring_path.read_text(encoding="utf-8"))
+    for field, want in before.items():
+        if field == "bash":
+            continue
+        assert after[field] == want, field
+    assert after["bash"][sess_b] == before["bash"][sess_b]
+    # The stamp did happen: A's own entry advanced to turn 1.
+    assert after["bash"][sess_a]["turn_id"] == 1, after["bash"]

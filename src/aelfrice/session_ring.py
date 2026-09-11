@@ -881,6 +881,72 @@ def push_classification(
             pass
 
 
+def _locked_bash_mutate(
+    session_id: str,
+    apply_fn: Callable[[dict[str, dict[str, int]]], None],
+    *,
+    stderr: IO[str] | None,
+) -> bool:
+    """Run ``apply_fn`` against the ring file's Bash map alone (#1522).
+
+    Reads the ring file under the same advisory lock as
+    :func:`_locked_phantom_mutate`, hands ``apply_fn`` the normalized
+    ``bash`` map, and writes every other key back exactly as it was
+    read.
+
+    Deliberately not :func:`_locked_phantom_mutate`, which reshapes the
+    whole record for the calling session and therefore *discards* it
+    when a neighbouring session owns the ring. Every git worktree of a
+    repo shares one ring file and several concurrent sessions against it
+    is a normal configuration, so a Bash counter write routed through
+    that path would take a co-tenant's #740 dedup ring,
+    ``next_fire_idx`` and #876 cadence state with it — on every turn
+    stamp, which is every prompt, including one that injects nothing.
+
+    Fail-soft: returns False on any error.
+    """
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return False
+    lock_path = _session_ring_lock_path(ring_path)
+    try:
+        lock_fd = _open_lock(lock_path)
+    except OSError as exc:
+        _warn(stderr, f"session_ring: lock open failed (non-fatal): {exc}")
+        return False
+    try:
+        try:
+            lock_exclusive(lock_fd)
+        except OSError as exc:
+            _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
+            return False
+        try:
+            data = _read_ring_unlocked(ring_path)
+            bash = _normalize_bash_state(data.get("bash"))
+            apply_fn(bash)
+            data["bash"] = bash
+            _atomic_write(ring_path, json.dumps(data))
+            return True
+        except Exception as exc:
+            _warn(
+                stderr,
+                f"session_ring: bash mutate failed (non-fatal): {exc}",
+            )
+            return False
+        finally:
+            try:
+                unlock(lock_fd)
+            except OSError:
+                # Best-effort unlock; the fd is closed below regardless.
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            # Best-effort close; nothing actionable if the fd is gone.
+            pass
+
+
 def _locked_phantom_mutate(
     session_id: str | None,
     apply_fn: Callable[[dict[str, Any]], None],
@@ -1087,15 +1153,20 @@ def stamp_bash_turn(
 
     Called once per turn from the ``UserPromptSubmit`` hook — the only
     hook the host guarantees fires exactly once per turn. It bumps
-    this session's ``turn_id`` and nothing else; the fire count is
-    *not* zeroed here. :func:`read_bash_fire_state` reports 0 fires as soon as the
-    stamped turn and the counted turn disagree, so the reset is a
-    consequence of the comparison rather than a second write that a
-    crash between the two could skip.
+    ``turn_id`` in this session's own entry of the ring's Bash map; the
+    fire count is *not* zeroed here. :func:`read_bash_fire_state`
+    reports 0 fires as soon as the stamped turn and the counted turn
+    disagree, so the reset is a consequence of the comparison rather
+    than a second write that a crash between the two could skip.
 
-    Scoped to ``session_id``'s own entry in the ring's Bash map: a
-    prompt submitted in a neighbouring session sharing this repo
-    checkout must not re-open this session's budget.
+    Writes through :func:`_locked_bash_mutate`, so the rest of the ring
+    record — whichever session owns it — is written back as it was read.
+    That matters because this runs on every prompt in every session
+    sharing a repo checkout: routed through the record-reshaping path it
+    would wipe a co-tenant's dedup ring and cadence state each time.
+    Other sessions' Bash entries are likewise untouched, except that a
+    ninth session evicts the least recently touched one
+    (:data:`BASH_STATE_MAX_SESSIONS`).
 
     Fail-soft: returns False on any error, and a missed stamp costs one
     turn of a stale cap, never a raised exception in a hook.
@@ -1103,13 +1174,12 @@ def stamp_bash_turn(
     if not session_id:
         return False
 
-    def _apply(data: dict[str, Any]) -> None:
-        bash = data["bash"]
+    def _apply(bash: dict[str, dict[str, int]]) -> None:
         entry = dict(bash.get(session_id, _EMPTY_BASH_ENTRY))
         entry["turn_id"] = entry["turn_id"] + 1
         _touch_bash_entry(bash, session_id, entry)
 
-    return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
+    return _locked_bash_mutate(session_id, _apply, stderr=stderr)
 
 
 def record_bash_fire(
@@ -1123,6 +1193,12 @@ def record_bash_fire(
     shared across the one-OS-process-per-fire hook deployment that made
     the process-global counter in ``hook_search_tool`` unreachable.
 
+    Touches the ``bash`` map only, through :func:`_locked_bash_mutate`,
+    for the same reason :func:`stamp_bash_turn` does: a search fire that
+    retrieves nothing writes no injection, so this would otherwise be a
+    second path on which one session's Bash activity discarded a
+    co-tenant's ring record.
+
     Returns ``{"turn_id": int, "fires": int}`` — the turn the fire was
     counted in and the new count within it — or ``{}`` when the ring is
     unavailable (no session_id, in-memory DB, unwritable ring). Callers
@@ -1132,8 +1208,7 @@ def record_bash_fire(
     if not session_id:
         return {}
 
-    def _apply(data: dict[str, Any]) -> None:
-        bash = data["bash"]
+    def _apply(bash: dict[str, dict[str, int]]) -> None:
         entry = dict(bash.get(session_id, _EMPTY_BASH_ENTRY))
         turn = entry["turn_id"]
         fires = entry["fires"] if entry["fires_turn_id"] == turn else 0
@@ -1143,7 +1218,7 @@ def record_bash_fire(
         captured["turn_id"] = turn
         captured["fires"] = fires + 1
 
-    if not _locked_phantom_mutate(session_id, _apply, stderr=stderr):
+    if not _locked_bash_mutate(session_id, _apply, stderr=stderr):
         return {}
     return captured
 
