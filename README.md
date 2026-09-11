@@ -106,7 +106,7 @@ quoted number. For figures you can reproduce on HEAD, read the scripts under [`b
 
 ## Memory model
 
-Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the confidence, and `α + β` is how much evidence backs that confidence. A new belief starts at low evidence and high variance: aelfrice can retrieve it, but discounts it. A locked belief does not decay, because aelfrice pins it as ground truth.
+Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the confidence, and `α + β` is how much evidence backs that confidence. A new belief starts at low evidence and high variance: aelfrice can retrieve it, but discounts it. No posterior ages on its own. A locked belief is pinned as ground truth, so passive feedback doesn't move it either.
 
 | You run | aelfrice stores |
 |---|---|

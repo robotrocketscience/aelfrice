@@ -154,10 +154,9 @@ made stores unusable in
 | Constant | Value |
 |---|---|
 | Lock initial prior | `(α, β) = (9.0, 0.5)` |
-| Decay target | Jeffreys prior `(0.5, 0.5)` |
-| Half-lives | factual 14d, requirement 30d, preference 12w, correction 24w |
+| Posterior decay | None. Nothing ages a stored `(α, β)`. The decay target and the type half-lives this table used to list were never wired, and [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369) deleted them. |
 | Retrieval token budget | 2,400 (`DEFAULT_TOKEN_BUDGET` in `aelfrice.retrieval`; it was 2,000 before v1.3) |
 | Valence propagation | BFS, maximum 3 hops, threshold 0.05; fires on every feedback event. To turn it off, set `AELFRICE_VALENCE_PROPAGATION=0`. |
 | Benchmark hit-depth | top-5 |
 
-The half-lives and the decay target live in `aelfrice.scoring`. The token budget lives in `aelfrice.retrieval` (`DEFAULT_TOKEN_BUDGET`). The lock prior lives in `aelfrice.derivation` and `aelfrice.classification_core`. The valence-propagation defaults live on `MemoryStore.propagate_valence`. The benchmark hit-depth lives in `aelfrice.benchmark` (`DEFAULT_TOP_K`). See [the architecture overview](../concepts/ARCHITECTURE.md).
+The token budget lives in `aelfrice.retrieval` (`DEFAULT_TOKEN_BUDGET`). The lock prior lives in `aelfrice.derivation` and `aelfrice.classification_core`. The valence-propagation defaults live on `MemoryStore.propagate_valence`. The benchmark hit-depth lives in `aelfrice.benchmark` (`DEFAULT_TOP_K`). See [the architecture overview](../concepts/ARCHITECTURE.md).

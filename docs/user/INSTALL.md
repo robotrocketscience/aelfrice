@@ -202,7 +202,7 @@ aelf lock "all commits SSH-signed with ~/.ssh/id_rrs"
 aelf locked                          # list what's locked
 ```
 
-Locked beliefs short-circuit decay: aelfrice always returns them at L0, so they're the beliefs that survive.
+Locked beliefs are the beliefs that survive: aelfrice always returns them at L0, and passive feedback doesn't move a locked posterior.
 
 Restart Claude Code. The next prompt that mentions "push" arrives with your rules already injected.
 

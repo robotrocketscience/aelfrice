@@ -11,7 +11,7 @@ This document describes how aelfrice fits together, and it maps directly to the 
     - `[benchmarks]` — the adapters on the development side.
 3. **Confidence is Bayesian.** Confidence is `α / (α + β)`, and every update has a closed-form rule. At v1.3.0+ the code combines the posterior log-additively with BM25 on the L1 tier. For what the partial ranking covers and does not cover, see [the limitations list](../user/LIMITATIONS.md).
 4. **`apply_feedback` is the central endpoint.** It's the one writer of `(α, β)`, and each successful update writes one audit row.
-5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay, a mechanism that doesn't run at present; see the note on posterior decay below. To correct a lock, overwrite it with `aelf lock`. That correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
+5. **Locks are user-asserted ground truth.** Nothing weakens a lock over time, because nothing ages a stored `(α, β)` at all; see the `scoring.py` row in the module table below. To correct a lock, overwrite it with `aelf lock`. That correction is an explicit user act (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)). Issue [#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the automatic demotion that a contradiction drove.
 
 ### Enrichment-step boundary
 
@@ -47,7 +47,7 @@ modules against the 129 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | Module | Responsibility |
 |---|---|
 | `models.py` | Defines the `Belief`, `Edge`, `FeedbackEvent`, and `OnboardSession` dataclasses, along with the constants for type, lock, and origin. Does no I/O. |
-| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma and zeta posterior rerank scorers, all imported by retrieval. It also defines `decay`, `type_half_life`, and `TYPE_HALF_LIFE_SECONDS` (a lock-floor short-circuit, with the Jeffreys `(0.5, 0.5)` target), but **no module under `src/` calls those three names**: posterior decay is designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)), and its disposition is tracked under [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162). |
+| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma and zeta posterior rerank scorers, all imported by retrieval. It defines **no posterior decay**. It used to carry a Jeffreys-targeted ager, a type half-life lookup and a half-life table, described here as designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)); no module under `src/` ever called them, and [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369) deleted them, discharging the disposition [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162) held open. Nothing moves a stored `(α, β)` toward a prior. |
 | `store.py` | SQLite with write-ahead logging (WAL), full-text search version 5 (FTS5), and the create, read, update, and delete (CRUD) operations. `propagate_valence` runs a breadth-first search (BFS) attenuated by broker confidence, and `apply_feedback` fires it on every direct feedback event. To turn it off, set `AELFRICE_VALENCE_PROPAGATION=0`. |
 | `retrieval.py` | `retrieve(store, query, token_budget=2400)`. The lanes are L0, L2.5, L1, and L3. L0 holds the locked beliefs and is never trimmed. L2.5 is the entity index (v1.3+). L1 is the FTS5 lane with BM25 or BM25F — BM25F is default-on since v1.7.0 — and it also applies Bayesian log-additive reranking (v1.3+). L3 is the BFS multi-hop lane (v1.3+, default-off) over the seed set of L0, L2.5, and L1. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)`, the only path to a Bayesian update. Writes `feedback_history`. |
@@ -178,7 +178,7 @@ The specification documents are [the entity-index spec](../design/entity_index.m
 `scan_repo(store, path)`:
 
 1. **The filesystem walk** covers `*.md`, `*.rst`, `*.txt`, and `*.adoc`. It produces `factual` and `requirement` candidates.
-2. **The git log** produces `factual` candidates with the recency of the file. Since v1.1.0, `belief.created_at` is the file's most recent commit, so decay penalizes old branches.
+2. **The git log** produces `factual` candidates with the recency of the file. Since v1.1.0, `belief.created_at` is the file's most recent commit, so a candidate from an old branch carries an old timestamp. Nothing on the default path acts on that age: the ranking-time `_apply_temporal_decay` sits behind `temporal_sort`, which defaults to off, and there is no posterior decay at all.
 3. **The Python AST** gives the names of the functions and classes and their docstrings, which become `factual` candidates.
 
 Classification uses the priors, with a regex fallback, and the scan is idempotent on `content_hash`.
@@ -279,7 +279,7 @@ new context alongside the harness's own summary (augment mode)
 | Layer | Marker | Coverage |
 |---|---|---|
 | Unit | default | One property per test. Pyright runs in strict mode. |
-| Property | default | The pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, the token-budget invariant, and broker attenuation. |
+| Property | default | The pre-registered invariants: Bayesian inertia, the token-budget invariant, and broker attenuation. The decay-required and lock-floor-sharpness invariants were pre-registered against the posterior-decay surface and went with it in [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369). |
 | Regression | `@pytest.mark.regression` | Scenarios that cross modules: the retrieval round-trip, the feedback loop, onboarding, the setup→hook→unsetup sequence, and `aelf bench` end to end. |
 
 Run `uv run pytest`. The suite holds 7,300+ tests at v4.2.0.

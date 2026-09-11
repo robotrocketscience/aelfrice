@@ -37,7 +37,7 @@ v2.0 must commit one way before `wonder`, `reason`, and the speculative-belief s
     - `scoring.posterior_mean(α, β)` — division
     - `scoring.partial_bayesian_score(...)` — retrieval ranking
     - `scoring.relevance(belief, ...)` — relevance scoring
-    - `scoring.decay(α, β, ...)` — half-life aging
+    - ~~`scoring.decay` — half-life aging~~ — **removed** in [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369). It had no caller at any point between this audit and its deletion, so the single-axis consumer surface this memo enumerates is one entry shorter at HEAD.
     - `feedback._bayesian_update(b, valence)` — feedback arithmetic
     - `feedback.apply_feedback` — persistence
     - `store.alpha_beta_pairs()` and `telemetry.py:184` — aggregate stats

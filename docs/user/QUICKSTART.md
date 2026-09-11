@@ -34,7 +34,7 @@ $ aelf locked
 a1f3c2d09e1b4f7a: never push to main; use scripts/publish.sh
 ```
 
-A new lock starts at `(α, β) = (9.0, 0.5)`, a posterior of approximately 0.95. A lock skips decay, and aelfrice always returns a locked belief at L0.
+A new lock starts at `(α, β) = (9.0, 0.5)`, a posterior of approximately 0.95. Nothing weakens it over time — no belief's posterior ages — and aelfrice always returns a locked belief at L0.
 
 ## 3. Search
 
