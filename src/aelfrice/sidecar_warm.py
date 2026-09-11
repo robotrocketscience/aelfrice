@@ -201,6 +201,13 @@ def _record_warm_outcome(outcome: str | None) -> None:
     the same reason, so `aelf tail` shows the warm beside the fires it is
     meant to spare and it inherits the log's rotation.
 
+    Reusing the sink means inheriting its opt-out, and the `cfg.enabled`
+    check below is not optional. This writer runs detached, with all three
+    streams on `/dev/null`; without that check a user who set
+    `AELFRICE_HOOK_AUDIT=0`, or `enabled = false` under `[hook_audit]`,
+    would get one row per session from a process they cannot see and cannot
+    catch at it.
+
     `hook` is `sidecar_warm`, never `user_prompt_submit`: the rate in
     `benchmarks/sidecar_rebuild_rate.py` is per user-visible fire, and a
     warm is not one. A row claiming to be a UPS fire would enter that

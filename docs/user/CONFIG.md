@@ -746,7 +746,7 @@ Three cases give up that head start, and they are not the same case:
 - **You submit a prompt before the background build finishes.** Nothing coordinates the two: there is no build lock, no in-flight marker, and no check for a build already running. Your prompt starts its own full rebuild while the background build is still going, so two processes build the same index at the same time and contend for CPU and for the same SQLite database. Your prompt is therefore slower in this case than it is with the feature off, not merely no faster. How much slower is **not measured** — treat the magnitude as unknown.
 - **The background process never starts.** Setting `AELF_NO_SIDECAR_WARM=1` stops it, and then every first prompt rebuilds the index as it does today. Set this if your sessions typically begin with an immediate prompt, since that is the case above.
 
-Each background build records what it did in `hook_audit.jsonl` under the hook name `sidecar_warm`, so you can check whether the warm is running at all.
+Each background build records what it did in `hook_audit.jsonl` under the hook name `sidecar_warm`, so you can check whether the warm is running at all. That row obeys the hook-audit setting: if you set `AELFRICE_HOOK_AUDIT=0`, or `enabled = false` under `[hook_audit]`, the background process writes no row.
 
 ### `use_heat_kernel`
 
