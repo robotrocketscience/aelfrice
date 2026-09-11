@@ -71,16 +71,20 @@ to cite. CHANGELOG/v4.md carries the same relabel.
 
 The pooled rate above is an average over a population that is not
 homogeneous. Bucketed by whether a scored fire is the first one carrying its
-`session_id`, the two halves do not resemble each other:
+`session_id`, the two halves do not resemble each other: the session-FIRST
+bucket carries a materially higher `full_rebuild` rate than the LATER one.
+The cost is a session-first tail, and a single pooled number hides it —
+which is why the `BY POSITION WITHIN THE SESSION` section prints two rates
+and never one. Read the LATER bucket alongside it: a "fix" that merely
+defers the rebuild shows up as that number rising.
 
-    2026-08-19, n=39 scored   session-FIRST 5/13 = 38.5%   LATER 0/26 = 0.0%
-    2026-08-26, n=123 scored  session-FIRST 6/26 = 23.1%   LATER 1/97 = 1.0%
-
-The magnitude moved as the sample grew, which the #1513 issue predicted; the
-sign did not. The cost is a session-first tail, and a single pooled number
-hides it — which is why the `BY POSITION WITHIN THE SESSION` section prints
-two rates and never one. Read the LATER bucket alongside it: a "fix" that
-merely defers the rebuild shows up as that number rising.
+**This file publishes no magnitude for that split, deliberately.** Three
+re-derivations over three weeks moved the session-FIRST rate by more than a
+factor of three while the sign never flipped, because the population is a
+live, growing, single-slot-rotating log set: the rows a run scores today are
+not the rows it scored last month, and the ones rotation dropped are gone.
+A frozen percentage here would be a number nobody can reproduce. Run the
+script and read the two lines it prints.
 
 Rows with no `session_id` have no position. They are reported as their own
 count and kept out of BOTH buckets: sweeping them into LATER is the same
@@ -88,12 +92,41 @@ bias as scoring an unmeasured fire as not-a-rebuild, applied to this axis
 instead of to the denominators above.
 
 Usage:
-    uv run python benchmarks/sidecar_rebuild_rate.py [AUDIT_LOG ...]
+    uv run python benchmarks/sidecar_rebuild_rate.py [--since TS] [--until TS] \
+        [AUDIT_LOG ...]
 
 With no arguments this globs `hook_audit.jsonl*`, which includes **rotated**
 logs (`hook_audit.jsonl.1`, ...). The totals it prints are therefore across all
 rotations, not the single live file — pass an explicit path for a single-file
 count.
+
+**The default population is one repository's log, and that is rarely the
+population a claim is about.** `_default_logs()` globs the `aelfrice/`
+directory under the common directory of the repository you run it from, so a
+rate read with no arguments is a rate for that one repository. To read it
+over every store on the machine, enumerate them and pass them in::
+
+    find ~ -name 'hook_audit.jsonl*' -not -path '*/node_modules/*' \
+        | sort > /tmp/logs.txt
+    xargs uv run python benchmarks/sidecar_rebuild_rate.py < /tmp/logs.txt
+
+A figure quoted from one of those two commands has to name which one,
+because they do not share a denominator.
+
+## Two windows out of one log set (#1513)
+
+`--since TS` and `--until TS` filter `user_prompt_submit` rows by their `ts`,
+half-open on the upper bound, so `--until T` and `--since T` partition an
+input with no row in both and none lost. This exists so a before-and-after
+comparison is about one population: taking a baseline in one month and a
+post-change rate in another compares two log sets rather than two periods,
+and their difference is not the change you shipped. Cut both windows from
+the same files in one pair of invocations instead.
+
+These flags select ROWS. The `window first row` and `WINDOW TRUNCATED` lines
+are the #1528 report on the FILES and are unaffected by `--since` /
+`--until`: they still describe what the input can cover, which is what tells
+you whether the window you asked for was present in it at all.
 
 ## The window, printed alongside the rate (#1528)
 
@@ -135,9 +168,50 @@ def _default_logs() -> list[Path]:
     return sorted(d.glob("hook_audit.jsonl*"))
 
 
+def in_window(
+    ts: object, since: str | None, until: str | None
+) -> bool:
+    """True when `ts` falls in the half-open window `[since, until)`.
+
+    `ts` is the ISO-8601 Z string the audit rows carry, which sorts
+    lexicographically in time order, so the comparison is a string compare
+    and needs no parsing.
+
+    A row with no `ts` is **out** of any window that was asked for, and in
+    when neither bound was given. Keeping an undated row inside a window
+    would put a fire of unknown date into a rate the caller asked to be
+    about a specific period — the same unearned attribution the module
+    docstring refuses for unmeasured rows, applied to the time axis.
+    """
+    if since is None and until is None:
+        return True
+    if not isinstance(ts, str):
+        return False
+    if since is not None and ts < since:
+        return False
+    return not (until is not None and ts >= until)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("logs", nargs="*", type=Path)
+    # #1513 round 2. Without these, a baseline and a post-fix rate can only
+    # be taken as two runs weeks apart, over a log set that grew and rotated
+    # in between — so the two numbers are not about the same population and
+    # the difference between them is not the fix. With them, both windows
+    # are cut from ONE log set in ONE pair of invocations, and only the
+    # window differs.
+    ap.add_argument(
+        "--since",
+        metavar="TS",
+        help="keep rows whose ts is >= TS (ISO-8601, e.g. 2026-09-11T00:00:00Z)",
+    )
+    ap.add_argument(
+        "--until",
+        metavar="TS",
+        help="keep rows whose ts is < TS. Half-open, so --until T and "
+        "--since T partition one log set with no row in both and none lost.",
+    )
     args = ap.parse_args()
 
     logs = args.logs or _default_logs()
@@ -154,6 +228,10 @@ def main() -> int:
     # retrieval but built nothing; `pre_field` predates the field. The first
     # two are measured zeros; only `pre_field` shrinks over time.
     gate_skipped = 0
+    # Fires dropped by --since/--until. Printed rather than silently
+    # discarded: a window that ate most of the input is the difference
+    # between a rate and a rate over three fires.
+    out_of_window = 0
     unkeyed: list[str | None] = []
     scored_ts: list[str] = []
     # #1513: (ts, read-order, session_id, outcome) per scored fire, so the
@@ -179,6 +257,9 @@ def main() -> int:
                 continue
             if rec.get("hook") != "user_prompt_submit":
                 non_ups += 1
+                continue
+            if not in_window(rec.get("ts"), args.since, args.until):
+                out_of_window += 1
                 continue
             outcome = rec.get("sidecar_outcome")
             if outcome is None:
@@ -253,6 +334,12 @@ def main() -> int:
     print("#1407 — BM25 sidecar outcome per user_prompt_submit fire")
     for p in logs:
         print(f"  log                            {p}")
+    if args.since is not None or args.until is not None:
+        print(
+            f"  ts window (half-open)          "
+            f"[{args.since or '-inf'}, {args.until or '+inf'})"
+        )
+        print(f"  UPS fires outside the window   {out_of_window}")
     # #1528: the window this rate is over, printed before the rate itself.
     # `first_ts`/`last_ts` are over every row in the files, not only the
     # UPS rows scored below, so this is the coverage of the INPUT.
