@@ -854,3 +854,107 @@ def test_the_toml_opt_out_keeps_the_warm_row_out_of_the_audit_log(
         "`_record_warm_outcome`: the detached child appended a row for a "
         f"user who opted out of the audit log. Rows: {_all_audit_rows(db)!r}"
     )
+
+
+def test_the_warm_row_carries_the_literal_hook_name_sidecar_warm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`WARM_AUDIT_HOOK` is `sidecar_warm`, asserted as a literal.
+
+    The value is asserted here, not the mechanism. Every other assertion
+    in this file that touches the warm row reaches it through
+    `_warm_audit_rows`, which filters on the constant and therefore
+    follows any change to it: renaming the constant to
+    `user_prompt_submit` — the exact corruption `_record_warm_outcome`'s
+    own docstring argues against — left the whole suite green at 8624
+    passed.
+
+    The written row is checked against the same literal rather than
+    against the constant, so this also fails on a module that imports a
+    correct constant and then stamps something else.
+    """
+    from aelfrice.sidecar_warm import WARM_AUDIT_HOOK, _record_warm_outcome
+
+    assert WARM_AUDIT_HOOK == "sidecar_warm"
+
+    db = tmp_path / "memory.db"
+    monkeypatch.chdir(tmp_path)
+    _audit_toml(tmp_path, enabled=True)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+
+    _record_warm_outcome("full_rebuild")
+
+    rows = _all_audit_rows(db)
+    assert len(rows) == 1, rows
+    assert rows[0].get("hook") == "sidecar_warm", rows[0]
+
+
+def test_a_warm_row_is_not_scored_as_a_fire_by_the_rebuild_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production consequence of that literal, read off the script.
+
+    `benchmarks/sidecar_rebuild_rate.py` selects rows by
+    `hook == "user_prompt_submit"`. A warm row stamped with that name is
+    indistinguishable from a user-visible fire: it carries a
+    `sidecar_outcome`, so it enters the scored denominator and the
+    full-rebuild rate the warm exists to move, and — carrying no
+    `session_id` — it reaches the position split as an unattributed fire.
+    One real fire and one warm row show all three.
+    """
+    import json
+    import subprocess
+    import sys
+
+    from aelfrice.sidecar_warm import _record_warm_outcome
+
+    db = tmp_path / "memory.db"
+    monkeypatch.chdir(tmp_path)
+    _audit_toml(tmp_path, enabled=True)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+
+    log = db.parent / "hook_audit.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "hook": "user_prompt_submit",
+                "ts": "2026-09-01T00:00:00Z",
+                "session_id": "s",
+                "sidecar_outcome": "fresh",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _record_warm_outcome("full_rebuild")
+    assert len(_all_audit_rows(db)) == 2, _all_audit_rows(db)
+
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "benchmarks"
+        / "sidecar_rebuild_rate.py"
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script), str(log)],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+
+    assert "non-UPS rows (ignored)         1" in out, out
+    assert "fires with an outcome (scored) 1" in out, out
+    assert "of scored fires             0/1 = 0.00%" in out, (
+        "the warm's own full_rebuild entered the rate it exists to "
+        f"move\n{out}"
+    )
+    first = [ln for ln in out.splitlines() if "session-FIRST fires" in ln]
+    assert len(first) == 1, out
+    assert "0/1 = 0.0%" in first[0], first[0]
+    assert "no session_id" not in out, (
+        "the warm row reached the session-position split as an "
+        f"unattributed fire\n{out}"
+    )
