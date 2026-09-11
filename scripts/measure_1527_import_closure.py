@@ -13,11 +13,10 @@ Every count published for #1527 -- in `CHANGELOG/unreleased/`, in the
 check any of them. It exits non-zero if a probe fails.
 
 Wall-clock is deliberately absent. Three separate paired cold-subprocess runs
-against #1527's two arms returned medians about 10 ms apart, and one of them
-reported a bootstrap interval that the other two fell outside — so a
-millisecond figure from a loaded developer machine does not reproduce and is
-not worth publishing. The module closure is deterministic, so that is what
-this script measures.
+against #1527's two arms disagreed, two of them falling outside the bootstrap
+interval the third reported -- so a millisecond figure off a loaded developer
+machine does not reproduce and is not worth publishing. The module closure is
+deterministic, so that is what this script measures.
 
 How it measures: each ref is exported with `git archive` into a temporary
 directory, so the tree under test is never the installed package, and every

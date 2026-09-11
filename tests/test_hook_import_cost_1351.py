@@ -358,12 +358,13 @@ def test_a_gate_skipped_fire_does_not_import_the_numeric_stack(tmp_path) -> None
 
 _MAX_AELFRICE_MODULES_AT_IMPORT = 18
 """`import aelfrice.hook` was 35 before #1527; 18 after. Deterministic -- no
-lane resolver runs at import."""
+lane resolver runs at import. Re-derive both numbers, for any pair of refs,
+with `scripts/measure_1527_import_closure.py`."""
 
 _MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE = 26
 """The whole fire was 40 before #1527; 26 after. Above the import-time figure
 because the cadence, lifecycle, relevance and sentiment lanes run on a skipped
-fire and legitimately import at their call sites."""
+fire and legitimately import at their call sites. Same producer as above."""
 
 # Every one of these was loaded by a gate-skipped fire before #1527. None of
 # them has anything to do with a fire that does not retrieve.
@@ -504,7 +505,7 @@ def test_a_gate_skipped_fire_does_not_load_the_retrieval_subtree(
         f"import aelfrice.hook now loads {n_import} aelfrice modules, over "
         f"the {_MAX_AELFRICE_MODULES_AT_IMPORT} pinned by #1527. Every hook "
         "process pays this, including every Stop / PreToolUse / PostToolUse "
-        "fire and the ~32% of UserPromptSubmit fires the shape gate refuses. "
+        "fire and the UserPromptSubmit fires the shape gate refuses. "
         "Find the new eager edge with:\n"
         "  python -X importtime -c 'import aelfrice.hook'"
     )
