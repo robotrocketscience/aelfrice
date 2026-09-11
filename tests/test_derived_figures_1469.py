@@ -285,17 +285,34 @@ def test_backticks_do_not_buy_out_of_the_overclaim_rule(repo: Path) -> None:
     assert "93.7%" in fenced_report.hard[0] and "11,508" in fenced_report.hard[0]
 
 
-def test_mask_delta_ranks_the_three_candidate_rules(repo: Path) -> None:
-    """`--mask-delta` prices the narrowing instead of asserting its cost.
+_MASK_DELTA_FIXTURE = (
+    "- **Entry.** The share is `93.7%`, the cap is `STOP_PROMPT_MAX = 20`, "
+    "and `retrieve(k=7)` is a call.\n"
+)
 
-    The ordering is the property: the shipped rule sees more than masking every
-    span and much less than masking none. The numbers themselves move with the
-    corpus, which is why nothing publishes them.
-    """
-    (repo / "CHANGELOG" / "v9.md").write_text(
-        "- **Entry.** The share is `93.7%`, the cap is `STOP_PROMPT_MAX = 20`, "
-        "and `retrieve(k=7)` is a call.\n"
-    )
+# label printed by `mask_delta` -> the mask function that row prices.
+_MASK_DELTA_ROWS: tuple[tuple[str, str], ...] = (
+    ("mask every code span (pre-fix)", "_mask_every_code_span"),
+    ("mask all but a bare number", "_mask_code_spans"),
+    ("mask nothing", "_mask_no_code_span"),
+)
+
+
+def _parse_mask_delta(out: str) -> dict[str, int]:
+    """Read the printed report back as {row label: figures seen}."""
+    seen: dict[str, int] = {}
+    for line in out.splitlines():
+        label, sep, tail = line.partition(" : ")
+        if sep:
+            seen[label.strip()] = int(tail.split()[0])
+    return seen
+
+
+def test_the_three_candidate_inline_code_rules_are_ordered(repo: Path) -> None:
+    """The shipped rule sees more than masking every span and much less than
+    masking none. The numbers themselves move with the corpus, which is why
+    nothing publishes them."""
+    (repo / "CHANGELOG" / "v9.md").write_text(_MASK_DELTA_FIXTURE)
     files = [repo / "CHANGELOG" / "v9.md"]
     strict = cdf.unmarked_total(files, cdf._mask_every_code_span)
     shipped = cdf.unmarked_total(files, cdf._mask_code_spans)
@@ -304,6 +321,47 @@ def test_mask_delta_ranks_the_three_candidate_rules(repo: Path) -> None:
     assert shipped == 1, "only the bare-number span is a figure"
     assert loose == 3, "unmasked, the identifier and the kwarg count too"
     assert strict < shipped < loose
+
+
+def test_mask_delta_prints_each_rules_own_count_under_its_own_label(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A report that priced the rules and then mislabelled the rows is the
+    defect this module exists to catch, and no producer check can see it.
+
+    Each row is bound to the mask function it names by re-deriving that row's
+    number through `unmarked_total` with that function alone. The fixture gives
+    the three rules three different counts, so transposing any two rows inside
+    `mask_delta` moves a number out from under its label and fails here.
+    """
+    (repo / "CHANGELOG" / "v9.md").write_text(_MASK_DELTA_FIXTURE)
+    files = [repo / "CHANGELOG" / "v9.md"]
+    assert cdf.mask_delta(files) == 0
+    rows = _parse_mask_delta(capsys.readouterr().out)
+    assert set(rows) == {label for label, _ in _MASK_DELTA_ROWS}
+    for label, mask_name in _MASK_DELTA_ROWS:
+        expected = cdf.unmarked_total(files, getattr(cdf, mask_name))
+        assert rows[label] == expected, f"{label!r} is not {mask_name}'s count"
+    assert len({*rows.values()}) == 3, "the fixture must separate the rules"
+
+
+def test_mask_delta_flag_reports_and_returns_before_the_gate_runs(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--mask-delta` is documented as the way to price the narrowing, so the
+    flag itself is covered, not only the function behind it.
+
+    The flag parses, scans the paths given, prints the same report, and exits 0
+    without running the marker gate -- reporting only, as the help text says.
+    """
+    (repo / "CHANGELOG" / "v9.md").write_text(_MASK_DELTA_FIXTURE)
+    assert cdf.main(["--mask-delta", "CHANGELOG/v9.md"]) == 0
+    out = capsys.readouterr().out
+    rows = _parse_mask_delta(out)
+    files = [repo / "CHANGELOG" / "v9.md"]
+    for label, mask_name in _MASK_DELTA_ROWS:
+        assert rows[label] == cdf.unmarked_total(files, getattr(cdf, mask_name))
+    assert "derived-figure markers across" not in out, "the gate ran anyway"
 
 
 def test_issue_refs_versions_dates_and_code_are_not_figures() -> None:
