@@ -51,6 +51,10 @@ WARM_DISABLE_ENV: Final[str] = "AELF_NO_SIDECAR_WARM"
 """Set truthy to suppress the spawn. The escape hatch for anyone who does
 not want a second process touching the store behind their session."""
 
+WARM_AUDIT_HOOK: Final[str] = "sidecar_warm"
+"""`hook` value on the row the child writes. Deliberately not
+`user_prompt_submit`: see `_record_warm_outcome`."""
+
 _CHILD_SOURCE: Final[str] = (
     "from aelfrice.sidecar_warm import main; raise SystemExit(main())"
 )
@@ -155,7 +159,64 @@ def warm_sidecar() -> str | None:
         return None
 
 
+def _record_warm_outcome(outcome: str | None) -> None:
+    """Write one observability row for this warm. Never raises.
+
+    Without it a warm that worked and a warm that never ran leave the same
+    trace, which is none: the parent does not wait on the child, all three
+    of the child's streams go to `/dev/null`, and its return code is
+    discarded. A feature whose failure is indistinguishable from its success
+    cannot be operated, so the child says what it did.
+
+    The row reuses the hook-audit sink, the way `transcript_logger` does for
+    the same reason, so `aelf tail` shows the warm beside the fires it is
+    meant to spare and it inherits the log's rotation.
+
+    `hook` is `sidecar_warm`, never `user_prompt_submit`: the rate in
+    `benchmarks/sidecar_rebuild_rate.py` is per user-visible fire, and a
+    warm is not one. A row claiming to be a UPS fire would enter that
+    denominator and move the number the warm exists to move.
+
+    `outcome` is None when there was nothing to warm (the L1 lane is off, or
+    the store is in-memory) and also when the warm raised. Those are not the
+    same event, but the child cannot tell them apart without re-running the
+    work, so the row records the value it has and does not invent a
+    distinction.
+    """
+    try:
+        import time  # noqa: PLC0415
+
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
+        from aelfrice.hook_audit import (  # noqa: PLC0415
+            _append_audit,
+            _audit_path_for_db,
+            load_hook_audit_config,
+        )
+
+        cfg = load_hook_audit_config()
+        if not cfg.enabled:
+            return
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        record: dict[str, object] = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "hook": WARM_AUDIT_HOOK,
+            "sidecar_outcome": outcome,
+        }
+        _append_audit(_audit_path_for_db(p), record, cfg.max_bytes)
+    except Exception:
+        # Fail-soft (AC4), like every other line in this module: an audit
+        # write that fails must not change what the warm did.
+        return
+
+
 def main() -> int:
-    """Console entry for the detached child. Always returns 0."""
-    warm_sidecar()
+    """Console entry for the detached child. Always returns 0.
+
+    The return code is not the signal. Nothing waits on this process and its
+    streams are `/dev/null`, so the audit row `_record_warm_outcome` writes
+    is the only thing that survives the child.
+    """
+    _record_warm_outcome(warm_sidecar())
     return 0
