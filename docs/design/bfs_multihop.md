@@ -441,9 +441,11 @@ v1.0.3. The store-level wipe-on-write policy it was built on is
 v1.0.1: `git show v1.0.1:src/aelfrice/store.py` defines
 `add_invalidation_callback` and `_fire_invalidation`, and
 `insert_edge`, `update_edge` and `delete_edge` each call the latter at
-that tag. So a sentence dating the *policy* — the § Non-goals bullet
-and the decision-table row — says v1.0.1 and is correct, and the same
-literal in
+that tag. So a sentence dating the *policy* — the cache-invalidation
+bullet under [§ In scope](#in-scope) and the "Cache invalidation rule?"
+row of [§ Open questions resolved by this
+spec](#open-questions-resolved-by-this-spec) — says v1.0.1 and is
+correct, and the same literal in
 [`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py) is
 correct for the same reason. The policy also outlived the class, which
 [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)

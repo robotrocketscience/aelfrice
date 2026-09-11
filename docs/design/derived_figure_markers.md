@@ -132,8 +132,9 @@ store-level invalidation registry — the wipe-on-write policy — really did sh
 at v1.0.1: `add_invalidation_callback` is present at that tag, and
 `insert_edge`, `update_edge` and `delete_edge` all call `_fire_invalidation()`
 there. A sentence about the policy therefore says v1.0.1 and is right. The
-sites that do are `bfs_multihop.md`'s § Non-goals bullet and its
-decision-table row, both of which the first pass changed and this one puts
+sites that do are the cache-invalidation bullet under `bfs_multihop.md`'s
+§ In scope and the "Cache invalidation rule?" row of its § Open questions
+resolved by this spec, both of which the first pass changed and this one puts
 back, and the reference in
 [`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py), which it left
 alone. § Cache invalidation in `bfs_multihop.md` now states the test — does
