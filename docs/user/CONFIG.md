@@ -738,7 +738,15 @@ When you disable the path:
 
 Precedence (the first decisive tier applies): environment variable `AELFRICE_BM25F=0`/`1` > explicit Python kwarg `use_bm25f_anchors=<bool>` > TOML `[retrieval] use_bm25f_anchors` > default `true`.
 
-The BM25F path keeps its index in a sidecar file next to the database. At `SessionStart`, the hook starts a separate background process that builds the sidecar (#1513) and returns without waiting for it. The build runs alongside the time you spend typing, so it is a head start on the first prompt of the session rather than a step that finishes before it. When the build finishes first, your first prompt reads the sidecar instead of rebuilding the index, which is where the audit log showed the cost. When you submit before the build finishes, when a write to the store lands in between, or when the background process fails, that prompt rebuilds the index exactly as it does today. To stop the background process, set `AELF_NO_SIDECAR_WARM=1`.
+The BM25F path keeps its index in a sidecar file next to the database. At `SessionStart`, the hook starts a separate background process that builds the sidecar (#1513) and returns without waiting for it. The build runs alongside the time you spend typing, so it is a head start on the first prompt of the session rather than a step that finishes before it. When the build finishes first, your first prompt reads the sidecar instead of rebuilding the index, which is where the audit log showed the cost.
+
+Three cases give up that head start, and they are not the same case:
+
+- **A write to the store lands in between, or the background process fails.** The background build is finished or gone by the time your prompt arrives, so the prompt rebuilds the index on its own, exactly as it does without this feature.
+- **You submit a prompt before the background build finishes.** Nothing coordinates the two: there is no build lock, no in-flight marker, and no check for a build already running. Your prompt starts its own full rebuild while the background build is still going, so two processes build the same index at the same time and contend for CPU and for the same SQLite database. Your prompt is therefore slower in this case than it is with the feature off, not merely no faster. How much slower is **not measured** — treat the magnitude as unknown.
+- **The background process never starts.** Setting `AELF_NO_SIDECAR_WARM=1` stops it, and then every first prompt rebuilds the index as it does today. Set this if your sessions typically begin with an immediate prompt, since that is the case above.
+
+Each background build records what it did in `hook_audit.jsonl` under the hook name `sidecar_warm`, so you can check whether the warm is running at all.
 
 ### `use_heat_kernel`
 
