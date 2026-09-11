@@ -1144,11 +1144,11 @@ def _supersession_penalty(
     composite rerank score here is a log-domain quantity from
     `combine_log_scores` / `partial_bayesian_score` and is routinely
     negative — measured at ~-13 on a two-belief store. Multiplying a
-    negative score by 0.5 *raises* it, so the bench-only multiplicative
-    primitive `apply_supersession_demote` (in
-    `benchmarks/uri_baki_retest/adjusters.py`, written against a
-    non-negative score scale) would promote the superseded belief to the
-    top of the pack: the exact inversion this lane exists to fix. Adding
+    negative score by 0.5 *raises* it. The bench-only supersession
+    demote in `benchmarks/uri_baki_retest/adjusters.py` is written
+    against a non-negative score scale and multiplies; lifting it into
+    this path would promote the superseded belief to the top of the
+    pack, the exact inversion this lane exists to fix. Adding
     `log(factor)` is the log-domain equivalent of scaling a probability
     by `factor`, so the issue's "factor 0.5" semantics are preserved and
     the demote is unconditional. Same shape as
