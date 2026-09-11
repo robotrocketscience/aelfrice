@@ -392,7 +392,9 @@ def split_entries(path: Path, text: str) -> list[tuple[int, str]]:
     * **Bullet scoping is markdown-only.** That version switched a whole file
       into bullet mode on a single `- ` line anywhere in it, so one docstring
       list turned every paragraph in the file into "not an entry" and the
-      overclaim rule silently stopped running on 228 of the 929 scanned files.
+      overclaim rule silently stopped running on that file. No share is
+      published for how many files that was: the denominator is the scanned
+      corpus, which moves on every merge.
       A `- ` inside a Python docstring is a list item, not a changelog entry.
     * **Every non-blank line lands in exactly one entry.** That version dropped
       everything above the first bullet and everything after a heading. A rule

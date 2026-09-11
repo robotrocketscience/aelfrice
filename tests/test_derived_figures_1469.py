@@ -335,9 +335,11 @@ def test_an_unmarked_entry_without_the_sentence_is_clean(repo: Path) -> None:
 #
 # The first splitter put a whole file into changelog-bullet mode on a single
 # `- ` line anywhere in it, and in that mode discarded everything above the
-# first bullet. 228 of the 929 scanned files went that way, and the overclaim
-# rule -- the one hard non-producer check -- silently did not run on any of
-# them. A check that reports green because it never looked is the #1160 defect
+# first bullet. Every scanned Python file carrying a top-level `- ` line went
+# that way, and the overclaim rule -- the one hard non-producer check --
+# silently did not run on any of them. The count is not published: its
+# denominator is the scanned corpus and it moves on every merge.
+# A check that reports green because it never looked is the #1160 defect
 # this repo has already paid for once.
 
 
