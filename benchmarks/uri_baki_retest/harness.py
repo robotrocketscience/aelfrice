@@ -47,7 +47,7 @@ from aelfrice.models import (
     RETENTION_UNKNOWN,
     Belief,
 )
-from aelfrice.uri_baki import (
+from benchmarks.uri_baki_retest.adjusters import (
     apply_locked_floor,
     apply_recency_decay,
     apply_supersession_demote,

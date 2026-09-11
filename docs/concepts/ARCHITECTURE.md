@@ -42,7 +42,7 @@ understates how often the code works around the ordering. The converse also hold
 is an inversion. `store.py` defers `federation` only for the cost of the import, and the comment at that site
 records that `federation` is a leaf module that imports nothing from `store`. That deferral keeps
 `subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 33
-modules against the 130 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
+modules against the 129 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
 
 | Module | Responsibility |
 |---|---|

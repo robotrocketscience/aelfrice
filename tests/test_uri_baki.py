@@ -1,8 +1,14 @@
-"""Unit tests for the post-rank score adjusters in `aelfrice.uri_baki`.
+"""Unit tests for `benchmarks.uri_baki_retest.adjusters`.
 
 Issue #153 is a research issue; the deliverable is the benchmark
 result table. These tests pin the pure-function semantics so the
 benchmark cannot drift away from the documented effects.
+
+The module moved out of `src/aelfrice/` in
+[#1369](https://github.com/robotrocketscience/aelfrice/issues/1369),
+because no module in the package ever imported it. The tests stay:
+`benchmarks/uri_baki_retest/RESULTS.md` publishes numbers this code
+produces, so the primitives still need a semantic pin.
 """
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ from aelfrice.models import (
     RETENTION_UNKNOWN,
     Belief,
 )
-from aelfrice.uri_baki import (
+from benchmarks.uri_baki_retest.adjusters import (
     DEFAULT_LOCKED_FLOOR,
     DEFAULT_RECENCY_LAMBDA,
     DEFAULT_SUPERSESSION_FACTOR,

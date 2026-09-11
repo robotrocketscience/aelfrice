@@ -298,7 +298,8 @@ from aelfrice.exploration import (  # noqa: E402, PLC0415
 )
 
 SUPERSESSION_FACTOR_FLAG: Final[str] = "supersession_demote_factor"
-# 0.5 per the issue spec, the same default the uri_baki primitive carries.
+# 0.5 per the issue spec, the same default the bench-only primitive in
+# `benchmarks/uri_baki_retest/adjusters.py` carries.
 SUPERSESSION_DEMOTE_FACTOR: Final[float] = 0.5
 # Floor so `factor = 0` is a bounded penalty rather than `log(0) = -inf`,
 # which would make the score non-comparable (and NaN once summed).
@@ -1143,10 +1144,11 @@ def _supersession_penalty(
     composite rerank score here is a log-domain quantity from
     `combine_log_scores` / `partial_bayesian_score` and is routinely
     negative — measured at ~-13 on a two-belief store. Multiplying a
-    negative score by 0.5 *raises* it, so the multiplicative primitive in
-    `uri_baki.apply_supersession_demote` (written against a non-negative
-    score scale) would promote the superseded belief to the top of the
-    pack: the exact inversion this lane exists to fix. Adding
+    negative score by 0.5 *raises* it, so the bench-only multiplicative
+    primitive `apply_supersession_demote` (in
+    `benchmarks/uri_baki_retest/adjusters.py`, written against a
+    non-negative score scale) would promote the superseded belief to the
+    top of the pack: the exact inversion this lane exists to fix. Adding
     `log(factor)` is the log-domain equivalent of scaling a probability
     by `factor`, so the issue's "factor 0.5" semantics are preserved and
     the demote is unconditional. Same shape as

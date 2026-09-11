@@ -117,7 +117,7 @@ appetite.
 | # | Title | Status | Dep | Notes |
 |---|---|---|---|---|
 | 154 | Pipeline composition tracker (unified `retrieve()`) | S (v1.7 target) | #289 + #290 + #291 (all memos must land first — they all touch the unified path) | refactor only after #289-#291 implementations merge |
-| 153 | uri_baki post-rank adjuster retest | R | #154, #288 (calibration data) | research lane, low-priority |
+| 153 | uri_baki post-rank adjuster retest | R | #154, #288 (calibration data) | research lane, low-priority; retest returned an honest negative, and #1369 moved the primitives to `benchmarks/uri_baki_retest/adjusters.py` |
 
 **Rule of thumb:** #154 is a refactor; doing it before #289–#291
 ship guarantees rework. Hold.

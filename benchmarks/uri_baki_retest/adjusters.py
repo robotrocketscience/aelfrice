@@ -1,5 +1,9 @@
 """Post-rank score adjusters (research module — issue #153).
 
+Bench-only. These primitives live beside the retest harness rather than
+under ``src/aelfrice/`` because nothing in the shipped package has ever
+imported them ([#1369](https://github.com/robotrocketscience/aelfrice/issues/1369)).
+
 Three independently-toggleable effects applied after the textual-lane
 ranker has produced (belief, score) pairs and before the top-K cut:
 
@@ -16,8 +20,8 @@ ranker has produced (belief, score) pairs and before the top-K cut:
 
 Each function consumes and returns a fresh score list parallel to the
 input ``beliefs`` list. They never mutate ``Belief`` objects. The
-production wiring sequence (if the retest is positive) is intended to
-be:
+wiring sequence issue #153 specified, had the retest cleared its gate,
+was:
 
     scores = apply_supersession_demote(beliefs, scores, superseded_ids)
     scores = apply_recency_decay(beliefs, scores, now=now)
@@ -27,11 +31,17 @@ be:
 themselves; the locked floor is applied last so a relevant locked
 belief cannot be evicted by either effect.
 
-This module ships only the pure-function primitives. Issue #153 is a
-research issue: the deliverable is the benchmark result table at
-``benchmarks/uri_baki_retest/``, not production wiring. If the retest
-is positive, integration into ``retrieval.py`` lands in a follow-up
-issue under the retrieval pipeline tracker (#154).
+This module holds only the pure-function primitives. Issue #153 is a
+research issue: the deliverable is the benchmark result table in
+``RESULTS.md`` next to this file, not production wiring. That retest
+returned an honest negative and the approach is filed as not-adopted,
+so the primitives stay here as the reproducible input to that result.
+
+Retrieval since shipped its own supersession demote, and it is
+**log-additive, not multiplicative**: `retrieval._supersession_penalty`
+adds ``log(factor)`` because the composite rerank score is a log-domain
+quantity and is routinely negative, where multiplying by ``0.5`` would
+*raise* it. Do not lift ``apply_supersession_demote`` into that path.
 """
 from __future__ import annotations
 
