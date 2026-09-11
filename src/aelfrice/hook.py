@@ -1832,8 +1832,15 @@ def user_prompt_submit(
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
         # eager guard above -- it lands here instead. Same answer as that
-        # guard: one line, exit 0, no traceback.
-        return _report_incomplete_install(exc, serr)
+        # guard: one line, no traceback.
+        #
+        # Reported, NOT returned, in all three lanes that carry this arm. An
+        # `ImportError` from an optional dependency reached through a lazy
+        # call says nothing about the work that follows the `try`, and
+        # returning early here is what dropped `session_start`'s recap and
+        # auto-GC. Nothing follows this `try` in this lane today, so the
+        # shape is uniform rather than load-bearing -- which is the point.
+        _ = _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     finally:
@@ -3967,11 +3974,14 @@ def pre_compact(
         # the harness accepts; emitting it here only produces a
         # rejected-output validation error.
     except ImportError as exc:
-        # #1527: the retrieval subtree resolves through `_lazy` and a few
-        # function-scope imports, so a partial install no longer trips the
-        # eager guard above -- it lands here instead. Same answer as that
-        # guard: one line, exit 0, no traceback.
-        return _report_incomplete_install(exc, serr)
+        # #1527: same arm as `user_prompt_submit` and `session_start`, for the
+        # same reason -- one line, no traceback, reported rather than
+        # returned. No shipped call site in this lane's body raises an
+        # `ImportError` the helpers do not already swallow, so this is a guard
+        # against a future deferred import on the PreCompact path, not a live
+        # failure mode. `tests/test_hook_import_resilience.py` reaches it by
+        # making `load_rebuilder_config` raise.
+        _ = _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -4243,8 +4253,15 @@ def session_start(
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
         # eager guard above -- it lands here instead. Same answer as that
-        # guard: one line, exit 0, no traceback.
-        return _report_incomplete_install(exc, serr)
+        # guard: one line, no traceback.
+        #
+        # Reported, NOT returned. Everything below this `try` -- the belief
+        # recap and the wonder auto-GC -- is independent of retrieval and ran
+        # before #1527, when this exception was caught by the broad handler
+        # below and fell through. Returning here would make one absent
+        # optional dependency reachable through a lazy retrieval call (numpy,
+        # say) silently delete two unrelated features.
+        _ = _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     if _recap_enabled():

@@ -558,3 +558,203 @@ def test_a_retrieving_fire_skips_cleanly_when_the_subtree_is_absent(
     assert "Traceback" not in proc.stderr, (
         "a traceback reached the process stderr:\n" + proc.stderr
     )
+
+
+# ---------------------------------------------------------------------------
+# The arm must report, not return (#1527 round 2)
+# ---------------------------------------------------------------------------
+#
+# `session_start` does two things after its `try`: the belief-write recap
+# (#934) and the wonder auto-GC (#980 item 2). Neither touches retrieval.
+# Before #1527 an `ImportError` raised inside the body -- an absent optional
+# dependency reached through the retrieval call, numpy being the live example
+# -- was caught by the broad handler and fell through to both. The first cut
+# of the `except ImportError` arm returned instead, so one missing optional
+# dependency silently deleted two unrelated features while reporting only
+# "install incomplete".
+#
+# The probe below observes all four signals from one fire, which is what makes
+# it able to fail in the right direction: reporting without the post-`try`
+# work, and the post-`try` work without the report, are distinguishable.
+#
+# `_maybe_run_wonder_autogc` is replaced on the module object rather than
+# driven for real: it is opt-in, and its only observable output needs a store
+# holding stale phantoms. The call site reads the module global, so the
+# replacement is a true reading of whether the call was reached.
+
+_SESSION_START_SUBTREE_PROBE = '''
+import os
+import sys
+
+for _k in [k for k in os.environ if k.startswith(("AELFRICE_", "AELF_"))]:
+    del os.environ[_k]
+
+_tmp = %(tmp)r
+os.environ["HOME"] = _tmp
+os.environ["AELFRICE_DOTDIR"] = os.path.join(_tmp, ".aelfrice")
+os.environ["AELFRICE_DB"] = os.path.join(_tmp, "memory.db")
+os.environ["AELF_NO_UPDATE_CHECK"] = "1"
+# One belief write is enough to trip the recap, so the fixture below does not
+# have to fake three.
+os.environ["AELFRICE_SESSIONSTART_RECAP_THRESHOLD"] = "1"
+os.chdir(_tmp)
+
+import io
+import json
+
+# `feed_path()` is a sibling of AELFRICE_DB, which is pinned to _tmp above.
+with open(os.path.join(_tmp, "feed.jsonl"), "w", encoding="utf-8") as _fh:
+    _fh.write(
+        json.dumps({"ts": "2026-01-01T00:00:00Z", "event": "belief.locked"})
+        + "\\n"
+    )
+
+_BLOCKED = %(blocked)r
+
+
+class _Blocker:
+    """Make the named module and its submodules unimportable."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == _BLOCKED or fullname.startswith(_BLOCKED + "."):
+            raise ImportError("blocked: " + fullname, name=fullname)
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+
+import aelfrice.hook as hook
+
+_autogc_calls = []
+hook._maybe_run_wonder_autogc = lambda serr: _autogc_calls.append(1)
+
+print("imports_ok:%%d" %% int(hook._IMPORTS_OK))
+_out = io.StringIO()
+_err = io.StringIO()
+rc = hook.session_start(
+    stdin=io.StringIO(
+        json.dumps({"session_id": "s1", "source": "startup", "cwd": _tmp})
+    ),
+    stdout=_out,
+    stderr=_err,
+)
+_text = _err.getvalue()
+print("rc:%%d" %% rc)
+print("traceback:%%d" %% int("Traceback" in _text))
+print("incomplete_lines:%%d" %% _text.count("install incomplete"))
+print(
+    "recap:%%d"
+    %% int("beliefs written since last session" in _out.getvalue())
+)
+print("autogc:%%d" %% len(_autogc_calls))
+'''
+
+
+@pytest.mark.timeout(90)
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        # The subtree the deferral moved: the ImportError is raised by
+        # `_lazy("retrieve")` itself.
+        pytest.param("aelfrice.retrieval", id="retrieval-absent"),
+        # An optional dependency two levels below it. `import aelfrice.hook`
+        # is numpy-free since #1351, so the eager guard cannot see this one
+        # on any tree -- it can only surface mid-body.
+        pytest.param("numpy", id="numpy-absent"),
+    ],
+)
+def test_session_start_reports_a_partial_install_and_still_recaps(
+    tmp_path: Path, blocked: str
+) -> None:
+    """One line, exit 0 -- and the recap and auto-GC still run.
+
+    Both halves are the assertion. Answering the partial install is why the
+    arm exists; keeping the post-`try` work is the property the first cut of
+    that arm broke.
+
+    Mutation-checked twice, each mutation moving a different pair of readings:
+
+    * Restore `return` in front of `_report_incomplete_install` in
+      `session_start`: recap:0 and autogc:0, for both parameters.
+    * Delete the whole `except ImportError` arm: traceback:1 and
+      incomplete_lines:0, for both parameters.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _SESSION_START_SUBTREE_PROBE
+            % {"tmp": str(tmp_path), "blocked": blocked},
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        "the probe process itself died; session_start let the ImportError "
+        "escape:\n" + proc.stderr
+    )
+    lines = proc.stdout.split()
+    assert lines[0] == "imports_ok:1", (
+        f"importing aelfrice.hook needs {blocked}, so the fire returned at "
+        "the _IMPORTS_OK guard and this test proves nothing about the body"
+    )
+    assert "rc:0" in lines, proc.stdout
+    assert "traceback:0" in lines, (
+        f"a traceback reached stderr with {blocked} unimportable; a partial "
+        f"install gets one line.\nstdout: {proc.stdout}\n{proc.stderr}"
+    )
+    assert "incomplete_lines:1" in lines, (
+        f"session_start never reported the incomplete install for {blocked}."
+        f"\nstdout: {proc.stdout}"
+    )
+    assert "recap:1" in lines, (
+        f"the SessionStart belief-write recap was dropped because {blocked} "
+        "is missing. The recap reads the feed log and has nothing to do with "
+        "retrieval; an ImportError from the retrieval body must not delete "
+        f"it.\nstdout: {proc.stdout}"
+    )
+    assert "autogc:1" in lines, (
+        f"the wonder auto-GC pass was skipped because {blocked} is missing. "
+        "It runs unconditionally after the try and is unrelated to "
+        f"retrieval.\nstdout: {proc.stdout}"
+    )
+
+
+def test_pre_compact_reports_a_partial_install_without_a_traceback() -> None:
+    """PreCompact answers an ImportError the way the eager guard does.
+
+    No shipped call site in `pre_compact`'s body raises an `ImportError` the
+    helpers do not already swallow -- `_begin_injection_epoch` catches
+    everything, and `load_rebuilder_config` reaches only eagerly imported
+    names -- so the arm is a guard against a future deferred import on this
+    path rather than a live failure mode. The error is therefore injected at
+    the one module-global name the body calls, which is where such an import
+    would sit.
+
+    Mutation-checked by deleting the `except ImportError` arm from
+    `pre_compact`: `install incomplete` disappears and a traceback appears.
+    """
+    import aelfrice.hook as hook_mod
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise ImportError("No module named 'numpy'", name="numpy")
+
+    stderr = io.StringIO()
+    with mock.patch.object(hook_mod, "load_rebuilder_config", _raise):
+        rc = hook_mod.pre_compact(
+            stdin=io.StringIO('{"session_id":"s1","cwd":"/tmp"}'),
+            stdout=io.StringIO(),
+            stderr=stderr,
+        )
+
+    text = stderr.getvalue()
+    assert rc == 0, rc
+    assert "install incomplete" in text, (
+        "pre_compact did not report the partial install; the ImportError was "
+        f"answered by the broad handler instead.\nstderr: {text}"
+    )
+    assert "Traceback" not in text, (
+        "pre_compact printed a traceback for a missing dependency. Every hook "
+        f"fire is a fresh process, so this is per-fire noise.\nstderr: {text}"
+    )
