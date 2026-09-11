@@ -10,12 +10,12 @@ process, and #1351 moved numpy / scipy / snowballstemmer off the hook's import
 graph precisely because a large share of `UserPromptSubmit` fires are refused
 by the prompt-shape gate and never retrieve.
 
-**How large is UNVERIFIED, and the tree contradicts itself about it.** This
-docstring used to say "the majority"; `rebuild_log`'s module docstring cites
-the #1527 audit-log census for "roughly a third". A third is not a majority.
-Neither figure is re-derivable from anything in this repo and nothing has
-reconciled them, so treat the share as large and unquantified rather than
-repeating one of them. The argument below is unaffected either way.
+**How large is UNVERIFIED, and the tree used to contradict itself about it.**
+This docstring said "the majority"; `rebuild_log`'s module docstring cites the
+#1527 audit-log census for "roughly a third", for the same population. A third
+is not a majority. Neither figure is re-derivable from anything in this repo
+and nothing reconciles them, so both now say "a large share" rather than
+picking one. The argument below is unaffected either way.
 
 The reset has to run above that gate
 (the cadence dispatch reaches `BM25IndexCache.get()` and is dispatched there),

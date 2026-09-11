@@ -119,10 +119,11 @@ except ImportError as _e:
 # where the eager set alone loads 18 -- a bill every hook process pays,
 # including every `UserPromptSubmit` fire the prompt-shape gate refuses
 # (a large share -- **how large is UNVERIFIED**: the audit-log census in #1527
-# says roughly a third and `sidecar_outcome`'s module docstring says the
-# majority, neither figure is re-derivable from this repo, and nothing
-# reconciles them) and every `Stop` / `PreToolUse` / `PostToolUse` fire, none
-# of which retrieve at all. Both module counts are deterministic:
+# says roughly a third, the `sidecar_outcome` docstring used to say the
+# majority of the same population, neither figure is re-derivable from this
+# repo, and nothing reconciles them) and every `Stop` / `PreToolUse` /
+# `PostToolUse` fire, none of which retrieve at all. Both module counts are
+# deterministic:
 #   uv run python scripts/measure_1527_import_closure.py
 # and `tests/test_hook_import_cost_1351.py` pins the 18 as a ceiling. No
 # wall-clock figure for this change is published anywhere in the tree -- on a

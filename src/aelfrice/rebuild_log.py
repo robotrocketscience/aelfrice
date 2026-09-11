@@ -17,14 +17,15 @@ the same remedy #1407 applied to `sidecar_outcome`, and for the same reason:
 every hook fire is a fresh process, and a large share of `UserPromptSubmit`
 fires are refused by the shape gate and never retrieve.
 
-**How large is UNVERIFIED, and the tree contradicts itself about it.** The
-audit-log census cited by #1527 put it at roughly a third; `sidecar_outcome`'s
-module docstring, arguing for the same extraction under #1407, calls it the
-majority. A third is not a majority. Neither figure is re-derivable from
-anything in this repo, and nothing here reconciles them, so do not repeat
-either one as settled. The argument for this module does not turn on which is
-right: the refused population is the one that pays the import bill and gets
-nothing for it, at any share above zero.
+**How large is UNVERIFIED, and the tree used to contradict itself about it.**
+The audit-log census cited by #1527 put it at roughly a third; the
+`sidecar_outcome` module docstring, arguing the same extraction for the same
+population, used to call it the majority. A third is not a majority. Neither
+figure is re-derivable from anything in this repo and nothing reconciles them,
+so both docstrings now say "a large share" and neither number is repeated as
+settled. The argument for this module does not turn on which is right: the
+refused population is the one that pays the import bill and gets nothing for
+it, at any share above zero.
 
 Import discipline for this module, which is the whole point of it:
 
