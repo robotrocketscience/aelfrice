@@ -562,7 +562,8 @@ def test_a_retrieving_fire_still_loads_the_retrieval_subtree(tmp_path) -> None:
     It is not a claim about the other three entries -- `correction`,
     `derivation` and `triple_extractor` are in the ban list above but are not
     reached by this prompt's lane, so only
-    `test_every_banned_module_name_resolves` speaks for their spelling.
+    `test_every_banned_module_name_resolves` speaks for their spelling. Other
+    lanes do reach them: a cadence-driven `Stop` fire loads all three.
 
     The prompt is long, lowercase and carries no harness tag, so
     `_should_skip_bm25` returns None and the retrieval lane runs.
@@ -600,8 +601,10 @@ def test_every_banned_module_name_resolves() -> None:
     `_RETRIEVAL_SUBTREE` is matched against `sys.modules` keys, and a key that
     can never be there bans nothing. `find_spec` is the cheap half of the
     guard: it covers the three entries no fixture fire reaches, which the set
-    equality above cannot speak for. It locates the module without executing
-    it, so this costs the parent package import and nothing else.
+    equality above cannot speak for -- neither the skipped fire above nor the
+    retrieving fire below loads any of the three. It locates the module
+    without executing it, so this costs the parent package import and nothing
+    else.
 
     `_REACHED_BY_A_RETRIEVING_FIRE` is checked against the tuple here too, so
     a name can only be pinned as reached if it is on the ban list at all.
