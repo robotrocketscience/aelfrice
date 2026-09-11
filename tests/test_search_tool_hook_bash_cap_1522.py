@@ -22,6 +22,7 @@ content dedup cannot be what suppresses a block.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -593,3 +594,33 @@ def test_a_hand_edited_bash_map_is_bounded_on_the_next_write(
         f"hand-{i:02d}"
         for i in range(oversize - BASH_STATE_MAX_SESSIONS, oversize)
     ], sorted(after["bash"])
+
+
+def test_a_first_stamp_leaves_a_ring_file_doctor_can_render(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn stamp on a ring that does not exist yet seeds the record.
+
+    The stamp writes the `bash` key alone so it cannot damage a
+    co-tenant's record. When there is no record at all it has nothing to
+    protect, and leaving a `bash`-only file behind would hand every raw
+    reader of the ring a shape it does not expect:
+    `_print_doctor_session_ring` renders one as "0/None ids (evicted
+    None this session)".
+    """
+    # Imported here, not at module scope: this module asserts on import
+    # graphs and `aelfrice.cli` is the heaviest import in the tree.
+    from aelfrice.cli import _print_doctor_session_ring
+
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    ring_path.unlink(missing_ok=True)
+
+    assert stamp_bash_turn("first-stamp-session") is True
+
+    buf = io.StringIO()
+    _print_doctor_session_ring(buf)
+    line = buf.getvalue().strip()
+    assert "None" not in line, line
+    assert line.startswith("injection ring: 0/"), line
+    assert "evicted 0 this session" in line, line

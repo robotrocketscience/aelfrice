@@ -922,6 +922,17 @@ def _locked_bash_mutate(
             return False
         try:
             data = _read_ring_unlocked(ring_path)
+            if not data:
+                # Nothing on disk (no ring yet, or one that would not
+                # parse), so there is no co-tenant record to preserve
+                # and the seeding below takes nothing from anyone. It
+                # earns its place because the raw readers of this file
+                # expect the record's fields to be present:
+                # `_print_doctor_session_ring` renders a `bash`-only
+                # file as "0/None ids (evicted None this session)".
+                data = _normalize_for_session(
+                    data, session_id, _resolve_ring_max(),
+                )
             bash = _normalize_bash_state(data.get("bash"))
             apply_fn(bash)
             data["bash"] = bash

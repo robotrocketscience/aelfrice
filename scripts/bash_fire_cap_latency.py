@@ -88,15 +88,15 @@ _DROPS_BASH_MAP = (
 )
 
 _BASH_SCOPED_WRITE = (
-    "            data = _read_ring_unlocked(ring_path)\n"
     '            bash = _normalize_bash_state(data.get("bash"))\n'
+    "            apply_fn(bash)\n"
 )
 _RECORD_SCOPED_WRITE = (
-    "            data = _read_ring_unlocked(ring_path)\n"
     "            data = _normalize_for_session(\n"
     "                data, session_id, _resolve_ring_max()\n"
     "            )\n"
     '            bash = data["bash"]\n'
+    "            apply_fn(bash)\n"
 )
 
 
