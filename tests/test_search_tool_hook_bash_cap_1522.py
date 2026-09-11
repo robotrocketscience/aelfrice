@@ -100,6 +100,47 @@ def _fire(
     return True
 
 
+# Runs one Bash fire in a clean interpreter and reports whether the cap
+# lane's module landed in the import graph. Must be a subprocess: pytest
+# has already imported `aelfrice.session_ring` by the time this module is
+# collected, so an in-process check would pass either way.
+_IMPORT_PROBE = """
+import io, json, sys
+import aelfrice.hook_search_tool as hook
+payload = json.dumps({
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {"command": sys.argv[1]},
+    "cwd": sys.argv[2],
+    "session_id": "import-probe-1522",
+})
+hook.main(
+    stdin=io.StringIO(payload), stdout=io.StringIO(), stderr=io.StringIO()
+)
+print("aelfrice.session_ring" in sys.modules)
+"""
+
+
+def _session_ring_imported(
+    command: str, env: dict[str, str], cwd: Path,
+) -> bool:
+    """Return True if `command` pulled `session_ring` into `sys.modules`."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE, command, str(cwd)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=str(cwd),
+        timeout=_SUBPROCESS_TIMEOUT_S,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout.strip()
+    assert out in {"True", "False"}, f"{out!r} / {proc.stderr}"
+    return out == "True"
+
+
 def _submit_prompt(
     env: dict[str, str], cwd: Path, session: str = SESSION_ID,
 ) -> None:
@@ -414,3 +455,25 @@ def test_invalid_utf8_ring_is_not_read_as_cap_reached(
     )
     assert read_bash_fire_state(SESSION_ID) == {}
     assert _bash_fire_cap_reached(SESSION_ID) is False
+
+
+@pytest.mark.timeout(180)
+def test_a_non_search_bash_call_does_not_import_the_session_ring(
+    hook_env: dict[str, str], tmp_path: Path,
+) -> None:
+    """The cap check runs after extraction, so most Bash calls skip it.
+
+    Reading the cap imports `aelfrice.session_ring`, which pulls
+    `db_paths` and `store`. Every Bash call in a session runs this hook
+    and the overwhelming majority are not searches, so the order of the
+    two statements decides whether that import lands on all of them or
+    only on the ones about to retrieve.
+
+    The assertion is on the module set, not on wall-clock milliseconds,
+    for the reason `test_hook_import_cost_1351.py` gives: a timing
+    budget here is a flake generator under CI contention. The `rg` case
+    is the control — without it this test would also pass if the Bash
+    lane stopped consulting the ring at all.
+    """
+    assert _session_ring_imported("cat notes.txt", hook_env, tmp_path) is False
+    assert _session_ring_imported("rg needle src/", hook_env, tmp_path) is True
