@@ -22,7 +22,7 @@ The application-level picture, per `src/aelfrice/store.py`:
 
 | Table | Append-only? | Replay-capable? |
 |---|---|---|
-| `beliefs` | No (mutated on feedback / decay) | No — current values only |
+| `beliefs` | No (mutated on feedback) | No — current values only |
 | `edges` | Mostly insert; weight can update | No — current values only |
 | `beliefs_fts` | Derived (FTS5 virtual) | Yes — rebuildable from `beliefs.content` |
 | `feedback_history` | **Yes** (INSERT-only) | Yes — posterior math reproducible |

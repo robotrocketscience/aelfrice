@@ -75,6 +75,7 @@ ZETA_SCALE_DEFAULT: Final[float] = 14.5
 # so retrieval never crashes on degenerate posteriors.
 ZETA_POSTERIOR_FLOOR: Final[float] = PARTIAL_BAYESIAN_BM25_FLOOR
 
+
 def posterior_mean(alpha: float, beta: float) -> float:
     """Beta-Bernoulli posterior mean: alpha / (alpha + beta).
 

@@ -95,8 +95,9 @@ class SentenceCandidate:
       commit's own date). `None` for files outside any git work-tree
       and for files with no commit history (newly added, untracked).
       v1.1.0 git-recency feature: when set, scan_repo uses this as
-      `belief.created_at` so the existing decay mechanism penalises
-      pre-migration content from old branches.
+      `belief.created_at`. The posterior decay this was written to feed
+      was never wired and was deleted in #1369, so the date now serves
+      the temporal lanes and the age reports that read `created_at`.
     """
 
     text: str

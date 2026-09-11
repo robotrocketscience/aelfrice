@@ -81,7 +81,7 @@ The stable core has these parts:
 - Tests cover worktree concurrency under a write-ahead log (WAL) and `busy_timeout=5000`.
 - `aelf health` is rewritten as the structural auditor: orphan threads, FTS5 sync, and locked contradictions. The v1.0 regime classifier stays available as `aelf regime`; `aelf status` is an alias of `aelf health`.
 - The user-facing name `edges` becomes `threads`, though the internal schema doesn't change. The deprecation window covered both keys.
-- Onboard git-recency weighting. `belief.created_at` is the most recent commit of the source file, so decay penalizes stale branches.
+- Onboard git-recency weighting. `belief.created_at` is the most recent commit of the source file. The posterior decay this was meant to feed was never wired and was deleted in #1369; the date serves the temporal lanes and the age reports instead.
 - The `agent_inferred → user_validated` promotion path is designed here; v1.2 implements it.
 
 ### v1.2.0 — auto-capture and triple extraction
