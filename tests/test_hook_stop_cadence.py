@@ -436,3 +436,73 @@ def test_cadence_does_not_break_existing_lock_prompt(
     assert hook.STOP_PROMPT_OPEN_TAG in out  # lock-prompt block emitted
     assert "cadence checkpoint fired" in out  # cadence emitted
     assert len(calls) == 1
+
+
+@pytest.mark.timeout(60)
+def test_a_cadence_checkpoint_reaches_the_deferred_rebuilder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1527: a tripped cadence checkpoint runs the retrieval lane.
+
+    Every other cadence test in this module stubs `_rebuild_and_format`, so
+    none of them can see what the real one reaches. This one leaves it alone
+    and spies on `hook._lazy` instead, which is the seam #1527 put the
+    retrieval subtree behind: a name appearing there is the fire asking for a
+    module that `import aelfrice.hook` no longer loads.
+
+    A `sys.modules` assertion would prove nothing here -- pytest has imported
+    `aelfrice.retrieval` long before this test runs, for the same reason
+    `tests/test_hook_import_cost_1351.py` does its counting in a subprocess.
+    The `_lazy` call list is per-fire and does not have that problem.
+
+    The off arm is the control. Without it the on arm would pass just as well
+    if every `Stop` fire asked for `rebuild_v14`, and the claim is about the
+    checkpoint, not about `Stop`.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    _seed_db(db)
+    _stub_read_recent(monkeypatch)
+
+    asked: list[str] = []
+    real_lazy = hook._lazy
+
+    def _spy(name: str) -> object:
+        asked.append(name)
+        return real_lazy(name)
+
+    monkeypatch.setattr(hook, "_lazy", _spy)
+
+    def _fire() -> str:
+        asked.clear()
+        _write_ring_state(db.parent, "sess-A", next_fire_idx=15)
+        serr = io.StringIO()
+        assert hook.stop(
+            stdin=io.StringIO(_stop_payload("sess-A", tmp_path)),
+            stderr=serr,
+        ) == 0
+        return serr.getvalue()
+
+    # Control: shipped defaults. No [cadence] section at all.
+    out_off = _fire()
+    assert "cadence checkpoint" not in out_off
+    assert asked == [], (
+        f"a Stop fire on shipped defaults asked _lazy for {asked}; the "
+        "deferred-names comment in hook.py says it asks for nothing"
+    )
+
+    _write_toml(tmp_path, """
+        [cadence]
+        enabled = true
+        policy = "p1_every_k_turns"
+        k = 15
+    """)
+    out_on = _fire()
+    assert "cadence checkpoint fired" in out_on
+    assert "rebuild_v14" in asked, (
+        "a tripped cadence checkpoint did not reach the deferred rebuilder "
+        f"(asked for {asked}). Either the checkpoint stopped running the "
+        "rebuild, or _rebuild_and_format stopped resolving rebuild_v14 "
+        "through _lazy -- in both cases the hook.py comment describing this "
+        "as the one Stop path that retrieves has gone stale."
+    )
