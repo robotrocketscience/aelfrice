@@ -47,7 +47,7 @@ rebuilds, as it does now.
 ## What the child writes
 
 Fail-soft is not the same as read-only, and this child is not read-only. It
-writes four things, on a machine the user is not watching:
+writes four things, from a process the user cannot see:
 
 - **The database's parent directory.** `warm_sidecar` calls
   `mkdir(parents=True, exist_ok=True)` on it before opening the store.
