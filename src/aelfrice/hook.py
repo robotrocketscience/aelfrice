@@ -1071,6 +1071,19 @@ def user_prompt_submit(
 
             stamp_bash_turn(session_id, stderr=serr)
         except Exception:
+            # Swallowed on purpose, and not narrowed past `Exception`.
+            # Two things reach here: an ImportError from the lazy import
+            # on a partial install, and whatever escapes
+            # `stamp_bash_turn`'s own fail-soft net — it returns False
+            # on a failed lock, read or write, but its warning path
+            # prints to the `serr` it was handed, so an unwritable
+            # stderr raises ValueError or OSError straight out of it.
+            #
+            # Swallowing costs one turn of a stale Bash fire cap. Not
+            # swallowing costs the rest of this handler: the only
+            # `except` above it is the function-wide one, so a failed
+            # stamp would take this prompt's whole memory injection with
+            # it. A turn stamp must never be worth that.
             pass
         # #887: thread the UserPromptSubmit payload's cwd through to
         # the session-start builder so the <recent-work> sub-block
