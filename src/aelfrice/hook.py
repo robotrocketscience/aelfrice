@@ -143,6 +143,24 @@ _LAZY_RETRIEVAL_NAMES: Final[dict[str, str]] = {
 }
 
 
+def _report_incomplete_install(exc: BaseException | None, serr: IO[str]) -> int:
+    """Print the one-line install-incomplete diagnostic and return 0 (#1527).
+
+    The eager-import guard has always answered a missing dependency with one
+    concise line and a zero exit -- never a traceback, because a hook that
+    tracebacks writes noise into the user's terminal on every single fire. The
+    deferred retrieval-subtree names (below) leave the eager `try`, so the
+    lanes that reach them have to answer an `ImportError` the same way. One
+    function so the two paths cannot drift apart.
+    """
+    missing = getattr(exc, "name", None) or str(exc)
+    print(
+        f"aelf-hook: install incomplete (missing {missing}); skipping",
+        file=serr,
+    )
+    return 0
+
+
 def _lazy(name: str) -> Any:
     """Resolve one deferred retrieval-subtree name (#1527).
 
@@ -1116,12 +1134,7 @@ def user_prompt_submit(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
-        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
-        print(
-            f"aelf-hook: install incomplete (missing {missing}); skipping",
-            file=serr,
-        )
-        return 0
+        return _report_incomplete_install(_IMPORT_ERR, serr)
     # #1135: one store handle for the whole prompt. The helpers below
     # each used to open their own (4-6 opens per prompt, each replaying
     # the schema battery). Opened lazily after the payload parses; None
@@ -1815,6 +1828,12 @@ def user_prompt_submit(
             )
             if promotion_block:
                 sout.write(promotion_block)
+    except ImportError as exc:
+        # #1527: the retrieval subtree resolves through `_lazy` and a few
+        # function-scope imports, so a partial install no longer trips the
+        # eager guard above -- it lands here instead. Same answer as that
+        # guard: one line, exit 0, no traceback.
+        return _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     finally:
@@ -3898,12 +3917,7 @@ def pre_compact(
     # hook. Reference it so the unused-arg lint stays quiet.
     _ = stdout
     if not _IMPORTS_OK:
-        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
-        print(
-            f"aelf-hook: install incomplete (missing {missing}); skipping",
-            file=serr,
-        )
-        return 0
+        return _report_incomplete_install(_IMPORT_ERR, serr)
     try:
         raw = read_payload_text(sin, serr) or ""
         # #1382: compaction discards the window, so nothing injected before
@@ -3952,6 +3966,12 @@ def pre_compact(
         # (source=="compact") carries the rebuild block on a channel
         # the harness accepts; emitting it here only produces a
         # rejected-output validation error.
+    except ImportError as exc:
+        # #1527: the retrieval subtree resolves through `_lazy` and a few
+        # function-scope imports, so a partial install no longer trips the
+        # eager guard above -- it lands here instead. Same answer as that
+        # guard: one line, exit 0, no traceback.
+        return _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -4138,12 +4158,7 @@ def session_start(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
-        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
-        print(
-            f"aelf-hook: install incomplete (missing {missing}); skipping",
-            file=serr,
-        )
-        return 0
+        return _report_incomplete_install(_IMPORT_ERR, serr)
     # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
     # the whole of this hook's own work plus the user's first typing pause
     # to build in. Never blocks and never raises; see `sidecar_warm`.
@@ -4224,6 +4239,12 @@ def session_start(
                 if body:
                     sout.write("\n\n")
                 sout.write(rebuild_block)
+    except ImportError as exc:
+        # #1527: the retrieval subtree resolves through `_lazy` and a few
+        # function-scope imports, so a partial install no longer trips the
+        # eager guard above -- it lands here instead. Same answer as that
+        # guard: one line, exit 0, no traceback.
+        return _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     if _recap_enabled():

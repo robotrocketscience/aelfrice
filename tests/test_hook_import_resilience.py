@@ -421,3 +421,140 @@ def test_a_fire_survives_an_unimportable_module(
         f"audit field broke the hook.\nstdout: {proc.stdout}\n"
         f"stderr: {proc.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# A retrieving fire with the retrieval subtree absent (#1527)
+# ---------------------------------------------------------------------------
+#
+# Before #1527 every retrieval-subtree name `hook.py` used was bound inside the
+# `try` that sets `_IMPORTS_OK`, so an install missing `aelfrice.retrieval` was
+# answered by the guard at the top of each lane. #1527 moved those names out of
+# that `try` -- `retrieve` and `search_for_prompt` resolve through `_lazy`, and
+# a handful of function-scope `from aelfrice.retrieval import ...` statements
+# sit on the retrieving branch -- so the sentinel now stays True and the
+# `ImportError` is raised in the middle of the fire instead.
+#
+# Every case above this point patches `_IMPORTS_OK = False`; the comment at the
+# head of the previous block says so. None of them can observe this, and the
+# gate-skipped fire in that block cannot either, because the gate-skip branch
+# never reaches a retrieval name. This block drives a fire the shape gate does
+# *not* skip, with the module genuinely unimportable.
+
+_MISSING_SUBTREE_PROBE = '''
+import os
+import sys
+
+for _k in [k for k in os.environ if k.startswith(("AELFRICE_", "AELF_"))]:
+    del os.environ[_k]
+
+_tmp = %(tmp)r
+os.environ["HOME"] = _tmp
+os.environ["AELFRICE_DOTDIR"] = os.path.join(_tmp, ".aelfrice")
+os.environ["AELFRICE_DB"] = os.path.join(_tmp, "memory.db")
+os.environ["AELF_NO_UPDATE_CHECK"] = "1"
+os.chdir(_tmp)
+
+_BLOCKED = %(blocked)r
+
+
+class _Blocker:
+    """Make the named module and its submodules unimportable."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == _BLOCKED or fullname.startswith(_BLOCKED + "."):
+            raise ImportError("blocked: " + fullname, name=fullname)
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+
+import io
+import json
+
+import aelfrice.hook as hook
+
+print("imports_ok:%%d" %% int(hook._IMPORTS_OK))
+_err = io.StringIO()
+rc = hook.user_prompt_submit(
+    stdin=io.StringIO(
+        json.dumps(
+            {
+                # Long and content-bearing on purpose: the prompt-shape gate
+                # must NOT skip this, or the fire never reaches a deferred
+                # retrieval name and the test proves nothing.
+                "prompt": (
+                    "what did we decide about the retrieval lane ordering "
+                    "and why did the entity index come second"
+                ),
+                "session_id": "s1",
+                "cwd": _tmp,
+            }
+        )
+    ),
+    stdout=io.StringIO(),
+    stderr=_err,
+)
+print("rc:%%d" %% rc)
+_text = _err.getvalue()
+print("traceback:%%d" %% int("Traceback" in _text))
+print("incomplete_lines:%%d" %% _text.count("install incomplete"))
+'''
+
+
+@pytest.mark.timeout(90)
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        pytest.param("aelfrice.retrieval", id="retrieval-absent"),
+        pytest.param("aelfrice.hook_search", id="hook-search-absent"),
+    ],
+)
+def test_a_retrieving_fire_skips_cleanly_when_the_subtree_is_absent(
+    tmp_path: Path, blocked: str
+) -> None:
+    """A partial install must still get one line and exit 0, not a traceback.
+
+    A `sys.meta_path` finder raising `ImportError` stands in for the module
+    being absent from the install. That is the point of the case: patching
+    `_IMPORTS_OK = False`, which is all the rest of this file does, returns
+    about a hundred lines above the code under test here.
+
+    Mutation-checked by deleting the `except ImportError` arm from
+    `user_prompt_submit`: the fire then prints an `ImportError` traceback to
+    stderr and `incomplete_lines` is 0.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _MISSING_SUBTREE_PROBE % {"tmp": str(tmp_path), "blocked": blocked},
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, (
+        "the probe process itself died; the hook let the ImportError escape:\n"
+        + proc.stderr
+    )
+    lines = proc.stdout.split()
+    assert lines[0] == "imports_ok:1", (
+        f"importing aelfrice.hook needs {blocked}, so the fire returned at the "
+        "_IMPORTS_OK guard and this test proves nothing about the deferred "
+        "names"
+    )
+    assert "rc:0" in lines, proc.stdout
+    assert "traceback:0" in lines, (
+        f"a traceback reached stderr with {blocked} unimportable; the hook "
+        "must answer a partial install with one line, the way the eager guard "
+        f"does.\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+    assert "incomplete_lines:1" in lines, (
+        f"the fire never reported the incomplete install for {blocked}. Either "
+        "it silently swallowed the failure, or the prompt-shape gate skipped "
+        f"this prompt and no deferred name was reached.\nstdout: {proc.stdout}"
+    )
+    assert "Traceback" not in proc.stderr, (
+        "a traceback reached the process stderr:\n" + proc.stderr
+    )
