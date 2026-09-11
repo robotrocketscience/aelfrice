@@ -63,7 +63,7 @@ def _sidecar(db: Path) -> Path:
 def _outcome_of_a_retrieval_fire(db: Path) -> str | None:
     """Run the L1 lane exactly as a fresh hook process would, and report the
     sidecar outcome it paid."""
-    from aelfrice.retrieval import bm25f_cache_for_lane
+    import aelfrice.retrieval as r
     from aelfrice.sidecar_outcome import (
         last_sidecar_outcome,
         reset_sidecar_outcome,
@@ -72,7 +72,7 @@ def _outcome_of_a_retrieval_fire(db: Path) -> str | None:
     reset_sidecar_outcome()
     store = MemoryStore(str(db))
     try:
-        cache = bm25f_cache_for_lane(store, now_ts=1_756_000_000)
+        cache = r.bm25f_cache_for_lane(store, now_ts=1_756_000_000)
         cache.get()
     finally:
         store.close()
@@ -562,7 +562,6 @@ def test_with_the_meta_belief_flag_off_the_sidecar_pins_nothing(
     """
     import aelfrice.bm25 as b
     import aelfrice.retrieval as r
-    from aelfrice.bm25 import DEFAULT_ANCHOR_WEIGHT
 
     db = tmp_path / "memory.db"
     _seed(db)
@@ -590,7 +589,7 @@ def test_with_the_meta_belief_flag_off_the_sidecar_pins_nothing(
     finally:
         store.close()
 
-    assert passed["anchor_weight"] == DEFAULT_ANCHOR_WEIGHT, passed
+    assert passed["anchor_weight"] == b.DEFAULT_ANCHOR_WEIGHT, passed
     assert peeked == [], "the flag-off path read the sidecar header"
 
 
