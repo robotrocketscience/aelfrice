@@ -28,9 +28,31 @@ flat JSON object of key -> value on stdout, and nothing else on stdout.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import sys
+from pathlib import Path
 from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _top_level_test_count(rel_path: str) -> int:
+    """How many top-level `test_` functions a test module declares.
+
+    Parsed rather than grepped: a `def test_` inside a string or a comment is
+    not a test, and this number is published as an enumeration count in a
+    release note. Top-level only, because the file it is used on declares no
+    test classes and a class would change what the count means.
+    """
+    tree = ast.parse((REPO_ROOT / rel_path).read_text(encoding="utf-8"))
+    return sum(
+        1
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    )
 
 
 def figures() -> dict[str, Any]:
@@ -58,6 +80,15 @@ def figures() -> dict[str, Any]:
             getattr(sentiment_feedback, "_NEGATIVE_PATTERNS")
         ),
         "sentiment_max_prompt_chars": sentiment_feedback.MAX_PROMPT_CHARS,
+        # #1436 — the mutation count the #1451 review disputed: the entry
+        # published "thirteen" over a list that enumerated twelve. An
+        # enumeration count is not a constant, but it is still code-derived:
+        # each listed mutation is one top-level test in this file, so the
+        # count re-derives here and a fourteenth test turns the entry red
+        # rather than leaving the number to drift.
+        "ci_manual_dispatch_mutations": _top_level_test_count(
+            "tests/test_ci_manual_dispatch.py"
+        ),
     }
 
 

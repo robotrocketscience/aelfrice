@@ -638,6 +638,38 @@ def test_published_constants_speaks_the_emit_figures_protocol() -> None:
     assert all(isinstance(k, str) for k in keys)
 
 
+@pytest.mark.timeout(120)
+def test_every_store_free_key_is_named_by_a_marker() -> None:
+    """A producer key nobody cites guards nothing.
+
+    `published_constants.py` says adding a key is only half a change: the
+    figure it re-derives has to gain a marker naming it. Nothing enforced
+    that, so a key could be added, pass every producer check by being
+    compared against nothing, and leave the prose it was written for
+    unguarded -- the #1160 shape, where a check reports green over a figure
+    it never looked at.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(_REPO / "benchmarks" / "published_constants.py"), "--emit-figures"],
+        capture_output=True, text=True, cwd=str(_REPO), timeout=120, check=True,
+    )
+    emitted = {str(k) for k in cast("dict[object, object]", json.loads(proc.stdout))}
+    assert emitted, "an empty producer would pass this test vacuously"
+
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    report = cdf.Report(github=False)
+    cited = {
+        m.key
+        for m in cdf.check_text(files, report)
+        if m.producer == "benchmarks/published_constants.py"
+    }
+    assert cited, "no marker names the store-free producer at all"
+    assert emitted <= cited, (
+        "these published_constants keys are named by no marker, so nothing "
+        f"in the repo is held to them: {sorted(emitted - cited)}"
+    )
+
+
 def test_the_repo_passes_the_text_checks() -> None:
     files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
     report = cdf.Report(github=False)
