@@ -526,9 +526,12 @@ def test_a_gate_skipped_fire_does_not_load_the_retrieval_subtree(
     n_import = int(r["n_import"])
     assert n_import <= _MAX_AELFRICE_MODULES_AT_IMPORT, (
         f"import aelfrice.hook now loads {n_import} aelfrice modules, over "
-        f"the {_MAX_AELFRICE_MODULES_AT_IMPORT} pinned by #1527. Every hook "
-        "process pays this, including every Stop / PreToolUse / PostToolUse "
-        "fire and the UserPromptSubmit fires the shape gate refuses. "
+        f"the {_MAX_AELFRICE_MODULES_AT_IMPORT} pinned by #1527. Every "
+        "process that imports this module pays it, including the Stop, "
+        "SessionStart and PreCompact fires and the UserPromptSubmit fires "
+        "the shape gate refuses. The PreToolUse and "
+        "PostToolUse hooks are separate entry points that do not import "
+        "aelfrice.hook at load, so they do not pay it. "
         "Find the new eager edge with:\n"
         "  python -X importtime -c 'import aelfrice.hook'"
     )
