@@ -55,7 +55,7 @@ structure for BFS to find non-trivial chains.
 - Cycle detection via per-query visited-set.
 - Integration with the unified retrieval token budget.
 - ~~Cache invalidation rule for `RetrievalCache` extended to cover
-  edge mutations (already covered by the v1.0.3 wipe-on-write
+  edge mutations (already covered by the v1.0.1 wipe-on-write
   policy — see [§ Cache invalidation](#cache-invalidation)).~~
   **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)**
   — `RetrievalCache` never acquired a production caller and was deleted;
@@ -436,6 +436,20 @@ RetrievalCache` is absent at v1.0.2 and present at v1.0.3, added by
 `0c27a937`. The spec's own version literal is quoted as written and is
 not the ship date (#1469). v1.3.0 inherits the decision.
 
+**Two dates, and this page uses both on purpose.** The wrapper is
+v1.0.3. The store-level wipe-on-write policy it was built on is
+v1.0.1: `git show v1.0.1:src/aelfrice/store.py` defines
+`add_invalidation_callback` and `_fire_invalidation`, and
+`insert_edge`, `update_edge` and `delete_edge` each call the latter at
+that tag. So a sentence dating the *policy* — the § Non-goals bullet
+and the decision-table row — says v1.0.1 and is correct, and the same
+literal in
+[`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py) is
+correct for the same reason. The policy also outlived the class, which
+[#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)
+deleted. Before changing a `v1.0.1` near this cache, ask which of the
+two the sentence is about.
+
 The v1.3 BFS kwargs (`bfs_max_depth`, `bfs_nodes_per_hop`,
 `bfs_total_budget_nodes`, `bfs_min_path_score`) **are not added to
 the cache key**: callers that toggle them per-call would defeat the
@@ -641,6 +655,6 @@ output exactly — same beliefs, same order. BFS is gated.
 | Cycle detection — visited-set or LIMIT?          | Visited-set, per-query. See [§ Cycle detection](#cycle-detection). |
 | Temporal coherence — fix at v1.3 or document?    | Document, fix at v2.0. See [§ Open question: temporal coherence](#open-question-temporal-coherence). |
 | BFS budget shared with L0/L1/L2.5 or separate?   | Shared. See [§ Budget allocation](#budget-allocation). |
-| Cache invalidation rule?                         | No cache-key change; v1.0.3 wipe-on-write covers it. See [§ Cache invalidation](#cache-invalidation). |
+| Cache invalidation rule?                         | No cache-key change; v1.0.1 wipe-on-write covers it. See [§ Cache invalidation](#cache-invalidation). |
 | Default-on or default-off at v1.3?               | Default-off. Default-on candidate at v2.0 with benchmark uplift. |
 | `IMPLEMENTS` edge type?                          | Shipped as a v2.0 Track A edge (#385) at weight 0.65. `THREADS_TO` remains out of scope. |
