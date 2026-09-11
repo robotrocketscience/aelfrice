@@ -30,7 +30,10 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.hook_search_tool import BASH_FIRE_CAP_PER_TURN
+from aelfrice.hook_search_tool import (
+    BASH_FIRE_CAP_PER_TURN,
+    _bash_fire_cap_reached,
+)
 from aelfrice.session_ring import (
     BASH_STATE_MAX_SESSIONS,
     SESSION_RING_FILENAME,
@@ -387,3 +390,27 @@ def test_eviction_victim_is_the_coldest_entry_not_the_newest(
     assert read_bash_fire_state("a-newcomer") == {"turn_id": 0, "fires": 1}
     assert read_bash_fire_state("z1") == {"turn_id": 0, "fires": 6}
     assert read_bash_fire_state("z2") == {}
+
+
+def test_invalid_utf8_ring_is_not_read_as_cap_reached(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ring that raises on decode still reads as "no cap".
+
+    `_read_ring_unlocked` decodes the file as UTF-8 and catches only
+    `json.JSONDecodeError` and `OSError`, so a stray non-UTF-8 byte
+    raises `UnicodeDecodeError` straight out of it — the #1441 class.
+    That is what reaches `read_bash_fire_state`'s blanket handler, the
+    one branch whose whole job is to fail open. A handler that returned
+    a count instead would suppress this session's retrieval for as long
+    as the unreadable file sat there.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    sid = SESSION_ID.encode("ascii")
+    ring_path.write_bytes(
+        b'{"session_id": "' + sid + b'", "bash": {"' + sid
+        + b'": {"turn_id": 0, "fires": \x81}}}'
+    )
+    assert read_bash_fire_state(SESSION_ID) == {}
+    assert _bash_fire_cap_reached(SESSION_ID) is False
