@@ -711,15 +711,18 @@ def _do_search(
         t0 = time.perf_counter()
         # Extraction first, cap second (#1522). The cap now consults the
         # session ring, and importing `session_ring` pulls `db_paths` ->
-        # `store`: +14.0 ms median on a whole hook process (12.1-14.0 ms
-        # over five runs), positive in 60 of 60 interleaved pairs, per
-        # `scripts/bash_fire_cap_latency.py order --pairs 60`. Ordered
-        # the other way that landed on every Bash call in the session, the
-        # overwhelming majority of which are not searches at all and
-        # abort inside `_extract_bash_query` — which is pure regex over
-        # the command string and imports nothing. So only a call that
-        # would otherwise perform a full retrieval pays to ask whether
-        # it may.
+        # `store`, which costs a measurable slice of a whole hook
+        # process: `scripts/bash_fire_cap_latency.py order` runs both
+        # orders as real source trees and the delta was positive in
+        # every pair of every run. Ordered the other way that landed on
+        # every Bash call in the session, the overwhelming majority of
+        # which are not searches at all and abort inside
+        # `_extract_bash_query` — pure regex over the command string,
+        # importing nothing. So only a call that would otherwise perform
+        # a full retrieval pays to ask whether it may. Do not swap these
+        # two statements: `test_search_tool_hook_bash_cap_1522.py
+        # ::test_a_non_search_bash_call_does_not_import_the_session_ring`
+        # fails if you do.
         bash_extracted = _extract_bash_query(payload)
         if bash_extracted is None:
             return
