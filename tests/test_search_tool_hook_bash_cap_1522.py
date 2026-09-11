@@ -479,9 +479,18 @@ def test_a_non_search_bash_call_does_not_import_the_session_ring(
 
     The assertion is on the module set, not on wall-clock milliseconds,
     for the reason `test_hook_import_cost_1351.py` gives: a timing
-    budget here is a flake generator under CI contention. The `rg` case
-    is the control — without it this test would also pass if the Bash
-    lane stopped consulting the ring at all.
+    budget here is a flake generator under CI contention.
+
+    What the `rg` arm proves is that the probe can observe the import at
+    all, so the `cat` arm's False is a real skip rather than a broken
+    payload or a hook that did nothing. It does *not* prove the cap lane
+    still consults the ring: stubbing `_bash_fire_cap_reached` to
+    `return False` and `_record_bash_fire` to `return` leaves this test
+    at 1 passed with the `rg` arm still True, because
+    `hook_search_tool._append_telemetry` imports `exclusive_file_lock`
+    from `aelfrice.session_ring` on every firing call. The test that does
+    catch that mutation is
+    `test_cap_binds_across_separate_processes`, which goes red on it.
     """
     assert _session_ring_imported("cat notes.txt", hook_env, tmp_path) is False
     assert _session_ring_imported("rg needle src/", hook_env, tmp_path) is True
