@@ -111,11 +111,15 @@ except ImportError as _e:
 # `retrieve`, `search_for_prompt` and the four `context_rebuilder` entry points
 # are the only names this module took from the retrieval subtree, and every one
 # of them is reached from a lane that has already decided to retrieve. Binding
-# them at module scope made `import aelfrice.hook` cost 61.4 ms and 35 aelfrice
-# modules where the rest of the eager set costs 30.6 ms and 16 -- a bill every
-# hook process pays, including the ~32% of `UserPromptSubmit` fires the
-# prompt-shape gate refuses and every `Stop` / `PreToolUse` / `PostToolUse`
-# fire, none of which retrieve at all.
+# them at module scope made `import aelfrice.hook` load 35 aelfrice modules
+# where the eager set alone loads 18 -- a bill every hook process pays,
+# including the 31.7% of `UserPromptSubmit` fires the prompt-shape gate refuses
+# (#1527's census of 14,348 real fires) and every `Stop` / `PreToolUse` /
+# `PostToolUse` fire, none of which retrieve at all. Those two counts are
+# deterministic, and `tests/test_hook_import_cost_1351.py` pins the 18. The
+# wall-clock saving is machine-dependent, so it is recorded once -- in the
+# changelog entry for #1527 -- rather than a second time here, where nothing
+# would catch it drifting.
 #
 # Ten test modules monkeypatch `aelfrice.hook.<name>`, so the resolver has to
 # keep that working. Two properties do it. `_lazy` reads `globals()` before it
