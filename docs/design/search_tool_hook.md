@@ -465,6 +465,15 @@ which is bounded to `BASH_STATE_MAX_SESSIONS` entries
 (least-recently-touched evicted first) so one file serving a
 machine's worth of sessions cannot grow without limit.
 
+Both writes that maintain the map — the turn stamp and the fire
+count — go through a mutator that touches the `bash` key alone
+and writes every other key back as it was read, rather than the
+one the injection writes use, which reshapes the record for its
+caller. The stamp runs on every prompt in every session sharing
+the checkout, so through the reshaping mutator it would discard a
+co-tenant's dedup ring, `next_fire_idx` and P3 cadence state each
+time — data loss strictly worse than the dead cap it replaces.
+
 `UserPromptSubmit` stamps the turn boundary — it is the only
 hook the host guarantees fires exactly once per turn — by bumping
 that session's `turn_id`. A reader reports 0 fires as soon as
