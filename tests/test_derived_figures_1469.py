@@ -682,6 +682,50 @@ def test_a_producer_missing_the_key_is_a_hard_failure(repo: Path) -> None:
     assert any("emits no key" in h for h in report.hard)
 
 
+# --- the boundary of the rule, stated so it stays falsifiable ------------
+
+
+def test_the_gate_does_not_check_an_enumeration_against_its_own_list(
+    repo: Path,
+) -> None:
+    """An enumerated count is bound to its producer, not to its list.
+
+    This is #1451's exact shape -- a published 13 over a list of twelve -- and
+    it is **out of scope**, not covered. The marker binds the count to a
+    producer and to a figure of that value appearing in the annotated text;
+    deleting items from the prose list moves neither, so the gate stays green.
+
+    No enumeration-length rule was added, because counting items means deciding
+    which commas separate them and the live sentence carries a parenthesised
+    triple a comma counter reads as three more items. The boundary is asserted
+    here rather than left implied: if someone closes it, this test goes red and
+    sends them to the paragraph in the ledger that says it is open.
+    """
+    entry = (
+        "- **Entry.** `tests/t.py` pins **3** mutations — dropping the "
+        "trigger, adding an input, and ungating the filter — each turns it "
+        "red.\n"
+        f"  {_marker('benchmarks/p.py#mutations', 3)}\n"
+    )
+    shortened = entry.replace(", adding an input,", "")
+    assert shortened != entry and "adding an input" not in shortened
+
+    (repo / "CHANGELOG" / "full.md").write_text(entry)
+    (repo / "CHANGELOG" / "short.md").write_text(shortened)
+    assert _run(repo, "CHANGELOG/full.md").hard == []
+    assert _run(repo, "CHANGELOG/short.md").hard == [], (
+        "an enumeration-length check now exists; update the #1451 section of "
+        "docs/design/derived_figure_markers.md, which says it does not"
+    )
+
+    ledger = (_REPO / "docs" / "design" / "derived_figure_markers.md").read_text(
+        encoding="utf-8"
+    )
+    assert "enumeration-length check anywhere" in ledger, (
+        "the ledger must state the boundary this test pins"
+    )
+
+
 # --- #1445's reduction factor now has a producer -------------------------
 
 

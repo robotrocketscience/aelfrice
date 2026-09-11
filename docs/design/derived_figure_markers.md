@@ -157,6 +157,26 @@ Proven by mutation: appending a fourteenth top-level test makes the producer
 emit 14 against the published 13, and `check_derived_figures.py --mode all`
 exits 1 with `the figure is stale: re-derive it, or fix the producer`.
 
+**What that does not cover, which is the half #1451 was actually about.** The
+gate binds the published 13 to the producer and to a figure reading 13 in the
+annotated text. It does not bind it to the length of the list the sentence
+introduces. Delete two of the thirteen enumerated mutations from the prose and
+leave the tests alone, and the producer still emits 13, the marker still finds
+a 13 in the text, and `--mode text`, `--mode all` and
+`tests/test_derived_figures_1469.py` all stay green — which is #1451's exact
+shape, a published count over a shorter list. `check_derived_figures.py` has no
+enumeration-length check anywhere, and this branch did not add one: counting
+list items in prose means deciding which commas separate items, and the live
+sentence contains a parenthesised triple that a comma counter reads as three
+more mutations. A rule that mis-counts a legitimate sentence gets switched off,
+and a rule that only works on one sentence shape reports green over every other
+one — the #1160 failure this repository has already paid for.
+
+So what this instance gained is a producer for the count, not coverage of the
+enumeration. The list is held to the test file by reading, and
+`tests/test_derived_figures_1469.py::test_the_gate_does_not_check_an_enumeration_against_its_own_list`
+pins that boundary so the claim stays falsifiable.
+
 ### #1452 — "restoring `shlex.split` turns 2 red"
 
 **Corrected, and not markable.** A mutation count has no producer: it is the
