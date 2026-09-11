@@ -39,11 +39,37 @@ second fire arrives after the fire that pays.
 ## Fail-soft
 
 Both halves are fail-soft, and neither can change what the hook emits. The
-parent swallows every spawn error and returns False. The child writes nothing
-but the sidecar blob (which `BM25IndexCache._write_sidecar` replaces
-atomically, so a concurrent reader sees the old blob or the new one, never a
-torn one) and swallows every exception. A warm that fails leaves behaviour
-exactly as it is today: the next fire rebuilds, as it does now.
+parent swallows every spawn error and returns False. The child swallows every
+exception too — once in `warm_sidecar`, again in `_record_warm_outcome`. A
+warm that fails leaves behaviour exactly as it is today: the next fire
+rebuilds, as it does now.
+
+## What the child writes
+
+Fail-soft is not the same as read-only, and this child is not read-only. It
+writes four things, on a machine the user is not watching:
+
+- **The database's parent directory.** `warm_sidecar` calls
+  `mkdir(parents=True, exist_ok=True)` on it before opening the store.
+- **The store itself.** `MemoryStore(str(p))` is opened read-write, and
+  `MemoryStore.__init__` documents a bare open as a write: the DDL battery,
+  any pending migrations, the `schema_meta` seed, `_resolve_local_scope_id`
+  (which generates and persists an id on a store that has none) and, since
+  #1314, `sweep_expired_locks`, which flips a user's expired locks to
+  unlocked. `hook.py` calls the same open "a write (DDL plus migrations)".
+  A session whose first prompt never arrives still pays that write here.
+- **The sidecar blob**, through `BM25IndexCache._write_sidecar`: a temp file
+  in the sidecar's own directory, then `os.replace`, so a concurrent reader
+  sees the old blob or the new one, never a torn one.
+- **One `sidecar_warm` row in `hook_audit.jsonl`**, appended by
+  `_record_warm_outcome`. It is suppressed when `load_hook_audit_config()`
+  reports the audit off — `AELFRICE_HOOK_AUDIT=0`, or `enabled = false`
+  under `[hook_audit]` in `.aelfrice.toml`. That check is the only thing
+  between this writer and a user who asked for no audit log, because the
+  child runs detached and the user cannot see it refuse. The append can
+  also rotate the log: `_append_audit` renames the live file to `.1` once
+  the size cap is passed, overwriting any previous `.1`, and starts a fresh
+  file with an `audit_rotation` marker.
 """
 from __future__ import annotations
 
