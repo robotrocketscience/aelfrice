@@ -351,3 +351,39 @@ def test_bash_state_map_is_bounded(
     assert sorted(ring["bash"]) == sessions[-BASH_STATE_MAX_SESSIONS:]
     # Eviction is fail-soft in the "no cap" direction, never a phantom cap.
     assert read_bash_fire_state(sessions[0]) == {}
+
+
+def test_eviction_victim_is_the_coldest_entry_not_the_newest(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eviction follows recency, and never takes the entry just written.
+
+    `test_bash_state_map_is_bounded` inserts its sessions in ascending
+    id order, so recency order and lexicographic order coincide there
+    and the id tiebreak alone reproduces the right answer. This case
+    makes the two disagree: `z1` is the oldest insertion and the newest
+    touch, and the newcomer sorts before every held id while being the
+    most recently written.
+
+    Evicting the freshly written entry would leave that session with no
+    record at all, which reinstates the pre-#1522 defect — an uncapped
+    lane — for whichever session fires next.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    held = [f"z{i}" for i in range(1, BASH_STATE_MAX_SESSIONS + 1)]
+    for sid in held:
+        assert record_bash_fire(sid) == {"turn_id": 0, "fires": 1}
+    # Keep z1 live. z2 becomes the least recently touched entry.
+    for fires in range(2, 7):
+        assert record_bash_fire("z1") == {"turn_id": 0, "fires": fires}
+    # One over the bound, and lexicographically first of all of them.
+    assert record_bash_fire("a-newcomer") == {"turn_id": 0, "fires": 1}
+
+    ring = json.loads(
+        (Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME)
+        .read_text(encoding="utf-8")
+    )
+    assert sorted(ring["bash"]) == sorted({*held[2:], "z1", "a-newcomer"})
+    assert read_bash_fire_state("a-newcomer") == {"turn_id": 0, "fires": 1}
+    assert read_bash_fire_state("z1") == {"turn_id": 0, "fires": 6}
+    assert read_bash_fire_state("z2") == {}
