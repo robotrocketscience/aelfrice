@@ -91,6 +91,10 @@ count and kept out of BOTH buckets: sweeping them into LATER is the same
 bias as scoring an unmeasured fire as not-a-rebuild, applied to this axis
 instead of to the denominators above.
 
+Under `--since` / `--until` a session's position is still decided over the
+whole input rather than over the window; see "Two windows out of one log set
+(#1513)" below for why, and for the two lines that report it.
+
 Usage:
     uv run python benchmarks/sidecar_rebuild_rate.py [--since TS] [--until TS] \
         [AUDIT_LOG ...]
