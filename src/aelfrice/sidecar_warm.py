@@ -187,12 +187,12 @@ def _record_warm_outcome(outcome: str | None) -> None:
     distinction.
     """
     try:
-        import time  # noqa: PLC0415
+        from datetime import datetime, timezone  # noqa: PLC0415
 
         from aelfrice.db_paths import db_path  # noqa: PLC0415
         from aelfrice.hook_audit import (  # noqa: PLC0415
-            _append_audit,
-            _audit_path_for_db,
+            _append_audit,  # pyright: ignore[reportPrivateUsage]
+            _audit_path_for_db,  # pyright: ignore[reportPrivateUsage]
             load_hook_audit_config,
         )
 
@@ -203,7 +203,7 @@ def _record_warm_outcome(outcome: str | None) -> None:
         if str(p) == ":memory:":
             return
         record: dict[str, object] = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hook": WARM_AUDIT_HOOK,
             "sidecar_outcome": outcome,
         }
