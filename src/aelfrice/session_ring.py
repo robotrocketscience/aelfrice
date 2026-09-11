@@ -1224,8 +1224,12 @@ def stamp_bash_turn(
     ninth session evicts the least recently touched one
     (:data:`BASH_STATE_MAX_SESSIONS`).
 
-    Fail-soft: returns False on any error, and a missed stamp costs one
-    turn of a stale cap, never a raised exception in a hook.
+    Fail-soft: returns False on a failed lock, read, or write, and a
+    missed stamp costs one turn of a stale cap. It is not raise-proof.
+    The warning path prints to the ``serr`` it was handed, so an
+    unwritable stream raises ``ValueError`` or ``OSError`` out of this
+    function. The caller in ``hook.user_prompt_submit`` guards the call
+    for that reason.
     """
     if not session_id:
         return False
