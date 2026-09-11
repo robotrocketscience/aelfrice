@@ -1,0 +1,150 @@
+# Derived-figure markers: where the seven #1469 instances stand
+
+[#1469](https://github.com/robotrocketscience/aelfrice/issues/1469) requires
+that each of the seven published figures it names is either annotated with a
+marker the gate understands or explained as out of scope. This page is that
+record. It is the ledger, not the specification: for the marker grammar, the
+two figure classes, and what CI does with each, read the module docstring in
+[`scripts/check_derived_figures.py`](../../scripts/check_derived_figures.py).
+
+Read a row as the answer to one question: if this figure went stale tomorrow,
+what would catch it?
+
+## The rule this ledger applies
+
+A marker is only worth adding when the figure behind it can be re-derived. A
+marker that stamps a value nobody can recompute does not guard the figure; it
+publishes a second unchecked number beside the first and makes the entry look
+guarded. So a figure gets a marker when a producer can emit it, and gets a
+written reason when it cannot. Three of the seven fall on the second side, and
+saying so is the deliverable for them.
+
+## The seven
+
+### #1445 — the Stop-block bound and its reduction factor
+
+**Annotated.** Four markers, in `CHANGELOG/v4.md` and again in
+`src/aelfrice/hook.py`, because the figures ship in both.
+
+Two are store-free and CI re-runs them:
+`benchmarks/published_constants.py#stop_prompt_max_items` and
+`#stop_prompt_max_content` read the shipped constants directly. Two are
+store-backed — `benchmarks/stop_prompt_block_bounds.py` measures a rendered
+block against a real belief store — so their markers carry the corpus label,
+the measurement date, and a `producer-sha=` stamp, and CI holds them to
+self-consistency and to code staleness rather than to a value it cannot
+recompute.
+
+### #1446 — the rate pair "2.30x (8.69% versus 20.00%)"
+
+**Out of scope, because the figure was withdrawn rather than corrected.**
+`benchmarks/sidecar_rebuild_rate.py` now states that the pair is a worked
+example on a constructed log and that no live ratio exists to cite: the
+per-fire outcome field is written only by code that is not yet in the released
+package, so every row on the real log predates it and the script reports
+`NO MEASUREMENT YET` before printing any rate.
+
+There is no value for a marker to bind. A marker here would name a producer
+that deliberately emits nothing, which is a worse claim than the prose makes.
+When the field has shipped long enough to produce a live rate, that
+measurement is the one to mark.
+
+### #1447 — "135 genuine pasted commands", "of 788 prompts", "762 of 805"
+
+**Out of scope for this branch, and deferred rather than dismissed.** The
+figures were corrected on `main`. They are measured over an archived
+user-prompt corpus that does not live in this repository and must not be
+copied to a public runner ([#1456](https://github.com/robotrocketscience/aelfrice/issues/1456)).
+
+Marking them needs two things this repository does not record: which corpus
+snapshot produced them and on what date. Both are required attributes of a
+store-backed marker, and inventing either would ship exactly the defect #1469
+exists to stop. The next person to re-run that measurement should stamp it
+then, when both halves are known.
+
+### #1449 — "44,683 active beliefs" against "44,687" in the same pull request
+
+**Deferred; needs a belief store.** The branch's finding is that these are not
+an arithmetic error: they are two real snapshots of one store taken five days
+apart, and only a date distinguishes them. That finding is recorded at
+`scripts/check_derived_figures.py`'s `CORPUS_RE`.
+
+The gate's self-consistency check is precisely the check this instance needed,
+and it runs without a store. What blocks annotation is narrower: nothing in the
+repository records the date of the 44,683 snapshot, and a store-backed marker
+must carry one. Marking the two figures under one key would also be wrong —
+they are different measurements, so they need different keys, and inventing a
+date to separate them is the defect wearing a marker.
+
+To close this row, re-measure both counts against a named store, then stamp
+each site with its own corpus label and date.
+
+### #1450 — "the wrapper shipped in v1.3.0", later "v1.0.1"
+
+**Corrected, and deliberately not marked.** `class RetrievalCache` is absent
+from `src/` at `v1.0.1` and at `v1.0.2` and present at `v1.0.3`, added by
+`0c27a937`. Eight ship-version claims carried the wrong literal: five in
+[`bfs_multihop.md`](bfs_multihop.md) and three in
+[`bayesian_ranking.md`](bayesian_ranking.md). All eight now read v1.0.3.
+
+To re-derive it, run:
+
+```
+git grep -l 'class RetrievalCache' v1.0.1 -- src   # no output, exit 1
+git grep -l 'class RetrievalCache' v1.0.2 -- src   # no output, exit 1
+git grep -l 'class RetrievalCache' v1.0.3 -- src   # src/aelfrice/retrieval.py
+```
+
+A marker does not fit this figure. The grammar binds a number a producer
+emits from the shipped code, and a first-shipped-at version is a property of
+git history instead — it needs tags a shallow CI checkout may not have. The
+three commands above are the re-derivation, and they are recorded in the prose
+at each corrected site.
+
+One nearby literal is correct and must stay: the store-level invalidation
+registry really did ship at v1.0.1. `add_invalidation_callback` is present at
+that tag, and `insert_edge`, `update_edge` and `delete_edge` all call
+`_fire_invalidation()` there, so the v1.0.1 reference in
+[`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py) is about the
+policy rather than the wrapper.
+
+### #1451 — "thirteen mutations" over a list that enumerated twelve
+
+**Corrected and annotated, and this is the one instance the gate now holds to
+a producer.** The entry publishes `13`, in digits so a scanner can see it, and
+carries a marker naming
+`benchmarks/published_constants.py#ci_manual_dispatch_mutations`. That key
+parses `tests/test_ci_manual_dispatch.py` and counts its top-level `test_`
+functions, one per listed mutation.
+
+Proven by mutation: appending a fourteenth top-level test makes the producer
+emit 14 against the published 13, and `check_derived_figures.py --mode all`
+exits 1 with `the figure is stale: re-derive it, or fix the producer`.
+
+### #1452 — "restoring `shlex.split` turns 2 red"
+
+**Corrected, and not markable.** A mutation count has no producer: it is the
+result of reverting a named line and running the suite, and nothing in the
+repository emits it. What it can have is a site, which is what the original
+sentence lacked and what made the count impossible to check.
+
+Both readings were run against an 8,652-test baseline. Replacing the body of
+`command_tokens` in `src/aelfrice/launcher.py` with a bare `shlex.split` turns
+29 red. Replacing the single `launcher.command_tokens(stripped)` call in
+`src/aelfrice/doctor.py` turns 1 red. Neither is the 2 the entry published or
+the 3 the issue's table asserts, and the entry now publishes both counts with
+their sites.
+
+Three sibling counts in the same sentence recorded no site either, and their
+figures are withdrawn rather than restated. The nearest reading of "reverting
+the key derivation" turns 33 red against the 6 that shipped, which is the
+evidence that a site-less mutation count cannot be recovered after the fact.
+
+## What this ledger does not cover
+
+Every other published figure in the repository is unmarked and stays legal.
+The annotation backlog is the whole corpus, and a gate that failed on it would
+be switched off within a day. Run
+`python3 scripts/check_derived_figures.py --list-unmarked <path>` to enumerate
+what is still unannotated in a file, so grandfathered is not the same as
+invisible.
