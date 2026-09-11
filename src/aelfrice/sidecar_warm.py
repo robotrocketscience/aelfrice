@@ -1,15 +1,18 @@
 """#1513 — warm the BM25 sidecar off the user-visible path.
 
 `benchmarks/sidecar_rebuild_rate.py`, bucketed by position within the
-session, showed that the full-rebuild cost is a **session-first tail**, not
-an average::
+session, shows that the full-rebuild cost is a **session-first tail**, not an
+average: the `full_rebuild` rate on the first scored fire of a session runs
+materially above the rate on every later fire. That is the prompt a user is
+least willing to wait on.
 
-    session-FIRST fires:  full_rebuild 5, fresh  8            ->  5/13 = 38.5%
-    LATER fires:          full_rebuild 0, fresh 23, incr 3    ->  0/26 =  0.0%
-
-Every rebuild in that sample was the first scored fire of a session, and it
-cost between 347 ms and 1825 ms — paid on the prompt where a user is least
-willing to wait.
+No rate or latency figure is quoted here, deliberately. The population is a
+live, growing, single-slot-rotating audit log, and three re-derivations over
+three weeks moved the session-first magnitude by more than a factor of three
+while the sign never flipped; the rows the earlier runs scored are gone to
+rotation, so the numbers this docstring used to carry were not reproducible
+by anyone. Re-derive the split instead — the script's own docstring gives the
+command, and says which population each form of it covers.
 
 ## Why a detached process, and not the two alternatives
 
@@ -30,8 +33,8 @@ kills it mid-build, the sidecar is never written, and the warm silently does
 nothing. Neither arm survives.
 
 *Warming lazily on a later fire* was rejected on the measurement. The later
-bucket is already 0/26. A warm that runs on the second fire arrives after
-the only fire that ever pays.
+bucket already runs far below the session-first one. A warm that runs on the
+second fire arrives after the fire that pays.
 
 ## Fail-soft
 
