@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -679,6 +680,93 @@ def test_a_producer_missing_the_key_is_a_hard_failure(repo: Path) -> None:
     markers = cdf.check_text([repo / "a.md"], report)
     cdf.check_producers(markers, report)
     assert any("emits no key" in h for h in report.hard)
+
+
+# --- #1445's reduction factor now has a producer -------------------------
+
+
+_BOUNDS = _REPO / "benchmarks" / "stop_prompt_block_bounds.py"
+_bounds_spec = importlib.util.spec_from_file_location("_spbb", _BOUNDS)
+assert _bounds_spec and _bounds_spec.loader
+bounds: Any = importlib.util.module_from_spec(_bounds_spec)
+_bounds_spec.loader.exec_module(bounds)
+
+
+def test_the_reduction_factor_is_the_ratio_the_entry_publishes() -> None:
+    """`CHANGELOG/v4.md` published "a 299.7x reduction" with no producer, while
+    both numbers it divides carried markers. A ratio of two measured values is
+    arithmetic, not a third measurement, so it belongs in the producer."""
+    assert bounds.reduction_factor(11508, 3448428) == 299.7
+
+
+def test_the_reduction_factor_refuses_an_empty_or_zero_arm() -> None:
+    """An arm with no sessions must report no figure rather than divide by
+    zero or, worse, publish a 0 that reads as a measurement."""
+    assert bounds.reduction_factor(0, 3448428) is None
+    assert bounds.reduction_factor(None, 3448428) is None
+    assert bounds.reduction_factor(11508, None) is None
+
+
+def test_measure_emits_the_factor_beside_the_maxima_it_divides(tmp_path: Path) -> None:
+    """The key has to survive in the report, not only in the helper.
+
+    A synthetic store rather than the real one: `measure()` reads a store
+    through a read-only URI, and the figure this guards is the *presence and
+    consistency* of the key, which one fabricated session shows as well as
+    44,687 real beliefs do.
+    """
+    db = tmp_path / "memory.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE beliefs (id TEXT PRIMARY KEY, content TEXT, type TEXT, "
+        "origin TEXT, session_id TEXT, valid_to TEXT, lock_level TEXT)"
+    )
+    con.executemany(
+        "INSERT INTO beliefs VALUES (?,?,?,?,?,?,?)",
+        [
+            (f"b{i}", "correct the thing: " + "x" * (40 * i + 5), "correction",
+             "user_transcript", "sess-1", None, None)
+            for i in range(1, 60)
+        ],
+    )
+    con.commit()
+    con.close()
+
+    arm = cast("dict[str, Any]", bounds.measure([str(db)])["post_1315"])
+    assert arm["sessions"] == 1, "the fixture must produce a non-empty arm"
+    bounded = arm["rendered_bytes_bounded"]["max"]
+    unbounded = arm["rendered_bytes_unbounded"]["max"]
+    assert unbounded > bounded, "an unbounded render must exceed the capped one"
+    assert arm["worst_case_reduction_factor"] == round(unbounded / bounded, 1)
+
+
+def test_the_published_factor_agrees_with_the_two_maxima_it_divides() -> None:
+    """The three markers on the #1442 entry have to be one statement.
+
+    Read straight out of the shipped file: the factor marker must be the
+    rounded ratio of the two maxima markers beside it, so editing one of the
+    three and leaving the others is caught here as well as by the gate.
+    """
+    files = cdf.iter_files(["CHANGELOG"])
+    report = cdf.Report(github=False)
+    published = {
+        m.key: m.value
+        for m in cdf.check_text(files, report)
+        if m.producer == "benchmarks/stop_prompt_block_bounds.py"
+    }
+    wanted = {
+        "post_1315.rendered_bytes_bounded.max",
+        "post_1315.rendered_bytes_unbounded.max",
+        "post_1315.worst_case_reduction_factor",
+    }
+    assert wanted <= set(published), (
+        f"missing markers: {sorted(wanted - set(published))}"
+    )
+    bounded = int(published["post_1315.rendered_bytes_bounded.max"])
+    unbounded = int(published["post_1315.rendered_bytes_unbounded.max"])
+    assert bounds.reduction_factor(bounded, unbounded) == float(
+        published["post_1315.worst_case_reduction_factor"]
+    )
 
 
 # --- the live repo -------------------------------------------------------

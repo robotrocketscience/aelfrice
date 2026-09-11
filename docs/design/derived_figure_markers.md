@@ -23,17 +23,35 @@ saying so is the deliverable for them.
 
 ### #1445 — the Stop-block bound and its reduction factor
 
-**Annotated.** Four markers, in `CHANGELOG/v4.md` and again in
-`src/aelfrice/hook.py`, because the figures ship in both.
+**Annotated, both halves of the row.** The markers live in
+`CHANGELOG/v4.md` and again in `src/aelfrice/hook.py`, because the figures
+ship in both.
 
-Two are store-free and CI re-runs them:
 `benchmarks/published_constants.py#stop_prompt_max_items` and
-`#stop_prompt_max_content` read the shipped constants directly. Two are
-store-backed — `benchmarks/stop_prompt_block_bounds.py` measures a rendered
-block against a real belief store — so their markers carry the corpus label,
-the measurement date, and a `producer-sha=` stamp, and CI holds them to
-self-consistency and to code staleness rather than to a value it cannot
-recompute.
+`#stop_prompt_max_content` are store-free: they read the shipped constants, and
+CI re-runs them. The two rendered-byte maxima are store-backed —
+`benchmarks/stop_prompt_block_bounds.py` measures a rendered block against a
+real belief store — so their markers carry the corpus label, the measurement
+date, and a `producer-sha=` stamp, and CI holds them to self-consistency and to
+code staleness rather than to a value it cannot recompute.
+
+**The reduction factor is the half this row was missing.** The entry publishes
+"a 299.7x reduction" beside the two maxima it divides, and the first pass left
+it unmarked while calling the row annotated — `--list-unmarked` listed
+`299.7x`, which is the gate reporting the gap the ledger denied. A ratio of two
+measured values is arithmetic, not a third measurement, so
+`stop_prompt_block_bounds.py` now emits it as
+`post_1315.worst_case_reduction_factor` and the entry carries a third
+store-backed marker. `tests/test_derived_figures_1469.py` reads all three
+markers out of the shipped file and asserts the factor is the rounded ratio of
+the other two, so the trio cannot drift apart without a test going red.
+
+Adding that key changed the producer's bytes, so the stamps on the existing
+markers were re-run through `--restamp`. That is the restamp the flag's
+docstring permits: the new key is computed from two values the same function
+already produced, and the edit provably cannot move them. Proven rather than
+asserted — `measure()` from the pre-edit file and from the shipped one, run
+over one synthetic store, agree on every key the pre-edit file emitted.
 
 ### #1446 — the rate pair "2.30x (8.69% versus 20.00%)"
 

@@ -76,6 +76,25 @@ def _percentiles(values: list[int]) -> dict[str, int]:
     }
 
 
+def reduction_factor(bounded_max: int | None, unbounded_max: int | None) -> float | None:
+    """Worst-case unbounded bytes over worst-case bounded bytes, to one place.
+
+    #1442's entry publishes this ratio ("a 299.7x reduction") beside the two
+    maxima it is computed from. Both of those are marked and this was not, so
+    the one figure a reader is most likely to quote was the one nothing in the
+    repository re-derived. It is emitted here rather than restated because a
+    ratio of two measured numbers is not a third measurement: it is arithmetic,
+    and arithmetic belongs in the producer.
+
+    One place, matching how the entry publishes it. `None` when either maximum
+    is absent or the bounded maximum is zero, so an empty arm reports no figure
+    rather than a division by zero or a misleading `0`.
+    """
+    if not bounded_max or unbounded_max is None:
+        return None
+    return round(unbounded_max / bounded_max, 1)
+
+
 def _rows(db: str) -> list[tuple[str, str, str, str, str]]:
     """Candidate rows in the order production sees them: `rowid DESC`.
 
@@ -159,14 +178,15 @@ def measure(dbs: list[str]) -> dict[str, Any]:
 
     def arm(groups: dict[str, list[Belief]]) -> dict[str, Any]:
         counts = [len(v) for v in groups.values()]
+        bounded = _percentiles([len(_format_stop_prompt(v)) for v in groups.values()])
+        unbounded = _percentiles([len(_render_unbounded(v)) for v in groups.values()])
         return {
             "sessions": len(groups),
             "candidates_per_session": _percentiles(counts),
-            "rendered_bytes_bounded": _percentiles(
-                [len(_format_stop_prompt(v)) for v in groups.values()]
-            ),
-            "rendered_bytes_unbounded": _percentiles(
-                [len(_render_unbounded(v)) for v in groups.values()]
+            "rendered_bytes_bounded": bounded,
+            "rendered_bytes_unbounded": unbounded,
+            "worst_case_reduction_factor": reduction_factor(
+                bounded.get("max"), unbounded.get("max")
             ),
         }
 
