@@ -18,6 +18,7 @@ precedent, where exactly that shape was diagnosed as a deadlock twice.
 """
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 
@@ -383,6 +384,26 @@ _RETRIEVAL_SUBTREE = (
     "aelfrice.triple_extractor",
 )
 
+# Which of those the *retrieving* fixture fire below actually reaches. Measured
+# on this tree, not assumed: nine of the twelve load, and `correction`,
+# `derivation` and `triple_extractor` do not, because nothing on that prompt's
+# lane calls them. Pinned as a set equality rather than a subset so that the
+# two tuples cannot drift apart in either direction -- see
+# `test_a_retrieving_fire_still_loads_the_retrieval_subtree`.
+_REACHED_BY_A_RETRIEVING_FIRE = frozenset(
+    {
+        "aelfrice.bfs_multihop",
+        "aelfrice.clustering",
+        "aelfrice.compression",
+        "aelfrice.context_rebuilder",
+        "aelfrice.doc_linker",
+        "aelfrice.exploration",
+        "aelfrice.hook_search",
+        "aelfrice.retrieval",
+        "aelfrice.scoring",
+    }
+)
+
 _MODULE_COUNT_PROBE = '''
 import os
 import sys
@@ -524,10 +545,22 @@ def test_a_retrieving_fire_still_loads_the_retrieval_subtree(tmp_path) -> None:
     """Guard the guard: the subtree was deferred, not deleted.
 
     Without this, the absence assertion above passes just as well if
-    `aelfrice.retrieval` were misspelled in `_RETRIEVAL_SUBTREE`, if
-    `_lazy()` had dropped a name, or if `search_for_prompt` stopped being
+    `_lazy()` had dropped a name or if `search_for_prompt` stopped being
     called at all. An empty set is not evidence that anything is deferred
     until the same names are shown loading on the path that needs them.
+
+    The assertion is a set *equality* between the entries of
+    `_RETRIEVAL_SUBTREE` this fire loads and `_REACHED_BY_A_RETRIEVING_FIRE`,
+    both read from the module above rather than retyped here. That is what
+    makes a silent edit to either tuple fail: misspell an entry and it drops
+    out of the observed side; delete an entry and it drops out of the observed
+    side too, because the comprehension only looks at names the tuple still
+    holds. Neither degrades the absence assertion unnoticed any more.
+
+    It is not a claim about the other three entries -- `correction`,
+    `derivation` and `triple_extractor` are in the ban list above but are not
+    reached by this prompt's lane, so only
+    `test_every_banned_module_name_resolves` speaks for their spelling.
 
     The prompt is long, lowercase and carries no harness tag, so
     `_should_skip_bm25` returns None and the retrieval lane runs.
@@ -545,10 +578,46 @@ def test_a_retrieving_fire_still_loads_the_retrieval_subtree(tmp_path) -> None:
     )
 
     loaded = set(r["modules"].split(","))
-    for name in ("aelfrice.retrieval", "aelfrice.hook_search"):
-        assert name in loaded, (
-            f"{name} did not load on a retrieving fire. A deferred import was "
-            "dropped rather than moved, or the retrieval lane stopped "
-            "running -- either way the absence assertion in the test above "
-            "proves nothing."
-        )
+    reached = frozenset(m for m in _RETRIEVAL_SUBTREE if m in loaded)
+    assert reached == _REACHED_BY_A_RETRIEVING_FIRE, (
+        "the retrieval-subtree entries a retrieving fire loads no longer "
+        f"match the pinned set. Missing: "
+        f"{sorted(_REACHED_BY_A_RETRIEVING_FIRE - reached)}; unexpected: "
+        f"{sorted(reached - _REACHED_BY_A_RETRIEVING_FIRE)}. Either a "
+        "deferred import was dropped rather than moved, or the retrieval "
+        "lane stopped running, or an entry of _RETRIEVAL_SUBTREE was "
+        "misspelled or deleted -- in every one of those cases the absence "
+        "assertion in the test above stops proving what it claims to."
+    )
+
+
+@pytest.mark.timeout(30)
+def test_every_banned_module_name_resolves() -> None:
+    """A ban list is only a ban list while every name in it names a module.
+
+    `_RETRIEVAL_SUBTREE` is matched against `sys.modules` keys, and a key that
+    can never be there bans nothing. `find_spec` is the cheap half of the
+    guard: it covers the three entries no fixture fire reaches, which the set
+    equality above cannot speak for. It locates the module without executing
+    it, so this costs the parent package import and nothing else.
+
+    `_REACHED_BY_A_RETRIEVING_FIRE` is checked against the tuple here too, so
+    a name can only be pinned as reached if it is on the ban list at all.
+    """
+    unresolvable = sorted(
+        name
+        for name in _RETRIEVAL_SUBTREE
+        if importlib.util.find_spec(name) is None
+    )
+    assert not unresolvable, (
+        f"_RETRIEVAL_SUBTREE names {unresolvable}, which no longer resolve to "
+        "importable modules. A misspelled or renamed entry silently drops out "
+        "of the absence assertion in "
+        "test_a_gate_skipped_fire_does_not_load_the_retrieval_subtree."
+    )
+
+    stray = sorted(_REACHED_BY_A_RETRIEVING_FIRE - set(_RETRIEVAL_SUBTREE))
+    assert not stray, (
+        f"_REACHED_BY_A_RETRIEVING_FIRE names {stray}, which are not on the "
+        "ban list, so pinning them as reached constrains nothing."
+    )
