@@ -509,6 +509,52 @@ def _normalize_for_session(
     }
 
 
+_RING_RECORD_FIELDS: Final[frozenset[str]] = frozenset(
+    _normalize_for_session({}, "", 0),
+)
+"""Every field a ring record on disk is expected to carry.
+
+Derived from :func:`_normalize_for_session`'s own fresh-record shape
+rather than restated, so a field added there cannot drift out of
+:func:`_complete_ring_record`'s idea of "complete".
+"""
+
+
+def _complete_ring_record(
+    data: dict[str, Any], session_id: str,
+) -> dict[str, Any]:
+    """Return ``data`` with the ring fields it is missing filled in (#1522).
+
+    Only *absent* fields are added, each with the default
+    :func:`_normalize_for_session` gives a fresh record; every field
+    ``data`` already carries is passed through untouched, including a
+    neighbouring session's ``session_id`` and ring. That is the whole
+    point — the caller, :func:`_locked_bash_mutate`, exists precisely
+    because reshaping a co-tenant's record discards it.
+
+    Needed because "is there a record here at all" is not the same
+    question as "is the record here complete". A file holding
+    ``{"bash": {}}`` — what an aelfrice that only ever stamped a turn
+    leaves behind, and what a hand edit can leave behind — is truthy,
+    so an emptiness check alone lets it through and the record is
+    written back still missing ``ring_max``, ``evicted_total`` and the
+    rest. The raw readers of this file do not normalize: ``aelf
+    doctor`` renders that record as "0/None ids (evicted None this
+    session)".
+
+    Out of scope, deliberately: a field that is *present* but of the
+    wrong type. It was on disk before this function ran and is left as
+    it was found, because coercing it would mean rewriting a
+    co-tenant's record — the defect this path was built to avoid. Every
+    reader that consumes the record for its owner already coerces on
+    read through :func:`_normalize_for_session`.
+    """
+    if _RING_RECORD_FIELDS <= data.keys():
+        return data
+    seeded = _normalize_for_session({}, session_id, _resolve_ring_max())
+    return {**seeded, **data}
+
+
 def filter_against_ring(
     session_id: str | None,
     beliefs: list[Any],
@@ -891,8 +937,10 @@ def _locked_bash_mutate(
 
     Reads the ring file under the same advisory lock as
     :func:`_locked_phantom_mutate`, hands ``apply_fn`` the normalized
-    ``bash`` map, and writes every other key back exactly as it was
-    read.
+    ``bash`` map, and writes every other key the record carries back
+    exactly as it was read. Keys it does *not* carry are filled in with
+    their defaults by :func:`_complete_ring_record`, so a partial
+    record on disk is completed rather than written back partial.
 
     Deliberately not :func:`_locked_phantom_mutate`, which reshapes the
     whole record for the calling session and therefore *discards* it
@@ -922,17 +970,14 @@ def _locked_bash_mutate(
             return False
         try:
             data = _read_ring_unlocked(ring_path)
-            if not data:
-                # Nothing on disk (no ring yet, or one that would not
-                # parse), so there is no co-tenant record to preserve
-                # and the seeding below takes nothing from anyone. It
-                # earns its place because the raw readers of this file
-                # expect the record's fields to be present:
-                # `_print_doctor_session_ring` renders a `bash`-only
-                # file as "0/None ids (evicted None this session)".
-                data = _normalize_for_session(
-                    data, session_id, _resolve_ring_max(),
-                )
+            # Fill in whichever ring fields are absent — nothing on
+            # disk at all, or a record that carries some of them.
+            # Emptiness alone was not the right test: `{"bash": {}}`
+            # is truthy and would be written back still missing
+            # `ring_max` and `evicted_total`, which the raw readers of
+            # this file expect to be present. Whatever the record does
+            # carry, including a co-tenant's ring, is passed through.
+            data = _complete_ring_record(data, session_id)
             bash = _normalize_bash_state(data.get("bash"))
             apply_fn(bash)
             data["bash"] = bash
