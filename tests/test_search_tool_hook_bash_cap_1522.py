@@ -624,3 +624,105 @@ def test_a_first_stamp_leaves_a_ring_file_doctor_can_render(
     assert "None" not in line, line
     assert line.startswith("injection ring: 0/"), line
     assert "evicted 0 this session" in line, line
+
+
+# Enumerated independently of `session_ring`'s own idea of the shape, so
+# a field dropped from the record fails here rather than agreeing with
+# itself. Matches `_normalize_for_session`'s fresh-record return.
+_REQUIRED_RING_FIELDS = (
+    "session_id", "ring", "ring_max", "next_fire_idx", "evicted_total",
+    "bytes_at_last_fire", "fire_idx_at_last_fire", "classifications",
+    "phantom_fires", "phantom_dedup", "phantom_contradicts", "phantom_init",
+    "promotion_fires", "promotion_dedup", "bash",
+)
+
+# Every shape that reaches the Bash-mutate path holding *something* — so
+# an emptiness check passes it through — while still missing required
+# fields. The empty file is the other half and has its own test above.
+_PARTIAL_RING_RECORDS = [
+    pytest.param({"bash": {}}, id="bash-key-only-empty"),
+    pytest.param(
+        {"bash": {"older-session": {
+            "turn_id": 3, "fires": 1, "fires_turn_id": 3, "seq": 1,
+        }}},
+        id="bash-key-only-populated",
+    ),
+    pytest.param({"bash": 7}, id="bash-value-not-a-dict"),
+    pytest.param(
+        {"session_id": "partial-owner", "ring": [], "next_fire_idx": 2},
+        id="some-fields-not-all",
+    ),
+]
+
+
+@pytest.mark.parametrize("on_disk", _PARTIAL_RING_RECORDS)
+def test_a_partial_ring_record_is_completed_not_written_back_partial(
+    hook_env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    on_disk: dict[str, object],
+) -> None:
+    """A record that is present but incomplete is completed by the stamp.
+
+    "Is there a record here at all" is not "is the record complete".
+    `{"bash": {}}` is truthy — an aelfrice that had only ever stamped a
+    turn leaves exactly that behind, and so can a hand edit — so an
+    emptiness check alone lets it through and the mutator writes the
+    Bash map back on top of a record still missing `ring_max` and
+    `evicted_total`. The raw readers of this file do not normalize:
+    `_print_doctor_session_ring` renders such a record as "0/None ids
+    (evicted None this session)".
+    """
+    # Imported here, not at module scope: this module asserts on import
+    # graphs and `aelfrice.cli` is the heaviest import in the tree.
+    from aelfrice.cli import _print_doctor_session_ring
+
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    session = "partial-record-session"
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    ring_path.parent.mkdir(parents=True, exist_ok=True)
+    ring_path.write_text(json.dumps(on_disk), encoding="utf-8")
+
+    assert stamp_bash_turn(session) is True
+
+    after = json.loads(ring_path.read_text(encoding="utf-8"))
+    missing = [f for f in _REQUIRED_RING_FIELDS if f not in after]
+    assert missing == [], missing
+    # The stamp still landed — a mutator that stopped writing at all
+    # would leave the file complete-looking too.
+    assert after["bash"][session]["turn_id"] == 1, after["bash"]
+
+    buf = io.StringIO()
+    _print_doctor_session_ring(buf)
+    line = buf.getvalue().strip()
+    assert "None" not in line, line
+
+
+def test_completing_a_partial_record_keeps_the_fields_it_had(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Completion adds absent fields; it does not reshape present ones.
+
+    The co-tenant guarantee has to survive the completion: a neighbour's
+    half-written record comes back with its own `session_id` and its own
+    ring, not reseeded for the session that happened to stamp. Only the
+    fields that were absent may appear.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    owner, stamper = "partial-tenant-B", "partial-tenant-A"
+    on_disk: dict[str, object] = {
+        "session_id": owner,
+        "ring": [{"id": "tenant-b-1", "fire_idx": 0}],
+        "next_fire_idx": 7,
+        "classifications": [True, False],
+    }
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    ring_path.parent.mkdir(parents=True, exist_ok=True)
+    ring_path.write_text(json.dumps(on_disk), encoding="utf-8")
+
+    assert stamp_bash_turn(stamper) is True
+
+    after = json.loads(ring_path.read_text(encoding="utf-8"))
+    for field, want in on_disk.items():
+        assert after[field] == want, field
+    assert [f for f in _REQUIRED_RING_FIELDS if f not in after] == []
+    assert after["bash"][stamper]["turn_id"] == 1, after["bash"]
