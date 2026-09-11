@@ -3871,12 +3871,34 @@ def bm25f_cache_for_lane(store: MemoryStore, *, now_ts: int) -> BM25IndexCache:
     `now_ts` is passed rather than read here so the caller keeps its single
     wall-clock read (#1143): the anchor-weight resolver and the
     `bm25_l0_ratio` signal write in the lane must see the same timestamp.
+
+    Three of the four resolve from env and TOML, so two processes agree on
+    them by construction. `anchor_weight` does not: under the #757
+    meta-belief it decodes a *decaying* posterior, so the warm reading its
+    clock at T and the first fire reading its own at T+30s can land on
+    different integers in the `[1, 10]` band. Sharing this function is
+    therefore not enough on its own — it makes both sides call the same
+    resolver, not see the same answer. While a sidecar for this store is
+    fresh, the weight it was built under is the answer both sides take:
+    `bm25.sidecar_anchor_weight` reads it back off the blob's header. That
+    costs the flag-on path one stat-sized read and, in exchange, the warm's
+    blob is the one the fire loads instead of one the fire rejects.
+
+    The pin lifts the moment the store is written to, because the stamp then
+    no longer matches and a rebuild is due anyway; a moved meta-belief takes
+    effect there. With the flag off — how it ships — nothing is read and the
+    four values are exactly what the resolvers return.
     """
+    anchor_weight = resolve_bm25f_anchor_weight_with_meta(store, now_ts=now_ts)
+    if is_meta_belief_bm25f_anchor_weight_enabled():
+        from aelfrice.bm25 import sidecar_anchor_weight  # noqa: PLC0415
+
+        pinned = sidecar_anchor_weight(store)
+        if pinned is not None:
+            anchor_weight = pinned
     return _store_scoped_bm25f_cache(
         store,
-        anchor_weight=resolve_bm25f_anchor_weight_with_meta(
-            store, now_ts=now_ts,
-        ),
+        anchor_weight=anchor_weight,
         k3=resolve_bm25_k3(),
         per_field=resolve_bm25f_per_field(),
         b_anchor=resolve_bm25_b_anchor(),

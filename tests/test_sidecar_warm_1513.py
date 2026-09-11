@@ -389,3 +389,204 @@ def test_the_env_var_suppresses_the_spawn(
     monkeypatch.delenv("AELF_NO_SIDECAR_WARM", raising=False)
     assert spawn_sidecar_warm() is True
     assert len(spawned) == 1
+
+
+# ---- the decaying parameter: sharing a resolver is not sharing an answer ----
+#
+# Three of the four index parameters resolve from env and TOML, so two
+# processes agree on them by construction. `anchor_weight` does not: under
+# the #757 meta-belief it decodes a decaying posterior, so the warm reading
+# its clock and the fire reading its own seconds later can land on different
+# integers. `_load_sidecar` then rejects the blob and the fire rebuilds --
+# the warm becomes pure cost, with nothing in the outcome vocabulary saying
+# the feature stopped working.
+#
+# The two timestamps below are a real crossing of the 30-day-half-life decay
+# under twenty `bm25_l0_ratio` evidence events, found by bisection rather
+# than assumed; the test asserts the divergence before it relies on it.
+
+_T_WARM: int = 1_704_450_164
+_T_FIRE: int = _T_WARM + 30
+
+
+def _install_a_moving_anchor_weight(db: Path) -> None:
+    """Give the store a #757 meta-belief still moving through the band."""
+    import aelfrice.retrieval as r
+    from aelfrice.meta_beliefs import SIGNAL_BM25_L0_RATIO
+
+    store = MemoryStore(str(db))
+    try:
+        r.install_bm25f_anchor_weight_meta_belief(store, now_ts=1_700_000_000)
+        for _ in range(20):
+            store.update_meta_belief(
+                r.META_BM25F_ANCHOR_WEIGHT_KEY,
+                SIGNAL_BM25_L0_RATIO,
+                1.0,
+                now_ts=1_700_000_000,
+            )
+    finally:
+        store.close()
+
+
+def _resolved_at(db: Path, ts: int) -> int:
+    import aelfrice.retrieval as r
+
+    store = MemoryStore(str(db))
+    try:
+        return r.resolve_bm25f_anchor_weight_with_meta(store, now_ts=ts)
+    finally:
+        store.close()
+
+
+def _warm_at(ts: int, monkeypatch: pytest.MonkeyPatch) -> str | None:
+    """Run the warm child with its wall clock pinned to `ts`."""
+    import time
+
+    from aelfrice.sidecar_warm import warm_sidecar
+
+    real = time.time
+    time.time = lambda: float(ts)  # type: ignore[assignment]
+    try:
+        return warm_sidecar()
+    finally:
+        time.time = real  # type: ignore[assignment]
+
+
+def test_a_thirty_second_gap_does_not_make_the_fire_reject_the_warm_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warm's blob must survive the clock gap it was built across.
+
+    Without the pin the fire resolves its own `anchor_weight`, differs from
+    the warm's by one, and `_load_sidecar` throws the blob away: the warm
+    pays a full rebuild, the fire pays a second one, and the outcome the
+    audit log records is the same `full_rebuild` it recorded before the
+    feature existed.
+    """
+    import aelfrice.retrieval as r
+    from aelfrice.sidecar_outcome import (
+        last_sidecar_outcome,
+        reset_sidecar_outcome,
+    )
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    _install_a_moving_anchor_weight(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT", "1")
+
+    # The premise, asserted rather than assumed. If the two clocks happened
+    # to decode the same integer the assertion below would pass on the
+    # unfixed code and prove nothing.
+    at_warm = _resolved_at(db, _T_WARM)
+    at_fire = _resolved_at(db, _T_FIRE)
+    assert at_warm != at_fire, (
+        "the two timestamps resolve the same anchor_weight, so this test "
+        f"cannot see the divergence it exists to pin ({at_warm} == {at_fire})"
+    )
+
+    assert _warm_at(_T_WARM, monkeypatch) == "full_rebuild"
+    assert _sidecar(db).exists()
+
+    reset_sidecar_outcome()
+    store = MemoryStore(str(db))
+    try:
+        cache = r.bm25f_cache_for_lane(store, now_ts=_T_FIRE)
+        cache.get()
+    finally:
+        store.close()
+
+    assert cache.anchor_weight == at_warm, (
+        "the fire resolved its own anchor_weight instead of the one the "
+        f"fresh sidecar carries ({cache.anchor_weight} != {at_warm})"
+    )
+    assert last_sidecar_outcome() == "fresh", (
+        "the fire rejected the warm's blob over a one-integer anchor_weight "
+        "difference that a 30-second clock gap produced; the warm is pure "
+        "cost in this configuration"
+    )
+
+
+def test_a_store_write_lifts_the_pin_so_the_meta_belief_still_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The distinguishing half. Pinning to the blob must not freeze the knob.
+
+    A fix that always took the sidecar's `anchor_weight` would satisfy the
+    test above and silently stop the #757 meta-belief from ever taking
+    effect. The pin is scoped to a *fresh* blob, so the first write to the
+    store lifts it -- and a rebuild is due at that point anyway.
+    """
+    import aelfrice.retrieval as r
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    _install_a_moving_anchor_weight(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT", "1")
+
+    at_warm = _resolved_at(db, _T_WARM)
+    at_fire = _resolved_at(db, _T_FIRE)
+    assert at_warm != at_fire
+
+    assert _warm_at(_T_WARM, monkeypatch) == "full_rebuild"
+
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk("L9", "a belief written after the warm"))
+    finally:
+        store.close()
+
+    store = MemoryStore(str(db))
+    try:
+        cache = r.bm25f_cache_for_lane(store, now_ts=_T_FIRE)
+    finally:
+        store.close()
+
+    assert cache.anchor_weight == at_fire, (
+        "a stale sidecar is still pinning the anchor_weight, so the #757 "
+        f"meta-belief can never move it ({cache.anchor_weight} != {at_fire})"
+    )
+
+
+def test_with_the_meta_belief_flag_off_the_sidecar_pins_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blast radius. The flag ships off, and off must read nothing.
+
+    A sidecar built under `anchor_weight` 9 sits next to the store. With the
+    flag off the lane must still resolve `DEFAULT_ANCHOR_WEIGHT`, and must
+    not open the blob to find that out.
+    """
+    import aelfrice.bm25 as b
+    import aelfrice.retrieval as r
+    from aelfrice.bm25 import DEFAULT_ANCHOR_WEIGHT
+
+    db = tmp_path / "memory.db"
+    _seed(db)
+    _install_a_moving_anchor_weight(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    monkeypatch.setenv("AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT", "1")
+    assert _warm_at(_T_WARM, monkeypatch) == "full_rebuild"
+    store = MemoryStore(str(db))
+    try:
+        assert b.sidecar_anchor_weight(store) == _resolved_at(db, _T_WARM)
+    finally:
+        store.close()
+
+    monkeypatch.delenv("AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT")
+    peeked: list[object] = []
+    monkeypatch.setattr(r, "_store_scoped_bm25f_cache", lambda s, **kw: kw)
+    monkeypatch.setattr(
+        b, "sidecar_anchor_weight", lambda s: peeked.append(s) or 9
+    )
+
+    store = MemoryStore(str(db))
+    try:
+        passed = r.bm25f_cache_for_lane(store, now_ts=_T_FIRE)
+    finally:
+        store.close()
+
+    assert passed["anchor_weight"] == DEFAULT_ANCHOR_WEIGHT, passed
+    assert peeked == [], "the flag-off path read the sidecar header"

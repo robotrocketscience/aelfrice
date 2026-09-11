@@ -1554,6 +1554,62 @@ def sidecar_path_for(
     return Path(db_path + _SIDECAR_SUFFIX)
 
 
+def sidecar_anchor_weight(store: MemoryStore) -> int | None:
+    """The `anchor_weight` a *fresh* sidecar for `store` was built under.
+
+    Returns None when there is no readable sidecar, when the blob belongs to
+    another store, when its generation stamp is stale, or when either header
+    fails to parse. Reads the two fixed-width headers and nothing else — a
+    few dozen bytes — so a caller can consult it on the path that decides
+    what to build, before any deserialisation happens.
+
+    Why the parameter is worth reading back off the blob: `anchor_weight` is
+    the one index parameter resolved from a *decaying* posterior (#757), so
+    two processes that read their own wall clocks seconds apart can decode
+    different integers out of the `[1, 10]` band. `_load_sidecar` then
+    rejects the blob, which is correct — the two describe different
+    documents — but it makes the out-of-band warm (#1513) pay a full build
+    and leave the fire it was meant to spare rebuilding anyway.
+    """
+    path = sidecar_path_for(store)
+    if path is None:
+        return None
+    outer_len = len(_SIDECAR_MAGIC) + 4 + 8 + 4
+    inner_len = len(_SERIALIZE_MAGIC) + 4 + 4
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(outer_len)
+            if len(head) < outer_len:
+                return None
+            if head[: len(_SIDECAR_MAGIC)] != _SIDECAR_MAGIC:
+                return None
+            off = len(_SIDECAR_MAGIC)
+            if int(np.frombuffer(head, np.uint32, 1, off)[0]) != _SIDECAR_VERSION:
+                return None
+            off += 4
+            generation = int(np.frombuffer(head, np.uint64, 1, off)[0])
+            off += 8
+            scope_len = int(np.frombuffer(head, np.uint32, 1, off)[0])
+            scope = fh.read(scope_len)
+            if len(scope) < scope_len:
+                return None
+            if scope.decode("utf-8") != store.local_scope_id:
+                return None
+            if generation != store.store_generation():
+                return None
+            inner = fh.read(inner_len)
+            if len(inner) < inner_len:
+                return None
+            if inner[: len(_SERIALIZE_MAGIC)] != _SERIALIZE_MAGIC:
+                return None
+            ioff = len(_SERIALIZE_MAGIC)
+            if int(np.frombuffer(inner, np.uint32, 1, ioff)[0]) != _SERIALIZE_VERSION:
+                return None
+            return int(np.frombuffer(inner, np.int32, 1, ioff + 4)[0])
+    except Exception:  # noqa: BLE001 — an unreadable sidecar just means "resolve normally"
+        return None
+
+
 # #1407. The per-fire sidecar-outcome snapshot lives in `aelfrice.sidecar_outcome`,
 # a leaf module that imports nothing outside the standard library. `bm25` writes it
 # and re-exports it here so existing callers keep working; the hook reads and resets
