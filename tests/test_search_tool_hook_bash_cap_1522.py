@@ -540,3 +540,47 @@ def test_a_turn_stamp_leaves_a_co_tenants_ring_record_intact(
     assert after["bash"][sess_b] == before["bash"][sess_b]
     # The stamp did happen: A's own entry advanced to turn 1.
     assert after["bash"][sess_a]["turn_id"] == 1, after["bash"]
+
+
+def test_a_hand_edited_bash_map_is_bounded_on_the_next_write(
+    hook_env: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversize map read off disk comes back trimmed, not carried.
+
+    `BASH_STATE_MAX_SESSIONS` is enforced when the map is *written* too,
+    so every path that adds an entry stays bounded on its own. This pins
+    the other half: a ring file that already holds more entries than the
+    cap — hand-edited, or left by an older build — is trimmed the next
+    time the map is normalized, rather than being written back oversize
+    by a path that adds no entry of its own.
+    """
+    monkeypatch.setenv("AELFRICE_DB", hook_env["AELFRICE_DB"])
+    owner = "hand-edited-owner"
+    oversize = 20
+    assert oversize > BASH_STATE_MAX_SESSIONS
+    ring_path = Path(hook_env["AELFRICE_DB"]).parent / SESSION_RING_FILENAME
+    ring_path.parent.mkdir(parents=True, exist_ok=True)
+    ring_path.write_text(
+        json.dumps({
+            "session_id": owner,
+            "ring": [],
+            "next_fire_idx": 0,
+            "bash": {
+                f"hand-{i:02d}": {
+                    "turn_id": 1, "fires": 1, "fires_turn_id": 1, "seq": i,
+                }
+                for i in range(oversize)
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    # An injection write for the session that already owns the record:
+    # it normalizes the map without touching any entry in it.
+    assert append_ids(owner, ["hand-edited-belief"]) >= 0
+
+    after = json.loads(ring_path.read_text(encoding="utf-8"))
+    assert sorted(after["bash"]) == [
+        f"hand-{i:02d}"
+        for i in range(oversize - BASH_STATE_MAX_SESSIONS, oversize)
+    ], sorted(after["bash"])
