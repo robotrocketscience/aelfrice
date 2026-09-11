@@ -83,11 +83,18 @@ each site with its own corpus label and date.
 
 **Corrected, and deliberately not marked.** `class RetrievalCache` is absent
 from `src/` at `v1.0.1` and at `v1.0.2` and present at `v1.0.3`, added by
-`0c27a937`. Eight ship-version claims carried the wrong literal: five in
-[`bfs_multihop.md`](bfs_multihop.md) and three in
-[`bayesian_ranking.md`](bayesian_ranking.md). All eight now read v1.0.3.
+`0c27a937`. Every sentence in [`bfs_multihop.md`](bfs_multihop.md) and
+[`bayesian_ranking.md`](bayesian_ranking.md) that dated the *wrapper* now reads
+v1.0.3, except the one that quotes the spec's own v1.0.1 wording and says in
+the next clause that the quotation is the target and not the ship date. No
+count is published for how many sites that was: the honest way to see them is
+to read them, so run
 
-To re-derive it, run:
+```
+git grep -n 'RetrievalCache' docs/design/bfs_multihop.md docs/design/bayesian_ranking.md
+```
+
+To re-derive the ship version itself, run:
 
 ```
 git grep -l 'class RetrievalCache' v1.0.1 -- src   # no output, exit 1
@@ -97,16 +104,27 @@ git grep -l 'class RetrievalCache' v1.0.3 -- src   # src/aelfrice/retrieval.py
 
 A marker does not fit this figure. The grammar binds a number a producer
 emits from the shipped code, and a first-shipped-at version is a property of
-git history instead — it needs tags a shallow CI checkout may not have. The
-three commands above are the re-derivation, and they are recorded in the prose
-at each corrected site.
+git history instead — it needs tags a shallow CI checkout may not have. The three
+tag greps above are the re-derivation, and they are recorded in the prose at
+each corrected site.
 
-One nearby literal is correct and must stay: the store-level invalidation
-registry really did ship at v1.0.1. `add_invalidation_callback` is present at
-that tag, and `insert_edge`, `update_edge` and `delete_edge` all call
-`_fire_invalidation()` there, so the v1.0.1 reference in
-[`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py) is about the
-policy rather than the wrapper.
+**The first pass of this sweep over-corrected, and that is the part worth
+recording.** Not every `v1.0.1` near the cache dates the wrapper. The
+store-level invalidation registry — the wipe-on-write policy — really did ship
+at v1.0.1: `add_invalidation_callback` is present at that tag, and
+`insert_edge`, `update_edge` and `delete_edge` all call `_fire_invalidation()`
+there. A sentence about the policy therefore says v1.0.1 and is right. The
+sites that do are `bfs_multihop.md`'s § Non-goals bullet and its
+decision-table row, both of which the first pass changed and this one puts
+back, and the reference in
+[`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py), which it left
+alone. § Cache invalidation in `bfs_multihop.md` now states the test — does
+this sentence date the class or the policy? — beside both dates.
+
+This class of error is invisible to the gate in this branch, and deliberately
+so: `_MASKS` strips dotted version strings before figure extraction, because a
+version is not a measured figure. A version literal is checked by reading it,
+not by running the gate.
 
 ### #1451 — "thirteen mutations" over a list that enumerated twelve
 
