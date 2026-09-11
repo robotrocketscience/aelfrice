@@ -106,8 +106,17 @@ def warm_sidecar() -> str | None:
     tidy: a sidecar written under different tokenisation parameters is
     rejected by `_load_sidecar` as describing different documents, so a warm
     that resolved its own parameters would pay the whole expensive build and
-    still leave the next fire rebuilding. Sharing the call makes the two
-    unable to drift apart rather than merely asking them not to.
+    still leave the next fire rebuilding.
+
+    Sharing the call is not on its own sufficient, because it makes the two
+    sides run the same resolvers rather than see the same answer: under the
+    #757 meta-belief `anchor_weight` decodes a decaying posterior, and this
+    child's clock is minutes behind the fire's by design. The helper closes
+    that gap by taking the weight off a fresh sidecar when one exists; see
+    `retrieval.bm25f_cache_for_lane`.
+
+    `now_ts` is this child's own wall clock and is not the lane's. Nothing
+    it decides may depend on the two agreeing.
     """
     try:
         import time  # noqa: PLC0415
