@@ -313,7 +313,7 @@ appended unconditionally and never trimmed by the budget (#379). The pack
 loop this budget drives is therefore never entered.
 
 Measured on a 300-lock store of 150-character beliefs: 300 hits and 61,144
-rendered bytes at `token_budget=1`, at 1500, at 2140 and at 100000 alike
+rendered bytes at `token_budget=1`, at 1500 and at 100000 alike
 (`tests/test_render_cost_1526.py`
 ::`test_session_start_budget_does_not_bind_on_its_own_lane`, which drives
 the real `_retrieve_baseline_with_block` rather than a monkeypatch).

@@ -33,18 +33,23 @@ A budget that ends no pack is not evidence about that budget. This module
 checks that by re-running an arm with **every budget that can end its pack**
 raised by `SATURATION_PROBE_FACTOR` — `token_budget` *and*
 `l25_token_subbudget`, because the L2.5 sub-pack has its own cap and a pack
-ended by that cap does not move when `token_budget` alone is raised. Round 2 of
-#1526 found exactly that error: on `ups` at 92 content characters the pack
-returned 53 hits at `token_budget=2140` and 53 at 1,000,000, but 55 once the
-sub-budget was raised to match.
+ended by that cap does not move when `token_budget` alone is raised.
 
-The result is recorded per arm as `before_saturated` / `after_saturated`, and
-**a byte count is printed either way**. Saturation makes a cell weak evidence
-about the budget; it does not make the bytes unreal, and the earlier version of
-this module suppressed whole cells whose deviation ran to 53%.
+Round 2 of #1526 found exactly that error, and it reproduces on the shipped
+tree. On `ups` at 92 content characters, against a store of 300 beliefs, the
+pack returns 58 hits at `token_budget=6000` and 58 at 1,500,000 with the
+sub-budget left at its default 400 — and 60 at `token_budget=6000` with the
+sub-budget at 1600. A probe that varied `token_budget` alone read that as a
+budget binding on nothing, and suppressed the cell.
 
-Only one case is genuinely uninformative: **both** arms saturated, where the
-two arms return the same whole candidate pool and their equality is an equality
+Each arm records which cap ended it as `before_binds_on` / `after_binds_on`,
+and **a byte count is printed either way**. An arm that ended on the candidate
+pool is weak evidence about the budget; its bytes are still the bytes the model
+receives, and the earlier version of this module suppressed whole cells whose
+deviation ran to 53%.
+
+Only one case is genuinely uninformative: **both** arms ending on the pool,
+where the two arms return the same candidates and their equality is an equality
 of pools. Those cells are marked `pool_equality: true`. Their bytes are still
 reported.
 
@@ -488,9 +493,10 @@ def _measure(lane: str, store: Any, budget: int, *, legacy: bool) -> tuple[Arm, 
     correction.** The earlier version raised only `token_budget` while
     `l25_token_subbudget` stayed at the module default, so a pack the L2.5
     sub-cap had ended read as a budget that does not bind, and the cell was
-    suppressed. Measured on `ups` at 92 content characters: 53 hits at
-    `token_budget=2140` and 53 at 1,000,000, but 55 once the sub-budget was
-    raised to match — against a pool of 299.
+    suppressed. Measured on `ups` at 92 content characters, against a store of
+    300 beliefs: 58 hits at `token_budget=6000` and 58 at 1,500,000 with the
+    sub-budget at its default 400, but 60 at `token_budget=6000` with the
+    sub-budget at 1600.
 
     The arm is returned in every case. A `pool` arm is weak evidence about
     the budget; its bytes are still the bytes the model receives, and
