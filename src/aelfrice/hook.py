@@ -418,13 +418,22 @@ existing store — most of which contain no phantoms at all. Conditional keeps
 the no-phantom block byte-identical to pre-#1171 output.
 
 #1526 measured what this header costs and deliberately left it uncharged.
-It is 502 characters, 126 tokens at the 4-chars-per-token estimator, and it
-is emitted ahead of the first belief by four formatters (`_format_hits`,
+It is 502 characters -- 126 tokens, which is `(502 + 3) // 4` at the
+4-chars-per-token estimator and not a separately measured figure -- and it is
+emitted ahead of the first belief by four formatters (`_format_hits`,
 `_format_hits_with_session_start`, `_format_baseline_hits`, and
 `hook_agent_context._build_block`, which imports `_framing_header_for` from
-here; `test_every_block_that_emits_the_framing_header_is_enumerated` counts
-those call sites off the tree so a fifth cannot arrive unnoticed).
+here).
 <!-- derived: benchmarks/injection_budget_bytes.py#framing_header_chars = 502 -->
+
+`test_every_block_that_emits_the_framing_header_is_enumerated` holds that
+count against the tree rather than against a list, because the follow-up
+issue's accounting rests on it. Read its guarantee precisely: it scans the
+package for call sites by AST and for modules naming `_framing_header_for` at
+all, which catches a direct call, an attribute call, an aliased import, a
+`getattr` and a call through a local. A name assembled at run time from
+pieces defeats both scans. So a fifth emitter added in any ordinary way fails
+that test, and one added in that one way does not.
 
 Reserving it out of the retrieval budget is a separable change from the
 per-belief cost correction #1526 lands, and an uncompensated one. How much

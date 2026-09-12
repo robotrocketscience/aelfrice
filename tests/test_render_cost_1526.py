@@ -863,15 +863,28 @@ def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
     )
     from aelfrice.hook_agent_context import _build_block
 
-    # The enumeration has to come off the tree, not off this list. A
-    # hand-written list of four formatters makes `len(...) == 4` true by
-    # construction: it stays green when a fifth emitter is added, which is
-    # the only event it exists to catch. So count the call sites instead,
-    # and only then check that each one named here renders the header.
+    # The enumeration has to come off the tree, not off a list written here.
+    # A hand-written list of four formatters makes `len(...) == 4` true by
+    # construction: it stayed green when a fifth emitter was added, which is
+    # the only event it exists to catch.
+    #
+    # Two scans, because neither alone is enough. The AST scan says WHERE the
+    # header is emitted, which is the fact the follow-up issue cites. It is a
+    # name match on the call, so it sees a direct call and an attribute call
+    # and misses a call through an alias, a `getattr`, or a local. The module
+    # scan closes those: every one of them still has to spell
+    # `_framing_header_for` somewhere in its source to reach the function, so
+    # the set of modules mentioning the name at all is the wider net. A name
+    # assembled at run time from pieces defeats both, and nothing here claims
+    # otherwise.
     src_root = Path(aelfrice.__file__).parent
     call_sites: list[tuple[str, int]] = []
+    mentioning: set[str] = set()
     for path in sorted(src_root.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        source = path.read_text(encoding="utf-8")
+        if "_framing_header_for" in source:
+            mentioning.add(path.name)
+        for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
@@ -883,10 +896,14 @@ def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
                 continue
             if called == "_framing_header_for":
                 call_sites.append((path.name, node.lineno))
-    # `ast.walk` is breadth-first, so it does not yield call sites in source
-    # order; sort so a function moving within a module cannot flip this list.
+    # `ast.walk` is breadth-first, so the sites come out in node order rather
+    # than source order. Sort them for a stable failure message.
     call_sites.sort()
 
+    assert mentioning == {"hook.py", "hook_agent_context.py"}, (
+        "a module names `_framing_header_for` that this enumeration does not "
+        f"know about; #1526's follow-up rests on the emitter set: {mentioning}"
+    )
     assert [name for name, _ in call_sites] == [
         "hook.py",
         "hook.py",
@@ -904,6 +921,5 @@ def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
         _format_baseline_hits(hits),
         _build_block(list(hits)),
     ]
-    assert len(rendered) == len(call_sites)
     assert all(_FRAMING_HEADER in block for block in rendered)
     assert len(_FRAMING_HEADER) == 502
