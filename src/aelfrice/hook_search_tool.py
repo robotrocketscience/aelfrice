@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Final, cast
 
+from aelfrice.render_cost import chars_to_tokens
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 QUERY_TOKEN_LIMIT: Final[int] = 5
@@ -48,9 +49,20 @@ MIN_TOKEN_LEN: Final[int] = 3
 Filters single-letter regex anchors (\\b, \\d) and 2-char noise."""
 
 INJECTED_TOKEN_BUDGET: Final[int] = 600
-"""Token budget for retrieve() — one-quarter of the user-facing default
-(2400). Auxiliary context should not crowd out the user's primary turn
-budget."""
+"""Token budget for retrieve() — one-quarter of the user-facing default.
+Auxiliary context should not crowd out the user's primary turn budget.
+
+**#1526 did not move this number, and it changed what the number buys.**
+This lane emits `[L0] <id-prefix>: <content>` truncated to
+`PER_LINE_CHAR_CAP`, not the `<belief …>` element the other injection
+lanes render, and before #1526 it was nonetheless charged that element:
+the `[L0] <id-prefix>: ` prefix was 23 characters it paid nothing for and
+the truncation was bytes it paid for twice over. It now passes
+`_belief_line_cost` to `retrieve()` as `belief_cost_fn`, so the budget is
+spent in the currency this lane emits. The direction of the change is
+length-dependent — on short beliefs the uncharged prefix dominates and the
+block shrinks; past the per-line cap the truncation dominates and it grows.
+`benchmarks/injection_budget_bytes.py` publishes the curve."""
 
 INJECTED_L1_LIMIT: Final[int] = 10
 """L1 result cap. Lower than retrieval default to bound injection size."""
@@ -69,6 +81,10 @@ _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 # Halved budget vs. the v1.2.x Grep|Glob path. Bash extraction is one
 # parse hop further from the agent's intent so the auxiliary-context
 # allowance shrinks correspondingly. Spec § Token budget.
+#
+# #1526 did not move it. It is spent through `_belief_line_cost` now, the
+# same as `INJECTED_TOKEN_BUDGET` above — this lane renders the same line
+# shape at a smaller `BASH_INJECTED_L1_LIMIT`.
 BASH_INJECTED_TOKEN_BUDGET: Final[int] = 300
 BASH_INJECTED_L1_LIMIT: Final[int] = 5
 
@@ -568,6 +584,83 @@ def _extract_query(payload: dict[str, object]) -> str | None:
     return " OR ".join(tokens[:QUERY_TOKEN_LIMIT])
 
 
+def _belief_line(b: object, locked_ids: "set[str] | frozenset[str]") -> str | None:
+    """Render one result line, or None for a belief this lane drops.
+
+    `[{tier}] {id-prefix}: {content}`, newline-flattened and truncated to
+    `PER_LINE_CHAR_CAP`. This is the whole of what the lane emits per
+    belief -- there is no `<belief …>` element on this path.
+
+    Extracted (#1526) so `_belief_line_cost` charges exactly this, by
+    building it. A width transcribed into the cost function instead would
+    be a second copy free to drift, and the truncation is not expressible
+    as a width at all.
+    """
+    from aelfrice.hook import _escape_for_hook_block  # noqa: PLC0415
+    from aelfrice.models import (  # noqa: PLC0415
+        LOCK_TIER_REFERENCE,
+        LOCK_USER,
+    )
+    from aelfrice.retrieval import _lock_topic  # noqa: PLC0415
+
+    bid = getattr(b, "id", "") or ""
+    content = getattr(b, "content", "") or ""
+    if not bid or not content:
+        return None
+    # #1016-B: a reference-tier lock shows its bounded topic (full
+    # text on demand via `aelf locked`), not full content. getattr-based
+    # so this stays tolerant of the partial-stub `object` inputs the
+    # function already accepts (not the full is_reference_lock helper).
+    is_ref = (
+        getattr(b, "lock_level", "") == LOCK_USER
+        and getattr(b, "lock_tier", "") == LOCK_TIER_REFERENCE
+    )
+    if is_ref:
+        tier = "L0-ref"
+        content = _lock_topic(content)
+    else:
+        tier = "L0" if bid in locked_ids else "L1"
+    prefix = bid[:16]
+    line = f"[{tier}] {prefix}: {_escape_for_hook_block(content)}".replace(
+        "\n", " ",
+    )
+    if len(line) > PER_LINE_CHAR_CAP:
+        line = line[: PER_LINE_CHAR_CAP - 3] + "..."
+    return line
+
+
+def _belief_line_cost(b: object) -> int:
+    """Pack cost of one belief, in the currency this lane emits (#1526).
+
+    Passed to `retrieve()` as `belief_cost_fn`, because this lane does not
+    render the `<belief …>` element `retrieval._belief_tokens` charges. A
+    500-character belief costs 138 tokens under that function and emits a
+    line of 200 characters -- 50 tokens -- here, because
+    `PER_LINE_CHAR_CAP` truncates it. Charging the element made this lane's
+    budget buy less the longer the store's beliefs were, for bytes it never
+    emitted.
+
+    Built from `_belief_line`, so the truncation and the escaping are
+    charged because they happened, not because a width was transcribed.
+    The line's newline is charged as well: `_format_results` joins the
+    lines and the block ends with one, so every line carries exactly one.
+
+    `locked_ids` is deliberately not threaded in: the tier label is `[L0]`
+    or `[L1]` for every non-reference belief and those are the same width,
+    so the tier this function assumes cannot change the count. The
+    reference-lock tier `[L0-ref]` is wider and IS detected, off the
+    belief's own `lock_tier`. `tests/test_render_cost_1526.py` pins both
+    halves of that claim.
+
+    Returns 0 for a belief `_belief_line` drops, which is what it costs:
+    the renderer emits no line for it.
+    """
+    line = _belief_line(b, frozenset())
+    if line is None:
+        return 0
+    return chars_to_tokens(len(line) + 1)
+
+
 def _format_results(
     query: str,
     beliefs: list[object],
@@ -599,7 +692,7 @@ def _format_results(
     # comes from ingested transcript / commit text. Unescaped, any of them
     # can close the attribute or the element and forge a framing tag inside
     # a block the model reads as elevated context. Escape at the boundary.
-    from aelfrice.hook import _escape_attr, _escape_for_hook_block  # noqa: PLC0415
+    from aelfrice.hook import _escape_attr  # noqa: PLC0415
 
     if bash_source is not None:
         cmd_name, raw_cmd = bash_source
@@ -610,37 +703,11 @@ def _format_results(
         )
     else:
         attrs = f'query="{_escape_attr(query)}"'
-    from aelfrice.models import (  # noqa: PLC0415
-        LOCK_TIER_REFERENCE,
-        LOCK_USER,
-    )
-    from aelfrice.retrieval import _lock_topic  # noqa: PLC0415
     lines: list[str] = []
     for b in beliefs:
-        bid = getattr(b, "id", "") or ""
-        content = getattr(b, "content", "") or ""
-        if not bid or not content:
-            continue
-        # #1016-B: a reference-tier lock shows its bounded topic (full
-        # text on demand via `aelf locked`), not full content. getattr-based
-        # so this stays tolerant of the partial-stub `object` inputs the
-        # function already accepts (not the full is_reference_lock helper).
-        is_ref = (
-            getattr(b, "lock_level", "") == LOCK_USER
-            and getattr(b, "lock_tier", "") == LOCK_TIER_REFERENCE
-        )
-        if is_ref:
-            tier = "L0-ref"
-            content = _lock_topic(content)
-        else:
-            tier = "L0" if bid in locked_ids else "L1"
-        prefix = bid[:16]
-        line = f"[{tier}] {prefix}: {_escape_for_hook_block(content)}".replace(
-            "\n", " ",
-        )
-        if len(line) > PER_LINE_CHAR_CAP:
-            line = line[: PER_LINE_CHAR_CAP - 3] + "..."
-        lines.append(line)
+        line = _belief_line(b, locked_ids)
+        if line is not None:
+            lines.append(line)
     if not lines:
         if suppressed_recent > 0:
             turn_attr = (
@@ -793,6 +860,10 @@ def _do_search(
             # #1016-B: this injection path renders reference locks as a
             # bounded topic, so budget them at manifest size too.
             manifest_reference_locks=True,
+            # #1526: this lane renders `[L0] <prefix>: <content>` capped at
+            # PER_LINE_CHAR_CAP, not `<belief …>`, so it charges its own
+            # line. See `_belief_line_cost`.
+            belief_cost_fn=_belief_line_cost,
         )
     finally:
         store.close()
