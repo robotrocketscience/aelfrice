@@ -1,0 +1,394 @@
+{
+  "aelfrice_version": "4.3.0",
+  "captured_at_utc": "2026-09-12T10:33:41Z",
+  "git_commit": "8a1a5aa5dd34adeef6e16366876f21449ac11861",
+  "harness_version": "1",
+  "headline_cut": {
+    "amabench": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "locomo": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "longmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "mab": [
+      {
+        "args": [
+          "--split",
+          "Conflict_Resolution"
+        ],
+        "sub_key": "Conflict_Resolution"
+      },
+      {
+        "args": [
+          "--split",
+          "Test_Time_Learning"
+        ],
+        "sub_key": "Test_Time_Learning"
+      },
+      {
+        "args": [
+          "--split",
+          "Long_Range_Understanding"
+        ],
+        "sub_key": "Long_Range_Understanding"
+      },
+      {
+        "args": [
+          "--split",
+          "Accurate_Retrieval"
+        ],
+        "sub_key": "Accurate_Retrieval"
+      }
+    ],
+    "structmemeval": [
+      {
+        "args": [
+          "--task",
+          "location",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "location"
+      },
+      {
+        "args": [
+          "--task",
+          "accounting",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "accounting"
+      },
+      {
+        "args": [
+          "--task",
+          "recommendations",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "recommendations"
+      },
+      {
+        "args": [
+          "--task",
+          "tree",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "tree"
+      }
+    ]
+  },
+  "label": "v2.0.0 canonical",
+  "results": {
+    "amabench": {
+      "_": {
+        "_elapsed_sec": 1141.268,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "accuracy_by_domain": {
+            "EMBODIED_AI": {
+              "count": 360,
+              "exact_match": "n/a",
+              "f1": 0.0586,
+              "substring_exact_match": 0.0
+            },
+            "Game": {
+              "count": 360,
+              "exact_match": "n/a",
+              "f1": 0.0677,
+              "substring_exact_match": 0.0
+            },
+            "OPENWORLD_QA": {
+              "count": 360,
+              "exact_match": "n/a",
+              "f1": 0.0243,
+              "substring_exact_match": 0.0806
+            },
+            "SOFTWARE": {
+              "count": 432,
+              "exact_match": "n/a",
+              "f1": 0.0314,
+              "substring_exact_match": 0.0486
+            },
+            "TEXT2SQL": {
+              "count": 612,
+              "exact_match": "n/a",
+              "f1": 0.1368,
+              "substring_exact_match": 0.0
+            },
+            "WEB": {
+              "count": 372,
+              "exact_match": "n/a",
+              "f1": 0.036,
+              "substring_exact_match": 0.0108
+            }
+          },
+          "accuracy_by_type": {
+            "A": {
+              "count": 839,
+              "exact_match": "n/a",
+              "f1": 0.0654,
+              "substring_exact_match": 0.0381
+            },
+            "B": {
+              "count": 596,
+              "exact_match": "n/a",
+              "f1": 0.0686,
+              "substring_exact_match": 0.005
+            },
+            "C": {
+              "count": 647,
+              "exact_match": "n/a",
+              "f1": 0.055,
+              "substring_exact_match": 0.0278
+            },
+            "D": {
+              "count": 414,
+              "exact_match": "n/a",
+              "f1": 0.0812,
+              "substring_exact_match": 0.0024
+            }
+          },
+          "domain_counts": {
+            "EMBODIED_AI": 30,
+            "Game": 30,
+            "OPENWORLD_QA": 30,
+            "SOFTWARE": 36,
+            "TEXT2SQL": 51,
+            "WEB": 31
+          },
+          "exact_match": "n/a",
+          "f1": 0.0661,
+          "retrieval_quality": {
+            "mrr": 0.0056,
+            "recall_at_1": 0.0032,
+            "recall_at_10": 0.012,
+            "recall_at_20": 0.0164,
+            "recall_at_5": 0.0072
+          },
+          "substring_exact_match": 0.0216,
+          "total_episodes": 208,
+          "total_qa": 2496,
+          "type_counts": {
+            "A": 839,
+            "B": 596,
+            "C": 647,
+            "D": 414
+          }
+        }
+      }
+    },
+    "locomo": {
+      "_": {
+        "_elapsed_sec": 0.948,
+        "_error_message": "LoCoMo data not found at /tmp/LoCoMo/data/locomo10.json: [Errno 2] No such file or directory: '/tmp/LoCoMo/data/locomo10.json'",
+        "_status": "skipped_data_missing"
+      }
+    },
+    "longmemeval": {
+      "_": {
+        "_elapsed_sec": 69.113,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "avg_beliefs_per_query": 47.25,
+          "avg_latency_ms": 15.48,
+          "category_stats": {
+            "knowledge-update": {
+              "avg_beliefs": 49.45,
+              "avg_latency_ms": 15.57,
+              "count": 78,
+              "exact_match": "n/a",
+              "f1": 0.0067,
+              "substring_exact_match": 0.7564
+            },
+            "multi-session": {
+              "avg_beliefs": 48.95,
+              "avg_latency_ms": 18.52,
+              "count": 133,
+              "exact_match": "n/a",
+              "f1": 0.0057,
+              "substring_exact_match": 0.391
+            },
+            "single-session-assistant": {
+              "avg_beliefs": 35.59,
+              "avg_latency_ms": 7.56,
+              "count": 56,
+              "exact_match": "n/a",
+              "f1": 0.0206,
+              "substring_exact_match": 0.5179
+            },
+            "single-session-preference": {
+              "avg_beliefs": 48.27,
+              "avg_latency_ms": 14.32,
+              "count": 30,
+              "exact_match": "n/a",
+              "f1": 0.0685,
+              "substring_exact_match": 0.0
+            },
+            "single-session-user": {
+              "avg_beliefs": 48.93,
+              "avg_latency_ms": 11.74,
+              "count": 70,
+              "exact_match": "n/a",
+              "f1": 0.0066,
+              "substring_exact_match": 0.8143
+            },
+            "temporal-reasoning": {
+              "avg_beliefs": 48.08,
+              "avg_latency_ms": 17.97,
+              "count": 133,
+              "exact_match": "n/a",
+              "f1": 0.0105,
+              "substring_exact_match": 0.3083
+            }
+          },
+          "exact_match": "n/a",
+          "f1": 0.0127,
+          "retrieval_quality": {
+            "mrr": 0.2755,
+            "recall_at_1": 0.2128,
+            "recall_at_10": 0.4064,
+            "recall_at_20": 0.4723,
+            "recall_at_5": 0.3383
+          },
+          "substring_exact_match": 0.476,
+          "total_ingest_time_s": 53.3,
+          "total_ingest_turns": 10960,
+          "total_questions": 500
+        }
+      }
+    },
+    "mab": {
+      "Accurate_Retrieval": {
+        "_elapsed_sec": 902.439,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "exact_match": "n/a",
+          "f1": 0.0127,
+          "retrieval_quality": {
+            "mrr": 0.0633,
+            "recall_at_1": 0.0435,
+            "recall_at_10": 0.1135,
+            "recall_at_20": 0.136,
+            "recall_at_5": 0.0775
+          },
+          "source_filter": null,
+          "split": "Accurate_Retrieval",
+          "substring_exact_match": 0.1515,
+          "total_questions": 2000
+        }
+      },
+      "Conflict_Resolution": {
+        "_elapsed_sec": 208.463,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "exact_match": "n/a",
+          "f1": 0.0055,
+          "retrieval_quality": {
+            "mrr": 0.4018,
+            "recall_at_1": 0.2838,
+            "recall_at_10": 0.5625,
+            "recall_at_20": 0.61,
+            "recall_at_5": 0.5138
+          },
+          "source_filter": null,
+          "split": "Conflict_Resolution",
+          "substring_exact_match": 0.7125,
+          "total_questions": 800
+        }
+      },
+      "Long_Range_Understanding": {
+        "_elapsed_sec": 1934.702,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "exact_match": "n/a",
+          "f1": 0.1862,
+          "retrieval_quality": {
+            "mrr": 0.0017,
+            "recall_at_1": 0.0,
+            "recall_at_10": 0.0058,
+            "recall_at_20": 0.0175,
+            "recall_at_5": 0.0
+          },
+          "source_filter": null,
+          "split": "Long_Range_Understanding",
+          "substring_exact_match": 0.0234,
+          "total_questions": 171
+        }
+      },
+      "Test_Time_Learning": {
+        "_elapsed_sec": 1496.854,
+        "_status": "ok",
+        "output": {
+          "_not_applicable": {
+            "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
+          },
+          "exact_match": "n/a",
+          "f1": 0.0002,
+          "retrieval_quality": {
+            "mrr": 0.0116,
+            "recall_at_1": 0.0043,
+            "recall_at_10": 0.0286,
+            "recall_at_20": 0.0357,
+            "recall_at_5": 0.0086
+          },
+          "source_filter": null,
+          "split": "Test_Time_Learning",
+          "substring_exact_match": 0.1343,
+          "total_questions": 700
+        }
+      }
+    },
+    "structmemeval": {
+      "accounting": {
+        "_elapsed_sec": 0.08,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "location": {
+        "_elapsed_sec": 0.084,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "recommendations": {
+        "_elapsed_sec": 0.079,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "tree": {
+        "_elapsed_sec": 0.079,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      }
+    }
+  },
+  "schema_version": 2
+}
