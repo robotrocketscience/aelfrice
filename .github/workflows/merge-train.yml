@@ -361,20 +361,27 @@ jobs:
           # only fires when a merge commit lands; FF push (required here
           # by the signed-commit branch-protection model) doesn't trigger
           # it. Parse the PR body for `Closes #N` / `Fixes #N` /
-          # `Resolves #N` (case-insensitive, GitHub's standard keywords)
-          # and close each match explicitly. Failures here log but do
-          # not fail the workflow — the merge has already landed.
+          # `Resolves #N` (case-insensitive). That is a SUBSET of the nine
+          # keywords GitHub itself acts on, and fenced code blocks are not
+          # excluded the way GitHub excludes them; both gaps are named in
+          # the script's docstring and left for a decision. Failures here
+          # log but do not fail the workflow — the merge has landed.
           echo "[7/7] auto-closing linked issues..."
-          pr_body=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
-              --jq '.body // ""' | head -c 8192)
+          # #1541: this used to pipe the body through `head -c 8192` BEFORE
+          # matching, so a keyword written past the 8,192nd byte was cut
+          # away and its issue silently stayed open while the merge
+          # reported success. Over five consecutive merges the keyword sat
+          # at bytes 463, 9148, 8992, 0 and 0 -- both bodies over the cut
+          # lost their close. The body now reaches the matcher whole.
+          #
+          # The parse lives in scripts/merge_train_linked_issues.py so it
+          # can be tested; tests/test_merge_train_linked_issues_1541.py
+          # pins the regression at 8 KiB and well past it.
+          gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
+              --jq '.body // ""' > /tmp/pr_body.txt
 
-          # Extract `<keyword> #<num>` matches. `-i` for case-insensitive,
-          # `-oE` keeps just the matched text, then sed strips down to
-          # the issue numbers. Dedupe with sort -u.
-          linked_issues=$(printf '%s' "${pr_body}" \
-              | grep -ioE '\b(closes|fixes|resolves)[[:space:]]+#[0-9]+' \
-              | sed -E 's/.*#([0-9]+)/\1/' \
-              | sort -u || true)
+          linked_issues=$(python3 scripts/merge_train_linked_issues.py \
+              --body-file /tmp/pr_body.txt || true)
 
           if [ -z "${linked_issues}" ]; then
               echo "  no linked issues parsed from PR body."
