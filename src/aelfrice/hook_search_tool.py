@@ -635,7 +635,7 @@ def _belief_line_cost(b: object) -> int:
     Passed to `retrieve()` as `belief_cost_fn`, because this lane does not
     render the `<belief …>` element `retrieval._belief_tokens` charges. A
     500-character belief costs 138 tokens under that function and emits a
-    line of 200 characters -- 50 tokens -- here, because
+    line of 200 characters -- 51 tokens with its newline -- here, because
     `PER_LINE_CHAR_CAP` truncates it. Charging the element made this lane's
     budget buy less the longer the store's beliefs were, for bytes it never
     emitted.
