@@ -797,15 +797,23 @@ def _format_block(
         # the pack genuinely overruns.
         #
         # It is left uncorrected, and the reason given in #1526 round 1 --
-        # "correcting it would move this block's emitted bytes" -- was not
-        # a true one. This block's bytes move under #1526 anyway:
+        # "correcting it would move this block's emitted bytes" -- is not
+        # the reason. What this block emits is mostly unmoved by #1526:
         # `rebuild_v14` gets its non-locked candidates from `retrieve()`,
         # whose budget loop #1526 changed, so the hits reaching this
-        # formatter are already a different set. Measured on 300-belief
-        # synthetic stores by `benchmarks/injection_budget_bytes.py`:
-        # 8,567 -> 8,265 bytes at 92 content characters, 11,139 -> 10,930
-        # at 150, 18,222 -> 16,428 at 300. Byte-neutrality was never
-        # available here to preserve.
+        # formatter can be a different set -- but on 300-belief synthetic
+        # stores, re-derivable with `benchmarks/injection_budget_bytes.py`,
+        # they are the same set at two of the three measured lengths:
+        # 9,011 -> 9,011 bytes at 92 content characters, 12,178 -> 12,178
+        # at 150, and 19,293 -> 16,421 only at 300. Byte-neutrality here is
+        # a property of where the rebuilder's own budget lands, not a thing
+        # this change preserved or spent.
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_before_92 = 9011 -->
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_after_92 = 9011 -->
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_before_150 = 12178 -->
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_after_150 = 12178 -->
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_before_300 = 19293 -->
+        # <!-- derived: benchmarks/injection_budget_bytes.py#rebuild_bytes_after_300 = 16421 -->
         #
         # The reason it is left alone is the one #1526 gives for
         # `[retrieval] token_budget`, and here it actually bites:
