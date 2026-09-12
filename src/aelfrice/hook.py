@@ -2840,6 +2840,26 @@ def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
     return is_reference_lock(b) or b.id in already_rendered
 
 
+# Every `<belief>` element this repo emits opens `<belief id="..."`, in all
+# three shapes: the per-turn hit (`_split_belief_lines`), the `<locked>` entry
+# and the `<core>` entry. `[^"]+` rather than a hex class on purpose -- live
+# stores carry two id forms, 16-character hex and 26-character ULID, and a
+# hex-only pattern silently skips the ULIDs. That mistake is easy to make and
+# was made by four independent readers of this code before this comment
+# existed.
+_BELIEF_ID_RE: Final[re.Pattern[str]] = re.compile(r'<belief\s+id="([^"]+)"')
+
+
+def _ids_rendered_verbatim_in(block: str) -> frozenset[str]:
+    """The belief ids a rendered block already carries in full.
+
+    Used to stop the per-turn pack re-rendering, in the same envelope, a
+    belief the embedded session-start sub-block has already shown. Returns
+    an empty set for an empty block, so the caller needs no special case.
+    """
+    return frozenset(_BELIEF_ID_RE.findall(block))
+
+
 def _split_belief_lines(
     hits: list[Belief],
     *,
@@ -3861,7 +3881,24 @@ def _format_hits_with_session_start(
 
     When session_start_block is non-empty it is inserted after the framing
     header and before the per-turn retrieval beliefs.
+
+    #1547: the sub-block's own `<locked>` and `<core>` beliefs count as
+    already rendered for the per-turn hits below them. Both halves are
+    written by this one call, into one envelope, so a hit that also appears
+    above was being emitted twice in the same block -- measured at 1,589
+    redundant elements over 1,127 live rows, 14.6% of rows carrying at
+    least one, and `<core>` or `<locked>` paired with a per-turn hit in
+    1,569 of them. The duplicate now renders through the existing
+    `_renders_as_manifest` path as a `seen <id>` pointer instead.
+
+    This recovers bytes, not budget. The pack loop has already spent its
+    budget by the time anything is rendered, so the freed space admits no
+    further belief; it shortens the envelope and does not lengthen the tail.
     """
+    if session_start_block:
+        already_rendered = already_rendered | _ids_rendered_verbatim_in(
+            session_start_block
+        )
     belief_lines, manifest_lines = _split_belief_lines(
         hits, already_rendered=already_rendered
     )
