@@ -167,7 +167,10 @@ def test_hook_coverage_line_shown_when_budget_truncates(
     must appear in the hook output with the correct counts.
     """
     db = tmp_path / "memory.db"
-    # Each belief content is ~10 tokens; budget=30 allows about 3 through.
+    # #1526: a belief costs its rendered `<belief>` line, so each of these
+    # costs several times what its content alone did. 70 is the budget that
+    # admits a few of the ten and not all, which is what the "of 10"
+    # assertion below rests on; at 30 the new cost admits none.
     beliefs = [
         _mk(f"B{i}", f"banana related topic content here {i:02d}")
         for i in range(10)
@@ -178,7 +181,7 @@ def test_hook_coverage_line_shown_when_budget_truncates(
     # Use a prompt that passes the hook's prompt-shape gate (not "trivial:short").
     sin = io.StringIO(_payload("tell me about bananas"))
     sout = io.StringIO()
-    rc = user_prompt_submit(stdin=sin, stdout=sout, token_budget=30)
+    rc = user_prompt_submit(stdin=sin, stdout=sout, token_budget=70)
     assert rc == 0
     out = sout.getvalue()
     assert OPEN_TAG in out

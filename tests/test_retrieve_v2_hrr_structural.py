@@ -33,9 +33,11 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
+from aelfrice.render_cost import BELIEF_LINE_WRAPPER_CHARS
 from aelfrice.retrieval import (
     RELEVANCE_BUDGET_FLOOR_FRACTION,
     RetrievalResult,
+    _belief_tokens,
     retrieve_v2,
 )
 from aelfrice.store import MemoryStore
@@ -212,10 +214,14 @@ def test_locked_beliefs_pin_to_head_under_structural_lane(
 
 # Each filler belief is sized to an exact token count so the floor can be
 # pinned as a number of admitted beliefs rather than "some results".
+# #1526: a belief's pack cost is its rendered `<belief>` line, not its
+# content, so the content is sized to the target token count LESS the
+# wrapper. Sizing it to `tokens * 4` would make each belief cost 13 tokens
+# more than the name says and turn every count below into an off-by-some.
 _TOKENS_PER_TAIL = 100
-_TAIL_CONTENT_CHARS = _TOKENS_PER_TAIL * 4
+_TAIL_CONTENT_CHARS = _TOKENS_PER_TAIL * 4 - BELIEF_LINE_WRAPPER_CHARS
 _TOKENS_PER_LOCK = 400
-_LOCK_CONTENT_CHARS = _TOKENS_PER_LOCK * 4
+_LOCK_CONTENT_CHARS = _TOKENS_PER_LOCK * 4 - BELIEF_LINE_WRAPPER_CHARS
 
 
 def _mk_sized(bid: str, chars: int, *, locked: bool = False) -> Belief:
@@ -265,7 +271,11 @@ def test_structural_lane_reserves_relevance_floor_under_lock_saturation(
     expected = floor_tokens // _TOKENS_PER_TAIL
     assert expected < n_tail, "fixture must offer more candidates than the floor"
     assert len(tail) == expected, f"expected {expected} tail hits, got {ids}"
-    assert sum(len(b.content) // 4 for b in tail) == floor_tokens
+    # Summed in the pack's own currency (#1526), which is the rendered
+    # line. `len(content) // 4` was that currency before the wrapper was
+    # charged; reading the cost function keeps this assert measuring the
+    # floor rather than a sizing convention.
+    assert sum(_belief_tokens(b) for b in tail) == floor_tokens
 
 
 def test_structural_lane_floor_is_a_noop_when_locks_are_light(

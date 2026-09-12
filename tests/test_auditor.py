@@ -34,6 +34,11 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
+from aelfrice.render_cost import BELIEF_LINE_WRAPPER_CHARS
+from aelfrice.retrieval import (
+    DEFAULT_TOKEN_BUDGET,
+    RELEVANCE_BUDGET_FLOOR_FRACTION,
+)
 from aelfrice.store import MemoryStore
 
 
@@ -291,22 +296,34 @@ def test_lock_budget_info_when_no_locks(store: MemoryStore) -> None:
     assert "no locked beliefs" in f.detail
 
 
+# #1526: these three thresholds are sized off the constants the check reads,
+# not off literals. The check compares `_belief_tokens(locked)` against
+# `DEFAULT_TOKEN_BUDGET`. The budget did not move, but the cost function did
+# -- a belief now costs its rendered `<belief>` line -- so a lock length
+# written as "12000 chars, which is over 2400 tokens" stopped meaning what it
+# said, and a literal would go stale again on the next cost change.
+def _chars_for_tokens(n_tokens: int) -> int:
+    """Content length whose #1526 pack cost is about `n_tokens` tokens."""
+    return max(1, n_tokens * 4 - BELIEF_LINE_WRAPPER_CHARS)
+
+
 def test_lock_budget_info_when_under_budget(store: MemoryStore) -> None:
-    store.insert_belief(_lock("small", 400))  # ≈100 tok, well under 2400
+    store.insert_belief(_lock("small", _chars_for_tokens(100)))
     f = _find(audit(store), CHECK_LOCK_BUDGET)
     assert f.severity == SEVERITY_INFO
-    assert 0 < f.count < 2400
+    assert 0 < f.count < DEFAULT_TOKEN_BUDGET
 
 
 def test_lock_budget_warns_when_locks_meet_or_exceed_budget(
     store: MemoryStore,
 ) -> None:
-    # 12000 chars ≈ 3000 tok > the 2400-tok default retrieval budget.
-    store.insert_belief(_lock("fat", 12000))
+    store.insert_belief(
+        _lock("fat", _chars_for_tokens(DEFAULT_TOKEN_BUDGET + 500))
+    )
     report = audit(store)
     f = _find(report, CHECK_LOCK_BUDGET)
     assert f.severity == SEVERITY_WARN
-    assert f.count >= 2400
+    assert f.count >= DEFAULT_TOKEN_BUDGET
     assert "#1016" in f.detail
     # Advisory only — never flips the failed flag.
     assert report.failed is False
@@ -315,9 +332,12 @@ def test_lock_budget_warns_when_locks_meet_or_exceed_budget(
 def test_lock_budget_info_notes_relevance_floor_engagement(
     store: MemoryStore,
 ) -> None:
-    # 6000 chars ≈ 1500 tok: between the 1200-tok floor and the 2400-tok
-    # budget — info, but the detail flags that the floor caps query results.
-    store.insert_belief(_lock("mid", 6000))
+    # Between the relevance floor and the budget: info, but the detail flags
+    # that the floor caps query results.
+    floor = int(DEFAULT_TOKEN_BUDGET * RELEVANCE_BUDGET_FLOOR_FRACTION)
+    store.insert_belief(
+        _lock("mid", _chars_for_tokens((floor + DEFAULT_TOKEN_BUDGET) // 2))
+    )
     f = _find(audit(store), CHECK_LOCK_BUDGET)
     assert f.severity == SEVERITY_INFO
     assert "relevance floor" in f.detail

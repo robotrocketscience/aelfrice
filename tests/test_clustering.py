@@ -169,8 +169,11 @@ def test_pack_stage1_yields_to_stage2_on_tight_budget() -> None:
     """When a cluster representative does not fit the remaining budget,
     fallback_to_score=True abandons Stage 1 and Stage 2 fills from
     the score-ranked tail. Default behaviour."""
-    big = _b("a", "x" * 200)  # ~50 tokens
-    small = _b("b", "y" * 10)  # ~3 tokens
+    # #1526: a belief costs its rendered `<belief>` line, not its content,
+    # so `small` is 16 tokens rather than 3 and the budget that separates
+    # the two beliefs moved with it. 200 chars -> 63 tokens, 10 -> 16.
+    big = _b("a", "x" * 200)  # 63 tokens
+    small = _b("b", "y" * 10)  # 16 tokens
     cands = [big, small]
     clusters = [
         RetrievalCluster(0, ("a",), "a", 0.9),
@@ -180,9 +183,9 @@ def test_pack_stage1_yields_to_stage2_on_tight_budget() -> None:
     out = pack_with_clusters(
         clusters,
         {b.id: b for b in cands},
-        token_budget=5,
+        token_budget=20,
     )
-    # `a` consumes ~50 tokens, doesn't fit at budget=5.
+    # `a` consumes 63 tokens, doesn't fit at budget=20.
     # fallback_to_score=True → Stage 1 abandons after the miss; Stage 2
     # picks `b` from the tail.
     assert [b.id for b in out] == ["b"]
@@ -191,6 +194,7 @@ def test_pack_stage1_yields_to_stage2_on_tight_budget() -> None:
 def test_pack_strict_diversity_skips_oversize_rep_and_continues() -> None:
     """fallback_to_score=False keeps trying Stage 1 reps even after a
     miss — strict-diversity mode."""
+    # #1526 rendered-line costs: 63 tokens and 16 tokens respectively.
     big = _b("a", "x" * 200)  # too big
     small = _b("b", "y" * 10)
     cands = [big, small]
@@ -201,7 +205,7 @@ def test_pack_strict_diversity_skips_oversize_rep_and_continues() -> None:
     out = pack_with_clusters(
         clusters,
         {b.id: b for b in cands},
-        token_budget=5,
+        token_budget=20,
         fallback_to_score=False,
     )
     assert [b.id for b in out] == ["b"]

@@ -71,13 +71,24 @@ def test_floor_engages_at_moderate_lock_load() -> None:
     total output exceeds the nominal budget by up to the floor."""
     assert RELEVANCE_BUDGET_FLOOR_FRACTION >= 0.5
     s = MemoryStore(":memory:")
-    # Each padded belief ~250 tok. 6 locks ~= 1494 tok ~= 62% of 2400 — in
-    # the 50%-75% window where the 0.5 floor engages but 0.25 would not.
+    # Locks sized to ~60% of the budget: the 50%-75% window where the 0.5
+    # floor engages but 0.25 would not. #1526 raised what a belief costs
+    # against this budget, so a hard-coded 6 locks no longer lands where the
+    # comment said it did. Derived from the constants instead, so it tracks
+    # the next cost change too.
+    _per_lock = _belief_tokens(
+        _mk("L0", "unrelated locked fact topic alpha 0", locked=True)
+    )
+    _n_locks = -(-int(0.60 * DEFAULT_TOKEN_BUDGET) // _per_lock)
     locks = [_mk(f"L{i}", f"unrelated locked fact topic alpha {i}", locked=True)
-             for i in range(6)]
+             for i in range(_n_locks)]
     for b in locks:
         s.insert_belief(b)
-    for i in range(12):
+    # #1526: 60 rather than 12. The floor reserves `0.5 * budget` tokens for
+    # relevance, and the overflow this test is about only shows up if there is
+    # that much relevant content to put in it. With 12 the pool ran out first,
+    # so the assertion below measured the corpus, not the floor.
+    for i in range(60):
         s.insert_belief(
             _mk(f"T{i}", f"kubernetes deployment rollout pods replicas note {i}", locked=False)
         )

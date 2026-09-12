@@ -337,7 +337,13 @@ def test_a_pack_too_cheap_to_pay_for_the_draw_is_left_alone(
     _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
-    hits = [_mk("h1", "tiny"), _mk("h2", "also tiny")]
+    # #1526: a belief costs its rendered `<belief>` line, so the floor per
+    # hit is the wrapper and two short hits now out-cost one longer pool
+    # belief. One hit restores the condition the test is about — a pack
+    # that cannot fund the draw — and the assert below is what pins it, so
+    # a future cost change fails here rather than quietly inverting the
+    # scenario into "the pack could pay after all".
+    hits = [_mk("h1", "tiny")]
     assert sum(_belief_tokens(b) for b in hits) < _belief_tokens(
         store.get_belief("pool00")
     )
