@@ -534,11 +534,22 @@ def _rebuild_block_bytes(stores: dict[int, Any]) -> dict[str, Any]:
     would silently reinterpret values users have already written.
 
     Measured anyway, because #1526 round 1 justified leaving it with "correcting
-    it would move this block's bytes", which assumed the bytes were constant.
-    They are not: `rebuild_v14` takes its non-locked candidates from
-    `retrieve()`, whose pack cost #1526 changed, so the hits reaching this
-    formatter are already a different set. These numbers are what refutes that
-    premise, so they are produced rather than asserted.
+    it would move this block's bytes", and whether that is true is a question
+    with an answer rather than a premise. The answer is: only where this
+    block's own budget binds. `rebuild_v14` takes its non-locked candidates
+    from `retrieve()`, whose pack cost #1526 changed, so the hits reaching this
+    formatter *can* be a different set -- but at 92 and 150 content characters
+    they are the same set and the emitted bytes are identical (9,011 -> 9,011
+    and 12,178 -> 12,178), because `DEFAULT_REBUILDER_TOKEN_BUDGET` is nowhere
+    near binding there. At 300 it binds and the bytes move (19,293 -> 16,421).
+
+    So the round-1 justification is not so much wrong as unstated: it holds at
+    one of the three lengths this function measures and not at the other two.
+    That is the reason to produce these numbers rather than assert them, and
+    it is why the byte figures quoted in `context_rebuilder._format_block`
+    carry `derived:` markers back to the keys below. An earlier revision of
+    this docstring said the bytes "are not" constant, flatly; that was written
+    before the cost functions settled and is what this paragraph replaces.
     """
     from aelfrice.context_rebuilder import RecentTurn, rebuild_v14
     from aelfrice.rebuild_log import DEFAULT_REBUILDER_TOKEN_BUDGET
