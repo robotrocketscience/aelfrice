@@ -422,14 +422,18 @@ It is 502 characters, 126 tokens at the 4-chars-per-token estimator, and it
 is emitted ahead of the first belief by four formatters (`_format_hits`,
 `_format_hits_with_session_start`, `_format_baseline_hits`, and
 `hook_agent_context._build_block`, which imports `_framing_header_for` from
-here). Reserving it out of the retrieval budget is a separable change from
-the per-belief cost correction #1526 lands, and an uncompensated one:
-measured on 300-belief synthetic stores it removes 6.7% to 10.8% of the
-per-turn block and 13.2% to 18.7% of the worker-context block, depending on
-belief length. #1526 charges what each belief's own renderer emits; what
-the block's fixed prelude should cost is carried into the follow-up issue
-with those numbers, because it needs a retrieval-quality gate, not a byte
-count."""
+here; `test_every_block_that_emits_the_framing_header_is_enumerated` counts
+those call sites off the tree so a fifth cannot arrive unnoticed).
+<!-- derived: benchmarks/injection_budget_bytes.py#framing_header_chars = 502 -->
+
+Reserving it out of the retrieval budget is a separable change from the
+per-belief cost correction #1526 lands, and an uncompensated one. How much
+it would take off each block is deliberately not quoted here: the arm that
+measured it was reverted with the reservation, so nothing on this tree can
+re-derive the figure, and a number no committed producer can make is the
+thing #1469 exists to stop. The measurement is carried in the follow-up
+issue, where it is a claim about work not yet done. It needs a
+retrieval-quality gate to settle, not a byte count."""
 
 
 def _escape_for_hook_block(content: str) -> str:
