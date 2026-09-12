@@ -753,15 +753,33 @@ def test_session_start_budget_does_not_bind_on_its_own_lane(
     """
     import aelfrice.hook as hook_mod
 
+    n_locked, n_free = 10, 60
     db = tmp_path / "memory.db"
     store = MemoryStore(str(db))
     try:
-        for i in range(60):
+        for i in range(n_locked):
             store.insert_belief(
                 _mk(
                     bid=f"{i:016d}",
                     content=f"locked baseline belief {i} " + "b" * 120,
                     lock_level=LOCK_USER,
+                )
+            )
+        # Unlocked decoys, and the fixture's proportions are load-bearing.
+        # They carry the locks' words verbatim so that an L1 pass -- on any
+        # query a defect might substitute for the empty one -- would reach
+        # them, and they outnumber the locks so they are not all pushed out
+        # of the candidate slice by locks that dedupe away. Both were needed:
+        # this test survived the mutation that gives the lane a non-empty
+        # query with a near-miss vocabulary, and again with 60 locks.
+        # Measured with the empty query replaced by "locked baseline belief":
+        # 10 hits at budget 1 and 10, 29 at 1500, 50 at 100000.
+        for i in range(n_free):
+            store.insert_belief(
+                _mk(
+                    bid=f"{i + 1000:016d}",
+                    content=f"locked baseline belief spare {i} " + "b" * 120,
+                    lock_level=LOCK_NONE,
                 )
             )
     finally:
@@ -774,8 +792,56 @@ def test_session_start_budget_does_not_bind_on_its_own_lane(
     ]
     counts = {len(hits) for hits, _ in seen}
     sizes = {len(block) for _, block in seen}
-    assert counts == {60}, counts
+    assert counts == {n_locked}, counts
     assert len(sizes) == 1, sizes
+    # Only the locks reach the block, at every budget: no relevance lane
+    # runs on an empty query, so there is nothing for the budget to trim.
+    for hits, _ in seen:
+        assert all(b.lock_level == LOCK_USER for b in hits), [
+            b.id for b in hits if b.lock_level != LOCK_USER
+        ]
+
+
+def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wiring, not just the two ends of it.
+
+    `_belief_line_cost` being correct and `retrieve()` honouring
+    `belief_cost_fn` are both pinned above, and neither notices if the lane
+    stops connecting them -- the producer builds its own call and would go on
+    measuring a cost function the shipped lane no longer passes. Driven
+    through `_do_search` with `retrieve` replaced, and asserted by identity,
+    so a lookalike closure would not satisfy it.
+    """
+    import io
+
+    import aelfrice.hook_search_tool as st_mod
+    import aelfrice.retrieval as retrieval_mod
+
+    db = tmp_path / "memory.db"
+    MemoryStore(str(db)).close()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    seen: list[object] = []
+
+    def _capture(store: object, query: str, **kwargs: object) -> list[Belief]:
+        seen.append(kwargs.get("belief_cost_fn"))
+        return []
+
+    monkeypatch.setattr(retrieval_mod, "retrieve", _capture)
+    st_mod._do_search(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "packer budget retrieval"},
+            "cwd": str(tmp_path),
+            "session_id": "s-cost-fn",
+        },
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert seen, "the lane never reached retrieval"
+    assert seen[0] is st_mod._belief_line_cost, seen[0]
 
 
 def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
