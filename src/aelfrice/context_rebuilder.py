@@ -772,10 +772,7 @@ def _format_block(
             else (b, _normalize_turn_text(b.content), False)
             for b in hits
         ]
-        used_chars = sum(len(text) for _, text, _ in rendered)
-        lines.append(
-            f'  <retrieved-beliefs budget_used="{used_chars}/{token_budget * 4}">'
-        )
+        belief_lines: list[str] = []
         for b, content, is_ref in rendered:
             attrs: list[str] = [f'id="{_xml_attr_value(b.id)}"']
             is_locked = b.lock_level == LOCK_USER
@@ -784,9 +781,48 @@ def _format_block(
                 attrs.append('session_scoped="true"')
             if is_ref:
                 attrs.append('tier="reference"')
-            lines.append(
+            belief_lines.append(
                 f'    <belief {" ".join(attrs)}>{_xml_escape(content)}</belief>'
             )
+        # #1526: the numerator is what this section actually emits — the
+        # rendered lines, each with the newline the join puts after it —
+        # not the belief text inside them. It used to report the text
+        # alone, which is not a number any reader of the block can check
+        # against the block, and which understated the section by the
+        # `<belief>` elements around it.
+        #
+        # The numerator can now exceed the denominator, and that is the
+        # defect being surfaced rather than a bug in the report:
+        # `_estimate_belief_tokens` still packs against content length, so
+        # the pack genuinely overruns.
+        #
+        # It is left uncorrected, and the reason given in #1526 round 1 --
+        # "correcting it would move this block's emitted bytes" -- was not
+        # a true one. This block's bytes move under #1526 anyway:
+        # `rebuild_v14` gets its non-locked candidates from `retrieve()`,
+        # whose budget loop #1526 changed, so the hits reaching this
+        # formatter are already a different set. Measured on 300-belief
+        # synthetic stores by `benchmarks/injection_budget_bytes.py`:
+        # 8,567 -> 8,265 bytes at 92 content characters, 11,139 -> 10,930
+        # at 150, 18,222 -> 16,428 at 300. Byte-neutrality was never
+        # available here to preserve.
+        #
+        # The reason it is left alone is the one #1526 gives for
+        # `[retrieval] token_budget`, and here it actually bites:
+        # `DEFAULT_REBUILDER_TOKEN_BUDGET` **is** reachable from
+        # `.aelfrice.toml` as `[rebuilder] token_budget`
+        # (`rebuild_log.RebuilderConfig`), unlike the retrieval key, which
+        # the hook shadows with an explicit kwarg. Re-denominating the cost
+        # function this budget is spent in would silently reinterpret every
+        # value a user has already written against the old
+        # content-character currency, cutting their rebuild block without a
+        # word. Correcting it means a migration or a currency marker on the
+        # key, not a constant edit, and that is a separate decision.
+        used_chars = sum(len(line) + 1 for line in belief_lines)
+        lines.append(
+            f'  <retrieved-beliefs budget_used="{used_chars}/{token_budget * 4}">'
+        )
+        lines.extend(belief_lines)
         lines.append("  </retrieved-beliefs>")
     lines.append("  <continue/>")
     lines.append(CLOSE_TAG)
