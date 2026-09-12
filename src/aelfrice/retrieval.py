@@ -1,7 +1,7 @@
 """Four-layer retrieval: L0 locked beliefs, L2.5 entity-index, L1 FTS5
 BM25, L3 BFS multi-hop graph traversal.
 
-Token-budgeted output (default 2400 tokens at v1.3.0, ~4 chars/token
+Token-budgeted output (`DEFAULT_TOKEN_BUDGET`, ~4 chars/token
 estimate). L0 beliefs always present in the output above any non-locked
 result and never trimmed by the budget — locks are user-asserted ground
 truth and must survive retrieval.
@@ -61,7 +61,7 @@ import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Final
+from typing import IO, TYPE_CHECKING, Any, Callable, Final
 
 from aelfrice.bfs_multihop import (
     DEFAULT_MAX_DEPTH as BFS_DEFAULT_MAX_DEPTH,
@@ -102,7 +102,13 @@ from aelfrice.models import (
     LOCK_USER,
     ORIGIN_RETRIEVAL_PRIORITY,
     ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
+    ORIGIN_SPECULATIVE,
     Belief,
+)
+from aelfrice.render_cost import (
+    MANIFEST_LINE_WRAPPER_CHARS,
+    belief_line_chars,
+    chars_to_tokens,
 )
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
@@ -144,6 +150,12 @@ LEGACY_TOKEN_BUDGET: Final[int] = 2000
 # v1.3.0 expanded default. L2.5 fills against a sub-budget of 400 and
 # L1 fills against the remaining 2000 — preserves the v1.0 L1
 # behaviour byte-for-byte on queries where L2.5 returns nothing.
+#
+# #1526 did not move it. It changed the per-belief cost it is spent in,
+# from `len(b.content)` to the rendered `<belief …>` line, so the same
+# budget now buys fewer beliefs and the pack no longer overruns what the
+# renderer emits. Re-tuning the amount is deferred to a gold-set-gated
+# follow-up; see `aelfrice.render_cost`.
 DEFAULT_TOKEN_BUDGET: Final[int] = 2400
 
 # Reserved relevance-budget floor. L0 locked beliefs are injected
@@ -172,6 +184,18 @@ DEFAULT_L1_LIMIT: Final[int] = 50
 
 # v1.3.0 entity-index defaults (docs/design/entity_index.md § Budget split).
 DEFAULT_L25_LIMIT: Final[int] = 20
+
+# One L2.5 share to five L1 shares of `DEFAULT_TOKEN_BUDGET`
+# (docs/design/entity_index.md § Budget split). Left as the literal it has
+# always been: #1526 re-expressed it as `DEFAULT_TOKEN_BUDGET // 6` only to
+# keep the share fixed while that budget moved, and that budget did not
+# move. A derived spelling would ship a second public name
+# (`L25_SUBBUDGET_SHARE_DIVISOR`) for a number no shipped change varies.
+#
+# It IS one of the budgets that can end a pack, which matters for anything
+# measuring this module: raising `token_budget` alone leaves a pack that
+# ended here unchanged, and a saturation probe that varies only
+# `token_budget` reads that as "the budget does not bind".
 DEFAULT_L25_TOKEN_SUBBUDGET: Final[int] = 400
 DEFAULT_QUERY_ENTITY_CAP: Final[int] = 16
 
@@ -681,15 +705,62 @@ class RetrievalResult:
     compressed_beliefs: list[CompressedBelief] = field(default_factory=lambda: [])
 
 
-def _estimate_tokens(text: str) -> int:
-    """Cheap char-based token estimate. Conservative (rounds up)."""
+def _estimate_tokens(  # pyright: ignore[reportUnusedFunction]
+    text: str,
+) -> int:
+    """Cheap char-based token estimate of plain text. Rounds up.
+
+    Content only — no render scaffolding. #1526 moved the pack cost
+    functions off this and onto `_belief_tokens`, which charges the whole
+    rendered `<belief>` line, so nothing under `src/` calls this any more.
+    It is kept, and the unused-function check suppressed at the definition,
+    because `benchmarks/two_tier_render_bound.py` imports it by name and
+    documents that it does so rather than reimplementing the estimator —
+    and `benchmarks/` is outside pyright's scope, so the checker cannot see
+    that caller.
+    """
     if not text:
         return 0
     return int((len(text) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN)
 
 
 def _belief_tokens(b: Belief) -> int:
-    return _estimate_tokens(b.content)
+    """Pack cost of one belief, in the currency the renderer emits (#1526).
+
+    Charges the whole rendered `<belief>` line — content plus the element
+    that wraps it plus the newline — not `len(b.content)`. Charging content
+    alone let a caller of this function overrun its cap by the wrapper's
+    share of the line, which is largest on short beliefs; see
+    `aelfrice.render_cost`.
+
+    Returns a non-zero cost for empty content on purpose: an empty belief
+    still renders a whole line, and the line is what the model pays for.
+    """
+    return chars_to_tokens(
+        belief_line_chars(
+            len(b.content), speculative=(b.origin == ORIGIN_SPECULATIVE),
+        )
+    )
+
+
+def _render_wrapper_tokens(b: Belief) -> int:
+    """Token cost of the `<belief>` element alone, content excluded (#1526).
+
+    What `retrieve_with_tiers._cost` adds to a *compressed* render: the
+    compressor returns the cost of the shortened content, and the element
+    around it is emitted whether or not the content was shortened.
+
+    Module-level rather than inline in the closure so a measurement can
+    rebind it. `benchmarks/injection_budget_bytes.py` runs its before arm
+    with this bound to "charge nothing", which is what the compression arm
+    did pre-#1526; with the addition inlined in the closure there was no
+    name for the before arm to reach, so the only measurable arm was
+    compression-off — and compression resolves ON by default, so that arm
+    is not the production one.
+    """
+    return chars_to_tokens(
+        belief_line_chars(0, speculative=(b.origin == ORIGIN_SPECULATIVE))
+    )
 
 
 # --- #1016-B layered locks: reference-tier manifest -------------------
@@ -747,11 +818,18 @@ def lock_injection_tokens(b: Belief, *, manifest_reference_locks: bool) -> int:
 
     When `manifest_reference_locks` is on, a reference lock costs only its
     one-line manifest entry (the #1016-B bound); otherwise — and for every
-    frozen lock — it costs full content, identical to `_belief_tokens`. So
-    the default (off) is byte-identical to pre-#1016 budgeting.
+    frozen lock — it costs the full rendered line, identical to
+    `_belief_tokens`.
+
+    #1526: both arms charge their render scaffolding. A manifest entry is
+    emitted indented by two spaces and followed by a newline
+    (`hook._split_belief_lines`), so it costs three characters more than the
+    entry text.
     """
     if manifest_reference_locks and is_reference_lock(b):
-        return _estimate_tokens(lock_manifest_line(b))
+        return chars_to_tokens(
+            len(lock_manifest_line(b)) + MANIFEST_LINE_WRAPPER_CHARS
+        )
     return _belief_tokens(b)
 
 
@@ -1870,7 +1948,8 @@ def resolve_bm25_b_anchor(
 # recovers multi-session / temporal answers a 50-candidate slice misses
 # (LongMemEval-S 58.8% → 68.6% at l1=200 / budget=8000). Budget alone is
 # inert: candidates cap at `l1_limit` BEFORE the pack trim. Both stay at
-# their latency-sensitive hot-path defaults (50 / 2400) unless a caller
+# their latency-sensitive hot-path defaults (`DEFAULT_L1_LIMIT` /
+# `DEFAULT_TOKEN_BUDGET`) unless a caller
 # opts in via kwarg, env, or `.aelfrice.toml`. See #1045.
 ENV_L1_LIMIT: Final[str] = "AELFRICE_L1_LIMIT"
 L1_LIMIT_FLAG: Final[str] = "l1_limit"
@@ -1943,7 +2022,7 @@ def resolve_token_budget(
       1. ``AELFRICE_RETRIEVAL_TOKEN_BUDGET`` env var (positive int).
       2. Explicit ``explicit`` kwarg from the caller.
       3. ``[retrieval] token_budget`` in ``.aelfrice.toml``.
-      4. Default: ``DEFAULT_TOKEN_BUDGET`` (2400).
+      4. Default: ``DEFAULT_TOKEN_BUDGET``.
 
     Companion to `resolve_l1_limit`: raising ``l1_limit`` only helps when
     the budget is large enough to keep the extra candidates past the pack
@@ -3636,6 +3715,7 @@ def _l25_hits(
     query_entity_cap: int,
     use_origin_tiebreak: bool = False,
     use_fan_effect: bool = False,
+    cost_fn: Callable[[Belief], int] | None = None,
 ) -> list[Belief]:
     """Run L2.5: query-side extraction, entity lookup, materialise
     beliefs, dedupe vs L0, trim to `l25_token_subbudget`.
@@ -3643,6 +3723,19 @@ def _l25_hits(
     Returns at most `l25_limit` beliefs whose summed token estimate
     is at or below `l25_token_subbudget`. The trim is from the
     tail (lowest-overlap matches drop first).
+
+    `cost_fn` is the caller's per-belief cost, defaulting to
+    `_belief_tokens`. #1526 threads it: this sub-pack is a second budget
+    loop, and a lane that renders its own line shape
+    (`hook_search_tool._belief_line_cost`) has to charge it here too or
+    the L2.5 slice is selected against a shape that lane never emits.
+    Left on the module global when None, which is every caller but that
+    lane.
+
+    The compression arm of `retrieve_with_tiers._cost` still does not
+    reach here, and did not before #1526 either: this sub-pack charges
+    uncompressed cost while the outer pack may charge compressed. That
+    divergence is pre-existing and out of #1526's scope.
 
     `use_fan_effect` (#1176) swaps the lane's raw overlap ordering for
     ACT-R fan-weighted activation. It reorders *which* beliefs the trim
@@ -3681,7 +3774,7 @@ def _l25_hits(
             # Skip; the index will be cleaned up by the next mutation
             # cycle (delete_belief cascades to belief_entities).
             continue
-        cost = _belief_tokens(b)
+        cost = cost_fn(b) if cost_fn is not None else _belief_tokens(b)
         if used + cost > l25_token_subbudget:
             break
         out.append(b)
@@ -4396,6 +4489,7 @@ def retrieve(
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     use_type_aware_compression: bool | None = None,
     manifest_reference_locks: bool = False,
+    belief_cost_fn: Callable[[Belief], int] | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -4490,6 +4584,7 @@ def retrieve(
         eigenbasis_cache=eigenbasis_cache,
         use_type_aware_compression=use_type_aware_compression,
         manifest_reference_locks=manifest_reference_locks,
+        belief_cost_fn=belief_cost_fn,
         # Graduated lanes (#1107): resolver-driven (env -> TOML -> default)
         # rather than hard-off, so a production host gets the lane the moment
         # its resolver says on. temporal spine #1064 (Phase 2), entity-persist
@@ -4576,6 +4671,7 @@ def retrieve_with_tiers(
     supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
     utterance_prior_weight: float | None = None,
     manifest_reference_locks: bool = False,
+    belief_cost_fn: Callable[[Belief], int] | None = None,
     now_ts: int | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
@@ -4679,7 +4775,28 @@ def retrieve_with_tiers(
 
     def _cost(b: Belief) -> int:
         """Per-belief pack cost. Compressed render when flag ON,
-        else raw token estimate. Locks render verbatim either way."""
+        else the rendered-line estimate. Locks render verbatim either way.
+
+        `belief_cost_fn` overrides both arms and the lock arm below. It
+        exists because the `<belief …>` line this function charges is not
+        the only shape a caller renders: `hook_search_tool` emits
+        `[L0] <id-prefix>: <content>` truncated to a per-line character
+        cap, so a budget spent through this function bought that lane
+        something other than what it emits (#1526 item 4). A lane that
+        renders its own shape passes its own cost here rather than being
+        charged a shape it never emits. When it is None — every other
+        caller — nothing about this closure changes.
+
+        #1526: both arms charge the `<belief>` wrapper. `rendered_tokens`
+        is the cost of the compressed *content*; the element around it is
+        emitted whether or not the content was shortened, so the wrapper is
+        added to it the same way `_belief_tokens` adds it to raw content.
+        The wrapper is converted to tokens separately and therefore rounds
+        up twice on this arm — at most one token more than charging the
+        summed characters, and in the conservative direction.
+        """
+        if belief_cost_fn is not None:
+            return belief_cost_fn(b)
         if not compress_on:
             return _belief_tokens(b)
         cb = compress_for_retrieval(
@@ -4706,16 +4823,16 @@ def retrieve_with_tiers(
         # `entity_persist_demoted`: record only when the work landed.
         if cb.strategy != STRATEGY_VERBATIM:
             _record_lane_fired("compression_renders")
-        return cb.rendered_tokens
+        return cb.rendered_tokens + _render_wrapper_tokens(b)
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
     locked_ids: set[str] = set(locked_ids_list)
 
     # #1271: the legacy downgrade is for "nobody asked", not "the number
-    # happens to be 2400". Keying on the value silently turned an
+    # happens to be the default". Keying on the value silently turned an
     # explicit `token_budget=2400` into 2000 while 2399 and 2401 both
-    # survived — discontinuous at precisely the default, and it
+    # survived (2400 was the default when #1271 was written; #1526 moved it) — discontinuous at precisely the default, and it
     # invalidated a measurement on #1269 before it was found.
     effective_budget = (
         token_budget
@@ -4727,8 +4844,13 @@ def retrieve_with_tiers(
     # one-line manifest entry, freeing relevance budget. Frozen locks (the
     # default) still cost full content, so this is byte-identical unless a
     # lock is demoted to the reference tier.
+    # `belief_cost_fn` covers the locks too: a lane that renders its own
+    # line shape renders locks in that shape as well, so charging them the
+    # `<belief …>` shape reserves budget against bytes it never emits.
     locked_used: int = sum(
-        lock_injection_tokens(
+        belief_cost_fn(b)
+        if belief_cost_fn is not None
+        else lock_injection_tokens(
             b, manifest_reference_locks=manifest_reference_locks
         )
         for b in locked
@@ -4753,6 +4875,8 @@ def retrieve_with_tiers(
             query_entity_cap=query_entity_cap,
             use_origin_tiebreak=use_origin_tiebreak,
             use_fan_effect=use_fan_effect,
+            # #1526: the sub-pack charges the caller's line shape too.
+            cost_fn=belief_cost_fn,
         )
     else:
         l25 = []
@@ -5032,6 +5156,7 @@ def retrieve_v2(
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
     manifest_reference_locks: bool = False,
+    belief_cost_fn: Callable[[Belief], int] | None = None,
     # #1107 shim pass-throughs: params `retrieve()` exposes that route
     # straight to `retrieve_with_tiers`, added so `retrieve()` can delegate
     # to `retrieve_v2` without dropping caller overrides. Default to the
@@ -5138,7 +5263,8 @@ def retrieve_v2(
 
     # #1045 wide-retrieval knobs: resolve here so both the HRR-structural
     # lane below and the retrieve_with_tiers delegation see the same
-    # env/TOML-resolved values (default 50 / 2400 keep the hot path narrow).
+    # env/TOML-resolved values (the narrow `DEFAULT_L1_LIMIT` /
+    # `DEFAULT_TOKEN_BUDGET` defaults keep the hot path narrow).
     l1_limit = resolve_l1_limit(l1_limit)
     budget, budget_defaulted = resolve_token_budget_with_provenance(budget)
     # v2.1 #152 HRR structural-query routing. Returns early on marker
@@ -5238,6 +5364,7 @@ def retrieve_v2(
         supersession_factor=resolve_supersession_factor(supersession_factor),
         utterance_prior_weight=utterance_prior_weight,
         manifest_reference_locks=manifest_reference_locks,
+        belief_cost_fn=belief_cost_fn,
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
         temporal_spine_depth=temporal_spine_depth,

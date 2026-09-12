@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Final, Iterator, Sequence, cast
+from typing import IO, Any, Callable, Final, Iterator, Sequence, cast
 
 # Deliberately outside the guarded block below: `config_discovery` is
 # stdlib-only and imports nothing from `aelfrice`, so it cannot be the
@@ -229,9 +229,30 @@ def __getattr__(name: str) -> Any:
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
 """Conservative default budget for hook-injected context.
 
-Below the CLI default (2400) to leave headroom for the user's
-prompt and other concurrent UserPromptSubmit hooks competing for
-the same context window.
+Below the CLI default to leave headroom for the user's prompt and other
+concurrent UserPromptSubmit hooks competing for the same context window.
+
+**#1526 did not move this number, and it changed what the number buys.**
+The packers used to charge `len(b.content)` while the hook emitted
+`<belief …>` elements, so the block overran this budget by the elements
+around the content. They now charge the rendered line, so the same budget
+buys fewer beliefs and the block comes in at or under its cap. The size of
+that reduction is a ratio of wrapper to content — largest on the shortest
+beliefs — so it is a property of a store, not a constant; the per-lane
+curve is in `benchmarks/injection_budget_bytes.py` and the CHANGELOG entry.
+
+Whether 1500 is still the right amount of context under the corrected
+accounting is an open question, deliberately not answered here. Re-tuning
+it needs a retrieval-quality gate rather than a byte count; see the
+follow-up issue linked from the CHANGELOG entry.
+
+Precedence, and one knob that deliberately does not reach here: the UPS
+hook passes this value to `retrieve()` as an explicit kwarg, and
+`retrieval.resolve_token_budget_with_provenance` ranks an explicit kwarg
+above TOML. So `[retrieval] token_budget` in `.aelfrice.toml` does not move
+the UserPromptSubmit budget; `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, which
+outranks the kwarg, does. (`aelf search` shadows the key the same way — its
+`--budget` has a default, so it is always passed.)
 """
 
 # ---------------------------------------------------------------------------
@@ -281,11 +302,43 @@ before any user prompt. The block surfaces L0 locked beliefs (the
 user-asserted ground truth) so the agent enters the session with
 durable baseline knowledge already in context. Per-prompt
 retrieval continues to fire on every UserPromptSubmit thereafter.
+
+**This number bounds nothing on its own lane, and #1526 measured that
+rather than assuming it.** `session_start` spends it through
+`_retrieve_baseline_with_block`, which calls `retrieve()` with an **empty
+query**. In `retrieve_with_tiers` every relevance lane is gated on
+`query.strip()` — L2.5, L1, HRR expansion, the temporal spine and the BFS
+hop all sit behind it — so the only tier that contributes is L0, and L0 is
+appended unconditionally and never trimmed by the budget (#379). The pack
+loop this budget drives is therefore never entered.
+
+Measured on a 300-lock store of 150-character beliefs: 300 hits and 61,144
+rendered bytes at `token_budget=1`, at 1500, at 2140 and at 100000 alike
+(`tests/test_render_cost_1526.py`
+::`test_session_start_budget_does_not_bind_on_its_own_lane`, which drives
+the real `_retrieve_baseline_with_block` rather than a monkeypatch).
+
+The consequence is not "the block is unbounded": it is bounded by the lock
+count, which is the #379 contract. The consequence is that **tuning this
+constant is meaningless until the lane it governs can bind on it**, which
+is a prerequisite recorded in the #1526 follow-up issue.
+
+`DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` below is a different budget and
+does bind; it caps the `<core>` section of the first-prompt sub-block.
 """
 
 DEFAULT_SESSION_START_CORE_TOKEN_BUDGET: Final[int] = 1500
 """Token budget for the <core> section of the first-prompt session-start
 sub-block (#578).
+
+**#1526 did not move this number, and it changed what the number buys.**
+The section used to charge `max(1, len(b.content) // 4)` per belief while
+emitting a `<belief id=… corr=… posterior=…>` element around that content,
+so it overran this cap by the element. It now charges
+`_core_belief_cost`, which is the rendered line plus its newline. `<core>`
+shrinks further than the retrieval-backed lanes under the correction
+because its old cost floor-divided and charged no scaffolding at all; the
+per-length curve is in `benchmarks/injection_budget_bytes.py`.
 
 The <core> section surfaces load-bearing UNLOCKED beliefs (high
 corroboration or high posterior). Unlike <locked> — which is bounded by
@@ -362,7 +415,22 @@ speculative hit (#1171).
 Unconditional inclusion would spend tokens on every injection to explain a
 marker that is usually absent, and would change the header bytes for every
 existing store — most of which contain no phantoms at all. Conditional keeps
-the no-phantom block byte-identical to pre-#1171 output."""
+the no-phantom block byte-identical to pre-#1171 output.
+
+#1526 measured what this header costs and deliberately left it uncharged.
+It is 502 characters, 126 tokens at the 4-chars-per-token estimator, and it
+is emitted ahead of the first belief by four formatters (`_format_hits`,
+`_format_hits_with_session_start`, `_format_baseline_hits`, and
+`hook_agent_context._build_block`, which imports `_framing_header_for` from
+here). Reserving it out of the retrieval budget is a separable change from
+the per-belief cost correction #1526 lands, and an uncompensated one:
+measured on 300-belief synthetic stores it removes 6.7% to 10.8% of the
+per-turn block and 13.2% to 18.7% of the worker-context block, depending on
+belief length. #1526 charges what each belief's own renderer emits; what
+the block's fixed prelude should cost is carried into the follow-up issue
+with those numbers, because it needs a retrieval-quality gate, not a byte
+count."""
+
 
 def _escape_for_hook_block(content: str) -> str:
     """Entity-escape every angle bracket in belief content at render time.
@@ -1325,6 +1393,8 @@ def user_prompt_submit(
             if token_budget is not None
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
+        # `[retrieval] token_budget` in `.aelfrice.toml` does NOT reach
+        # here, and that is deliberate — see `DEFAULT_HOOK_TOKEN_BUDGET`.
         # #909/#887: resolve config from the payload's cwd, not the hook
         # process's incidental cwd — same project-relative reasoning as the
         # <recent-work> builder above. Falls back to process cwd when the
@@ -3019,9 +3089,13 @@ three) = 25 estimated tokens under `_audit_tokens_from_block`, the
 4-chars-per-token estimator that produces the audited count (this
 module's constant is `_CORE_CHARS_PER_TOKEN = 4`; the float spelling
 `_CHARS_PER_TOKEN = 4.0` lives in retrieval), on every fire that emits
-a block. That is 1.7% of the `DEFAULT_HOOK_TOKEN_BUDGET = 1500` the UPS
-hook actually passes — not of the 2400-token CLI default, which
-`resolve_token_budget` ranks below an explicit caller kwarg.
+a block. It is charged against `DEFAULT_HOOK_TOKEN_BUDGET`, the budget
+the UPS hook actually passes — not against the CLI default, which
+`resolve_token_budget` ranks below an explicit caller kwarg. The share
+that cost represents is not quoted here any more: #1526 re-denominated
+`DEFAULT_HOOK_TOKEN_BUDGET` and reserved the framing header out of it, so
+a percentage written beside the constant went stale the moment the
+constant moved. Read the two constants.
 """
 
 
@@ -3612,6 +3686,70 @@ def _session_start_core_budget() -> int:
         return DEFAULT_SESSION_START_CORE_TOKEN_BUDGET
 
 
+def _core_belief_line(b: "Belief") -> str:
+    """Render one `<core>` belief line, without the joining newline.
+
+    Extracted so the `<core>` packer can charge exactly what the `<core>`
+    renderer emits (#1526). Both call this; a wrapper width transcribed
+    into the packer instead would be a second copy free to drift, and this
+    line's width genuinely varies — `corr` and `posterior` are interpolated
+    numbers, so the scaffolding is not the same number of characters on
+    every belief.
+    """
+    content = _escape_for_hook_block(b.content)
+    ab = b.alpha + b.beta
+    mu = round(b.alpha / ab, 3) if ab > 0 else 0.0
+    return (
+        f'<belief id="{b.id}" corr="{b.corroboration_count}"'
+        f' posterior="{mu}">{content}</belief>'
+    )
+
+
+def _core_belief_cost(b: "Belief") -> int:
+    """Pack cost of one `<core>` belief, in the currency `<core>` emits.
+
+    The rendered line plus the newline `"\\n".join` puts after it. Before
+    #1526 this was `max(1, len(b.content) // _CORE_CHARS_PER_TOKEN)`, which
+    charged the content and emitted the element — so the section overran
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` by the wrapper's share of the
+    line, which is largest on the shortest beliefs.
+    """
+    return int(
+        (len(_core_belief_line(b)) + 1 + _CORE_CHARS_PER_TOKEN - 1)
+        // _CORE_CHARS_PER_TOKEN
+    )
+
+
+def _pack_core_candidates(
+    candidates: list["Belief"],
+    budget: int,
+    cost_fn: Callable[["Belief"], int] | None = None,
+) -> list["Belief"]:
+    """Pack `<core>` candidates, highest-ranked first, up to `budget`.
+
+    Skip, don't break, on a candidate that does not fit: a single oversized
+    belief must not truncate the whole section — keep packing smaller
+    lower-ranked beliefs that still fit. (An oversized FIRST belief would
+    otherwise empty the section entirely.)
+
+    `cost_fn` defaults to `_core_belief_cost`. It is a parameter so the
+    accounting and the packing can be varied independently:
+    `benchmarks/injection_budget_bytes.py` measures the #1526 before/after
+    by running this same loop under the old cost function and the old
+    budget, so the two arms differ in nothing but the pair being changed.
+    """
+    cost_of = cost_fn if cost_fn is not None else _core_belief_cost
+    packed: list["Belief"] = []
+    used = 0
+    for b in candidates:
+        cost = cost_of(b)
+        if used + cost > budget:
+            continue
+        packed.append(b)
+        used += cost
+    return packed
+
+
 def _build_session_start_subblock(
     store: "MemoryStore", *, cwd: Path | None = None,
 ) -> str:
@@ -3666,19 +3804,7 @@ def _build_session_start_subblock(
     # capped (always-injected ground truth, #379).
     core_budget = _session_start_core_budget()
     if core_budget > 0:
-        capped: list[Belief] = []
-        used = 0
-        for b in core_candidates:
-            cost = max(1, len(b.content) // _CORE_CHARS_PER_TOKEN)
-            if used + cost > core_budget:
-                # Skip (not break): a single oversized belief must not
-                # truncate the whole section — keep packing smaller
-                # lower-ranked beliefs that still fit. (An oversized FIRST
-                # belief would otherwise empty the section entirely.)
-                continue
-            capped.append(b)
-            used += cost
-        core_candidates = capped
+        core_candidates = _pack_core_candidates(core_candidates, core_budget)
 
     recent_work_block = _build_recent_work_subblock(cwd=cwd)
 
@@ -3700,13 +3826,7 @@ def _build_session_start_subblock(
     # <core> section
     lines.append("<core>")
     for b in core_candidates:
-        content = _escape_for_hook_block(b.content)
-        ab = b.alpha + b.beta
-        mu = round(b.alpha / ab, 3) if ab > 0 else 0.0
-        lines.append(
-            f'<belief id="{b.id}" corr="{b.corroboration_count}"'
-            f' posterior="{mu}">{content}</belief>'
-        )
+        lines.append(_core_belief_line(b))
     lines.append("</core>")
 
     # <recent-work> section (#887). Appended only when the resolver

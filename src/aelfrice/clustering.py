@@ -26,7 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Final, Iterable
 
-from aelfrice.models import Belief, Edge
+from aelfrice.models import ORIGIN_SPECULATIVE, Belief, Edge
+from aelfrice.render_cost import belief_line_chars, chars_to_tokens
 
 # Default edge-weight floor: 0.4. Picked to include `EDGE_CITES` (0.5
 # in `EDGE_VALENCE`) but exclude `EDGE_RELATES_TO` (0.3) — beliefs that
@@ -39,20 +40,26 @@ DEFAULT_CLUSTER_EDGE_FLOOR: Final[float] = 0.4
 # tail. Tunable via `[retrieval] cluster_diversity_target`.
 DEFAULT_CLUSTER_DIVERSITY_TARGET: Final[int] = 3
 
-_CHARS_PER_TOKEN: Final[float] = 4.0
-
 
 def _belief_tokens(b: Belief) -> int:
-    """Char-based token estimate, conservative (rounds up).
+    """Char-based token estimate of the rendered line, rounds up.
 
     Mirrors `retrieval._belief_tokens`. Duplicated here rather than
     imported to keep this module free of a `retrieval`-side dependency
-    (the wiring direction is retrieval → clustering, not vice versa).
+    (the wiring direction is retrieval → clustering, not vice versa); the
+    shared half is the wrapper width, which both read from
+    `aelfrice.render_cost`.
+
+    #1526: charges the `<belief>` element and its newline as well as the
+    content. This is the default `cost_fn` for the packers below;
+    `retrieve()` passes its own closure, so on the production path the
+    default is reached only by a caller that supplies none.
     """
-    if not b.content:
-        return 0
-    n = len(b.content)
-    return int((n + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN)
+    return chars_to_tokens(
+        belief_line_chars(
+            len(b.content), speculative=(b.origin == ORIGIN_SPECULATIVE),
+        )
+    )
 
 
 @dataclass(frozen=True)

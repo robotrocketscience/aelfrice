@@ -63,7 +63,7 @@ Within a v1 series, hit@K numbers are directly comparable.
 
 DEFAULT_TOP_K: Final[int] = 5
 DEFAULT_TOKEN_BUDGET: Final[int] = 4000
-"""Higher than retrieval's default 2400 so the budget doesn't
+"""Higher than `retrieval.DEFAULT_TOKEN_BUDGET` so the budget doesn't
 cap the harness at fewer than top_k results when belief contents
 are long."""
 
