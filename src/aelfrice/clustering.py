@@ -208,7 +208,8 @@ def pack_with_clusters(
     L2.5 pack loop).
 
     ``cost_fn`` (#878 compose-reconciliation): per-belief token cost
-    callable. Defaults to the raw ``_belief_tokens`` estimator. Callers
+    callable. Defaults to this module's ``_belief_tokens``, which since
+    #1526 charges the whole rendered ``<belief>`` line. Callers
     composing with ``use_type_aware_compression`` pass a callable that
     returns the compressed ``rendered_tokens`` so the cluster pack
     accounts in the same currency as the outer pack loop.

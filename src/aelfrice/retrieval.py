@@ -4815,11 +4815,14 @@ def retrieve_with_tiers(
         # `observed=` lambda), and that is true iff at least one belief was
         # shortened, which is the property this field exists to report.
         # `STRATEGY_VERBATIM` returns `rendered_tokens =
-        # _estimate_tokens(content)` (compression.py:143-149), which is
-        # byte-identical to the uncompressed `_belief_tokens` at :707 — so
-        # counting it would report a fire for a call that changed no cost,
-        # and the rate would restate "the flag is on" the way the three
-        # `tracks_flag` lanes do. Held to the same standard as
+        # _estimate_tokens(content)` (compression.py:143-149), which is the
+        # uncompressed content cost — so counting it would report a fire for
+        # a call that shortened nothing, and the rate would restate "the flag
+        # is on" the way the three `tracks_flag` lanes do. (#1526 note: on
+        # that arm this branch returns the content cost plus the wrapper
+        # cost, which is `_belief_tokens` give or take the extra round-up
+        # named above. It is no longer identical to it, but it is still the
+        # same render, which is what "changed no cost" means here.) Held to the same standard as
         # `entity_persist_demoted`: record only when the work landed.
         if cb.strategy != STRATEGY_VERBATIM:
             _record_lane_fired("compression_renders")
