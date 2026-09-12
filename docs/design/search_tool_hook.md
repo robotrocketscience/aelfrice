@@ -141,10 +141,21 @@ minimum filters single-letter regex anchors and short noise.
 
 ### Budget framing
 
-The hook calls `retrieve(store, query, token_budget=600,
-l1_limit=10)`. Token budget is half the default to keep the
-injection light — this is auxiliary context, not the user's
-turn-level retrieval. L1 limit is also lower for the same reason.
+The hook calls `retrieve(store, query,
+token_budget=INJECTED_TOKEN_BUDGET, l1_limit=INJECTED_L1_LIMIT)`. The
+token budget is a quarter of the `retrieval.DEFAULT_TOKEN_BUDGET` the
+CLI uses — 600 against 2400 — to keep the injection light. This is
+auxiliary context, not the user's turn-level retrieval. The L1 limit is
+lower for the same reason.
+
+Since [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526)
+the call also passes `belief_cost_fn=_belief_line_cost`, because this
+lane emits `[L0] <id-prefix>: <content>` truncated to
+`PER_LINE_CHAR_CAP`, not the `<belief …>` element the other injection
+lanes render. The budget number did not move; what a belief costs
+against it did. So this budget is not comparable belief-for-belief with
+`hook.DEFAULT_HOOK_TOKEN_BUDGET`, which is spent on a different line
+shape.
 
 The output block uses an XML-shaped envelope keyed on the *query
 that was run*, so multiple search-tool injections in the same
@@ -175,8 +186,9 @@ Tactics:
    single-character regexes exit immediately.
 3. **Cap token count and per-token length.** First 5 tokens, ≥ 3
    chars each. Bounds FTS5 query complexity.
-4. **Reduced retrieval budget.** `token_budget=600`, `l1_limit=10` —
-   well below the user-facing default 2400 / 50.
+4. **Reduced retrieval budget.** `INJECTED_TOKEN_BUDGET` = 600,
+   `INJECTED_L1_LIMIT` = 10 — well below the user-facing defaults of
+   2400 and 50.
 5. **Read-only access.** No write paths — the hook only reads the
    FTS5 index and the locked-beliefs table.
 
@@ -306,10 +318,12 @@ The hook closes the gap on the agent-search code path.
   store for beliefs about that file)? The `tool_input.file_path`
   surface differs enough that v1.2.x keeps `Grep|Glob` only and
   defers the Read variant. Worth reserving the design space.
-- Token-budget tuning: 600 was picked to roughly half the default
-  user-prompt budget. Worth measuring real-world injection size
-  before defaulting; could be 400 or 800 depending on observed
-  signal-to-noise.
+- Token-budget tuning: 600 was picked against a 1500-token
+  user-prompt budget and a 2400-token CLI default, not measured.
+  [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526)
+  corrected what a belief costs against it but deliberately left the
+  number alone; re-tuning it needs a retrieval-quality gate, and is
+  carried in that issue's follow-up.
 
 ---
 
@@ -513,7 +527,10 @@ correspondingly:
 | `Grep|Glob` (v1.2.x) | 600 | 10 |
 | `Bash` allowlist (v1.5.0) | **300** | **5** |
 
-Half the v1.2.x figures. Tunable per `[search_tool_hook]
+Half the v1.2.x figures. Both are spent through the same
+`_belief_line_cost` since
+[#1526](https://github.com/robotrocketscience/aelfrice/issues/1526).
+Tunable per `[search_tool_hook]
 bash_token_budget` / `bash_l1_limit` keys in `.aelfrice.toml`
 once production data lands.
 

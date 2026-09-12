@@ -13,7 +13,7 @@ This document is the reference for power users. Reach for it when your project h
   - `entity_index_enabled` — the L2.5 tier.
   - `bfs_enabled` — the L3 tier.
   - `posterior_weight` — partial Bayesian-weighted L1 ranking.
-  - `l1_limit` and `token_budget` — the #1045 keys for wide retrieval. `l1_limit` caps the Best Matching 25 (BM25) candidate set, and `token_budget` caps the tokens. The defaults are 50 and 2400. Raise both together for multi-hop recall.
+  - `l1_limit` and `token_budget` — the #1045 keys for wide retrieval. `l1_limit` caps the Best Matching 25 (BM25) candidate set, and `token_budget` caps the tokens. The defaults are 50 and 2400. Raise both together for multi-hop recall. **`token_budget` reaches only a caller that passes no budget of its own.** The resolver's precedence is environment variable, then explicit argument, then TOML, then the default, so any caller that passes a budget explicitly shadows this key. Two shipped callers that do: the `UserPromptSubmit` hook, and `aelf search`, whose `--budget` has a default and is therefore always passed. To move the hook's budget, set `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, which outranks the explicit argument. Note that [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526) did not change this number but did change what it buys: a belief now costs the whole rendered line rather than its content, so a value you wrote before that change admits fewer beliefs than it used to.
   - `use_bm25f_anchors` — the BM25F path with anchor text, since v1.7.
   - `bm25f_per_field` and `bm25_b_anchor` — the #1180 two-field BM25F scorer. It normalizes the content and the anchor text separately instead of concatenating them. The default is off, pending its bench.
   - `use_heat_kernel` — the authority-scoring lane. The default is **off** again since #1162: the lane needs an eigenbasis, no production caller builds one, and a default-on flag therefore advertised a lane that can't fire. `LaneTelemetry.heat_used` now reports at runtime whether the lane fired.
@@ -144,6 +144,13 @@ posterior_weight = 0.5
 # the per-prompt injection hook. AELFRICE_L1_LIMIT and
 # AELFRICE_RETRIEVAL_TOKEN_BUDGET env vars override; explicit kwargs on
 # retrieve() / retrieve_v2() override TOML in turn.
+#
+# #1526: an explicit kwarg outranks TOML, so this key reaches only a
+# caller that passes no budget of its own. The UserPromptSubmit hook and
+# `aelf search` both pass one, so neither is moved by this key; use
+# AELFRICE_RETRIEVAL_TOKEN_BUDGET for those. #1526 also changed what a
+# token buys here -- a belief costs its whole rendered line now -- without
+# changing this number.
 #
 # Measured characterization (LongMemEval oracle, 364 questions across dev
 # + held-out confirmation; per-turn gold labels; deterministic reruns):

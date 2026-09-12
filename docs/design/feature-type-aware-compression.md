@@ -157,7 +157,7 @@ A labeled `compression_uplift` corpus lives under `tests/corpus/v2_0/compression
 
 ### A2 — token-budget recovery
 
-At a fixed `token_budget` (default `2400` per `retrieval.py:119 DEFAULT_TOKEN_BUDGET`):
+At a fixed `token_budget` (default `2400`, `retrieval.DEFAULT_TOKEN_BUDGET`):
 
 ```
 recall@k(use_type_aware_compression=ON)  >  recall@k(use_type_aware_compression=OFF)

@@ -434,7 +434,7 @@ Two structural choices, ruled out, and the recommended third:
 |---|---|---|
 | **Subtractive** (L2.5 steals from L1) | Default `token_budget` stays at 2000. L2.5 runs first; whatever budget remains feeds L1. | Underuses retrieval surface. The agent ends up with strictly *less* BM25 context on identifier-heavy queries — the exact case the entity index is supposed to *improve*. |
 | **Gating** (L2.5 replaces L1 when entities present) | If extracted-from-query entities is non-empty, return L0 + L2.5 only. Else fall back to L0 + L1. | All-or-nothing. A query with one weak entity (`the parser`) collapses BM25's keyword recall to nothing. The two tiers are complementary, not competing. |
-| **Additive (recommended)** | Default `token_budget` increases from 2000 to 2400. L2.5 fills against a sub-budget of 400 tokens; L1 fills against the remaining 2000. | Costs 20 % more output tokens in the worst case. Worth it: this is auxiliary context we already trim, and the v1.0 default of 2000 was sized when L1 was the only non-locked source. |
+| **Additive (recommended)** | Default `token_budget` increases from 2000 to 2400. L2.5 fills against a sub-budget of 400 tokens; L1 fills against the remaining 2000. (Both numbers are unchanged by [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526), which changed what a belief costs against them rather than the split.) | Costs 20 % more output tokens in the worst case. Worth it: this is auxiliary context we already trim, and the v1.0 default of 2000 was sized when L1 was the only non-locked source. |
 
 **Recommended defaults at v1.3.0:**
 

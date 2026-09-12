@@ -55,7 +55,7 @@ JSON payload on stdin from the harness.
 2. Extracts `payload["prompt"]` — the raw user message exactly as
    typed (`hook.py:_extract_prompt`, line 118).
 3. Calls `hook_search.search_for_prompt(store, prompt,
-   token_budget=1500)` (`hook.py` line 139).
+   token_budget=hook.DEFAULT_HOOK_TOKEN_BUDGET)`.
    - `search_for_prompt` calls `retrieval.retrieve()` then writes
      a `feedback_history` row per hit with `valence=0.1`
      (`hook_search.py`).
@@ -86,10 +86,15 @@ global DB**, which is the primary cross-domain contamination vector.
 - L3 BFS: default OFF.
 - Posterior rerank: `posterior_weight=0.5` by default.
 
-**Token budget:** `DEFAULT_HOOK_TOKEN_BUDGET = 1500` (`hook.py` line 48).
-This is below the user-facing CLI default (2000) to leave headroom for
-other concurrent UserPromptSubmit hooks, but well above the PreToolUse
-hook budget.
+**Token budget:** `hook.DEFAULT_HOOK_TOKEN_BUDGET` = 1500. This is below
+the user-facing CLI default of 2400 to leave headroom for other concurrent
+UserPromptSubmit hooks, and well above the PreToolUse hook budget.
+
+[#1526](https://github.com/robotrocketscience/aelfrice/issues/1526) did not
+move the number, and it changed what the number buys: a packed belief now
+costs the whole rendered `<belief …>` line rather than its content alone, so
+the same budget admits fewer beliefs and the block no longer overruns its
+cap. Read the constant's docstring for the measured per-lane effect.
 
 ### Relevance filter
 
@@ -120,8 +125,10 @@ transcript window. It is a distinct code path: rebuild queries by
 session-scoped turn content, not by the live user prompt. The two
 hooks are complementary:
 
-- UserPromptSubmit = per-prompt, query = live prompt text, budget = 1500.
-- PreCompact rebuild = per-compaction, query = recent turn text, budget = 4000 (configurable).
+- UserPromptSubmit = per-prompt, query = live prompt text, budget =
+  `hook.DEFAULT_HOOK_TOKEN_BUDGET` (1500).
+- PreCompact rebuild = per-compaction, query = recent turn text, budget =
+  `rebuild_log.DEFAULT_REBUILDER_TOKEN_BUDGET` (4000, configurable).
 
 There is no de-duplication between them. A belief can appear in both
 the per-prompt `<aelfrice-memory>` block and the compaction rebuild
@@ -170,7 +177,9 @@ actual runtime path depends on which is resolved by `$AELF_BIN`.
    ```python
    return " OR ".join(tokens[:QUERY_TOKEN_LIMIT])
    ```
-6. Calls `retrieve(store, query, token_budget=600, l1_limit=10)`.
+6. Calls `retrieve(store, query, token_budget=INJECTED_TOKEN_BUDGET,
+   l1_limit=INJECTED_L1_LIMIT)`, passing this lane's own per-belief cost
+   function as `belief_cost_fn` ([#1526](https://github.com/robotrocketscience/aelfrice/issues/1526)).
 7. Emits an `additionalContext` JSON block with the `<aelfrice-search>`
    envelope.
 
@@ -183,14 +192,21 @@ This fires unconditionally on every Grep/Glob call with extractable
 tokens — the "no-op path" in the issue is a real emission, not
 silence.
 
-**Token budget:** `INJECTED_TOKEN_BUDGET = 600`, `INJECTED_L1_LIMIT = 10`
-(`hook_search_tool.py` lines 48–51). Roughly half the UserPromptSubmit
-budget, reflecting that this is auxiliary context.
+**Token budget:** `hook_search_tool.INJECTED_TOKEN_BUDGET` = 600,
+`INJECTED_L1_LIMIT` = 10. A fraction of the UserPromptSubmit budget,
+reflecting that this is auxiliary context.
+
+Since [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526)
+this lane charges its own rendered line — `[L0] <id-prefix>: <content>`
+truncated to `PER_LINE_CHAR_CAP` — rather than the `<belief …>` element the
+other lanes emit. The budget number is unchanged, but the two are no longer
+comparable belief-for-belief: they are spent on different line shapes.
 
 **v1.5.0 Bash extension:** the same module also handles `PreToolUse`
 on `Bash` for allowlisted search commands (`grep`, `rg`, `find`,
-`fd`), with a halved budget (300 tokens, 5 results) and a per-turn
-fire cap of 3. The Bash matcher is wired separately; the currently
+`fd`), with a halved budget (`BASH_INJECTED_TOKEN_BUDGET` = 300,
+`BASH_INJECTED_L1_LIMIT` = 5) and a per-turn fire cap of 3. The Bash
+matcher is wired separately; the currently
 deployed `settings.json` only registers `Grep|Glob` at
 `~/.claude/settings.json`.
 
@@ -262,6 +278,12 @@ even when the store has nothing relevant.
 | UserPromptSubmit | Every user message | 1500 tokens | Yes | 0–20 (AND filter; common words bloat) |
 | PreToolUse Grep/Glob | Every Grep/Glob tool call | 600 tokens | Yes | 0 (OR mismatch makes L1 effectively dead) |
 
+The two budgets are not in the same currency. Since
+[#1526](https://github.com/robotrocketscience/aelfrice/issues/1526) each lane
+charges the line its own renderer emits, and these two renderers emit
+different line shapes, so the rows compare as caps on their own lanes and not
+as a like-for-like ratio.
+
 ### Combined turn cost
 
 A representative aelfrice-internal coding turn with:
@@ -275,6 +297,11 @@ Worst-case (all inject at budget cap):
 | UserPromptSubmit | 1 | 1500 | 1500 |
 | PreToolUse | 8 | 600 | 4800 |
 | **Combined** | | | **6300** |
+
+The combined figure is a cap on the budgets, not on emitted tokens. Since
+[#1526](https://github.com/robotrocketscience/aelfrice/issues/1526) the two
+lanes charge different line shapes, so 6300 bounds two different units added
+together and should be read as an order of magnitude, not a measurement.
 
 In practice, the OR mismatch means PreToolUse L1 hits are near-zero
 and actual injection is dominated by L0 locked beliefs (typically 200–800
