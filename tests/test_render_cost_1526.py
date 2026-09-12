@@ -22,11 +22,13 @@ must go the other way is.
 """
 from __future__ import annotations
 
+import ast
 import functools
 from pathlib import Path
 
 import pytest
 
+import aelfrice
 from aelfrice.hook import (
     _build_session_start_subblock,
     _core_belief_cost,
@@ -861,6 +863,40 @@ def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
     )
     from aelfrice.hook_agent_context import _build_block
 
+    # The enumeration has to come off the tree, not off this list. A
+    # hand-written list of four formatters makes `len(...) == 4` true by
+    # construction: it stays green when a fifth emitter is added, which is
+    # the only event it exists to catch. So count the call sites instead,
+    # and only then check that each one named here renders the header.
+    src_root = Path(aelfrice.__file__).parent
+    call_sites: list[tuple[str, int]] = []
+    for path in sorted(src_root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                called = func.id
+            elif isinstance(func, ast.Attribute):
+                called = func.attr
+            else:
+                continue
+            if called == "_framing_header_for":
+                call_sites.append((path.name, node.lineno))
+    # `ast.walk` is breadth-first, so it does not yield call sites in source
+    # order; sort so a function moving within a module cannot flip this list.
+    call_sites.sort()
+
+    assert [name for name, _ in call_sites] == [
+        "hook.py",
+        "hook.py",
+        "hook.py",
+        "hook_agent_context.py",
+    ], (
+        "the framing header is emitted from a call site this enumeration does "
+        f"not know about; #1526's follow-up rests on there being four: {call_sites}"
+    )
+
     hits = [_mk(bid=f"{i:016d}", content=f"framing belief {i}") for i in range(2)]
     rendered = [
         _format_hits(hits),
@@ -868,6 +904,6 @@ def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
         _format_baseline_hits(hits),
         _build_block(list(hits)),
     ]
-    assert len(rendered) == 4
+    assert len(rendered) == len(call_sites)
     assert all(_FRAMING_HEADER in block for block in rendered)
     assert len(_FRAMING_HEADER) == 502
