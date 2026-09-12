@@ -23,12 +23,12 @@ must go the other way is.
 from __future__ import annotations
 
 import ast
-import functools
 from pathlib import Path
 
 import pytest
 
 import aelfrice
+import aelfrice.hook_search_tool
 from aelfrice.hook import (
     _build_session_start_subblock,
     _core_belief_cost,
@@ -537,12 +537,11 @@ def test_search_tool_charges_the_line_its_own_renderer_emits(n: int) -> None:
     charged before #1526 and does not emit — on a belief past the per-line
     cap the two must disagree, or the truncation is still uncharged.
     """
-    from aelfrice.hook_search_tool import (
-        PER_LINE_CHAR_CAP,
-        _belief_line,
-        _belief_line_cost,
-        _format_results,
-    )
+    st = aelfrice.hook_search_tool
+    PER_LINE_CHAR_CAP = st.PER_LINE_CHAR_CAP
+    _belief_line = st._belief_line
+    _belief_line_cost = st._belief_line_cost
+    _format_results = st._format_results
 
     b = _mk(content="m" * n)
     line = _belief_line(b, frozenset())
@@ -568,7 +567,8 @@ def test_search_tool_cost_may_ignore_the_locked_set_but_not_the_lock_tier() -> N
     reference tier `[L0-ref]` is wider and is detected off the belief
     itself, not off the set — so the shortcut must not extend to it.
     """
-    from aelfrice.hook_search_tool import _belief_line, _belief_line_cost
+    _belief_line = aelfrice.hook_search_tool._belief_line
+    _belief_line_cost = aelfrice.hook_search_tool._belief_line_cost
 
     b = _mk(content="a belief long enough to render a full line of text")
     free = _belief_line(b, frozenset()) or ""
@@ -753,8 +753,6 @@ def test_session_start_budget_does_not_bind_on_its_own_lane(
     This is why the #1526 follow-up lists "make this budget able to bind"
     as a prerequisite for re-tuning it.
     """
-    import aelfrice.hook as hook_mod
-
     n_locked, n_free = 10, 60
     db = tmp_path / "memory.db"
     store = MemoryStore(str(db))
@@ -786,10 +784,12 @@ def test_session_start_budget_does_not_bind_on_its_own_lane(
             )
     finally:
         store.close()
-    monkeypatch.setattr(hook_mod, "_open_store", lambda: MemoryStore(str(db)))
+    monkeypatch.setattr(
+        aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
+    )
 
     seen = [
-        hook_mod._retrieve_baseline_with_block(budget)
+        aelfrice.hook._retrieve_baseline_with_block(budget)
         for budget in (1, 10, 1500, 100_000)
     ]
     counts = {len(hits) for hits, _ in seen}
@@ -818,8 +818,6 @@ def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
     """
     import io
 
-    import aelfrice.hook_search_tool as st_mod
-    import aelfrice.retrieval as retrieval_mod
 
     db = tmp_path / "memory.db"
     MemoryStore(str(db)).close()
@@ -830,8 +828,8 @@ def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
         seen.append(kwargs.get("belief_cost_fn"))
         return []
 
-    monkeypatch.setattr(retrieval_mod, "retrieve", _capture)
-    st_mod._do_search(
+    monkeypatch.setattr(aelfrice.retrieval, "retrieve", _capture)
+    aelfrice.hook_search_tool._do_search(
         {
             "hook_event_name": "PreToolUse",
             "tool_name": "Grep",
@@ -843,7 +841,7 @@ def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
         stderr=io.StringIO(),
     )
     assert seen, "the lane never reached retrieval"
-    assert seen[0] is st_mod._belief_line_cost, seen[0]
+    assert seen[0] is aelfrice.hook_search_tool._belief_line_cost, seen[0]
 
 
 def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
