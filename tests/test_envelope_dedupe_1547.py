@@ -30,6 +30,7 @@ import re
 import pytest
 
 from aelfrice.hook import (
+    _cap_belief_content,
     _format_hits,
     _format_hits_with_session_start,
     _ids_rendered_verbatim_in,
@@ -177,7 +178,14 @@ def test_dedupe_shortens_the_envelope() -> None:
     not_deduped = _format_hits_with_session_start(hits, _sub_block("dddddddddddddddd"))
     assert len(deduped) < len(not_deduped)
     saved = len(not_deduped) - len(deduped)
-    assert saved > len(long_text) * 0.8, saved
+    # #1551 caps a rendered belief at BELIEF_CONTENT_CHAR_CAP, so the most
+    # dedupe can reclaim is the capped element rather than the raw belief;
+    # measuring against `len(long_text)` asserted a saving the envelope can
+    # no longer contain. The property under test is unchanged: dedupe drops
+    # the duplicated element and leaves only the manifest line and its
+    # section framing, a fixed cost that does not grow with the belief.
+    reclaimable = len(_cap_belief_content(long_text))
+    assert saved > reclaimable * 0.7, (saved, reclaimable)
 
 
 def test_every_hit_duplicated_still_renders_the_sub_block() -> None:

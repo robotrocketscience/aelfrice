@@ -37,7 +37,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Callable, Final, Iterator, Sequence, cast
+from typing import (
+    IO,
+    Any,
+    Callable,
+    Final,
+    Iterator,
+    Mapping,
+    Sequence,
+    cast,
+)
 
 # Deliberately outside the guarded block below: `config_discovery` is
 # stdlib-only and imports nothing from `aelfrice`, so it cannot be the
@@ -254,6 +263,90 @@ the UserPromptSubmit budget; `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, which
 outranks the kwarg, does. (`aelf search` shadows the key the same way — its
 `--budget` has a default, so it is always passed.)
 """
+
+BELIEF_CONTENT_CHAR_CAP: Final[int] = 1200
+"""Per-belief character cap applied when rendering a `<belief>` element.
+
+`hook_search_tool.PER_LINE_CHAR_CAP` already bounds a single belief on the
+PreToolUse lane. The UserPromptSubmit lane had no equivalent, so one
+oversized row could dominate a whole block: a store holding three
+machine-synthesised documents of 24k-35k characters rendered blocks of
+91k and 130k bytes (22.8k and 32.6k estimated tokens) against
+`DEFAULT_HOOK_TOKEN_BUDGET = 1500`.
+
+The cap is deliberately generous. It is a guard against a pathological
+row, not a retrieval-quality knob; trimming to fit the budget is the
+packer's job. A capped belief keeps its id, so the full text stays
+reachable with `aelf search` or the belief's anchored document.
+"""
+
+HOOK_BLOCK_TOKEN_CEILING: Final[int] = 4 * DEFAULT_HOOK_TOKEN_BUDGET
+"""Hard ceiling on the assembled block, enforced at the emit boundary.
+
+The packers charge the rendered line and respect their own budgets, but
+several lanes (`<locked>`, `<core>`, `<recent-work>`, the retrieval hits)
+are packed independently and concatenated, so no single budget bounds the
+block that reaches the model. `_write_hook_audit_record` already measures
+the result and records the overrun; nothing acted on it.
+
+This is a backstop, set well above the sum of the per-lane budgets so it
+never fires on a healthy store. Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET`
+itself needs a retrieval-quality gate and is deliberately not attempted
+here. Override with `AELFRICE_HOOK_BLOCK_CEILING`; `0` disables.
+"""
+
+_BLOCK_CEILING_ENV: Final[str] = "AELFRICE_HOOK_BLOCK_CEILING"
+
+_BELIEF_ELEMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r'<belief id="[^"]*"[^>]*>.*?</belief>\n?', re.DOTALL
+)
+
+
+def _cap_belief_content(content: str) -> str:
+    """Truncate one belief's content to `BELIEF_CONTENT_CHAR_CAP`.
+
+    Returns `content` unchanged when it already fits. The marker names the
+    cap so a reader can tell a truncated belief from a short one.
+    """
+    if len(content) <= BELIEF_CONTENT_CHAR_CAP:
+        return content
+    return content[:BELIEF_CONTENT_CHAR_CAP] + " […truncated]"
+
+
+def resolve_block_ceiling(env: Mapping[str, str] | None = None) -> int:
+    """Resolve the block ceiling. `0` (or a non-integer) disables it."""
+    env_map = env if env is not None else os.environ
+    raw = env_map.get(_BLOCK_CEILING_ENV)
+    if raw is None:
+        return HOOK_BLOCK_TOKEN_CEILING
+    try:
+        value = int(raw)
+    except ValueError:
+        return HOOK_BLOCK_TOKEN_CEILING
+    return max(value, 0)
+
+
+def enforce_block_ceiling(
+    body: str, ceiling: int | None = None
+) -> tuple[str, int]:
+    """Drop whole `<belief>` elements from the end until `body` fits.
+
+    Returns `(body, n_dropped)`. Only complete elements are removed, so the
+    block stays well-formed; the framing sections and any manifest lines
+    are never touched. A `body` that is already under the ceiling is
+    returned unchanged with `n_dropped == 0`.
+    """
+    limit = resolve_block_ceiling() if ceiling is None else ceiling
+    if limit <= 0 or _audit_tokens_from_block(body) <= limit:
+        return body, 0
+    spans = [m.span() for m in _BELIEF_ELEMENT_RE.finditer(body)]
+    dropped = 0
+    while spans and _audit_tokens_from_block(body) > limit:
+        start, end = spans.pop()
+        body = body[:start] + body[end:]
+        dropped += 1
+    return body, dropped
+
 
 # ---------------------------------------------------------------------------
 # Session-first-prompt detection (#578)
@@ -1709,6 +1802,17 @@ def user_prompt_submit(
                 # retrieval found — but nothing was injected, so the size
                 # of what was injected is zero.
                 total_chars = 0
+            # #1551: backstop the per-lane budgets. The lanes are packed
+            # independently and concatenated, so nothing bounded the block
+            # that actually reached the model; the audit record measured
+            # the overrun without acting on it.
+            body, n_dropped = enforce_block_ceiling(body)
+            if n_dropped:
+                serr.write(
+                    "aelfrice hook: block over ceiling, dropped "
+                    f"{n_dropped} belief element(s)\n"
+                )
+                total_chars = len(body)
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
@@ -2921,7 +3025,7 @@ def _split_belief_lines(
             manifest_lines.append("  " + _escape_for_hook_block(line))
             continue
         lock_attr = "user" if h.lock_level == LOCK_USER else "none"
-        content = _escape_for_hook_block(h.content)
+        content = _escape_for_hook_block(_cap_belief_content(h.content))
         # #1171: a wonder-synthesised phantom rendered byte-identically to a
         # belief the user actually said, so machine conjecture reached the
         # agent as ordinary retrieved context. The attribute is a fixed
