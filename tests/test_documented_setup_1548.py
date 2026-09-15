@@ -25,6 +25,7 @@ shape directly instead of trusting it through the assertions above.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,8 @@ from tests.conftest import (
     ARCHIVE_EXTRA_NAME,
     ARCHIVE_EXTRA_SKIP_REASON,
     _report_archive_extra_skips,
+    pytest_terminal_summary,
+    requires_archive_extra,
 )
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -299,3 +302,52 @@ def test_the_terminal_summary_is_silent_when_nothing_skipped_for_the_extra() -> 
     _report_archive_extra_skips(rep)
     assert rep.seps == []
     assert rep.lines == []
+
+
+def test_a_real_archive_skip_carries_the_shared_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The constant is not the contract — the skip the helper raises is.
+
+    The test above reads `ARCHIVE_EXTRA_SKIP_REASON` and nothing else, so
+    dropping `reason=` from the `pytest.importorskip` call inside
+    `requires_archive_extra()` leaves it green while `pytest -rs` goes back
+    to printing "could not import 'cryptography'", which is the message
+    #1548 AC2 exists to remove. Worse, the summary section below keys on
+    this text, so an unnamed reason also deletes the report.
+
+    So make `cryptography` unimportable, read the reason off the `Skipped`
+    that a real call raises, and feed that same reason to the reporter —
+    pinning the edge between the two rather than each end separately.
+    """
+    monkeypatch.setitem(sys.modules, "cryptography", None)
+
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        requires_archive_extra()
+
+    reason = str(excinfo.value)
+    assert reason == ARCHIVE_EXTRA_SKIP_REASON
+    assert "could not import" not in reason
+
+    rep = _FakeReporter([_FakeReport(reason)])
+    _report_archive_extra_skips(rep)
+    assert rep.seps == ["optional extras"], (
+        "a real archive skip is not classified by the terminal summary"
+    )
+
+
+def test_the_registered_hook_reports_the_archive_section() -> None:
+    """`_report_archive_extra_skips` is wired in, not merely present.
+
+    Every other test here calls the private helper directly, so deleting
+    its one call from `pytest_terminal_summary` kills the section with no
+    failure anywhere. This goes through the hook pytest actually calls.
+    """
+    rep = _FakeReporter([_FakeReport(ARCHIVE_EXTRA_SKIP_REASON)] * 3)
+
+    pytest_terminal_summary(rep)
+
+    assert rep.seps == ["optional extras"]
+    assert len(rep.lines) == 1
+    assert "3 test(s) skipped" in rep.lines[0]
+    assert ARCHIVE_EXTRA_NAME in rep.lines[0]
