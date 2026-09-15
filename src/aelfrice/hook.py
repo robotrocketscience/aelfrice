@@ -294,38 +294,27 @@ if it does happen the cost is one redundant <session-start> injection, which
 is the pre-#1344 behaviour rather than a new failure mode.
 """
 
-DEFAULT_SESSION_START_TOKEN_BUDGET: Final[int] = 1500
-"""Token budget for the SessionStart context block.
-
-SessionStart fires once at the beginning of a Claude Code session,
-before any user prompt. The block surfaces L0 locked beliefs (the
-user-asserted ground truth) so the agent enters the session with
-durable baseline knowledge already in context. Per-prompt
-retrieval continues to fire on every UserPromptSubmit thereafter.
-
-**This number bounds nothing on its own lane, and #1526 measured that
-rather than assuming it.** `session_start` spends it through
-`_retrieve_baseline_with_block`, which calls `retrieve()` with an **empty
-query**. In `retrieve_with_tiers` every relevance lane is gated on
-`query.strip()` — L2.5, L1, HRR expansion, the temporal spine and the BFS
-hop all sit behind it — so the only tier that contributes is L0, and L0 is
-appended unconditionally and never trimmed by the budget (#379). The pack
-loop this budget drives is therefore never entered.
-
-Measured on a 300-lock store of 150-character beliefs: 300 hits and 61,144
-rendered bytes at `token_budget=1`, at 1500 and at 100000 alike
-(`tests/test_render_cost_1526.py`
-::`test_session_start_budget_does_not_bind_on_its_own_lane`, which drives
-the real `_retrieve_baseline_with_block` rather than a monkeypatch).
-
-The consequence is not "the block is unbounded": it is bounded by the lock
-count, which is the #379 contract. The consequence is that **tuning this
-constant is meaningless until the lane it governs can bind on it**, which
-is a prerequisite recorded in the #1526 follow-up issue.
-
-`DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` below is a different budget and
-does bind; it caps the `<core>` section of the first-prompt sub-block.
-"""
+# The SessionStart baseline block carries no token budget of its own, and
+# that is the #379 contract rather than an omission (#1546 deleted the
+# constant that used to sit here). `session_start` retrieves through
+# `_retrieve_baseline_with_block`, which calls `retrieve()` with an EMPTY
+# query. In `retrieve_with_tiers` every relevance lane is gated on
+# `query.strip()` — L2.5, L1, HRR expansion, the temporal spine and the BFS
+# hop all sit behind it — so the only tier that contributes is L0, and L0 is
+# appended unconditionally and never trimmed by a budget. The pack loop a
+# budget drives is never entered, so no value of one could change this
+# block.
+#
+# The block is still bounded: by the lock count, which is the knob #379
+# gives the operator. Measured on a 300-lock store of 150-character
+# beliefs: 300 hits and 61,144 rendered bytes across four orders of
+# magnitude of budget alike. `tests/test_render_cost_1526.py`
+# ::`test_session_start_lane_never_trims_its_l0_pool` pins that through the
+# production call shape, against the budget knob that still reaches the
+# lane.
+#
+# `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` below is a different budget and
+# does bind; it caps the `<core>` section of the first-prompt sub-block.
 
 DEFAULT_SESSION_START_CORE_TOKEN_BUDGET: Final[int] = 1500
 """Token budget for the <core> section of the first-prompt session-start
@@ -4347,7 +4336,6 @@ def session_start(
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
-    token_budget: int | None = None,
 ) -> int:
     """Run the SessionStart hook. Always returns 0.
 
@@ -4366,6 +4354,11 @@ def session_start(
     Empty store / no locked beliefs: emit nothing (return 0). Per the
     non-blocking hook contract, every failure path returns 0;
     internal exceptions write to stderr and are otherwise swallowed.
+
+    The block takes no token budget. Under the #379 contract it is
+    bounded by the lock count, and the empty query it retrieves on
+    leaves nothing for a budget to trim; see the comment above
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`.
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
@@ -4393,11 +4386,6 @@ def session_start(
         payload = _parse_pre_compact_payload(raw) or {}
         source_obj = payload.get(_SOURCE_KEY)
         source = source_obj if isinstance(source_obj, str) else ""
-        budget = (
-            token_budget
-            if token_budget is not None
-            else DEFAULT_SESSION_START_TOKEN_BUDGET
-        )
         # #1382: this fire is the epoch boundary — the event after which
         # earlier verbatim text can no longer be assumed present in the window.
         #
@@ -4415,7 +4403,7 @@ def session_start(
         # is an empty ledger, which renders everything verbatim.
         _begin_injection_epoch(session_id, stderr=serr)
         retrieve_start = time.monotonic()
-        hits, body = _retrieve_baseline_with_block(budget)
+        hits, body = _retrieve_baseline_with_block()
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
@@ -4490,26 +4478,30 @@ def session_start(
     return 0
 
 
-def _retrieve_and_format_baseline(token_budget: int) -> str:
+def _retrieve_and_format_baseline() -> str:
     """Retrieve L0 locked beliefs and emit them as the baseline block.
 
     Calls retrieve() with an empty query so only the L0 layer fires.
     Equivalent to MemoryStore.list_locked_beliefs() filtered through
     retrieve()'s budget logic, which leaves L0 untrimmed even when
-    the locked set alone exceeds the budget.
+    the locked set alone exceeds any budget.
     """
-    _, body = _retrieve_baseline_with_block(token_budget)
+    _, body = _retrieve_baseline_with_block()
     return body
 
 
-def _retrieve_baseline_with_block(
-    token_budget: int,
-) -> tuple[list[Belief], str]:
+def _retrieve_baseline_with_block() -> tuple[list[Belief], str]:
     """Retrieve baseline hits and the rendered block in one call.
 
     Returns ([], "") when retrieval yields nothing. Used by both the
     legacy formatter wrapper and the session_start hook (which needs
     the hit list for audit-record counts).
+
+    Passes no `token_budget`, because on this lane there is nothing for one
+    to do: the query is empty, so only L0 contributes and L0 is never
+    trimmed (#379). `retrieve()` resolves the shared retrieval budget for
+    its own bookkeeping; the block this returns is the same at every value
+    of it (#1546).
     """
     store = _open_store()
     try:
@@ -4518,8 +4510,7 @@ def _retrieve_baseline_with_block(
         hits = cast(
             "list[Belief]",
             _lazy("retrieve")(
-                store, "", token_budget=token_budget,
-                manifest_reference_locks=True,
+                store, "", manifest_reference_locks=True,
             ),
         )
     finally:

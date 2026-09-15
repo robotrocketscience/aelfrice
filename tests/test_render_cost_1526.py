@@ -56,6 +56,7 @@ from aelfrice.render_cost import (
 )
 from aelfrice.retrieval import (
     _belief_tokens,
+    ENV_RETRIEVAL_TOKEN_BUDGET,
     lock_manifest_line,
     lock_injection_tokens,
 )
@@ -733,25 +734,32 @@ def test_core_pack_skips_an_oversized_belief_instead_of_breaking(
     assert broken == []
 
 
-def test_session_start_budget_does_not_bind_on_its_own_lane(
+def test_session_start_lane_never_trims_its_l0_pool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`DEFAULT_SESSION_START_TOKEN_BUDGET` bounds nothing it is spent on.
+    """#379: the SessionStart block is bounded by the lock count, not a budget.
 
-    Driven through the real `_retrieve_baseline_with_block`, not a
-    monkeypatch of it. The branch's round-2 guard patched that function and
-    asserted the integer handed to it, which pins the ends and not the edge:
-    it would have passed unchanged while the budget did nothing.
+    This is the property #1546 deleted
+    `hook.DEFAULT_SESSION_START_TOKEN_BUDGET` on, so it is asserted here
+    directly rather than against that constant. The lane must keep emitting
+    every lock whatever budget it is run under; a future change that gives
+    the SessionStart pack a trim fails this.
 
-    `session_start` retrieves with an empty query; in `retrieve_with_tiers`
-    every relevance lane is gated on `query.strip()`, so only L0 contributes
-    and L0 is never trimmed by the budget (#379). Asserted as an identity
-    across four orders of magnitude of budget, with the store's whole lock
-    set as the control: if the budget ever bound, the smallest of these would
-    return fewer than all of them.
+    Driven through the real `_retrieve_baseline_with_block`, at the
+    production call shape — no budget argument, which is what `session_start`
+    now passes. The branch's round-2 guard instead monkeypatched that
+    function and asserted the integer handed to it, which pins the ends and
+    not the edge: it would have passed unchanged while the budget did
+    nothing.
 
-    This is why the #1526 follow-up lists "make this budget able to bind"
-    as a prerequisite for re-tuning it.
+    The budget is varied through `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, the one
+    knob that still reaches this lane now that the caller passes none, plus
+    an unset arm for the shipped default. `session_start` retrieves with an
+    empty query; in `retrieve_with_tiers` every relevance lane is gated on
+    `query.strip()`, so only L0 contributes and L0 is appended
+    unconditionally. Asserted as an identity across four orders of magnitude
+    of budget, with the store's whole lock set as the control: if any budget
+    ever bound, the smallest of these would return fewer than all of them.
     """
     n_locked, n_free = 10, 60
     db = tmp_path / "memory.db"
@@ -788,16 +796,21 @@ def test_session_start_budget_does_not_bind_on_its_own_lane(
         aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
     )
 
-    seen = [
-        aelfrice.hook._retrieve_baseline_with_block(budget)
-        for budget in (1, 10, 1500, 100_000)
-    ]
+    seen = []
+    for budget in (1, 10, 1500, 100_000, None):
+        if budget is None:
+            # The shipped path: nobody sets the env var, so `retrieve()`
+            # falls through to its own default.
+            monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+        else:
+            monkeypatch.setenv(ENV_RETRIEVAL_TOKEN_BUDGET, str(budget))
+        seen.append(aelfrice.hook._retrieve_baseline_with_block())
     counts = {len(hits) for hits, _ in seen}
     sizes = {len(block) for _, block in seen}
     assert counts == {n_locked}, counts
     assert len(sizes) == 1, sizes
     # Only the locks reach the block, at every budget: no relevance lane
-    # runs on an empty query, so there is nothing for the budget to trim.
+    # runs on an empty query, so there is nothing for a budget to trim.
     for hits, _ in seen:
         assert all(b.lock_level == LOCK_USER for b in hits), [
             b.id for b in hits if b.lock_level != LOCK_USER

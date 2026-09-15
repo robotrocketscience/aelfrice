@@ -14,8 +14,9 @@ renderer:
 * `ups` — the per-turn `<aelfrice-memory>` block (`hook.DEFAULT_HOOK_TOKEN_BUDGET`).
 * `core` — the first-prompt `<core>` section
   (`hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`).
-* `session_start` — the `<aelfrice-baseline>` block
-  (`hook.DEFAULT_SESSION_START_TOKEN_BUDGET`).
+* `session_start` — the `<aelfrice-baseline>` block (no shipped budget: the
+  production lane passes none, and this module probes it at
+  `SESSION_START_PROBE_BUDGET`).
 * `search_tool` / `search_tool_bash` — the PreToolUse Grep|Glob and Bash lanes
   (`hook_search_tool.INJECTED_TOKEN_BUDGET` / `BASH_INJECTED_TOKEN_BUDGET`).
 * `agent_context` — the Agent/Task worker-context lane
@@ -56,10 +57,12 @@ reported.
 `session_start` is `pool_equality` at every length, and that is the finding
 rather than a gap in the measurement. `hook.session_start` retrieves with an
 **empty query**, and in `retrieve_with_tiers` every relevance lane is gated on
-`query.strip()`; only L0 contributes, and L0 is never trimmed by the budget
-(#379). `DEFAULT_SESSION_START_TOKEN_BUDGET` therefore cannot bind on the lane
-it governs, at any value. This module renders that lane with the empty query it
-actually issues rather than with `QUERY`, so the reader sees it.
+`query.strip()`; only L0 contributes, and L0 is never trimmed by a budget
+(#379). No budget can bind on that lane, at any value, which is why #1546
+deleted the constant it used to carry. The lane is still measured — the bytes
+it emits reach the model on every session — and this module renders it with
+the empty query it actually issues rather than with `QUERY`, so the reader
+sees why the row reads `pool`.
 
 ## The effect is length-dependent, and this module reports the whole curve
 
@@ -366,6 +369,10 @@ def _render_session_start(store: Any, budget: int, sub: int, *, legacy: bool) ->
     `retrieve_with_tiers` is gated on `query.strip()`, so only L0 reaches the
     block and L0 is never trimmed (#379). Rendering this lane with `QUERY`
     would measure a lane that does not exist.
+
+    The production call passes no `token_budget` at all (#1546). `budget`
+    here is this module's probe value, varied so the row can report that
+    nothing moves.
     """
     del legacy
     from aelfrice import hook, retrieval
@@ -468,6 +475,20 @@ LANES: tuple[str, ...] = (
     "agent_context",
     "cli_search",
 )
+
+# The budget the `session_start` arm is probed at. It is a literal of this
+# module, not a shipped constant: the production lane passes NO token budget
+# at all. #1546 deleted `hook.DEFAULT_SESSION_START_TOKEN_BUDGET` because no
+# value of it could change this block — the lane retrieves on an empty query,
+# only L0 contributes, and L0 is never trimmed (#379).
+#
+# The lane is still measured, at the value the deleted constant carried, for
+# two reasons. Its rendered bytes are bytes the model receives on every
+# session, whatever ends the pack. And `_measure` varies this number by
+# `SATURATION_PROBE_FACTOR` and reports `pool` for both arms, which is the
+# evidence for the deletion rather than an assertion of it: change the lane so
+# a budget can bind and this row stops reading `pool`.
+SESSION_START_PROBE_BUDGET: int = 1500
 
 
 def _subbudget() -> int:
@@ -579,13 +600,18 @@ def _rebuild_block_bytes(stores: dict[int, Any]) -> dict[str, Any]:
 
 
 def shipped_budget(lane: str) -> int:
-    """The budget constant this lane ships, read off the module that holds it."""
+    """The budget this lane is measured at, read off the module that holds it.
+
+    Every entry but one is the lane's shipped constant. `session_start` has
+    no shipped constant — the production lane passes no budget — so it is
+    probed at this module's own `SESSION_START_PROBE_BUDGET`.
+    """
     from aelfrice import hook, hook_agent_context, hook_search_tool, retrieval
 
     return {
         "ups": hook.DEFAULT_HOOK_TOKEN_BUDGET,
         "core": hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET,
-        "session_start": hook.DEFAULT_SESSION_START_TOKEN_BUDGET,
+        "session_start": SESSION_START_PROBE_BUDGET,
         "search_tool": hook_search_tool.INJECTED_TOKEN_BUDGET,
         "search_tool_bash": hook_search_tool.BASH_INJECTED_TOKEN_BUDGET,
         "agent_context": hook_agent_context.INJECTED_TOKEN_BUDGET,
@@ -696,6 +722,19 @@ def _curve(
     return rows
 
 
+def _budget_label(lane: str, budget: int) -> str:
+    """How to read the number this lane was measured at.
+
+    Every lane but `session_start` was measured at its shipped constant, held
+    at the same value in both arms. `session_start` has no shipped constant to
+    hold: the production lane passes no budget, so the number is this module's
+    probe value and the reader must not take it for a setting.
+    """
+    if lane == "session_start":
+        return f"probe budget {budget}; the lane itself passes none"
+    return f"budget {budget} unchanged"
+
+
 def _flag(row: dict[str, Any]) -> str:
     """The one-line legend for a cell, saying what is actually true of it."""
     if row["pool_equality"]:
@@ -747,14 +786,15 @@ def main(argv: list[str] | None = None) -> int:
         chars = values[f"{lane}_headline_chars"]
         row = values[f"{lane}_curve"][str(chars)]
         print(
-            f"{lane}: budget {values[f'{lane}_budget']} unchanged, emitted bytes "
-            f"{before} -> {after} ({values[f'{lane}_pct']:+.1f}%) at {chars} "
+            f"{lane}: {_budget_label(lane, values[f'{lane}_budget'])}, "
+            f"emitted bytes {before} -> {after} "
+            f"({values[f'{lane}_pct']:+.1f}%) at {chars} "
             f"content chars{_flag(row)}"
         )
     if args.curve:
         print()
         for lane in LANES:
-            print(f"--- {lane} (budget {values[f'{lane}_budget']}, unchanged) ---")
+            print(f"--- {lane} ({_budget_label(lane, values[f'{lane}_budget'])}) ---")
             for chars, row in values[f"{lane}_curve"].items():
                 pct = "" if row["pct"] is None else f"  ({row['pct']:+.1f}%)"
                 print(
