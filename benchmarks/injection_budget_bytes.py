@@ -1356,6 +1356,15 @@ def _flat_1547_keys(
     out["dedupe_repeated_ids"] = d["repeated_ids"]
     out["dedupe_bytes_before"] = d["bytes_before"]
     out["dedupe_bytes_after"] = d["bytes_after"]
+    # The composed lane's own snapshot-arm cell, at the top of the grid. Lifted
+    # here so the gate has a `first_prompt` arm figure to re-derive: every other
+    # published arm number is the `ups` lane's, and a lane set that quietly lost
+    # `first_prompt` would leave the CHANGELOG's composed-envelope paragraph
+    # backed by nothing. Indexed rather than probed, so that loss is a crash.
+    cell = values["snapshot_arm"]["first_prompt"][top]
+    out["snapshot_arm_first_prompt_prose_bytes"] = cell["prose_bytes"]
+    out["snapshot_arm_first_prompt_snapshot_bytes"] = cell["snapshot_bytes"]
+    out["snapshot_arm_first_prompt_snapshot_items"] = cell["snapshot_items"]
     return out
 
 
