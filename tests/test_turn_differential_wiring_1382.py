@@ -438,13 +438,27 @@ def test_a_failed_baseline_read_still_resets_the_epoch(
     _fire(session_id="sess-A")
     assert "HIT01" in (_ledger(wired) or {}).get("rendered", [])
 
-    def boom(_budget: int) -> tuple[list[Belief], str]:
+    # The stub's arity must track the callee's. #1546 deleted the
+    # `token_budget` parameter, and a stub still declaring one raised
+    # TypeError at the call instead of running — which `session_start`'s one
+    # broad `except` swallows exactly like the RuntimeError this test means to
+    # raise, so the assertions below passed while the failure they name was
+    # never exercised. `entered` is the distinguishing arm: it fails if the
+    # stub stops being reached, whatever the reason.
+    entered: list[str] = []
+
+    def boom() -> tuple[list[Belief], str]:
+        entered.append("boom")
         raise RuntimeError("store open failed")
 
     original = hook_mod._retrieve_baseline_with_block
     monkeypatch.setattr(hook_mod, "_retrieve_baseline_with_block", boom)
     _fire_session_start(session_id="sess-A")
 
+    assert entered == ["boom"], (
+        "the stub never ran, so this test did not exercise a failed store "
+        "read; check its signature against _retrieve_baseline_with_block"
+    )
     assert "HIT01" not in (_ledger(wired) or {}).get("rendered", []), (
         "a failed baseline read skipped the epoch reset; the previous epoch's "
         "ids are still live"
