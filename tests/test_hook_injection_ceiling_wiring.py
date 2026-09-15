@@ -106,6 +106,8 @@ def _seed(
     hit_chars: int = 400,
     n_long: int = 0,
     long_chars: int = 5_000,
+    n_long_locks: int = 0,
+    long_lock_chars: int = 5_000,
 ) -> tuple[list[str], list[str], list[str]]:
     """Seed a store and return `(lock_ids, core_ids, hit_ids)`.
 
@@ -126,6 +128,13 @@ def _seed(
     `_cap_belief_content` is the identity, and a fixture on which it is
     the identity cannot tell a call site that applies it from one that
     does not.
+
+    `n_long_locks` is the other half of that, and it is a separate knob
+    for a separate mutant. `_cap_belief_content` takes a `locked=`
+    exemption, and a store whose locks are all short cannot tell a caller
+    that passes it from one that does not — every lock is returned
+    unchanged either way. These locks are over the cap, so the exemption
+    is load-bearing on them.
     """
     lock_ids: list[str] = []
     core_ids: list[str] = []
@@ -156,8 +165,22 @@ def _seed(
             hit_ids.append(bid)
         for i in range(n_long):
             bid = f"B{i:031d}"
-            store.insert_belief(_mk(bid, f"{_WORD} fact " + "y" * long_chars))
+            # Term-dense, not padded with filler. BM25 penalises document
+            # length, so a long belief carrying the query term once ranks
+            # below every short one and is the first thing the ceiling
+            # drops — which takes it straight back out of the emitted set
+            # the caller seeded it to reach.
+            unit = f"{_WORD} fact "
+            store.insert_belief(
+                _mk(bid, (unit * (long_chars // len(unit) + 1))[:long_chars])
+            )
             hit_ids.append(bid)
+        for i in range(n_long_locks):
+            bid = f"K{i:031d}"
+            store.insert_belief(
+                _mk(bid, "lockword " + "p" * long_lock_chars, locked=True)
+            )
+            lock_ids.append(bid)
     finally:
         store.close()
     return lock_ids, core_ids, hit_ids
@@ -514,19 +537,38 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     field must hold AND the value it must not, because the two are within
     an order of magnitude of each other and an `> 0` check passes on both.
 
-    The fixture carries one 5,012-character hit so the sum's per-belief
-    cap is not the identity. Without it every seeded belief is under
-    `BELIEF_CONTENT_CHAR_CAP` (1,200) — locks of 159 characters, hits of
-    412 — `_cap_belief_content` returns its input on every row, and
-    `expected` is the same figure whether the shipped sum applies the cap
-    or not. The `uncapped` assertion below pins that the fixture keeps
-    that property.
+    The sum is `len(_cap_belief_content(h.content, locked=...))`, which
+    has two halves, and the fixture has to keep both alive.
+
+    One long hit keeps the **cap** alive. Without it every seeded belief
+    is under `BELIEF_CONTENT_CHAR_CAP` (1,200) — locks of 159 characters,
+    hits of 412 — `_cap_belief_content` returns its input on every row and
+    `expected` is the same figure whether the sum applies the cap or not.
+
+    One long **lock** keeps the `locked=` exemption alive, and it is a
+    distinct mutant: on a store of 159-character locks the exemption
+    changes nothing either, because a short lock is returned unchanged
+    with or without it. Dropping `locked=` from the sum used to leave the
+    whole suite green while under-reporting this fixture's 5,009-character
+    lock by 3,796 characters.
+
+    The two `assert expected != ...` lines below pin that the fixture
+    keeps both properties, so neither half of the expression can go dead
+    without a failure.
+
+    The `<core>` beliefs are what the ceiling actually sheds: it drops the
+    prompt-independent lane first, which is what leaves the long hit in
+    the emitted set for the cap to bite on. Without them the trim came out
+    of the hit lane and took the long hit with it, and `expected` went
+    back to equalling `uncapped`.
     """
     db = tmp_path / "memory.db"
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
     _seed(
-        db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400,
+        db, n_locks=40, lock_chars=150, n_hits=20, hit_chars=400,
+        n_core=10, core_chars=2_000,
         n_long=1, long_chars=5_000,
+        n_long_locks=1, long_lock_chars=5_000,
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch)
     assert "dropped" in err
@@ -545,6 +587,7 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     try:
         expected = 0
         uncapped = 0
+        capped_everywhere = 0
         for row in emitted:  # type: ignore[union-attr]
             b = store.get_belief(row["id"])
             assert b is not None
@@ -552,12 +595,16 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
                 _cap_belief_content(b.content, locked=bool(row["locked"]))
             )
             uncapped += len(b.content)
+            capped_everywhere += len(_cap_belief_content(b.content))
     finally:
         store.close()
 
     # The cap bites on the emitted set, so `expected` distinguishes a sum
     # that applies it from one that sums raw content.
     assert expected != uncapped, (expected, uncapped)
+    # And the `locked=` exemption bites, so `expected` also distinguishes
+    # the shipped sum from one that caps every row including the locks.
+    assert expected != capped_everywhere, (expected, capped_everywhere)
     assert total_chars == expected, (total_chars, expected)
     assert total_chars != len(out), "recorded rendered-block bytes, not content"
 
