@@ -260,6 +260,20 @@ def test_a_rejection_reports_the_line_it_was_found_on() -> None:
     assert [r.line for r in refused] == [4]
 
 
+def test_a_rejection_names_the_keyword_on_one_normalised_line() -> None:
+    """GitHub accepts a newline between the keyword and the `#N`, so a match
+    can span one. The warning is read out of a step log a line at a time, so
+    the quoted text collapses its whitespace instead of breaking the message
+    in two and leaving `#7` on a line of its own.
+    """
+    (_, refused) = parse("```\nResolves\n#7\n```\n")
+    assert [r.text for r in refused] == ["Resolves #7"]
+    assert "\n" not in refused[0].message()
+    assert refused[0].message() == (
+        'warning: ignored "Resolves #7" on line 2: inside a fenced code block.'
+    )
+
+
 def test_a_keyword_split_across_lines_takes_its_keyword_line_context() -> None:
     """A documented divergence: classification is by where the match starts."""
     assert linked_issues("```\nResolves\n#7\n```\n") == []
