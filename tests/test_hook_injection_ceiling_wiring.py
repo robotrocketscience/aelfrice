@@ -217,6 +217,70 @@ def _fire_session_start(
 # ---------------------------------------------------------------------------
 
 
+def test_ups_ceiling_sheds_core_before_the_prompts_own_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ceiling sheds prompt-independent content first.
+
+    `<locked>`, `<core>` and `<recent-work>` are emitted above the
+    per-turn hits, so a dropper that pops the body's tail takes the hits
+    the prompt selected and keeps the `<core>` pool the prompt had no part
+    in choosing — `<core>` is ranked by corroboration and posterior, and
+    neither consults the prompt. Measured by
+    `scripts/measure_block_ceiling.py --lanes` on this fixture's shape: 50
+    locks, 20 `<core>` beliefs without the query term and 20 hits with it
+    gave 6/20 hits and 19/20 core untrimmed, 0/20 hits and 17/20 core
+    under tail-first, 6/20 hits and 7/20 core under the lane order.
+
+    The control arm is the same store with `AELFRICE_HOOK_BLOCK_CEILING=0`,
+    so what a hit lane of this store looks like untrimmed is measured
+    rather than transcribed, and the shipped arm is compared against it.
+    The three assertions are one expression, so no half can go dead: the
+    trim must have run, the hit lane must be untouched by it, and the
+    `<core>` lane must be where the bytes came from. A tail-first dropper
+    fails the second, a dropper that fires on nothing fails the first.
+    """
+    _, core_ids, hit_ids = _seed(
+        tmp_path / "ceiling.db",
+        n_locks=50, lock_chars=150,
+        n_core=20, core_chars=200,
+        n_hits=20, hit_chars=400,
+    )
+    # A second store with identical contents: the control fire writes ring
+    # and exposure rows, and a shared db would let the first arm move the
+    # second arm's ranking.
+    _seed(
+        tmp_path / "control.db",
+        n_locks=50, lock_chars=150,
+        n_core=20, core_chars=200,
+        n_hits=20, hit_chars=400,
+    )
+
+    monkeypatch.setenv(_CEILING_ENV, "0")
+    control, control_err = _fire_ups(
+        tmp_path, tmp_path / "control.db", monkeypatch, session_id="s-ctl"
+    )
+    assert control_err == "", control_err
+    monkeypatch.delenv(_CEILING_ENV, raising=False)
+    out, err = _fire_ups(
+        tmp_path, tmp_path / "ceiling.db", monkeypatch, session_id="s-cap"
+    )
+
+    dropped = re.search(r"dropped (\d+) belief element", err)
+    control_hits = [b for b in hit_ids if b in control]
+    control_core = [b for b in core_ids if b in control]
+    assert control_hits and control_core, control[:2_000]
+    assert {
+        "trim_ran": bool(dropped) and int(dropped.group(1)) > 0,
+        "hits": [b for b in hit_ids if b in out],
+        "core_shed": len([b for b in core_ids if b in out]) < len(control_core),
+    } == {
+        "trim_ran": True,
+        "hits": control_hits,
+        "core_shed": True,
+    }, (err, len(out), len(control))
+
+
 def test_ups_retrieval_branch_trims_to_the_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

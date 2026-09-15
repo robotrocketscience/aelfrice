@@ -453,6 +453,78 @@ def resolve_block_ceiling(
     return value
 
 
+def _section_span(body: str, open_tag: str, close_tag: str) -> tuple[int, int]:
+    """Half-open character span of one tagged section, or `(-1, -1)`.
+
+    Located by tag rather than rebuilt, because the dropper is handed an
+    assembled block and not the lists it was assembled from. A literal tag
+    cannot appear inside belief content: `_escape_for_hook_block` entity-
+    escapes every angle bracket at render time, which is the property that
+    makes this lookup safe rather than a guess. The sentinel span contains
+    no offset, so a caller's membership test is False for every element
+    when the section is absent -- which is the common case, since only a
+    session's first prompt carries the sub-block at all.
+    """
+    start = body.find(open_tag)
+    if start < 0:
+        return (-1, -1)
+    end = body.find(close_tag, start + len(open_tag))
+    if end < 0:
+        return (-1, -1)
+    return (start, end + len(close_tag))
+
+
+def _ceiling_drop_order(
+    body: str, droppable: list[re.Match[str]]
+) -> list[re.Match[str]]:
+    """Order the droppable elements into the sequence the ceiling sheds them.
+
+    **Prompt-independent content is shed before prompt-matched content.**
+    The lanes are emitted in the fixed order `<locked>`, `<core>`,
+    `<recent-work>`, per-turn hits, so popping the body's tail drops the
+    per-turn hits first -- the one lane whose members were selected by
+    *this prompt*. `<core>` is selected by corroboration and posterior and
+    `<recent-work>` by the git state of the checkout; neither consults the
+    prompt, so neither can be the weakest thing in the block with respect
+    to the turn being answered. Measured on 50 user locks of 150
+    characters, 20 `<core>` beliefs whose content does not mention the
+    prompt and 20 hits that do, by `scripts/measure_block_ceiling.py
+    --lanes` run once on this ordering and once on the tail-first one it
+    replaced::
+
+        ceiling off                  6/20 hits  19/20 core  dropped 0
+        ceiling 6000, tail-first     0/20 hits  17/20 core  dropped 8
+        ceiling 6000, lane order     6/20 hits   7/20 core  dropped 12
+
+    The lane order sheds *more* elements, because a `<core>` entry is
+    shorter than a hit on this fixture, and it is still the better trade:
+    the trimmed block now carries every hit the untrimmed one did.
+
+    Within a lane the order is still tail-first: `<core>` is sorted by
+    posterior descending and the hits by rank, so the tail of each is its
+    own weakest member.
+
+    Returns a new list; `droppable` is not mutated. Elements outside both
+    named sections are the per-turn hits by construction -- `<locked>`
+    carries no droppable element, since every one of its members renders
+    `lock="user"`.
+    """
+    core = _section_span(body, CORE_OPEN_TAG, CORE_CLOSE_TAG)
+    recent = _section_span(body, RECENT_WORK_OPEN_TAG, RECENT_WORK_CLOSE_TAG)
+    lanes: tuple[list[re.Match[str]], ...] = ([], [], [])
+    for m in droppable:
+        if core[0] <= m.start() < core[1]:
+            lanes[0].append(m)
+        elif recent[0] <= m.start() < recent[1]:
+            lanes[1].append(m)
+        else:
+            lanes[2].append(m)
+    order: list[re.Match[str]] = []
+    for lane in lanes:
+        order.extend(reversed(lane))
+    return order
+
+
 def enforce_block_ceiling(
     body: str, ceiling: int | None = None
 ) -> BlockCeilingOutcome:
@@ -460,6 +532,15 @@ def enforce_block_ceiling(
 
     Only complete elements are removed, so the block stays well-formed;
     the framing sections are never touched.
+
+    **Prompt-independent lanes are shed first.** The removal order is
+    `<core>` tail-first, then `<recent-work>`, then the per-turn hits,
+    which is `_ceiling_drop_order` and not the body's own tail. Popping
+    the tail sheds the retrieval hits the prompt selected while keeping
+    the `<core>` pool the prompt had no part in choosing; measured on 50
+    locks, 20 unrelated `<core>` beliefs and 20 prompt-matching hits, the
+    tail-first order took the block from 6 hits to 0 while leaving 17 of
+    20 core entries standing.
 
     **`lock="user"` elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
@@ -530,8 +611,14 @@ def enforce_block_ceiling(
     cut: list[tuple[int, int]] = []
     dropped: list[str] = []
     remaining = len(body)
-    while droppable and _tokens_from_chars(remaining) > limit:
-        m = droppable.pop()  # tail first: the weakest hits go first.
+    # Lane order, not body order: `<core>` tail-first, then
+    # `<recent-work>`, then the per-turn hits. See `_ceiling_drop_order`
+    # for why the body's own tail is the wrong end to pop from.
+    order = _ceiling_drop_order(body, droppable)
+    taken = 0
+    while taken < len(order) and _tokens_from_chars(remaining) > limit:
+        m = order[taken]
+        taken += 1
         cut.append(m.span())
         remaining -= m.end() - m.start()
         dropped.append(m.group("id"))
@@ -699,6 +786,14 @@ LOCKS_MANIFEST_CLOSE_TAG: Final[str] = "</aelfrice-locks-manifest>"
 # Placed INSIDE <aelfrice-memory> before per-turn retrieval hits.
 SESSION_START_SUBBLOCK_OPEN: Final[str] = "<session-start>"
 SESSION_START_SUBBLOCK_CLOSE: Final[str] = "</session-start>"
+
+# The <core> section of that sub-block. Named rather than spelled twice
+# because the block ceiling locates this section by tag to decide which
+# lane an element belongs to (`_ceiling_drop_order`); a second literal
+# would let the renderer and the dropper disagree silently, and the
+# dropper's failure mode is to shed the wrong lane rather than to raise.
+CORE_OPEN_TAG: Final[str] = "<core>"
+CORE_CLOSE_TAG: Final[str] = "</core>"
 
 # Fixed framing header rendered inside <aelfrice-memory> and
 # <aelfrice-baseline> blocks. Per docs/design/hook_hardening.md (#280) the
@@ -4351,10 +4446,10 @@ def _build_session_start_subblock(
     lines.append("</locked>")
 
     # <core> section
-    lines.append("<core>")
+    lines.append(CORE_OPEN_TAG)
     for b in core_candidates:
         lines.append(_core_belief_line(b))
-    lines.append("</core>")
+    lines.append(CORE_CLOSE_TAG)
 
     # <recent-work> section (#887). Appended only when the resolver
     # returned a non-empty block — non-git cwds get nothing.
