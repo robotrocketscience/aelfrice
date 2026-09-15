@@ -638,6 +638,30 @@ def _session_start_block(store: Any) -> str:
     return hook._build_session_start_subblock(store, cwd=Path.cwd())
 
 
+def _recent_work_chars_in(block: str) -> int:
+    """`<recent-work>`'s size *inside the block the lane rendered*, tag to tag.
+
+    Read back off the composed block rather than measured by a second call to
+    `hook._build_recent_work_subblock`. A separate call agrees with the lane
+    only while both happen to resolve the same cwd, so an assertion on it
+    constrains nothing about the lane: mutating `_session_start_block` to
+    `cwd=REPO_ROOT` moves every composed-lane byte count while a separate
+    probe on `Path.cwd()` goes on reporting 0. Derived from the block, the
+    published `first_prompt_recent_work_chars` moves with the lane and the
+    assertion in `tests/test_render_cost_1526.py` fails, which is the whole
+    reason the figure is published.
+    """
+    from aelfrice.hook import RECENT_WORK_CLOSE_TAG, RECENT_WORK_OPEN_TAG
+
+    start = block.find(RECENT_WORK_OPEN_TAG)
+    if start < 0:
+        return 0
+    end = block.find(RECENT_WORK_CLOSE_TAG, start)
+    if end < 0:
+        return 0
+    return end + len(RECENT_WORK_CLOSE_TAG) - start
+
+
 def _render_first_prompt(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
     """The composed first-prompt envelope: session-start sub-block plus hits.
 
@@ -1281,8 +1305,10 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
                 values["undercharge"] = undercharge_table(lengths)
                 for lane in LANES:
                     values.update(_lane_figures(lane, stores, lengths))
-                values["first_prompt_recent_work_chars"] = len(
-                    hook._build_recent_work_subblock(cwd=Path.cwd())
+                values["first_prompt_recent_work_chars"] = _recent_work_chars_in(
+                    _session_start_block(
+                        stores[values["first_prompt_headline_chars"]]
+                    )
                 )
                 values["dedupe"] = dedupe_effect(
                     stores[values["first_prompt_headline_chars"]],
@@ -1477,7 +1503,7 @@ def _print_1547(values: dict[str, Any]) -> None:
         f"({d['pct']:+.1f}%)"
     )
     print(
-        f"  <recent-work> in the measured sub-block: "
+        f"  <recent-work> inside the sub-block this lane rendered: "
         f"{values['first_prompt_recent_work_chars']} chars"
     )
 
