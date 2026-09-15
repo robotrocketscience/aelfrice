@@ -1,19 +1,22 @@
 name: pyright-ratchet
 
-# #1503 — four documents asserted `pyright --strict` passes. It emits 987
-# errors and NO workflow ran it, so the tick was self-reported. The operator
-# ruling of 2026-08-19 is to drive the count to zero and gate it; this job is
-# the ratchet that makes the burn-down monotonic. Without it, clearing one
-# module while another gains errors is a leaky bucket.
+# #1503 — four documents asserted `pyright --strict` passes. The issue body
+# recorded 987 errors over 76 files, and NO workflow ran it, so the tick was
+# self-reported. This job is the ratchet. The operator ruling of 2026-08-26
+# cancelled the burn-down, so the ratchet is the whole answer and the count
+# falls only as a side effect of other work.
 #
 # Per file, not a repo total: a total lets a fix in one module pay for a
 # regression in another, by unrelated authors in unrelated changes.
 #
 # Gates `pyright src/` — the command the documents name, over the code that
-# ships. `pyproject.toml` also includes `tests`, which raises the count to
-# 6,938; gating that today would freeze a number seven times larger and make
-# every test edit fight the ratchet. `scripts/check_pyright_baseline.py`
-# states that scope rather than letting the job name imply full coverage.
+# ships. `pyproject.toml` also includes `tests`, and the count over both is
+# several times larger; run `uv run pyright` under `uv sync --all-groups
+# --all-extras` to read it. No document records that figure, because it moves
+# with every test edit — which is also why gating `tests/` today would put
+# every test edit in conflict with the ratchet.
+# `scripts/check_pyright_baseline.py` states that scope rather than letting
+# the job name imply full coverage.
 
 on:
   pull_request:

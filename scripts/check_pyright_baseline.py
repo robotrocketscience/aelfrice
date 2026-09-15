@@ -2,9 +2,9 @@
 """Fail when a file's pyright error count rises above its baseline (#1503).
 
 `RELEASING.md` step 6 told the releaser to run `uv run pyright src/` with the
-comment `# strict`, implying it passes. It emitted 991 errors when #1503 was
-filed, and **no workflow anywhere ran pyright**, so the tick was self-reported
-and unenforced.
+comment `# strict`, implying it passes. The #1503 issue body recorded 987
+errors over 76 files, and **no workflow anywhere ran pyright**, so the tick
+was self-reported and unenforced.
 Three other documents repeated the claim. The cost is on the record:
 `CHANGELOG/v4.md` notes a `NameError` that reached `main` behind it.
 
@@ -12,9 +12,9 @@ The operator ruling of 2026-08-19 was to drive the count to zero and gate it
 in CI. The ruling of 2026-08-26 **cancelled the burn-down** and made this
 ratchet the whole answer: record a baseline, fail any file that rises, and do
 not drive the total down on a schedule. The count therefore falls only as a
-side effect of other work. It stood at 973 errors over 75 files when this
-paragraph was written; `pyright_baseline.json` carries the live per-file
-figures, and is the only place to read the number from.
+side effect of other work, so no number is written here:
+`pyright_baseline.json` carries the live per-file figures and their total, and
+is the only place to read the count from.
 
 ## Measure it in the environment CI measures it in
 
@@ -36,10 +36,12 @@ the ratchet turning.
 ## Scope: `src/`, and the wider surface is stated rather than implied
 
 This gates `pyright src/` — the command the documents name, over the code that
-ships. `pyproject.toml` sets `include = ["src/aelfrice", "tests"]`, and honouring
-that raises the count to 6,938 over 462 files, because the test suite is
-almost entirely unannotated. Gating the wider surface today would freeze a
-number seven times larger and make every test edit fight the ratchet.
+ships. `pyproject.toml` sets `include = ["src/aelfrice", "tests"]`, and the
+count over both is several times the `src/` one, because the test suite is
+almost entirely unannotated. Run `uv run pyright` to read it; no document
+records the figure, because it moves with every test edit — which is also why
+gating the wider surface today would put every test edit in conflict with the
+ratchet.
 
 So `tests/` is deliberately **not** gated, and this docstring says so rather
 than letting `pyright` in a CI job name imply full coverage. Extending the

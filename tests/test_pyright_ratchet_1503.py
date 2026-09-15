@@ -1,8 +1,9 @@
 """No document may assert that pyright strict passes (#1503).
 
 `RELEASING.md` step 6 ran `uv run pyright src/` with the comment `# strict`,
-implying it passes. It emits 987 errors over 76 files, and **no workflow ran
-pyright at all**, so the tick was self-reported and unenforced. Three other
+implying it passes. The issue body recorded 987 errors over 76 files, and
+**no workflow ran pyright at all**, so the tick was self-reported and
+unenforced. Three other
 documents repeated the claim. The cost is on the record: `CHANGELOG/v4.md`
 notes a `NameError` that reached `main` behind it.
 
@@ -14,8 +15,8 @@ lives in `pyright_baseline.json` and moves with every fix.
      wearing a CI badge.
   2. **No document re-asserts the unqualified claim.** The words come back
      easily — the four sites were written by four different changes — and a
-     document that says "strict must pass" next to a ratchet that permits 987
-     errors is worse than no document.
+     document that says "strict must pass" next to a ratchet that permits
+     the counts in `pyright_baseline.json` is worse than no document.
 
 Running pyright itself is CI's job (`.github/workflows/pyright-ratchet.yml`).
 It takes minutes on this tree, so it is deliberately not run from the unit
