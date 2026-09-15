@@ -1,69 +1,219 @@
-r"""The merge-train's auto-close emulates GitHub's close keywords (#1549).
+r"""The merge-train asks GitHub which issues a body closes (#1549).
 
-#1541 made the whole pull-request body reach the matcher and deliberately left
-two fidelity gaps open, because both change *which* issues close. #1549 ruled
-the framing: step 7/7 stands in for a merge-commit close that the fast-forward
-model cannot produce, so it reads the body the way GitHub reads it.
+#1541 made the whole pull-request body reach the matcher and left two fidelity
+gaps open, because both change *which* issues close. #1549 ruled the framing:
+step 7/7 stands in for a merge-commit close that the fast-forward model cannot
+produce, so it must read the body the way GitHub reads it.
 
-Three things are pinned here, and they pull against each other, which is why
-none of them is sufficient alone:
+An earlier revision emulated that reading with a line-state Markdown scanner and
+was wrong once per review round, the last time on this repository's own
+pull-request template. The scanner is gone. `scripts/merge_train_linked_issues.py`
+now renders the body through GitHub's `/markdown` endpoint and acts on the
+issue-link anchors GitHub itself produced.
 
-1. **All nine keywords link.** A parser that matched only `closes` / `fixes` /
-   `resolves` left `Fixed #N` open, and the train logged the same line a body
-   with no keyword at all produces.
-2. **A keyword a Markdown reader would not render as prose does not link.** A
-   parser that matched everything passes (1) and closes the issue named in a
-   body that merely documents the syntax. Fences, indented blocks, inline code
-   spans, block quotes and HTML comments are all covered.
-3. **A refused keyword is named on stderr.** This is the acceptance criterion
-   #1549 calls the one that matters: (1) and (2) together still let a
-   rejection look exactly like an absence in the step log. stdout must stay
-   bare numbers, because the workflow reads it into a shell variable.
+Four things are pinned here, and none is sufficient alone:
+
+1. **What GitHub actually renders.** Replayed from
+   `tests/data/merge_train_github_renders.json`, which holds verbatim responses
+   from the real endpoint. Without these the claim "a fence produces no anchor"
+   would rest on the parser under test agreeing with itself.
+2. **Which anchor is a close directive.** GitHub anchors every reference, so
+   adjacency in the rendered text decides, and that logic is this module's own.
+3. **The call itself.** The tests never reach the network, so the seam is
+   pinned twice: once by injecting the runner and asserting the exact argv and
+   payload, and once by putting a `gh` of the tests' own on `PATH` and driving
+   the shipped command end to end. A suite that only ever sees an injected
+   callable proves nothing about what ships.
+4. **The failure policy.** Unreachable, non-200 and unreadable all exit 2 with
+   an `error:` line and an empty stdout, because a wrong close is worse in kind
+   than a missed one -- and because a silent "no linked issues" is the exact
+   failure #1549 exists to kill.
+
+The recorded renders were produced against `robotrocketscience/aelfrice` on
+2026-09-15; `python3 scripts/record_merge_train_renders.py --dry-run` re-sends
+every body and reports any that GitHub now answers differently.
 """
 from __future__ import annotations
 
-import os
-import re
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from merge_train_fake_gh import (
+    CLI_TIMEOUT as _CLI_TIMEOUT,
+    fake_gh,
+    issue_anchor,
+    recorded_call,
+    run_cli,
+)
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "merge_train_linked_issues.py"
 _WORKFLOW = _REPO / ".github" / "workflows" / "merge-train.yml"
+_RECORDS_FILE = _REPO / "tests" / "data" / "merge_train_github_renders.json"
 
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_linked_issues import (  # noqa: E402
+    ADJACENT_RE,
     CROSS_REPO,
-    IN_COMMENT,
-    IN_FENCE,
-    IN_INDENT,
     IN_QUOTE,
-    IN_SPAN,
-    ISSUE_URL,
     KEYWORDS,
+    NOT_LINKED,
+    RENDER_TIMEOUT_SECONDS,
+    RendererUnavailable,
+    close_directives,
     linked_issues,
     parse,
+    render_markdown,
 )
 
+_RECORDS = json.loads(_RECORDS_FILE.read_text(encoding="utf-8"))
+_CONTEXT = _RECORDS["_context"]
+
+
+def _replay(name: str):
+    """The recorded body, and a renderer that replays what GitHub answered.
+
+    The renderer asserts it was handed that exact body and context, so a test
+    cannot quietly pass by replaying one record against another body.
+    """
+    record = _RECORDS["records"][name]
+
+    def render(body: str, repo: str) -> str:
+        assert body == record["body"], f"the {name} record replayed another body"
+        assert repo == _CONTEXT
+        return record["html"]
+
+    return record["body"], render
+
+
+def _parse(name: str) -> tuple[list[int], list[tuple[str, str]]]:
+    body, render = _replay(name)
+    found, refused = parse(body, _CONTEXT, render=render)
+    return found, [(r.text, r.reason) for r in refused]
+
+
 # --------------------------------------------------------------------------
-# Gap 1: the keyword set is GitHub's, not the shell's three.
+# What GitHub renders, and what therefore cannot close.
 # --------------------------------------------------------------------------
 
-_GITHUB_KEYWORDS = (
-    "close",
-    "closes",
-    "closed",
-    "fix",
-    "fixes",
-    "fixed",
-    "resolve",
-    "resolves",
-    "resolved",
+
+def test_the_recorded_renders_are_githubs_and_not_this_modules() -> None:
+    """The fixtures must look like the endpoint's output, not like a stand-in.
+
+    Every replay below is only worth as much as this: the HTML carries
+    GitHub's own `issue-link js-issue-link` anchor class and its `data-url`
+    attribute, neither of which anything in this repository writes.
+    """
+    for name, record in _RECORDS["records"].items():
+        assert record["body"], f"{name} recorded an empty body"
+        assert 'class="issue-link js-issue-link"' in record["html"], name
+        assert f'data-url="https://github.com/{_CONTEXT}/issues/' in record["html"], (
+            name
+        )
+
+
+@pytest.mark.parametrize(
+    ("record", "issue"),
+    [
+        ("blocks", 8),  # a fenced code block
+        ("blocks", 9),  # an indented code block
+        ("blocks", 11),  # an HTML comment
+        ("blocks", 12),  # an inline code span
+        ("template", 7),  # the indented line under `## Linked issues`
+        ("template", 8),  # an indent after a setext underline
+        ("template", 9),  # an indent after a thematic break
+        ("template", 12),  # an indent inside a block quote
+        ("template", 13),  # an indent inside a list item
+    ],
 )
+def test_github_renders_no_anchor_for_a_keyword_it_reads_as_code(
+    record: str, issue: int
+) -> None:
+    """Gap 2, closed by the renderer rather than by a block grammar.
+
+    Asserted against the recorded HTML directly, not through the parser: this
+    is the claim the whole change rests on, and reading it off the parser
+    would be reading it off the thing under test. Each of these was a wrong
+    close the line-state scanner made, and the first `template` row is this
+    repository's own pull-request template, where an indented `Fixed #7`
+    under a `## Linked issues` heading linked #7.
+    """
+    html = _RECORDS["records"][record]["html"]
+    assert f"/issues/{issue}" not in html
+    assert "<pre" in html or "<code" in html
+
+
+@pytest.mark.parametrize(
+    ("record", "issue"),
+    [("blocks", 7), ("blocks", 13), ("template", 10), ("template", 11)],
+)
+def test_github_does_anchor_the_references_those_bodies_close(
+    record: str, issue: int
+) -> None:
+    """The control. Without it the assertion above passes on empty HTML."""
+    html = _RECORDS["records"][record]["html"]
+    assert f'data-url="https://github.com/{_CONTEXT}/issues/{issue}"' in html
+
+
+def test_a_body_documenting_the_syntax_closes_nothing_and_says_so() -> None:
+    found, refused = _parse("blocks")
+    assert found == [7, 13], "the prose keyword and the GH- form still link"
+    assert (
+        "Fixes #8",
+        NOT_LINKED,
+    ) in refused, "a refused keyword must never be silent"
+    assert {text for text, _ in refused} == {
+        "Closes #10",
+        "Fixes #8",
+        "Resolves #9",
+        "Closes #11",
+        "Closes #12",
+        "Closes octo-org/octo-repo#14",
+    }
+
+
+def test_the_pull_request_template_no_longer_wrong_closes() -> None:
+    """#1549's fifth-round defect, on this repository's own template.
+
+    `## Linked issues` followed by an indented `Fixed #7` linked #7 under the
+    line-state scanner. GitHub renders it inside `<pre><code>`.
+    """
+    found, refused = _parse("template")
+    assert 7 not in found
+    assert ("Fixed #7", NOT_LINKED) in refused
+    assert found == [10, 11, 15]
+
+
+@pytest.mark.parametrize("issue", [8, 9, 12, 13])
+def test_every_block_type_round_five_found_is_inert_now(issue: int) -> None:
+    """A setext underline, a thematic break, a quote and a list item.
+
+    Each was a separate wrong close, and none of them costs a line of code
+    here: they are inert because GitHub rendered no anchor.
+    """
+    found, refused = _parse("template")
+    assert issue not in found
+    assert any(str(issue) in text for text, _ in refused)
+
+
+def test_a_table_row_and_a_heading_do_close() -> None:
+    """The other half: a block GitHub renders as prose is prose.
+
+    Both were also wrong under the line-state scanner, in the other
+    direction. Adjacency is per block, so a `<td>` and an `<h2>` are blocks
+    like any other.
+    """
+    found, _ = _parse("template")
+    assert 10 in found and 11 in found
+
+
+# --------------------------------------------------------------------------
+# Which anchor is a close directive: adjacency.
+# --------------------------------------------------------------------------
 
 
 def test_the_module_names_exactly_githubs_nine_keywords() -> None:
@@ -71,591 +221,605 @@ def test_the_module_names_exactly_githubs_nine_keywords() -> None:
 
     Asserting `KEYWORDS == KEYWORDS` would pass whatever the module said.
     """
-    assert sorted(KEYWORDS) == sorted(_GITHUB_KEYWORDS)
-
-
-@pytest.mark.parametrize("keyword", _GITHUB_KEYWORDS)
-def test_every_github_keyword_links(keyword: str) -> None:
-    assert linked_issues(f"{keyword} #7") == [7]
-    assert linked_issues(f"{keyword.upper()} #7") == [7]
-    assert linked_issues(f"{keyword.capitalize()} #7") == [7]
-
-
-@pytest.mark.parametrize(
-    "keyword", ["closed", "fix", "fixed", "close", "resolve", "resolved"]
-)
-def test_the_six_spellings_1541_missed_now_link(keyword: str) -> None:
-    """The six #1549 gap 1 named. Redundant with the sweep above on purpose.
-
-    If a future author re-narrows the set to the shell's three, the sweep
-    fails on six rows and this fails on six more, and the reason is in the
-    test name rather than only in a parametrisation id.
-    """
-    assert linked_issues(f"{keyword.capitalize()} #4242.") == [4242]
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "precloses #7",  # \b must still hold at the front
-        "prefixes #7",
-        "unresolved #7",
-        "closesX #7",  # no boundary between the keyword and the digit run
-        "Closes#7",  # a delimiter is still required
-        "Closes issue #7",  # GitHub does not accept this either
-        "#7",
-        "See #7 for context",
-    ],
-)
-def test_widening_the_keywords_did_not_widen_what_counts_as_a_link(
-    body: str,
-) -> None:
-    assert linked_issues(body) == []
-
-
-# --------------------------------------------------------------------------
-# Gap 1b: the colon GitHub's own page accepts after a keyword.
-# --------------------------------------------------------------------------
-
-# Verbatim from the page cited in the module docstring: "The keywords can be
-# followed by colons or in uppercase. For example: `Closes: #10`,
-# `CLOSES #10`, or `CLOSES: #10`."
-_GITHUB_COLON_EXAMPLES = ["Closes: #10", "CLOSES #10", "CLOSES: #10"]
-
-
-@pytest.mark.parametrize("body", _GITHUB_COLON_EXAMPLES)
-def test_githubs_own_three_examples_all_link(body: str) -> None:
-    """The colon form used to match nothing, and matching nothing is silent.
-
-    `parse("Closes: #10")` returned `([], [])`: no link and no rejection, so
-    the step log printed what it prints for a body with no keyword at all --
-    verbatim the failure the whole of AC5 exists to kill.
-    """
-    assert linked_issues(body) == [10]
-
-
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        ("Closes: #10", [10]),  # GitHub's published example
-        ("Closes:#10", [10]),  # the colon is itself the delimiter
-        ("Closes : #10", []),  # the colon must touch the keyword
-        ("Closes::#10", []),  # one colon, not a run of them
-        ("Closes#10", []),  # no delimiter at all
-    ],
-    ids=["colon-space", "colon-tight", "space-colon", "double-colon", "bare"],
-)
-def test_the_colon_binds_to_the_keyword_and_does_not_repeat(
-    body: str, expected: list[int]
-) -> None:
-    """GitHub publishes the colon but not its spacing; the module rules on it.
-
-    The three undocumented forms are decided in the module docstring, under
-    'What "followed by a colon" means here', and pinned here so the reading is
-    a decision rather than whatever the regex happened to do.
-    """
-    assert linked_issues(body) == expected
-
-
-def test_the_colon_form_still_obeys_the_block_exclusions() -> None:
-    """Widening the separator must not widen where a keyword may fire."""
-    found, refused = parse("```\nCloses: #7\n```\n\nFixes: #8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [("Closes: #7", IN_FENCE)]
-
-
-def test_the_1504_shaped_prose_links_and_that_is_the_accepted_cost() -> None:
-    """The known false positive the colon buys, recorded rather than hidden.
-
-    Merged PR #1504's body ends a clause on one of the nine words, and no
-    rule of text tells that apart from a close directive. GitHub closes #1329
-    from this body on an ordinary merge, so a train standing in for GitHub
-    closes it too.
-    """
-    body = "All ruled prerequisites are closed: #1329, #1412 and #1428.\n"
-    found, refused = parse(body)
-    assert found == [1329]
-    assert refused == [], "a prose match is a link, not a rejection"
-
-
-def test_the_docstring_records_the_false_positive_the_colon_buys() -> None:
-    """A cost accepted in a ruling and left out of the file is not recorded."""
-    doc = _SCRIPT.read_text(encoding="utf-8")
-    assert "#1504" in doc
-    assert "false positive" in doc
-
-
-# --------------------------------------------------------------------------
-# Gap 1c: the reference half, and the forms GitHub's own pages document for it.
-# --------------------------------------------------------------------------
-
-# Every casing of `GH-` GitHub's renderer links to the same issue. Measured
-# against GitHub rather than assumed, with:
-#     gh api --method POST /markdown -f mode=gfm -f context=OWNER/REPO \
-#         -f text='GH-10 and gh-10 and Gh-10 and gH-10 and #10'
-# whose output carries one issue-link anchor to /issues/10 per spelling.
-_GH_CASINGS = ["GH-10", "gh-10", "Gh-10", "gH-10"]
-
-
-@pytest.mark.parametrize("reference", _GH_CASINGS)
-def test_the_gh_reference_form_links_in_any_case(reference: str) -> None:
-    """`Closes GH-10` used to be the silent no-op AC5 forbids outright.
-
-    `parse("Closes GH-10")` returned `([], [])`, so the step printed for it
-    exactly what it prints for a body carrying no keyword: empty stdout,
-    empty stderr, `no linked issues parsed from PR body`. The repository's
-    own advisory `pr-metadata.yml` job matches `GH-` and had already told the
-    author the link was fine.
-    """
-    assert linked_issues(f"Closes {reference}") == [10]
-    assert linked_issues(f"resolved {reference}") == [10]
-
-
-def test_the_gh_form_takes_the_colon_separator_too() -> None:
-    """The two halves of the pattern are independent, and stay that way."""
-    assert linked_issues("Closes: GH-10") == [10]
-    assert linked_issues("CLOSES:gh-10") == [10]
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "Closes GH10",  # the hyphen is part of the form
-        "ClosesGH-10",  # a delimiter is still required
-        "Closes GH-",  # a reference needs a number
-        "Closes ugh-10",  # the form has to start where the reference does
-    ],
-)
-def test_the_gh_form_did_not_widen_what_counts_as_a_link(body: str) -> None:
-    assert linked_issues(body) == []
-
-
-def test_the_gh_form_obeys_the_block_exclusions() -> None:
-    """Widening the reference half must not widen where a keyword may fire."""
-    found, refused = parse("```\nCloses GH-7\n```\n\nFixes GH-8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [("Closes GH-7", IN_FENCE)]
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://github.com/octo-org/octo-repo/issues/26",
-        "https://github.com/octo-org/octo-repo/pull/26",
-        "https://github.com/robotrocketscience/aelfrice/issues/26",
-    ],
-    ids=["issue", "pull", "this-repository"],
-)
-def test_a_full_issue_url_is_refused_out_loud(url: str) -> None:
-    """Refused rather than followed, and never in silence.
-
-    The parser carries no repository identity, so it cannot tell its own URL
-    from another repository's -- the third case is this repository's own and
-    is refused with the other two, exactly as `robotrocketscience/aelfrice#7`
-    already is. Matching the form is what turns a silent miss into a named
-    rejection.
-    """
-    found, refused = parse(f"Closes {url}\n\nFixes #8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [(f"Closes {url}", ISSUE_URL)]
-
-
-# Every reference form GitHub documents: the keyword page's syntax table and
-# its formatting note, plus the "Autolinked references and URLs" page that
-# same page links for what a reference to an issue may look like.
-_DOCUMENTED_FORMS = [
-    ("#N", "Closes #10", [10], []),
-    ("GH-N", "Closes GH-10", [10], []),
-    ("OWNER/REPOSITORY#N", "Fixes octo-org/octo-repo#100", [], [CROSS_REPO]),
-    (
-        "issue URL",
-        "Closes https://github.com/octo-org/octo-repo/issues/26",
-        [],
-        [ISSUE_URL],
-    ),
-    (
-        "multiple issues",
-        "Resolves #10, resolves #123, resolves octo-org/octo-repo#100",
-        [10, 123],
-        [CROSS_REPO],
-    ),
-    ("a colon", "Closes: #10", [10], []),
-    ("uppercase", "CLOSES #10", [10], []),
-    ("uppercase and a colon", "CLOSES: #10", [10], []),
-]
-
-
-@pytest.mark.parametrize(
-    ("body", "found", "reasons"),
-    [(body, found, reasons) for _, body, found, reasons in _DOCUMENTED_FORMS],
-    ids=[name for name, *_ in _DOCUMENTED_FORMS],
-)
-def test_no_documented_reference_form_is_silently_unmatched(
-    body: str, found: list[int], reasons: list[str]
-) -> None:
-    """AC5 over the whole documented surface, not only the forms #1549 named.
-
-    Linking is a fine outcome and refusing by name is a fine outcome. The one
-    outcome forbidden is `([], [])`: a form that neither links nor says why
-    prints what a body with no keyword at all prints, which is the failure
-    this issue exists to remove. Both `GH-N` and the URL row did exactly that
-    until this commit.
-    """
-    got, refused = parse(body)
-    assert (got, [r.reason for r in refused]) != ([], []), (
-        "a documented form matched nothing and reported nothing"
+    assert sorted(KEYWORDS) == sorted(
+        (
+            "close",
+            "closes",
+            "closed",
+            "fix",
+            "fixes",
+            "fixed",
+            "resolve",
+            "resolves",
+            "resolved",
+        )
     )
-    assert got == found
-    assert [r.reason for r in refused] == reasons
 
 
-# --------------------------------------------------------------------------
-# Gap 2: a keyword a Markdown reader renders as code, a quote or a comment.
-# --------------------------------------------------------------------------
+def _anchor(number: int, repo: str = _CONTEXT, text: str | None = None) -> str:
+    """One issue-link anchor shaped like GitHub's, for the logic tests."""
+    return issue_anchor(number, repo, text)
 
-# Every body below links #8 from prose and names #7 somewhere inert. Asserting
-# both halves is what stops a parser that returns nothing from passing.
-_INERT_BODIES = [
-    ("```\nCloses #7\n```\n\nFixes #8", IN_FENCE),
-    ("```markdown\nCloses #7\n```\n\nFixes #8", IN_FENCE),
-    ("~~~\nCloses #7\n~~~\n\nFixes #8", IN_FENCE),
-    ("~~~text\nCloses #7\n~~~\n\nFixes #8", IN_FENCE),
-    ("`````\nCloses #7\n`````\n\nFixes #8", IN_FENCE),
-    ("````\n```\nCloses #7\n```\n````\n\nFixes #8", IN_FENCE),
-    ("  ```\nCloses #7\n  ```\n\nFixes #8", IN_FENCE),
-    ("prose\n\n    Closes #7\n\nFixes #8", IN_INDENT),
-    ("prose\n\n\tCloses #7\n\nFixes #8", IN_INDENT),
-    ("prose\n\n        Closes #7\n\nFixes #8", IN_INDENT),
-    ("prose\n\n    Closes #7\n    still code\n\nFixes #8", IN_INDENT),
-    ("```\ncode\n```\n    Closes #7\n\nFixes #8", IN_INDENT),
-    ("<!-- note -->\n    Closes #7\n\nFixes #8", IN_INDENT),
-    ("Write `Closes #7` in the body.\n\nFixes #8", IN_SPAN),
-    ("``a `tick` and Closes #7``\n\nFixes #8", IN_SPAN),
-    ("> Closes #7\n\nFixes #8", IN_QUOTE),
-    ("> quoting a review:\n> Closes #7\n\nFixes #8", IN_QUOTE),
-    ("   > Closes #7\n\nFixes #8", IN_QUOTE),
-    ("<!-- Closes #7 -->\n\nFixes #8", IN_COMMENT),
-    ("<!--\nCloses #7\n-->\n\nFixes #8", IN_COMMENT),
-    ("Fixes #8 <!-- template line: Closes #7 -->", IN_COMMENT),
-]
+
+@pytest.mark.parametrize("keyword", KEYWORDS)
+@pytest.mark.parametrize("case", [str.lower, str.upper, str.capitalize])
+def test_every_keyword_arms_the_anchor_after_it_in_any_case(keyword, case) -> None:
+    html = f"<p>{case(keyword)} {_anchor(7)}</p>"
+    assert close_directives(html, _CONTEXT) == ([7], [])
 
 
 @pytest.mark.parametrize(
-    ("body", "reason"), _INERT_BODIES, ids=[b[:24] for b, _ in _INERT_BODIES]
-)
-def test_an_inert_keyword_does_not_link_but_the_prose_one_does(
-    body: str, reason: str
-) -> None:
-    found, refused = parse(body)
-    assert found == [8], "the prose keyword must still link"
-    assert [r.reason for r in refused] == [reason]
-    assert [r.text for r in refused] == ["Closes #7"]
-
-
-def test_a_pr_documenting_this_very_syntax_closes_nothing() -> None:
-    """#1549's motivating wrong close, written as a real PR body would be."""
-    body = (
-        "## Summary\n"
-        "\n"
-        "The parser acts on a trailer such as:\n"
-        "\n"
-        "```\n"
-        "Closes #1234\n"
-        "Fixes #1235\n"
-        "Resolves #1236\n"
-        "```\n"
-        "\n"
-        "That is all it does.\n"
-    )
-    found, refused = parse(body)
-    assert found == []
-    assert [r.text for r in refused] == ["Closes #1234", "Fixes #1235", "Resolves #1236"]
-    assert {r.reason for r in refused} == {IN_FENCE}
-
-
-def test_an_unclosed_fence_swallows_the_rest_of_the_body() -> None:
-    """The documented choice: CommonMark ends the block at end of document.
-
-    The two errors are not symmetric -- refusing a close leaves an open issue
-    a human notices, making one closes an issue nobody asked to close -- so an
-    unterminated fence stays a fence rather than reverting to literal text.
-    """
-    found, refused = parse("```\nCloses #7\n\nFixes #8\n")
-    assert found == []
-    assert [(r.text, r.reason) for r in refused] == [
-        ("Closes #7", IN_FENCE),
-        ("Fixes #8", IN_FENCE),
-    ]
-
-
-def test_an_unclosed_html_comment_swallows_the_rest_of_the_body() -> None:
-    found, refused = parse("<!-- Closes #7\n\nFixes #8\n")
-    assert found == []
-    assert {r.reason for r in refused} == {IN_COMMENT}
-
-
-def test_a_fence_closes_only_on_its_own_character_and_length() -> None:
-    """A shorter run, or the other fence character, does not close it."""
-    assert linked_issues("````\n```\n~~~~\nCloses #7\n````\n\nFixes #8") == [8]
-    assert linked_issues("```\n~~~\nCloses #7\n```\n\nFixes #8") == [8]
-
-
-def test_a_closing_fence_carrying_text_does_not_close() -> None:
-    """CommonMark allows an info string on the opener only."""
-    assert linked_issues("```\ncode\n``` trailing\nCloses #7\n") == []
-
-
-def test_an_indented_block_cannot_interrupt_a_paragraph() -> None:
-    """A documented divergence, pinned so it is a decision and not a surprise.
-
-    CommonMark folds an indented line directly under a paragraph into that
-    paragraph, so the keyword is prose and does link. It needs a blank line
-    above it to become code.
-    """
-    assert linked_issues("a paragraph line\n    Closes #7\n") == [7]
-    assert linked_issues("a paragraph line\n\n    Closes #7\n") == []
-
-
-@pytest.mark.parametrize(
-    ("predecessor", "found"),
+    ("before", "found"),
     [
-        ("```\ncode\n```", []),  # the line that closes a fence
-        ("```", []),  # an open fence swallows the indent as fence, not indent
-        ("<!-- note -->", []),  # a one-line HTML block
-        ("<!-- note --> tail", []),  # the tail is part of the same HTML block
-        ("<!-- a\nb -->", []),  # the line that closes a multi-line comment
-        ("<!-- a\nb --> tail", []),
-        ("", []),  # the first line of the body
-        ("prose\n", []),  # a blank line between the paragraph and the indent
-        ("prose", [7]),  # a paragraph swallows the indent
-        ("text <!-- note -->", [7]),  # a comment mid-line leaves a paragraph
-        ("> quoted", [7]),  # a lazy continuation of a block quote
+        ("Closes ", [7]),
+        ("Closes: ", [7]),  # GitHub's published example
+        ("Closes:", [7]),  # the colon is itself the delimiter
+        ("Closes : ", []),  # the colon must touch the keyword
+        ("Closes::", []),  # one colon, not a run of them
+        ("precloses ", []),  # the boundary at the front still holds
+        ("Closes issue ", []),  # GitHub does not act on this either
+        ("See ", []),  # a mention, not a directive
+        ("", []),  # an anchor with nothing before it
+        ("Closes\n", [7]),  # GitHub accepts any whitespace
     ],
-    ids=lambda v: repr(v)[:28],
+    ids=lambda v: repr(v)[:20],
 )
-def test_only_a_paragraph_line_stops_an_indent_opening_a_code_block(
-    predecessor: str, found: list[int]
+def test_what_counts_as_the_keyword_immediately_before_an_anchor(
+    before: str, found: list[int]
 ) -> None:
-    """What may precede an indented code block, checked against GitHub.
+    """The colon spacings are this module's ruling, not GitHub's.
 
-    Tracking this as "the line above was blank" gets every row above wrong
-    except the last three: a fence closer and an HTML block are not
-    paragraphs, so an indent under either opens a code block even with no
-    blank line between them, and a `Closes #7` written there does not link.
-
-    Each row was rendered through GitHub's own Markdown before it was pinned,
-    with `gh api --method POST /markdown -f mode=gfm -f
-    context=robotrocketscience/aelfrice -f text=BODY`: the rows expecting
-    `[]` come back inside `<pre><code>` with no issue anchor, and the three
-    expecting `[7]` come back as a paragraph carrying an `issue-link` anchor
-    to issue 7.
+    GitHub renders an anchor for all five colon rows -- checked in the
+    `separators` record -- and publishes no close processor, so the module
+    docstring rules on them under "What 'followed by a colon' means here" and
+    they are pinned here rather than left to whatever the regex did.
     """
-    body = f"{predecessor}\n    Closes #7\n" if predecessor else "    Closes #7\n"
-    assert linked_issues(body) == found
+    assert close_directives(f"<p>{before}{_anchor(7)}</p>", _CONTEXT)[0] == found
 
 
-def test_an_unmatched_backtick_marks_nothing_inert() -> None:
-    """Otherwise one stray tick in a body silences every keyword after it."""
-    assert linked_issues("a ` stray tick, and Closes #7") == [7]
+def test_the_separator_rulings_hold_against_a_real_github_render() -> None:
+    """The rows above, driven through the body GitHub actually rendered.
 
-
-def test_text_after_a_comment_closes_is_live_again() -> None:
-    assert linked_issues("<!-- ignore Closes #7 --> and Fixes #8") == [8]
-
-
-def test_a_code_span_after_a_comment_closes_mid_line_is_still_code() -> None:
-    """A wrong close: the remainder used to be scanned for comments only.
-
-    The comment opens on line 1 and closes part-way through line 2, so the
-    rest of line 2 is live text. It reached a comment-only scan rather than
-    the live-line path, so the backticks around `Closes #7` marked nothing and
-    the parser returned `([7, 8], [])` -- closing an issue whose keyword sits
-    inside a code span, a context the docstring lists as excluded.
+    `Closes : #4`, `Closes::#5`, `Closes#6`, `precloses #7` and
+    `Closes issue #8` close nothing. The first two are rulings; the last
+    three are forms GitHub itself does not act on, so refusing them is
+    fidelity rather than a decision, and each is silent for the same reason a
+    body with no keyword is silent -- there is no close directive in it.
     """
-    found, refused = parse("<!--\nnote --> `Closes #7` and Fixes #8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [("Closes #7", IN_SPAN)]
-
-
-def test_a_comment_marker_inside_a_code_span_does_not_open_a_comment() -> None:
-    """The mirror of the case above, and a wrong refusal rather than a close.
-
-    Comments were scanned before code spans on a live line, so a `<!--`
-    written between backticks opened a comment that swallowed the rest of the
-    body: `Fixes #8` came back refused as `inside an HTML comment`.
-    """
-    found, refused = parse("a `comment marker <!-- inside` a code span Fixes #8")
-    assert found == [8]
+    found, refused = _parse("separators")
+    assert found == [1, 2, 3, 9, 10]
     assert refused == []
 
 
-def test_a_backtick_inside_a_comment_does_not_open_a_code_span() -> None:
-    """The other direction of the same rule: the comment opened first.
+def test_a_keyword_split_across_a_line_still_arms_the_anchor() -> None:
+    """`Resolves\\n#9` in the recorded body; GitHub renders a `<br>`."""
+    assert 9 in _parse("separators")[0]
 
-    Ranking spans over comments instead would end the comment at the backtick
-    run and hand `Closes #7` back as prose.
+
+def test_a_line_break_does_not_break_the_run() -> None:
+    """`<br>` is inline, and adds no whitespace of its own because none is needed.
+
+    Written with no newline beside the tag, which is the shape the recorded
+    render does not have: GitHub emits `Resolves<br>\\n<a ...>`, so a tool
+    that read only the literal newline would pass the row above. Adjacency
+    allows zero whitespace, so what has to hold here is only that `<br>` does
+    not end the run -- dropping it from the inline set does end it, and the
+    recorded `#9` stops linking.
     """
-    found, refused = parse("<!-- a `tick` and Closes #7 -->\n\nFixes #8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [("Closes #7", IN_COMMENT)]
+    assert close_directives(f"<p>Resolves<br>{_anchor(7)}</p>", _CONTEXT) == ([7], [])
 
 
-def test_an_unterminated_comment_opened_inside_a_code_span_is_inert_text() -> None:
-    """The span wins, so nothing is left open and the next line is live."""
-    assert linked_issues("`<!-- still code`\nFixes #8") == [8]
+def test_one_keyword_arms_one_anchor() -> None:
+    """`Closes #10 #11` links #10 alone, which is GitHub's rule.
 
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "<!-- note -->Fixes #8",  # the `-->` and the keyword touch
-        "`x`Fixes #8",  # so do the closing backtick and the keyword
-    ],
-)
-def test_a_keyword_starting_where_an_inert_span_ends_is_prose(body: str) -> None:
-    """An inert span is half-open, and the first live offset is its end.
-
-    The cases above sit one character tighter than
-    `test_text_after_a_comment_closes_is_live_again`, which leaves a space
-    after the `-->`. Without that space the keyword starts at exactly the
-    span's end offset, so widening the containment test to `offset <= end`
-    turns both of these into refusals.
+    An anchor ends the run of text, so nothing before the first anchor can
+    reach the second.
     """
-    assert linked_issues(body) == [8]
+    assert 11 not in _parse("separators")[0]
+    assert close_directives(
+        f"<p>Closes {_anchor(10)} {_anchor(11)}</p>", _CONTEXT
+    ) == ([10], [])
 
 
-def test_a_cross_repository_link_is_refused_out_loud() -> None:
+def test_text_before_a_block_boundary_cannot_arm_an_anchor_after_it() -> None:
+    """Adjacency is per block. Two paragraphs are two blocks."""
+    assert close_directives(f"<p>Closes</p><p>{_anchor(7)}</p>", _CONTEXT) == ([], [])
+    assert close_directives(
+        f"<ul><li>Closes</li><li>{_anchor(7)}</li></ul>", _CONTEXT
+    ) == ([], [])
+
+
+def test_a_keyword_written_as_code_does_not_arm_the_anchor_beside_it() -> None:
+    """A keyword inside a code span is not a keyword.
+
+    `<code>` is deliberately absent from the inline set, so it breaks the run
+    like a block boundary. The tie-break is the asymmetry the docstring
+    states: refusing costs an open issue a human sees.
+    """
+    assert close_directives(
+        f"<p><code>Closes</code> {_anchor(7)}</p>", _CONTEXT
+    ) == ([], [])
+
+
+def test_an_inline_wrapper_does_not_break_the_run() -> None:
+    """Emphasis around the reference is still the same block of text."""
+    assert close_directives(
+        f"<p>Closes <em>{_anchor(7)}</em></p>", _CONTEXT
+    ) == ([7], [])
+
+
+def test_an_unknown_wrapper_breaks_the_run_rather_than_arming_it() -> None:
+    """The conservative direction for HTML GitHub has not emitted yet."""
+    assert close_directives(
+        f"<p>Closes <some-future-element>{_anchor(7)}</some-future-element></p>",
+        _CONTEXT,
+    ) == ([], [])
+
+
+def test_an_ordinary_link_is_not_an_issue_reference() -> None:
+    """Only GitHub's `issue-link` anchor counts, and it ends the run too."""
+    url = "https://example.invalid/x"
+    assert close_directives(
+        f'<p>Closes <a href="{url}">docs</a> {_anchor(7)}</p>', _CONTEXT
+    ) == ([], [])
+
+
+# --------------------------------------------------------------------------
+# Repository identity, which the emulating revision did not have.
+# --------------------------------------------------------------------------
+
+
+def test_a_link_to_another_repository_is_refused_out_loud() -> None:
     """Out of scope to *follow*; in scope to stop passing over in silence."""
-    found, refused = parse("Closes robotrocketscience/aelfrice#7\n\nFixes #8")
-    assert found == [8]
-    assert [(r.text, r.reason) for r in refused] == [
-        ("Closes robotrocketscience/aelfrice#7", CROSS_REPO)
+    found, refused = _parse("elsewhere")
+    assert refused == [
+        ("Closes cli/cli#1", CROSS_REPO),
+        ("Fixes cli/cli#2", CROSS_REPO),
     ]
+    assert found == [3]
 
 
-def test_a_rejection_reports_the_line_it_was_found_on() -> None:
-    body = "one\ntwo\n```\nCloses #7\n```\n"
-    (_, refused) = parse(body)
-    assert [r.line for r in refused] == [4]
+def test_a_full_url_to_this_repository_now_closes_it() -> None:
+    """A behaviour change, and a deliberate one.
 
-
-def test_a_rejection_names_the_keyword_on_one_normalised_line() -> None:
-    """A match that spans a newline still warns on a single log line.
-
-    GitHub accepts any whitespace between the keyword and the `#N`, so the
-    match can carry a newline. A step log is read a line at a time, so the
-    quoted text collapses its whitespace rather than breaking the warning in
-    two and leaving `#7` on a line of its own.
+    The emulating revision refused every URL, its own included, because it
+    carried no repository identity and could not tell them apart. This one
+    sends `--repo` as the render context and compares it against every
+    anchor's `data-url`, so `Resolves <this repo>/issues/3` closes #3 -- which
+    is what GitHub does with the same body.
     """
-    (_, refused) = parse("```\nResolves\n#7\n```\n")
-    assert [r.text for r in refused] == ["Resolves #7"]
-    assert "\n" not in refused[0].message()
-    assert refused[0].message() == (
-        'warning: ignored "Resolves #7" on line 2: inside a fenced code block.'
-    )
+    assert _parse("elsewhere")[0] == [3]
 
 
-def test_a_keyword_split_across_lines_takes_its_keyword_line_context() -> None:
-    """A documented divergence: classification is by where the match starts."""
-    assert linked_issues("```\nResolves\n#7\n```\n") == []
-    assert linked_issues("Resolves\n#7\n") == [7]
+def test_the_comparison_is_case_insensitive_like_github() -> None:
+    html = f"<p>Closes {_anchor(7, repo='RobotRocketScience/Aelfrice')}</p>"
+    assert close_directives(html, "robotrocketscience/aelfrice") == ([7], [])
+
+
+def test_a_near_miss_repository_name_is_refused_not_closed() -> None:
+    """The control for the case fold: a different repo is still a different repo."""
+    html = f"<p>Closes {_anchor(7, repo='robotrocketscience/aelfrice-lab')}</p>"
+    found, refused = close_directives(html, _CONTEXT)
+    assert found == []
+    assert [r.reason for r in refused] == [CROSS_REPO]
+
+
+def test_a_block_quote_is_refused_out_loud() -> None:
+    """The one place this refuses where adjacency alone would close.
+
+    Divergence 4 in the module docstring: a quoted review comment saying
+    `Fixes #N` is a real wrong close, and the rendered tree says exactly
+    which anchors are inside a `<blockquote>`, so the refusal costs no
+    grammar. It is a ruling; GitHub publishes nothing either way.
+    """
+    _, refused = _parse("blocks")
+    assert ("Closes #10", IN_QUOTE) in refused
+
+
+def test_leaving_a_quote_makes_the_next_anchor_live_again() -> None:
+    """The depth counter must come back down, or one quote silences the body."""
+    html = f"<blockquote><p>Closes {_anchor(7)}</p></blockquote><p>Fixes {_anchor(8)}</p>"
+    found, refused = close_directives(html, _CONTEXT)
+    assert found == [8]
+    assert [r.reason for r in refused] == [IN_QUOTE]
 
 
 # --------------------------------------------------------------------------
-# AC5: a rejection must not print what an absence prints.
+# Nothing is silently unmatched.
 # --------------------------------------------------------------------------
 
-# One interpreter per CLI test, reading a string and printing numbers -- no
-# network, no store, no lock. Scaled by the suite's own knob so a loaded
-# machine reports contention as slowness rather than as a failure (#1307).
-_CLI_TIMEOUT = 30 * int(os.environ.get("AELF_TEST_TIMEOUT_SCALE", "4"))
+
+def test_a_reference_github_declined_to_render_is_reported() -> None:
+    """`owner/repo#N` for a repository GitHub cannot resolve renders no anchor.
+
+    There is then nothing in the document to hang a reason on, so the source
+    scan reports it. It is the only refusal reason that carries a line number,
+    because it is the only one derived from the body rather than the render.
+    """
+    body, render = _replay("blocks")
+    _, refused = parse(body, _CONTEXT, render=render)
+    unrendered = [r for r in refused if r.reason == NOT_LINKED]
+    assert ("Closes octo-org/octo-repo#14", 17) in [
+        (r.text, r.line) for r in unrendered
+    ]
+    assert all(r.line is not None for r in unrendered)
 
 
-def _run(args: list[str], stdin: str = "") -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(_SCRIPT), *args],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_CLI_TIMEOUT,
+def test_a_number_that_was_closed_is_not_also_reported_as_unmatched() -> None:
+    """A body that documents `Closes #7` in a fence and closes #7 in prose.
+
+    The source scan is diagnostics, so an accounted-for number is not worth a
+    warning; reporting it would teach a reader to ignore the warnings.
+    """
+    body = "Closes #7\n\n```\nCloses #7\n```\n"
+    html = f"<p>Closes {_anchor(7)}</p><pre><code>Closes #7\n</code></pre>"
+    found, refused = parse(body, _CONTEXT, render=lambda b, r: html)
+    assert found == [7]
+    assert refused == []
+
+
+def test_the_source_scan_never_decides_a_close() -> None:
+    """It is a flat regex with no idea of blocks; only the render decides.
+
+    A body whose source is full of keywords and whose render carries no
+    anchor closes nothing -- which is what makes it safe for it to be a
+    superset in the places it is one.
+    """
+    body = "Closes #7 Fixes #8 Resolves #9\n"
+    found, refused = parse(body, _CONTEXT, render=lambda b, r: "<p>nothing</p>")
+    assert found == []
+    assert {r.reason for r in refused} == {NOT_LINKED}
+    assert len(refused) == 3
+
+
+def test_an_empty_body_is_answered_without_calling_the_renderer() -> None:
+    def explode(body: str, repo: str) -> str:
+        raise AssertionError("an empty body must not cost a network call")
+
+    assert parse("", _CONTEXT, render=explode) == ([], [])
+    assert parse("   \n\n", _CONTEXT, render=explode) == ([], [])
+
+
+# --------------------------------------------------------------------------
+# The seam: the call this step actually makes.
+# --------------------------------------------------------------------------
+
+
+class _Runner:
+    """A stand-in for `subprocess.run` that records how it was called."""
+
+    def __init__(self, *, returncode: int = 0, stdout: str = "<p>ok</p>", stderr: str = ""):
+        self.result = subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+        self.argv: list[str] | None = None
+        self.kwargs: dict[str, object] = {}
+
+    def __call__(self, argv: list[str], **kwargs: object):
+        self.argv = argv
+        self.kwargs = kwargs
+        return self.result
+
+
+def test_the_real_call_is_pinned_argument_by_argument() -> None:
+    """What ships, not what a fake accepts.
+
+    `mode` must be `gfm` or `#N` is literal text and nothing links; `context`
+    must be the repository or `#N` resolves nowhere; the body must go on
+    stdin, because a quarter-megabyte one does not fit in argv.
+    """
+    runner = _Runner()
+    render_markdown("Closes #7", _CONTEXT, run=runner)
+
+    assert runner.argv == ["gh", "api", "--method", "POST", "/markdown", "--input", "-"]
+    assert json.loads(runner.kwargs["input"]) == {
+        "mode": "gfm",
+        "context": _CONTEXT,
+        "text": "Closes #7",
+    }
+    assert runner.kwargs["capture_output"] is True
+    assert runner.kwargs["text"] is True
+    assert runner.kwargs["check"] is False
+    assert runner.kwargs["timeout"] == RENDER_TIMEOUT_SECONDS
+
+
+def test_the_whole_body_is_sent_however_long_it_is() -> None:
+    """#1541's property, restated for the renderer.
+
+    The cap that caused #1541 sat between the body and the matcher. The
+    matcher is now GitHub, so the property is that the whole body reaches it.
+    """
+    body = "x" * 200_000 + "\nCloses #4242."
+    runner = _Runner()
+    render_markdown(body, _CONTEXT, run=runner)
+    assert json.loads(runner.kwargs["input"])["text"] == body
+
+
+def test_the_render_seam_is_late_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Written as `render=render_markdown` the seam would be a decoration.
+
+    A default argument is evaluated once, at import, so the signature form
+    binds the real renderer before any test can replace it: replacing the
+    module attribute would leave the network call in place and the suite
+    would look injected while reaching GitHub on every run. Caught exactly
+    that way -- this test failed against the live endpoint before the default
+    moved into the body.
+    """
+    monkeypatch.setattr(
+        "merge_train_linked_issues.render_markdown",
+        lambda body, repo: f"<p>Closes {issue_anchor(7, repo)}</p>",
     )
+    assert parse("Closes #7", _CONTEXT)[0] == [7]
+    assert linked_issues("Closes #7", _CONTEXT) == [7]
+
+
+def test_the_runner_seam_is_late_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same trap one level down, where the subprocess is spawned."""
+    calls: list[list[str]] = []
+
+    def record(argv: list[str], **kwargs: object):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="<p>ok</p>", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", record)
+    render_markdown("Closes #7", _CONTEXT)
+    assert calls and calls[0][0] == "gh"
+
+
+def _fake_gh(tmp_path: Path, body: str, *, returncode: int = 0, stderr: str = "") -> Path:
+    """A `gh` of our own on `PATH`, so the shipped command runs for real.
+
+    It records the argv and stdin it was given, which is how the end-to-end
+    tests below check that `subprocess.run` was handed what the unit test
+    above pins -- an injected callable alone could not tell.
+    """
+    return fake_gh(tmp_path, body, returncode=returncode, stderr=stderr)
+
+
+def _run_cli(
+    args: list[str], *, bin_dir: Path, stdin: str = ""
+) -> subprocess.CompletedProcess[str]:
+    """The CLI, with `PATH` holding only our `gh`, so nothing reaches GitHub."""
+    return run_cli(_SCRIPT, args, bin_dir=bin_dir, stdin=stdin)
 
 
 @pytest.mark.timeout(_CLI_TIMEOUT)
-def test_a_rejected_keyword_is_not_silent() -> None:
+def test_the_shipped_command_runs_gh_with_the_pinned_arguments(
+    tmp_path: Path,
+) -> None:
+    """End to end through the real `subprocess.run`, with no network.
+
+    The unit test above pins the argv against an injected runner; this one
+    proves the shipped default runner is `subprocess.run` and that it invokes
+    `gh` -- the two together are what make the seam tested rather than only
+    the fake.
+    """
+    html = f"<p>Closes {_anchor(7)}</p>"
+    bin_dir = _fake_gh(tmp_path, html)
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="Closes #7\n")
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["7"]
+
+    call = recorded_call(tmp_path)
+    assert call["argv"] == ["api", "--method", "POST", "/markdown", "--input", "-"]
+    assert json.loads(call["stdin"]) == {
+        "mode": "gfm",
+        "context": _CONTEXT,
+        "text": "Closes #7\n",
+    }
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_repo_flag_is_what_reaches_github_as_the_context(tmp_path: Path) -> None:
+    bin_dir = _fake_gh(tmp_path, "<p>nothing</p>")
+    _run_cli(["--repo", "octo-org/octo-repo"], bin_dir=bin_dir, stdin="hello\n")
+    call = recorded_call(tmp_path)
+    assert json.loads(call["stdin"])["context"] == "octo-org/octo-repo"
+
+
+# --------------------------------------------------------------------------
+# The failure policy: loud, and closing nothing.
+# --------------------------------------------------------------------------
+
+
+def test_a_non_zero_renderer_exit_raises_rather_than_returning_nothing() -> None:
+    runner = _Runner(returncode=1, stdout="", stderr="HTTP 503: unavailable")
+    with pytest.raises(RendererUnavailable) as exc:
+        render_markdown("Closes #7", _CONTEXT, run=runner)
+    assert "503" in str(exc.value), "the failure must name what GitHub said"
+
+
+def test_an_empty_render_of_a_non_empty_body_raises() -> None:
+    """The unparseable case that matters: a 200 carrying nothing.
+
+    Returning `([], [])` here is indistinguishable from a body with no
+    keyword, which is the silence AC5 forbids.
+    """
+    runner = _Runner(stdout="")
+    with pytest.raises(RendererUnavailable):
+        render_markdown("Closes #7", _CONTEXT, run=runner)
+
+
+def test_a_missing_gh_raises_rather_than_closing_nothing_quietly() -> None:
+    def absent(argv, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    with pytest.raises(RendererUnavailable) as exc:
+        render_markdown("Closes #7", _CONTEXT, run=absent)
+    assert "gh" in str(exc.value)
+
+
+def test_a_renderer_timeout_raises() -> None:
+    def slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=RENDER_TIMEOUT_SECONDS)
+
+    with pytest.raises(RendererUnavailable) as exc:
+        render_markdown("Closes #7", _CONTEXT, run=slow)
+    assert str(RENDER_TIMEOUT_SECONDS) in str(exc.value)
+
+
+def test_an_anchor_with_an_unreadable_url_raises_rather_than_being_skipped() -> None:
+    """If GitHub's output shape changes, the step must stop, not miss closes."""
+    html = (
+        '<p>Closes <a class="issue-link js-issue-link" '
+        'data-url="https://example.invalid/whatever">#7</a></p>'
+    )
+    with pytest.raises(RendererUnavailable):
+        close_directives(html, _CONTEXT)
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_cli_exits_two_and_prints_nothing_when_the_renderer_fails(
+    tmp_path: Path,
+) -> None:
+    """Exit 2, an `error:` line, and an empty stdout -- the ruled policy.
+
+    Closing nothing is recoverable by a human reading the step log. Closing
+    the wrong issue is not, and printing nothing on a failure while exiting 0
+    would be the silent "no linked issues" #1549 removed.
+    """
+    bin_dir = _fake_gh(tmp_path, "", returncode=1, stderr="HTTP 503\n")
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="Closes #7\n")
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "error:" in proc.stderr
+    assert "nothing was closed" in proc.stderr
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_a_renderer_failure_does_not_look_like_a_body_with_no_keyword(
+    tmp_path: Path,
+) -> None:
+    """The two outcomes must differ in the exit code *and* in the log."""
+    ok = _fake_gh(tmp_path / "ok", "<p>nothing here</p>")
+    broken = _fake_gh(tmp_path / "broken", "", returncode=1, stderr="boom\n")
+
+    absent = _run_cli(["--repo", _CONTEXT], bin_dir=ok, stdin="no trailer here\n")
+    failed = _run_cli(["--repo", _CONTEXT], bin_dir=broken, stdin="no trailer here\n")
+
+    assert (absent.returncode, absent.stdout, absent.stderr) == (0, "", "")
+    assert failed.returncode == 2
+    assert failed.stderr != ""
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_cli_refuses_to_guess_the_repository(tmp_path: Path) -> None:
+    """Without a context `#N` resolves nowhere, so guessing one is a wrong close."""
+    bin_dir = _fake_gh(tmp_path, "<p>nothing</p>")
+    proc = _run_cli([], bin_dir=bin_dir, stdin="Closes #7\n")
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "--repo" in proc.stderr
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_repository_may_come_from_the_workflow_environment(
+    tmp_path: Path,
+) -> None:
+    bin_dir = _fake_gh(tmp_path, f"<p>Closes {_anchor(7)}</p>")
+    proc = run_cli(
+        _SCRIPT,
+        [],
+        bin_dir=bin_dir,
+        stdin="Closes #7\n",
+        env={"GITHUB_REPOSITORY": _CONTEXT},
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.split() == ["7"]
+
+
+# --------------------------------------------------------------------------
+# AC5 at the step's own boundary.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_a_refused_keyword_is_not_silent(tmp_path: Path) -> None:
     """The defect #1549 calls the one that matters.
 
-    A body whose only keyword the parser refused used to produce exactly what
-    a body with no keyword produces: empty stdout and empty stderr.
+    A body whose only keyword the tool refused used to produce exactly what a
+    body with no keyword produces: empty stdout and empty stderr.
     """
-    absent = _run([], stdin="no trailer here\n")
-    refused = _run([], stdin="```\nCloses #7\n```\n")
+    bin_dir = _fake_gh(tmp_path, "<pre><code>Closes #7\n</code></pre>")
+    refused = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="```\nCloses #7\n```\n")
+
+    quiet = _fake_gh(tmp_path / "quiet", "<p>no trailer here</p>")
+    absent = _run_cli(["--repo", _CONTEXT], bin_dir=quiet, stdin="no trailer here\n")
 
     assert absent.returncode == refused.returncode == 0
     assert absent.stdout == refused.stdout == ""
     assert absent.stderr == "", "an absence has nothing to report"
-    assert refused.stderr != absent.stderr, (
-        "a refused keyword printed the same thing as no keyword at all"
-    )
-
-
-@pytest.mark.timeout(_CLI_TIMEOUT)
-def test_the_rejection_names_the_text_and_the_reason() -> None:
-    refused = _run([], stdin="intro\n\n```\nCloses #7\n```\n")
-    assert refused.returncode == 0
     assert "Closes #7" in refused.stderr
-    assert IN_FENCE in refused.stderr
-    assert "line 4" in refused.stderr
+    assert NOT_LINKED in refused.stderr
 
 
 @pytest.mark.timeout(_CLI_TIMEOUT)
-def test_rejections_never_reach_stdout() -> None:
+def test_rejections_never_reach_stdout(tmp_path: Path) -> None:
     """stdout is read into a shell variable and split on whitespace."""
-    proc = _run([], stdin="```\nCloses #7\n```\n\nFixes #8\n")
+    html = f"<pre><code>Closes #7\n</code></pre><p>Fixes {_anchor(8)}</p>"
+    bin_dir = _fake_gh(tmp_path, html)
+    proc = _run_cli(
+        ["--repo", _CONTEXT],
+        bin_dir=bin_dir,
+        stdin="```\nCloses #7\n```\n\nFixes #8\n",
+    )
     assert proc.returncode == 0
     assert proc.stdout.split() == ["8"]
     assert "#7" in proc.stderr
 
 
 @pytest.mark.timeout(_CLI_TIMEOUT)
-def test_every_rejection_gets_its_own_line() -> None:
-    proc = _run([], stdin="```\nCloses #7\nFixes #8\nResolves #9\n```\n")
+def test_every_rejection_gets_its_own_line(tmp_path: Path) -> None:
+    bin_dir = _fake_gh(tmp_path, "<pre><code>x\n</code></pre>")
+    proc = _run_cli(
+        ["--repo", _CONTEXT],
+        bin_dir=bin_dir,
+        stdin="```\nCloses #7\nFixes #8\nResolves #9\n```\n",
+    )
     lines = [ln for ln in proc.stderr.splitlines() if ln.startswith("warning:")]
     assert len(lines) == 3
     assert proc.stdout == ""
 
 
 @pytest.mark.timeout(_CLI_TIMEOUT)
-def test_dry_run_still_reports_rejections() -> None:
-    proc = _run(["--dry-run"], stdin="```\nCloses #7\n```\n\nFixes #8\n")
+def test_dry_run_still_reports_rejections(tmp_path: Path) -> None:
+    html = f"<pre><code>Closes #7\n</code></pre><p>Fixes {_anchor(8)}</p>"
+    bin_dir = _fake_gh(tmp_path, html)
+    proc = _run_cli(
+        ["--repo", _CONTEXT, "--dry-run"],
+        bin_dir=bin_dir,
+        stdin="```\nCloses #7\n```\n\nFixes #8\n",
+    )
     assert proc.stdout.strip() == "would close #8"
     assert "Closes #7" in proc.stderr
 
 
-@pytest.mark.timeout(_CLI_TIMEOUT)
-def test_the_gh_form_no_longer_prints_what_an_absent_keyword_prints() -> None:
-    """The defect at the step's own boundary, where a human reads the log."""
-    absent = _run([], stdin="no trailer here\n")
-    gh_form = _run([], stdin="Closes GH-10\n")
+def test_a_rejection_reads_as_one_normalised_log_line() -> None:
+    """A step log is read a line at a time, and a match can span a newline."""
+    body = "```\nResolves\n#7\n```\n"
+    _, refused = parse(body, _CONTEXT, render=lambda b, r: "<pre><code>x</code></pre>")
+    assert [r.text for r in refused] == ["Resolves #7"]
+    assert "\n" not in refused[0].message()
+    assert refused[0].message() == (
+        f'warning: ignored "Resolves #7" on line 2: {NOT_LINKED}.'
+    )
 
-    assert (absent.stdout, absent.stderr) == ("", "")
-    assert gh_form.stdout.split() == ["10"]
 
-
-@pytest.mark.timeout(_CLI_TIMEOUT)
-def test_a_url_link_is_refused_on_stderr_and_not_in_silence() -> None:
-    url = "https://github.com/octo-org/octo-repo/issues/26"
-    proc = _run([], stdin=f"Closes {url}\n")
-
-    assert proc.returncode == 0
-    assert proc.stdout == "", "stdout is the issue-number list the shell splits"
-    assert ISSUE_URL in proc.stderr
-    assert url in proc.stderr
+def test_a_rejection_without_a_source_line_still_names_itself() -> None:
+    """A refusal read off the render has no line, and must not print `line None`."""
+    _, refused = close_directives(
+        f"<blockquote><p>Closes {_anchor(7)}</p></blockquote>", _CONTEXT
+    )
+    assert refused[0].message() == f'warning: ignored "Closes #7": {IN_QUOTE}.'
+    assert "None" not in refused[0].message()
 
 
 # --------------------------------------------------------------------------
-# The workflow must surface that stderr.
+# The workflow must invoke it correctly and surface its failures.
 # --------------------------------------------------------------------------
 
 
@@ -671,23 +835,23 @@ def _live_lines() -> list[str]:
 
 
 def _script_invocation() -> str:
-    r"""The merge-train lines that run the parser, comments dropped.
+    r"""The merge-train lines that run the tool, comments dropped.
 
-    The invocation is wrapped over two lines with a `\` continuation, so the
+    The invocation is wrapped over two lines with a `\` continuation, so a
     redirect that would swallow stderr could sit on either of them.
     """
     lines = _live_lines()
     for i, line in enumerate(lines):
         if "merge_train_linked_issues.py" in line:
             return "\n".join(lines[i : i + 3])
-    raise AssertionError("merge-train.yml no longer runs the parser")
+    raise AssertionError("merge-train.yml no longer runs the tool")
 
 
-def test_the_workflow_does_not_swallow_the_parsers_stderr() -> None:
+def test_the_workflow_does_not_swallow_the_tools_stderr() -> None:
     """Command substitution captures stdout only, so stderr reaches the log.
 
     A `2>/dev/null` or a `2>&1` on this call would undo #1549 without touching
-    the parser: the first discards the diagnostics, the second folds them into
+    the tool: the first discards the diagnostics, the second folds them into
     the issue-number list the shell then loops over.
     """
     call = _script_invocation()
@@ -700,54 +864,109 @@ def test_that_assertion_is_not_vacuous() -> None:
     """Other commands in this workflow do redirect stderr, so the check is narrow.
 
     Read the same comment-filtered lines `_script_invocation` reads, not the
-    raw file: the step comment added for #1549 names both spellings, so a
-    whole-file search reports a redirect that no command runs.
+    raw file: the step comment names both spellings, so a whole-file search
+    reports a redirect that no command runs.
     """
     live = "\n".join(_live_lines())
     assert "2>/dev/null" in live
     assert "2>&1" in live
 
 
-def test_the_workflow_no_longer_calls_the_gaps_undecided() -> None:
-    """The step comment named both gaps as open; #1549 closed them."""
+def test_the_workflow_passes_the_repository_to_the_tool() -> None:
+    """Without it the tool exits 2 and the train closes nothing, every merge."""
+    assert "--repo" in _script_invocation()
+
+
+def test_the_workflow_surfaces_a_failed_determination_instead_of_swallowing_it() -> None:
+    """`|| true` on this call would restore the silence #1549 removed.
+
+    A non-zero exit means the tool could not decide; the step must say so
+    where a human will see it rather than report the same "no linked issues"
+    a body with no keyword reports.
+    """
+    live = "\n".join(_live_lines())
+    assert "merge_train_linked_issues.py \\\n              --repo" in live
+    assert "::error::merge-train could not determine the linked issues" in live
+    assert "|| true)" not in _script_invocation()
+
+
+def test_the_workflow_log_tells_undetermined_apart_from_no_keyword() -> None:
+    """Three outcomes, three messages, or the annotation stands alone.
+
+    Collapsing the failure branch back into the empty one would put
+    `no linked issues parsed from PR body` under an `::error::` -- the same
+    sentence a body with no keyword produces, which is the equivalence #1549
+    exists to break. Driving the extracted fragment under `set -euo pipefail`
+    with a stub tool prints `linked issues UNDETERMINED` for exit 2, `no
+    linked issues parsed from PR body` for an empty stdout, and the close
+    loop otherwise.
+    """
+    live = "\n".join(_live_lines())
+    assert "linked issues UNDETERMINED" in live
+    assert "no linked issues parsed from PR body" in live
+    assert live.index("UNDETERMINED") < live.index("no linked issues parsed")
+
+
+def test_the_workflow_no_longer_claims_to_emulate_markdown() -> None:
+    """The step comment described the scanner this change deleted."""
     whole = _WORKFLOW.read_text(encoding="utf-8")
     assert "left for a decision" not in whole
+    assert "ignores one written inside a" not in whole
 
 
-def test_the_docstring_states_the_decision_and_what_remains() -> None:
-    """AC1: the gaps section is replaced, not merely amended."""
+# --------------------------------------------------------------------------
+# The module must state what it decided.
+# --------------------------------------------------------------------------
+
+
+def test_the_docstring_states_the_ruling_and_the_deleted_emulation() -> None:
     doc = _SCRIPT.read_text(encoding="utf-8")
-    assert "Two fidelity gaps this deliberately does NOT close" not in doc
-    assert "this step emulates GitHub" in doc
-    assert "Divergences that REMAIN, deliberately" in doc
-    for remaining in ("Commit messages", "Cross-repository", "target branch"):
-        assert remaining in doc
+    assert "ask GitHub rather than emulate it" in doc
+    assert "gh api --method POST /markdown" in doc
+
+
+def test_the_docstring_settles_the_failure_policy() -> None:
+    """AC5 forbids a silent failure, so the choice has to be argued in the file."""
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "Failure policy" in doc
+    for rejected_alternative in ("Falling back to a local parse", "no links"):
+        assert rejected_alternative in doc
+    assert "RendererUnavailable" in doc
+
+
+def test_the_docstring_states_the_injection_seam() -> None:
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "This is the seam" in doc
 
 
 def test_the_docstring_enumerates_every_documented_reference_form() -> None:
-    """A form ruled on in review and left out of the file is not ruled on.
-
-    The enumeration is the deliverable, not only the two forms it changed:
-    the next reader has to be able to check the list against GitHub's pages
-    without re-deriving which forms were considered.
-    """
+    """A form ruled on in review and left out of the file is not ruled on."""
     doc = _SCRIPT.read_text(encoding="utf-8")
     assert "Every documented reference form is acted on or refused out loud" in doc
-    for form in ("`#N`", "`GH-N`", "`OWNER/REPOSITORY#N`", "/issues/26"):
+    for form in ("`#N`", "`GH-N`", "`OWNER/REPOSITORY#N`", "full issue"):
         assert form in doc, f"the docstring does not rule on {form}"
 
 
-def test_the_docstring_cites_githubs_keyword_list() -> None:
-    """The citation must be one whole URL, not a host and a path that happen
-    to both appear.
+def test_the_docstring_states_what_still_diverges_from_github() -> None:
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "Divergences that REMAIN, deliberately" in doc
+    for remaining in ("Commit messages", "Cross-repository", "target branch", "block quote"):
+        assert remaining in doc
 
-    Matched as a single pattern rather than as two `in` checks. Two
-    independent substring assertions pass on a docstring that names the host
-    in one sentence and the page in another, which is not a citation a reader
-    can follow; and a bare `"docs.github.com" in doc` also reads to CodeQL as
-    an incomplete URL sanitization check, since that is the shape of one.
-    """
+
+def test_the_docstring_cites_githubs_keyword_page_as_one_url() -> None:
+    """Two independent substring checks pass on a host in one sentence and a
+    path in another, which is not a citation a reader can follow."""
+    import re
+
     doc = _SCRIPT.read_text(encoding="utf-8")
     assert re.search(
         r"https://docs\.github\.com/\S*linking-a-pull-request-to-an-issue", doc
     ), "the docstring does not cite GitHub's closing-keyword page by URL"
+
+
+def test_the_keyword_alternation_is_built_from_the_nine() -> None:
+    """The regex that decides a close must carry every keyword, not three."""
+    for keyword in KEYWORDS:
+        assert ADJACENT_RE.search(f"{keyword} ") is not None
+    assert ADJACENT_RE.search("mentions ") is None
