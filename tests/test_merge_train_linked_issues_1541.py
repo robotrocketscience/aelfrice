@@ -31,6 +31,7 @@ _WORKFLOW = _REPO / ".github" / "workflows" / "merge-train.yml"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_linked_issues import (  # noqa: E402
+    KEYWORDS,
     LINK_RE,
     NOISY_COUNT,
     linked_issues,
@@ -268,9 +269,15 @@ def test_the_inline_grep_pipeline_is_gone() -> None:
 
 
 def test_the_regex_keyword_set_matches_what_the_docs_claim() -> None:
-    """The docstring names three keywords; the regex must carry those three."""
-    assert LINK_RE.pattern.count("|") == 2
-    for kw in ("closes", "fixes", "resolves"):
+    """The docstring names GitHub's nine keywords; the regex must carry them.
+
+    #1541 pinned the three the shell used. #1549 ruled that the step emulates
+    GitHub, so the set widened to nine and this guard widened with it; the
+    nine are pinned one spelling at a time in
+    `tests/test_merge_train_close_keywords_1549.py`.
+    """
+    assert LINK_RE.pattern.count("|") == len(KEYWORDS) - 1
+    for kw in KEYWORDS:
         assert kw in LINK_RE.pattern
 
 
