@@ -10,7 +10,7 @@
   |---|---|---|
   | `hook.DEFAULT_HOOK_TOKEN_BUDGET` (per-turn) | 1500 | 9259 → 6763 |
   | `hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` (`<core>`) | 1500 | 10335 → 5883 |
-  | `hook.DEFAULT_SESSION_START_TOKEN_BUDGET` | 1500 | 1408 → 1408 (see below) |
+  | the SessionStart baseline block | 1500 | 1408 → 1408 (see below) |
   | `hook_search_tool.INJECTED_TOKEN_BUDGET` (Grep\|Glob) | 600 | 3305 → 2609 |
   | `hook_search_tool.BASH_INJECTED_TOKEN_BUDGET` | 300 | 1910 → 1678 |
   | `hook_agent_context.INJECTED_TOKEN_BUDGET` | 600 | 4586 → 3114 |
@@ -37,7 +37,7 @@
   <!-- derived: benchmarks/injection_budget_bytes.py#cli_search_bytes_before = 6960 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#cli_search_bytes_after = 6960 -->
 
-  Two rows in that table are equalities, and neither is a null result. `retrieval.DEFAULT_TOKEN_BUDGET`'s two arms both end on the **L2.5 sub-budget** at this length, not on the budget in the row — the producer names which cap ended each pack rather than reporting a bare byte count, and away from 92 characters this lane moves. `hook.DEFAULT_SESSION_START_TOKEN_BUDGET`'s two arms both end on the **candidate pool**, at every length in the grid, which is the next item.
+  Two rows in that table are equalities, and neither is a null result. `retrieval.DEFAULT_TOKEN_BUDGET`'s two arms both end on the **L2.5 sub-budget** at this length, not on the budget in the row — the producer names which cap ended each pack rather than reporting a bare byte count, and away from 92 characters this lane moves. the SessionStart baseline block's two arms both end on the **candidate pool**, at every length in the grid, which is the next item. That lane's budget constant is deleted in this release under [#1546](https://github.com/robotrocketscience/aelfrice/issues/1546), and the figures above come from a probe budget the benchmark now supplies itself.
 
   **A seventh renderer, which does not emit `<belief …>` at all ([#1526](https://github.com/robotrocketscience/aelfrice/issues/1526)).** `hook_search_tool` emits `[L0] <id-prefix>: <content>` truncated to `PER_LINE_CHAR_CAP = 200`. Charging it the `<belief>` element made a 500-character belief cost 138 tokens for a line that is 200 characters — 51 tokens — long, and left the 23-character `[L0] <id-prefix>: ` prefix charged to nothing. `retrieve()` now takes a `belief_cost_fn`, and that lane passes one built from `_belief_line`, the same function the renderer calls, so the truncation and the escaping are charged because they happened rather than transcribed as a width. Because the old accounting charged *more* than this lane emits past the per-line cap, this is the one lane where the correction changes sign: it emits fewer bytes on short beliefs and more on long ones.
 
