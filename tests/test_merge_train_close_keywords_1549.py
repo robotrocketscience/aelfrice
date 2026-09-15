@@ -226,6 +226,25 @@ def test_text_after_a_comment_closes_is_live_again() -> None:
     assert linked_issues("<!-- ignore Closes #7 --> and Fixes #8") == [8]
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- note -->Fixes #8",  # the `-->` and the keyword touch
+        "`x`Fixes #8",  # so do the closing backtick and the keyword
+    ],
+)
+def test_a_keyword_starting_where_an_inert_span_ends_is_prose(body: str) -> None:
+    """An inert span is half-open, and the first live offset is its end.
+
+    The cases above sit one character tighter than
+    `test_text_after_a_comment_closes_is_live_again`, which leaves a space
+    after the `-->`. Without that space the keyword starts at exactly the
+    span's end offset, so widening the containment test to `offset <= end`
+    turns both of these into refusals.
+    """
+    assert linked_issues(body) == [8]
+
+
 def test_a_cross_repository_link_is_refused_out_loud() -> None:
     """Out of scope to *follow*; in scope to stop passing over in silence."""
     found, refused = parse("Closes robotrocketscience/aelfrice#7\n\nFixes #8")
