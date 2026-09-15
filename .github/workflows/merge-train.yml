@@ -360,12 +360,12 @@ jobs:
           # #634: auto-close linked issues. GitHub's auto-close-on-merge
           # only fires when a merge commit lands; FF push (required here
           # by the signed-commit branch-protection model) doesn't trigger
-          # it. Parse the PR body for `Closes #N` / `Fixes #N` /
-          # `Resolves #N` (case-insensitive). That is a SUBSET of the nine
-          # keywords GitHub itself acts on, and fenced code blocks are not
-          # excluded the way GitHub excludes them; both gaps are named in
-          # the script's docstring and left for a decision. Failures here
-          # log but do not fail the workflow — the merge has landed.
+          # it. #1549 ruled that this step emulates GitHub rather than
+          # being a narrow trailer parser, so it now matches all nine of
+          # GitHub's closing keywords and ignores one written inside a
+          # code fence, an indented block, an inline code span, a block
+          # quote or an HTML comment. Failures here log but do not fail
+          # the workflow — the merge has landed.
           echo "[7/7] auto-closing linked issues..."
           # #1541: this used to pipe the body through `head -c 8192` BEFORE
           # matching, so a keyword written past the 8,192nd byte was cut
@@ -376,10 +376,18 @@ jobs:
           #
           # The parse lives in scripts/merge_train_linked_issues.py so it
           # can be tested; tests/test_merge_train_linked_issues_1541.py
-          # pins the regression at 8 KiB and well past it.
+          # pins the regression at 8 KiB and well past it, and
+          # tests/test_merge_train_close_keywords_1549.py pins the
+          # keyword set and the code-block exclusions.
           gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
               --jq '.body // ""' > /tmp/pr_body.txt
 
+          # Command substitution captures stdout only, so the script's
+          # `warning: ignored "Closes #N" ...` lines reach this step's log
+          # instead of the issue-number list. Do NOT add `2>/dev/null` or
+          # `2>&1` here: the first hides a deliberate rejection, which is
+          # the silence #1549 removed, and the second feeds the warning
+          # text into the `for n in ${linked_issues}` loop below.
           linked_issues=$(python3 scripts/merge_train_linked_issues.py \
               --body-file /tmp/pr_body.txt || true)
 
