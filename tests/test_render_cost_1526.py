@@ -481,16 +481,28 @@ def test_the_producer_names_which_budget_ended_every_pack(
     `l25_subbudget` value the earlier probe could not produce, which must
     actually occur somewhere in the grid or the fix is untested.
 
-    The per-cell floor is `>= 0`, not `> 0`. #1547 extended the grid past
-    every lane's own budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`
-    a single `<core>` line no longer fits: `_pack_core_candidates` skips an
-    oversized belief rather than breaking, so at 7,170 content characters it
-    packs none of 300 candidates and `<core>` emits nothing. Zero is that
-    lane's measured value there, not a suppressed cell — the property this
-    test exists to defend — so the emptiness is pinned by
-    `test_the_core_section_empties_once_one_belief_exceeds_its_budget` and the
-    per-lane floor below keeps this assertion from passing on a producer that
-    emitted nothing anywhere.
+    The per-cell floor is `> 0` at every lane and every length but one, and
+    that one is admitted by re-deriving the condition that empties it rather
+    than by widening the floor. #1547 extended the grid past every lane's own
+    budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` a single
+    `<core>` line no longer fits: `_pack_core_candidates` skips an oversized
+    belief rather than breaking, so at 7,170 content characters it packs none
+    of 300 candidates and `<core>` emits nothing. Zero is that lane's measured
+    value there, not a suppressed cell — the property this test exists to
+    defend — so a zero is accepted only from `<core>`, and only where
+    `<core>`'s own line at that length costs more than `<core>`'s own budget in
+    the currency of the arm that packed it. `_core_pack_cost_at` computes that,
+    and the emptiness it admits is pinned separately by
+    `test_the_core_section_empties_once_one_belief_exceeds_its_budget`.
+
+    A floor relaxed to `>= 0` across all eight lanes and all eight lengths, on
+    the strength of that one cell, is what this replaces. It let any lane emit
+    nothing at any length with the suite green: an oversize guard on
+    `_render_session_start` that returns `Arm(0, 0)` above 100,000 bytes turns
+    that lane's 112,456-byte cell at 18,600 content characters into a published
+    zero, and `uv run pytest tests/test_render_cost_1526.py -q` reported
+    `49 passed` under it, with the per-lane floor that accompanied the
+    relaxation in place. The same mutation now fails this test.
     """
     fig = producer_figures
     m = _producer_module()
@@ -498,14 +510,24 @@ def test_the_producer_names_which_budget_ended_every_pack(
     for lane in _producer_lanes():
         curve = fig[f"{lane}_curve"]
         assert set(curve) == {str(c) for c in fig["lengths"]}, lane
-        assert any(
-            curve[chars][arm] > 0
-            for chars in curve
-            for arm in ("before", "after")
-        ), f"{lane}: no cell in the grid emitted a byte"
         for chars, row in curve.items():
             for arm in ("before", "after"):
-                assert isinstance(row[arm], int) and row[arm] >= 0, (lane, chars)
+                assert isinstance(row[arm], int), (lane, chars, arm, row[arm])
+                if row[arm] == 0:
+                    assert lane == "core", (
+                        f"{lane}: the {arm} arm emitted no bytes at {chars} "
+                        f"content chars; only <core> has a measured zero"
+                    )
+                    cost = _core_pack_cost_at(
+                        int(chars), legacy=(arm == "before"),
+                    )
+                    assert cost > fig["core_budget"], (
+                        f"<core> emitted nothing at {chars} content chars in "
+                        f"the {arm} arm, but one line costs {cost} against a "
+                        f"budget of {fig['core_budget']}, so it fits"
+                    )
+                else:
+                    assert row[arm] > 0, (lane, chars, arm, row[arm])
                 binds_on = row[f"{arm}_binds_on"]
                 assert binds_on in {
                     "token_budget", "l25_subbudget", "both", "pool",
@@ -1101,9 +1123,10 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` the section packs none of 300
     candidates and emits nothing. The grid reached that for the first time when
     #1547 extended it past 300 characters, and
-    `test_the_producer_names_which_budget_ended_every_pack` relaxed its
-    per-cell floor to `>= 0` on the strength of this. Pinned here so the
-    relaxation is backed by an assertion rather than by a tolerance.
+    `test_the_producer_names_which_budget_ended_every_pack` admits this one
+    zero, and no other, by re-deriving the same condition through
+    `_core_pack_cost_at`. Pinned here so the exemption is backed by an
+    assertion that the threshold is crossed rather than by a tolerance.
     """
     fig = producer_figures
     curve = fig["core_curve"]
@@ -1125,17 +1148,45 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
         assert (row["pct"] is None) == (row["before"] == 0), (c, row)
 
 
-def _core_line_at(content_chars: int) -> str:
-    """The `<core>` line the shipped renderer emits for one belief of that size."""
-    from aelfrice.hook import _core_belief_line
+def _core_probe_at(content_chars: int) -> Belief:
+    """One `<core>` candidate of that content length, built as the producer builds them.
 
+    `synthetic_content` returns content of exactly `content_chars`, so every
+    candidate in a producer store at a given grid length is the same length and
+    this one stands for all 300 of them.
+    """
     import random
 
     m = _producer_module()
     content = m.synthetic_content(  # type: ignore[attr-defined]
         random.Random(m.UNDERCHARGE_SEED), 0, content_chars,  # type: ignore[attr-defined]
     )
-    return _core_belief_line(m._probe_belief(content, "unknown"))  # type: ignore[attr-defined]
+    return m._probe_belief(content, "unknown")  # type: ignore[attr-defined]
+
+
+def _core_line_at(content_chars: int) -> str:
+    """The `<core>` line the shipped renderer emits for one belief of that size."""
+    from aelfrice.hook import _core_belief_line
+
+    return _core_belief_line(_core_probe_at(content_chars))
+
+
+def _core_pack_cost_at(content_chars: int, *, legacy: bool) -> int:
+    """What `<core>`'s packer charges for one belief of that length, per arm.
+
+    The two arms pack under two accountings — the before arm under the
+    pre-#1526 `max(1, len(content) // 4)`, the after arm under the rendered
+    line — so whether a zero cell is legitimate has to be read in the currency
+    of the arm that produced it. The shipped side is written as the emitted
+    line and not as a call to `hook._core_belief_cost`, for the reason
+    `test_the_core_section_empties_once_one_belief_exceeds_its_budget` gives:
+    the claim is about what the section emits, so a cost function must not be
+    the thing that decides it.
+    """
+    b = _core_probe_at(content_chars)
+    if legacy:
+        return _legacy_core_cost(b)
+    return chars_to_tokens(len(_core_belief_line(b)) + 1)
 
 
 # ---------------------------------------------------------------------------
