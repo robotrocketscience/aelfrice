@@ -43,6 +43,7 @@ from merge_train_linked_issues import (  # noqa: E402
     IN_INDENT,
     IN_QUOTE,
     IN_SPAN,
+    ISSUE_URL,
     KEYWORDS,
     linked_issues,
     parse,
@@ -182,6 +183,130 @@ def test_the_docstring_records_the_false_positive_the_colon_buys() -> None:
     doc = _SCRIPT.read_text(encoding="utf-8")
     assert "#1504" in doc
     assert "false positive" in doc
+
+
+# --------------------------------------------------------------------------
+# Gap 1c: the reference half, and the forms GitHub's own pages document for it.
+# --------------------------------------------------------------------------
+
+# Every casing of `GH-` GitHub's renderer links to the same issue. Measured
+# against GitHub rather than assumed, with:
+#     gh api --method POST /markdown -f mode=gfm -f context=OWNER/REPO \
+#         -f text='GH-10 and gh-10 and Gh-10 and gH-10 and #10'
+# whose output carries one issue-link anchor to /issues/10 per spelling.
+_GH_CASINGS = ["GH-10", "gh-10", "Gh-10", "gH-10"]
+
+
+@pytest.mark.parametrize("reference", _GH_CASINGS)
+def test_the_gh_reference_form_links_in_any_case(reference: str) -> None:
+    """`Closes GH-10` used to be the silent no-op AC5 forbids outright.
+
+    `parse("Closes GH-10")` returned `([], [])`, so the step printed for it
+    exactly what it prints for a body carrying no keyword: empty stdout,
+    empty stderr, `no linked issues parsed from PR body`. The repository's
+    own advisory `pr-metadata.yml` job matches `GH-` and had already told the
+    author the link was fine.
+    """
+    assert linked_issues(f"Closes {reference}") == [10]
+    assert linked_issues(f"resolved {reference}") == [10]
+
+
+def test_the_gh_form_takes_the_colon_separator_too() -> None:
+    """The two halves of the pattern are independent, and stay that way."""
+    assert linked_issues("Closes: GH-10") == [10]
+    assert linked_issues("CLOSES:gh-10") == [10]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Closes GH10",  # the hyphen is part of the form
+        "ClosesGH-10",  # a delimiter is still required
+        "Closes GH-",  # a reference needs a number
+        "Closes ugh-10",  # the form has to start where the reference does
+    ],
+)
+def test_the_gh_form_did_not_widen_what_counts_as_a_link(body: str) -> None:
+    assert linked_issues(body) == []
+
+
+def test_the_gh_form_obeys_the_block_exclusions() -> None:
+    """Widening the reference half must not widen where a keyword may fire."""
+    found, refused = parse("```\nCloses GH-7\n```\n\nFixes GH-8")
+    assert found == [8]
+    assert [(r.text, r.reason) for r in refused] == [("Closes GH-7", IN_FENCE)]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/octo-org/octo-repo/issues/26",
+        "https://github.com/octo-org/octo-repo/pull/26",
+        "https://github.com/robotrocketscience/aelfrice/issues/26",
+    ],
+    ids=["issue", "pull", "this-repository"],
+)
+def test_a_full_issue_url_is_refused_out_loud(url: str) -> None:
+    """Refused rather than followed, and never in silence.
+
+    The parser carries no repository identity, so it cannot tell its own URL
+    from another repository's -- the third case is this repository's own and
+    is refused with the other two, exactly as `robotrocketscience/aelfrice#7`
+    already is. Matching the form is what turns a silent miss into a named
+    rejection.
+    """
+    found, refused = parse(f"Closes {url}\n\nFixes #8")
+    assert found == [8]
+    assert [(r.text, r.reason) for r in refused] == [(f"Closes {url}", ISSUE_URL)]
+
+
+# Every reference form GitHub documents: the keyword page's syntax table and
+# its formatting note, plus the "Autolinked references and URLs" page that
+# same page links for what a reference to an issue may look like.
+_DOCUMENTED_FORMS = [
+    ("#N", "Closes #10", [10], []),
+    ("GH-N", "Closes GH-10", [10], []),
+    ("OWNER/REPOSITORY#N", "Fixes octo-org/octo-repo#100", [], [CROSS_REPO]),
+    (
+        "issue URL",
+        "Closes https://github.com/octo-org/octo-repo/issues/26",
+        [],
+        [ISSUE_URL],
+    ),
+    (
+        "multiple issues",
+        "Resolves #10, resolves #123, resolves octo-org/octo-repo#100",
+        [10, 123],
+        [CROSS_REPO],
+    ),
+    ("a colon", "Closes: #10", [10], []),
+    ("uppercase", "CLOSES #10", [10], []),
+    ("uppercase and a colon", "CLOSES: #10", [10], []),
+]
+
+
+@pytest.mark.parametrize(
+    ("body", "found", "reasons"),
+    [(body, found, reasons) for _, body, found, reasons in _DOCUMENTED_FORMS],
+    ids=[name for name, *_ in _DOCUMENTED_FORMS],
+)
+def test_no_documented_reference_form_is_silently_unmatched(
+    body: str, found: list[int], reasons: list[str]
+) -> None:
+    """AC5 over the whole documented surface, not only the forms #1549 named.
+
+    Linking is a fine outcome and refusing by name is a fine outcome. The one
+    outcome forbidden is `([], [])`: a form that neither links nor says why
+    prints what a body with no keyword at all prints, which is the failure
+    this issue exists to remove. Both `GH-N` and the URL row did exactly that
+    until this commit.
+    """
+    got, refused = parse(body)
+    assert (got, [r.reason for r in refused]) != ([], []), (
+        "a documented form matched nothing and reported nothing"
+    )
+    assert got == found
+    assert [r.reason for r in refused] == reasons
 
 
 # --------------------------------------------------------------------------
@@ -468,6 +593,27 @@ def test_dry_run_still_reports_rejections() -> None:
     assert "Closes #7" in proc.stderr
 
 
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_gh_form_no_longer_prints_what_an_absent_keyword_prints() -> None:
+    """The defect at the step's own boundary, where a human reads the log."""
+    absent = _run([], stdin="no trailer here\n")
+    gh_form = _run([], stdin="Closes GH-10\n")
+
+    assert (absent.stdout, absent.stderr) == ("", "")
+    assert gh_form.stdout.split() == ["10"]
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_a_url_link_is_refused_on_stderr_and_not_in_silence() -> None:
+    url = "https://github.com/octo-org/octo-repo/issues/26"
+    proc = _run([], stdin=f"Closes {url}\n")
+
+    assert proc.returncode == 0
+    assert proc.stdout == "", "stdout is the issue-number list the shell splits"
+    assert ISSUE_URL in proc.stderr
+    assert url in proc.stderr
+
+
 # --------------------------------------------------------------------------
 # The workflow must surface that stderr.
 # --------------------------------------------------------------------------
@@ -536,6 +682,19 @@ def test_the_docstring_states_the_decision_and_what_remains() -> None:
     assert "Divergences that REMAIN, deliberately" in doc
     for remaining in ("Commit messages", "Cross-repository", "target branch"):
         assert remaining in doc
+
+
+def test_the_docstring_enumerates_every_documented_reference_form() -> None:
+    """A form ruled on in review and left out of the file is not ruled on.
+
+    The enumeration is the deliverable, not only the two forms it changed:
+    the next reader has to be able to check the list against GitHub's pages
+    without re-deriving which forms were considered.
+    """
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "Every documented reference form is acted on or refused out loud" in doc
+    for form in ("`#N`", "`GH-N`", "`OWNER/REPOSITORY#N`", "/issues/26"):
+        assert form in doc, f"the docstring does not rule on {form}"
 
 
 def test_the_docstring_cites_githubs_keyword_list() -> None:
