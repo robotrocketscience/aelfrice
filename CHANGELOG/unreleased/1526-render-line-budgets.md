@@ -23,6 +23,7 @@
   <!-- derived: benchmarks/injection_budget_bytes.py#ups_bytes_after = 6763 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#core_bytes_before = 10335 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#core_bytes_after = 5883 -->
+  <!-- derived: benchmarks/injection_budget_bytes.py#session_start_budget = 1500 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#session_start_bytes_before = 1408 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#session_start_bytes_after = 1408 -->
   <!-- derived: benchmarks/injection_budget_bytes.py#search_tool_budget = 600 -->

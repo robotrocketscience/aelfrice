@@ -466,6 +466,47 @@ def test_the_effect_is_length_dependent_and_changes_sign(
     assert st["300"]["pct"] > 0, st["300"]
 
 
+def test_the_producer_says_the_session_start_number_is_its_own_probe() -> None:
+    """The one lane whose budget column is not a setting says so, in the run.
+
+    Every other lane in `benchmarks/injection_budget_bytes.py` is measured at
+    a shipped constant held equal in both arms, and the printed legend reads
+    `budget N unchanged`. `session_start` has no shipped constant to hold —
+    #1546 deleted it, and the production lane passes none — so the number in
+    that row is `SESSION_START_PROBE_BUDGET`, a literal of the producer. The
+    same legend on that row would tell a reader the lane ships a 1500-token
+    budget: the misreading the CHANGELOG spent an entry removing.
+
+    Reverting `_budget_label` to the single pre-branch string leaves the rest
+    of this module and the `derived-figures` gate green, which is why the
+    label carries an assertion of its own. Both directions are asserted: a
+    label that said "passes none" on every lane would be just as wrong.
+
+    The probe value is pinned beside it because it is published — it is the
+    `session_start` row of the CHANGELOG's budget column — and the marker in
+    that entry is what re-derives it from this module.
+    """
+    m = _producer_module()
+    assert m.SESSION_START_PROBE_BUDGET == 1500, (
+        "benchmarks/injection_budget_bytes.py SESSION_START_PROBE_BUDGET is "
+        f"{m.SESSION_START_PROBE_BUDGET}, but CHANGELOG/unreleased/"
+        "1526-render-line-budgets.md publishes 1500 in the SessionStart row "
+        "of its budget column. Move both together (#1546)."
+    )
+    probed = m._budget_label("session_start", m.SESSION_START_PROBE_BUDGET)
+    assert "passes none" in probed, (
+        f"the session_start legend reads {probed!r}, which presents this "
+        "module's probe value as a budget the lane ships. It ships none "
+        "(#1546)."
+    )
+    for lane in _producer_lanes():
+        if lane == "session_start":
+            continue
+        shipped = m._budget_label(lane, 1500)
+        assert "passes none" not in shipped, (lane, shipped)
+        assert "unchanged" in shipped, (lane, shipped)
+
+
 def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
     producer_figures: dict[str, object],
 ) -> None:
