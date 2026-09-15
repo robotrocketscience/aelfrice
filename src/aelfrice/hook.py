@@ -265,7 +265,7 @@ outranks the kwarg, does. (`aelf search` shadows the key the same way — its
 """
 
 BELIEF_CONTENT_CHAR_CAP: Final[int] = 1200
-"""Per-belief character cap applied when rendering a `<belief>` element.
+"""Character cap on the *stored content* of one non-locked belief at render.
 
 `hook_search_tool.PER_LINE_CHAR_CAP` already bounds a single belief on the
 PreToolUse lane. The UserPromptSubmit lane had no equivalent, so one
@@ -274,9 +274,25 @@ machine-synthesised documents of 24k-35k characters rendered blocks of
 91k and 130k bytes (22.8k and 32.6k estimated tokens) against
 `DEFAULT_HOOK_TOKEN_BUDGET = 1500`.
 
-The cap is deliberately generous. It is a guard against a pathological
-row, not a retrieval-quality knob; trimming to fit the budget is the
-packer's job. A capped belief keeps its id, so the full text stays
+**It bounds stored content, not the rendered element.** The cap runs
+before `_escape_for_hook_block`, so a belief made entirely of angle
+brackets renders up to four times this many characters (`<` becomes
+`&lt;`). Capping after escaping would have to split on an entity boundary
+to avoid emitting half an `&lt;`; the rendered block has its own bound —
+`HOOK_BLOCK_TOKEN_CEILING`, measured over the escaped bytes — so the
+element-level number is left as the simple one.
+
+**User-locked content is exempt**, at every render site. A lock is the
+operator's asserted ground truth and truncating it mid-clause can invert
+what it says, so the same rule the ceiling follows applies here: bounds
+stop at `lock="user"`, and a store whose locks alone are oversized gets a
+stderr note rather than a silent edit. `aelf lock --reference` is the
+supported home for long-form locked material — it renders as a one-line
+manifest entry with the text read on demand (#1016-B).
+
+The cap is otherwise deliberately generous. It is a guard against a
+pathological row, not a retrieval-quality knob; trimming to fit the budget
+is the packer's job. A capped belief keeps its id, so the full text stays
 reachable with `aelf search` or the belief's anchored document.
 """
 
@@ -289,32 +305,107 @@ are packed independently and concatenated, so no single budget bounds the
 block that reaches the model. `_write_hook_audit_record` already measures
 the result and records the overrun; nothing acted on it.
 
-This is a backstop, set well above the sum of the per-lane budgets so it
-never fires on a healthy store. Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET`
-itself needs a retrieval-quality gate and is deliberately not attempted
-here. Override with `AELFRICE_HOOK_BLOCK_CEILING`; `0` disables.
+**It is not set above the reach of a healthy store, and an earlier
+revision of this docstring said it was.** Measured on the first prompt of
+a session, where the `<locked>` sub-block and the per-turn hits share one
+envelope, the ceiling first reports at **66 user locks of 150 characters**
+and at **58 of 200 characters** — ordinary lock counts, not a pathology.
+Re-derive with `uv run python scripts/measure_block_ceiling.py
+--lock-chars 150 200`. Treat this constant as the size at which the block
+stops growing, not as a number nothing reaches.
+
+What "reports" means at those counts is the #379 exemption below: the
+locks are emitted whole and the overrun goes to stderr. A store trims
+only once it holds non-locked material for the ceiling to drop.
+
+Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
+Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
+gate and is deliberately not attempted here.
 """
 
 _BLOCK_CEILING_ENV: Final[str] = "AELFRICE_HOOK_BLOCK_CEILING"
 
 _BELIEF_ELEMENT_RE: Final[re.Pattern[str]] = re.compile(
-    r'<belief id="[^"]*"[^>]*>.*?</belief>\n?', re.DOTALL
+    r'<belief id="(?P<id>[^"]*)"(?P<attrs>[^>]*)>.*?</belief>\n?', re.DOTALL
 )
+"""One rendered `<belief>` element, with its id and its attribute tail.
+
+`attrs` is matched so the dropper can read `lock="user"` off the element
+it is about to delete. That attribute is written by every render site
+(`_split_belief_lines`, the `<locked>` section of the session-start
+sub-block) and survives `_group_by_provenance`, which rewrites only the
+`speculative` marker and appends evidence attributes.
+"""
+
+_LOCKED_ATTR: Final[str] = 'lock="user"'
 
 
-def _cap_belief_content(content: str) -> str:
+@dataclass(frozen=True)
+class BlockCeilingOutcome:
+    """What `enforce_block_ceiling` did to one assembled block.
+
+    `dropped_ids` is the belief ids the trim removed, in the order they
+    were removed (tail first). Callers need it because a dropped belief
+    must not receive the audit rows, ring entries and `belief_touches`
+    that claim the model saw it — see `_write_memory_block`.
+
+    `over_ceiling` is the #379 escape hatch made visible: True when the
+    body is still over the limit after every droppable element is gone,
+    which happens when what remains is user-locked content or manifest
+    lines. `n_dropped == 0 and over_ceiling` is therefore a real state and
+    is not the same as "it fits".
+    """
+
+    body: str
+    dropped_ids: tuple[str, ...]
+    over_ceiling: bool
+
+    @property
+    def n_dropped(self) -> int:
+        return len(self.dropped_ids)
+
+
+def _is_user_locked(b: Belief) -> bool:
+    """True when `b` is L0 user-locked: the tier both #1551 bounds exempt.
+
+    One predicate rather than a `lock_level == LOCK_USER` comparison
+    repeated at each render, cap, cost and accounting site. The rendered
+    counterpart is `_LOCKED_ATTR`, which is what the dropper reads back off
+    the emitted element; these two must keep agreeing, and a single spelling
+    on this side is half of that.
+    """
+    return b.lock_level == LOCK_USER
+
+
+def _cap_belief_content(content: str, *, locked: bool = False) -> str:
     """Truncate one belief's content to `BELIEF_CONTENT_CHAR_CAP`.
 
-    Returns `content` unchanged when it already fits. The marker names the
-    cap so a reader can tell a truncated belief from a short one.
+    Returns `content` unchanged when it already fits, and unconditionally
+    when `locked` — user-locked text is exempt from the cap for the reason
+    the constant's docstring gives. The marker names the truncation so a
+    reader can tell a capped belief from a short one.
     """
-    if len(content) <= BELIEF_CONTENT_CHAR_CAP:
+    if locked or len(content) <= BELIEF_CONTENT_CHAR_CAP:
         return content
     return content[:BELIEF_CONTENT_CHAR_CAP] + " […truncated]"
 
 
-def resolve_block_ceiling(env: Mapping[str, str] | None = None) -> int:
-    """Resolve the block ceiling. `0` (or a non-integer) disables it."""
+def resolve_block_ceiling(
+    env: Mapping[str, str] | None = None,
+    *,
+    stderr: IO[str] | None = None,
+) -> int:
+    """Resolve the block ceiling from `AELFRICE_HOOK_BLOCK_CEILING`.
+
+    Only a literal `0` disables the backstop. An unparseable value and a
+    negative value both fall back to `HOOK_BLOCK_TOKEN_CEILING` and write
+    a one-line note to `stderr` when one is given: a typo that silently
+    removed the only bound on the injected block is the failure this
+    function exists to prevent, and `-1` used to do exactly that.
+
+    `env` defaults to `os.environ`; pass a mapping to keep a caller (a
+    test, above all) off the ambient environment.
+    """
     env_map = env if env is not None else os.environ
     raw = env_map.get(_BLOCK_CEILING_ENV)
     if raw is None:
@@ -322,30 +413,101 @@ def resolve_block_ceiling(env: Mapping[str, str] | None = None) -> int:
     try:
         value = int(raw)
     except ValueError:
+        value = -1
+        reason = "not an integer"
+    else:
+        reason = "negative"
+    if value < 0:
+        if stderr is not None:
+            stderr.write(
+                f"aelfrice hook: {_BLOCK_CEILING_ENV}={raw!r} is {reason}; "
+                f"using the default ceiling of {HOOK_BLOCK_TOKEN_CEILING} "
+                f"tokens (only 0 disables it)\n"
+            )
         return HOOK_BLOCK_TOKEN_CEILING
-    return max(value, 0)
+    return value
 
 
 def enforce_block_ceiling(
     body: str, ceiling: int | None = None
-) -> tuple[str, int]:
-    """Drop whole `<belief>` elements from the end until `body` fits.
+) -> BlockCeilingOutcome:
+    """Drop whole non-locked `<belief>` elements until `body` fits.
 
-    Returns `(body, n_dropped)`. Only complete elements are removed, so the
-    block stays well-formed; the framing sections and any manifest lines
-    are never touched. A `body` that is already under the ceiling is
-    returned unchanged with `n_dropped == 0`.
+    Only complete elements are removed, so the block stays well-formed;
+    the framing sections and any manifest lines are never touched.
+
+    **`lock="user"` elements are never dropped.** That is the #379 /
+    #1016-B contract — locks are the always-injected pool, uncapped and
+    untrimmed — and a ceiling that deleted them would have made this
+    module's bound the thing that broke it. Measured before the exemption
+    existed: a 300-lock store had all 300 locked elements removed, leaving
+    an empty `<locked>` section under 300 `seen <id>` manifest pointers.
+    When the locks alone do not fit, the body is emitted over the limit
+    and `over_ceiling` says so; `_write_memory_block` turns that into a
+    stderr note.
+
+    `ceiling=None` resolves the environment override without a note (the
+    note belongs to the emit path, which has a stderr to write to).
     """
     limit = resolve_block_ceiling() if ceiling is None else ceiling
     if limit <= 0 or _audit_tokens_from_block(body) <= limit:
-        return body, 0
-    spans = [m.span() for m in _BELIEF_ELEMENT_RE.finditer(body)]
-    dropped = 0
-    while spans and _audit_tokens_from_block(body) > limit:
-        start, end = spans.pop()
-        body = body[:start] + body[end:]
-        dropped += 1
-    return body, dropped
+        return BlockCeilingOutcome(body, (), False)
+    # Tail first, so each splice leaves every earlier span's offsets valid.
+    droppable = [
+        m for m in _BELIEF_ELEMENT_RE.finditer(body)
+        if _LOCKED_ATTR not in m.group("attrs")
+    ]
+    dropped: list[str] = []
+    while droppable and _audit_tokens_from_block(body) > limit:
+        m = droppable.pop()
+        body = body[: m.start()] + body[m.end():]
+        dropped.append(m.group("id"))
+    return BlockCeilingOutcome(
+        body, tuple(dropped), _audit_tokens_from_block(body) > limit
+    )
+
+
+def _write_memory_block(
+    body: str, *, stdout: IO[str], stderr: IO[str]
+) -> BlockCeilingOutcome:
+    """Trim `body` to the ceiling, note what happened, and write it.
+
+    **Every memory-block write goes through here.** Before #1551 the trim
+    guarded one of three emit sites: `user_prompt_submit`'s retrieval
+    branch had it, while its `elif gate_skip:` branch and `session_start`
+    wrote the same envelope unbounded. That gate-skip branch is reached
+    whenever the #674 prompt-shape gate refuses BM25 on a session's first
+    prompt — a first prompt under 12 characters, an acknowledgement — so
+    it was not a corner: measured on a 300-lock store it emitted 16,526
+    estimated tokens against a 6,000-token ceiling with nothing on
+    stderr. Routing the write itself through the trim is what keeps a
+    fourth emit site from being added unbounded;
+    `test_hook_injection_ceiling.py` pins that there is exactly one caller
+    of `enforce_block_ceiling` and that it is this function.
+
+    An empty `body` is written as-is (a suppressed fire, `#1359`), which
+    is a no-op on the stream and costs nothing on the ceiling.
+
+    Returns the outcome so the caller can keep its accounting honest: the
+    audit record must carry the block that was actually emitted, and the
+    exposure writes must skip the beliefs that were dropped.
+    """
+    limit = resolve_block_ceiling(stderr=stderr)
+    outcome = enforce_block_ceiling(body, limit)
+    if outcome.dropped_ids:
+        stderr.write(
+            "aelfrice hook: block over ceiling, dropped "
+            f"{outcome.n_dropped} belief element(s)\n"
+        )
+    if outcome.over_ceiling:
+        stderr.write(
+            f"aelfrice hook: block still over the {limit}-token ceiling at "
+            f"{_audit_tokens_from_block(outcome.body)} tokens; user-locked "
+            "beliefs are never dropped (#379). Move long-form locks to "
+            "`aelf lock --reference` to bound them.\n"
+        )
+    stdout.write(outcome.body)
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -1697,25 +1859,16 @@ def user_prompt_submit(
             from aelfrice.retrieval import (  # noqa: PLC0415
                 get_active_meta_belief_consumers,
             )
-            # #1359: gated on the off-switch. An injection_events row is
-            # a claim that the model saw the belief, and the Layer-3
-            # sweeper resolves every pending row against the next
-            # assistant turn — so recording a suppressed fire would score
-            # each of these beliefs `referenced=0` by construction. An
-            # off-switch must not manufacture negative evidence.
-            if emit_memory_block:
-                _injection_turn_id = _new_injection_event_turn_id()
-                _record_injection_events(
-                    session_id=session_id,
-                    turn_id=_injection_turn_id,
-                    hits=hits,
-                    source="ups",
-                    active_consumers=get_active_meta_belief_consumers(),
-                    stderr=serr,
-                    store=ups_store,
-                )
-            # total_chars measured post-collapse (what is actually injected).
-            total_chars = sum(len(h.content) for h in hits)
+            # #1551: both the exposure-evidence write above and the
+            # injected-size figure below need the set of beliefs that
+            # actually reached the prompt, which is not known until the
+            # block is assembled and the ceiling has run. Both moved down
+            # to the emit boundary; only the import stays here.
+            #
+            # total_chars measured post-collapse (what is actually
+            # injected), in belief-content characters. Initialised here so
+            # the suppressed-fire branch below can zero it.
+            total_chars = 0
             # #1382: beliefs already rendered verbatim earlier in this session
             # epoch become a one-line reference instead of the identical block
             # again. Read here, immediately before the render, so the set is
@@ -1791,19 +1944,58 @@ def user_prompt_submit(
                 # retrieval found — but nothing was injected, so the size
                 # of what was injected is zero.
                 total_chars = 0
-            # #1551: backstop the per-lane budgets. The lanes are packed
-            # independently and concatenated, so nothing bounded the block
-            # that actually reached the model; the audit record measured
-            # the overrun without acting on it.
-            body, n_dropped = enforce_block_ceiling(body)
-            if n_dropped:
-                serr.write(
-                    "aelfrice hook: block over ceiling, dropped "
-                    f"{n_dropped} belief element(s)\n"
+            # #1551: backstop the per-lane budgets and emit. The lanes are
+            # packed independently and concatenated, so nothing bounded the
+            # block that actually reached the model; the audit record
+            # measured the overrun without acting on it. The write goes
+            # through `_write_memory_block` rather than `sout` directly so
+            # this branch cannot drift away from its two siblings.
+            outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            body = outcome.body
+            # A dropped belief was not injected. Everything below that
+            # claims the model saw a belief — the audit record's
+            # `beliefs[]`, the `injection_events` rows, the session ring,
+            # `belief_touches`, the #1382 ledger — takes this list, not
+            # `hits`, so the trim does not manufacture exposure evidence
+            # for text that was deleted before the write.
+            dropped_ids = set(outcome.dropped_ids)
+            emitted_hits = (
+                [h for h in hits if h.id not in dropped_ids]
+                if dropped_ids
+                else hits
+            )
+            # #1359: gated on the off-switch. An injection_events row is
+            # a claim that the model saw the belief, and the Layer-3
+            # sweeper resolves every pending row against the next
+            # assistant turn — so recording a suppressed fire would score
+            # each of these beliefs `referenced=0` by construction. An
+            # off-switch must not manufacture negative evidence.
+            if emit_memory_block:
+                # `total_chars` is belief-content characters as injected,
+                # and stays in that unit here. An earlier #1551 revision
+                # overwrote it with `len(body)` — whole rendered-block
+                # bytes, framing and manifest lines included — but only on
+                # fires the ceiling trimmed, so `aelf doctor`'s "injection
+                # size p50/p95" mixed two units, switching between them
+                # exactly at the over-ceiling boundary where the tail of
+                # the distribution is.
+                total_chars = sum(
+                    len(_cap_belief_content(
+                        h.content, locked=_is_user_locked(h)
+                    ))
+                    for h in emitted_hits
                 )
-                total_chars = len(body)
+                _injection_turn_id = _new_injection_event_turn_id()
+                _record_injection_events(
+                    session_id=session_id,
+                    turn_id=_injection_turn_id,
+                    hits=emitted_hits,
+                    source="ups",
+                    active_consumers=get_active_meta_belief_consumers(),
+                    stderr=serr,
+                    store=ups_store,
+                )
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
-            sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
             _write_telemetry(
                 prompt=prompt,
@@ -1818,10 +2010,17 @@ def user_prompt_submit(
                 hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
                 prompt=prompt,
                 rendered_block=body,
-                n_beliefs=len(hits),
-                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
+                # #1551: the beliefs the emitted block contains, not the
+                # ones retrieval returned. `aelf tail` prints `beliefs[]`
+                # as what was injected; a ceiling-dropped belief listed
+                # there is a row the reader cannot find in the block
+                # beside it.
+                n_beliefs=len(emitted_hits),
+                n_locked=sum(
+                    1 for h in emitted_hits if _is_user_locked(h)
+                ),
                 session_id=session_id,
-                beliefs=hits,
+                beliefs=emitted_hits,
                 latency_ms=latency_ms,
                 expansion_gate_reason=tel.expansion_gate_reason or None,
                 expansion_gate_skipped_bfs=tel.expansion_gate_skipped_bfs,
@@ -1853,11 +2052,17 @@ def user_prompt_submit(
             # `append_ids` with an empty list is not a no-op: it persists
             # the bump and records nothing, which is exactly the split.
             try:
+                # #1551: `emitted_hits`, so a ceiling-dropped belief is
+                # not entered in the dedup ring. The ring's contract is
+                # "already shipped this session"; an id put there without
+                # being shipped suppresses the belief on the next
+                # PreToolUse fire, which is a silent drop rather than a
+                # deduplication.
                 injected_ids = [
-                    h.id for h in hits if getattr(h, "id", None)
+                    h.id for h in emitted_hits if getattr(h, "id", None)
                 ]
                 locked_now = {
-                    h.id for h in hits if h.lock_level == LOCK_USER
+                    h.id for h in emitted_hits if _is_user_locked(h)
                 }
                 _next_fire = _ring_append_ids(
                     session_id,
@@ -1910,7 +2115,13 @@ def user_prompt_submit(
                         record_rendered,
                     )
                     record_rendered(
-                        session_id, _verbatim_ids(hits, already_rendered)
+                        # #1551: `emitted_hits` again — the ledger is the
+                        # strongest of these claims ("this text is in the
+                        # context window"), so a ceiling-dropped belief
+                        # recorded here would make the next turn emit a
+                        # `seen` pointer to text that was never shown.
+                        session_id,
+                        _verbatim_ids(emitted_hits, already_rendered),
                     )
                 except Exception:  # fail-soft: costs a repeat, never a drop
                     pass
@@ -1938,11 +2149,23 @@ def user_prompt_submit(
             if session_start_block and emit_memory_block:
                 # #1359: the same <aelfrice-memory> envelope, so it carries
                 # the same hint and answers to the same off-switch.
+                # #1551: through `_write_memory_block`, because this
+                # branch emits the same envelope and was the larger of the
+                # two unbounded ones. It ships the whole `<locked>` and
+                # `<core>` sub-block on a session's first prompt whenever
+                # the #674 shape gate refuses BM25 — a first prompt under
+                # 12 characters, an acknowledgement — and on shipped
+                # defaults that is routine, not a corner. Measured on
+                # pristine `bac77038`: 16,526 estimated tokens from 300
+                # locks of 150 characters against a 6,000-token ceiling,
+                # with nothing on stderr.
                 body = (
                     _format_hits_with_session_start([], session_start_block)
                     + MEMORY_BLOCK_HINT
                 )
-                sout.write(body)
+                body = _write_memory_block(
+                    body, stdout=sout, stderr=serr
+                ).body
             else:
                 body = ""
             _write_hook_audit_record(
@@ -2933,24 +3156,34 @@ def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
     return is_reference_lock(b) or b.id in already_rendered
 
 
-# Every `<belief>` element this repo emits opens `<belief id="..."`, in all
-# three shapes: the per-turn hit (`_split_belief_lines`), the `<locked>` entry
-# and the `<core>` entry. `[^"]+` rather than a hex class on purpose -- live
-# stores carry two id forms, 16-character hex and 26-character ULID, and a
-# hex-only pattern silently skips the ULIDs. That mistake is easy to make and
-# was made by four independent readers of this code before this comment
-# existed.
-_BELIEF_ID_RE: Final[re.Pattern[str]] = re.compile(r'<belief\s+id="([^"]+)"')
+def _belief_element_line(h: Belief) -> str:
+    """Render one verbatim `<belief>` element, without the joining newline.
 
-
-def _ids_rendered_verbatim_in(block: str) -> frozenset[str]:
-    """The belief ids a rendered block already carries in full.
-
-    Used to stop the per-turn pack re-rendering, in the same envelope, a
-    belief the embedded session-start sub-block has already shown. Returns
-    an empty set for an empty block, so the caller needs no special case.
+    Extracted (#1551) so the per-belief cap has one render site, and so a
+    cost function can charge exactly what this lane emits by building it.
     """
-    return frozenset(_BELIEF_ID_RE.findall(block))
+    lock_attr = "user" if _is_user_locked(h) else "none"
+    # #1551: the per-belief cap, exempting user-locked content. See
+    # `BELIEF_CONTENT_CHAR_CAP` for why the bounds stop at a lock.
+    content = _escape_for_hook_block(
+        _cap_belief_content(h.content, locked=_is_user_locked(h))
+    )
+    # #1171: a wonder-synthesised phantom rendered byte-identically to a
+    # belief the user actually said, so machine conjecture reached the
+    # agent as ordinary retrieved context. The attribute is a fixed
+    # literal chosen by an equality test, never interpolated from belief
+    # data, so content cannot forge it (angle brackets are escaped above
+    # regardless — #1178). Keyed on `origin`, not `type`: promotion flips
+    # origin to user_validated while `type` stays 'speculative' forever
+    # (see models.BELIEF_SPECULATIVE), so origin is the live trust tier
+    # and a user-validated phantom correctly loses the marker.
+    speculative_attr = (
+        ' speculative="1"' if h.origin == ORIGIN_SPECULATIVE else ""
+    )
+    return (
+        f'<belief id="{h.id}" lock="{lock_attr}"'
+        f'{speculative_attr}>{content}</belief>'
+    )
 
 
 def _split_belief_lines(
@@ -3013,24 +3246,7 @@ def _split_belief_lines(
             )
             manifest_lines.append("  " + _escape_for_hook_block(line))
             continue
-        lock_attr = "user" if h.lock_level == LOCK_USER else "none"
-        content = _escape_for_hook_block(_cap_belief_content(h.content))
-        # #1171: a wonder-synthesised phantom rendered byte-identically to a
-        # belief the user actually said, so machine conjecture reached the
-        # agent as ordinary retrieved context. The attribute is a fixed
-        # literal chosen by an equality test, never interpolated from belief
-        # data, so content cannot forge it (angle brackets are escaped above
-        # regardless — #1178). Keyed on `origin`, not `type`: promotion flips
-        # origin to user_validated while `type` stays 'speculative' forever
-        # (see models.BELIEF_SPECULATIVE), so origin is the live trust tier
-        # and a user-validated phantom correctly loses the marker.
-        speculative_attr = (
-            ' speculative="1"' if h.origin == ORIGIN_SPECULATIVE else ""
-        )
-        belief_lines.append(
-            f'<belief id="{h.id}" lock="{lock_attr}"'
-            f'{speculative_attr}>{content}</belief>'
-        )
+        belief_lines.append(_belief_element_line(h))
     if provenance_render:
         belief_lines = _group_by_provenance(
             hits, belief_lines, already_rendered=already_rendered
@@ -3821,8 +4037,15 @@ def _core_belief_line(b: "Belief") -> str:
     line's width genuinely varies — `corr` and `posterior` are interpolated
     numbers, so the scaffolding is not the same number of characters on
     every belief.
+
+    #1551: the per-belief cap applies here too. `<core>` is one of the two
+    lanes the #1551 changelog entry names as the cause, and it was the one
+    an unbounded belief could reach without being locked — the section is
+    selected by corroboration and posterior, neither of which is a length.
+    `_core_belief_cost` charges this line, so the cap is charged because it
+    is rendered, not because a width was transcribed.
     """
-    content = _escape_for_hook_block(b.content)
+    content = _escape_for_hook_block(_cap_belief_content(b.content))
     ab = b.alpha + b.beta
     mu = round(b.alpha / ab, 3) if ab > 0 else 0.0
     return (
@@ -3939,11 +4162,27 @@ def _build_session_start_subblock(
 
     lines: list[str] = [SESSION_START_SUBBLOCK_OPEN]
 
-    # <locked> section
+    # <locked> section.
+    #
+    # #1551, stated here because this is the site a reader checks: the
+    # per-belief cap is applied to `lock="none"` content and NOT to
+    # `lock="user"` content, and the block ceiling drops `lock="none"`
+    # elements and never a `lock="user"` one. Both bounds stop at the same
+    # place, and it is the #379 / #1016-B place — locks are the
+    # always-injected pool. A truncated lock is worse than a large one: cut
+    # mid-clause it can assert the opposite of what the operator locked,
+    # and unlike a retrieval hit there is no ranking that put it here for
+    # the model to discount. `aelf lock --reference` is the bounded form of
+    # a long lock and renders as a one-line manifest entry instead.
+    #
+    # So a store whose locks alone exceed the ceiling overruns it, and
+    # `_write_memory_block` says so on stderr rather than trimming.
     lines.append("<locked>")
     for b in locked:
-        content = _escape_for_hook_block(b.content)
-        lock_attr = "user" if b.lock_level == LOCK_USER else "none"
+        content = _escape_for_hook_block(
+            _cap_belief_content(b.content, locked=_is_user_locked(b))
+        )
+        lock_attr = "user" if _is_user_locked(b) else "none"
         lines.append(
             f'<belief id="{b.id}" lock="{lock_attr}">{content}</belief>'
         )
@@ -4510,20 +4749,35 @@ def session_start(
         hits, body = _retrieve_baseline_with_block()
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
-            sout.write(body)
+            # #1551: the third emit site, and the only one that was never
+            # bounded at all. In practice its block is almost entirely
+            # `lock="user"` elements, which the ceiling never drops — so
+            # what this mostly buys is the overrun note, which is the
+            # honest outcome for a baseline the #379 contract forbids
+            # trimming.
+            outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            body = outcome.body
+            dropped_ids = set(outcome.dropped_ids)
+            emitted_hits = (
+                [h for h in hits if h.id not in dropped_ids]
+                if dropped_ids
+                else hits
+            )
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
-            _begin_injection_epoch(session_id, hits)
+            _begin_injection_epoch(session_id, emitted_hits)
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_SESSION_START,
                 prompt="",
                 rendered_block=body,
-                n_beliefs=len(hits),
-                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
+                n_beliefs=len(emitted_hits),
+                n_locked=sum(
+                    1 for h in emitted_hits if _is_user_locked(h)
+                ),
                 session_id=session_id,
-                beliefs=hits,
+                beliefs=emitted_hits,
                 latency_ms=latency_ms,
                 order_policy=_audit_order_policy(),
                 source=source,
