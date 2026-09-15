@@ -515,6 +515,13 @@ def _ceiling_drop_order(
     named sections are the per-turn hits by construction -- `<locked>`
     carries no droppable element, since every one of its members renders
     `lock="user"`.
+
+    The `<recent-work>` lane is a placeholder today and is kept anyway:
+    `_build_recent_work_subblock` emits `<branch>`, `<commit>` and
+    `<linked-issues>`, none of which `_BELIEF_ELEMENT_RE` matches, so that
+    bucket is always empty. It is a prompt-independent lane sitting
+    between the other two, and leaving the position out would put the
+    burden of rediscovering where it goes on whoever gives it beliefs.
     """
     core = _section_span(body, CORE_OPEN_TAG, CORE_CLOSE_TAG)
     recent = _section_span(body, RECENT_WORK_OPEN_TAG, RECENT_WORK_CLOSE_TAG)
