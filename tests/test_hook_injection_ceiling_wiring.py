@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,7 @@ def _seed(
     lock_chars: int = 150,
     n_core: int = 0,
     core_chars: int = 200,
+    core_matches_prompt: bool = False,
     n_hits: int = 0,
     hit_chars: int = 400,
 ) -> tuple[list[str], list[str], list[str]]:
@@ -108,6 +110,12 @@ def _seed(
     is mu 0.8 over alpha+beta 5, clearing `_CORE_MIN_POSTERIOR` (2/3) and
     `_CORE_MIN_ALPHA_BETA` (4). Core beliefs are not locked, so they are
     what the ceiling is allowed to drop.
+
+    `core_matches_prompt` puts `_WORD` in the core content, so the same
+    belief is both a `<core>` entry and a BM25 hit for `_PROMPT`. That is
+    the shape #1547's dedupe collapses: the `<core>` entry renders
+    verbatim and the hit renders as a `seen` pointer to it, in one
+    envelope.
     """
     lock_ids: list[str] = []
     core_ids: list[str] = []
@@ -123,7 +131,13 @@ def _seed(
         for i in range(n_core):
             bid = f"C{i:031d}"
             store.insert_belief(
-                _mk(bid, "coreword " + "w" * core_chars, alpha=4.0, beta=1.0)
+                _mk(
+                    bid,
+                    (f"{_WORD} core fact " if core_matches_prompt
+                     else "coreword ") + "w" * core_chars,
+                    alpha=4.0,
+                    beta=1.0,
+                )
             )
             core_ids.append(bid)
         for i in range(n_hits):
@@ -249,6 +263,44 @@ def test_ups_audit_record_omits_the_beliefs_the_ceiling_dropped(
     assert ups[0]["n_beliefs"] == len(audited)
 
 
+def test_ups_never_emits_a_seen_pointer_to_a_dropped_element(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trim must not leave a manifest pointer without its referent.
+
+    `retrieval.seen_manifest_line`'s docstring is the contract: the entry
+    exists because "the full text is already in this context window,
+    above". On a session's first prompt #1547's dedupe puts both halves in
+    one envelope — the belief renders verbatim in `<core>` and as a `seen`
+    pointer among the per-turn hits — and a `<core>` element carries no
+    `lock="user"`, so the ceiling was free to delete it and leave the
+    pointer behind. Measured on the shipped 6,000-token ceiling before the
+    fix: 57 `seen` ids against 55 elements, 2 of them dangling.
+
+    The assertion is a whole-body invariant rather than a check on the two
+    ids that happened to dangle, because the defect is the class and any
+    future dropper reintroduces it the same way.
+    """
+    db = tmp_path / "memory.db"
+    _seed(
+        db,
+        n_locks=55,
+        lock_chars=200,
+        n_core=40,
+        core_chars=2_000,
+        core_matches_prompt=True,
+    )
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+
+    # The trim must have run, and the dedupe must have emitted pointers:
+    # without both, the invariant below holds vacuously.
+    assert "dropped" in err, err
+    seen_ids = re.findall(r'^  seen (\S+): "', out, re.MULTILINE)
+    assert seen_ids, out[:2_000]
+    element_ids = set(re.findall(r'<belief id="([^"]+)"', out))
+    assert [bid for bid in seen_ids if bid not in element_ids] == []
+
+
 def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -333,6 +385,55 @@ def test_ups_does_not_cap_a_user_locked_belief(
     assert "[…truncated]" not in out
     assert "q" * 35_000 in out
     assert "still over the" in err
+
+
+def test_ups_does_not_cap_a_user_locked_belief_on_a_later_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock cap-exemption at the site that renders turns 2 and on.
+
+    Turn 1 emits the lock inside the session-start `<locked>` sub-block,
+    which has its own render. Every turn after that emits it through
+    `_belief_element_line`, and only a second fire in the same session
+    reaches that code with a locked belief — so
+    `test_ups_does_not_cap_a_user_locked_belief` above, which fires once,
+    leaves it uncovered. Dropping `locked=` from that call site truncated
+    a 5,000-character lock on turn 2 while `pytest tests -k hook` stayed
+    at 1005 passed.
+
+    The turn-2 assertions are distinguishing on purpose: the block must
+    contain the whole content AND no truncation marker. Either alone
+    passes on a mutant — the marker is absent from a block that dropped
+    the belief entirely, and a prefix check passes on a truncated one.
+    """
+    db = tmp_path / "memory.db"
+    content = "lockword " + "q" * 5_000
+    assert len(content) > 1_200, "must exceed BELIEF_CONTENT_CHAR_CAP"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk("L" + "0" * 31, content, locked=True))
+    finally:
+        store.close()
+
+    first, _ = _fire_ups(
+        tmp_path, db, monkeypatch, prompt=_PROMPT, session_id="s-two-turn"
+    )
+    # Turn 1 goes through the `<locked>` sub-block, which is a different
+    # render. Asserted so a change that removed the sub-block would not
+    # quietly leave this test measuring turn 1 twice.
+    assert "<locked>" in first
+
+    second, err = _fire_ups(
+        tmp_path,
+        db,
+        monkeypatch,
+        prompt="second turn: tell me about the lockword please",
+        session_id="s-two-turn",
+    )
+    assert "<locked>" not in second
+    assert "[…truncated]" not in second
+    assert content in second
+    assert err == ""
 
 
 # ---------------------------------------------------------------------------

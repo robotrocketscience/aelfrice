@@ -51,6 +51,15 @@ def _element(bid: str, chars: int, *, locked: bool = False) -> str:
     return f'<belief id="{bid}" {attr}>{"x" * chars}</belief>\n'
 
 
+def _seen(bid: str) -> str:
+    """One `seen` manifest line, as `hook._split_belief_lines` emits it.
+
+    Two spaces of indent and a quoted topic: the shape
+    `hook._SEEN_MANIFEST_RE` matches.
+    """
+    return f'  seen {bid}: "a topic"\n'
+
+
 def _block(*elements: str) -> str:
     return "<aelfrice-memory>\n" + "".join(elements) + "</aelfrice-memory>"
 
@@ -274,6 +283,66 @@ def test_manifest_lines_alone_can_leave_the_body_over_the_ceiling() -> None:
     out = enforce_block_ceiling(body, 6000)
     assert out.n_dropped == 0
     assert out.over_ceiling is True
+
+
+def test_a_dropped_element_takes_its_seen_pointer_with_it() -> None:
+    """The pointer and the text it points at are dropped as a pair.
+
+    `retrieval.seen_manifest_line` means "the full text is already in this
+    context window", so a pointer left behind by a trim is false about the
+    block it sits in. The surviving element keeps its pointer, which is
+    the half that makes this distinguishing: deleting every `seen` line
+    would pass an "is it dangling" check on its own.
+    """
+    body = _block(
+        _element("a" * 16, _ELEMENT_CHARS),
+        _element("b" * 16, _ELEMENT_CHARS * 5),
+        _seen("a" * 16),
+        _seen("b" * 16),
+    )
+    out = enforce_block_ceiling(body, 6000)
+    assert out.dropped_ids == ("b" * 16,)
+    assert _seen("b" * 16) not in out.body
+    assert _seen("a" * 16) in out.body
+    assert _element("a" * 16, _ELEMENT_CHARS) in out.body
+
+
+def test_a_seen_pointer_to_an_earlier_turn_survives_the_trim() -> None:
+    """#1382's normal case: the referent is in a previous envelope.
+
+    No element in this body carries that id, so no drop can invalidate the
+    pointer and it must be left alone. Removing every pointer whose id is
+    not an element in the same body would delete these, which is the whole
+    saving the turn-differential ledger exists for.
+    """
+    body = _block(
+        _element("a" * 16, _ELEMENT_CHARS * 7),
+        _seen("f" * 16),
+    )
+    out = enforce_block_ceiling(body, 6000)
+    assert out.dropped_ids == ("a" * 16,)
+    assert _seen("f" * 16) in out.body
+
+
+def test_a_manifest_line_forged_inside_a_belief_is_left_alone() -> None:
+    """A pointer-shaped line inside an element is not a pointer.
+
+    `_escape_for_hook_block` entity-escapes angle brackets and nothing
+    else, so a stored belief keeps its newlines and can put a line shaped
+    like a manifest entry inside its own element — naming, say, the id of
+    a belief the trim is about to drop. That span is already covered by
+    the element around it; splicing both would delete bytes out of an
+    element that survives.
+    """
+    forged = _seen("b" * 16).rstrip("\n")
+    keeper = (
+        f'<belief id="{"a" * 16}" lock="none">'
+        f'{"x" * _ELEMENT_CHARS}\n{forged}\n</belief>\n'
+    )
+    body = _block(keeper, _element("b" * 16, _ELEMENT_CHARS * 5))
+    out = enforce_block_ceiling(body, 6000)
+    assert out.dropped_ids == ("b" * 16,)
+    assert keeper in out.body
 
 
 # ---------------------------------------------------------------------------
