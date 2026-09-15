@@ -1,7 +1,8 @@
 name: pyright-ratchet
 
-# #1503 — four documents asserted `pyright --strict` passes. The issue body
-# recorded 987 errors over 76 files, and NO workflow ran it, so the tick was
+# #1503 — four documents asserted `pyright --strict` passes. The baseline that
+# landed with #1503 — `git show ce9e5461:pyright_baseline.json` — records 987
+# errors over 76 files, and NO workflow ran it, so the tick was
 # self-reported. This job is the ratchet. The operator ruling of 2026-08-26
 # cancelled the burn-down, so the ratchet is the whole answer and the count
 # falls only as a side effect of other work.

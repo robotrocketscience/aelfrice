@@ -2,10 +2,10 @@
 """Fail when a file's pyright error count rises above its baseline (#1503).
 
 `RELEASING.md` step 6 told the releaser to run `uv run pyright src/` with the
-comment `# strict`, implying it passes. The #1503 issue body recorded 987
-errors over 76 files, and **no workflow anywhere ran pyright**, so the tick
-was self-reported and unenforced.
-Three other documents repeated the claim. The cost is on the record:
+comment `# strict`, implying it passes. The baseline that landed with #1503 —
+`git show ce9e5461:pyright_baseline.json` — records 987 errors over 76 files,
+and **no workflow anywhere ran pyright**, so the tick was self-reported and
+unenforced. Three other documents repeated the claim. The cost is on the record:
 `CHANGELOG/v4.md` notes a `NameError` that reached `main` behind it.
 
 The operator ruling of 2026-08-19 was to drive the count to zero and gate it

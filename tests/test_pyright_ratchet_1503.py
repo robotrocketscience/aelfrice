@@ -1,11 +1,11 @@
 """No document may assert that pyright strict passes (#1503).
 
 `RELEASING.md` step 6 ran `uv run pyright src/` with the comment `# strict`,
-implying it passes. The issue body recorded 987 errors over 76 files, and
-**no workflow ran pyright at all**, so the tick was self-reported and
-unenforced. Three other
-documents repeated the claim. The cost is on the record: `CHANGELOG/v4.md`
-notes a `NameError` that reached `main` behind it.
+implying it passes. The baseline that landed with #1503 —
+`git show ce9e5461:pyright_baseline.json` — records 987 errors over 76 files,
+and **no workflow ran pyright at all**, so the tick was self-reported and
+unenforced. Three other documents repeated the claim. The cost is on the
+record: `CHANGELOG/v4.md` notes a `NameError` that reached `main` behind it.
 
 Two properties are pinned here, and neither of them is the error count — that
 lives in `pyright_baseline.json` and moves with every fix.
