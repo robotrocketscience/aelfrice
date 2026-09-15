@@ -361,9 +361,10 @@ def test_the_corrected_accounting_shrinks_what_each_budget_buys(
     pack a budget ends, so no lane's block may grow there.
 
     `session_start` is exempt and is asserted to be exempt rather than
-    skipped quietly: its arms both end on the candidate pool, because its
-    budget cannot bind on its own lane at all (see
-    `test_session_start_budget_does_not_bind_on_its_own_lane`).
+    skipped quietly: its arms both end on the candidate pool, because no
+    budget can bind on that lane at all -- which is why #1546 deleted the
+    one it used to carry (see
+    `test_session_start_lane_never_trims_its_l0_pool`).
     """
     fig = producer_figures
     assert fig["store_beliefs"] > 0
