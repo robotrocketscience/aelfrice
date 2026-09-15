@@ -261,10 +261,12 @@ def test_a_rejection_reports_the_line_it_was_found_on() -> None:
 
 
 def test_a_rejection_names_the_keyword_on_one_normalised_line() -> None:
-    """GitHub accepts a newline between the keyword and the `#N`, so a match
-    can span one. The warning is read out of a step log a line at a time, so
-    the quoted text collapses its whitespace instead of breaking the message
-    in two and leaving `#7` on a line of its own.
+    """A match that spans a newline still warns on a single log line.
+
+    GitHub accepts any whitespace between the keyword and the `#N`, so the
+    match can carry a newline. A step log is read a line at a time, so the
+    quoted text collapses its whitespace rather than breaking the warning in
+    two and leaving `#7` on a line of its own.
     """
     (_, refused) = parse("```\nResolves\n#7\n```\n")
     assert [r.text for r in refused] == ["Resolves #7"]
