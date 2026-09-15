@@ -758,6 +758,14 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     fig = producer_figures
     m = _producer_module()
     arm = fig["snapshot_arm"]
+    # Named literally, not read back off `SNAPSHOT_ARM_LANES`. Comparing the
+    # produced dict against the constant that produced it cannot fail: dropping
+    # `first_prompt` from the constant drops the composed envelope — the
+    # intersection of #1547 AC4's two deliverables — out of the arm entirely and
+    # keeps the comparison true. The set equality stays below it to catch the
+    # other direction, a produced key no constant declares.
+    assert "ups" in arm, sorted(arm)
+    assert "first_prompt" in arm, sorted(arm)
     assert set(arm) == set(m.SNAPSHOT_ARM_LANES), set(arm)
     lengths = sorted(int(c) for c in fig["snapshot_arm_lengths"])
     for lane, rows in arm.items():
