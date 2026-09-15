@@ -961,6 +961,81 @@ def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
     )
 
 
+def _init_probe_repo(path: Path) -> None:
+    """A one-commit git repository, so `<recent-work>` has something to render.
+
+    A throwaway repo rather than this checkout: `_resolve_branch` reads git
+    plumbing under the cwd it is handed, and pointing it at the tree the tests
+    run in would make the assertion below depend on the tester's branch name
+    and on whether the source was unpacked from a checkout at all.
+    """
+    import subprocess
+
+    def run(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=str(path), check=True,
+            capture_output=True, timeout=30,
+        )
+
+    path.mkdir(parents=True, exist_ok=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    run("config", "commit.gpgsign", "false")
+    (path / "seed.txt").write_text("seed", encoding="utf-8")
+    run("add", "seed.txt")
+    run("commit", "-q", "-m", "feat: seed the probe repo")
+
+
+def test_the_recent_work_reader_finds_the_section_the_lane_suppresses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The zero in `first_prompt_recent_work_chars` is a suppression, not a stub.
+
+    `test_the_composed_lane_renders_both_halves_of_the_first_prompt` asserts
+    that figure is zero. On its own that assertion cannot fail for the right
+    reason: `_recent_work_chars_in` replaced by `return 0` keeps it green, and
+    so does the cwd mutation the reader exists to catch, because a reader that
+    always returns zero cannot see the lane move. What is missing is a case
+    where the answer must not be zero.
+
+    So both directions are asserted against the same store. The lane's own
+    block is built on a non-git cwd and must read 0; the same builder handed a
+    git cwd emits the section, and the reader must find it and report its
+    tag-to-tag span exactly — cross-checked against `_build_recent_work_subblock`
+    on that cwd, which renders the identical text standalone. A reader that
+    returns a constant fails the second assertion; a lane that starts resolving
+    a real cwd fails the first.
+    """
+    from aelfrice import hook
+
+    m = _producer_module()
+    for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "probe-repo"
+    _init_probe_repo(repo)
+    store = m._synthetic_store(  # type: ignore[attr-defined]
+        tmp_path / "recent.db", m.CORPUS_MEDIAN_CHARS,  # type: ignore[attr-defined]
+    )
+    try:
+        hermetic = m._session_start_block(store)  # type: ignore[attr-defined]
+        carrying = hook._build_session_start_subblock(store, cwd=repo)
+    finally:
+        store.close()
+    # The lane's own cwd carries no git, so the section is absent.
+    assert hook.RECENT_WORK_OPEN_TAG not in hermetic
+    assert m._recent_work_chars_in(hermetic) == 0  # type: ignore[attr-defined]
+    # The same builder on a git cwd emits it, and the reader must find it.
+    section = hook._build_recent_work_subblock(cwd=repo)
+    assert section.startswith(hook.RECENT_WORK_OPEN_TAG), section[:40]
+    assert "<branch>main</branch>" in section, section
+    chars = m._recent_work_chars_in(carrying)  # type: ignore[attr-defined]
+    assert chars == len(section), (chars, len(section))
+    assert chars > 0
+    assert len(carrying) > len(hermetic)
+
+
 def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
     producer_figures: dict[str, object],
 ) -> None:
