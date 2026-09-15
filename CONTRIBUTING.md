@@ -123,17 +123,36 @@ The contributions with the largest effect tend to land in three places:
 ```bash
 git clone https://github.com/robotrocketscience/aelfrice.git
 cd aelfrice
-uv sync --all-groups
+uv sync --all-groups --all-extras
 uv run pytest tests/ -x -q
 uv run python scripts/check_pyright_baseline.py
 ```
+
+**Sync the extras, not only the groups.** `--all-groups` installs the
+dependency groups, and `archive` is an *extra* (`pyproject.toml`,
+`[project.optional-dependencies]`), so `--all-groups` alone leaves
+`cryptography` uninstalled. Two things then go quietly wrong, and both make
+your local green weaker than the green that gates the merge:
+
+- Eight uninstall-archive tests skip. They cover the one path where a bug
+  destroys data a user asked to keep, and `pytest -rs` names the extra in the
+  skip reason (#1548).
+- `pyright` cannot resolve `cryptography.fernet` or `cryptography.hazmat` in
+  `src/aelfrice/lifecycle.py`, and the cascade of unknown types adds 23
+  phantom errors to that file — 31 with the extra, 54 without — so
+  `scripts/check_pyright_baseline.py` fails on a correctly set-up machine.
+  `.github/workflows/pyright-ratchet.yml` runs `uv sync --frozen
+  --all-extras`, which is why CI never sees this.
+
+`tests/test_documented_setup_1548.py` fails if this block stops installing
+what the workflows install.
 
 Conventions:
 
 - Use a conventional-commit prefix: `feat:`, `fix:`, `perf:`, `refactor:`, `test:`, `docs:`, `build:`, `ci:`, `style:`, `revert:`, `exp:`, `chore:`, `release:`, `gate:`, `audit:`.
 - Make atomic commits. Each commit moves the tree from one tested green state to the next.
 - Every change of behavior needs a test.
-- **`pyright --strict` does not pass, and no file may get worse.** `pyright src/` reports 987 errors over 76 files. `scripts/check_pyright_baseline.py` holds a per-file baseline, and the `pyright-ratchet` workflow fails a pull request that raises any file's count. Drive a file down and regenerate the baseline with `--update`, then commit the lower numbers with the fix. The project deliberately avoids a repo-wide total, because a total lets a fix in one module pay for a regression in another. `tests/` is not gated: `pyproject.toml` includes it, which puts the count at 6,938, and freezing that today would put every test edit in conflict with the ratchet.
+- **`pyright --strict` does not pass, and no file may get worse.** `pyright src/` reports 973 errors over 75 files under `uv sync --all-groups --all-extras`. Read the live figures from `pyright_baseline.json` rather than from this sentence, which goes stale every time the ratchet turns. `scripts/check_pyright_baseline.py` holds a per-file baseline, and the `pyright-ratchet` workflow fails a pull request that raises any file's count. Drive a file down and regenerate the baseline with `--update`, then commit the lower numbers with the fix. The project deliberately avoids a repo-wide total, because a total lets a fix in one module pay for a regression in another. `tests/` is not gated: `pyproject.toml` includes it, which puts the count at 6,938, and freezing that today would put every test edit in conflict with the ratchet.
 
 ### Your local test budgets are 4 times the CI budgets
 

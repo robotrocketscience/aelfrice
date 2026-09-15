@@ -30,11 +30,18 @@ aelfrice uses semantic versioning (semver), and the current line is v4.x. The pr
 5. Update the roadmap status in the README.
 6. Run these commands on your machine:
    ```bash
+   uv sync --all-groups --all-extras   # extras, not only groups — see below
    uv run pytest tests/ -x -q     # track the actual count in CI
    uv run python scripts/check_pyright_baseline.py  # no file may regress
    uv run aelf --help              # spot-check CLI
    uv build                        # wheels build clean
    ```
+
+   Sync the extras before you run either check. Without the `archive` extra,
+   eight uninstall-archive tests skip and `pyright` cannot resolve
+   `cryptography` in `src/aelfrice/lifecycle.py`, so the baseline check fails
+   on a correctly set-up machine for a reason that has nothing to do with the
+   release (#1548). `CONTRIBUTING.md` § Development setup has the numbers.
 7. **Run the bench-gate tier** (#1477). **Paste its output into the release PR.**
 
    ```bash
