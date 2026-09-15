@@ -789,6 +789,115 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
         assert short["snapshot_pack_ratio"] == 1.0, (lane, short)
 
 
+_1526_COST_NAME_SUFFIXES = ("_tokens", "_cost")
+
+
+def _scan_1526_cost_functions() -> set[tuple[str, str]]:
+    """Every `#1526` cost function in the shipped tree, as `(module, name)`.
+
+    The rule, stated so a reader can apply it by hand: a module-level function
+    in `src/aelfrice` whose name ends in `_tokens` or `_cost` and whose
+    docstring names #1526. Read off the AST rather than by import, so a
+    function nothing here happens to import is still in the set, and so the
+    scan cannot be satisfied by a name the producer defines for itself.
+    """
+    src = Path(aelfrice.__file__).resolve().parent
+    found: set[tuple[str, str]] = set()
+    for path in sorted(src.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.endswith(_1526_COST_NAME_SUFFIXES):
+                continue
+            if "#1526" in (ast.get_docstring(node) or ""):
+                found.add((path.stem, node.name))
+    return found
+
+
+def test_every_1526_cost_function_is_rebound_or_named_as_an_exception() -> None:
+    """A before arm that misses one cost function measures a hybrid.
+
+    The producer's before arm rebinds the pre-#1526 bodies onto module
+    globals. Nothing checked that the set it rebinds was the set the lanes
+    reach, and the `first_prompt` lane shipped without
+    `hook._core_belief_cost` in it: that lane packs `<core>` through
+    `_build_session_start_subblock`, which has no `cost_fn` parameter to pass
+    a legacy body into, so every composed before cell mixed pre-#1526
+    retrieval cost with post-#1526 `<core>` cost. Measured at 92 content
+    characters, the before arm read 15,861 bytes against a true legacy 19,999
+    and the change was published as -15.7% where it is -33.2%.
+
+    So the set is scanned out of the shipped tree and must partition exactly
+    into the names the producer rebinds and the names it declares it does not,
+    each with a reason. A sixth cost function added to #1526's set lands in
+    neither table and fails here, which is the check that was missing.
+    """
+    import importlib
+
+    m = _producer_module()
+    scanned = _scan_1526_cost_functions()
+    rebound = {(stem, attr) for stem, attr, _body in m.LEGACY_COST_REBINDS}
+    excused = {(stem, attr) for stem, attr, _why in m.LEGACY_COST_NOT_REBOUND}
+    assert scanned, "the scan matched no #1526 cost function at all"
+    assert not rebound & excused, sorted(rebound & excused)
+    assert scanned == rebound | excused, {
+        "scanned but in neither table": sorted(scanned - rebound - excused),
+        "tabled but not in the tree": sorted((rebound | excused) - scanned),
+    }
+    # Each rebind must name a live attribute, or it would restore `None` on
+    # exit and leave the shipped tree broken for every later test.
+    for stem, attr, body in m.LEGACY_COST_REBINDS:
+        mod = importlib.import_module(f"aelfrice.{stem}")
+        assert callable(getattr(mod, attr)), (stem, attr)
+        assert callable(body), (stem, attr)
+    # An exception without a reason is a tolerance.
+    for stem, attr, why in m.LEGACY_COST_NOT_REBOUND:
+        assert len(why) > 60, (stem, attr, why)
+
+
+def test_the_before_arm_rebinds_the_core_cost_the_composed_lane_packs_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rebind reaches `<core>`, which is what the table check cannot show.
+
+    `test_every_1526_cost_function_is_rebound_or_named_as_an_exception` pins
+    the membership of the set; this pins that membership does anything.
+    `_pack_core_candidates` resolves its default `cost_fn` to
+    `hook._core_belief_cost` per call, so rebinding the module global changes
+    what the session-start sub-block packs — and the legacy body charges
+    content where the shipped one charges the rendered line, so the legacy arm
+    must fit strictly more `<core>` beliefs into the same unchanged budget.
+
+    `corr="` counts the `<core>` lines specifically: `_core_belief_line`
+    renders that attribute and the `<locked>` section renders `lock="`
+    instead, so the count separates the section the budget governs from the
+    one #379 exempts.
+    """
+    m = _producer_module()
+    for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+    store = m._synthetic_store(  # type: ignore[attr-defined]
+        tmp_path / "core.db", m.CORPUS_MEDIAN_CHARS,  # type: ignore[attr-defined]
+    )
+    try:
+        shipped = m._session_start_block(store)  # type: ignore[attr-defined]
+        with m._legacy_accounting():  # type: ignore[attr-defined]
+            legacy = m._session_start_block(store)  # type: ignore[attr-defined]
+        after = m._session_start_block(store)  # type: ignore[attr-defined]
+    finally:
+        store.close()
+    assert shipped.count('corr="') > 0, "the corpus packed no <core> belief"
+    assert legacy.count('corr="') > shipped.count('corr="'), (
+        legacy.count('corr="'), shipped.count('corr="'),
+    )
+    assert len(legacy) > len(shipped)
+    # The context restores what it rebound; a before arm that leaked would
+    # make every test that ran after it a measurement of the wrong tree.
+    assert after == shipped
+
+
 def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
     producer_figures: dict[str, object],
 ) -> None:
@@ -797,9 +906,20 @@ def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
     `first_prompt` composes what the other lanes render one at a time, so it
     must be strictly larger than the per-turn lane alone at the same budget on
     the same corpus, and the difference must be the session-start sub-block.
-    Its `<recent-work>` section is asserted empty because the producer builds
-    the sub-block on a non-git cwd on purpose: that section is resolved from
-    git plumbing and would otherwise make a published byte count a function of
+
+    Because it carries `<core>` as well as the per-turn pack, and #1526
+    changed the accounting of both, the change it measures must be strictly
+    larger than the per-turn lane's. That is the assertion that fails on a
+    before arm which rebinds the retrieval cost functions and not
+    `hook._core_belief_cost`: the composed delta collapses to exactly the
+    per-turn delta, because the `<core>` half renders identically in both
+    arms.
+
+    `first_prompt_recent_work_chars` is read out of the sub-block this lane
+    renders, not from a second call to `hook._build_recent_work_subblock`, so
+    asserting it is zero constrains the lane. The producer builds the
+    sub-block on a non-git cwd on purpose: that section resolves from git
+    plumbing and would otherwise make every composed byte count a function of
     the branch name of whatever checkout the producer ran in.
 
     The #1546 property — vary both budgets, name the cap that ended the arm —
@@ -819,6 +939,14 @@ def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
         assert fig[f"first_prompt_bytes_{arm}"] > fig[f"ups_bytes_{arm}"], (
             "the composed envelope must be larger than its per-turn half alone"
         )
+    composed_delta = fig["first_prompt_bytes_before"] - fig[
+        "first_prompt_bytes_after"
+    ]
+    per_turn_delta = fig["ups_bytes_before"] - fig["ups_bytes_after"]
+    assert composed_delta > per_turn_delta, (
+        "the composed lane's before arm did not carry the <core> accounting: "
+        f"{composed_delta} against the per-turn lane's {per_turn_delta}"
+    )
     curve = fig["first_prompt_curve"]
     assert set(curve) == {str(c) for c in fig["lengths"]}, set(curve)
     binds = {
