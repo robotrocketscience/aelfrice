@@ -100,7 +100,7 @@ def test_the_six_spellings_1541_missed_now_link(keyword: str) -> None:
         "prefixes #7",
         "unresolved #7",
         "closesX #7",  # no boundary between the keyword and the digit run
-        "Closes#7",  # whitespace is still required
+        "Closes#7",  # a delimiter is still required
         "Closes issue #7",  # GitHub does not accept this either
         "#7",
         "See #7 for context",
@@ -110,6 +110,78 @@ def test_widening_the_keywords_did_not_widen_what_counts_as_a_link(
     body: str,
 ) -> None:
     assert linked_issues(body) == []
+
+
+# --------------------------------------------------------------------------
+# Gap 1b: the colon GitHub's own page accepts after a keyword.
+# --------------------------------------------------------------------------
+
+# Verbatim from the page cited in the module docstring: "The keywords can be
+# followed by colons or in uppercase. For example: `Closes: #10`,
+# `CLOSES #10`, or `CLOSES: #10`."
+_GITHUB_COLON_EXAMPLES = ["Closes: #10", "CLOSES #10", "CLOSES: #10"]
+
+
+@pytest.mark.parametrize("body", _GITHUB_COLON_EXAMPLES)
+def test_githubs_own_three_examples_all_link(body: str) -> None:
+    """The colon form used to match nothing, and matching nothing is silent.
+
+    `parse("Closes: #10")` returned `([], [])`: no link and no rejection, so
+    the step log printed what it prints for a body with no keyword at all --
+    verbatim the failure the whole of AC5 exists to kill.
+    """
+    assert linked_issues(body) == [10]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("Closes: #10", [10]),  # GitHub's published example
+        ("Closes:#10", [10]),  # the colon is itself the delimiter
+        ("Closes : #10", []),  # the colon must touch the keyword
+        ("Closes::#10", []),  # one colon, not a run of them
+        ("Closes#10", []),  # no delimiter at all
+    ],
+    ids=["colon-space", "colon-tight", "space-colon", "double-colon", "bare"],
+)
+def test_the_colon_binds_to_the_keyword_and_does_not_repeat(
+    body: str, expected: list[int]
+) -> None:
+    """GitHub publishes the colon but not its spacing; the module rules on it.
+
+    The three undocumented forms are decided in the module docstring, under
+    'What "followed by a colon" means here', and pinned here so the reading is
+    a decision rather than whatever the regex happened to do.
+    """
+    assert linked_issues(body) == expected
+
+
+def test_the_colon_form_still_obeys_the_block_exclusions() -> None:
+    """Widening the separator must not widen where a keyword may fire."""
+    found, refused = parse("```\nCloses: #7\n```\n\nFixes: #8")
+    assert found == [8]
+    assert [(r.text, r.reason) for r in refused] == [("Closes: #7", IN_FENCE)]
+
+
+def test_the_1504_shaped_prose_links_and_that_is_the_accepted_cost() -> None:
+    """The known false positive the colon buys, recorded rather than hidden.
+
+    Merged PR #1504's body ends a clause on one of the nine words, and no
+    rule of text tells that apart from a close directive. GitHub closes #1329
+    from this body on an ordinary merge, so a train standing in for GitHub
+    closes it too.
+    """
+    body = "All ruled prerequisites are closed: #1329, #1412 and #1428.\n"
+    found, refused = parse(body)
+    assert found == [1329]
+    assert refused == [], "a prose match is a link, not a rejection"
+
+
+def test_the_docstring_records_the_false_positive_the_colon_buys() -> None:
+    """A cost accepted in a ruling and left out of the file is not recorded."""
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "#1504" in doc
+    assert "false positive" in doc
 
 
 # --------------------------------------------------------------------------

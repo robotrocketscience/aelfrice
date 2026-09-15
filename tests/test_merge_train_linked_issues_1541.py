@@ -18,6 +18,7 @@ production six merges later.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -129,7 +130,7 @@ def test_forms_that_link(body: str) -> None:
         "See #7 for context",
         "precloses #7",  # \b must not let a suffix match
         "Closes issue #7",  # GitHub does not accept this either
-        "Closes#7",  # whitespace is required
+        "Closes#7",  # a delimiter, whitespace or a colon, is required
         "Closes owner/repo#7",  # cross-repo: not ours to close
         "Closes #",  # no number
     ],
@@ -275,10 +276,15 @@ def test_the_regex_keyword_set_matches_what_the_docs_claim() -> None:
     GitHub, so the set widened to nine and this guard widened with it; the
     nine are pinned one spelling at a time in
     `tests/test_merge_train_close_keywords_1549.py`.
+
+    The alternation counted is the `keyword` group's, not the whole pattern's.
+    A whole-pattern count of `|` said the same thing only while the pattern
+    held exactly one alternation, and the colon separator added a second one
+    that has nothing to do with the keyword set.
     """
-    assert LINK_RE.pattern.count("|") == len(KEYWORDS) - 1
-    for kw in KEYWORDS:
-        assert kw in LINK_RE.pattern
+    alternation = re.search(r"\(\?P<keyword>([^)]*)\)", LINK_RE.pattern)
+    assert alternation is not None, "the keyword group is gone from the regex"
+    assert sorted(alternation.group(1).split("|")) == sorted(KEYWORDS)
 
 
 def test_main_returns_zero_for_a_body_on_stdin(
