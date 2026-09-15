@@ -80,11 +80,11 @@ def _covers(documented: set[str], required: set[str]) -> bool:
     """Does the documented sync install everything `required` names?"""
     if ALL_EXTRAS in documented:
         return True
-    if ALL_EXTRAS in required:
-        # A workflow syncing `--all-extras` is only covered by a documented
-        # setup that does the same; naming today's extras one by one would
-        # silently stop covering it the day an extra is added.
-        return False
+    # A workflow syncing `--all-extras` is covered only by a documented setup
+    # that does the same, and the subset test below already says so: the
+    # sentinel is not a name, so no list of names can contain it. Naming
+    # today's extras one by one therefore fails, which is the intent —
+    # such a list stops covering the workflow the day an extra is added.
     return required <= documented
 
 
