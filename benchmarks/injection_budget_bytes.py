@@ -167,11 +167,15 @@ SPECULATIVE_EVERY = 5
 SNAPSHOT_EVERY = 7
 
 # Every synthetic belief is terminated into sentences of about this many
-# characters. The headline strategy needs a `. ` or `.\n` at or before
-# `compression.MAX_HEADLINE_CHARS` (240) or `compression._headline` falls to its
-# hard-truncate branch, which is a different code path with a different byte
-# count; the generator this module shipped before #1547 joined vocabulary words
-# with spaces and produced no boundary at any length. 120 is half that cap, so
+# characters. The headline strategy's first-sentence branch needs a `. ` or
+# `.\n` outside a code fence, ending at or before
+# `compression.MAX_HEADLINE_CHARS` (240). With no such boundary
+# `compression._headline` either returns the content unchanged (content no
+# longer than the cap) or hard-truncates at the last space inside it (content
+# longer) — two different code paths with two different byte counts, and
+# neither is what this arm measures. The generator this module shipped before
+# #1547 joined vocabulary words with spaces and produced no boundary at any
+# length, so it never reached the branch. 120 is half that cap, so
 # the first boundary lands well inside it at every grid length above 120 and the
 # headline is a first sentence rather than a truncation. Below 120 a belief
 # carries no boundary at all and the headline strategy returns it unchanged,
@@ -1395,7 +1399,8 @@ def _curve(
 
     A byte count of **zero** is a measurement, not a suppressed cell, and the
     extended grid produces one: at 7,170 and 18,600 content characters a single
-    `<core>` line costs 1,806 and 4,663 tokens against
+    `<core>` line costs 1,810 and 4,667 tokens by `hook._core_belief_cost` —
+    the function `_pack_core_candidates` charges with — against
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`, so
     `_pack_core_candidates` — which skips an oversized belief rather than
     breaking — packs none of 300 candidates and the section emits nothing. The
