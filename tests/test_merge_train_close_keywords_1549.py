@@ -324,14 +324,24 @@ def test_dry_run_still_reports_rejections() -> None:
 # --------------------------------------------------------------------------
 
 
+def _live_lines() -> list[str]:
+    """The merge-train's command lines, with the comment lines dropped.
+
+    The step comment quotes both `2>/dev/null` and `2>&1` to say not to add
+    them, so any check that reads the raw file text sees those spellings
+    whether or not a command still uses one.
+    """
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    return [ln for ln in text.splitlines() if not ln.strip().startswith("#")]
+
+
 def _script_invocation() -> str:
     r"""The merge-train lines that run the parser, comments dropped.
 
     The invocation is wrapped over two lines with a `\` continuation, so the
     redirect that would swallow stderr could sit on either of them.
     """
-    text = _WORKFLOW.read_text(encoding="utf-8")
-    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("#")]
+    lines = _live_lines()
     for i, line in enumerate(lines):
         if "merge_train_linked_issues.py" in line:
             return "\n".join(lines[i : i + 3])
@@ -352,10 +362,15 @@ def test_the_workflow_does_not_swallow_the_parsers_stderr() -> None:
 
 
 def test_that_assertion_is_not_vacuous() -> None:
-    """The workflow does redirect stderr elsewhere, so the check is narrow."""
-    whole = _WORKFLOW.read_text(encoding="utf-8")
-    assert "2>/dev/null" in whole
-    assert "2>&1" in whole
+    """Other commands in this workflow do redirect stderr, so the check is narrow.
+
+    Read the same comment-filtered lines `_script_invocation` reads, not the
+    raw file: the step comment added for #1549 names both spellings, so a
+    whole-file search reports a redirect that no command runs.
+    """
+    live = "\n".join(_live_lines())
+    assert "2>/dev/null" in live
+    assert "2>&1" in live
 
 
 def test_the_workflow_no_longer_calls_the_gaps_undecided() -> None:
