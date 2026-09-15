@@ -17,6 +17,7 @@ import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -204,6 +205,39 @@ BENCH_GATE_SKIP_REASON: str = (
 )
 
 
+ARCHIVE_EXTRA_NAME = "archive"
+
+ARCHIVE_EXTRA_SKIP_REASON: str = (
+    f"requires the '{ARCHIVE_EXTRA_NAME}' extra: "
+    "uv sync --all-groups --all-extras (or --extra archive). cryptography is "
+    "an optional dependency, and these tests cover the uninstall --archive "
+    "path — see #1548"
+)
+"""The one skip reason for every archive-extra skip (#1548 AC2).
+
+`pytest.importorskip("cryptography")` writes "could not import
+'cryptography'", which names the import and not the thing a contributor
+has to do about it. The eight uninstall-archive tests are the ones whose
+absence matters most — they cover encrypting a store on the way out and
+proving the plaintext artifacts are gone — and under the setup command
+this repository used to document they all skipped, so a local green was
+weaker than the green that gates the merge.
+
+One shared string, for the same reason `BENCH_GATE_SKIP_REASON` is one:
+the terminal summary recognises these skips by this text rather than
+re-deriving which tests are archive-gated.
+"""
+
+
+def requires_archive_extra() -> ModuleType:
+    """Skip unless the `archive` extra is installed, naming the extra.
+
+    Returns the `cryptography` module so a caller that needs a symbol from
+    it can bind one without a second import.
+    """
+    return pytest.importorskip("cryptography", reason=ARCHIVE_EXTRA_SKIP_REASON)
+
+
 def _corpus_root() -> Path | None:
     raw = os.environ.get(CORPUS_ENV_VAR)
     if not raw:
@@ -225,6 +259,31 @@ def _skip_reason(rep: object) -> str:
     if isinstance(longrepr, tuple) and len(longrepr) == 3:
         return str(longrepr[2])
     return ""
+
+
+def _report_archive_extra_skips(terminalreporter) -> None:  # type: ignore[no-untyped-def]
+    """Name the missing extra in the tail, not just in `-rs` (#1548 AC2).
+
+    A skip caused by a missing optional dependency is invisible in
+    `N passed, M skipped`, and the contributor who reads that tail as a
+    pass is exactly the reader this reports to. Classification is by skip
+    reason, so a test that skips inside an archive module for an
+    unrelated cause is not folded in.
+    """
+    n = sum(
+        1
+        for rep in terminalreporter.stats.get("skipped", [])
+        if ARCHIVE_EXTRA_SKIP_REASON in _skip_reason(rep)
+    )
+    if not n:
+        return
+    terminalreporter.write_sep("-", "optional extras")
+    terminalreporter.write_line(
+        f"{n} test(s) skipped for the missing '{ARCHIVE_EXTRA_NAME}' extra. "
+        f"These are the uninstall --archive gates; they did NOT run. Install "
+        f"it with `uv sync --all-groups --all-extras`, which is what "
+        f"CONTRIBUTING.md documents and what CI installs (#1548)."
+    )
 
 
 def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untyped-def]
@@ -251,6 +310,8 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
     is not folded in. Executed tests are counted off the marker, which
     is the only place that signal survives to summary time.
     """
+    _report_archive_extra_skips(terminalreporter)
+
     stats = terminalreporter.stats
     tier_skips = 0
     by_module: dict[tuple[str, str], int] = {}

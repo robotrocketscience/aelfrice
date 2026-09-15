@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from aelfrice import auto_install, cli, lifecycle
+from tests.conftest import requires_archive_extra
 
 _SECRET = "the corpus content that must not survive a purge"
 
@@ -393,9 +394,7 @@ def test_cli_removes_consent_in_every_disposition_mode(
     assert sentinel.exists()
 
     if mode == "archive":
-        pytest.importorskip(
-            "cryptography", reason="[archive] extra required for --archive"
-        )
+        requires_archive_extra()
         args = _args(archive=str(tmp_path / "out.age"))
     else:
         args = _args(**{mode: True})
@@ -551,9 +550,7 @@ def test_cli_archive_gate_discloses_the_dotdir_paths(
     the same disposition by a different branch, and it is the branch that
     had to learn to prompt when the store itself has no extras.
     """
-    pytest.importorskip(
-        "cryptography", reason="[archive] extra required for --archive"
-    )
+    requires_archive_extra()
     monkeypatch.setattr(cli, "_read_password", lambda _args: "pw")
 
     out = io.StringIO()

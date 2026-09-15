@@ -28,6 +28,7 @@ import pytest
 from aelfrice import lifecycle
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
+from tests.conftest import requires_archive_extra
 
 _SECRET = "vector embeddings are prohibited in this project"
 
@@ -125,9 +126,7 @@ def test_archive_of_a_live_store_recovers_every_belief(
     `read_bytes()` never saw. The user was told "original deleted" and
     handed an archive of an empty database.
     """
-    pytest.importorskip(
-        "cryptography", reason="[archive] extra required for --archive"
-    )
+    requires_archive_extra()
     _store_dir, db, store = live_store
     expected = len(store.list_belief_ids())
     assert expected == 12
@@ -211,9 +210,7 @@ def test_archive_removes_the_derived_plaintext_artifacts(
     live_store: tuple[Path, Path, MemoryStore], tmp_path: Path,
 ) -> None:
     """An encrypted archive beside plaintext copies is not a guarantee."""
-    pytest.importorskip(
-        "cryptography", reason="[archive] extra required for --archive"
-    )
+    requires_archive_extra()
     store_dir, db, _store = live_store
     archive = tmp_path / "backup.enc"
 
@@ -281,9 +278,7 @@ def test_archive_destination_inside_the_store_dir_is_not_deleted(
     live_store: tuple[Path, Path, MemoryStore],
 ) -> None:
     """Writing the archive next to the store must not destroy it."""
-    pytest.importorskip(
-        "cryptography", reason="[archive] extra required for --archive"
-    )
+    requires_archive_extra()
     store_dir, db, _store = live_store
     archive = store_dir / "backup.enc"
 

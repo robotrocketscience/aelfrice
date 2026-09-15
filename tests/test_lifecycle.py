@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice import lifecycle
+from tests.conftest import requires_archive_extra
 
 
 # --- is_newer ----------------------------------------------------------
@@ -256,7 +257,7 @@ def test_uninstall_purge_silent_when_db_absent(tmp_path: Path) -> None:
 
 
 def test_uninstall_archive_roundtrip(tmp_path: Path) -> None:
-    pytest.importorskip("cryptography")
+    requires_archive_extra()
     db = tmp_path / "memory.db"
     sqlite3.connect(str(db)).executescript(
         "CREATE TABLE x(y INT); INSERT INTO x VALUES(42);"
@@ -277,7 +278,7 @@ def test_uninstall_archive_roundtrip(tmp_path: Path) -> None:
 
 
 def test_uninstall_archive_wrong_password_rejected(tmp_path: Path) -> None:
-    pytest.importorskip("cryptography")
+    requires_archive_extra()
     from cryptography.fernet import InvalidToken
 
     db = tmp_path / "memory.db"
