@@ -189,6 +189,9 @@ also_copy = [
     "CHANGELOG",
     "CHANGELOG.md",
     "README.md",
+    # `tests/test_documented_setup_1548.py` reads the § Development setup
+    # block to compare its extras against the workflow syncs.
+    "CONTRIBUTING.md",
 ]
 
 # `src/aelfrice/__init__.py` is six hand-written lines of package metadata:
