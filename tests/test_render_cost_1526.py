@@ -1021,6 +1021,7 @@ def _init_probe_repo(path: Path) -> None:
     run("commit", "-q", "-m", "feat: seed the probe repo")
 
 
+@pytest.mark.timeout(30)
 def test_the_recent_work_reader_finds_the_section_the_lane_suppresses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
