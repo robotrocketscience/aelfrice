@@ -3186,24 +3186,26 @@ def _retrieve(
     showed them.
     """
     search = _lazy("search_for_prompt")
-    if store is not None:
+    # Resolve the handle first, then make one call. The two arms used to
+    # carry their own copy of the argument list, and `belief_cost_fn`
+    # added to only one of them would have left the caller-supplied store
+    # (the #1135 shared handle, which is the hot path) charging a
+    # different cost function from the open-per-call fallback.
+    owned = _open_store() if store is None else None
+    try:
         return search(
-            store, prompt, token_budget=token_budget,
+            store if store is not None else owned,
+            prompt,
+            token_budget=token_budget,
             record_exposure=record_exposure,
             # #1551: this lane renders `_belief_element_line`, whose
             # content is capped, not the uncapped element
             # `retrieval._belief_tokens` charges. See `_ups_belief_line_cost`.
             belief_cost_fn=_ups_belief_line_cost,
         )
-    owned = _open_store()
-    try:
-        return search(
-            owned, prompt, token_budget=token_budget,
-            record_exposure=record_exposure,
-            belief_cost_fn=_ups_belief_line_cost,
-        )
     finally:
-        owned.close()
+        if owned is not None:
+            owned.close()
 
 
 def _filter_by_project_context(hits: list[Belief]) -> list[Belief]:
