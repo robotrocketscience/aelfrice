@@ -40,7 +40,10 @@ from aelfrice.hook import (
     SESSION_START_OPEN_TAG,
     _audit_path_for_db,
     _audit_tokens_from_block,
+    _cap_belief_content,
+    _telemetry_path_for_db,
     read_hook_audit,
+    read_user_prompt_submit_telemetry,
     session_start,
     user_prompt_submit,
 )
@@ -244,6 +247,55 @@ def test_ups_audit_record_omits_the_beliefs_the_ceiling_dropped(
     assert audited, ups[0]
     assert all(bid in out for bid in audited)
     assert ups[0]["n_beliefs"] == len(audited)
+
+
+def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B6: the telemetry field must not change units at the boundary.
+
+    `total_chars` is belief-content characters as injected, and `aelf
+    doctor` renders it as "injection size p50/p95: N chars". An earlier
+    revision of this change overwrote it with `len(body)` — whole
+    rendered-block bytes, framing and manifest lines included — but only
+    on fires the ceiling trimmed, so the percentiles mixed two units and
+    switched between them exactly at the over-ceiling boundary, which is
+    where the tail of the distribution is.
+
+    The assertion is distinguishing on purpose: it names the value the
+    field must hold AND the value it must not, because the two are within
+    an order of magnitude of each other and an `> 0` check passes on both.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+    assert "dropped" in err
+
+    tel = read_user_prompt_submit_telemetry(_telemetry_path_for_db(db))
+    assert len(tel) == 1
+    total_chars = tel[0]["total_chars"]
+
+    # The emitted set, taken from the audit record, costed from the store.
+    ups = [
+        r for r in read_hook_audit(_audit_path_for_db(db))
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    emitted = ups[0]["beliefs"]  # type: ignore[index]
+    store = MemoryStore(str(db))
+    try:
+        expected = 0
+        for row in emitted:  # type: ignore[union-attr]
+            b = store.get_belief(row["id"])
+            assert b is not None
+            expected += len(
+                _cap_belief_content(b.content, locked=bool(row["locked"]))
+            )
+    finally:
+        store.close()
+
+    assert total_chars == expected, (total_chars, expected)
+    assert total_chars != len(out), "recorded rendered-block bytes, not content"
 
 
 def test_ups_caps_one_oversized_belief_instead_of_dropping_the_block(
