@@ -43,7 +43,7 @@ import os
 import sys
 import traceback
 from datetime import datetime, timezone
-from typing import IO, Final, Iterable
+from typing import IO, Callable, Final, Iterable
 
 from aelfrice.feedback import apply_feedback
 from aelfrice.models import Belief
@@ -96,6 +96,7 @@ def search_for_prompt(
     *,
     stderr: IO[str] | None = None,
     record_exposure: bool = True,
+    belief_cost_fn: Callable[[Belief], int] | None = None,
 ) -> list[Belief]:
     """Retrieve hits for a hook prompt and record them to feedback_history.
 
@@ -115,6 +116,12 @@ def search_for_prompt(
     output. Skipping the whole call (rather than parts of it) keeps the
     audit row and the `last_retrieved_at` mirror in agreement, which is
     the invariant #1373 established.
+
+    `belief_cost_fn` (#1551) is handed to `retrieve` unchanged. The
+    UserPromptSubmit hook passes `hook._ups_belief_line_cost`, because
+    that lane caps a belief's content at render and would otherwise reserve
+    budget against bytes it has already decided not to send. `None` — any
+    other caller — leaves `retrieve`'s own costing in place.
     """
     # #1016-B: this is a hook injection path whose formatter renders
     # reference-tier locks as a one-line manifest, so budget them at
@@ -123,6 +130,7 @@ def search_for_prompt(
     hits: list[Belief] = retrieve(
         store, prompt, token_budget=token_budget,
         manifest_reference_locks=True,
+        belief_cost_fn=belief_cost_fn,
     )
     if record_exposure:
         record_retrieval(store, hits, stderr=stderr)

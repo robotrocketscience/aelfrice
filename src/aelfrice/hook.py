@@ -2989,12 +2989,17 @@ def _retrieve(
         return search(
             store, prompt, token_budget=token_budget,
             record_exposure=record_exposure,
+            # #1551: this lane renders `_belief_element_line`, whose
+            # content is capped, not the uncapped element
+            # `retrieval._belief_tokens` charges. See `_ups_belief_line_cost`.
+            belief_cost_fn=_ups_belief_line_cost,
         )
     owned = _open_store()
     try:
         return search(
             owned, prompt, token_budget=token_budget,
             record_exposure=record_exposure,
+            belief_cost_fn=_ups_belief_line_cost,
         )
     finally:
         owned.close()
@@ -3159,8 +3164,11 @@ def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
 def _belief_element_line(h: Belief) -> str:
     """Render one verbatim `<belief>` element, without the joining newline.
 
-    Extracted (#1551) so the per-belief cap has one render site, and so a
-    cost function can charge exactly what this lane emits by building it.
+    Extracted (#1551) so `_ups_belief_line_cost` can charge exactly what this
+    lane emits by building it. A width transcribed into the cost function
+    instead would be a second copy free to drift, and the per-belief cap is
+    not expressible as a width at all — the same argument
+    `hook_search_tool._belief_line` makes for the PreToolUse lane.
     """
     lock_attr = "user" if _is_user_locked(h) else "none"
     # #1551: the per-belief cap, exempting user-locked content. See
@@ -3184,6 +3192,69 @@ def _belief_element_line(h: Belief) -> str:
         f'<belief id="{h.id}" lock="{lock_attr}"'
         f'{speculative_attr}>{content}</belief>'
     )
+
+
+def _ups_belief_line_cost(b: Belief) -> int:
+    """Pack cost of one belief, in the currency this lane emits (#1551).
+
+    Passed to `retrieve()` as `belief_cost_fn`. Without it the packer
+    charged `retrieval._belief_tokens` — the whole of `b.content` plus the
+    element around it — while `_belief_element_line` emits at most
+    `BELIEF_CONTENT_CHAR_CAP` characters of that content. The lane
+    therefore reserved budget against bytes it had already decided not to
+    send, and the effect was not a rounding error: a single 35,000-
+    character belief costs 8,763 tokens against `DEFAULT_HOOK_TOKEN_BUDGET
+    = 1500`, so it was rejected outright and the fire injected an **empty
+    block** — the cap never ran, on the lane the cap was added for. It now
+    costs 321 and is admitted, capped. This is #1526 item 4 in the
+    opposite direction, and the class #1547 is open about.
+
+    Built from `_belief_element_line`, so the cap and the escaping are
+    charged because they happened. The line's newline is charged too:
+    `_format_hits` joins the lines and each carries exactly one.
+
+    The reference-lock arm is here rather than left to
+    `manifest_reference_locks`, because `belief_cost_fn` overrides that
+    path entirely (`retrieval.retrieve_with_tiers`) — a lane that renders
+    its own shape renders locks in that shape as well. `_split_belief_lines`
+    emits the same two-space-indented, escaped manifest line.
+
+    Not charged: `_group_by_provenance`'s evidence attributes, which widen
+    the element when `AELFRICE_PROVENANCE_RENDER` is on. That flag is
+    default-off, and the block ceiling bounds the result either way.
+    """
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        is_reference_lock,
+        lock_manifest_line,
+    )
+
+    if is_reference_lock(b):
+        line = "  " + _escape_for_hook_block(lock_manifest_line(b))
+    else:
+        line = _belief_element_line(b)
+    return int(
+        (len(line) + 1 + _CORE_CHARS_PER_TOKEN - 1) // _CORE_CHARS_PER_TOKEN
+    )
+
+
+# Every `<belief>` element this repo emits opens `<belief id="..."`, in all
+# three shapes: the per-turn hit (`_split_belief_lines`), the `<locked>` entry
+# and the `<core>` entry. `[^"]+` rather than a hex class on purpose -- live
+# stores carry two id forms, 16-character hex and 26-character ULID, and a
+# hex-only pattern silently skips the ULIDs. That mistake is easy to make and
+# was made by four independent readers of this code before this comment
+# existed.
+_BELIEF_ID_RE: Final[re.Pattern[str]] = re.compile(r'<belief\s+id="([^"]+)"')
+
+
+def _ids_rendered_verbatim_in(block: str) -> frozenset[str]:
+    """The belief ids a rendered block already carries in full.
+
+    Used to stop the per-turn pack re-rendering, in the same envelope, a
+    belief the embedded session-start sub-block has already shown. Returns
+    an empty set for an empty block, so the caller needs no special case.
+    """
+    return frozenset(_BELIEF_ID_RE.findall(block))
 
 
 def _split_belief_lines(
