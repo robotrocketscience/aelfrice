@@ -379,23 +379,29 @@ def test_ups_never_emits_a_seen_pointer_to_a_dropped_element(
     assert [bid for bid in seen_ids if bid not in element_ids] == []
 
 
-def test_ups_ring_and_touches_omit_the_beliefs_the_ceiling_dropped(
+def test_ups_exposure_writes_omit_the_beliefs_the_ceiling_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The two exposure writes the audit test above does not reach.
+    """The three exposure writes the audit test above does not reach.
 
     The session ring's contract is "already shipped this session", and
     the next `PreToolUse:Grep|Glob|Bash` fire dedups against it — so an
     id entered without being shipped suppresses a belief the model never
     saw, which is a silent drop rather than a deduplication. A
     `belief_touches` row is the same claim in the sidecar table, and it
-    outlives the session.
+    outlives the session. An `injection_events` row is the sharpest of
+    the three: the #779 Layer-3 sweeper resolves it against the *next*
+    assistant turn, so a row for a belief that was deleted before the
+    write scores `referenced=0` by construction and feeds that verdict
+    into the meta-belief substrate. Measured with
+    `hits=emitted_hits` reverted to `hits` on this fixture: 66 rows
+    against 63 rendered `<belief>` elements, 3 credited but absent.
 
-    Both are asserted as whole-set invariants against the emitted block:
-    every id either side of the ceiling appears in what was written, so
-    any future dropper is covered too. The dropped count is read off
-    stderr first, because on a fixture the ceiling leaves alone both
-    invariants hold vacuously.
+    All three are asserted as whole-set invariants against the emitted
+    block: every id either side of the ceiling appears in what was
+    written, so any future dropper is covered too. The dropped count is
+    read off stderr first, because on a fixture the ceiling leaves alone
+    every invariant holds vacuously.
     """
     db = tmp_path / "memory.db"
     session_id = "s-ring"
@@ -416,16 +422,24 @@ def test_ups_ring_and_touches_omit_the_beliefs_the_ceiling_dropped(
         touched = store.read_touch_set_in_window(
             session_id, current_fire_idx=0, window_k=1
         )
+        # Every row of this session: the sweeper has not run, so all of
+        # them are still `referenced IS NULL`.
+        injected = [
+            row[2] for row in store.list_pending_injection_events(session_id)
+        ]
     finally:
         store.close()
-    assert ring_ids and touched, (len(ring_ids), len(touched))
+    assert ring_ids and touched and injected, (
+        len(ring_ids), len(touched), len(injected)
+    )
 
-    # One assertion over both sets, so neither half can go dead while the
-    # other reports the failure.
+    # One assertion over all three sets, so no one of them can go dead
+    # while another reports the failure.
     assert {
         "ring": [bid for bid in ring_ids if bid not in out],
         "belief_touches": [bid for bid in sorted(touched) if bid not in out],
-    } == {"ring": [], "belief_touches": []}
+        "injection_events": [bid for bid in injected if bid not in out],
+    } == {"ring": [], "belief_touches": [], "injection_events": []}
 
 
 def test_ups_seen_pointer_on_turn_two_names_a_belief_turn_one_rendered(
