@@ -360,12 +360,19 @@ jobs:
           # #634: auto-close linked issues. GitHub's auto-close-on-merge
           # only fires when a merge commit lands; FF push (required here
           # by the signed-commit branch-protection model) doesn't trigger
-          # it. #1549 ruled that this step emulates GitHub rather than
-          # being a narrow trailer parser, so it now matches all nine of
-          # GitHub's closing keywords and ignores one written inside a
-          # code fence, an indented block, an inline code span, a block
-          # quote or an HTML comment. Failures here log but do not fail
-          # the workflow — the merge has landed.
+          # it. #1549 ruled that this step reads the body the way GitHub
+          # reads it. It does that by asking GitHub: the script POSTs the
+          # body to /markdown and acts on the issue-link anchors GitHub
+          # itself produced, so a keyword inside a code fence, an indented
+          # block, an inline code span or an HTML comment is never a close
+          # — GitHub renders no anchor there. Nothing emulates Markdown.
+          #
+          # That endpoint needs no permission this job lacks. POST
+          # /markdown against a public repository answers 200 with the
+          # anchors for an entirely unauthenticated request, so the
+          # GH_TOKEN above is already more than enough and no scope was
+          # added for it. A close failure still logs without failing the
+          # workflow — the merge has landed.
           echo "[7/7] auto-closing linked issues..."
           # #1541: this used to pipe the body through `head -c 8192` BEFORE
           # matching, so a keyword written past the 8,192nd byte was cut
@@ -374,11 +381,11 @@ jobs:
           # at bytes 463, 9148, 8992, 0 and 0 -- both bodies over the cut
           # lost their close. The body now reaches the matcher whole.
           #
-          # The parse lives in scripts/merge_train_linked_issues.py so it
-          # can be tested; tests/test_merge_train_linked_issues_1541.py
+          # The decision lives in scripts/merge_train_linked_issues.py so
+          # it can be tested; tests/test_merge_train_linked_issues_1541.py
           # pins the regression at 8 KiB and well past it, and
-          # tests/test_merge_train_close_keywords_1549.py pins the
-          # keyword set and the code-block exclusions.
+          # tests/test_merge_train_close_keywords_1549.py replays recorded
+          # GitHub renders and pins the call this step makes.
           gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
               --jq '.body // ""' > /tmp/pr_body.txt
 
@@ -388,10 +395,28 @@ jobs:
           # `2>&1` here: the first hides a deliberate rejection, which is
           # the silence #1549 removed, and the second feeds the warning
           # text into the `for n in ${linked_issues}` loop below.
-          linked_issues=$(python3 scripts/merge_train_linked_issues.py \
-              --body-file /tmp/pr_body.txt || true)
+          #
+          # A non-zero exit means the body could not be read or GitHub's
+          # renderer could not be reached, and the script then prints
+          # nothing on stdout on purpose: closing nothing is recoverable
+          # by a human reading this log, closing the wrong issue is not.
+          # It is surfaced as an annotation rather than swallowed by the
+          # `|| true` this replaced, which would have printed what a body
+          # with no keyword prints — the silence #1549 removed.
+          decided=yes
+          if ! linked_issues=$(python3 scripts/merge_train_linked_issues.py \
+              --repo "${REPO}" --body-file /tmp/pr_body.txt); then
+              echo "::error::merge-train could not determine the linked issues for PR #${PR_NUMBER}; nothing was closed (#1549). Close them by hand."
+              decided=no
+              linked_issues=""
+          fi
 
-          if [ -z "${linked_issues}" ]; then
+          # Three outcomes, three messages. "Undetermined" must not print
+          # what "no keyword in the body" prints — that equivalence is the
+          # whole of #1549.
+          if [ "${decided}" = "no" ]; then
+              echo "  linked issues UNDETERMINED; nothing closed. See the error above."
+          elif [ -z "${linked_issues}" ]; then
               echo "  no linked issues parsed from PR body."
           else
               for n in ${linked_issues}; do

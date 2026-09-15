@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-r"""Parse the closing keywords out of a pull-request body (#1541, #1549).
+r"""Read the issues a pull-request body closes, by asking GitHub (#1541, #1549).
 
 Usage:
-    python3 scripts/merge_train_linked_issues.py --body-file /tmp/pr_body.txt
+    python3 scripts/merge_train_linked_issues.py \
+        --repo OWNER/NAME --body-file /tmp/pr_body.txt
     gh pr view N --json body --jq '.body // ""' \
-        | python3 scripts/merge_train_linked_issues.py
+        | python3 scripts/merge_train_linked_issues.py --repo OWNER/NAME
 
 Prints one issue number per line, deduplicated, in ascending numeric order, on
-stdout. Every keyword the parser found and deliberately did NOT act on prints
-one `warning:` line on stderr naming the text and the reason. Exits non-zero
-only when the input cannot be read; a body with no linked issue is not an
-error, it prints nothing and exits 0.
+stdout. Every closing keyword the tool found and deliberately did NOT act on
+prints one `warning:` line on stderr naming the text and the reason. Exit 0
+means the answer on stdout is complete -- a body with no linked issue is not an
+error, it prints nothing. Exit 1 means the body could not be read; exit 2 means
+the answer could not be determined at all, and stdout is then empty on purpose.
 
 ## Why this is a script and not a shell pipeline
 
@@ -30,38 +32,65 @@ it worked. The failure is invisible at the merge -- the train prints "no linked
 issues parsed from PR body" and exits green.
 
 Nothing bounds the input here any more, and that is deliberate. The cap was
-the defect: `grep` streams, and the quantity worth bounding was never the body
-but the loop over what came out of it, which is bounded by how many distinct
-issues a human wrote in one description. Re-adding an input cap would
-re-introduce exactly this bug at a larger offset. A surprising count warns on
-stderr rather than truncating, so the train never again drops work quietly.
+the defect, and the quantity worth bounding was never the body but the loop
+over what came out of it, which is bounded by how many distinct issues a human
+wrote in one description. A 264,036-character body renders and links all three
+of its issues, checked rather than assumed:
 
-## The decision (#1549): this step emulates GitHub
+    python3 - <<'PY'
+    import json
+    body = "\n".join(["prose line, and more of it"] * 4000
+                     + ["Closes #11.", "Fixes #22.", "Resolves #33."])
+    json.dump({"mode": "gfm", "context": "robotrocketscience/aelfrice",
+               "text": body}, open("big.json", "w"))
+    PY
+    gh api --method POST /markdown --input big.json | grep -o 'issues/[0-9]*'
+
+## The decision (#1549): ask GitHub rather than emulate it
 
 The step stands in for a merge-commit close that the fast-forward model cannot
-produce, so it reads the body the way GitHub reads it rather than as a narrow
-trailer format of its own. Concretely, it now:
+produce, so it must read the body the way GitHub reads it. An earlier revision
+tried to *emulate* that reading: it classified each line of the body as prose,
+fence, indent, quote or comment with a line-state scanner, and only fired a
+keyword found in prose. Five review rounds each fixed one reading and found
+another block type -- the last of them a wrong close on this repository's own
+pull-request template, where `## Linked issues` followed by an indented
+`Fixed #7` linked #7 although GitHub renders it inside `<pre><code>` and closes
+nothing. The surface being emulated was CommonMark's whole block grammar.
 
-* Matches all nine keywords GitHub acts on -- `close`, `closes`, `closed`,
-  `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` -- case
-  insensitively, each followed by an issue reference GitHub recognises,
-  `#N` or `GH-N`, with either whitespace or a colon between the two. The
-  keyword list and the colon are GitHub's, published under
-  "Linking a pull request to an issue", which says: "The keywords can be
-  followed by colons or in uppercase. For example: `Closes: #10`,
-  `CLOSES #10`, or `CLOSES: #10`."
-  https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
-* Ignores a keyword a Markdown reader would not render as prose: inside a
-  fenced code block (``` or ~~~, three characters or more, an info string
-  allowed), inside an indented code block (four spaces or a tab), inside an
-  inline code span, inside a block quote, or inside an HTML comment. GitHub
-  does not publish these exclusions; they follow from the body being Markdown,
-  and each is a wrong close this parser used to make -- a PR that documents
-  the syntax, one that quotes an earlier comment containing `Fixes #N`, one
-  that leaves a commented-out template line.
-* Reports every rejection on stderr instead of passing over it, so a body
-  whose keyword was refused never prints what a body with no keyword prints
-  (#1549). stdout stays bare numbers, because the workflow parses it.
+So this module does not parse Markdown. It renders the body through GitHub's
+own renderer and reads which references GitHub itself anchored:
+
+    gh api --method POST /markdown --input -
+    {"mode": "gfm", "context": "OWNER/NAME", "text": "<the body>"}
+
+Text inside a fenced code block, an indented code block, an inline code span or
+an HTML comment never produces an issue-link anchor, so every
+block-classification question disappears at once rather than one block type per
+review round. The `context` is what makes `#N` resolve, and it is also this
+module's only source of repository identity; see "Which repository" below.
+
+### Which reference closes, and which merely appears
+
+GitHub anchors every reference, closing or not, so the rendered document alone
+does not say which ones close. This decides that by adjacency in the rendered
+text, which is how GitHub's own close processor reads a body: walk the rendered
+HTML, and for each issue-link anchor look at the text immediately before it in
+the same block. If that text ends in one of the nine keywords -- `close`,
+`closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`,
+in any case -- optionally followed by a colon and any whitespace, the anchor is
+a close directive. Otherwise it is a mention and is ignored.
+
+Adjacency is per *block*: a paragraph, a heading, a table cell, a list item.
+Text before a block boundary cannot arm an anchor after it, and neither can
+text inside an inline code span, because a keyword written as code is not a
+keyword. An anchor ends the run too, so `Closes #1 #2` links #1 alone, which is
+GitHub's rule of one keyword per issue.
+
+The keyword list and the colon are GitHub's, published under "Linking a pull
+request to an issue", which says: "The keywords can be followed by colons or in
+uppercase. For example: `Closes: #10`, `CLOSES #10`, or `CLOSES: #10`."
+https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
 
 ### What "followed by a colon" means here
 
@@ -69,15 +98,15 @@ GitHub publishes the colon but not its spacing, so this pins the three forms
 its three examples leave open. The colon is a suffix of the keyword rather
 than a token standing on its own:
 
-* `Closes:#10` links. The colon is itself the delimiter, so nothing has to
-  follow it -- which is why `Closes#10`, carrying no delimiter at all, still
-  does not link.
+* `Closes:#10` links. The colon is itself the delimiter.
 * `Closes : #10` does not link. The colon has to touch the keyword.
 * `Closes::#10` does not link. One colon, not a run of them.
 
-Those two refusals are silent, as every non-match is, and that is the accepted
-cost of matching what GitHub publishes rather than a superset of it: a form
-GitHub would not close is a form this train must not close either.
+All three render an anchor -- GitHub's renderer does not decide this, its close
+processor does, and that is not published -- so the refusals are this module's
+ruling and not a measurement. They are refusals rather than links because a
+wrong close is worse in kind than a missed one: a missed close leaves an open
+issue a human notices, a wrong one closes an issue nobody asked to close.
 
 ### The colon admits a prose false positive, knowingly
 
@@ -89,10 +118,65 @@ links #1329, which its author did not mean as a close directive.
 It is accepted, not worked around. GitHub closes #1329 from that same body on
 an ordinary merge, and this step exists to reproduce the close the
 fast-forward push suppressed; a train that quietly disagreed with the platform
-here would be a second surprise rather than a repair. This does not contradict
-the asymmetry below. "Refuse rather than close" is the tie-break for the cases
-GitHub leaves undefined -- an unterminated fence, a lazy quote continuation.
-Where GitHub's behaviour is defined and published, matching it wins.
+here would be a second surprise rather than a repair.
+
+### Which repository
+
+`--repo OWNER/NAME` (or `GITHUB_REPOSITORY`) is required, and missing it is an
+error rather than a default. It is sent as the render `context`, and every
+anchor GitHub returns carries a `data-url` naming the repository it resolved
+to, so this module can compare the two. That is new: the emulating revision
+held no repository identity and therefore had to refuse `owner/repo#N` and full
+issue URLs indiscriminately, its own spellings included. Now:
+
+* An anchor resolving to this repository is closed, however it was spelled --
+  `#N`, `GH-N`, `OWNER/NAME#N`, or a full
+  `https://github.com/OWNER/NAME/issues/N`. GitHub renders all four identically
+  and closes all four, so this does too.
+* An anchor resolving anywhere else is refused out loud; see divergence 2.
+
+### Failure policy: loud, and closing nothing
+
+The renderer is a network call, so it can be unreachable, answer non-200, or
+answer something this module cannot read. All three raise `RendererUnavailable`
+and `main` returns 2 with an `error:` line on stderr and **nothing on stdout**.
+Two alternatives were rejected:
+
+* Falling back to a local parse is the emulation this change deletes, and it
+  would make its wrong closes precisely when the renderer that would have
+  caught them is unavailable -- the worst possible moment.
+* Treating an unreachable renderer as "no links" is the silent no-op #1549
+  exists to kill: the step would print what a body with no keyword prints.
+
+Closing nothing is recoverable by a human reading the step log; a wrong close
+is not. There is no retry: this step runs after the merge has landed, so a
+transient failure costs one hand-run of `gh issue close`, and a retry loop
+would add a timing dependency to a step whose whole job is to be legible. The
+workflow turns exit 2 into a `::error::` annotation rather than swallowing it.
+
+An empty or whitespace-only body is answered without calling the renderer at
+all: it has no anchors by construction, and that keeps the commonest no-op
+cheap.
+
+### Nothing is silently unmatched
+
+AC5 forbids exactly one outcome -- a keyword the tool neither acts on nor
+reports. Two of the three refusal reasons come from the rendered document, but
+the third cannot: when GitHub declines to render a reference at all, there is
+no anchor to attach a reason to. `Fixes octo-org/octo-repo#100` is the standard
+case, because GitHub only autolinks `owner/repo#N` for a repository it can
+resolve; so is every keyword written inside a code fence.
+
+So the body is also scanned at source level by `SOURCE_RE`, purely for
+diagnostics. It never decides a close -- it cannot, being a flat regex with no
+idea of blocks -- and any source candidate whose issue number was neither
+closed nor already refused prints one `NOT_LINKED` warning. That keeps the
+property without re-introducing a single line of block classification.
+
+The source scan is not a superset of what closes, and does not claim to be:
+`Closes *#7*` renders an anchor armed by an adjacent `Closes` while the source
+reads `Closes *#`, which `SOURCE_RE` does not match. A source candidate missed
+there costs a warning, never a close.
 
 ### Every documented reference form is acted on or refused out loud
 
@@ -100,93 +184,60 @@ The keyword page writes the syntax as a keyword plus an ISSUE-NUMBER, and the
 page it links for what a reference to an issue may look like -- "Autolinked
 references and URLs" --
 https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls#issues-and-pull-requests
--- gives five rows for four distinct forms; its
-`Username/Repository#N` and `Organization_name/Repository#N` rows are one form
-written twice. All four are enumerated here, because a form this parser
-neither links nor refuses aloud is the silent no-op #1549 exists to kill:
+-- gives five rows for four distinct forms; its `Username/Repository#N` and
+`Organization_name/Repository#N` rows are one form written twice:
 
-* `#N` (`Closes #10`) links. The keyword page's own first row.
-* `GH-N` (`Closes GH-10`) links, in any case. `GH-`, `gh-`, `Gh-` and `gH-`
-  all render as the same issue reference in GitHub's renderer, checked rather
-  than assumed with `gh api --method POST /markdown -f mode=gfm -f
-  context=OWNER/REPO -f text='GH-10 and gh-10 and Gh-10 and gH-10 and #10'`,
-  whose output links each casing, and the `#10` beside them, to the same
-  issue. This repository's own advisory `pr-metadata.yml` job matches `GH-`
-  under `grep -iE` too, and greets such a body with "Traceability OK".
-* `OWNER/REPOSITORY#N` (`Fixes octo-org/octo-repo#100`) is refused out loud;
-  see divergence 2. So is the same-repository spelling of it, which this
-  parser cannot tell apart from any other.
-* A full issue or pull-request URL
-  (`Closes https://github.com/OWNER/REPOSITORY/issues/26`) is refused out
-  loud, for the same reason and under its own wording. It names a repository,
-  and this parser resolves numbers in one repository only.
-* Nothing else is a reference. `Closes issue #10`, `Closes 10` and a bare
-  `#10` are not forms GitHub acts on, so not matching them is fidelity.
-
-GitHub publishes the reference syntax but not the processor that closes on it,
-so acting on `GH-N` is a ruling under "emulate GitHub" taken on the reference
-parser's measured behaviour, not a measurement of the close itself. It is the
-one place this module widens rather than refuses on an edge GitHub leaves
-undocumented, and the alternative loses either way: refusing here would have
-the train contradict `pr-metadata.yml`, which has already told the author the
-link is fine.
-
-### An unclosed fence or comment runs to the end of the body
-
-CommonMark closes an unterminated fenced block and an unterminated HTML
-comment at the end of the containing document, and GitHub renders both that
-way, so a lone ``` opener makes everything after it inert here too. The
-alternative -- treating an unclosed fence as literal text -- would let a stray
-backtick line resurrect the wrong close this change removes, and the two
-errors are not symmetric: refusing a close leaves an open issue a human
-notices, while making one closes an issue nobody asked to close.
+* `#N` (`Closes #10`) links.
+* `GH-N` (`Closes GH-10`) links, in any case. GitHub's renderer anchors `GH-`,
+  `gh-`, `Gh-` and `gH-` to the same issue as `#10`, so nothing here has to
+  know the form at all -- it arrives as an anchor like any other.
+* `OWNER/REPOSITORY#N` links when it names this repository and is refused out
+  loud when it names another. When GitHub cannot resolve the repository it
+  renders no anchor, and the source scan reports it as `NOT_LINKED`.
+* A full issue or pull-request URL behaves identically, for the same reason:
+  GitHub renders it as an anchor to the issue it names.
+* Nothing else is a reference. `Closes issue #10`, `Closes 10` and a bare `#10`
+  are not forms GitHub acts on, so not matching them is fidelity.
 
 ### Divergences that REMAIN, deliberately
 
 1. **Commit messages are not read.** GitHub also closes from the commit
    messages of a merged push; this reads the pull-request body only. Out of
    scope on #1549 -- it changes the surface far more than the keyword set does.
-2. **Cross-repository and URL links are not followed.** GitHub closes
-   `Closes owner/repo#12` in that other repository, and reads a full issue URL
-   as a reference to that issue. This train closes issues in its own
-   repository only, and cannot tell its own name from another's, so both are
-   refused -- but refused out loud, on stderr, instead of falling through the
-   regex unremarked.
+2. **Cross-repository links are not followed.** GitHub closes
+   `Closes owner/repo#12` in that other repository. This train closes issues in
+   its own repository only, so an anchor whose `data-url` names another
+   repository is refused -- out loud, on stderr, rather than passed over.
 3. **The target branch is not checked.** GitHub auto-closes only for a pull
    request targeting the default branch. The train only ever fast-forwards
    `main`, so the condition holds by construction, but nothing here asserts
    it; a train taught to push elsewhere would close issues GitHub would not.
-4. **The block scan is line-based, not a CommonMark parse.** The known gaps: a
-   lazy continuation line of a block quote (a line with no `>` that a reader
-   still folds into the quote above it) counts as prose; a fence or an indent
-   nested in a list item is measured against the left margin rather than
-   against the list marker; a keyword split across a line boundary
-   (`Resolves\n#7`) takes the context of the line its keyword starts on; an
-   inline code span must open and close on one line; and the text after a
-   `-->` on the line that closes a comment is ordinary text that cannot itself
-   open a *block*, though it is scanned for inline spans and comments like any
-   other live text.
-
-### Code spans and comments are ranked by which opens first
-
-Both are inline constructs, and each one's opening marker is ordinary text
-inside the other: `` `a <!-- b` `` is a code span containing the characters
-`<!--`, and `<!-- a `b` -->` is a comment containing two backticks. So one
-left-to-right pass takes whichever opens first and consumes it whole. Scanning
-one kind before the other, on any part of a line, lets the loser override the
-winner and produces a wrong close in one direction and a wrong refusal in the
-other.
+4. **A block quote is refused, and GitHub probably closes it.** An anchor
+   inside `<blockquote>` renders exactly like one in a paragraph, so adjacency
+   alone would close it. It is refused instead, out loud, because the body that
+   quotes an earlier review comment saying `Fixes #N` is a real wrong close and
+   this is the one place the asymmetry above outranks fidelity. GitHub does not
+   publish whether its close processor skips quoted text, so this is a ruling,
+   not a measurement -- and it is an exact test on the rendered tree, not a
+   grammar to emulate: dropping the `in_quote` branch from `close_directives`
+   reverses it in one line.
+5. **The colon spacings above** are rulings for the same reason: GitHub renders
+   an anchor for all three and publishes no processor.
 """
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 
-# GitHub's nine closing keywords. `\b` before the keyword so `precloses #4`
-# does not match; see `_SEPARATOR` for what may follow one.
+# GitHub's nine closing keywords. Both patterns below are built from this
+# tuple, so it is the single place the set is written.
 KEYWORDS = (
     "close",
     "closes",
@@ -199,56 +250,43 @@ KEYWORDS = (
     "resolved",
 )
 
-# An owner or repository name as GitHub allows it: alphanumerics, `.`, `_` and
-# `-`, neither leading nor trailing with a separator.
-_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
-
-# What may stand between a keyword and its `#N`: a run of whitespace, a
-# newline included, or a colon bound directly to the keyword. The colon is
-# GitHub's, published on the page cited in the module docstring; because it is
-# itself a delimiter it does not need whitespace of its own. See that
-# docstring for the three spacings GitHub's examples leave open.
-_SEPARATOR = r"(?::\s*|\s+)"
-
-# A full issue or pull-request URL, which GitHub also accepts as a reference
-# to an issue. Matched so that it can be refused by name rather than missed.
-_ISSUE_URL = (
-    r"https?://github\.com/" + _NAME + r"/" + _NAME + r"/(?:issues|pull)/"
-)
-
-# Every candidate the parser considers, whether or not it acts on it. The
-# optional `repo` group and the `url` group are what make a link this train
-# will not follow visible: without them the link simply fails to match and
-# nothing is left to report.
-#
-# `GH-` carries no group because it needs none -- it is this repository's own
-# issue either way, so it lands in the same place `#N` does. It matches every
-# casing, which is GitHub's behaviour; see the docstring for the probe.
-#
-# The longest-first sort of the alternation is legibility, not correctness.
+# The longest-first sort of both alternations is legibility, not correctness.
 # `re` backtracks, so `close` matching first in `closes #7` fails at the
 # separator and the engine retries `closes`; sorting the nine alphabetically,
 # or shortest-first, matches the same text at the same offsets. Nothing may
 # depend on the order.
-LINK_RE = re.compile(
-    r"\b(?P<keyword>" + "|".join(sorted(KEYWORDS, key=len, reverse=True)) + r")"
-    + _SEPARATOR
-    + r"(?:(?P<url>" + _ISSUE_URL + r")"
-    + r"|(?P<repo>" + _NAME + r"/" + _NAME + r")?#"
-    + r"|GH-)"
-    + r"(?P<number>\d+)",
+_ALTERNATION = "|".join(sorted(KEYWORDS, key=len, reverse=True))
+
+# What decides a close: the text immediately before an anchor, in the same
+# block, ending in a keyword plus an optional colon bound to it and any
+# whitespace. `(?:^|\W)` is the word boundary at the front, so `precloses #4`
+# does not fire; `:?\s*$` is why `Closes : #4` and `Closes::#4` do not.
+ADJACENT_RE = re.compile(
+    r"(?:^|\W)(?P<keyword>" + _ALTERNATION + r"):?\s*$",
+    re.IGNORECASE,
+)
+
+# An owner or repository name as GitHub allows it: alphanumerics, `.`, `_` and
+# `-`, neither leading nor trailing with a separator.
+_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+
+# The source-level scan. DIAGNOSTIC ONLY -- it never decides a close, it only
+# names a candidate GitHub declined to render so that nothing is silent. See
+# "Nothing is silently unmatched" in the module docstring.
+SOURCE_RE = re.compile(
+    r"\b(?P<keyword>" + _ALTERNATION + r")(?::\s*|\s+)"
+    r"(?:https?://github\.com/" + _NAME + r"/" + _NAME + r"/(?:issues|pull)/"
+    r"|(?:" + _NAME + r"/" + _NAME + r")?#"
+    r"|GH-)"
+    r"(?P<number>\d+)",
     re.IGNORECASE,
 )
 
 # Why a refused candidate was refused. Each string lands verbatim in the
 # merge-train step log and reads as the end of "ignored ... because it is".
-IN_FENCE = "inside a fenced code block"
-IN_INDENT = "inside an indented code block"
-IN_SPAN = "inside an inline code span"
-IN_QUOTE = "inside a block quote"
-IN_COMMENT = "inside an HTML comment"
 CROSS_REPO = "a link to another repository, which this train does not close"
-ISSUE_URL = "a full issue URL, which this train does not follow"
+IN_QUOTE = "inside a block quote"
+NOT_LINKED = "not linked by GitHub's renderer, so a merge commit would not close it"
 
 # Above this many distinct issues in one body, say so on stderr. Not a cap:
 # every issue found is still printed. A body naming this many is more likely
@@ -256,233 +294,281 @@ ISSUE_URL = "a full issue URL, which this train does not follow"
 # the only place a human would see that.
 NOISY_COUNT = 20
 
-_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-_QUOTE_RE = re.compile(r"^ {0,3}>")
-_INDENT_RE = re.compile(r"^(?: {4}|\t)")
-_TICKS_RE = re.compile(r"`+")
+# The renderer is one HTTPS round trip on a step that already holds the
+# merge-train's only concurrency slot, so it is bounded. A timeout raises
+# `RendererUnavailable` like any other failure and closes nothing.
+RENDER_TIMEOUT_SECONDS = 30
 
-# CommonMark's start condition for an HTML block opened by a comment: `<!--`
-# at the head of the line, under four spaces of indentation. Such a line is a
-# block of its own, so unlike a paragraph it does not lazily swallow an
-# indented line written under it.
-_HTML_BLOCK_RE = re.compile(r"^ {0,3}<!--")
+# The anchor GitHub emits for an issue reference, and the shape of the URL it
+# hangs on it. `data-url` is always the `/issues/N` spelling even when `href`
+# points at `/pull/N`, so it is read first.
+_ANCHOR_CLASS = "issue-link"
+_ISSUE_HREF_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>" + _NAME + r")/(?P<repo>" + _NAME + r")"
+    r"/(?:issues|pull)/(?P<number>\d+)(?:[/?#].*)?$"
+)
+
+_QUOTE_TAG = "blockquote"
+
+# Tags that do not break a run of text. Everything else does, which is the
+# conservative direction: an unknown wrapper GitHub adds later separates text
+# from an anchor rather than silently arming it. `code` is deliberately NOT
+# here -- a keyword written as code is not a keyword.
+_INLINE_TAGS = frozenset(
+    {
+        "a", "abbr", "b", "br", "cite", "del", "em", "font", "g-emoji", "i",
+        "img", "ins", "kbd", "mark", "q", "s", "small", "span", "strong",
+        "sub", "sup", "time", "tt", "u",
+    }
+)
+
+# How much of the preceding text `ADJACENT_RE` can need. The longest keyword
+# is nine characters; the rest is slack for the colon, whitespace and the
+# non-word character in front.
+_TAIL = 64
+
+
+class RendererUnavailable(RuntimeError):
+    """GitHub's renderer could not be reached, or answered unusably."""
 
 
 @dataclass(frozen=True)
 class Rejection:
-    """A closing keyword the parser found and chose not to act on."""
+    """A closing keyword the tool found and chose not to act on."""
 
     text: str
-    line: int
     reason: str
+    line: int | None = None
 
     def message(self) -> str:
-        return f'warning: ignored "{self.text}" on line {self.line}: {self.reason}.'
+        where = f" on line {self.line}" if self.line is not None else ""
+        return f'warning: ignored "{self.text}"{where}: {self.reason}.'
 
 
-def _first_code_span(text: str, start_at: int) -> tuple[int, int] | None:
-    """The leftmost inline code span opening at or after `start_at`, if any.
+def render_markdown(body: str, repo: str, *, run: object = None) -> str:
+    """The body as GitHub renders it, in GFM mode, in `repo`'s context.
 
-    A run of N backticks opens a span that only a run of exactly N backticks
-    closes. An unmatched run is literal text, not an opener, so the search
-    steps over it and keeps looking -- otherwise one stray backtick would
-    silence the rest of the line. A span that would cross a line boundary is
-    not recognised; see the module docstring's divergence 4.
+    This is the seam. `run` exists so a test can pin the call without a
+    network, and the tests also drive the real `subprocess.run` with a `gh`
+    of their own on `PATH`, because a suite that only ever sees an injected
+    callable proves nothing about the command that ships.
+
+    The default is resolved here rather than written as `run=subprocess.run`
+    in the signature: a default argument is evaluated once, at import, so the
+    signature form would bind the real runner past any later replacement of
+    it and quietly make an injected one a no-op.
+
+    The payload goes on stdin rather than in argv: a pull-request body has no
+    length limit worth relying on, and a quarter-megabyte one renders fine.
     """
-    pos = start_at
-    while True:
-        opener = _TICKS_RE.search(text, pos)
-        if opener is None:
-            return None
-        width = opener.end() - opener.start()
-        search_at = opener.end()
-        while True:
-            candidate = _TICKS_RE.search(text, search_at)
-            if candidate is None:
-                break
-            if candidate.end() - candidate.start() == width:
-                return opener.start(), candidate.end()
-            search_at = candidate.end()
-        pos = opener.end()
+    run = subprocess.run if run is None else run
+    payload = json.dumps({"mode": "gfm", "context": repo, "text": body})
+    argv = ["gh", "api", "--method", "POST", "/markdown", "--input", "-"]
+    try:
+        proc = run(  # type: ignore[operator]
+            argv,
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=RENDER_TIMEOUT_SECONDS,
+        )
+    except OSError as exc:
+        raise RendererUnavailable(f"cannot run {argv[0]}: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RendererUnavailable(
+            f"{argv[0]} did not answer within {RENDER_TIMEOUT_SECONDS}s"
+        ) from exc
+
+    if proc.returncode != 0:
+        detail = " ".join((proc.stderr or "").split())[:400] or "no output"
+        raise RendererUnavailable(
+            f"{argv[0]} exited {proc.returncode} rendering the body: {detail}"
+        )
+    if not proc.stdout.strip():
+        raise RendererUnavailable(
+            f"{argv[0]} rendered a {len(body)}-character body as nothing"
+        )
+    return proc.stdout
 
 
-def _scan_inline(
-    text: str, start_at: int, line_start: int, spans: list[tuple[int, int, str]]
-) -> bool:
-    """Mark the code spans and comments in `text[start_at:]`; is one left open?
+class _AnchorScanner(HTMLParser):
+    """Collects `(keyword, anchor_text, url, in_quote)` for every issue link.
 
-    Code spans and HTML comments are both inline constructs, so whichever
-    opens first wins and the other's marker is ordinary characters inside it:
-    a `<!--` written between backticks is code, and a backtick written inside
-    a comment is comment. Scanning one kind first and the other second instead
-    lets the loser override the winner, in whichever direction the order
-    happens to run.
-
-    Returns True when a comment is still open at the end of the line, which
-    makes every following line inert until a `-->` closes it.
+    One left-to-right pass. `_tail` holds the text since the last block
+    boundary, trimmed to the few characters `ADJACENT_RE` can need, so a
+    paragraph of any length costs the same.
     """
-    pos = start_at
-    while True:
-        comment_at = text.find("<!--", pos)
-        span = _first_code_span(text, pos)
-        if span is not None and (comment_at < 0 or span[0] < comment_at):
-            spans.append((line_start + span[0], line_start + span[1], IN_SPAN))
-            pos = span[1]
-            continue
-        if comment_at < 0:
-            return False
-        closed = text.find("-->", comment_at + 4)
-        if closed < 0:
-            spans.append((line_start + comment_at, line_start + len(text), IN_COMMENT))
-            return True
-        spans.append((line_start + comment_at, line_start + closed + 3, IN_COMMENT))
-        pos = closed + 3
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[tuple[str | None, str, str, bool]] = []
+        self._tail = ""
+        self._quote_depth = 0
+        self._open: tuple[str, str, bool] | None = None
+        self._anchor_text = ""
+
+    # -- text ------------------------------------------------------------
+    def handle_data(self, data: str) -> None:
+        if self._open is not None:
+            self._anchor_text += data
+        else:
+            self._tail = (self._tail + data)[-_TAIL:]
+
+    # -- tags ------------------------------------------------------------
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == _QUOTE_TAG:
+            self._quote_depth += 1
+        if tag not in _INLINE_TAGS:
+            self._tail = ""
+            return
+        if tag != "a":
+            # Every other inline tag, `<br>` included, leaves the run alone.
+            # A `<br>` adds no whitespace of its own because none is needed:
+            # `ADJACENT_RE` allows zero, so a keyword that ends flush against
+            # an anchor still arms it, which is the same rule that makes
+            # `Closes:#10` a link.
+            return
+        attributes = {k: (v or "") for k, v in attrs}
+        if _ANCHOR_CLASS not in attributes.get("class", "").split():
+            # An ordinary link. It ends the run either way: a keyword before
+            # `[see](url)` must not arm whatever anchor comes after it.
+            self._tail = ""
+            return
+        url = attributes.get("data-url") or attributes.get("href", "")
+        keyword = _keyword_before(self._tail)
+        self._open = (keyword or "", url, self._quote_depth > 0)
+        self._anchor_text = ""
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag != "br":
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == _QUOTE_TAG and self._quote_depth:
+            self._quote_depth -= 1
+        if tag == "a" and self._open is not None:
+            keyword, url, in_quote = self._open
+            self.anchors.append(
+                (keyword or None, self._anchor_text, url, in_quote)
+            )
+            self._open = None
+        # An anchor ends the run whether or not it was an issue link, so
+        # `Closes #1 #2` arms only #1.
+        if tag not in _INLINE_TAGS or tag == "a":
+            self._tail = ""
 
 
-def inert_spans(body: str) -> list[tuple[int, int, str]]:
-    """Every `(start, end, reason)` range of the body a keyword must not fire in.
+def _keyword_before(tail: str) -> str | None:
+    m = ADJACENT_RE.search(tail)
+    return m.group("keyword") if m is not None else None
 
-    One pass over the lines, carrying the four states a line inherits from the
-    one above it: an open code fence, an open HTML comment, an open indented
-    code block, and whether the line above was a paragraph line. Offsets are
-    into `body`, so a match is classified by where it starts.
 
-    `prev_paragraph` is the one that is easy to get wrong, and it is not the
-    same as "the line above was not blank". An indented code block may not
-    interrupt a paragraph, but every other predecessor lets one open: a fence,
-    an HTML block, a preceding indented line, the start of the body and a
-    blank line all do. Only a paragraph line blocks it, and a block quote
-    counts as one because GitHub folds the indented line under it into the
-    quote as a lazy continuation. See the module docstring's divergence 4.
+def close_directives(html: str, repo: str) -> tuple[list[int], list[Rejection]]:
+    """Split the rendered document's close directives into acted-on and refused.
+
+    A directive is an issue-link anchor with one of the nine keywords
+    immediately before it in the same block. Everything else in the document,
+    anchor or not, is a mention.
     """
-    spans: list[tuple[int, int, str]] = []
-    fence: tuple[str, int] | None = None
-    in_comment = False
-    in_indent = False
-    prev_paragraph = False
-    pos = 0
+    scanner = _AnchorScanner()
+    try:
+        scanner.feed(html)
+        scanner.close()
+    except Exception as exc:  # pragma: no cover - html.parser is lenient
+        raise RendererUnavailable(f"cannot read the rendered body: {exc}") from exc
 
-    for raw in body.splitlines(keepends=True):
-        start = pos
-        pos += len(raw)
-        text = raw.rstrip("\n").rstrip("\r")
-        end = start + len(text)
-
-        if in_comment:
-            closed = text.find("-->")
-            if closed < 0:
-                spans.append((start, end, IN_COMMENT))
-            else:
-                spans.append((start, start + closed + 3, IN_COMMENT))
-                # The rest of the line is live text, so it takes the same
-                # inline path a line that never was in a comment takes.
-                in_comment = _scan_inline(text, closed + 3, start, spans)
-            # The whole line belongs to the HTML block, the text after `-->`
-            # included, so it is not a paragraph line.
-            prev_paragraph = False
-            continue
-
-        if fence is not None:
-            spans.append((start, end, IN_FENCE))
-            closer = _FENCE_RE.match(text)
-            if (
-                closer is not None
-                and closer.group(1)[0] == fence[0]
-                and len(closer.group(1)) >= fence[1]
-                and not closer.group(2).strip()
-            ):
-                fence = None
-            prev_paragraph = False
-            continue
-
-        if not text.strip():
-            # A blank line ends a paragraph but not an indented code block.
-            prev_paragraph = False
-            continue
-
-        opener = _FENCE_RE.match(text)
-        if opener is not None:
-            fence = (opener.group(1)[0], len(opener.group(1)))
-            spans.append((start, end, IN_FENCE))
-            in_indent = False
-            prev_paragraph = False
-            continue
-
-        indented = _INDENT_RE.match(text) is not None
-        if indented and (in_indent or not prev_paragraph):
-            # An indented block cannot interrupt a paragraph, so it needs a
-            # non-paragraph line above it -- or to be running already.
-            in_indent = True
-            spans.append((start, end, IN_INDENT))
-            prev_paragraph = False
-            continue
-        in_indent = False
-
-        if _QUOTE_RE.match(text) is not None:
-            spans.append((start, end, IN_QUOTE))
-            # A lazy continuation folds the next line into this quote's
-            # paragraph, so an indent below it is prose, not code.
-            prev_paragraph = True
-            continue
-
-        in_comment = _scan_inline(text, 0, start, spans)
-        # A line that opens with `<!--` is an HTML block rather than a
-        # paragraph, whatever follows the `-->` on it.
-        prev_paragraph = _HTML_BLOCK_RE.match(text) is None
-
-    return spans
-
-
-def _reason_at(offset: int, spans: list[tuple[int, int, str]]) -> str | None:
-    for start, end, reason in spans:
-        if start <= offset < end:
-            return reason
-    return None
-
-
-def parse(body: str) -> tuple[list[int], list[Rejection]]:
-    """Split the body's closing keywords into the acted-on and the refused.
-
-    Returns the issue numbers to close -- sorted, deduplicated -- and one
-    `Rejection` per candidate the parser declined, in the order they appear.
-    """
-    spans = inert_spans(body)
     found: set[int] = set()
     refused: list[Rejection] = []
-
-    for m in LINK_RE.finditer(body):
-        reason = _reason_at(m.start(), spans)
-        if reason is None and m.group("url") is not None:
-            reason = ISSUE_URL
-        if reason is None and m.group("repo") is not None:
-            reason = CROSS_REPO
-        if reason is None:
-            found.add(int(m.group("number")))
+    for keyword, text, url, in_quote in scanner.anchors:
+        if keyword is None:
             continue
-        refused.append(
-            Rejection(
-                text=" ".join(m.group(0).split()),
-                line=body.count("\n", 0, m.start()) + 1,
-                reason=reason,
+        target = _ISSUE_HREF_RE.match(url)
+        if target is None:
+            raise RendererUnavailable(
+                f"an issue-link anchor carried an unreadable URL: {url!r}"
             )
-        )
-
+        quoted = f"{keyword} {text}".strip()
+        if in_quote:
+            refused.append(Rejection(text=quoted, reason=IN_QUOTE))
+            continue
+        if f"{target['owner']}/{target['repo']}".lower() != repo.lower():
+            refused.append(Rejection(text=quoted, reason=CROSS_REPO))
+            continue
+        found.add(int(target["number"]))
     return sorted(found), refused
 
 
-def linked_issues(body: str) -> list[int]:
-    """Every issue number this train will close, sorted and deduplicated.
+def unrendered_candidates(
+    body: str, accounted: set[int]
+) -> list[Rejection]:
+    """Source-level keywords whose issue number nothing in the render explains.
 
-    A link that names a repository -- `Closes owner/repo#12`, or a full issue
-    URL -- is not included, because the train closes issues in its own
-    repository only. It is not dropped in silence either: `parse` returns it as
-    a rejection and `main` prints each one on stderr.
+    Diagnostics only; see "Nothing is silently unmatched" in the module
+    docstring. A number already closed or already refused is accounted for,
+    so a body that both documents `Closes #7` in a fence and closes #7 in
+    prose warns about neither.
     """
-    return parse(body)[0]
+    seen: set[int] = set()
+    out: list[Rejection] = []
+    for m in SOURCE_RE.finditer(body):
+        number = int(m.group("number"))
+        if number in accounted or number in seen:
+            continue
+        seen.add(number)
+        out.append(
+            Rejection(
+                text=" ".join(m.group(0).split()),
+                reason=NOT_LINKED,
+                line=body.count("\n", 0, m.start()) + 1,
+            )
+        )
+    return out
+
+
+def parse(
+    body: str, repo: str, *, render: object = None
+) -> tuple[list[int], list[Rejection]]:
+    """The issue numbers to close, and every candidate refused, for one body.
+
+    Raises `RendererUnavailable` when the answer cannot be determined; see
+    the module docstring's failure policy. `render` is the injection seam, and
+    its default is resolved here rather than in the signature for the reason
+    `render_markdown` gives about its own.
+    """
+    render = render_markdown if render is None else render
+    if not body.strip():
+        return [], []
+    html = render(body, repo)  # type: ignore[operator]
+    found, refused = close_directives(html, repo)
+    accounted = set(found)
+    for rejection in refused:
+        number = re.search(r"(\d+)\s*$", rejection.text)
+        if number is not None:
+            accounted.add(int(number.group(1)))
+    refused = refused + unrendered_candidates(body, accounted)
+    return found, refused
+
+
+def linked_issues(body: str, repo: str, *, render: object = None) -> list[int]:
+    """Every issue number this train will close, sorted and deduplicated."""
+    return parse(body, repo, render=render)[0]
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY", ""),
+        help=(
+            "OWNER/NAME this body belongs to; defaults to $GITHUB_REPOSITORY. "
+            "Sent to GitHub as the render context and compared against every "
+            "anchor, so it is required rather than guessed"
+        ),
+    )
     ap.add_argument(
         "--body-file",
         type=Path,
@@ -498,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if not args.repo:
+        print(
+            "error: no repository: pass --repo OWNER/NAME or set "
+            "GITHUB_REPOSITORY. Nothing was closed.",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.body_file is not None:
         try:
             body = args.body_file.read_text(encoding="utf-8", errors="replace")
@@ -507,7 +601,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         body = sys.stdin.read()
 
-    found, refused = parse(body)
+    try:
+        found, refused = parse(body, args.repo)
+    except RendererUnavailable as exc:
+        # Loud, and stdout stays empty: the workflow must close nothing
+        # rather than close the wrong thing or report a silent absence.
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "error: could not determine the linked issues; nothing was closed.",
+            file=sys.stderr,
+        )
+        return 2
 
     # Diagnostics go to stderr only: the workflow reads stdout into a shell
     # variable and loops over the words in it.
