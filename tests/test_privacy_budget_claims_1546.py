@@ -9,24 +9,42 @@ an empty query, so only L0 contributes and L0 is never trimmed (#379) -- and
 in the code. Nothing read the page, so the promise and the code could part
 without anything going red.
 
-**What is asserted here is the absence, because that is what this side can
-assert.** "Carries no token budget" is a sentence, not a figure, and the fact
-that makes it true is a signature. Re-adding a budget parameter to either frame
-of the lane, or re-adding the deleted constant, turns these red and the message
-names the page that would become false.
+**Two of the three tests here assert an absence, and the third asserts the
+call, because a signature is not the claim.** `docs/user/CONFIG.md` now tells a
+user that `[retrieval] token_budget` reaches this lane, and the mechanism it
+names is that the caller passes no budget of its own for the resolver's
+explicit tier to take. A signature cannot hold that: restoring
+`token_budget=1500` to the `retrieve()` call inside
+`_retrieve_baseline_with_block` leaves both signatures clean, re-shadows the
+TOML key and makes the page false. So the last test spies the `retrieve`
+callable the lane actually resolves and asserts both halves at once -- that
+`token_budget` is absent from the kwargs, and that the resolver fed exactly
+what the caller passed lands on the value in the file.
 
 **The page itself is deliberately not read here, and that is a gap with a
 number.** A test that reads `docs/user/PRIVACY.md` makes documentation
 load-bearing for the suite, and `tests/test_ci_path_filter.py` forbids that:
 `test_code_filter_covers_every_in_repo_package_the_suite_uses` fails the moment
-a test under `tests/` reads `docs/`, because `docs/**` is not in `ci.yml`'s
-`code` filter. Putting it there fails
+a test under `tests/` reads `docs/` with the path spelled inline, because
+`docs/**` is not in `ci.yml`'s `code` filter.
+
+That guard is spelling-dependent, and the spelling it misses is not the way
+out. Its scanner is two literal regexes, one anchored on `parents[1]` and one
+on `parent.parent`, each requiring a quoted first component immediately after
+the slash. Binding the repo root to a name first and joining the directory
+onto that name -- which is how `test_ci_path_filter.py` writes its own `_REPO`
+-- therefore reads the page with the module green. What that would buy is
+nothing: the same filter decides whether the suite runs at all, so a guard on
+the page hidden from it would be skipped on exactly the docs-only pull request
+that changes the page. That is the #1160 failure mode -- a required check
+reporting success from an `echo`, having run nothing.
+
+So the way out is the filter, and it is an operator call rather than a side
+effect of this branch. Putting `docs/**` in it fails
 `test_docs_only_changes_still_skip_the_suite`, and `e2e.yml`'s `paths` list
-mirrors that filter
-(`test_e2e_paths_cover_the_ci_code_filter`), so widening also puts the pytest
-matrix and e2e's three-leg install matrix on every user-doc pull request --
-reversing #413/#427 and #1420 §1 AC2. That is an operator call, not a side
-effect of this branch.
+mirrors that filter (`test_e2e_paths_cover_the_ci_code_filter`), so widening
+also puts the pytest matrix and e2e's three-leg install matrix on every
+user-doc pull request -- reversing #413/#427 and #1420 §1 AC2.
 
 Until it is made, the page's two published figures are guarded by review rather
 than by CI. The #1469 derived-figure marker is the mechanism that would guard
@@ -40,8 +58,15 @@ hole is #1556; when it closes, the two figures can carry markers and the
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
+from typing import Any
 
+import pytest
+
+import aelfrice.retrieval
 from aelfrice import hook
+from aelfrice.retrieval import ENV_RETRIEVAL_TOKEN_BUDGET, resolve_token_budget
+from aelfrice.store import MemoryStore
 
 
 def test_no_budget_reaches_the_session_start_call_path() -> None:
@@ -79,4 +104,71 @@ def test_the_deleted_constant_has_not_come_back() -> None:
         "because no value of it could change the block it named; if the lane "
         "now has something a budget can trim, docs/user/PRIVACY.md has to say "
         "so."
+    )
+
+
+def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call, not the signature: this is what CONFIG.md's claim rests on.
+
+    `docs/user/CONFIG.md` says `[retrieval] token_budget` now reaches the
+    `SessionStart` hook "because the caller no longer shadows it". The
+    resolver ranks an explicit keyword argument above TOML, so that sentence
+    is true only while the `retrieve()` call inside
+    `_retrieve_baseline_with_block` passes no `token_budget` -- a fact about
+    one call site, which the two signature guards above cannot see. Restoring
+    `token_budget=1500` to that call leaves both signatures clean and makes
+    the page false.
+
+    So the callable the lane resolves is replaced with a recorder and the
+    kwargs it receives are read off the wire. `hook._lazy("retrieve")` prefers
+    a binding in `hook`'s own globals and otherwise imports
+    `aelfrice.retrieval`, which is where the recorder is installed; the arity
+    assert below is the distinguishing arm, so a resolution order that routed
+    around the recorder fails here instead of passing on an empty list.
+
+    The second assert closes the composition. `[retrieval] token_budget = 77`
+    sits on disk with the environment variable cleared, and the resolver is
+    fed exactly what the caller passed. It lands on 77 while nothing is
+    shadowing it, and on 1500 the moment something is.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def recorder(store: Any, query: str, **kwargs: Any) -> list[Any]:
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(aelfrice.retrieval, "retrieve", recorder)
+    monkeypatch.setattr(
+        hook, "_open_store", lambda: MemoryStore(str(tmp_path / "memory.db"))
+    )
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[retrieval]\ntoken_budget = 77\n", encoding="utf-8"
+    )
+    # `resolve_token_budget` walks up from the process's cwd, and the
+    # environment variable outranks every other tier, so both have to be set
+    # before the call for the TOML tier to be the one under test.
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    hook._retrieve_baseline_with_block()
+
+    assert len(calls) == 1, (
+        "the recorder was called "
+        f"{len(calls)} times, so this test measured nothing: "
+        "hook._lazy did not resolve aelfrice.retrieval.retrieve"
+    )
+    assert "token_budget" not in calls[0], (
+        "the SessionStart lane passes "
+        f"token_budget={calls[0]['token_budget']!r} to retrieve(), which "
+        "outranks [retrieval] token_budget in .aelfrice.toml. "
+        "docs/user/CONFIG.md tells users that key reaches this lane because "
+        "the caller passes none; delete the argument or fix the page (#1546)."
+    )
+    resolved = resolve_token_budget(calls[0].get("token_budget"))
+    assert resolved == 77, (
+        f"with [retrieval] token_budget = 77 on disk the lane resolves to "
+        f"{resolved}, so the TOML key does not reach it and "
+        "docs/user/CONFIG.md is false (#1546)."
     )
