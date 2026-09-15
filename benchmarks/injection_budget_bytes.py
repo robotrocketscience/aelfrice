@@ -468,49 +468,105 @@ def _legacy_core_cost(b: Any) -> int:
     return max(1, len(b.content) // 4)
 
 
+def _legacy_wrapper_tokens(b: Any) -> int:
+    """`retrieval._render_wrapper_tokens`'s pre-#1526 body: it did not exist.
+
+    The compressed arm of `retrieve_with_tiers._cost` added nothing for the
+    `<belief>` element before #1526, so the legacy body is a constant zero.
+    """
+    del b
+    return 0
+
+
+# Every cost function #1526 changed, as `(module stem, attribute, legacy body)`.
+# `_legacy_accounting` rebinds each one; the before arm of any lane that reaches
+# one and does not rebind it measures a hybrid of the two accountings.
+#
+# Enumerated as data rather than as five assignments so the set is readable
+# from a test. `tests/test_render_cost_1526.py` scans `src/aelfrice` for the
+# #1526 cost functions and fails when one appears in neither this tuple nor
+# `LEGACY_COST_NOT_REBOUND` — which is the check that was missing when the
+# `first_prompt` lane shipped a before arm mixing pre-#1526 retrieval cost with
+# post-#1526 `<core>` cost.
+LEGACY_COST_REBINDS: tuple[tuple[str, str, Callable[..., int]], ...] = (
+    # The uncompressed pack cost, and the L2.5 sub-pack's.
+    ("retrieval", "_belief_tokens", _legacy_belief_tokens),
+    # What the compressed arm of `retrieve_with_tiers._cost` adds.
+    ("retrieval", "_render_wrapper_tokens", _legacy_wrapper_tokens),
+    # The L0 arm.
+    ("retrieval", "lock_injection_tokens", _legacy_lock_injection_tokens),
+    # The cluster and max-coverage packs' default `cost_fn`.
+    ("clustering", "_belief_tokens", _legacy_belief_tokens),
+    # `<core>`'s packer, reached by every lane that composes a session-start
+    # sub-block: `_build_session_start_subblock` calls `_pack_core_candidates`
+    # with no `cost_fn`, so the default — this name — is what it packs with.
+    ("hook", "_core_belief_cost", _legacy_core_cost),
+)
+
+# The #1526 cost functions the before arm deliberately leaves alone, each with
+# the reason. Kept beside the rebind table so the scan above has somewhere to
+# put a name that is genuinely not a rebind, rather than a tolerance.
+LEGACY_COST_NOT_REBOUND: tuple[tuple[str, str, str], ...] = (
+    (
+        "retrieval",
+        "_estimate_tokens",
+        "#1526 did not change it. It is `ceil(len(text) / 4)` on both sides, "
+        "and it is the primitive the legacy bodies here are written in terms "
+        "of, so rebinding it would move both arms together.",
+    ),
+    (
+        "hook_search_tool",
+        "_belief_line_cost",
+        "Not read off a module global. The Grep|Glob and Bash lanes pass it in "
+        "as `belief_cost_fn`, and `_render_search_tool`'s before arm passes "
+        "None in its place, so a rebind here would reach nothing.",
+    ),
+)
+
+
 @contextlib.contextmanager
 def _legacy_accounting() -> Iterator[None]:
     """Rebind every cost function #1526 changed to its pre-#1526 body.
 
-    Four names, enumerated rather than summarised, because a before arm that
-    misses one measures a hybrid: `retrieval._belief_tokens` (the uncompressed
-    pack cost, and the L2.5 sub-pack's), `retrieval._render_wrapper_tokens`
-    (what the compressed arm of `retrieve_with_tiers._cost` adds -- pre-#1526
-    it added nothing), `retrieval.lock_injection_tokens` (the L0 arm), and
-    `clustering._belief_tokens` (the cluster and max-coverage packs' default
-    `cost_fn`).
+    Driven by `LEGACY_COST_REBINDS`, which enumerates the five names rather
+    than summarising them, because a before arm that misses one measures a
+    hybrid. The `first_prompt` lane shipped exactly that defect: it reaches
+    `hook._core_belief_cost` through `_build_session_start_subblock`, that name
+    was not in the set, and every composed before cell mixed pre-#1526
+    retrieval cost with post-#1526 `<core>` cost. Measured at 92 content
+    characters the composed before arm read 15,861 bytes against a true legacy
+    19,999, and the published change read -15.7% against a consistent -33.2%.
 
     The packers read these off the module global rather than closing over
     them, so rebinding reaches them. `_render_wrapper_tokens` exists as a
     module-level name for exactly this reason: compression resolves ON by
     default, so the compressed arm is the production one, and with its
     wrapper addition inlined in the closure there was nothing for a before
-    arm to rebind.
+    arm to rebind. `_pack_core_candidates` resolves its default `cost_fn` to
+    `_core_belief_cost` per call for the same reason.
 
-    The Grep|Glob lanes' fifth change is not here: `_belief_line_cost` is
-    passed in as `belief_cost_fn`, so their before arm passes None instead.
+    `LEGACY_COST_NOT_REBOUND` holds the two #1526 cost functions this
+    deliberately does not touch, with the reason for each.
     """
-    from aelfrice import clustering, retrieval
+    import importlib
 
-    saved = (
-        retrieval._belief_tokens,
-        retrieval._render_wrapper_tokens,
-        retrieval.lock_injection_tokens,
-        clustering._belief_tokens,
-    )
+    modules = [
+        importlib.import_module(f"aelfrice.{stem}")
+        for stem, _attr, _body in LEGACY_COST_REBINDS
+    ]
+    saved = [
+        getattr(mod, attr)
+        for mod, (_stem, attr, _body) in zip(modules, LEGACY_COST_REBINDS)
+    ]
     try:
-        retrieval._belief_tokens = _legacy_belief_tokens
-        retrieval._render_wrapper_tokens = lambda b: 0
-        retrieval.lock_injection_tokens = _legacy_lock_injection_tokens
-        clustering._belief_tokens = _legacy_belief_tokens
+        for mod, (_stem, attr, body) in zip(modules, LEGACY_COST_REBINDS):
+            setattr(mod, attr, body)
         yield
     finally:
-        (
-            retrieval._belief_tokens,
-            retrieval._render_wrapper_tokens,
-            retrieval.lock_injection_tokens,
-            clustering._belief_tokens,
-        ) = saved
+        for mod, (_stem, attr, _body), previous in zip(
+            modules, LEGACY_COST_REBINDS, saved
+        ):
+            setattr(mod, attr, previous)
 
 
 # --- lanes ------------------------------------------------------------------
@@ -536,13 +592,21 @@ def _core_candidates(store: Any) -> list[Any]:
 
 
 def _render_core(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
-    """`<core>` packs directly, with no retrieval, so `sub` is unused here."""
-    del sub
+    """`<core>` packs directly, with no retrieval, so `sub` is unused here.
+
+    `legacy` is unused too, and that is the point: `_pack_core_candidates`
+    resolves its default `cost_fn` to `hook._core_belief_cost` per call, so the
+    `_legacy_accounting` rebind `_measure` is already holding open reaches this
+    packer the same way it reaches every other. Passing the legacy cost in here
+    explicitly is what let the composed `first_prompt` lane — which packs
+    `<core>` through `_build_session_start_subblock` and has no such
+    parameter — render a before arm the rebind never touched.
+    """
+    del sub, legacy
     from aelfrice import hook
 
     candidates = _core_candidates(store)
-    cost_fn = _legacy_core_cost if legacy else None
-    packed = hook._pack_core_candidates(candidates, budget, cost_fn)
+    packed = hook._pack_core_candidates(candidates, budget)
     return Arm(len(packed), sum(len(hook._core_belief_line(b)) + 1 for b in packed))
 
 
@@ -589,6 +653,15 @@ def _render_first_prompt(store: Any, budget: int, sub: int, *, legacy: bool) -> 
     `<locked>` is exempt by #379 and `<core>` is packed by its own separate
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. They are in the byte count
     because the model receives them, which is the whole point of composing.
+
+    `legacy` is unused because it does not need to be used: both halves reach
+    their cost functions through module globals `_legacy_accounting` rebinds —
+    the pack through `retrieval._belief_tokens` and friends, `<core>` through
+    `hook._core_belief_cost`, which `_pack_core_candidates` resolves per call.
+    That fifth name was missing from the rebind set when this lane shipped, and
+    the composed before arm was a hybrid: 15,861 bytes at 92 content characters
+    against a true legacy 19,999, published as -15.7% where the consistent
+    figure is -33.2%.
     """
     del legacy
     from aelfrice import hook, retrieval
