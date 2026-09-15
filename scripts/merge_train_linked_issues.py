@@ -124,7 +124,18 @@ notices, while making one closes an issue nobody asked to close.
    (`Resolves\n#7`) takes the context of the line its keyword starts on; an
    inline code span must open and close on one line; and the text after a
    `-->` on the line that closes a comment is ordinary text that cannot itself
-   open a block.
+   open a *block*, though it is scanned for inline spans and comments like any
+   other live text.
+
+### Code spans and comments are ranked by which opens first
+
+Both are inline constructs, and each one's opening marker is ordinary text
+inside the other: `` `a <!-- b` `` is a code span containing the characters
+`<!--`, and `<!-- a `b` -->` is a comment containing two backticks. So one
+left-to-right pass takes whichever opens first and consumes it whole. Scanning
+one kind before the other, on any part of a line, lets the loser override the
+winner and produces a wrong close in one direction and a wrong refusal in the
+other.
 """
 from __future__ import annotations
 
@@ -202,55 +213,63 @@ class Rejection:
         return f'warning: ignored "{self.text}" on line {self.line}: {self.reason}.'
 
 
-def _scan_comments(
-    text: str, start_at: int, line_start: int, spans: list[tuple[int, int, str]]
-) -> bool:
-    """Mark the HTML comments opening in `text[start_at:]`; report if one is open."""
-    i = start_at
-    while True:
-        opened = text.find("<!--", i)
-        if opened < 0:
-            return False
-        closed = text.find("-->", opened + 4)
-        if closed < 0:
-            spans.append((line_start + opened, line_start + len(text), IN_COMMENT))
-            return True
-        spans.append((line_start + opened, line_start + closed + 3, IN_COMMENT))
-        i = closed + 3
-
-
-def _scan_code_spans(
-    text: str, line_start: int, spans: list[tuple[int, int, str]]
-) -> None:
-    """Mark the inline code spans on one line.
+def _first_code_span(text: str, start_at: int) -> tuple[int, int] | None:
+    """The leftmost inline code span opening at or after `start_at`, if any.
 
     A run of N backticks opens a span that only a run of exactly N backticks
-    closes. An unmatched run is literal text, not an opener, so it marks
-    nothing -- otherwise one stray backtick would silence the rest of the line.
-    A span that would cross a line boundary is not recognised; see the module
-    docstring's divergence 4.
+    closes. An unmatched run is literal text, not an opener, so the search
+    steps over it and keeps looking -- otherwise one stray backtick would
+    silence the rest of the line. A span that would cross a line boundary is
+    not recognised; see the module docstring's divergence 4.
     """
-    pos = 0
+    pos = start_at
     while True:
         opener = _TICKS_RE.search(text, pos)
         if opener is None:
-            return
+            return None
         width = opener.end() - opener.start()
-        closer = None
         search_at = opener.end()
         while True:
             candidate = _TICKS_RE.search(text, search_at)
             if candidate is None:
                 break
             if candidate.end() - candidate.start() == width:
-                closer = candidate
-                break
+                return opener.start(), candidate.end()
             search_at = candidate.end()
-        if closer is None:
-            pos = opener.end()
+        pos = opener.end()
+
+
+def _scan_inline(
+    text: str, start_at: int, line_start: int, spans: list[tuple[int, int, str]]
+) -> bool:
+    """Mark the code spans and comments in `text[start_at:]`; is one left open?
+
+    Code spans and HTML comments are both inline constructs, so whichever
+    opens first wins and the other's marker is ordinary characters inside it:
+    a `<!--` written between backticks is code, and a backtick written inside
+    a comment is comment. Scanning one kind first and the other second instead
+    lets the loser override the winner, in whichever direction the order
+    happens to run.
+
+    Returns True when a comment is still open at the end of the line, which
+    makes every following line inert until a `-->` closes it.
+    """
+    pos = start_at
+    while True:
+        comment_at = text.find("<!--", pos)
+        span = _first_code_span(text, pos)
+        if span is not None and (comment_at < 0 or span[0] < comment_at):
+            spans.append((line_start + span[0], line_start + span[1], IN_SPAN))
+            pos = span[1]
             continue
-        spans.append((line_start + opener.start(), line_start + closer.end(), IN_SPAN))
-        pos = closer.end()
+        if comment_at < 0:
+            return False
+        closed = text.find("-->", comment_at + 4)
+        if closed < 0:
+            spans.append((line_start + comment_at, line_start + len(text), IN_COMMENT))
+            return True
+        spans.append((line_start + comment_at, line_start + closed + 3, IN_COMMENT))
+        pos = closed + 3
 
 
 def inert_spans(body: str) -> list[tuple[int, int, str]]:
@@ -280,7 +299,9 @@ def inert_spans(body: str) -> list[tuple[int, int, str]]:
                 spans.append((start, end, IN_COMMENT))
             else:
                 spans.append((start, start + closed + 3, IN_COMMENT))
-                in_comment = _scan_comments(text, closed + 3, start, spans)
+                # The rest of the line is live text, so it takes the same
+                # inline path a line that never was in a comment takes.
+                in_comment = _scan_inline(text, closed + 3, start, spans)
             prev_blank = False
             continue
 
@@ -325,8 +346,7 @@ def inert_spans(body: str) -> list[tuple[int, int, str]]:
             prev_blank = False
             continue
 
-        in_comment = _scan_comments(text, 0, start, spans)
-        _scan_code_spans(text, start, spans)
+        in_comment = _scan_inline(text, 0, start, spans)
         prev_blank = False
 
     return spans

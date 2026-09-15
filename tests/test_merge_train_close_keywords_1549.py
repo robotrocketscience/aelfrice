@@ -298,6 +298,48 @@ def test_text_after_a_comment_closes_is_live_again() -> None:
     assert linked_issues("<!-- ignore Closes #7 --> and Fixes #8") == [8]
 
 
+def test_a_code_span_after_a_comment_closes_mid_line_is_still_code() -> None:
+    """A wrong close: the remainder used to be scanned for comments only.
+
+    The comment opens on line 1 and closes part-way through line 2, so the
+    rest of line 2 is live text. It reached a comment-only scan rather than
+    the live-line path, so the backticks around `Closes #7` marked nothing and
+    the parser returned `([7, 8], [])` -- closing an issue whose keyword sits
+    inside a code span, a context the docstring lists as excluded.
+    """
+    found, refused = parse("<!--\nnote --> `Closes #7` and Fixes #8")
+    assert found == [8]
+    assert [(r.text, r.reason) for r in refused] == [("Closes #7", IN_SPAN)]
+
+
+def test_a_comment_marker_inside_a_code_span_does_not_open_a_comment() -> None:
+    """The mirror of the case above, and a wrong refusal rather than a close.
+
+    Comments were scanned before code spans on a live line, so a `<!--`
+    written between backticks opened a comment that swallowed the rest of the
+    body: `Fixes #8` came back refused as `inside an HTML comment`.
+    """
+    found, refused = parse("a `comment marker <!-- inside` a code span Fixes #8")
+    assert found == [8]
+    assert refused == []
+
+
+def test_a_backtick_inside_a_comment_does_not_open_a_code_span() -> None:
+    """The other direction of the same rule: the comment opened first.
+
+    Ranking spans over comments instead would end the comment at the backtick
+    run and hand `Closes #7` back as prose.
+    """
+    found, refused = parse("<!-- a `tick` and Closes #7 -->\n\nFixes #8")
+    assert found == [8]
+    assert [(r.text, r.reason) for r in refused] == [("Closes #7", IN_COMMENT)]
+
+
+def test_an_unterminated_comment_opened_inside_a_code_span_is_inert_text() -> None:
+    """The span wins, so nothing is left open and the next line is live."""
+    assert linked_issues("`<!-- still code`\nFixes #8") == [8]
+
+
 @pytest.mark.parametrize(
     "body",
     [
