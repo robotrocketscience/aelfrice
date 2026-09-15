@@ -67,6 +67,14 @@ from aelfrice.store import MemoryStore
 # to 16, and `BELIEF_LINE_WRAPPER_CHARS` is stated for that width.
 _ID = "0123456789abcdef"
 
+# Padding for the SessionStart fixture's belief content, chosen so each
+# belief runs past `hook_search_tool.PER_LINE_CHAR_CAP` (200) — the per-line
+# truncation a sibling injection lane already applies. A lock shorter than
+# that cap is invisible to it, so the guard that asserts no lock is trimmed
+# would pass on a block where every line had been cut. The test asserts the
+# resulting length against the shipped cap rather than trusting this number.
+_PAD_CHARS = 200
+
 
 def _mk(
     bid: str = _ID,
@@ -782,6 +790,17 @@ def test_session_start_lane_never_trims_its_l0_pool(
     are checked, because a formatter that packed the block would leave the
     hit list whole.
 
+    **The block is held to content, not to ids, and the fixture is sized for
+    the cap that would trim it.** An id-presence assert passes on a block
+    whose every line has been truncated: the id sits in the `<belief id="…"`
+    attribute ahead of the content, so a per-line cap leaves every id in
+    place, leaves `hits` whole, and leaves the block length identical across
+    arms. `hook_search_tool.PER_LINE_CHAR_CAP = 200` is that regression
+    already shipped on a sibling lane, so the locks here carry more than 200
+    characters of content and each one's content is required in the block
+    verbatim. Under 200 characters this arm would pass on a cap of the
+    shipped size.
+
     **The two store sizes are not a sweep; each catches a mutation the other
     cannot, so neither may be dropped.** Any fixture is blind to a cap above
     its own lock count, so the large store sets the ceiling: at 10 locks
@@ -793,9 +812,10 @@ def test_session_start_lane_never_trims_its_l0_pool(
     at 10 locks that slice has room for decoys and this test fails, and at
     300 the locks fill it and dedupe away, so no decoy is admitted and the
     mutation passes. Measured with the empty query replaced by "locked
-    baseline belief" — at (10, 60): 10 hits and 0 decoys at budgets 1 and 10,
-    29 hits and 19 decoys at 1500, 50 hits and 40 decoys at 100000; at (300,
-    1800): 300 hits and 0 decoys at all four.
+    baseline belief", at this fixture's content length — at (10, 60): 10 hits
+    and 0 decoys at budgets 1 and 10, 21 hits and 11 decoys at 1500, 50 hits
+    and 40 decoys at 100000; at (300, 1800): 300 hits and 0 decoys at all
+    four.
     """
     db = tmp_path / "memory.db"
     store = MemoryStore(str(db))
@@ -804,7 +824,7 @@ def test_session_start_lane_never_trims_its_l0_pool(
             store.insert_belief(
                 _mk(
                     bid=f"{i:016d}",
-                    content=f"locked baseline belief {i} " + "b" * 120,
+                    content=f"locked baseline belief {i} " + "b" * _PAD_CHARS,
                     lock_level=LOCK_USER,
                 )
             )
@@ -818,16 +838,28 @@ def test_session_start_lane_never_trims_its_l0_pool(
             store.insert_belief(
                 _mk(
                     bid=f"{i + 100_000:016d}",
-                    content=f"locked baseline belief spare {i} " + "b" * 120,
+                    content=(
+                        f"locked baseline belief spare {i} " + "b" * _PAD_CHARS
+                    ),
                     lock_level=LOCK_NONE,
                 )
             )
         # The control comes from the store, not from the loop above: it is
-        # the set the #379 contract says every arm must emit in full.
-        locked_ids = {b.id for b in store.list_locked_beliefs()}
+        # the set the #379 contract says every arm must emit in full, and the
+        # text it says must reach the model unabridged.
+        locked = {b.id: b.content for b in store.list_locked_beliefs()}
     finally:
         store.close()
+    locked_ids = set(locked)
     assert len(locked_ids) == n_locked, len(locked_ids)
+    # The fixture has to be able to see the cap it is guarding against.
+    shortest = min(len(c) for c in locked.values())
+    assert shortest > aelfrice.hook_search_tool.PER_LINE_CHAR_CAP, (
+        f"the locks are {shortest} characters, which is at or under the "
+        f"{aelfrice.hook_search_tool.PER_LINE_CHAR_CAP}-character per-line "
+        "cap the sibling Grep|Glob lane already applies. A cap of that size "
+        "added here would leave every id in place and pass this test."
+    )
     monkeypatch.setattr(
         aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
     )
@@ -877,10 +909,23 @@ def test_session_start_lane_never_trims_its_l0_pool(
         )
         # The render edge, which the hit list alone cannot see: a formatter
         # that packs the block would leave `hits` whole and still ship less.
-        absent = [bid for bid in sorted(locked_ids) if bid not in block]
+        # Content, not the id: the id is an attribute ahead of the content, so
+        # a per-line cap keeps every id and truncates every lock.
+        absent = [
+            bid for bid in sorted(locked_ids) if locked[bid] not in block
+        ]
         assert not absent, (
-            f"{label}: {len(absent)} locks reached the formatter and not the "
-            f"rendered block. First absent: {absent[:3]}"
+            f"{label}: {len(absent)} of {n_locked} locks reached the "
+            "formatter and not the rendered block in full, so the block "
+            "trims content docs/user/PRIVACY.md promises is never trimmed "
+            f"(#379, #1546). First absent: {absent[:3]}"
+        )
+        # The id arm is kept beside it: it is the one that fails when a lock
+        # is dropped outright rather than shortened.
+        idless = [bid for bid in sorted(locked_ids) if bid not in block]
+        assert not idless, (
+            f"{label}: {len(idless)} locks reached the formatter and not the "
+            f"rendered block. First absent: {idless[:3]}"
         )
 
 
