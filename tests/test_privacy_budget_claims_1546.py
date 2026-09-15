@@ -128,10 +128,15 @@ def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
     assert below is the distinguishing arm, so a resolution order that routed
     around the recorder fails here instead of passing on an empty list.
 
-    The second assert closes the composition. `[retrieval] token_budget = 77`
-    sits on disk with the environment variable cleared, and the resolver is
-    fed exactly what the caller passed. It lands on 77 while nothing is
-    shadowing it, and on 1500 the moment something is.
+    The resolution assert closes the composition, and it runs *before* the
+    absence assert rather than after it. `[retrieval] token_budget = 77` sits
+    on disk with the environment variable cleared, and the resolver is fed
+    exactly what the caller passed: 77 on the shipped code, 1500 under the
+    mutation. Behind the absence assert it would be dead weight -- reached
+    only once the argument had been proved absent, so reducing to
+    `resolve_token_budget(None) == 77`, and never reached at all on the
+    mutation that restores the argument. In this order the mutation's first
+    failure names both numbers.
     """
     calls: list[dict[str, Any]] = []
 
@@ -159,16 +164,26 @@ def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
         f"{len(calls)} times, so this test measured nothing: "
         "hook._lazy did not resolve aelfrice.retrieval.retrieve"
     )
+    # The resolution assert runs first, and the order is the whole point of
+    # it: behind an `assert "token_budget" not in calls[0]` this line would
+    # only ever be reached with the argument already proved absent, so it
+    # would reduce to `resolve_token_budget(None) == 77` -- the resolver
+    # returning the literal this test wrote to disk four lines ago, and never
+    # reached at all under the mutation it exists to catch.
+    resolved = resolve_token_budget(calls[0].get("token_budget"))
+    assert resolved == 77, (
+        f"with [retrieval] token_budget = 77 on disk and the caller passing "
+        f"token_budget={calls[0].get('token_budget')!r}, the lane resolves to "
+        f"{resolved}. docs/user/CONFIG.md tells users that key reaches this "
+        "lane because the caller passes none; delete the argument or fix the "
+        "page (#1546)."
+    )
+    # Second, and narrower: a caller passing `token_budget=77` would satisfy
+    # the resolution above and still shadow the key for every other value.
     assert "token_budget" not in calls[0], (
         "the SessionStart lane passes "
         f"token_budget={calls[0]['token_budget']!r} to retrieve(), which "
-        "outranks [retrieval] token_budget in .aelfrice.toml. "
-        "docs/user/CONFIG.md tells users that key reaches this lane because "
-        "the caller passes none; delete the argument or fix the page (#1546)."
-    )
-    resolved = resolve_token_budget(calls[0].get("token_budget"))
-    assert resolved == 77, (
-        f"with [retrieval] token_budget = 77 on disk the lane resolves to "
-        f"{resolved}, so the TOML key does not reach it and "
-        "docs/user/CONFIG.md is false (#1546)."
+        "outranks [retrieval] token_budget in .aelfrice.toml even where the "
+        "two agree. docs/user/CONFIG.md tells users that key reaches this "
+        "lane because the caller passes none (#1546)."
     )
