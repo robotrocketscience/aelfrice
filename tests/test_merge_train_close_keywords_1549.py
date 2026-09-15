@@ -327,6 +327,8 @@ _INERT_BODIES = [
     ("prose\n\n\tCloses #7\n\nFixes #8", IN_INDENT),
     ("prose\n\n        Closes #7\n\nFixes #8", IN_INDENT),
     ("prose\n\n    Closes #7\n    still code\n\nFixes #8", IN_INDENT),
+    ("```\ncode\n```\n    Closes #7\n\nFixes #8", IN_INDENT),
+    ("<!-- note -->\n    Closes #7\n\nFixes #8", IN_INDENT),
     ("Write `Closes #7` in the body.\n\nFixes #8", IN_SPAN),
     ("``a `tick` and Closes #7``\n\nFixes #8", IN_SPAN),
     ("> Closes #7\n\nFixes #8", IN_QUOTE),
@@ -412,6 +414,44 @@ def test_an_indented_block_cannot_interrupt_a_paragraph() -> None:
     """
     assert linked_issues("a paragraph line\n    Closes #7\n") == [7]
     assert linked_issues("a paragraph line\n\n    Closes #7\n") == []
+
+
+@pytest.mark.parametrize(
+    ("predecessor", "found"),
+    [
+        ("```\ncode\n```", []),  # the line that closes a fence
+        ("```", []),  # an open fence swallows the indent as fence, not indent
+        ("<!-- note -->", []),  # a one-line HTML block
+        ("<!-- note --> tail", []),  # the tail is part of the same HTML block
+        ("<!-- a\nb -->", []),  # the line that closes a multi-line comment
+        ("<!-- a\nb --> tail", []),
+        ("", []),  # the first line of the body
+        ("prose\n", []),  # a blank line between the paragraph and the indent
+        ("prose", [7]),  # a paragraph swallows the indent
+        ("text <!-- note -->", [7]),  # a comment mid-line leaves a paragraph
+        ("> quoted", [7]),  # a lazy continuation of a block quote
+    ],
+    ids=lambda v: repr(v)[:28],
+)
+def test_only_a_paragraph_line_stops_an_indent_opening_a_code_block(
+    predecessor: str, found: list[int]
+) -> None:
+    """What may precede an indented code block, checked against GitHub.
+
+    Tracking this as "the line above was blank" gets every row above wrong
+    except the last three: a fence closer and an HTML block are not
+    paragraphs, so an indent under either opens a code block even with no
+    blank line between them, and a `Closes #7` written there does not link.
+
+    Each row was rendered through GitHub's own Markdown before it was pinned,
+    with `gh api --method POST /markdown -f mode=gfm -f
+    context=robotrocketscience/aelfrice -f text=BODY`: the rows expecting
+    `[]` come back inside `<pre><code>` with no issue anchor, and the three
+    expecting `[7]` come back as a paragraph carrying an `issue-link` anchor
+    to issue 7.
+    """
+    body = f"{predecessor}\n    Closes #7\n" if predecessor else "    Closes #7\n"
+    assert linked_issues(body) == found
 
 
 def test_an_unmatched_backtick_marks_nothing_inert() -> None:
