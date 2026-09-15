@@ -364,6 +364,61 @@ def test_ups_ring_and_touches_omit_the_beliefs_the_ceiling_dropped(
     } == {"ring": [], "belief_touches": []}
 
 
+def test_ups_seen_pointer_on_turn_two_names_a_belief_turn_one_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1382's ledger must not record what the ceiling deleted.
+
+    `test_ups_never_emits_a_seen_pointer_to_a_dropped_element` covers the
+    dangling pointer *within* one envelope. This is the cross-turn form,
+    and it is worse: the ledger says "this text is in the context
+    window", and a dropped belief written there emits a `seen` pointer to
+    text the model was never shown on every later turn of the session,
+    not just the next one.
+
+    Measured on the 80-lock / 20-core store below with
+    `AELFRICE_TURN_DIFFERENTIAL=1`, never-shown `seen` ids per turn are
+    0/0/0/0 on the shipped routing and 0/2/2/2 when the ledger is fed
+    `hits` instead of `emitted_hits` — the same two `<core>` ids, for the
+    rest of the session.
+    """
+    monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
+    db = tmp_path / "memory.db"
+    session_id = "s-ledger"
+    _seed(
+        db,
+        n_locks=80,
+        lock_chars=200,
+        n_core=20,
+        core_chars=2_000,
+        core_matches_prompt=True,
+    )
+    first, err = _fire_ups(
+        tmp_path, db, monkeypatch, session_id=session_id
+    )
+    assert "dropped" in err, err
+    rendered_on_turn_one = set(re.findall(r'<belief id="([^"]+)"', first))
+    assert rendered_on_turn_one, first[:2_000]
+
+    second, _ = _fire_ups(
+        tmp_path,
+        db,
+        monkeypatch,
+        prompt=f"turn two: tell me more about the {_WORD} please",
+        session_id=session_id,
+    )
+    # Turn 1 rendered the session-start sub-block; turn 2 does not, so
+    # every pointer below comes from the ledger rather than from #1547's
+    # in-envelope dedupe.
+    assert "<locked>" in first
+    assert "<locked>" not in second
+    seen_ids = re.findall(r'^  seen (\S+): "', second, re.MULTILINE)
+    assert seen_ids, second[:2_000]
+    assert [
+        bid for bid in seen_ids if bid not in rendered_on_turn_one
+    ] == []
+
+
 def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
