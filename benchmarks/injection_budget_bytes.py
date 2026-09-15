@@ -8,10 +8,13 @@ repo publishes.
 
 ## What it measures
 
-Seven lanes, each at its own shipped `(budget, l1_limit)` and through its own
+Eight lanes, each at its own shipped `(budget, l1_limit)` and through its own
 renderer:
 
 * `ups` — the per-turn `<aelfrice-memory>` block (`hook.DEFAULT_HOOK_TOKEN_BUDGET`).
+* `first_prompt` — the composed first-prompt envelope: the session-start
+  sub-block and the per-turn pack rendered into one `<aelfrice-memory>` block
+  by `hook._format_hits_with_session_start` (#1547).
 * `core` — the first-prompt `<core>` section
   (`hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`).
 * `session_start` — the `<aelfrice-baseline>` block (no shipped budget: the
@@ -74,6 +77,39 @@ the lane emits. So there is no single multiplier for this change, and any
 figure taken from it is only readable beside the belief length it was measured
 at. `--curve` prints the whole grid.
 
+## #1547: the arm this module did not have, and why it could not see the defect
+
+`retrieve_with_tiers._cost` charges `compress_for_retrieval(b).rendered_tokens`
+whenever `use_type_aware_compression` is on, which is the shipped default, and
+nothing renders that compressed form. On a `snapshot` belief the packer pays a
+headline price and the hook emits the whole document.
+
+Two properties of this module made that invisible, and both are now closed:
+
+1. **The corpus held no snapshot belief.** `_synthetic_store` passed no
+   `retention_class`, so every row landed on `RETENTION_UNKNOWN`, which
+   `compress_for_retrieval` maps to `verbatim`. Every charge matched every
+   emission by construction. `snapshot_every` builds a second corpus that is
+   identical except for that one field, and `corpus_shape` reads the class back
+   off both stores so the published figures carry a measured count and not the
+   generator's arithmetic — the same standard the locked and speculative counts
+   are already held to.
+
+2. **No lane composed.** Seven lanes each rendered one block; the first prompt
+   of a session renders two into one envelope, and that is the shape #1547's
+   live 66,165-character row came from. `first_prompt` renders it.
+
+Three figures come out of this, none of which the seven-lane version could
+produce. `undercharge` is charged tokens against emitted tokens for one belief
+at each grid length in each retention class. `snapshot_arm` is the two corpora
+run through the two composing lanes, with `_measure`'s binding probe on both
+sides. `dedupe` is what #1547's AC2 envelope dedupe recovers — that fix shipped
+with no producer able to measure it, because it only fires where a belief
+appears in both halves of a composed envelope.
+
+**This module measures the defect. It does not fix it**, and nothing here
+changes `src/aelfrice/`.
+
 Usage:
 
     uv run python benchmarks/injection_budget_bytes.py
@@ -112,12 +148,85 @@ STORE_BELIEFS = 300
 LOCK_EVERY = 50
 SPECULATIVE_EVERY = 5
 
-# Content lengths the curve is reported at, in characters. 92 is the committed
-# `tests/corpus/replay_soak` corpus's median belief length. 200 is
-# `hook_search_tool.PER_LINE_CHAR_CAP`, where the truncation arm starts to
-# dominate; 300 is past it.
+# The #1547 snapshot arm's stride: every `SNAPSHOT_EVERY`-th belief carries
+# `retention_class = RETENTION_SNAPSHOT`. Used only by the arm's own corpus;
+# the control corpus passes no stride and measures zero of them (`corpus_shape`
+# reports the count either way, so the reader sees which corpus is which).
+#
+# The stride is not a model of the live rate. Live stores run 0.09% `snapshot`
+# by candidate count, and 0.09% of 300 beliefs is zero — which is exactly the
+# corpus that made a 150x undercharge invisible. The arm exists so the class is
+# reachable by every lane's pack, including the Bash lane's `l1_limit` of 5, so
+# the stride is set where a pool that small still contains one.
+#
+# It is deliberately coprime with neither of the strides above: a belief that is
+# both speculative-origin and snapshot-class, or both locked and snapshot-class,
+# is an ordinary row in a live store, and the locked one exercises
+# compression's lock override (a locked snapshot renders verbatim). Both are
+# reported separately by `corpus_shape` rather than assumed away.
+SNAPSHOT_EVERY = 7
+
+# Every synthetic belief is terminated into sentences of about this many
+# characters. The headline strategy needs a `. ` or `.\n` at or before
+# `compression.MAX_HEADLINE_CHARS` (240) or `compression._headline` falls to its
+# hard-truncate branch, which is a different code path with a different byte
+# count; the generator this module shipped before #1547 joined vocabulary words
+# with spaces and produced no boundary at any length. 120 is half that cap, so
+# the first boundary lands well inside it at every grid length above 120 and the
+# headline is a first sentence rather than a truncation. Below 120 a belief
+# carries no boundary at all and the headline strategy returns it unchanged,
+# which is why the two shortest grid points are the arm's inert control.
+SENTENCE_CHARS = 120
+
+# Content lengths the curve is reported at, in characters. Each point, and why
+# it is here:
+#
+# * 40 — below `SENTENCE_CHARS`: no sentence boundary, so a snapshot belief
+#   compresses to itself. The arm is inert here by construction, which makes
+#   this and 92 the control for every ratio below.
+# * 92 — the committed `tests/corpus/replay_soak` corpus's median belief
+#   length, and the length every #1526 headline figure is quoted at. Also below
+#   `SENTENCE_CHARS`, so also inert.
+# * 150 — the first grid point that carries a sentence boundary. The headline
+#   strategy fires and the charged-vs-emitted ratio is barely above 1.
+# * 200 — `hook_search_tool.PER_LINE_CHAR_CAP`, where that lane's truncation arm
+#   starts to dominate; 300 is past it.
+# * 300 — the top of this grid before #1547. The largest ratio the old producer
+#   could have reported even if its corpus had carried the class, which is the
+#   second half of why the defect was invisible here.
+# * 1000 — p90 of live per-turn `<belief>` element size (#1547 measured 1,005
+#   over n=24,083 elements).
+# * 7170 — p99 of that same distribution.
+# * 18600 — the length #1547's charged-vs-emitted table is measured at, and the
+#   only grid point where this producer's ratio can be compared with the
+#   issue's prior.
 CORPUS_MEDIAN_CHARS = 92
-LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300)
+LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 7170, 18600)
+
+# Lengths the snapshot arm builds its own corpus at. A subset of the grid: the
+# arm's corpus is a second set of stores, and building all eight would double
+# the producer's runtime to report the same shape twice. 92 is the control
+# point (no sentence boundary, so the class changes nothing); the rest are the
+# grid above `MAX_HEADLINE_CHARS`.
+SNAPSHOT_ARM_LENGTHS: tuple[int, ...] = (92, 300, 1000, 7170, 18600)
+
+# Lanes the snapshot arm is measured on. Both compose `<belief>` elements out of
+# a budgeted `retrieve()`, which is the pack whose cost function charges the
+# compressed form; the PreToolUse lanes pass their own `belief_cost_fn` and do
+# not read compression at all.
+SNAPSHOT_ARM_LANES: tuple[str, ...] = ("ups", "first_prompt")
+
+# The retention classes the charged-vs-emitted table is reported for, in the
+# order #1547's own table lists them.
+RETENTION_CLASSES_MEASURED: tuple[str, ...] = (
+    "fact", "snapshot", "transient", "unknown",
+)
+
+# Seed for the one belief the charged-vs-emitted table is built from. Its own
+# seed, not the store's: that table is a single-belief measurement with no
+# store behind it, and drawing it off the store's shared stream would make the
+# published ratio depend on how many stores had been built first.
+UNDERCHARGE_SEED = 1547
 
 # The saturation probe re-runs an arm with every pack-ending budget raised by
 # this factor. Both `token_budget` and `l25_token_subbudget` are raised: the
@@ -159,7 +268,56 @@ _ENTITIES: tuple[str, ...] = tuple(
 )
 
 
-def _synthetic_store(path: Path, content_chars: int, *, seed: int = 1526) -> Any:
+def synthetic_content(
+    rng: random.Random, i: int, content_chars: int, *, sentences: bool = False,
+) -> str:
+    """One belief's content, exactly `content_chars` long.
+
+    A per-belief unique token first — `beliefs.content_hash` is UNIQUE, and at
+    40 characters a shared prefix plus a small vocabulary collides — then one
+    identifier, so L2.5 has something to index, then vocabulary words drawn
+    from `rng` until the length is reached.
+
+    `sentences` closes a sentence every `SENTENCE_CHARS` characters. That is
+    what the #1547 arm needs and what nothing else may have: without a `. ` the
+    headline strategy never takes its first-sentence branch, and **with** one
+    the corpus is no longer the corpus every published #1526 figure was
+    measured on. So it is off by default and the arm carries its own corpus,
+    and the two are separated by a third arm that changes the text without the
+    class, so the class effect is attributable rather than asserted.
+
+    Off, this is byte-identical to the generator that shipped before #1547 —
+    same shared `rng`, same draw order, same truncation — which is checked by
+    `scripts/check_derived_figures.py --mode all` re-deriving the twelve
+    published figures that read this corpus. What changed is that the running
+    length is accumulated instead of re-joining the whole word list per word.
+    That join was quadratic and was 9.8 of the 12.5 seconds one
+    18,600-character store took to build (`cProfile`, 797,843 calls to
+    `str.join`), which is the mechanical reason the grid could not previously
+    reach the lengths the defect lives at.
+    """
+    parts: list[str] = [f"b{i:04d}", _ENTITIES[i % len(_ENTITIES)]]
+    total = len(parts[0]) + 1 + len(parts[1])
+    since = 0
+    while total < content_chars:
+        word = rng.choice(_VOCAB)
+        total += 1 + len(word)
+        if sentences and total - since >= SENTENCE_CHARS:
+            word += "."
+            total += 1
+            since = total
+        parts.append(word)
+    return " ".join(parts)[:content_chars]
+
+
+def _synthetic_store(
+    path: Path,
+    content_chars: int,
+    *,
+    seed: int = 1526,
+    snapshot_every: int = 0,
+    sentences: bool = False,
+) -> Any:
     """A store of `STORE_BELIEFS` beliefs, each `content_chars` long.
 
     Seeded, so the same length always produces the same store. Every belief
@@ -173,32 +331,51 @@ def _synthetic_store(path: Path, content_chars: int, *, seed: int = 1526) -> Any
     #1526 rewrote for those cases (`retrieval.lock_injection_tokens` and the
     `speculative="1"` attribute in `render_cost.belief_line_chars`) are
     exercised by the published figures rather than by the unit tests alone.
+
+    `snapshot_every` and `sentences` are the #1547 arm. At the defaults — which
+    is what every `LANES` figure is measured on — no belief carries a retention
+    class and none carries a sentence boundary, so every row lands on
+    `RETENTION_UNKNOWN`, which `compress_for_retrieval` maps to `verbatim`.
+    That is the corpus this module shipped with, and it is why nothing here
+    could see a charge-only discount.
+
+    Separate corpora rather than a changed one, deliberately: this module is
+    the producer for every #1526 figure the repo publishes, and folding either
+    flag into its one store would re-denominate all of them — twelve markers
+    that `scripts/check_derived_figures.py` re-derives — while leaving nothing
+    to attribute the change to. Three corpora make the attribution explicit:
+    control (neither flag), prose (`sentences` alone), snapshot (both). The
+    class effect is prose → snapshot; control → prose is the cost of the text
+    change, which is measured rather than asserted to be nil.
     """
     from aelfrice.models import (
         LOCK_NONE,
         LOCK_USER,
         ORIGIN_SPECULATIVE,
+        RETENTION_SNAPSHOT,
+        RETENTION_UNKNOWN,
         Belief,
     )
     from aelfrice.store import MemoryStore
 
+    # One shared stream across the whole store, which is what the pre-#1547
+    # generator used; a per-belief seed would be tidier and would change every
+    # belief's content.
     rng = random.Random(seed)
     store = MemoryStore(str(path))
     for i in range(STORE_BELIEFS):
-        # A per-belief unique token first: `beliefs.content_hash` is UNIQUE,
-        # and at 40 characters a shared prefix plus a small vocabulary
-        # collides. Then one identifier, so L2.5 has something to index.
-        words: list[str] = [f"b{i:04d}", _ENTITIES[i % len(_ENTITIES)]]
-        while len(" ".join(words)) < content_chars:
-            words.append(rng.choice(_VOCAB))
-        content = " ".join(words)[:content_chars]
+        content = synthetic_content(rng, i, content_chars, sentences=sentences)
         bid = hashlib.sha256(f"{i}:{seed}".encode()).hexdigest()[:16]
         locked = i % LOCK_EVERY == 0
         speculative = not locked and i % SPECULATIVE_EVERY == 0
+        snapshot = snapshot_every > 0 and i % snapshot_every == 0
         store.insert_belief(
             Belief(
                 id=bid,
                 content=content,
+                retention_class=(
+                    RETENTION_SNAPSHOT if snapshot else RETENTION_UNKNOWN
+                ),
                 content_hash=hashlib.sha256(content.encode()).hexdigest(),
                 alpha=5.0,
                 beta=1.0,
@@ -220,16 +397,26 @@ def _synthetic_store(path: Path, content_chars: int, *, seed: int = 1526) -> Any
 
 
 def corpus_shape(store: Any) -> dict[str, int]:
-    """Locked and speculative-origin counts, read back off the store.
+    """Locked, speculative-origin and snapshot-class counts, read off the store.
 
-    Emitted with the figures so a reader can check that the two arms
-    #1526 rewrote for those cases were populated, rather than trusting
-    `_synthetic_store`'s arithmetic.
+    Emitted with the figures so a reader can check that the arms those cases
+    exercise were populated, rather than trusting `_synthetic_store`'s
+    arithmetic. Same justification for all three, and the snapshot count is the
+    one that most needs it: the class is a column the store writes and reads
+    back, and a generator that set it on a `Belief` the store then dropped
+    would leave every ratio below reading 1.0 with nothing to say why.
+
+    `snapshot_unlocked` is reported separately because `compress_for_retrieval`
+    renders a *locked* snapshot verbatim — locks override retention class, the
+    same rule as "L0 is never trimmed" — so only the unlocked ones can produce
+    a shortened charge. On the control corpus all three snapshot keys are 0.
     """
-    from aelfrice.models import LOCK_USER, ORIGIN_SPECULATIVE
+    from aelfrice.models import LOCK_USER, ORIGIN_SPECULATIVE, RETENTION_SNAPSHOT
 
     locked = 0
     speculative = 0
+    snapshot = 0
+    snapshot_unlocked = 0
     for bid in store.list_belief_ids():
         b = store.get_belief(bid)
         if b is None:
@@ -238,7 +425,16 @@ def corpus_shape(store: Any) -> dict[str, int]:
             locked += 1
         if b.origin == ORIGIN_SPECULATIVE:
             speculative += 1
-    return {"locked": locked, "speculative": speculative}
+        if b.retention_class == RETENTION_SNAPSHOT:
+            snapshot += 1
+            if b.lock_level != LOCK_USER:
+                snapshot_unlocked += 1
+    return {
+        "locked": locked,
+        "speculative": speculative,
+        "snapshot": snapshot,
+        "snapshot_unlocked": snapshot_unlocked,
+    }
 
 
 def _legacy_belief_tokens(b: Any) -> int:
@@ -361,6 +557,50 @@ def _render_ups(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
     return Arm(len(hits), len(hook._format_hits(hits)))
 
 
+def _session_start_block(store: Any) -> str:
+    """The `<session-start>` sub-block, built on a cwd that carries no git.
+
+    `_build_session_start_subblock` appends a `<recent-work>` section resolved
+    from git plumbing under `cwd`, which would make this lane's byte count a
+    function of the branch name and the last five commit subjects of whatever
+    checkout the producer happened to run in. `figures()` has already chdir'd
+    into a tempdir for the same hermeticity reason the `[retrieval]` flags
+    need, so `Path.cwd()` is a non-git directory and `_resolve_branch` returns
+    None before any subprocess reads a log. The measured size of that section
+    is published as `first_prompt_recent_work_chars` rather than asserted here.
+    """
+    from aelfrice import hook
+
+    return hook._build_session_start_subblock(store, cwd=Path.cwd())
+
+
+def _render_first_prompt(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
+    """The composed first-prompt envelope: session-start sub-block plus hits.
+
+    This is the shape #1547's live 66,165-character row came from, and the
+    lane this module did not have. The other seven lanes each render one block;
+    the first prompt of a session renders two into one envelope —
+    `_build_session_start_subblock` (`<locked>` + `<core>` + `<recent-work>`)
+    inside `_format_hits_with_session_start` alongside the per-turn pack — and
+    a per-block measurement cannot see what composing them costs.
+
+    `n_items` counts the per-turn hits only. The `<locked>` and `<core>`
+    elements above them are not hits and are not packed by this lane's budget:
+    `<locked>` is exempt by #379 and `<core>` is packed by its own separate
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. They are in the byte count
+    because the model receives them, which is the whole point of composing.
+    """
+    del legacy
+    from aelfrice import hook, retrieval
+
+    hits = retrieval.retrieve(
+        store, QUERY, token_budget=budget, l25_token_subbudget=sub,
+        manifest_reference_locks=True,
+    )
+    block = _session_start_block(store)
+    return Arm(len(hits), len(hook._format_hits_with_session_start(list(hits), block)))
+
+
 def _render_session_start(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
     """The SessionStart baseline block, retrieved the way the lane retrieves it.
 
@@ -456,6 +696,7 @@ def _render_cli_search(store: Any, budget: int, sub: int, *, legacy: bool) -> Ar
 
 _RENDERERS: dict[str, Callable[..., Arm]] = {
     "ups": _render_ups,
+    "first_prompt": _render_first_prompt,
     "core": _render_core,
     "session_start": _render_session_start,
     "search_tool": _render_search_tool,
@@ -468,6 +709,7 @@ _RENDERERS: dict[str, Callable[..., Arm]] = {
 
 LANES: tuple[str, ...] = (
     "ups",
+    "first_prompt",
     "core",
     "session_start",
     "search_tool",
@@ -541,6 +783,281 @@ def _measure(lane: str, store: Any, budget: int, *, legacy: bool) -> tuple[Arm, 
     return (arm, "pool")
 
 
+# --- #1547: what the pack charges against what the lane emits ---------------
+
+
+def _charged_tokens(b: Any) -> int:
+    """What `retrieve_with_tiers._cost` charges for one belief.
+
+    The compressed branch of that closure, transcribed:
+    `compress_for_retrieval(b, locked=...).rendered_tokens +
+    _render_wrapper_tokens(b)`. Transcribed rather than called because `_cost`
+    is a closure over `retrieve_with_tiers`'s arguments and has no name a
+    measurement can reach — the same reason `_render_wrapper_tokens` was given
+    a module-level name in the first place.
+
+    The `belief_cost_fn` and `compress_on=False` branches are not reproduced:
+    `resolve_use_type_aware_compression()` is published with these figures and
+    defaults True, and the two lanes that pass their own `belief_cost_fn` are
+    not in `SNAPSHOT_ARM_LANES` precisely because they never read compression.
+    """
+    from aelfrice.compression import compress_for_retrieval
+    from aelfrice.models import LOCK_USER
+    from aelfrice.retrieval import _render_wrapper_tokens
+
+    cb = compress_for_retrieval(b, locked=(b.lock_level == LOCK_USER))
+    return cb.rendered_tokens + _render_wrapper_tokens(b)
+
+
+def _emitted_chars(b: Any) -> int:
+    """What the per-turn renderer emits for one belief, newline included.
+
+    `hook._split_belief_lines` rather than an arithmetic reconstruction: this
+    is the number the charge above is supposed to match, so reconstructing it
+    from `render_cost` would compare two arithmetics and agree by
+    construction. The resolvers this leaves unpinned (`order_policy`,
+    `provenance_render`) are the same ones every other lane in this module
+    resolves, and `figures()` runs in a directory with no ancestor config.
+    """
+    from aelfrice import hook
+
+    belief_lines, _manifest = hook._split_belief_lines([b])
+    return sum(len(line) + 1 for line in belief_lines)
+
+
+def _probe_belief(content: str, retention_class: str) -> Any:
+    """One unlocked, agent-inferred belief carrying `retention_class`.
+
+    A 16-character id, because `render_cost.BELIEF_LINE_WRAPPER_CHARS` is
+    itemised against that form; the 26-character ULID form undercharges the
+    wrapper by 10 characters per line and is filed separately by #1547.
+    """
+    from aelfrice.models import LOCK_NONE, Belief
+
+    return Belief(
+        id="1547" + "0" * 12,
+        content=content,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        alpha=5.0,
+        beta=1.0,
+        type="factual",
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-01-01T00:00:00Z",
+        last_retrieved_at=None,
+        origin="agent_inferred",
+        retention_class=retention_class,
+    )
+
+
+def undercharge_table(lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
+    """Charged tokens against emitted tokens, per retention class, per length.
+
+    One belief, one text, four retention classes — the same design as #1547's
+    own table, so the two are comparable cell for cell. The ratio is not a
+    constant: the headline is a fixed-size prefix and the emitted element is
+    not, so it grows with belief length, and any single multiplier quoted from
+    it is unreadable without the length beside it.
+
+    **This disagrees with #1547's prior, and the producer wins.** At 18,600
+    characters the issue's table reads snapshot 150.4x and transient 388.6x;
+    this measures 106.0x and 186.5x. The emitted side agrees exactly — 4,663
+    tokens on both. The charged side does not: 44 tokens here against the
+    issue's 31, and 25 against 12. The whole of both gaps is the `<belief>`
+    wrapper. `_render_wrapper_tokens` adds 13 tokens to every compressed
+    render, which is #1526's correction and postdates the figure the issue
+    quotes; net of it the two tables agree cell for cell (31 and 31, 12 and
+    12). So they measure the same compressor and disagree only about whether
+    the element around the shortened content is part of the charge. It is:
+    that element is emitted whether or not the content was shortened. The
+    smaller ratio is the one to carry.
+
+    The ratio is still a property of the corpus as much as of the defect — it
+    is set by where the first sentence ends, which here is character 122 for a
+    123-character headline — so the charged and emitted columns are published
+    beside it and the multiplier is not quoted alone.
+    """
+    from aelfrice.compression import compress_for_retrieval
+    from aelfrice.render_cost import chars_to_tokens
+
+    out: dict[str, Any] = {}
+    for chars in lengths:
+        content = synthetic_content(
+            random.Random(UNDERCHARGE_SEED), 0, chars, sentences=True,
+        )
+        row: dict[str, Any] = {}
+        for retention_class in RETENTION_CLASSES_MEASURED:
+            b = _probe_belief(content, retention_class)
+            charged = _charged_tokens(b)
+            emitted_chars = _emitted_chars(b)
+            emitted = chars_to_tokens(emitted_chars)
+            row[retention_class] = {
+                "strategy": compress_for_retrieval(b, locked=False).strategy,
+                "charged_tokens": charged,
+                "emitted_chars": emitted_chars,
+                "emitted_tokens": emitted,
+                "ratio": round(emitted / charged, 1) if charged else None,
+            }
+        out[str(chars)] = row
+    return out
+
+
+def _pack_charge(store: Any, budget: int, sub: int) -> dict[str, int]:
+    """Charged against emitted, summed over one pack's non-locked hits.
+
+    Locks are excluded from both sums. L0 is never trimmed (#379), so a lock's
+    charge is not what bought it a place in the pack; including them would
+    measure that exemption rather than the compression discount, and on this
+    corpus at 18,600 characters the locks are the *only* thing the control
+    pack admits, so the ratio would be exactly 1.0 by selection.
+    """
+    from aelfrice import retrieval
+    from aelfrice.models import LOCK_USER
+    from aelfrice.render_cost import chars_to_tokens
+
+    hits = retrieval.retrieve(
+        store, QUERY, token_budget=budget, l25_token_subbudget=sub,
+        manifest_reference_locks=True,
+    )
+    unlocked = [h for h in hits if h.lock_level != LOCK_USER]
+    charged = sum(_charged_tokens(h) for h in unlocked)
+    emitted = sum(chars_to_tokens(_emitted_chars(h)) for h in unlocked)
+    return {
+        "hits": len(hits),
+        "unlocked_hits": len(unlocked),
+        "charged_tokens": charged,
+        "emitted_tokens": emitted,
+    }
+
+
+def snapshot_arm(
+    control: dict[int, Any],
+    prose: dict[int, Any],
+    snapshot: dict[int, Any],
+    lengths: tuple[int, ...],
+) -> dict[str, Any]:
+    """Each arm lane, run against the control corpus and the snapshot corpus.
+
+    Three corpora, differing one step at a time. `control` is the corpus every
+    `LANES` figure is measured on. `prose` adds the sentence boundaries the
+    headline strategy needs and nothing else, so `control` → `prose` prices the
+    text change on its own. `snapshot` adds `retention_class` on top of that,
+    so `prose` → `snapshot` is the cost of the class and nothing else. Reading
+    the class effect off `control` → `snapshot` would confound the two, which
+    is why the middle column is here rather than an assertion that it does not
+    matter.
+
+    `_measure` is used on all three sides, so both budgets are varied on each
+    and each reports which cap ended it. That matters more here than anywhere
+    else in this module, and the measured answer is the reverse of the one a
+    reader would guess. At 18,600 characters the control and prose sides end on
+    `pool`: a single verbatim belief costs 4,663 tokens against a 1,500-token
+    budget, so the pack admits no non-locked belief at all and what is left is
+    the six locks #379 exempts. The snapshot side ends on `token_budget` — the
+    budget binds, and binds *later*, admitting 22 beliefs whose emitted text is
+    74,616 tokens against the 723 they were charged. A budget reporting that it
+    is doing its job is the defect here, not the absence of one.
+
+    `snapshot_pack_ratio` is that pack's emitted tokens over its charged
+    tokens, non-locked hits only, and is the lane-level form of the
+    `undercharge_table` cell: 103.2x where the single-belief table reads
+    106.0x. The difference is the verbatim-class beliefs the same pack also
+    admits — they charge what they emit and dilute a lane ratio, which a
+    single-belief table has nothing to dilute it with.
+    """
+    sub = _subbudget()
+    out: dict[str, Any] = {}
+    for lane in SNAPSHOT_ARM_LANES:
+        budget = shipped_budget(lane)
+        rows: dict[str, Any] = {}
+        for chars in lengths:
+            c_arm, c_binds = _measure(lane, control[chars], budget, legacy=False)
+            p_arm, p_binds = _measure(lane, prose[chars], budget, legacy=False)
+            s_arm, s_binds = _measure(lane, snapshot[chars], budget, legacy=False)
+            row: dict[str, Any] = {
+                "control_items": c_arm.n_items,
+                "control_bytes": c_arm.n_bytes,
+                "control_binds_on": c_binds,
+                "prose_items": p_arm.n_items,
+                "prose_bytes": p_arm.n_bytes,
+                "prose_binds_on": p_binds,
+                "snapshot_items": s_arm.n_items,
+                "snapshot_bytes": s_arm.n_bytes,
+                "snapshot_binds_on": s_binds,
+                "bytes_ratio": (
+                    round(s_arm.n_bytes / p_arm.n_bytes, 2)
+                    if p_arm.n_bytes
+                    else None
+                ),
+            }
+            for name, store in (("prose", prose), ("snapshot", snapshot)):
+                charge = _pack_charge(store[chars], budget, sub)
+                row[f"{name}_charged_tokens"] = charge["charged_tokens"]
+                row[f"{name}_emitted_tokens"] = charge["emitted_tokens"]
+                row[f"{name}_unlocked_hits"] = charge["unlocked_hits"]
+                row[f"{name}_pack_ratio"] = (
+                    round(charge["emitted_tokens"] / charge["charged_tokens"], 1)
+                    if charge["charged_tokens"]
+                    else None
+                )
+            rows[str(chars)] = row
+        out[lane] = rows
+    return out
+
+
+def dedupe_effect(store: Any, budget: int, sub: int) -> dict[str, Any]:
+    """What #1547's AC2 envelope dedupe recovers, on this corpus.
+
+    `_format_hits_with_session_start` (the shipped body, commit 570cb934)
+    against the same composition with the `already_rendered` union removed —
+    the body of that function on the commit before it. Transcribed here, the
+    way `_legacy_accounting` transcribes the pre-#1526 cost functions, because
+    the fix has no flag to turn off.
+
+    This is the only lane in this module that can see AC2 at all: the dedupe
+    only fires where a belief appears both in the session-start sub-block and
+    in the per-turn pack, and a lane that renders one of those two halves in
+    isolation has no repeat to find. That AC shipped with no producer able to
+    measure it, which is the same gap as the snapshot arm's and is why both
+    are closed in one change.
+    """
+    from aelfrice import hook, retrieval
+
+    hits = list(
+        retrieval.retrieve(
+            store, QUERY, token_budget=budget, l25_token_subbudget=sub,
+            manifest_reference_locks=True,
+        )
+    )
+    block = _session_start_block(store)
+    after = hook._format_hits_with_session_start(hits, block)
+
+    belief_lines, manifest_lines = hook._split_belief_lines(hits)
+    lines: list[str] = [hook.OPEN_TAG, hook._framing_header_for(hits)]
+    if block:
+        lines.append(block)
+    lines.extend(belief_lines)
+    lines.extend(hook._manifest_block_lines(manifest_lines))
+    lines.append(hook.CLOSE_TAG)
+    lines.append("")
+    before = "\n".join(lines)
+
+    block_ids = hook._ids_rendered_verbatim_in(block)
+    repeated = sum(1 for h in hits if h.id in block_ids)
+    return {
+        "hits": len(hits),
+        "session_start_chars": len(block),
+        "repeated_ids": repeated,
+        "bytes_before": len(before),
+        "bytes_after": len(after),
+        "pct": (
+            round(100.0 * (len(after) - len(before)) / len(before), 1)
+            if before
+            else None
+        ),
+    }
+
+
 # Content lengths the untuned rebuild block is reported at. Shorter than the
 # full grid because this is a "did it move" figure, not a tuning.
 REBUILD_LENGTHS: tuple[int, ...] = (92, 150, 300)
@@ -610,6 +1127,11 @@ def shipped_budget(lane: str) -> int:
 
     return {
         "ups": hook.DEFAULT_HOOK_TOKEN_BUDGET,
+        # The composed envelope's per-turn half is the UPS pack, at the UPS
+        # budget. The `<core>` half inside it carries its own budget and
+        # `<locked>` carries none; this is the only one that can end this
+        # lane's `retrieve()`.
+        "first_prompt": hook.DEFAULT_HOOK_TOKEN_BUDGET,
         "core": hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET,
         "session_start": SESSION_START_PROBE_BUDGET,
         "search_tool": hook_search_tool.INJECTED_TOKEN_BUDGET,
@@ -652,18 +1174,86 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
                 chars: _synthetic_store(tmp / f"s{chars}.db", chars)
                 for chars in lengths
             }
+            arm_lengths = tuple(c for c in SNAPSHOT_ARM_LENGTHS if c in lengths)
+            prose_stores = {
+                chars: _synthetic_store(
+                    tmp / f"prose{chars}.db", chars, sentences=True,
+                )
+                for chars in arm_lengths
+            }
+            snap_stores = {
+                chars: _synthetic_store(
+                    tmp / f"snap{chars}.db",
+                    chars,
+                    snapshot_every=SNAPSHOT_EVERY,
+                    sentences=True,
+                )
+                for chars in arm_lengths
+            }
             try:
                 values["corpus_shape"] = corpus_shape(stores[lengths[0]])
+                values["snapshot_every"] = SNAPSHOT_EVERY
+                values["sentence_chars"] = SENTENCE_CHARS
+                values["snapshot_arm_lengths"] = list(arm_lengths)
+                if arm_lengths:
+                    values["snapshot_corpus_shape"] = corpus_shape(
+                        snap_stores[arm_lengths[0]]
+                    )
+                    values["prose_corpus_shape"] = corpus_shape(
+                        prose_stores[arm_lengths[0]]
+                    )
+                    values["snapshot_arm"] = snapshot_arm(
+                        stores, prose_stores, snap_stores, arm_lengths,
+                    )
+                values["undercharge"] = undercharge_table(lengths)
                 for lane in LANES:
                     values.update(_lane_figures(lane, stores, lengths))
+                values["first_prompt_recent_work_chars"] = len(
+                    hook._build_recent_work_subblock(cwd=Path.cwd())
+                )
+                values["dedupe"] = dedupe_effect(
+                    stores[values["first_prompt_headline_chars"]],
+                    shipped_budget("first_prompt"),
+                    _subbudget(),
+                )
+                values.update(_flat_1547_keys(values, lengths))
                 if set(REBUILD_LENGTHS) <= set(lengths):
                     values.update(_rebuild_block_bytes(stores))
             finally:
-                for store in stores.values():
-                    store.close()
+                for group in (stores, prose_stores, snap_stores):
+                    for store in group.values():
+                        store.close()
         finally:
             os.chdir(cwd)
     return values
+
+
+def _flat_1547_keys(
+    values: dict[str, Any], lengths: tuple[int, ...],
+) -> dict[str, Any]:
+    """Flatten the #1547 headline cells to scalar keys.
+
+    `scripts/check_derived_figures.py` re-runs this module and compares one
+    published number against one emitted key, so a figure that lives only
+    inside a nested dict cannot be gated. These are the cells the CHANGELOG
+    entry quotes, lifted to the top level so the gate can re-derive them.
+    """
+    top = str(max(lengths))
+    row = values["undercharge"][top]
+    out: dict[str, Any] = {
+        "undercharge_top_chars": max(lengths),
+        "undercharge_top_emitted_tokens": row["fact"]["emitted_tokens"],
+        "undercharge_top_snapshot_charged_tokens": row["snapshot"][
+            "charged_tokens"
+        ],
+        "undercharge_top_snapshot_ratio": row["snapshot"]["ratio"],
+        "undercharge_top_transient_ratio": row["transient"]["ratio"],
+    }
+    d = values["dedupe"]
+    out["dedupe_repeated_ids"] = d["repeated_ids"]
+    out["dedupe_bytes_before"] = d["bytes_before"]
+    out["dedupe_bytes_after"] = d["bytes_after"]
+    return out
 
 
 def _lane_figures(
@@ -703,6 +1293,16 @@ def _curve(
     is true only when both arms read `pool`, which is the one case where the
     two numbers say nothing about any budget because they are the same
     candidate pool rendered twice.
+
+    A byte count of **zero** is a measurement, not a suppressed cell, and the
+    extended grid produces one: at 7,170 and 18,600 content characters a single
+    `<core>` line costs 1,806 and 4,663 tokens against
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`, so
+    `_pack_core_candidates` — which skips an oversized belief rather than
+    breaking — packs none of 300 candidates and the section emits nothing. The
+    old grid stopped at 300 characters and never reached that. `pct` is None
+    where the before arm is zero, because a percentage of nothing is not a
+    number this module is willing to print.
     """
     rows: dict[str, Any] = {}
     for chars in lengths:
@@ -750,6 +1350,65 @@ def _flag(row: dict[str, Any]) -> str:
     return f"  [{'; '.join(marks)}]" if marks else ""
 
 
+def _print_1547(values: dict[str, Any]) -> None:
+    """The #1547 sections: the undercharge table, the arm, and the dedupe."""
+    print()
+    print("--- #1547 charged vs emitted, one belief, by retention class ---")
+    print(
+        f"  {'chars':>6}  {'class':<9} {'strategy':<9} {'charged':>8} "
+        f"{'emitted':>8}  ratio"
+    )
+    for chars, row in values["undercharge"].items():
+        for name in RETENTION_CLASSES_MEASURED:
+            cell = row[name]
+            ratio = "n/a" if cell["ratio"] is None else f"{cell['ratio']}x"
+            print(
+                f"  {chars:>6}  {name:<9} {cell['strategy']:<9} "
+                f"{cell['charged_tokens']:>8} {cell['emitted_tokens']:>8}  "
+                f"{ratio}"
+            )
+    if "snapshot_arm" in values:
+        print()
+        print(
+            "--- #1547 snapshot arm: control -> prose (text only) -> snapshot "
+            "(text + class) ---"
+        )
+        for lane, rows in values["snapshot_arm"].items():
+            print(f"  {lane} (budget {values[f'{lane}_budget']}):")
+            for chars, row in rows.items():
+                ratio = (
+                    "n/a" if row["bytes_ratio"] is None else f"{row['bytes_ratio']}x"
+                )
+                pack = (
+                    "n/a"
+                    if row["snapshot_pack_ratio"] is None
+                    else f"{row['snapshot_pack_ratio']}x"
+                )
+                print(
+                    f"    {chars:>6} chars: items {row['control_items']} -> "
+                    f"{row['prose_items']} -> {row['snapshot_items']}, bytes "
+                    f"{row['control_bytes']} -> {row['prose_bytes']} -> "
+                    f"{row['snapshot_bytes']} ({ratio} over prose)  "
+                    f"[ended on {row['control_binds_on']} / "
+                    f"{row['prose_binds_on']} / {row['snapshot_binds_on']}]  "
+                    f"snapshot pack charged {row['snapshot_charged_tokens']} "
+                    f"tok, emitted {row['snapshot_emitted_tokens']} tok ({pack})"
+                )
+    d = values["dedupe"]
+    print()
+    print("--- #1547 AC2 envelope dedupe, measured on the composed lane ---")
+    print(
+        f"  {d['hits']} hits, {d['repeated_ids']} of them already rendered in a "
+        f"{d['session_start_chars']}-char session-start sub-block: "
+        f"{d['bytes_before']} -> {d['bytes_after']} bytes "
+        f"({d['pct']:+.1f}%)"
+    )
+    print(
+        f"  <recent-work> in the measured sub-block: "
+        f"{values['first_prompt_recent_work_chars']} chars"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument(
@@ -778,7 +1437,9 @@ def main(argv: list[str] | None = None) -> int:
     width = max(len(k) for k in flat)
     for key in sorted(flat):
         print(f"{key:<{width}}  {flat[key]}")
-    print(f"corpus_shape  {values['corpus_shape']}")
+    print(f"corpus_shape           {values['corpus_shape']}")
+    if "snapshot_corpus_shape" in values:
+        print(f"snapshot_corpus_shape  {values['snapshot_corpus_shape']}")
     print()
     for lane in LANES:
         before = values[f"{lane}_bytes_before"]
@@ -791,6 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
             f"({values[f'{lane}_pct']:+.1f}%) at {chars} "
             f"content chars{_flag(row)}"
         )
+    _print_1547(values)
     if args.curve:
         print()
         for lane in LANES:
