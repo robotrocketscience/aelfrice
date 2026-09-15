@@ -44,8 +44,9 @@ trailer format of its own. Concretely, it now:
 
 * Matches all nine keywords GitHub acts on -- `close`, `closes`, `closed`,
   `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` -- case
-  insensitively, each followed by `#N`, with either whitespace or a colon
-  between the two. Both the list and the colon are GitHub's, published under
+  insensitively, each followed by an issue reference GitHub recognises,
+  `#N` or `GH-N`, with either whitespace or a colon between the two. The
+  keyword list and the colon are GitHub's, published under
   "Linking a pull request to an issue", which says: "The keywords can be
   followed by colons or in uppercase. For example: `Closes: #10`,
   `CLOSES #10`, or `CLOSES: #10`."
@@ -93,6 +94,43 @@ the asymmetry below. "Refuse rather than close" is the tie-break for the cases
 GitHub leaves undefined -- an unterminated fence, a lazy quote continuation.
 Where GitHub's behaviour is defined and published, matching it wins.
 
+### Every documented reference form is acted on or refused out loud
+
+The keyword page writes the syntax as a keyword plus an ISSUE-NUMBER, and the
+page it links for what a reference to an issue may look like -- "Autolinked
+references and URLs" --
+https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls#issues-and-pull-requests
+-- gives five rows for four distinct forms; its
+`Username/Repository#N` and `Organization_name/Repository#N` rows are one form
+written twice. All four are enumerated here, because a form this parser
+neither links nor refuses aloud is the silent no-op #1549 exists to kill:
+
+* `#N` (`Closes #10`) links. The keyword page's own first row.
+* `GH-N` (`Closes GH-10`) links, in any case. `GH-`, `gh-`, `Gh-` and `gH-`
+  all render as the same issue reference in GitHub's renderer, checked rather
+  than assumed with `gh api --method POST /markdown -f mode=gfm -f
+  context=OWNER/REPO -f text='GH-10 and gh-10 and Gh-10 and gH-10 and #10'`,
+  whose output links each casing, and the `#10` beside them, to the same
+  issue. This repository's own advisory `pr-metadata.yml` job matches `GH-`
+  under `grep -iE` too, and greets such a body with "Traceability OK".
+* `OWNER/REPOSITORY#N` (`Fixes octo-org/octo-repo#100`) is refused out loud;
+  see divergence 2. So is the same-repository spelling of it, which this
+  parser cannot tell apart from any other.
+* A full issue or pull-request URL
+  (`Closes https://github.com/OWNER/REPOSITORY/issues/26`) is refused out
+  loud, for the same reason and under its own wording. It names a repository,
+  and this parser resolves numbers in one repository only.
+* Nothing else is a reference. `Closes issue #10`, `Closes 10` and a bare
+  `#10` are not forms GitHub acts on, so not matching them is fidelity.
+
+GitHub publishes the reference syntax but not the processor that closes on it,
+so acting on `GH-N` is a ruling under "emulate GitHub" taken on the reference
+parser's measured behaviour, not a measurement of the close itself. It is the
+one place this module widens rather than refuses on an edge GitHub leaves
+undocumented, and the alternative loses either way: refusing here would have
+the train contradict `pr-metadata.yml`, which has already told the author the
+link is fine.
+
 ### An unclosed fence or comment runs to the end of the body
 
 CommonMark closes an unterminated fenced block and an unterminated HTML
@@ -108,10 +146,12 @@ notices, while making one closes an issue nobody asked to close.
 1. **Commit messages are not read.** GitHub also closes from the commit
    messages of a merged push; this reads the pull-request body only. Out of
    scope on #1549 -- it changes the surface far more than the keyword set does.
-2. **Cross-repository links are not followed.** GitHub closes
-   `Closes owner/repo#12` in that other repository. This train closes issues
-   in its own repository only, so the link is refused -- but it is now refused
-   out loud, on stderr, instead of falling through the regex unremarked.
+2. **Cross-repository and URL links are not followed.** GitHub closes
+   `Closes owner/repo#12` in that other repository, and reads a full issue URL
+   as a reference to that issue. This train closes issues in its own
+   repository only, and cannot tell its own name from another's, so both are
+   refused -- but refused out loud, on stderr, instead of falling through the
+   regex unremarked.
 3. **The target branch is not checked.** GitHub auto-closes only for a pull
    request targeting the default branch. The train only ever fast-forwards
    `main`, so the condition holds by construction, but nothing here asserts
@@ -170,9 +210,20 @@ _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 # docstring for the three spacings GitHub's examples leave open.
 _SEPARATOR = r"(?::\s*|\s+)"
 
+# A full issue or pull-request URL, which GitHub also accepts as a reference
+# to an issue. Matched so that it can be refused by name rather than missed.
+_ISSUE_URL = (
+    r"https?://github\.com/" + _NAME + r"/" + _NAME + r"/(?:issues|pull)/"
+)
+
 # Every candidate the parser considers, whether or not it acts on it. The
-# optional `repo` group is what makes a cross-repository link visible: without
-# it the link simply fails to match and nothing is left to report.
+# optional `repo` group and the `url` group are what make a link this train
+# will not follow visible: without them the link simply fails to match and
+# nothing is left to report.
+#
+# `GH-` carries no group because it needs none -- it is this repository's own
+# issue either way, so it lands in the same place `#N` does. It matches every
+# casing, which is GitHub's behaviour; see the docstring for the probe.
 #
 # The longest-first sort of the alternation is legibility, not correctness.
 # `re` backtracks, so `close` matching first in `closes #7` fails at the
@@ -182,7 +233,10 @@ _SEPARATOR = r"(?::\s*|\s+)"
 LINK_RE = re.compile(
     r"\b(?P<keyword>" + "|".join(sorted(KEYWORDS, key=len, reverse=True)) + r")"
     + _SEPARATOR
-    + r"(?P<repo>" + _NAME + r"/" + _NAME + r")?#(?P<number>\d+)",
+    + r"(?:(?P<url>" + _ISSUE_URL + r")"
+    + r"|(?P<repo>" + _NAME + r"/" + _NAME + r")?#"
+    + r"|GH-)"
+    + r"(?P<number>\d+)",
     re.IGNORECASE,
 )
 
@@ -194,6 +248,7 @@ IN_SPAN = "inside an inline code span"
 IN_QUOTE = "inside a block quote"
 IN_COMMENT = "inside an HTML comment"
 CROSS_REPO = "a link to another repository, which this train does not close"
+ISSUE_URL = "a full issue URL, which this train does not follow"
 
 # Above this many distinct issues in one body, say so on stderr. Not a cap:
 # every issue found is still printed. A body naming this many is more likely
@@ -377,6 +432,8 @@ def parse(body: str) -> tuple[list[int], list[Rejection]]:
 
     for m in LINK_RE.finditer(body):
         reason = _reason_at(m.start(), spans)
+        if reason is None and m.group("url") is not None:
+            reason = ISSUE_URL
         if reason is None and m.group("repo") is not None:
             reason = CROSS_REPO
         if reason is None:
@@ -396,10 +453,10 @@ def parse(body: str) -> tuple[list[int], list[Rejection]]:
 def linked_issues(body: str) -> list[int]:
     """Every issue number this train will close, sorted and deduplicated.
 
-    Cross-repository links (`Closes owner/repo#12`) are not included, because
-    the train closes issues in its own repository only. They are not dropped in
-    silence either -- `parse` returns them as rejections and `main` prints each
-    one on stderr.
+    A link that names a repository -- `Closes owner/repo#12`, or a full issue
+    URL -- is not included, because the train closes issues in its own
+    repository only. It is not dropped in silence either: `parse` returns it as
+    a rejection and `main` prints each one on stderr.
     """
     return parse(body)[0]
 
