@@ -32,11 +32,26 @@ _WORKFLOW = _REPO / ".github" / "workflows" / "merge-train.yml"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_linked_issues import (  # noqa: E402
-    KEYWORDS,
     LINK_RE,
     NOISY_COUNT,
     linked_issues,
     main,
+)
+
+# GitHub's nine closing keywords, spelled out here rather than imported from
+# the module under test. Comparing the compiled pattern against the tuple it
+# was built from holds for any value of that tuple, so it would pass a narrowing
+# back to the shell's three.
+_GITHUB_KEYWORDS = (
+    "close",
+    "closed",
+    "closes",
+    "fix",
+    "fixed",
+    "fixes",
+    "resolve",
+    "resolved",
+    "resolves",
 )
 
 # The cut that caused #1541. Referenced by name so the tests read as being
@@ -277,14 +292,19 @@ def test_the_regex_keyword_set_matches_what_the_docs_claim() -> None:
     nine are pinned one spelling at a time in
     `tests/test_merge_train_close_keywords_1549.py`.
 
-    The alternation counted is the `keyword` group's, not the whole pattern's.
-    A whole-pattern count of `|` said the same thing only while the pattern
-    held exactly one alternation, and the colon separator added a second one
-    that has nothing to do with the keyword set.
+    The alternation read is the `keyword` group's, not the whole pattern's. A
+    whole-pattern count of `|` said the same thing only while the pattern held
+    exactly one alternation, and the colon separator added a second one that
+    has nothing to do with the keyword set.
+
+    It is compared against `_GITHUB_KEYWORDS`, not against the module's own
+    `KEYWORDS`. `LINK_RE` is built from `KEYWORDS`, so comparing the two pins
+    nothing: narrowing `KEYWORDS` back to the shell's three narrows the
+    alternation with it and the assertion still holds.
     """
     alternation = re.search(r"\(\?P<keyword>([^)]*)\)", LINK_RE.pattern)
     assert alternation is not None, "the keyword group is gone from the regex"
-    assert sorted(alternation.group(1).split("|")) == sorted(KEYWORDS)
+    assert sorted(alternation.group(1).split("|")) == sorted(_GITHUB_KEYWORDS)
 
 
 def test_main_returns_zero_for_a_body_on_stdin(
