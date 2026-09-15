@@ -23,6 +23,7 @@ must go the other way is.
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 import pytest
@@ -398,10 +399,24 @@ def producer_figures() -> dict[str, object]:
 
     The run itself is fast because there is nothing to search: #1526 ships
     unchanged budgets, so the producer renders two arms per cell instead of
-    sweeping a budget range for a byte-neutral band. Measured at about 1.4
-    seconds for the full grid.
+    sweeping a budget range for a byte-neutral band. Measured at about 8
+    seconds for the full grid after #1547 extended it to 18,600 characters.
+
+    Every `AELFRICE_` variable is removed for the duration. `figures()` is
+    already hermetic against `.aelfrice.toml` — it chdirs into a tempdir with
+    no ancestor config — but a dozen of the resolvers it reaches check an
+    environment variable first, `AELFRICE_TYPE_AWARE_COMPRESSION` among them,
+    and a value exported in the operator's shell must not change a published
+    figure or the assertions below. The prefix is cleared as a class rather
+    than a list of names, so a resolver added later is covered too.
     """
-    return _producer_module().figures()  # type: ignore[attr-defined]
+    mp = pytest.MonkeyPatch()
+    try:
+        for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
+            mp.delenv(name, raising=False)
+        return _producer_module().figures()  # type: ignore[attr-defined]
+    finally:
+        mp.undo()
 
 
 def _producer_lanes() -> tuple[str, ...]:
@@ -465,6 +480,17 @@ def test_the_producer_names_which_budget_ended_every_pack(
     carries a `binds_on` naming which cap ended it — including the
     `l25_subbudget` value the earlier probe could not produce, which must
     actually occur somewhere in the grid or the fix is untested.
+
+    The per-cell floor is `>= 0`, not `> 0`. #1547 extended the grid past
+    every lane's own budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`
+    a single `<core>` line no longer fits: `_pack_core_candidates` skips an
+    oversized belief rather than breaking, so at 7,170 content characters it
+    packs none of 300 candidates and `<core>` emits nothing. Zero is that
+    lane's measured value there, not a suppressed cell — the property this
+    test exists to defend — so the emptiness is pinned by
+    `test_the_core_section_empties_once_one_belief_exceeds_its_budget` and the
+    per-lane floor below keeps this assertion from passing on a producer that
+    emitted nothing anywhere.
     """
     fig = producer_figures
     m = _producer_module()
@@ -472,9 +498,14 @@ def test_the_producer_names_which_budget_ended_every_pack(
     for lane in _producer_lanes():
         curve = fig[f"{lane}_curve"]
         assert set(curve) == {str(c) for c in fig["lengths"]}, lane
+        assert any(
+            curve[chars][arm] > 0
+            for chars in curve
+            for arm in ("before", "after")
+        ), f"{lane}: no cell in the grid emitted a byte"
         for chars, row in curve.items():
             for arm in ("before", "after"):
-                assert isinstance(row[arm], int) and row[arm] > 0, (lane, chars)
+                assert isinstance(row[arm], int) and row[arm] >= 0, (lane, chars)
                 binds_on = row[f"{arm}_binds_on"]
                 assert binds_on in {
                     "token_budget", "l25_subbudget", "both", "pool",
@@ -609,6 +640,264 @@ def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
     shape = producer_figures["corpus_shape"]
     assert shape["locked"] > 0, shape
     assert shape["speculative"] > 0, shape
+
+
+# ---------------------------------------------------------------------------
+# #1547 AC4 — the producer that can see the charge-vs-emit defect
+#
+# These assert on the same producer and the same `producer_figures` run as the
+# block above, which is why they live in this file rather than beside
+# `tests/test_envelope_dedupe_1547.py`: the run costs about eight seconds and
+# a second module-scoped fixture would pay it twice to assert on the same
+# numbers.
+# ---------------------------------------------------------------------------
+
+
+def test_the_snapshot_arm_is_a_second_corpus_and_the_control_holds_none(
+    producer_figures: dict[str, object],
+) -> None:
+    """The arm is one field's difference between two otherwise-equal stores.
+
+    The control corpus is the one this producer shipped with: every belief on
+    the `RETENTION_UNKNOWN` default, which `compress_for_retrieval` maps to
+    `verbatim`, so every charge equals its emission by construction. That zero
+    is asserted, not assumed — it is the property that made a 150x undercharge
+    invisible here, and a producer that quietly grew a snapshot belief into its
+    control would stop being a control without saying so.
+
+    `snapshot_unlocked` is strictly smaller than `snapshot`, because the
+    stride lands on belief 0, which `LOCK_EVERY` also locks, and a locked
+    snapshot renders verbatim — locks override retention class. Reading both
+    counts off the store is what distinguishes "the class was written" from
+    "the generator meant to write it".
+    """
+    fig = producer_figures
+    control = fig["corpus_shape"]
+    arm = fig["snapshot_corpus_shape"]
+    assert control["snapshot"] == 0, control
+    assert control["snapshot_unlocked"] == 0, control
+    assert arm["snapshot"] > 0, arm
+    assert 0 < arm["snapshot_unlocked"] < arm["snapshot"], arm
+    # The middle corpus is the attribution control: sentence-bearing text, no
+    # class, so it must hold no snapshot belief either.
+    prose = fig["prose_corpus_shape"]
+    assert prose["snapshot"] == 0, prose
+    # Everything except the class is identical across the three corpora.
+    for other in (prose, arm):
+        assert other["locked"] == control["locked"], (other, control)
+        assert other["speculative"] == control["speculative"], (other, control)
+
+
+def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
+    producer_figures: dict[str, object],
+) -> None:
+    """The defect, at every grid length, in the producer's own numbers.
+
+    `fact` and `unknown` render verbatim and must charge exactly what they
+    emit — that is the control, and without it a table where every ratio was
+    large would be evidence of a broken measurement rather than of a defect.
+    `snapshot` must charge less than it emits wherever the headline strategy
+    fires, and the ratio must grow with belief length, because the headline is
+    a fixed-size prefix and the element around the emitted content is not.
+
+    The two shortest grid points are the arm's inert control: below
+    `SENTENCE_CHARS` a belief carries no sentence boundary, `_headline`
+    returns it unchanged, and the ratio is 1.0 for every class that is not
+    `transient`. A grid that stopped there would measure nothing, which is
+    what the pre-#1547 grid did.
+    """
+    fig = producer_figures
+    m = _producer_module()
+    assert fig["compression"] is True, (
+        "the charge this measures only exists with type-aware compression on"
+    )
+    table = fig["undercharge"]
+    lengths = [int(c) for c in fig["lengths"]]
+    for chars in lengths:
+        row = table[str(chars)]
+        for verbatim in ("fact", "unknown"):
+            assert row[verbatim]["strategy"] == "verbatim", (chars, verbatim)
+            assert row[verbatim]["ratio"] == 1.0, (chars, row[verbatim])
+        snap = row["snapshot"]
+        if chars < m.SENTENCE_CHARS:
+            assert snap["strategy"] == "verbatim", (chars, snap)
+            assert snap["ratio"] == 1.0, (chars, snap)
+        else:
+            assert snap["strategy"] == "headline", (chars, snap)
+            assert snap["ratio"] > 1.0, (chars, snap)
+            assert snap["charged_tokens"] < snap["emitted_tokens"], (chars, snap)
+    compressing = [c for c in lengths if c >= m.SENTENCE_CHARS]
+    ratios = [table[str(c)]["snapshot"]["ratio"] for c in compressing]
+    assert ratios == sorted(ratios), dict(zip(compressing, ratios))
+    # The grid reaches a range where the undercharge is an order of magnitude,
+    # which is the whole reason #1547 extended it past 300 characters.
+    assert max(ratios) > 10.0, dict(zip(compressing, ratios))
+
+
+def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
+    producer_figures: dict[str, object],
+) -> None:
+    """A pack that believes it is under budget while emitting 100x its charge.
+
+    At the top of the grid the prose pack admits no non-locked belief at all —
+    one verbatim belief costs more than the whole `DEFAULT_HOOK_TOKEN_BUDGET` —
+    so it ends on the candidate pool. The snapshot corpus differs from it in
+    one field, and on it the budget binds and admits beliefs whose emitted text
+    is two orders of magnitude more than what they were charged.
+
+    The comparison is prose against snapshot, not control against snapshot.
+    Those two corpora differ in exactly one field; the control differs in two,
+    and attributing a ratio to the class while the text also moved is the
+    confound this arm was built to avoid. The control is asserted here only for
+    what it is for: its own text change must not be what produced the effect,
+    so `prose` is required to stay close to it.
+
+    All three sides go through `_measure`, so both budgets are varied on each,
+    and the `binds_on` each reports is the #1546 property applied to the arm.
+    """
+    fig = producer_figures
+    m = _producer_module()
+    arm = fig["snapshot_arm"]
+    assert set(arm) == set(m.SNAPSHOT_ARM_LANES), set(arm)
+    lengths = sorted(int(c) for c in fig["snapshot_arm_lengths"])
+    for lane, rows in arm.items():
+        row = rows[str(lengths[-1])]
+        assert row["snapshot_items"] > row["prose_items"], (lane, row)
+        assert row["snapshot_bytes"] > row["prose_bytes"], (lane, row)
+        assert row["snapshot_pack_ratio"] > 10.0, (lane, row)
+        # The prose pack admits no non-locked belief at all here, so it has no
+        # ratio to report: one verbatim belief of this length costs more than
+        # the whole budget. That None is the control the line above is read
+        # against, and it is asserted rather than skipped over.
+        assert row["prose_unlocked_hits"] == 0, (lane, row)
+        assert row["prose_pack_ratio"] is None, (lane, row)
+        assert row["snapshot_unlocked_hits"] > 0, (lane, row)
+        for side in ("control_binds_on", "prose_binds_on", "snapshot_binds_on"):
+            assert row[side] in {
+                "token_budget", "l25_subbudget", "both", "pool",
+            }, (lane, side, row[side])
+        # The text change on its own moves nothing at the top of the grid:
+        # without the class, sentence boundaries are just characters.
+        assert row["prose_bytes"] == row["control_bytes"], (lane, row)
+        # The inert control length: below `SENTENCE_CHARS` no belief carries a
+        # sentence boundary, so the class has nothing to shorten and all three
+        # corpora must render byte-identically.
+        short = rows[str(lengths[0])]
+        assert short["control_bytes"] == short["prose_bytes"] == short[
+            "snapshot_bytes"
+        ], (lane, short)
+        assert short["snapshot_pack_ratio"] == 1.0, (lane, short)
+
+
+def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
+    producer_figures: dict[str, object],
+) -> None:
+    """The lane this producer did not have, and the #1546 property on it.
+
+    `first_prompt` composes what the other lanes render one at a time, so it
+    must be strictly larger than the per-turn lane alone at the same budget on
+    the same corpus, and the difference must be the session-start sub-block.
+    Its `<recent-work>` section is asserted empty because the producer builds
+    the sub-block on a non-git cwd on purpose: that section is resolved from
+    git plumbing and would otherwise make a published byte count a function of
+    the branch name of whatever checkout the producer ran in.
+
+    The #1546 property — vary both budgets, name the cap that ended the arm —
+    is asserted on this lane by name rather than left to the all-lanes sweep,
+    because a lane registered in `_RENDERERS` but not in `LANES` would pass
+    that sweep by not being in it.
+    """
+    fig = producer_figures
+    m = _producer_module()
+    assert "first_prompt" in m.LANES, m.LANES
+    assert fig["first_prompt_recent_work_chars"] == 0, fig[
+        "first_prompt_recent_work_chars"
+    ]
+    assert fig["first_prompt_headline_chars"] == fig["ups_headline_chars"]
+    assert fig["first_prompt_budget"] == fig["ups_budget"]
+    for arm in ("before", "after"):
+        assert fig[f"first_prompt_bytes_{arm}"] > fig[f"ups_bytes_{arm}"], (
+            "the composed envelope must be larger than its per-turn half alone"
+        )
+    curve = fig["first_prompt_curve"]
+    assert set(curve) == {str(c) for c in fig["lengths"]}, set(curve)
+    binds = {
+        curve[chars][f"{arm}_binds_on"]
+        for chars in curve
+        for arm in ("before", "after")
+    }
+    assert binds <= {"token_budget", "l25_subbudget", "both", "pool"}, binds
+    assert binds - {"pool"}, (
+        "every cell of the composed lane ended on the candidate pool, so no "
+        "budget was measured on it"
+    )
+
+
+def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
+    producer_figures: dict[str, object],
+) -> None:
+    """#1547's AC2 shipped with no producer able to measure it. This is it.
+
+    The dedupe fires where a belief appears in both halves of one envelope, so
+    a lane that renders one half in isolation has no repeat to find. The
+    measured effect is a byte reduction and a positive count of repeated ids:
+    a zero count would mean the corpus never puts the same belief in both
+    halves, and then the byte figure would be a tautology rather than a
+    measurement.
+    """
+    d = producer_figures["dedupe"]
+    assert d["hits"] > 0, d
+    assert d["repeated_ids"] > 0, d
+    assert d["session_start_chars"] > 0, d
+    assert d["bytes_after"] < d["bytes_before"], d
+    assert d["pct"] < 0, d
+
+
+def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
+    producer_figures: dict[str, object],
+) -> None:
+    """A zero in the grid is a measurement, and this is the one that produces it.
+
+    `_pack_core_candidates` skips an oversized belief rather than breaking, so
+    once a single `<core>` line costs more than
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` the section packs none of 300
+    candidates and emits nothing. The grid reached that for the first time when
+    #1547 extended it past 300 characters, and
+    `test_the_producer_names_which_budget_ended_every_pack` relaxed its
+    per-cell floor to `>= 0` on the strength of this. Pinned here so the
+    relaxation is backed by an assertion rather than by a tolerance.
+    """
+    fig = producer_figures
+    curve = fig["core_curve"]
+    lengths = sorted(int(c) for c in fig["lengths"])
+    budget = fig["core_budget"]
+    emptied = [c for c in lengths if curve[str(c)]["after"] == 0]
+    assert emptied, {c: curve[str(c)]["after"] for c in lengths}
+    # A cost function is not consulted here; the line the section emits is.
+    smallest_empty = min(emptied)
+    assert chars_to_tokens(len(_core_line_at(smallest_empty))) > budget
+    # Everything below the first empty length still emits, so the zero is a
+    # threshold this lane crosses and not a lane that never emitted.
+    for c in lengths:
+        if c < smallest_empty:
+            assert curve[str(c)]["after"] > 0, (c, curve[str(c)])
+    # `pct` is None exactly where the before arm is zero.
+    for c in lengths:
+        row = curve[str(c)]
+        assert (row["pct"] is None) == (row["before"] == 0), (c, row)
+
+
+def _core_line_at(content_chars: int) -> str:
+    """The `<core>` line the shipped renderer emits for one belief of that size."""
+    from aelfrice.hook import _core_belief_line
+
+    import random
+
+    m = _producer_module()
+    content = m.synthetic_content(  # type: ignore[attr-defined]
+        random.Random(m.UNDERCHARGE_SEED), 0, content_chars,  # type: ignore[attr-defined]
+    )
+    return _core_belief_line(m._probe_belief(content, "unknown"))  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
