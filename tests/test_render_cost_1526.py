@@ -59,6 +59,7 @@ from aelfrice.retrieval import (
     ENV_RETRIEVAL_TOKEN_BUDGET,
     lock_manifest_line,
     lock_injection_tokens,
+    resolve_token_budget,
 )
 from aelfrice.store import MemoryStore
 
@@ -753,14 +754,21 @@ def test_session_start_lane_never_trims_its_l0_pool(
     not the edge: it would have passed unchanged while the budget did
     nothing.
 
-    The budget is varied through `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, the one
-    knob that still reaches this lane now that the caller passes none, plus
-    an unset arm for the shipped default. `session_start` retrieves with an
-    empty query; in `retrieve_with_tiers` every relevance lane is gated on
-    `query.strip()`, so only L0 contributes and L0 is appended
-    unconditionally. Asserted as an identity across four orders of magnitude
-    of budget, with the store's whole lock set as the control: if any budget
-    ever bound, the smallest of these would return fewer than all of them.
+    The budget is varied through both knobs that reach this lane, and
+    through neither. `AELFRICE_RETRIEVAL_TOKEN_BUDGET` outranks everything
+    and always reached it; `[retrieval] token_budget` is the one #1546
+    newly exposed, because the resolver ranks TOML below an explicit
+    argument and this caller used to pass one. The unset arm is the shipped
+    default. `session_start` retrieves with an empty query; in
+    `retrieve_with_tiers` every relevance lane is gated on `query.strip()`,
+    so only L0 contributes and L0 is appended unconditionally. Asserted as
+    an identity across four orders of magnitude of budget, with the store's
+    whole lock set as the control: if any budget ever bound, the smallest of
+    these would return fewer than all of them.
+
+    The TOML arm asserts its own resolution first. A config file the
+    resolver never discovers would leave that arm running at the default and
+    agreeing with every other arm for the wrong reason.
     """
     n_locked, n_free = 10, 60
     db = tmp_path / "memory.db"
@@ -797,25 +805,41 @@ def test_session_start_lane_never_trims_its_l0_pool(
         aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
     )
 
-    seen = []
-    for budget in (1, 10, 1500, 100_000, None):
-        if budget is None:
-            # The shipped path: nobody sets the env var, so `retrieve()`
-            # falls through to its own default.
-            monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
-        else:
-            monkeypatch.setenv(ENV_RETRIEVAL_TOKEN_BUDGET, str(budget))
-        seen.append(aelfrice.hook._retrieve_baseline_with_block())
-    counts = {len(hits) for hits, _ in seen}
-    sizes = {len(block) for _, block in seen}
-    assert counts == {n_locked}, counts
-    assert len(sizes) == 1, sizes
+    seen: list[tuple[str, list[Belief], str]] = []
+    for budget in (1, 10, 1500, 100_000):
+        monkeypatch.setenv(ENV_RETRIEVAL_TOKEN_BUDGET, str(budget))
+        hits, block = aelfrice.hook._retrieve_baseline_with_block()
+        seen.append((f"env={budget}", hits, block))
+    # The shipped path: nobody sets the env var, so `retrieve()` falls
+    # through to its own default.
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    hits, block = aelfrice.hook._retrieve_baseline_with_block()
+    seen.append(("unset", hits, block))
+    # The knob the deletion exposed. `resolve_token_budget` walks up from the
+    # process's cwd, so the file has to sit in a directory this test owns and
+    # the chdir has to happen before the call.
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[retrieval]\ntoken_budget = 1\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    assert resolve_token_budget() == 1, (
+        "the TOML arm resolved to something else, so it is not measuring "
+        f"what it claims: {resolve_token_budget()}"
+    )
+    hits, block = aelfrice.hook._retrieve_baseline_with_block()
+    seen.append(("toml=1", hits, block))
+
+    counts = {label: len(hits) for label, hits, _ in seen}
+    sizes = {label: len(block) for label, _, block in seen}
+    assert set(counts.values()) == {n_locked}, counts
+    assert len(set(sizes.values())) == 1, sizes
     # Only the locks reach the block, at every budget: no relevance lane
     # runs on an empty query, so there is nothing for a budget to trim.
-    for hits, _ in seen:
-        assert all(b.lock_level == LOCK_USER for b in hits), [
-            b.id for b in hits if b.lock_level != LOCK_USER
-        ]
+    for label, hits, _ in seen:
+        assert all(b.lock_level == LOCK_USER for b in hits), (
+            label,
+            [b.id for b in hits if b.lock_level != LOCK_USER],
+        )
 
 
 def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
