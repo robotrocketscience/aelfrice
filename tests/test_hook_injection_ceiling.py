@@ -31,9 +31,18 @@ from aelfrice.hook import (
     HOOK_BLOCK_TOKEN_CEILING,
     _audit_tokens_from_block,
     _cap_belief_content,
+    _split_belief_lines,
+    _ups_belief_line_cost,
     _write_memory_block,
     enforce_block_ceiling,
     resolve_block_ceiling,
+)
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_TIER_FROZEN,
+    LOCK_TIER_REFERENCE,
+    LOCK_USER,
+    Belief,
 )
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
@@ -388,6 +397,75 @@ def test_write_memory_block_is_silent_on_a_block_that_fits(
     _write_memory_block(body, stdout=sout, stderr=serr)
     assert sout.getvalue() == body
     assert serr.getvalue() == ""
+
+
+# ---------------------------------------------------------------------------
+# _ups_belief_line_cost — the reference-lock arm
+# ---------------------------------------------------------------------------
+
+# One belief text, rendered two ways by the tier alone. 20,019 characters
+# is long enough that the two costs are three orders of magnitude apart,
+# so neither assertion below can be satisfied by the other's value.
+_REF_CONTENT = "reference material " + "a" * 20_000
+
+# Produced by `uv run python -c` over `hook._ups_belief_line_cost` on the
+# two beliefs `_ref_lock` builds; see the docstring below for why they are
+# literals rather than a formula re-derived here.
+_REF_MANIFEST_TOKENS = 31
+_REF_ELEMENT_TOKENS = 5022
+
+
+def _ref_lock(bid: str, tier: str) -> Belief:
+    return Belief(
+        id=bid,
+        content=_REF_CONTENT,
+        content_hash=f"h_{bid}",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_USER,
+        lock_tier=tier,
+        locked_at="2026-04-26T00:00:00Z",
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    )
+
+
+def test_reference_lock_costs_its_manifest_line_not_its_element() -> None:
+    """A reference lock is charged what it renders: one manifest line.
+
+    `belief_cost_fn` overrides `retrieval.lock_injection_tokens`
+    entirely (`retrieval.retrieve_with_tiers`), so this lane has to make
+    the #1016-B bound itself — a lane that renders its own shape renders
+    locks in that shape as well. Replacing the branch with the
+    unconditional element cost is revert-green and measurably halves the
+    hits that reach the model: this 20,019-character lock goes from 31
+    tokens to 5,022, `locked_used` then swamps `DEFAULT_HOOK_TOKEN_BUDGET`
+    (1,500), and the relevance budget collapses to its floor.
+
+    The two costs are literals rather than arithmetic re-derived here,
+    because a formula transcribed from `_ups_belief_line_cost` moves with
+    it and could not detect it changing. They are pinned in the same
+    assertion, so the shipped value is named and the wrong value is named
+    with it.
+
+    The second assertion ties both to the renderer: `_split_belief_lines`
+    must actually emit this belief as a manifest entry and no element, or
+    the cost being charged is not the cost of the line that ships.
+    """
+    ref = _ref_lock("R" + "0" * 31, LOCK_TIER_REFERENCE)
+    frozen = _ref_lock("F" + "0" * 31, LOCK_TIER_FROZEN)
+    assert {
+        "reference": _ups_belief_line_cost(ref),
+        "frozen": _ups_belief_line_cost(frozen),
+    } == {
+        "reference": _REF_MANIFEST_TOKENS,
+        "frozen": _REF_ELEMENT_TOKENS,
+    }
+
+    belief_lines, manifest_lines = _split_belief_lines([ref])
+    assert (belief_lines, len(manifest_lines)) == ([], 1)
+    assert manifest_lines[0].startswith(f'  ref {ref.id}: "')
 
 
 # ---------------------------------------------------------------------------
