@@ -261,6 +261,12 @@ _QUOTE_RE = re.compile(r"^ {0,3}>")
 _INDENT_RE = re.compile(r"^(?: {4}|\t)")
 _TICKS_RE = re.compile(r"`+")
 
+# CommonMark's start condition for an HTML block opened by a comment: `<!--`
+# at the head of the line, under four spaces of indentation. Such a line is a
+# block of its own, so unlike a paragraph it does not lazily swallow an
+# indented line written under it.
+_HTML_BLOCK_RE = re.compile(r"^ {0,3}<!--")
+
 
 @dataclass(frozen=True)
 class Rejection:
@@ -336,16 +342,24 @@ def _scan_inline(
 def inert_spans(body: str) -> list[tuple[int, int, str]]:
     """Every `(start, end, reason)` range of the body a keyword must not fire in.
 
-    One pass over the lines, carrying the three states a line inherits from the
-    one above it: an open code fence, an open HTML comment, and an open
-    indented code block. Offsets are into `body`, so a match is classified by
-    where it starts.
+    One pass over the lines, carrying the four states a line inherits from the
+    one above it: an open code fence, an open HTML comment, an open indented
+    code block, and whether the line above was a paragraph line. Offsets are
+    into `body`, so a match is classified by where it starts.
+
+    `prev_paragraph` is the one that is easy to get wrong, and it is not the
+    same as "the line above was not blank". An indented code block may not
+    interrupt a paragraph, but every other predecessor lets one open: a fence,
+    an HTML block, a preceding indented line, the start of the body and a
+    blank line all do. Only a paragraph line blocks it, and a block quote
+    counts as one because GitHub folds the indented line under it into the
+    quote as a lazy continuation. See the module docstring's divergence 4.
     """
     spans: list[tuple[int, int, str]] = []
     fence: tuple[str, int] | None = None
     in_comment = False
     in_indent = False
-    prev_blank = True
+    prev_paragraph = False
     pos = 0
 
     for raw in body.splitlines(keepends=True):
@@ -363,7 +377,9 @@ def inert_spans(body: str) -> list[tuple[int, int, str]]:
                 # The rest of the line is live text, so it takes the same
                 # inline path a line that never was in a comment takes.
                 in_comment = _scan_inline(text, closed + 3, start, spans)
-            prev_blank = False
+            # The whole line belongs to the HTML block, the text after `-->`
+            # included, so it is not a paragraph line.
+            prev_paragraph = False
             continue
 
         if fence is not None:
@@ -376,12 +392,12 @@ def inert_spans(body: str) -> list[tuple[int, int, str]]:
                 and not closer.group(2).strip()
             ):
                 fence = None
-            prev_blank = False
+            prev_paragraph = False
             continue
 
         if not text.strip():
             # A blank line ends a paragraph but not an indented code block.
-            prev_blank = True
+            prev_paragraph = False
             continue
 
         opener = _FENCE_RE.match(text)
@@ -389,26 +405,30 @@ def inert_spans(body: str) -> list[tuple[int, int, str]]:
             fence = (opener.group(1)[0], len(opener.group(1)))
             spans.append((start, end, IN_FENCE))
             in_indent = False
-            prev_blank = False
+            prev_paragraph = False
             continue
 
         indented = _INDENT_RE.match(text) is not None
-        if indented and (in_indent or prev_blank):
+        if indented and (in_indent or not prev_paragraph):
             # An indented block cannot interrupt a paragraph, so it needs a
-            # blank line above it -- or to be running already.
+            # non-paragraph line above it -- or to be running already.
             in_indent = True
             spans.append((start, end, IN_INDENT))
-            prev_blank = False
+            prev_paragraph = False
             continue
         in_indent = False
 
         if _QUOTE_RE.match(text) is not None:
             spans.append((start, end, IN_QUOTE))
-            prev_blank = False
+            # A lazy continuation folds the next line into this quote's
+            # paragraph, so an indent below it is prose, not code.
+            prev_paragraph = True
             continue
 
         in_comment = _scan_inline(text, 0, start, spans)
-        prev_blank = False
+        # A line that opens with `<!--` is an HTML block rather than a
+        # paragraph, whatever follows the `-->` on it.
+        prev_paragraph = _HTML_BLOCK_RE.match(text) is None
 
     return spans
 
