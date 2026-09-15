@@ -339,6 +339,29 @@ sub-block) and survives `_group_by_provenance`, which rewrites only the
 
 _LOCKED_ATTR: Final[str] = 'lock="user"'
 
+_SEEN_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
+    r'^  seen (?P<id>.+?): ".*"$\n?', re.MULTILINE
+)
+"""One `seen <id>` manifest line, as `_split_belief_lines` emits it.
+
+This is the only manifest form that *points into the block it is in*.
+`retrieval.seen_manifest_line`'s docstring states the contract: "the full
+text is already in this context window, above — so the entry points at it
+rather than telling the reader to go fetch it". The dropper matches these
+so a trim cannot leave the pointer without its referent; see
+`enforce_block_ceiling`.
+
+The sibling `ref <id>` form is deliberately not matched. A reference lock's
+text is *never* in the block by construction (#1016-B), so a `ref` line
+points outward and no drop can dangle it — and a reference lock is
+`lock="user"`, which the dropper never removes anyway.
+
+Two spaces of indent and the `: "` separator are both required, so the id
+group cannot run past the line's own punctuation. The pattern is only ever
+consulted for ids the dropper is already removing, so escaped content that
+happened to look like a manifest line could not cause a removal on its own.
+"""
+
 
 @dataclass(frozen=True)
 class BlockCeilingOutcome:
@@ -347,7 +370,9 @@ class BlockCeilingOutcome:
     `dropped_ids` is the belief ids the trim removed, in the order they
     were removed (tail first). Callers need it because a dropped belief
     must not receive the audit rows, ring entries and `belief_touches`
-    that claim the model saw it — see `_write_memory_block`.
+    that claim the model saw it — see `_write_memory_block`. A belief
+    whose `seen` pointer was removed with its element is in this list
+    exactly once: it reached the model in neither form.
 
     `over_ceiling` is the #379 escape hatch made visible: True when the
     body is still over the limit after every droppable element is gone,
@@ -434,7 +459,7 @@ def enforce_block_ceiling(
     """Drop whole non-locked `<belief>` elements until `body` fits.
 
     Only complete elements are removed, so the block stays well-formed;
-    the framing sections and any manifest lines are never touched.
+    the framing sections are never touched.
 
     **`lock="user"` elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
@@ -446,22 +471,76 @@ def enforce_block_ceiling(
     and `over_ceiling` says so; `_write_memory_block` turns that into a
     stderr note.
 
+    **A dropped element takes its `seen` pointer with it.** The dangling
+    pointer above was not a locks-only accident; it is the class, and the
+    lock exemption fixed one instance of it. `retrieval.seen_manifest_line`
+    means "the full text is already in this context window", so a `seen`
+    line whose element this function just deleted is a false statement
+    about the block it sits in — the model is told to look up text that is
+    not there. Reproduced on the first prompt of a session, where #1547's
+    dedupe renders a belief verbatim in `<core>` and as a `seen` pointer in
+    the same envelope, against the shipped 6,000-token ceiling::
+
+        [locks55 + core40x2000] tokens=5873 elements=55 seen=57 DANGLING=2
+        [locks80 + core20x2000] tokens=8385 elements=80 seen=82 DANGLING=2
+        control [core-only 40x4000] tokens=1701 elements=4  seen=4 DANGLING=0
+
+    The pointer is dropped rather than the element made non-droppable,
+    because the alternative inverts what the ceiling is for. A pointed-at
+    element is exactly a belief the block renders twice; exempting it would
+    let #1547's dedupe — a size *optimisation* — pin bytes in place, and on
+    a first prompt where every `<core>` entry is also a hit that is the
+    whole droppable set, leaving the ceiling nothing to act on. Dropping
+    the pair is also strictly the larger saving, and it is what the belief
+    losing both of its renders already means: it is in `dropped_ids`, so
+    every exposure write skips it.
+
+    A `seen` pointer to a belief rendered on an *earlier* turn is
+    untouched: its id cannot be in the dropped set, because there is no
+    element carrying that id in this body to drop.
+
     `ceiling=None` resolves the environment override without a note (the
     note belongs to the emit path, which has a stderr to write to).
     """
     limit = resolve_block_ceiling() if ceiling is None else ceiling
     if limit <= 0 or _audit_tokens_from_block(body) <= limit:
         return BlockCeilingOutcome(body, (), False)
-    # Tail first, so each splice leaves every earlier span's offsets valid.
+    elements = list(_BELIEF_ELEMENT_RE.finditer(body))
     droppable = [
-        m for m in _BELIEF_ELEMENT_RE.finditer(body)
-        if _LOCKED_ATTR not in m.group("attrs")
+        m for m in elements if _LOCKED_ATTR not in m.group("attrs")
     ]
+    # Only manifest lines that sit *outside* every element. Belief content
+    # keeps its newlines through `_escape_for_hook_block` (only angle
+    # brackets are entity-escaped), so a stored belief can put a line
+    # shaped like a manifest entry inside its own element. Such a match is
+    # a span already covered by the element around it, and splicing both
+    # would delete the wrong bytes.
+    element_spans = [m.span() for m in elements]
+    pointers = {
+        m.group("id"): m.span()
+        for m in _SEEN_MANIFEST_RE.finditer(body)
+        if not any(
+            start <= m.start() < end for start, end in element_spans
+        )
+    }
+    # Spans are collected and spliced in one descending pass at the end.
+    # A pointer can sit either side of the element it names — `<core>`
+    # renders above the per-turn hits — so removing them as they are
+    # chosen would invalidate offsets in both directions.
+    cut: list[tuple[int, int]] = []
     dropped: list[str] = []
-    while droppable and _audit_tokens_from_block(body) > limit:
-        m = droppable.pop()
-        body = body[: m.start()] + body[m.end():]
+    remaining = len(body)
+    while droppable and _tokens_from_chars(remaining) > limit:
+        m = droppable.pop()  # tail first: the weakest hits go first.
+        cut.append(m.span())
+        remaining -= m.end() - m.start()
         dropped.append(m.group("id"))
+        pointer = pointers.pop(m.group("id"), None)
+        if pointer is not None:
+            cut.append(pointer)
+            remaining -= pointer[1] - pointer[0]
+    for start, end in sorted(cut, reverse=True):
+        body = body[:start] + body[end:]
     return BlockCeilingOutcome(
         body, tuple(dropped), _audit_tokens_from_block(body) > limit
     )
@@ -1389,6 +1468,19 @@ def _audit_order_policy() -> str | None:
         return None
 
 
+def _tokens_from_chars(n_chars: int) -> int:
+    """Estimate tokens for a block of `n_chars` characters.
+
+    Split out of `_audit_tokens_from_block` (#1551) so the ceiling's drop
+    loop can price a pending removal by arithmetic instead of rebuilding
+    the body string on every iteration. One estimator, called two ways —
+    a second copy of the constant would be free to drift from the one the
+    audit record reports.
+    """
+    chars_per_token = 4.0
+    return int((n_chars + chars_per_token - 1) // chars_per_token)
+
+
 def _audit_tokens_from_block(block: str) -> int:
     """Estimate tokens in the rendered block.
 
@@ -1396,8 +1488,7 @@ def _audit_tokens_from_block(block: str) -> int:
     `aelfrice.retrieval._estimate_tokens` to keep audit-side counts
     comparable with the budgeter that produced the block.
     """
-    chars_per_token = 4.0
-    return int((len(block) + chars_per_token - 1) // chars_per_token)
+    return _tokens_from_chars(len(block))
 
 
 def read_hook_audit(path: Path) -> list[dict[str, object]]:
