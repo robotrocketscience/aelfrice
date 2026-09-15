@@ -698,6 +698,16 @@ def test_the_docstring_enumerates_every_documented_reference_form() -> None:
 
 
 def test_the_docstring_cites_githubs_keyword_list() -> None:
+    """The citation must be one whole URL, not a host and a path that happen
+    to both appear.
+
+    Matched as a single pattern rather than as two `in` checks. Two
+    independent substring assertions pass on a docstring that names the host
+    in one sentence and the page in another, which is not a citation a reader
+    can follow; and a bare `"docs.github.com" in doc` also reads to CodeQL as
+    an incomplete URL sanitization check, since that is the shape of one.
+    """
     doc = _SCRIPT.read_text(encoding="utf-8")
-    assert "docs.github.com" in doc
-    assert re.search(r"linking-a-pull-request-to-an-issue", doc)
+    assert re.search(
+        r"https://docs\.github\.com/\S*linking-a-pull-request-to-an-issue", doc
+    ), "the docstring does not cite GitHub's closing-keyword page by URL"
