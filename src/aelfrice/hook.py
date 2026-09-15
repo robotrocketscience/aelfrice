@@ -393,11 +393,18 @@ class BlockCeilingOutcome:
 def _is_user_locked(b: Belief) -> bool:
     """True when `b` is L0 user-locked: the tier both #1551 bounds exempt.
 
-    One predicate rather than a `lock_level == LOCK_USER` comparison
-    repeated at each render, cap, cost and accounting site. The rendered
-    counterpart is `_LOCKED_ATTR`, which is what the dropper reads back off
-    the emitted element; these two must keep agreeing, and a single spelling
-    on this side is half of that.
+    Called from the sites where the answer is genuinely unknown — the
+    per-turn hit render and the `total_chars` sum, both of which see a
+    mixed list from retrieval. It is deliberately NOT called where the
+    tier is already settled: the `<locked>` sub-block, whose every member
+    came from `list_locked_beliefs()`, and the `n_locked` / `locked_now`
+    accounting, where the drop policy already guarantees the answer. A
+    predicate applied to a list it cannot discriminate reads like a bound
+    and is none.
+
+    The rendered counterpart is `_LOCKED_ATTR`, which is what the dropper
+    reads back off the emitted element; these two must keep agreeing, and
+    a single spelling on this side is half of that.
     """
     return b.lock_level == LOCK_USER
 
@@ -2202,9 +2209,14 @@ def user_prompt_submit(
                 # there is a row the reader cannot find in the block
                 # beside it.
                 n_beliefs=len(emitted_hits),
-                n_locked=sum(
-                    1 for h in emitted_hits if _is_user_locked(h)
-                ),
+                # `hits`, not `emitted_hits`, and the two are equal here by
+                # construction: `enforce_block_ceiling` filters a
+                # `lock="user"` element out of its droppable set, so no
+                # locked belief can reach `dropped_ids` and the difference
+                # between the lists contains no locked row. Restating the
+                # filter would read as a bound the drop policy already
+                # guarantees.
+                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
                 beliefs=emitted_hits,
                 latency_ms=latency_ms,
@@ -2247,8 +2259,11 @@ def user_prompt_submit(
                 injected_ids = [
                     h.id for h in emitted_hits if getattr(h, "id", None)
                 ]
+                # `hits` for the same reason `n_locked` above uses it: a
+                # locked belief is never in `dropped_ids`, so the two
+                # lists carry the same locked rows.
                 locked_now = {
-                    h.id for h in emitted_hits if _is_user_locked(h)
+                    h.id for h in hits if h.lock_level == LOCK_USER
                 }
                 _next_fire = _ring_append_ids(
                     session_id,
@@ -4434,12 +4449,16 @@ def _build_session_start_subblock(
     #
     # So a store whose locks alone exceed the ceiling overruns it, and
     # `_write_memory_block` says so on stderr rather than trimming.
+    # No `_cap_belief_content` call in this loop, and the omission is
+    # deliberate. `models.LOCK_LEVELS` is exactly `{LOCK_NONE, LOCK_USER}`
+    # and `store.list_locked_beliefs()` selects `WHERE lock_level !=
+    # 'none'`, so every belief here is L0 and the cap's `locked=` exemption
+    # would be True on every row. Calling it would read like a bound and
+    # apply none.
     lines.append("<locked>")
     for b in locked:
-        content = _escape_for_hook_block(
-            _cap_belief_content(b.content, locked=_is_user_locked(b))
-        )
-        lock_attr = "user" if _is_user_locked(b) else "none"
+        content = _escape_for_hook_block(b.content)
+        lock_attr = "user" if b.lock_level == LOCK_USER else "none"
         lines.append(
             f'<belief id="{b.id}" lock="{lock_attr}">{content}</belief>'
         )
@@ -5007,34 +5026,36 @@ def session_start(
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             # #1551: the third emit site, and the only one that was never
-            # bounded at all. In practice its block is almost entirely
-            # `lock="user"` elements, which the ceiling never drops — so
-            # what this mostly buys is the overrun note, which is the
-            # honest outcome for a baseline the #379 contract forbids
-            # trimming.
-            outcome = _write_memory_block(body, stdout=sout, stderr=serr)
-            body = outcome.body
-            dropped_ids = set(outcome.dropped_ids)
-            emitted_hits = (
-                [h for h in hits if h.id not in dropped_ids]
-                if dropped_ids
-                else hits
-            )
+            # bounded at all. What it buys is the overrun note, which is
+            # the honest outcome for a baseline the #379 contract forbids
+            # trimming — **this lane has nothing droppable.** The block
+            # comes from `_retrieve_baseline_with_block`, which calls
+            # `retrieve(store, "", ...)`, and `retrieve_with_tiers` gates
+            # every relevance lane on `query.strip()`, so L0 is the only
+            # tier that contributes and every element it renders carries
+            # `lock="user"`, which `enforce_block_ceiling` never drops.
+            # Measured on a store of 200 unlocked core-qualifying beliefs
+            # plus 5 locks: 5 elements in the emitted baseline, 5
+            # `lock="user"`, 0 `lock="none"`.
+            #
+            # So there is no `dropped_ids` routing below, and its absence
+            # is deliberate: subtracting the dropped set from `hits` here
+            # selected `hits` from `hits`, and no fixture can make it do
+            # otherwise. Do not re-add it.
+            body = _write_memory_block(body, stdout=sout, stderr=serr).body
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
-            _begin_injection_epoch(session_id, emitted_hits)
+            _begin_injection_epoch(session_id, hits)
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_SESSION_START,
                 prompt="",
                 rendered_block=body,
-                n_beliefs=len(emitted_hits),
-                n_locked=sum(
-                    1 for h in emitted_hits if _is_user_locked(h)
-                ),
+                n_beliefs=len(hits),
+                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
-                beliefs=emitted_hits,
+                beliefs=hits,
                 latency_ms=latency_ms,
                 order_policy=_audit_order_policy(),
                 source=source,
