@@ -736,8 +736,16 @@ def test_core_pack_skips_an_oversized_belief_instead_of_breaking(
     assert broken == []
 
 
+@pytest.mark.parametrize(
+    ("n_locked", "n_free"),
+    [(10, 60), (300, 1800)],
+    ids=["decoys-reachable", "locks-above-any-plausible-cap"],
+)
 def test_session_start_lane_never_trims_its_l0_pool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    n_locked: int,
+    n_free: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#379: the SessionStart block is bounded by the lock count, not a budget.
 
@@ -761,16 +769,34 @@ def test_session_start_lane_never_trims_its_l0_pool(
     argument and this caller used to pass one. The unset arm is the shipped
     default. `session_start` retrieves with an empty query; in
     `retrieve_with_tiers` every relevance lane is gated on `query.strip()`,
-    so only L0 contributes and L0 is appended unconditionally. Asserted as
-    an identity across four orders of magnitude of budget, with the store's
-    whole lock set as the control: if any budget ever bound, the smallest of
-    these would return fewer than all of them.
+    so only L0 contributes and L0 is appended unconditionally.
 
     The TOML arm asserts its own resolution first. A config file the
     resolver never discovers would leave that arm running at the default and
     agreeing with every other arm for the wrong reason.
+
+    **Each arm is held absolutely, to the store's own lock list.** An
+    identity across arms is blind to a trim that does not vary with the
+    budget: `hits = hits[:5]` in `_retrieve_baseline_with_block` agrees with
+    every arm and still breaks #379. Both the hit list and the rendered block
+    are checked, because a formatter that packed the block would leave the
+    hit list whole.
+
+    **The two store sizes are not a sweep; each catches a mutation the other
+    cannot, so neither may be dropped.** Any fixture is blind to a cap above
+    its own lock count, so the large store sets the ceiling: at 10 locks
+    `hits = hits[:50]` changes nothing, and at 300 it drops 250. 300 is the
+    lock count #1546's measurement is published at, and it sits above every
+    cap this lane could plausibly acquire. The small store is what keeps the
+    decoys reachable. They exist for the mutation that gives this lane a
+    non-empty query, and `resolve_l1_limit`'s default candidate slice is 50:
+    at 10 locks that slice has room for decoys and this test fails, and at
+    300 the locks fill it and dedupe away, so no decoy is admitted and the
+    mutation passes. Measured with the empty query replaced by "locked
+    baseline belief" — at (10, 60): 10 hits and 0 decoys at budgets 1 and 10,
+    29 hits and 19 decoys at 1500, 50 hits and 40 decoys at 100000; at (300,
+    1800): 300 hits and 0 decoys at all four.
     """
-    n_locked, n_free = 10, 60
     db = tmp_path / "memory.db"
     store = MemoryStore(str(db))
     try:
@@ -785,22 +811,23 @@ def test_session_start_lane_never_trims_its_l0_pool(
         # Unlocked decoys, and the fixture's proportions are load-bearing.
         # They carry the locks' words verbatim so that an L1 pass -- on any
         # query a defect might substitute for the empty one -- would reach
-        # them, and they outnumber the locks so they are not all pushed out
-        # of the candidate slice by locks that dedupe away. Both were needed:
-        # this test survived the mutation that gives the lane a non-empty
-        # query with a near-miss vocabulary, and again with 60 locks.
-        # Measured with the empty query replaced by "locked baseline belief":
-        # 10 hits at budget 1 and 10, 29 at 1500, 50 at 100000.
+        # them, and they outnumber the locks six to one so they are not all
+        # pushed out of the candidate slice by locks that dedupe away. Only
+        # the small store has room for them in that slice; see the docstring.
         for i in range(n_free):
             store.insert_belief(
                 _mk(
-                    bid=f"{i + 1000:016d}",
+                    bid=f"{i + 100_000:016d}",
                     content=f"locked baseline belief spare {i} " + "b" * 120,
                     lock_level=LOCK_NONE,
                 )
             )
+        # The control comes from the store, not from the loop above: it is
+        # the set the #379 contract says every arm must emit in full.
+        locked_ids = {b.id for b in store.list_locked_beliefs()}
     finally:
         store.close()
+    assert len(locked_ids) == n_locked, len(locked_ids)
     monkeypatch.setattr(
         aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
     )
@@ -829,16 +856,31 @@ def test_session_start_lane_never_trims_its_l0_pool(
     hits, block = aelfrice.hook._retrieve_baseline_with_block()
     seen.append(("toml=1", hits, block))
 
-    counts = {label: len(hits) for label, hits, _ in seen}
     sizes = {label: len(block) for label, _, block in seen}
-    assert set(counts.values()) == {n_locked}, counts
     assert len(set(sizes.values())) == 1, sizes
-    # Only the locks reach the block, at every budget: no relevance lane
-    # runs on an empty query, so there is nothing for a budget to trim.
-    for label, hits, _ in seen:
+    for label, hits, block in seen:
+        # Absolute, not an identity across arms: a trim that does not vary
+        # with the budget agrees with every arm and still breaks #379.
+        missing = locked_ids - {b.id for b in hits}
+        assert not missing, (
+            f"{label}: the lane dropped {len(missing)} of {n_locked} locks, "
+            "so the SessionStart block no longer carries every locked "
+            "belief. That is the #379 contract, and it is what "
+            "docs/user/PRIVACY.md promises the user (#1546). "
+            f"First dropped: {sorted(missing)[:3]}"
+        )
+        # Only the locks reach the block, at every budget: no relevance lane
+        # runs on an empty query, so there is nothing for a budget to trim.
         assert all(b.lock_level == LOCK_USER for b in hits), (
             label,
             [b.id for b in hits if b.lock_level != LOCK_USER],
+        )
+        # The render edge, which the hit list alone cannot see: a formatter
+        # that packs the block would leave `hits` whole and still ship less.
+        absent = [bid for bid in sorted(locked_ids) if bid not in block]
+        assert not absent, (
+            f"{label}: {len(absent)} locks reached the formatter and not the "
+            f"rendered block. First absent: {absent[:3]}"
         )
 
 
