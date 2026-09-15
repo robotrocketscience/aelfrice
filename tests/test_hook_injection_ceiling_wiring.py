@@ -49,6 +49,7 @@ from aelfrice.hook import (
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.session_ring import read_ring_state
 from aelfrice.store import MemoryStore
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
@@ -312,6 +313,55 @@ def test_ups_never_emits_a_seen_pointer_to_a_dropped_element(
     assert seen_ids, out[:2_000]
     element_ids = set(re.findall(r'<belief id="([^"]+)"', out))
     assert [bid for bid in seen_ids if bid not in element_ids] == []
+
+
+def test_ups_ring_and_touches_omit_the_beliefs_the_ceiling_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two exposure writes the audit test above does not reach.
+
+    The session ring's contract is "already shipped this session", and
+    the next `PreToolUse:Grep|Glob|Bash` fire dedups against it — so an
+    id entered without being shipped suppresses a belief the model never
+    saw, which is a silent drop rather than a deduplication. A
+    `belief_touches` row is the same claim in the sidecar table, and it
+    outlives the session.
+
+    Both are asserted as whole-set invariants against the emitted block:
+    every id either side of the ceiling appears in what was written, so
+    any future dropper is covered too. The dropped count is read off
+    stderr first, because on a fixture the ceiling leaves alone both
+    invariants hold vacuously.
+    """
+    db = tmp_path / "memory.db"
+    session_id = "s-ring"
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    out, err = _fire_ups(tmp_path, db, monkeypatch, session_id=session_id)
+    dropped = re.search(r"dropped (\d+) belief element", err)
+    assert dropped is not None, err
+    assert int(dropped.group(1)) > 0, err
+
+    ring_ids = [
+        e["id"] for e in read_ring_state(session_id).get("ring", [])
+    ]
+    store = MemoryStore(str(db))
+    try:
+        # `current_fire_idx=0, window_k=1` puts the threshold at -1, so
+        # the window covers every row this session has: the assertion is
+        # about the whole table, not a recency slice of it.
+        touched = store.read_touch_set_in_window(
+            session_id, current_fire_idx=0, window_k=1
+        )
+    finally:
+        store.close()
+    assert ring_ids and touched, (len(ring_ids), len(touched))
+
+    # One assertion over both sets, so neither half can go dead while the
+    # other reports the failure.
+    assert {
+        "ring": [bid for bid in ring_ids if bid not in out],
+        "belief_touches": [bid for bid in sorted(touched) if bid not in out],
+    } == {"ring": [], "belief_touches": []}
 
 
 def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
