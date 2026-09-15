@@ -44,8 +44,11 @@ trailer format of its own. Concretely, it now:
 
 * Matches all nine keywords GitHub acts on -- `close`, `closes`, `closed`,
   `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved` -- case
-  insensitively, each followed by whitespace and `#N`. The list is GitHub's
-  published one, under "Linking a pull request to an issue":
+  insensitively, each followed by `#N`, with either whitespace or a colon
+  between the two. Both the list and the colon are GitHub's, published under
+  "Linking a pull request to an issue", which says: "The keywords can be
+  followed by colons or in uppercase. For example: `Closes: #10`,
+  `CLOSES #10`, or `CLOSES: #10`."
   https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
 * Ignores a keyword a Markdown reader would not render as prose: inside a
   fenced code block (``` or ~~~, three characters or more, an info string
@@ -58,6 +61,37 @@ trailer format of its own. Concretely, it now:
 * Reports every rejection on stderr instead of passing over it, so a body
   whose keyword was refused never prints what a body with no keyword prints
   (#1549). stdout stays bare numbers, because the workflow parses it.
+
+### What "followed by a colon" means here
+
+GitHub publishes the colon but not its spacing, so this pins the three forms
+its three examples leave open. The colon is a suffix of the keyword rather
+than a token standing on its own:
+
+* `Closes:#10` links. The colon is itself the delimiter, so nothing has to
+  follow it -- which is why `Closes#10`, carrying no delimiter at all, still
+  does not link.
+* `Closes : #10` does not link. The colon has to touch the keyword.
+* `Closes::#10` does not link. One colon, not a run of them.
+
+Those two refusals are silent, as every non-match is, and that is the accepted
+cost of matching what GitHub publishes rather than a superset of it: a form
+GitHub would not close is a form this train must not close either.
+
+### The colon admits a prose false positive, knowingly
+
+A colon after one of the nine words is also how English introduces a list, and
+nothing in the text distinguishes the two. Merged PR #1504's body contains the
+prose "All ruled prerequisites are closed: #1329, ..." -- under this rule that
+links #1329, which its author did not mean as a close directive.
+
+It is accepted, not worked around. GitHub closes #1329 from that same body on
+an ordinary merge, and this step exists to reproduce the close the
+fast-forward push suppressed; a train that quietly disagreed with the platform
+here would be a second surprise rather than a repair. This does not contradict
+the asymmetry below. "Refuse rather than close" is the tie-break for the cases
+GitHub leaves undefined -- an unterminated fence, a lazy quote continuation.
+Where GitHub's behaviour is defined and published, matching it wins.
 
 ### An unclosed fence or comment runs to the end of the body
 
@@ -101,8 +135,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # GitHub's nine closing keywords. `\b` before the keyword so `precloses #4`
-# does not match; `\s+` after it because GitHub accepts any run of whitespace,
-# a newline included.
+# does not match; see `_SEPARATOR` for what may follow one.
 KEYWORDS = (
     "close",
     "closes",
@@ -119,12 +152,20 @@ KEYWORDS = (
 # `-`, neither leading nor trailing with a separator.
 _NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 
+# What may stand between a keyword and its `#N`: a run of whitespace, a
+# newline included, or a colon bound directly to the keyword. The colon is
+# GitHub's, published on the page cited in the module docstring; because it is
+# itself a delimiter it does not need whitespace of its own. See that
+# docstring for the three spacings GitHub's examples leave open.
+_SEPARATOR = r"(?::\s*|\s+)"
+
 # Every candidate the parser considers, whether or not it acts on it. The
 # optional `repo` group is what makes a cross-repository link visible: without
 # it the link simply fails to match and nothing is left to report.
 LINK_RE = re.compile(
     r"\b(?P<keyword>" + "|".join(sorted(KEYWORDS, key=len, reverse=True)) + r")"
-    r"\s+(?P<repo>" + _NAME + r"/" + _NAME + r")?#(?P<number>\d+)",
+    + _SEPARATOR
+    + r"(?P<repo>" + _NAME + r"/" + _NAME + r")?#(?P<number>\d+)",
     re.IGNORECASE,
 )
 
