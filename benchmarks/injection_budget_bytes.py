@@ -414,13 +414,29 @@ def corpus_shape(store: Any) -> dict[str, int]:
     renders a *locked* snapshot verbatim — locks override retention class, the
     same rule as "L0 is never trimmed" — so only the unlocked ones can produce
     a shortened charge. On the control corpus all three snapshot keys are 0.
+
+    `sentence_headline` counts the beliefs that satisfy the *other* condition
+    the arm needs: a sentence boundary at or before `MAX_HEADLINE_CHARS`, which
+    is what takes `compression._headline` down its first-sentence branch. It is
+    what separates the middle corpus from the control, and without it that
+    middle column is unfalsifiable — a prose corpus generated with the sentence
+    boundaries left off is byte-identical to the control at every length, and
+    every assertion written against it stays true while it attributes nothing.
+    The predicate is `compression`'s own function, not a copy of its rule, so
+    this counts what the renderer keys on rather than what this module believes
+    it keys on.
     """
+    from aelfrice.compression import (
+        MAX_HEADLINE_CHARS,
+        _first_sentence_end_outside_fence,
+    )
     from aelfrice.models import LOCK_USER, ORIGIN_SPECULATIVE, RETENTION_SNAPSHOT
 
     locked = 0
     speculative = 0
     snapshot = 0
     snapshot_unlocked = 0
+    sentence_headline = 0
     for bid in store.list_belief_ids():
         b = store.get_belief(bid)
         if b is None:
@@ -433,11 +449,15 @@ def corpus_shape(store: Any) -> dict[str, int]:
             snapshot += 1
             if b.lock_level != LOCK_USER:
                 snapshot_unlocked += 1
+        end = _first_sentence_end_outside_fence(b.content)
+        if end is not None and end <= MAX_HEADLINE_CHARS:
+            sentence_headline += 1
     return {
         "locked": locked,
         "speculative": speculative,
         "snapshot": snapshot,
         "snapshot_unlocked": snapshot_unlocked,
+        "sentence_headline": sentence_headline,
     }
 
 
@@ -1297,11 +1317,23 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
                 values["sentence_chars"] = SENTENCE_CHARS
                 values["snapshot_arm_lengths"] = list(arm_lengths)
                 if arm_lengths:
+                    # Read at the *top* of the arm grid, and the control beside
+                    # them at the same length. `arm_lengths[0]` is 92, below
+                    # `SENTENCE_CHARS`, where no belief closes a sentence: all
+                    # three corpora carry `sentence_headline` 0 there and the
+                    # middle column is indistinguishable from the control by
+                    # construction. A shape read on that length can confirm the
+                    # retention class was written but cannot confirm the text
+                    # change was, which is half of what these corpora are for.
+                    arm_top = arm_lengths[-1]
                     values["snapshot_corpus_shape"] = corpus_shape(
-                        snap_stores[arm_lengths[0]]
+                        snap_stores[arm_top]
                     )
                     values["prose_corpus_shape"] = corpus_shape(
-                        prose_stores[arm_lengths[0]]
+                        prose_stores[arm_top]
+                    )
+                    values["control_corpus_shape_at_arm_top"] = corpus_shape(
+                        stores[arm_top]
                     )
                     values["snapshot_arm"] = snapshot_arm(
                         stores, prose_stores, snap_stores, arm_lengths,

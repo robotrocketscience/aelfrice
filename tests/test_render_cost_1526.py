@@ -670,6 +670,14 @@ def test_the_snapshot_arm_is_a_second_corpus_and_the_control_holds_none(
     snapshot renders verbatim — locks override retention class. Reading both
     counts off the store is what distinguishes "the class was written" from
     "the generator meant to write it".
+
+    The same question is then asked of the *text* change, which is the half
+    that had no assertion: `sentence_headline` counts the beliefs carrying a
+    sentence boundary at or before `MAX_HEADLINE_CHARS`, the condition
+    `compression._headline` keys on. A prose corpus built without the boundaries
+    is byte-identical to the control at every length and satisfies every other
+    assertion here, so without this count the middle column could quietly
+    collapse into the column it exists to be compared against.
     """
     fig = producer_figures
     control = fig["corpus_shape"]
@@ -686,6 +694,14 @@ def test_the_snapshot_arm_is_a_second_corpus_and_the_control_holds_none(
     for other in (prose, arm):
         assert other["locked"] == control["locked"], (other, control)
         assert other["speculative"] == control["speculative"], (other, control)
+    # The text change is real, and the control does not carry it. All three
+    # shapes below are read at the same grid length, so the comparison is not
+    # a comparison of two lengths.
+    top_control = fig["control_corpus_shape_at_arm_top"]
+    assert top_control["sentence_headline"] == 0, top_control
+    assert prose["sentence_headline"] > 0, prose
+    assert arm["sentence_headline"] > 0, arm
+    assert prose["sentence_headline"] == arm["sentence_headline"], (prose, arm)
 
 
 def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
@@ -787,6 +803,16 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
         # The text change on its own moves nothing at the top of the grid:
         # without the class, sentence boundaries are just characters.
         assert row["prose_bytes"] == row["control_bytes"], (lane, row)
+        # It does move something somewhere, though, and it has to: a middle
+        # corpus that renders byte-identically to the control at every length
+        # is the control, and the attribution above it would be a comparison
+        # of a corpus with itself. `ups` differs at 300 content characters,
+        # where the headline the sentence boundary makes available is longer
+        # than the hard truncation it replaces.
+        assert [
+            c for c in lengths
+            if rows[str(c)]["prose_bytes"] != rows[str(c)]["control_bytes"]
+        ], (lane, {c: rows[str(c)]["prose_bytes"] for c in lengths})
         # The inert control length: below `SENTENCE_CHARS` no belief carries a
         # sentence boundary, so the class has nothing to shorten and all three
         # corpora must render byte-identically.
