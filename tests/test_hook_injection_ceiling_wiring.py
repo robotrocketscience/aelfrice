@@ -103,6 +103,8 @@ def _seed(
     core_matches_prompt: bool = False,
     n_hits: int = 0,
     hit_chars: int = 400,
+    n_long: int = 0,
+    long_chars: int = 5_000,
 ) -> tuple[list[str], list[str], list[str]]:
     """Seed a store and return `(lock_ids, core_ids, hit_ids)`.
 
@@ -116,6 +118,13 @@ def _seed(
     the shape #1547's dedupe collapses: the `<core>` entry renders
     verbatim and the hit renders as a `seen` pointer to it, in one
     envelope.
+
+    `n_long` adds unlocked retrieval hits of `long_chars` characters,
+    appended to `hit_ids`. They exist so a fixture can put a belief over
+    `BELIEF_CONTENT_CHAR_CAP` into the emitted set: below the cap
+    `_cap_belief_content` is the identity, and a fixture on which it is
+    the identity cannot tell a call site that applies it from one that
+    does not.
     """
     lock_ids: list[str] = []
     core_ids: list[str] = []
@@ -143,6 +152,10 @@ def _seed(
         for i in range(n_hits):
             bid = f"H{i:031d}"
             store.insert_belief(_mk(bid, f"{_WORD} fact " + "z" * hit_chars))
+            hit_ids.append(bid)
+        for i in range(n_long):
+            bid = f"B{i:031d}"
+            store.insert_belief(_mk(bid, f"{_WORD} fact " + "y" * long_chars))
             hit_ids.append(bid)
     finally:
         store.close()
@@ -317,10 +330,21 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     The assertion is distinguishing on purpose: it names the value the
     field must hold AND the value it must not, because the two are within
     an order of magnitude of each other and an `> 0` check passes on both.
+
+    The fixture carries one 5,012-character hit so the sum's per-belief
+    cap is not the identity. Without it every seeded belief is under
+    `BELIEF_CONTENT_CHAR_CAP` (1,200) — locks of 159 characters, hits of
+    412 — `_cap_belief_content` returns its input on every row, and
+    `expected` is the same figure whether the shipped sum applies the cap
+    or not. The `uncapped` assertion below pins that the fixture keeps
+    that property.
     """
     db = tmp_path / "memory.db"
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
-    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    _seed(
+        db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400,
+        n_long=1, long_chars=5_000,
+    )
     out, err = _fire_ups(tmp_path, db, monkeypatch)
     assert "dropped" in err
 
@@ -337,15 +361,20 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     store = MemoryStore(str(db))
     try:
         expected = 0
+        uncapped = 0
         for row in emitted:  # type: ignore[union-attr]
             b = store.get_belief(row["id"])
             assert b is not None
             expected += len(
                 _cap_belief_content(b.content, locked=bool(row["locked"]))
             )
+            uncapped += len(b.content)
     finally:
         store.close()
 
+    # The cap bites on the emitted set, so `expected` distinguishes a sum
+    # that applies it from one that sums raw content.
+    assert expected != uncapped, (expected, uncapped)
     assert total_chars == expected, (total_chars, expected)
     assert total_chars != len(out), "recorded rendered-block bytes, not content"
 
