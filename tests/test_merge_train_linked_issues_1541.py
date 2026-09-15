@@ -18,6 +18,7 @@ production six merges later.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ _WORKFLOW = _REPO / ".github" / "workflows" / "merge-train.yml"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_linked_issues import (  # noqa: E402
+    KEYWORDS,
     LINK_RE,
     NOISY_COUNT,
     linked_issues,
@@ -128,7 +130,7 @@ def test_forms_that_link(body: str) -> None:
         "See #7 for context",
         "precloses #7",  # \b must not let a suffix match
         "Closes issue #7",  # GitHub does not accept this either
-        "Closes#7",  # whitespace is required
+        "Closes#7",  # a delimiter, whitespace or a colon, is required
         "Closes owner/repo#7",  # cross-repo: not ours to close
         "Closes #",  # no number
     ],
@@ -268,10 +270,21 @@ def test_the_inline_grep_pipeline_is_gone() -> None:
 
 
 def test_the_regex_keyword_set_matches_what_the_docs_claim() -> None:
-    """The docstring names three keywords; the regex must carry those three."""
-    assert LINK_RE.pattern.count("|") == 2
-    for kw in ("closes", "fixes", "resolves"):
-        assert kw in LINK_RE.pattern
+    """The docstring names GitHub's nine keywords; the regex must carry them.
+
+    #1541 pinned the three the shell used. #1549 ruled that the step emulates
+    GitHub, so the set widened to nine and this guard widened with it; the
+    nine are pinned one spelling at a time in
+    `tests/test_merge_train_close_keywords_1549.py`.
+
+    The alternation counted is the `keyword` group's, not the whole pattern's.
+    A whole-pattern count of `|` said the same thing only while the pattern
+    held exactly one alternation, and the colon separator added a second one
+    that has nothing to do with the keyword set.
+    """
+    alternation = re.search(r"\(\?P<keyword>([^)]*)\)", LINK_RE.pattern)
+    assert alternation is not None, "the keyword group is gone from the regex"
+    assert sorted(alternation.group(1).split("|")) == sorted(KEYWORDS)
 
 
 def test_main_returns_zero_for_a_body_on_stdin(
