@@ -173,6 +173,12 @@ _SEPARATOR = r"(?::\s*|\s+)"
 # Every candidate the parser considers, whether or not it acts on it. The
 # optional `repo` group is what makes a cross-repository link visible: without
 # it the link simply fails to match and nothing is left to report.
+#
+# The longest-first sort of the alternation is legibility, not correctness.
+# `re` backtracks, so `close` matching first in `closes #7` fails at the
+# separator and the engine retries `closes`; sorting the nine alphabetically,
+# or shortest-first, matches the same text at the same offsets. Nothing may
+# depend on the order.
 LINK_RE = re.compile(
     r"\b(?P<keyword>" + "|".join(sorted(KEYWORDS, key=len, reverse=True)) + r")"
     + _SEPARATOR
