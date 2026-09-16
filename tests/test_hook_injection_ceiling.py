@@ -90,24 +90,26 @@ def test_shipped_constants_are_pinned() -> None:
     """Both constants, asserted as literals, in the unsafe direction.
 
     What each raise actually costs, measured on this tree against a
-    baseline of 8867 passed:
+    baseline of 8873 passed, by `uv run pytest tests -q -p no:randomly`:
 
     * `BELIEF_CONTENT_CHAR_CAP = 30000`, the value that reinstates the
-      24k-35k character rows #1551 exists to bound, reds six tests —
-      three here and three in `test_hook_injection_ceiling_wiring.py`.
+      24k-35k character rows #1551 exists to bound, reds **eight** — three
+      here, three in `test_hook_injection_ceiling_wiring.py`, and two in
+      `test_exploration_slot_1279.py`, whose prices are quoted at the
+      shipped cap.
     * `HOOK_BLOCK_TOKEN_CEILING = 40 * DEFAULT_HOOK_TOKEN_BUDGET` reds
-      nineteen — seven here and twelve there.
+      **twenty-three** — seven here, fifteen there, and one in
+      `test_derived_figures_1469.py`, because the gate re-runs
+      `scripts/measure_block_ceiling.py` and the published lock counts
+      move with the ceiling.
 
-    An earlier version of this docstring said a raise left every other
-    test in this file passing, and that the two constants were the same
-    shape. Both claims are false: neither raise is silent, and the two do
-    not fail alike.
-
-    What the runs do agree on is the scope, and that is what the pin is
-    for. Every failure in both runs is a #1551 test in one of these two
-    files, and the rest of the suite passes at its baseline count under
-    both raises. Whatever else reads the injected block, nothing outside
-    these two files red-flags either constant moving.
+    Two earlier versions of this docstring were wrong about this, in the
+    same direction each time: the first said a raise left every other
+    test in this file passing, the second that every failure was a #1551
+    test "in one of these two files". The derived-figures failure is the
+    counter-example, and it is the useful one — the figures this branch
+    publishes are bound to their producer, so a constant that moves them
+    fails CI whether or not a #1551 test names it.
     """
     assert BELIEF_CONTENT_CHAR_CAP == 1200
     assert HOOK_BLOCK_TOKEN_CEILING == 6000
