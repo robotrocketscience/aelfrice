@@ -650,11 +650,13 @@ def test_ups_caps_one_oversized_belief_instead_of_dropping_the_block(
 ) -> None:
     """The per-belief cap, on the lane it was added for.
 
-    A 35,000-character belief costs 8,763 tokens under retrieval's own
-    element estimate and `DEFAULT_HOOK_TOKEN_BUDGET` is 1,500, so before
-    `_ups_belief_line_cost` the packer rejected it and the fire emitted an
-    **empty block** — the cap never ran. Charging the line this lane
-    actually renders admits it at 321 tokens, capped.
+    The belief this seeds is 35,012 characters. `retrieval._belief_tokens`
+    charges 8,766 tokens for it and `DEFAULT_HOOK_TOKEN_BUDGET` is 1,500,
+    so before `_ups_belief_line_cost` the packer rejected it and the fire
+    emitted an **empty block** — the cap never ran. Charging the
+    1,280-character line this lane actually renders admits it at 321
+    tokens, capped. Both figures are this belief: the id width is part of
+    the element, so a pair quoted from two fixtures does not subtract.
     """
     db = tmp_path / "memory.db"
     _, _, hit_ids = _seed(db, n_hits=1, hit_chars=35_000)

@@ -3413,12 +3413,17 @@ def _ups_belief_line_cost(b: Belief) -> int:
     element around it — while `_belief_element_line` emits at most
     `BELIEF_CONTENT_CHAR_CAP` characters of that content. The lane
     therefore reserved budget against bytes it had already decided not to
-    send, and the effect was not a rounding error: a single 35,000-
-    character belief costs 8,763 tokens against `DEFAULT_HOOK_TOKEN_BUDGET
-    = 1500`, so it was rejected outright and the fire injected an **empty
-    block** — the cap never ran, on the lane the cap was added for. It now
-    costs 321 and is admitted, capped. This is #1526 item 4 in the
-    opposite direction, and the class #1547 is open about.
+    send, and the effect was not a rounding error. On the 35,012-character
+    belief `test_ups_caps_one_oversized_belief_instead_of_dropping_the_block`
+    seeds, `retrieval._belief_tokens` charges 8,766 tokens against
+    `DEFAULT_HOOK_TOKEN_BUDGET = 1500`, so it was rejected outright and the
+    fire injected an **empty block** — the cap never ran, on the lane the
+    cap was added for. This function charges the 1,280-character element
+    that lane emits: 321 tokens, admitted and capped. (Both halves must
+    come from one belief. The id width is part of the element, so the two
+    numbers move together and quoting them from different fixtures reads
+    as a larger win than there is.) This is #1526 item 4 in the opposite
+    direction, and the class #1547 is open about.
 
     Built from `_belief_element_line`, so the cap and the escaping are
     charged because they happened. The line's newline is charged too:
