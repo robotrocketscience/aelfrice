@@ -424,7 +424,8 @@ def corpus_shape(store: Any) -> dict[str, int]:
     `snapshot_unlocked` is reported separately because `compress_for_retrieval`
     renders a *locked* snapshot verbatim — locks override retention class, the
     same rule as "L0 is never trimmed" — so only the unlocked ones can produce
-    a shortened charge. On the control corpus all three snapshot keys are 0.
+    a shortened charge. On the control corpus both snapshot keys — `snapshot`
+    and `snapshot_unlocked` — are 0.
 
     `sentence_headline` counts the beliefs that satisfy the *other* condition
     the arm needs: a sentence boundary at or before `MAX_HEADLINE_CHARS`, which
@@ -661,7 +662,9 @@ def _session_start_block(store: Any) -> str:
 
     `_build_session_start_subblock` appends a `<recent-work>` section resolved
     from git plumbing under `cwd`, which would make this lane's byte count a
-    function of the branch name and the last five commit subjects of whatever
+    function of the branch name and the commit subjects
+    `hook.DEFAULT_RECENT_WORK_COMMIT_LIMIT` admits — eight at the shipped
+    value — of whatever
     checkout the producer happened to run in. `figures()` has already chdir'd
     into a tempdir for the same hermeticity reason the `[retrieval]` flags
     need, so `Path.cwd()` is a non-git directory and `_resolve_branch` returns
