@@ -529,12 +529,19 @@ def test_the_producer_names_which_budget_ended_every_pack(
     characters below the window at 1,475 pre-#1526 against 1,492 as shipped —
     gives `1 failed, 48 passed` too. Both left `49 passed` before.
 
-    Only the after arm's half is falsifiable, and that is arithmetic rather
-    than a gap in the grid: the pre-#1526 charge is below the shipped charge at
-    every length, so `shipped > budget` is implied by `legacy > budget` and
-    charging the before arm in the shipped currency is a weaker claim that no
-    cell can refute. That mutation leaves `49 passed` and no grid length can
-    change it. The emptiness itself is pinned separately by
+    Both halves are falsifiable, but only one of them by a test-side mutation,
+    which is why an earlier revision of this docstring called the before arm's
+    half a weaker claim no cell could refute. Charging the before arm in the
+    shipped currency does leave `49 passed` on the shipped producer, because
+    the pre-#1526 charge is below the shipped charge at every length and
+    `shipped > budget` is implied by `legacy > budget` there. The producer side
+    separates them: an oversize guard in `_render_core` returning `Arm(0, 0)`
+    for the one 6,017-byte cell gives `1 failed, 48 passed` on the assertion
+    below, naming the before arm — `assert 1487 > 1500` — and with that guard
+    in place, charging the before arm in the shipped currency gives
+    `49 passed` again. The before arm's half is what catches a suppressed
+    `<core>` cell, which is the property the first line of this docstring
+    claims. The emptiness itself is pinned separately by
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget`.
 
     A floor relaxed to `>= 0` across all eight lanes and all nine lengths, on
