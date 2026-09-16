@@ -31,20 +31,66 @@ success. Measured over five consecutive merges: the keyword sat at byte 463,
 it worked. The failure is invisible at the merge -- the train prints "no linked
 issues parsed from PR body" and exits green.
 
-Nothing bounds the input here any more, and that is deliberate. The cap was
-the defect, and the quantity worth bounding was never the body but the loop
-over what came out of it, which is bounded by how many distinct issues a human
-wrote in one description. A 264,036-character body renders and links all three
-of its issues, checked rather than assumed:
+This module bounds nothing itself, and that is deliberate: the cap was the
+defect, and the quantity worth bounding was never the body but the loop over
+what came out of it, which is bounded by how many distinct issues a human wrote
+in one description. A 264,096-character body renders and links all three of its
+issues, checked rather than assumed:
 
     python3 - <<'PY'
     import json
-    body = "\n".join(["prose line, and more of it"] * 4000
+    body = "\n".join(["prose line, and more of it"] * 9780
                      + ["Closes #11.", "Fixes #22.", "Resolves #33."])
+    print(len(body))
     json.dump({"mode": "gfm", "context": "robotrocketscience/aelfrice",
                "text": body}, open("big.json", "w"))
     PY
-    gh api --method POST /markdown --input big.json | grep -o 'issues/[0-9]*'
+    gh api --method POST /markdown --input big.json \
+        | grep -o 'issues/[0-9]*' | sort -u
+
+prints `264096`, then `issues/11`, `issues/22` and `issues/33`.
+
+### The renderer has a cap of its own, and it must be said out loud
+
+`POST /markdown` refuses a request above 400 KB. That is a reintroduced input
+bound on a step whose whole defect was an input bound, so it is stated rather
+than discovered:
+
+    python3 -c 'import json; json.dump({"mode": "gfm", "context":
+        "robotrocketscience/aelfrice", "text": "x" * 420000},
+        open("too_big.json", "w"))'
+    gh api --method POST /markdown --input too_big.json
+
+answers HTTP 403, `{"code": "too_large"}`, with the message "This API renders
+Markdown text up to 400 KB in size." It is nothing like `head -c 8192`: `gh`
+exits non-zero, so it raises `RendererUnavailable` and the failure policy below
+applies -- exit 2, an `error:` line, and **nothing closed**. A silent truncation
+is what #1541 was about; a loud refusal that closes nothing is the safe side of
+the same question, and `test_a_render_refused_for_size_closes_nothing_loudly`
+pins it.
+
+Can a pull-request body reach that cap? Not through the text itself. GitHub
+caps an issue or pull-request body at 65,536 characters -- widely reported as
+the 422 `Body is too long (maximum is 65536 characters)`, and **UNVERIFIED
+here**, because measuring it would mean creating a pull request. At four UTF-8
+bytes per character that is at most 262,144 bytes, under everything measured to
+render. It can reach the cap through *this module's own encoding*, though:
+
+    python3 -c 'import json; b = "\U0001F600" * 65536;
+        print(len(json.dumps({"mode": "gfm", "context":
+            "robotrocketscience/aelfrice", "text": b}).encode()),
+              len(json.dumps({"mode": "gfm", "context":
+            "robotrocketscience/aelfrice", "text": b},
+            ensure_ascii=False).encode()))'
+
+prints `786501 262213`. `json.dumps` escapes every non-ASCII character to
+`\uXXXX` by default, three times the size for an astral character, and the
+renderer measures the request it receives; a legal 65,536-character emoji body
+was refused with that 403 until `render_markdown` passed `ensure_ascii=False`.
+Unescaped, the payload is the body's UTF-8 size plus a fixed envelope, so no
+body GitHub would accept can reach the cap. `RENDER_LIMIT_BYTES` and
+`MAX_BODY_CHARACTERS` below record both numbers so a test can assert the
+relation instead of a reader having to trust this paragraph.
 
 ## The decision (#1549): ask GitHub rather than emulate it
 
@@ -395,6 +441,20 @@ NOISY_COUNT = 20
 # `RendererUnavailable` like any other failure and closes nothing.
 RENDER_TIMEOUT_SECONDS = 30
 
+# GitHub's published cap on a `POST /markdown` request: above this it answers
+# HTTP 403 `too_large`. Measured, not assumed -- the module docstring carries
+# the command. Recorded here so a test can assert that the largest body GitHub
+# would accept still fits, rather than a reader having to trust a paragraph.
+RENDER_LIMIT_BYTES = 400 * 1024
+
+# The largest body GitHub accepts on an issue or pull request, in characters.
+# UNVERIFIED here: measuring it would mean creating a pull request. It is the
+# widely reported 422 `Body is too long (maximum is 65536 characters)`, and it
+# is used only as an upper bound -- at four UTF-8 bytes per character that is
+# 262,144 bytes, comfortably inside `RENDER_LIMIT_BYTES` once `render_markdown`
+# stops escaping non-ASCII.
+MAX_BODY_CHARACTERS = 65_536
+
 # The anchor GitHub emits for an issue reference, and the shape of the URL it
 # hangs on it. `data-url` is always the `/issues/N` spelling even when `href`
 # points at `/pull/N`, so it is read first.
@@ -463,9 +523,19 @@ def render_markdown(body: str, repo: str, *, run: object = None) -> str:
 
     The payload goes on stdin rather than in argv: a pull-request body has no
     length limit worth relying on, and a quarter-megabyte one renders fine.
+
+    `ensure_ascii=False` is load-bearing, not tidiness. The renderer measures
+    the request it receives and refuses one over `RENDER_LIMIT_BYTES`, and
+    `json.dumps` escapes an astral character to twelve ASCII bytes by default,
+    so the largest body GitHub accepts becomes a 786,501-byte request and is
+    refused -- see the module docstring. Unescaped it is 262,213 bytes and
+    renders. That makes the encoding of stdin load-bearing too, so it is named
+    rather than inherited from the runner's locale.
     """
     run = subprocess.run if run is None else run
-    payload = json.dumps({"mode": "gfm", "context": repo, "text": body})
+    payload = json.dumps(
+        {"mode": "gfm", "context": repo, "text": body}, ensure_ascii=False
+    )
     argv = ["gh", "api", "--method", "POST", "/markdown", "--input", "-"]
     try:
         proc = run(  # type: ignore[operator]
@@ -473,6 +543,7 @@ def render_markdown(body: str, repo: str, *, run: object = None) -> str:
             input=payload,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             timeout=RENDER_TIMEOUT_SECONDS,
         )

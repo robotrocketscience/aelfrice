@@ -64,7 +64,9 @@ from merge_train_linked_issues import (  # noqa: E402
     FROM_DISCUSSION,
     IN_QUOTE,
     KEYWORDS,
+    MAX_BODY_CHARACTERS,
     NOT_LINKED,
+    RENDER_LIMIT_BYTES,
     RENDER_TIMEOUT_SECONDS,
     RendererUnavailable,
     close_directives,
@@ -792,6 +794,10 @@ def test_the_real_call_is_pinned_argument_by_argument() -> None:
     assert runner.kwargs["text"] is True
     assert runner.kwargs["check"] is False
     assert runner.kwargs["timeout"] == RENDER_TIMEOUT_SECONDS
+    assert runner.kwargs["encoding"] == "utf-8", (
+        "the payload is no longer pure ASCII, so the encoding of stdin cannot "
+        "be left to the runner's locale"
+    )
 
 
 def test_the_whole_body_is_sent_however_long_it_is() -> None:
@@ -804,6 +810,57 @@ def test_the_whole_body_is_sent_however_long_it_is() -> None:
     runner = _Runner()
     render_markdown(body, _CONTEXT, run=runner)
     assert json.loads(runner.kwargs["input"])["text"] == body
+
+
+def test_a_non_ascii_body_is_sent_as_itself_and_not_as_escapes() -> None:
+    """`json.dumps` escapes non-ASCII by default, and the renderer counts bytes."""
+    body = "Closes #7 \U0001F600"
+    runner = _Runner()
+    render_markdown(body, _CONTEXT, run=runner)
+    payload = runner.kwargs["input"]
+    assert "\\ud83d" not in payload, "the emoji was escaped into six-fold ASCII"
+    assert "\U0001F600" in payload
+    assert json.loads(payload)["text"] == body
+
+
+def test_the_largest_body_github_accepts_fits_inside_the_renderers_cap() -> None:
+    """The reintroduced input bound, asserted rather than argued.
+
+    `POST /markdown` refuses a request over 400 KB, which is a cap on a step
+    whose defect was a cap. Escaped, a body of 65,536 astral characters is a
+    786,501-byte request and GitHub answers HTTP 403; unescaped it is 262,213
+    bytes and renders. The relation is what makes the cap unreachable from any
+    body GitHub would accept, so it is the relation that is pinned.
+    """
+    runner = _Runner()
+    render_markdown("\U0001F600" * MAX_BODY_CHARACTERS, _CONTEXT, run=runner)
+    sent = len(runner.kwargs["input"].encode("utf-8"))
+    assert sent == 262_213
+    assert sent < RENDER_LIMIT_BYTES
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_a_render_refused_for_size_closes_nothing_loudly(tmp_path: Path) -> None:
+    """The cap is nothing like `head -c 8192`: `gh` exits non-zero.
+
+    A silent truncation is what #1541 was about. A refusal that reaches the
+    failure policy costs one hand-run of `gh issue close` and says so in the
+    step log, which is the safe side of the same question.
+    """
+    bin_dir = _fake_gh(
+        tmp_path,
+        "",
+        returncode=1,
+        stderr=(
+            "gh: This API renders Markdown text up to 400 KB in size. The "
+            "requested text is too large to render via the API. (HTTP 403)\n"
+        ),
+    )
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="Closes #7\n")
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "400 KB" in proc.stderr
+    assert "nothing was closed" in proc.stderr
 
 
 def test_the_render_seam_is_late_bound(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1236,6 +1293,42 @@ def test_the_docstring_audits_what_github_rewrites_into_an_issue_anchor() -> Non
         "orgs/ORG/discussions",
     ):
         assert shape in doc, f"the docstring does not rule on {shape}"
+
+
+def test_the_docstring_states_the_renderers_own_cap() -> None:
+    """A reintroduced input bound on the step whose defect was an input bound.
+
+    #1541's framing means a cap cannot be left implicit: it has to be named,
+    measured, tied to the failure policy, and shown to be unreachable from a
+    body GitHub would accept.
+
+    Read off `__doc__` rather than the file: the same words appear in the
+    comments on `RENDER_LIMIT_BYTES` and `MAX_BODY_CHARACTERS`, so a whole-file
+    search passes on a docstring that no longer says any of it.
+    """
+    doc = module.__doc__ or ""
+    assert "The renderer has a cap of its own, and it must be said out loud" in doc
+    assert "400 KB" in doc
+    assert "ensure_ascii" in doc
+    assert "65,536 characters" in doc
+    assert "UNVERIFIED" in doc, "the body limit was not measured here and must say so"
+
+
+def test_the_docstrings_big_body_figure_matches_the_command_it_publishes() -> None:
+    """The command in the file must produce the number beside it.
+
+    The figure published here was 264,036 for a command that builds a
+    108,036-character body. Re-derived rather than re-copied.
+    """
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    rebuilt = "\n".join(
+        ["prose line, and more of it"] * 9780
+        + ["Closes #11.", "Fixes #22.", "Resolves #33."]
+    )
+    assert len(rebuilt) == 264_096
+    assert "* 9780" in doc, "the docstring no longer builds the body it measured"
+    assert "264,096-character body" in doc
+    assert "264,036" not in doc
 
 
 def test_the_docstring_states_what_still_diverges_from_github() -> None:
