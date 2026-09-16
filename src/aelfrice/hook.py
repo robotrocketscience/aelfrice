@@ -544,8 +544,9 @@ def enforce_block_ceiling(
 ) -> BlockCeilingOutcome:
     """Drop whole non-locked `<belief>` elements until `body` fits.
 
-    Only complete elements are removed, so the block stays well-formed;
-    the framing sections are never touched.
+    The only spans removed are complete elements and the `seen` pointers
+    that name them, so the block stays well-formed; every framing tag,
+    including the `<aelfrice-locks-manifest>` wrapper, is untouched.
 
     **Prompt-independent lanes are shed first.** The removal order is
     `<core>` tail-first, then `<recent-work>`, then the per-turn hits,
