@@ -30,7 +30,9 @@ from aelfrice.hook import (
     BELIEF_CONTENT_CHAR_CAP,
     HOOK_BLOCK_TOKEN_CEILING,
     _audit_tokens_from_block,
+    _belief_element_line,
     _cap_belief_content,
+    _format_hits,
     _split_belief_lines,
     _ups_belief_line_cost,
     _write_memory_block,
@@ -39,6 +41,7 @@ from aelfrice.hook import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    LOCK_NONE,
     LOCK_TIER_FROZEN,
     LOCK_TIER_REFERENCE,
     LOCK_USER,
@@ -466,6 +469,78 @@ def test_reference_lock_costs_its_manifest_line_not_its_element() -> None:
     belief_lines, manifest_lines = _split_belief_lines([ref])
     assert (belief_lines, len(manifest_lines)) == ([], 1)
     assert manifest_lines[0].startswith(f'  ref {ref.id}: "')
+
+
+# ---------------------------------------------------------------------------
+# _ups_belief_line_cost — the newline the join adds
+# ---------------------------------------------------------------------------
+
+# Two ordinary beliefs one content character apart, sized so the newline
+# charge discriminates on one of them and not the other. The element
+# around 1,001 characters of content is 1,068 characters, an exact
+# multiple of the 4-character estimator, so the joining newline is the
+# character that crosses into a 268th token; 1,000 characters render
+# 1,067 and cost 267 whether or not the newline is charged.
+_CROSSING_CONTENT_CHARS = 1_001
+_CROSSING_ELEMENT_CHARS = 1_068
+_CROSSING_TOKENS = 268
+_FLAT_CONTENT_CHARS = 1_000
+_FLAT_TOKENS = 267
+
+
+def _plain_belief(bid: str, chars: int) -> Belief:
+    """An unlocked, non-speculative belief of `chars` content characters."""
+    return Belief(
+        id=bid,
+        content="x" * chars,
+        content_hash=f"h_{bid}",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    )
+
+
+def test_element_cost_charges_the_newline_the_block_ships() -> None:
+    """The cost includes the newline `_format_hits` joins the lines with.
+
+    `_belief_element_line` returns the element without its separator, and
+    `_format_hits` emits the lines through `"\\n".join`, so every element
+    in the block costs one character more than the renderer returns.
+    Deleting the `+ 1` from `_ups_belief_line_cost` is not a no-op: it
+    under-charges by one token every belief whose element length is an
+    exact multiple of the estimator's 4 characters, which moves admission
+    at the budget boundary.
+
+    The reference-lock test above cannot see that deletion. Its element is
+    20,086 characters, so 20,086 and 20,087 both round up to 5,022, and
+    its manifest line lands the same way at 31 tokens — both literals are
+    identical with and without the term. The pair here is chosen to
+    straddle a boundary instead: the crossing belief is the assertion the
+    deletion reds, and the flat belief holds the value the deletion would
+    charge for both, so the wrong answer is named beside the right one.
+
+    The second assertion ties the charge to what ships. The block has to
+    contain this element followed by a newline, or the byte being charged
+    is not a byte the lane emits.
+    """
+    crossing = _plain_belief("E" + "0" * 31, _CROSSING_CONTENT_CHARS)
+    flat = _plain_belief("F" + "1" * 31, _FLAT_CONTENT_CHARS)
+    element = _belief_element_line(crossing)
+    assert {
+        "element_chars": len(element),
+        "crossing": _ups_belief_line_cost(crossing),
+        "flat": _ups_belief_line_cost(flat),
+    } == {
+        "element_chars": _CROSSING_ELEMENT_CHARS,
+        "crossing": _CROSSING_TOKENS,
+        "flat": _FLAT_TOKENS,
+    }
+
+    assert element + "\n" in _format_hits([crossing])
 
 
 # ---------------------------------------------------------------------------
