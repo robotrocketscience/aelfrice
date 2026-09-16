@@ -89,27 +89,64 @@ def _ids(body: str) -> list[str]:
 def test_shipped_constants_are_pinned() -> None:
     """Both constants, asserted as literals, in the unsafe direction.
 
-    What each raise actually costs, measured on this tree against a
-    baseline of 8873 passed, by `uv run pytest tests -q -p no:randomly`:
+    **What each raise costs is published as the tests it reds, by file,
+    and not as a pass total.** Three earlier versions of this docstring
+    quoted totals and all three went stale at once when the branch was
+    rebased; a name survives a rebase and "eight" does not. Measured with
+    `uv run pytest tests -q -p no:randomly` on `fe90b455`, the last commit
+    on this branch that changes anything a test can see.
 
-    * `BELIEF_CONTENT_CHAR_CAP = 30000`, the value that reinstates the
-      24k-35k character rows #1551 exists to bound, reds **eight** — three
-      here, three in `test_hook_injection_ceiling_wiring.py`, and two in
-      `test_exploration_slot_1279.py`, whose prices are quoted at the
-      shipped cap.
-    * `HOOK_BLOCK_TOKEN_CEILING = 40 * DEFAULT_HOOK_TOKEN_BUDGET` reds
-      **twenty-three** — seven here, fifteen there, and one in
-      `test_derived_figures_1469.py`, because the gate re-runs
-      `scripts/measure_block_ceiling.py` and the published lock counts
-      move with the ceiling.
+    `BELIEF_CONTENT_CHAR_CAP = 30000` — the value that reinstates the
+    24k-35k character rows #1551 exists to bound — reds **ten across four
+    files**:
 
-    Two earlier versions of this docstring were wrong about this, in the
-    same direction each time: the first said a raise left every other
-    test in this file passing, the second that every failure was a #1551
-    test "in one of these two files". The derived-figures failure is the
-    counter-example, and it is the useful one — the figures this branch
-    publishes are bound to their producer, so a constant that moves them
-    fails CI whether or not a #1551 test names it.
+    * here, three: `test_shipped_constants_are_pinned`,
+      `test_content_one_character_over_the_cap_is_truncated`,
+      `test_oversized_content_is_capped_and_says_so`;
+    * `test_hook_injection_ceiling_wiring.py`, three:
+      `test_ups_total_chars_stays_in_one_unit_across_the_ceiling`,
+      `test_ups_caps_one_oversized_belief_instead_of_dropping_the_block`,
+      `test_core_section_caps_an_oversized_belief`;
+    * `test_exploration_slot_1279.py`, two:
+      `test_a_drawn_belief_is_priced_at_the_element_the_lane_renders`,
+      `test_a_displaced_belief_frees_only_what_the_lane_would_have_shipped`,
+      whose prices are quoted at the shipped cap;
+    * `test_render_cost_1526.py`, two:
+      `test_session_start_lane_never_trims_its_l0_pool`, both parametrised
+      cases, on `assert shortest > largest_cap` — reported as
+      `assert 1225 > 30000`.
+
+    **That fourth file is the counter-example, and the cause is worth
+    stating rather than just counting.** `_shipped_content_caps()` there
+    discovers every per-belief cap constant in `aelfrice.hook` and
+    `aelfrice.hook_search_tool` by name shape — `CHAR_CAP`,
+    `MAX_CONTENT`, `_CHARS` — and sizes its SessionStart fixture above the
+    largest one it finds. `BELIEF_CONTENT_CHAR_CAP` joined that discovered
+    set the moment #1551 named it, and at 1200 it is already the largest
+    member (the others are 1000, 200, 80 and 60), so the fixture's 1225-
+    character locks clear it by 25. Raise it and they do not. That is
+    #1526's discovery mechanism working exactly as designed, and it is the
+    same shape of counter-example as the ceiling raise's.
+
+    `HOOK_BLOCK_TOKEN_CEILING = 40 * DEFAULT_HOOK_TOKEN_BUDGET` reds
+    **twenty-six across three files**. Seven here:
+    `test_shipped_constants_are_pinned`, the four that resolve the value
+    (`test_unset_env_resolves_the_shipped_ceiling`,
+    `test_non_integer_falls_back_to_the_default_with_a_note`,
+    `test_negative_falls_back_to_the_default_with_a_note`,
+    `test_resolve_reads_os_environ_when_no_mapping_is_given`, the last
+    three because the note quotes the default in its text), and the two
+    that drive `_write_memory_block`
+    (`test_write_memory_block_trims_notes_and_writes`,
+    `test_write_memory_block_notes_an_unavoidable_overrun`). Eighteen in
+    the wiring file, which asserts a trim or an overrun on nearly every
+    fixture it has. And one in `test_derived_figures_1469.py`:
+    `test_the_repo_passes_the_producer_checks`, which reports
+    `producer scripts/measure_block_ceiling.py exited 1 under
+    --emit-figures: the ceiling dropped nothing: the comparison would be
+    vacuous`. The figures this branch publishes are bound to their
+    producer, so a constant that moves them fails CI whether or not a
+    #1551 test names it.
     """
     assert BELIEF_CONTENT_CHAR_CAP == 1200
     assert HOOK_BLOCK_TOKEN_CEILING == 6000
