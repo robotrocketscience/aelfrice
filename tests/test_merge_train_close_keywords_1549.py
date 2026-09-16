@@ -36,6 +36,7 @@ every body and reports any that GitHub now answers differently.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -390,6 +391,46 @@ def test_an_inline_wrapper_does_not_break_the_run() -> None:
     ) == ([7], [])
 
 
+# Every tag GitHub emits that may sit between a keyword and its reference
+# without ending the run. Spelled out here rather than read from the module,
+# because a list derived from `_INLINE_TAGS` loses a row exactly when a member
+# is deleted -- which is the deletion these rows exist to catch. Written
+# derived first, and dropping `strong` then left 216 passed.
+_GITHUB_INLINE_TAGS = (
+    "a", "abbr", "b", "br", "cite", "del", "em", "font", "g-emoji", "i",
+    "img", "ins", "kbd", "mark", "q", "s", "small", "span", "strong",
+    "sub", "sup", "time", "tt", "u",
+)
+
+
+def test_the_module_names_exactly_the_inline_tags_github_emits() -> None:
+    """The set, against a list written out rather than imported from it."""
+    assert sorted(module._INLINE_TAGS) == sorted(_GITHUB_INLINE_TAGS)
+
+
+@pytest.mark.parametrize("tag", [t for t in _GITHUB_INLINE_TAGS if t != "a"])
+def test_every_inline_tag_leaves_the_keyword_inside_the_run(tag: str) -> None:
+    """One row per member, with the tag wrapped around the KEYWORD.
+
+    `**Closes** #7` renders `<strong>Closes</strong> <a class="issue-link">`.
+    With `strong` missing from the set, `</strong>` ends the run, the anchor is
+    never armed, and the close is lost in SILENCE: no keyword was found, so no
+    warning is printed either. That is the one outcome AC5 forbids, and it was
+    reachable for 20 of the 24 members -- only `a`, `br` and the start tag of
+    `em` were exercised anywhere, so the rest could be deleted with the suite
+    still green. All 24 are real GitHub output.
+
+    `a` is excluded deliberately rather than forgotten. An anchor ENDS the run
+    -- `Closes #1 #2` links #1 alone -- so `<a>Closes</a>` arms nothing and the
+    row would read backwards. What its membership decides is whether an
+    issue-link anchor is opened at all: without it `handle_starttag` resets the
+    run and returns before reading the URL, so nothing in the body ever closes
+    and most of this file fails.
+    """
+    html = f"<p><{tag}>Closes</{tag}> {_anchor(7)}</p>"
+    assert close_directives(html, _CONTEXT) == ([7], [])
+
+
 def test_an_unknown_wrapper_breaks_the_run_rather_than_arming_it() -> None:
     """The conservative direction for HTML GitHub has not emitted yet."""
     assert close_directives(
@@ -567,6 +608,154 @@ def test_a_near_miss_repository_name_is_refused_not_closed() -> None:
     assert [r.reason for r in refused] == [CROSS_REPO]
 
 
+# --------------------------------------------------------------------------
+# A name grammar on the anchor side is a way to abort the whole step.
+# --------------------------------------------------------------------------
+
+
+def test_github_anchors_a_repository_whose_name_begins_with_a_dot() -> None:
+    """The premise, read off GitHub's own bytes: `.github` is a repository.
+
+    GitHub only anchors `owner/repo#N` for a repository it can resolve, so the
+    anchor in the recorded render is itself the proof that the name is legal.
+    """
+    html = _RECORDS["records"]["identity"]["html"]
+    assert 'data-url="https://github.com/github/.github/issues/5"' in html
+
+
+def test_a_legal_repository_name_is_a_refusal_and_not_an_abort() -> None:
+    """A body naming another repository must still close this one's issues.
+
+    `Closes github/.github#5` beside a reference to this repository: the name
+    pattern required an alphanumeric at each end, so `_ISSUE_HREF_RE` returned
+    no match for `.github`, `close_directives` raised, and the shipped CLI
+    answered rc=2 with an empty stdout -- closing NOTHING for the whole body,
+    the issue in its own repository included. The docstring's ruling for an
+    anchor resolving elsewhere is CROSS_REPO, so that is what it has to be.
+    """
+    found, refused = _parse("identity")
+    assert found == [22], "the abort took this repository's own close with it"
+    assert ("Closes github/.github#5", CROSS_REPO) in refused
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_shipped_cli_closes_its_own_issue_beside_a_dotted_name(
+    tmp_path: Path,
+) -> None:
+    """End to end, because the defect was rc=2 and an empty shipped stdout."""
+    body = _RECORDS["records"]["identity"]["body"]
+    bin_dir = _fake_gh(tmp_path, _RECORDS["records"]["identity"]["html"])
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin=body)
+    assert proc.returncode == 0
+    assert proc.stdout.split() == ["22"]
+    assert CROSS_REPO in proc.stderr
+
+
+def test_every_anchor_in_every_recorded_render_is_readable() -> None:
+    """The grammar has to cover GitHub's whole output, not a sample of it.
+
+    `close_directives` raises on a `data-url` it cannot read, and that raise
+    costs every close in the body rather than one. So a URL shape the pattern
+    misses is not a missed close, it is a merge that closes nothing -- which
+    is why this sweeps every anchor GitHub returned for every recorded body,
+    and why a re-record that brings back a new shape fails here.
+    """
+    seen = 0
+    for name, record in _RECORDS["records"].items():
+        for url in re.findall(
+            r'class="issue-link[^"]*"[^>]*data-url="([^"]+)"', record["html"]
+        ):
+            assert module._ISSUE_HREF_RE.match(url) is not None, (name, url)
+            seen += 1
+    assert seen >= 20, f"the sweep only found {seen} anchors to read"
+
+
+@pytest.mark.parametrize(
+    ("url", "closes"),
+    [
+        # A legal repository name with a leading dot, which is the shape that
+        # aborted the step. `github/.github` is real and common.
+        ("https://github.com/github/.github/issues/5", False),
+        # An owner spelled the same way. No GitHub login may begin with a dot,
+        # so the renderer cannot produce this -- but reading it costs nothing
+        # and refusing to read it costs every close in the body.
+        ("https://github.com/.dotowner/.dotname/issues/5", False),
+        # A name at GitHub's documented 100-character maximum. No length bound
+        # is written into the pattern, because a bound here is another abort.
+        ("https://github.com/owner/" + "n" * 100 + "/issues/5", False),
+        # Percent-encoding: `aelfric%65` decodes to this repository's name and
+        # is refused all the same. Nothing here decodes, so the comparison
+        # fails and the answer is a missed close rather than a wrong one --
+        # the asymmetry the docstring states, applied to an escape.
+        ("https://github.com/robotrocketscience/aelfric%65/issues/5", False),
+        # This repository, in every shape a URL may carry after the number.
+        ("https://github.com/robotrocketscience/aelfrice/issues/5", True),
+        ("https://github.com/robotrocketscience/aelfrice/issues/5/", True),
+        ("https://github.com/robotrocketscience/aelfrice/issues/5?utm_source=x", True),
+        ("https://github.com/robotrocketscience/aelfrice/issues/5#issuecomment-1", True),
+        ("https://github.com/robotrocketscience/aelfrice/pull/5", True),
+    ],
+    ids=lambda v: str(v)[-40:],
+)
+def test_no_url_a_legal_anchor_can_carry_aborts_the_step(
+    url: str, closes: bool
+) -> None:
+    """Each shape the review asked about, decided one row at a time.
+
+    The owner and the name are read as whole path segments, which is what
+    makes this list closed rather than a sample: a path segment cannot contain
+    a `/`, so every owner and name GitHub is able to put here parses, whatever
+    its length or spelling. Being wider than the legal set decides nothing,
+    because the segments are only ever compared against `--repo`.
+    """
+    html = f'<p>Closes <a class="issue-link js-issue-link" data-url="{url}">#5</a></p>'
+    found, refused = close_directives(html, _CONTEXT)
+    if closes:
+        assert (found, refused) == ([5], [])
+    else:
+        assert found == []
+        assert [r.reason for r in refused] == [CROSS_REPO]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid/whatever",
+        "https://github.com/robotrocketscience/aelfrice/milestone/5",
+        "https://github.com/robotrocketscience/issues/5",
+    ],
+)
+def test_a_url_that_is_not_an_issue_reference_still_stops_the_step(url: str) -> None:
+    """The control: widening the segments must not empty the raise.
+
+    What the raise is for is an output shape GitHub does not emit today --
+    another host, or a path that is not `OWNER/NAME/(issues|pull)/N`. Stopping
+    is right there, because the module cannot tell whose issue it is looking
+    at; stopping for a name it simply could not spell was not.
+    """
+    html = f'<p>Closes <a class="issue-link js-issue-link" data-url="{url}">#5</a></p>'
+    with pytest.raises(RendererUnavailable):
+        close_directives(html, _CONTEXT)
+
+
+def test_a_discussion_in_a_dotted_repository_is_still_found_at_source() -> None:
+    """On the source side the same grammar decides a close, not a diagnostic.
+
+    `DISCUSSION_RE` is what stops a discussions URL from closing the issue
+    that happens to share its number, and it is built from the same name
+    fragment. A repository whose name the fragment cannot spell got no such
+    protection: run against `--repo github/.github`, a body writing that
+    repository's own discussion would have closed its issue 5.
+    """
+    body = "Closes https://github.com/github/.github/discussions/5\n"
+    assert discussion_targets(body) == frozenset({("github", ".github", 5)})
+
+    html = f"<p>Closes {_anchor(5, repo='github/.github')}</p>"
+    found, refused = parse(body, "github/.github", render=lambda b, r: html)
+    assert found == []
+    assert [(r.text, r.reason) for r in refused] == [("Closes #5", FROM_DISCUSSION)]
+
+
 def test_a_block_quote_is_refused_out_loud() -> None:
     """The one place this refuses where adjacency alone would close.
 
@@ -637,6 +826,42 @@ def test_the_other_rewritten_url_forms_are_ruled_on_one_by_one() -> None:
     # A commit link and an organisation discussion are not references at all.
     assert not any("abc1234" in text for text, _ in refused)
     assert not any("orgs/robotrocketscience" in text for text, _ in refused)
+
+
+def test_github_lower_cases_the_url_it_hangs_on_a_mixed_case_reference() -> None:
+    """The premise of the fold, read off GitHub's own bytes.
+
+    The body writes `RobotRocketScience/AelfRice`; `data-url` comes back
+    lower-cased, and the author's capitalisation survives nowhere in the
+    render. So the two sides of the discussions comparison -- one read from
+    the source, one from the anchor -- meet only if both are folded.
+    """
+    record = _RECORDS["records"]["identity"]
+    assert "RobotRocketScience/AelfRice/discussions/21" in record["body"]
+    assert (
+        'data-url="https://github.com/robotrocketscience/aelfrice/issues/21"'
+        in record["html"]
+    )
+    assert "RobotRocketScience" not in record["html"]
+
+
+def test_a_mixed_case_discussions_url_is_refused_like_a_lower_case_one() -> None:
+    """The round-six wrong close, spelled the way an author actually types it.
+
+    Only the SOURCE-side fold catches this: GitHub has already lower-cased the
+    anchor, so folding the anchor again is a no-op here. That half was
+    unguarded -- dropping it left the whole suite green while
+    `Closes https://github.com/RobotRocketScience/AelfRice/discussions/21`
+    closed the unrelated issue 21.
+    """
+    found, refused = _parse("identity")
+    assert 21 not in found
+    assert ("Closes #21", FROM_DISCUSSION) in refused
+
+
+def test_a_mixed_case_spelling_of_this_repository_still_closes() -> None:
+    """The control: folding must not turn every mixed-case reference away."""
+    assert _parse("identity")[0] == [22]
 
 
 def test_the_source_scan_is_what_finds_a_discussion_not_the_render() -> None:
@@ -824,19 +1049,71 @@ def test_a_non_ascii_body_is_sent_as_itself_and_not_as_escapes() -> None:
 
 
 def test_the_largest_body_github_accepts_fits_inside_the_renderers_cap() -> None:
-    """The reintroduced input bound, asserted rather than argued.
+    """The reintroduced input bound, bracketed from both sides.
 
     `POST /markdown` refuses a request over 400 KB, which is a cap on a step
     whose defect was a cap. Escaped, a body of 65,536 astral characters is a
     786,501-byte request and GitHub answers HTTP 403; unescaped it is 262,213
     bytes and renders. The relation is what makes the cap unreachable from any
     body GitHub would accept, so it is the relation that is pinned.
+
+    Both halves of the relation are asserted, not one. `sent < LIMIT` alone
+    lets the constant be widened to 4 MB with the suite green, and the
+    docstring beside it -- which is what a reader trusts -- would then be
+    false. The escaped figure exceeding the cap is the other half, and it is
+    also what makes `ensure_ascii=False` load-bearing rather than tidy.
     """
+    body = "\U0001F600" * MAX_BODY_CHARACTERS
     runner = _Runner()
-    render_markdown("\U0001F600" * MAX_BODY_CHARACTERS, _CONTEXT, run=runner)
+    render_markdown(body, _CONTEXT, run=runner)
     sent = len(runner.kwargs["input"].encode("utf-8"))
+    escaped = len(
+        json.dumps({"mode": "gfm", "context": _CONTEXT, "text": body}).encode("utf-8")
+    )
+
+    assert escaped == 786_501
+    assert escaped > RENDER_LIMIT_BYTES, (
+        "the cap has to be reachable by the escaping this module stopped "
+        "doing, or `ensure_ascii=False` guards nothing"
+    )
     assert sent == 262_213
     assert sent < RENDER_LIMIT_BYTES
+
+
+def test_the_recorded_caps_are_the_figures_the_docstring_publishes() -> None:
+    """Two constants no production path reads, kept honest by the prose.
+
+    Neither bounds anything this module does -- deliberately, because an input
+    bound was #1541's whole defect -- so they are assertions ABOUT GitHub, and
+    what a reader trusts is the docstring. Read each figure back out of that
+    prose and compare, rather than reading the constant against its own
+    definition, which would pass for any value.
+    """
+    doc = module.__doc__ or ""
+    limit = re.search(r"refuses a request above ([\d,]+) KB", doc)
+    assert limit is not None, "the docstring no longer publishes the render cap"
+    assert RENDER_LIMIT_BYTES == int(limit.group(1).replace(",", "")) * 1024
+
+    body_cap = re.search(
+        r"caps an issue or pull-request body at ([\d,]+) characters", doc
+    )
+    assert body_cap is not None, "the docstring no longer publishes the body cap"
+    assert MAX_BODY_CHARACTERS == int(body_cap.group(1).replace(",", ""))
+
+
+def test_the_module_applies_no_size_bound_of_its_own() -> None:
+    """The constants record GitHub's caps; they must not become this tool's.
+
+    #1541 was an input bound on this step, so its fix cannot be a different
+    input bound. A body larger than `RENDER_LIMIT_BYTES` is handed over whole
+    and the refusal is left to GitHub, which is loud about it -- see
+    `test_a_render_refused_for_size_closes_nothing_loudly`.
+    """
+    body = "x" * (RENDER_LIMIT_BYTES + 1)
+    runner = _Runner()
+    render_markdown(body, _CONTEXT, run=runner)
+    assert json.loads(runner.kwargs["input"])["text"] == body
+    assert len(runner.kwargs["input"].encode("utf-8")) > RENDER_LIMIT_BYTES
 
 
 @pytest.mark.timeout(_CLI_TIMEOUT)
@@ -987,6 +1264,42 @@ def test_a_renderer_timeout_raises() -> None:
     with pytest.raises(RendererUnavailable) as exc:
         render_markdown("Closes #7", _CONTEXT, run=slow)
     assert str(RENDER_TIMEOUT_SECONDS) in str(exc.value)
+
+
+# The worst of 17 live renders measured against GitHub on 2026-09-15, over
+# three body sizes -- one line, the 264,096-character body the docstring
+# builds, and the 262,213-byte astral payload. The slowest was the largest
+# body. The command is in the comment on `RENDER_TIMEOUT_SECONDS`.
+_WORST_MEASURED_RENDER_SECONDS = 1.03
+
+
+def _job_timeout_seconds() -> int:
+    """The merge-train job's own bound, read from the workflow, not written."""
+    match = re.search(
+        r"^\s*timeout-minutes:\s*(\d+)\s*$",
+        _WORKFLOW.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None, "merge-train.yml no longer bounds the job"
+    return int(match.group(1)) * 60
+
+
+def test_the_render_timeout_cannot_be_trimmed_silently() -> None:
+    """Both of the older assertions read the value back from the constant.
+
+    `kwargs["timeout"] == RENDER_TIMEOUT_SECONDS` and
+    `str(RENDER_TIMEOUT_SECONDS) in str(exc)` hold for any value at all, so 30
+    could become 1 with the suite green -- and then every render slower than a
+    second aborts the close of every issue in the body, on exactly the loaded
+    runner where a render is slow. Bracketed here from two sources that are
+    not this constant: the measured worst render below it, and the workflow's
+    own job bound above it.
+    """
+    assert RENDER_TIMEOUT_SECONDS >= 10 * _WORST_MEASURED_RENDER_SECONDS
+    assert RENDER_TIMEOUT_SECONDS <= _job_timeout_seconds() / 10
+    assert RENDER_TIMEOUT_SECONDS == 30, (
+        "the render timeout changed; re-measure it against the live endpoint"
+    )
 
 
 def test_an_anchor_with_an_unreadable_url_raises_rather_than_being_skipped() -> None:
@@ -1295,6 +1608,37 @@ def test_the_docstring_audits_what_github_rewrites_into_an_issue_anchor() -> Non
         assert shape in doc, f"the docstring does not rule on {shape}"
 
 
+def test_the_docstring_rules_on_what_an_unreadable_url_costs() -> None:
+    """A raise that closes nothing for the whole body is a ruling, not a detail.
+
+    The pattern reading GitHub's own URLs is the one place where being too
+    strict aborts the step, so what it accepts has to be argued in the file
+    and each shape decided. Read off `__doc__`, because the same words appear
+    in the comment on `_ISSUE_HREF_RE` and a whole-file search would pass on a
+    docstring that no longer says any of it.
+    """
+    doc = module.__doc__ or ""
+    assert "Reading GitHub's own URL must not be able to abort the step" in doc
+    for shape in (
+        "leading dot",
+        "100-character maximum",
+        "Percent-encoding",
+        "trailing slash",
+    ):
+        assert shape in doc, f"the docstring does not rule on {shape}"
+    assert "creating-a-new-repository" in doc, (
+        "the name grammar is GitHub's, so the file must cite where GitHub "
+        "writes it rather than assert it"
+    )
+
+
+def test_the_docstring_states_where_the_case_fold_happens() -> None:
+    """Folding in two places is what left the source half unguarded."""
+    doc = module.__doc__ or ""
+    assert "One case fold, in one place" in doc
+    assert "_identity" in doc
+
+
 def test_the_docstring_states_the_renderers_own_cap() -> None:
     """A reintroduced input bound on the step whose defect was an input bound.
 
@@ -1341,8 +1685,6 @@ def test_the_docstring_states_what_still_diverges_from_github() -> None:
 def test_the_docstring_cites_githubs_keyword_page_as_one_url() -> None:
     """Two independent substring checks pass on a host in one sentence and a
     path in another, which is not a citation a reader can follow."""
-    import re
-
     doc = _SCRIPT.read_text(encoding="utf-8")
     assert re.search(
         r"https://docs\.github\.com/\S*linking-a-pull-request-to-an-issue", doc
