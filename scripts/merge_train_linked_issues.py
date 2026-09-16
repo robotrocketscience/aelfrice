@@ -192,6 +192,62 @@ issue URLs indiscriminately, its own spellings included. Now:
   and closes all four, so this does too.
 * An anchor resolving anywhere else is refused out loud; see divergence 2.
 
+### Reading GitHub's own URL must not be able to abort the step
+
+`close_directives` raises `RendererUnavailable` for an anchor whose `data-url`
+it cannot read. That is right for an output shape GitHub does not emit today --
+the module then cannot tell whose issue it is looking at -- but the failure
+policy below turns it into **nothing closed for the whole body**, not one
+anchor skipped. So the pattern that reads those URLs is a place where being
+too strict is far worse than being too loose, and it was too strict: it spelled
+a repository name as "alphanumeric at each end", which was this module's
+invention. GitHub's own rule reserves no position -- "The repository name must
+not exceed 100 characters, and can only contain ASCII letters, digits, and the
+characters `.`, `-`, and `_`":
+https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository
+
+`.github` is such a name, and a common one. A body writing
+
+    Closes github/.github#5
+
+    Closes #1549
+
+renders both as issue-link anchors, the first with
+`data-url="https://github.com/github/.github/issues/5"`. The pattern refused
+that URL, and the shipped CLI answered exit 2 on an empty stdout, closing
+neither -- including the issue in its own repository. The ruling for an anchor
+resolving elsewhere is CROSS_REPO: one `warning:` line, and the rest of the
+body still closes.
+
+The repair is not a wider name grammar but no name grammar at all on this
+side. `_ISSUE_HREF_RE` reads the owner and the name as whole path segments,
+which cannot fail for anything GitHub is able to put there, because a path
+segment never contains a `/`. Width decides nothing on its own: these segments
+are only ever compared against `--repo`. Each shape the audit raised was then
+settled against the live renderer rather than argued:
+
+* **A leading dot, in the name or in the owner.** Read, and refused unless it
+  is this repository. GitHub anchors `.github/.github#5` as `github/.github`,
+  leaving the owner's dot outside the anchor, so that spelling cannot reach
+  `data-url` at all; reading it anyway costs nothing.
+* **A name at the documented 100-character maximum.** Read. No length is
+  written into the pattern, because a length bound here is one more way to
+  abort.
+* **Percent-encoding.** `https://github.com/github/%2Egithub/issues/5` renders
+  no anchor, so none arrives. If one ever did, nothing here decodes, so a
+  percent-encoded spelling of *this* repository compares unequal and is
+  refused -- a missed close rather than a wrong one, which is the standing
+  asymmetry.
+* **A trailing slash or a query string.** GitHub normalises `data-url` to the
+  bare `/issues/N` spelling, and the pattern accepts the others regardless.
+
+The source-level scans keep a name grammar, because they read the author's
+prose rather than GitHub's output and need somewhere to stop. Theirs is
+GitHub's documented character set, ended by the literal that must follow it --
+`#`, `/issues/`, `/pull/` or `/discussions/`. That is not only a diagnostic
+question: `DISCUSSION_RE` decides a refusal, so a repository whose name the
+grammar could not spell had no protection at all from the wrong close below.
+
 ### The render is not an oracle for which object a reference names
 
 Reading the render answers "is this text a reference?" It does **not** answer
@@ -388,9 +444,23 @@ DECLINED_RE = re.compile(_FRONT + _DECLINED, re.IGNORECASE)
 _CLIPPED_ADJACENT_RE = re.compile(_CLIPPED_FRONT + _ACCEPTED, re.IGNORECASE)
 _CLIPPED_DECLINED_RE = re.compile(_CLIPPED_FRONT + _DECLINED, re.IGNORECASE)
 
-# An owner or repository name as GitHub allows it: alphanumerics, `.`, `_` and
-# `-`, neither leading nor trailing with a separator.
-_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+# An owner or repository name, as GitHub's own documentation writes the rule:
+# "The repository name must not exceed 100 characters, and can only contain
+# ASCII letters, digits, and the characters `.`, `-`, and `_`."
+# https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository
+#
+# No position is reserved, so `.github` is a legal name, and a common one --
+# `gh api repos/github/.github` resolves. An earlier spelling here required an
+# alphanumeric at each end; that was this module's invention rather than
+# GitHub's rule, and it is what made `Closes github/.github#5` abort the step.
+# See `_ISSUE_HREF_RE` for the half of that defect that mattered.
+#
+# The 100-character bound is deliberately NOT written into the pattern. Both
+# users of `_NAME` scan the author's prose, and a bound there can only lose a
+# match; losing a `DISCUSSION_RE` match is a wrong close. Each use is bounded
+# instead by the literal that must follow it -- `#`, `/issues/`, `/pull/` or
+# `/discussions/` -- so the greedy class cannot run away into prose.
+_NAME = r"[A-Za-z0-9._-]+"
 
 # The source-level scan. DIAGNOSTIC ONLY -- it never decides a close, it only
 # names a candidate GitHub declined to render so that nothing is silent. See
@@ -458,6 +528,23 @@ MAX_BODY_CHARACTERS = 65_536
 # The anchor GitHub emits for an issue reference, and the shape of the URL it
 # hangs on it. `data-url` is always the `/issues/N` spelling even when `href`
 # points at `/pull/N`, so it is read first.
+#
+# The owner and the name are read as whole path segments here rather than
+# through `_NAME`, because on this side a name grammar is a way to abort the
+# whole step. This URL is GitHub's own output, and `close_directives` raises
+# `RendererUnavailable` on a `data-url` it cannot read -- so a grammar narrower
+# than GitHub's closes NOTHING for the entire body, this repository's own
+# issues included. `Closes github/.github#5` beside `Closes #1549` did exactly
+# that: GitHub anchors it with `data-url=".../github/.github/issues/5"`, the old
+# pattern forbade the leading dot, and the step exited 2 having closed neither.
+#
+# A path segment can never contain `/`, so `[^/?#]+` reads every owner and name
+# GitHub is able to put here, at any length and whatever it encodes. Being
+# wider than the legal set costs nothing: these segments are only ever compared
+# against `--repo`, so anything that is not this repository is refused out loud
+# as CROSS_REPO rather than closed. What still raises is a `data-url` that is
+# not a github.com issue or pull URL at all, which is the output-shape change
+# the raise is actually for.
 _ANCHOR_CLASS = "issue-link"
 _ISSUE_HREF_RE = re.compile(
     r"^https?://github\.com/(?P<owner>" + _NAME + r")/(?P<repo>" + _NAME + r")"
