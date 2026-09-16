@@ -1209,6 +1209,18 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     charges 1,487 for the same belief and still emits there, which is the
     disagreement `test_the_producer_names_which_budget_ended_every_pack` reads
     per arm.
+
+    The line is charged with the newline `"\\n".join` puts after it, because
+    that is what `_core_belief_cost` charges and therefore what decides
+    whether the section empties. Charging the bare line understates the
+    packer by one character, which moves this guard's lower edge one content
+    character above the real one: the two charges cross `budget` at 6,004
+    content characters in the pre-#1526 currency and at 5,934 as shipped, so
+    the window where the two arms disagree is 5,934 to 6,003 inclusive, and a
+    ninth grid length at 5,934 — inside that window, and the length
+    `test_the_producer_names_which_budget_ended_every_pack` blesses — reported
+    `1 failed, 48 passed` here on `assert 1500 > 1500` before the newline was
+    charged.
     """
     fig = producer_figures
     curve = fig["core_curve"]
@@ -1216,9 +1228,10 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     budget = fig["core_budget"]
     emptied = [c for c in lengths if curve[str(c)]["after"] == 0]
     assert emptied, {c: curve[str(c)]["after"] for c in lengths}
-    # A cost function is not consulted here; the line the section emits is.
+    # A cost function is not consulted here; the line the section emits is,
+    # plus the newline that joins it to the next one.
     smallest_empty = min(emptied)
-    assert chars_to_tokens(len(_core_line_at(smallest_empty))) > budget
+    assert chars_to_tokens(len(_core_line_at(smallest_empty)) + 1) > budget
     # Everything below the first empty length still emits, so the zero is a
     # threshold this lane crosses and not a lane that never emitted.
     for c in lengths:
