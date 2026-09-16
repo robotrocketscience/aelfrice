@@ -849,9 +849,10 @@ def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
 #
 # These assert on the same producer and the same `producer_figures` run as the
 # block above, which is why they live in this file rather than beside
-# `tests/test_envelope_dedupe_1547.py`: the run costs about eight seconds and
-# a second module-scoped fixture would pay it twice to assert on the same
-# numbers.
+# `tests/test_envelope_dedupe_1547.py`: a second module-scoped fixture would
+# pay for that run twice to assert on the same numbers. What it costs, and how
+# much of the per-test timeout that leaves, is published once — in the
+# `producer_figures` docstring above — so this file carries one figure for it.
 # ---------------------------------------------------------------------------
 
 
