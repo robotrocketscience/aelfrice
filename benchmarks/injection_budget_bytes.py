@@ -219,10 +219,10 @@ CORPUS_MEDIAN_CHARS = 92
 LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 5950, 7170, 18600)
 
 # Lengths the snapshot arm builds its own corpus at. A subset of the grid: the
-# arm's corpus is a second set of stores, and building all eight would double
-# the producer's runtime to report the same shape twice. 92 is the control
-# point (no sentence boundary, so the class changes nothing); the rest are the
-# grid above `MAX_HEADLINE_CHARS`.
+# arm's corpus is a second set of stores, and building one at every grid length
+# would double the producer's runtime to report the same shape twice. 92 is the
+# control point (no sentence boundary, so the class changes nothing); the rest
+# are the grid above `MAX_HEADLINE_CHARS`.
 SNAPSHOT_ARM_LENGTHS: tuple[int, ...] = (92, 300, 1000, 7170, 18600)
 
 # Lanes the snapshot arm is measured on. Both compose `<belief>` elements out of
