@@ -2938,6 +2938,29 @@ def _substitute_exploration_slots(
       Since #1551 the `feedback_history` exposure row is written at the emit
       boundary as well, so a drawn belief that survives the ceiling leaves the
       unexplored pool by both of its exits rather than only one.
+    - **The `exploration_events` row is written here, before the ceiling
+      runs, and it is the one accounting write on this lane that a dropped
+      belief still reaches.** The drawn belief is appended to the tail of
+      `hits`, and the ceiling sheds the per-turn lane last but tail-first, so
+      the drawn belief is the first per-turn element deleted. Measured at the
+      shipped ceiling on a 60-lock / 20-core / 12-hit / 4-pool store: the
+      block was byte-identical with the slot on and off, and the ledger still
+      recorded one draw and one displacement, neither of which reached the
+      model. That is deliberate rather than an oversight of the #1551 sweep:
+      this row is the replay record of a *pack decision* — `fire_idx`, the
+      seed, the candidate pool, what was drawn and what paid for it — and
+      `derive_seed` is only auditable if every firing turn leaves one.
+      Deferring it to the emit boundary would delete the record of the fires
+      whose draw was dropped, which are exactly the fires an operator
+      investigating a seed would look for.
+
+      **What it costs.** A coverage figure counted from `drawn_ids` alone
+      over-counts by the draws the ceiling deleted. Count coverage the way
+      `docs/user/CONFIG.md` specifies it — `exploration_events` joined
+      against `injection_events` — and the figure is right, because the
+      `injection_events` write moved to the emit boundary in #1551. The
+      same join is the one to use against `feedback_history`.
+      `test_hook_injection_ceiling_wiring.py` pins both halves.
 
     Both sides of the displacement are priced in `_ups_belief_line_cost`, the
     cost function this lane packs and renders with (#1551). They were

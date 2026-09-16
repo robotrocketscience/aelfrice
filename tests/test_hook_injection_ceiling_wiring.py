@@ -601,6 +601,68 @@ def test_ups_exposure_rows_leave_a_dropped_belief_unexplored(
     assert dropped <= pool_after
 
 
+def test_the_exploration_ledger_is_pre_ceiling_and_the_exposure_tables_are_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fifth accounting writer, and the one that stays upstream.
+
+    `_substitute_exploration_slots` appends the drawn belief to the tail of
+    `hits` and writes `exploration_events` there, before the block is
+    assembled. The ceiling sheds the per-turn lane tail-first, so the drawn
+    belief is the first per-turn element it deletes: the ledger can record a
+    draw the model never saw. That is the documented behaviour rather than a
+    miss — the row is the replay record of a pack decision (`fire_idx`, the
+    seed, the pool, the draw, the displacement), and a ledger that skipped
+    the fires whose draw was dropped would be missing exactly the fires an
+    operator re-deriving a seed goes looking for.
+
+    So this pins the pair that makes a coverage figure correct anyway: the
+    ledger names the draw, and `injection_events` — which #1551 moved to the
+    emit boundary — does not. `docs/user/CONFIG.md` specifies coverage as the
+    join of the two, and the join is right precisely because the two tables
+    disagree here.
+
+    Non-vacuity: the fixture must actually fire the slot, actually draw, and
+    actually have the ceiling delete the draw. Each is asserted before the
+    claim, because every one of them silently empties it.
+    """
+    db = tmp_path / "memory.db"
+    session_id = "s-explore"
+    monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
+    monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", "1")
+    monkeypatch.setenv("AELFRICE_EXPLORATION_SLOTS", "1")
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    out, err = _fire_ups(tmp_path, db, monkeypatch, session_id=session_id)
+    assert "dropped" in err, err
+    rendered = set(re.findall(r'<belief id="([^"]+)"', out))
+
+    store = MemoryStore(str(db))
+    try:
+        ledger = [
+            (json.loads(row["drawn_ids"]), json.loads(row["displaced_ids"]))
+            for row in store._conn.execute(
+                "SELECT drawn_ids, displaced_ids FROM exploration_events"
+            )
+        ]
+        injected = {
+            row[2] for row in store.list_pending_injection_events(session_id)
+        }
+    finally:
+        store.close()
+
+    assert len(ledger) == 1, ledger
+    drawn, displaced = ledger[0]
+    assert drawn and displaced, ledger
+    # The case under test: the ceiling deleted the belief that was drawn.
+    unshown = [bid for bid in drawn if bid not in rendered]
+    assert unshown == drawn, (drawn, sorted(rendered)[:4])
+    # The ledger credits it; the emit-boundary writer does not. A coverage
+    # count over the join of the two therefore excludes it.
+    assert injected, "no injection_events rows to join against"
+    assert [bid for bid in unshown if bid in injected] == []
+    assert [bid for bid in injected if bid not in rendered] == []
+
+
 def test_ups_seen_pointer_on_turn_two_names_a_belief_turn_one_rendered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
