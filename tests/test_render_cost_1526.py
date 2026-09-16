@@ -566,7 +566,7 @@ def test_the_producer_names_which_budget_ended_every_pack(
     at once.
 
     * Drop the `+ 1` from `_core_pack_costs_at` — this test, on
-      `assert (1483 <= 1500 < 1500) is True` at 5,934 content characters.
+      `assert (1500 < 1500) is True` at 5,934 content characters.
     * Drop it from the sibling guard's `charged()` as well —
       `test_the_core_section_empties_once_one_belief_exceeds_its_budget` on
       `assert 1500 > 1500`, and this test as above.
