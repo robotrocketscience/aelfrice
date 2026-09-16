@@ -362,7 +362,9 @@ means the attribute cannot become a new way to abort the step.
 The renderer is a network call, so it can be unreachable, answer non-200, or
 answer something this module cannot read. All three raise `RendererUnavailable`
 and `main` returns 2 with an `error:` line on stderr and **nothing on stdout**.
-Two alternatives were rejected:
+Answering *nothing* is not one of them -- an empty document is a render, not a
+failure; see "An empty document is an answer" below. Two alternatives were
+rejected:
 
 * Falling back to a local parse is the emulation this change deletes, and it
   would make its wrong closes precisely when the renderer that would have
@@ -379,6 +381,43 @@ workflow turns exit 2 into a `::error::` annotation rather than swallowing it.
 An empty or whitespace-only body is answered without calling the renderer at
 all: it has no anchors by construction, and that keeps the commonest no-op
 cheap.
+
+### An empty document is an answer
+
+`gh` exiting 0 with nothing on stdout is a *successful* render of a body with
+nothing renderable, and it used to raise. `<!-- Closes #1549 -->` is such a
+body -- GitHub's answer for it is "nothing is linked" -- and the raise turned
+that into exit 2 and
+
+    ::error::merge-train could not determine the linked issues for PR #N;
+    nothing was closed. Close them by hand.
+
+which invites a human to make exactly the wrong close this module exists to
+prevent. A pull-request template stripped to its guidance comments, or a body
+that is only a bot marker, is a realistic body.
+
+It is now returned, and the step answers what GitHub answers: no anchors, no
+close, exit 0. The keyword inside the comment is not silent -- the source scan
+reports it as `NOT_LINKED`, which is true of it, and that was the property the
+raise was defending.
+
+The raise cannot be kept for "gh answered something unusable", because with
+exit 0 there is nothing left to tell apart. An empty document is
+byte-for-byte the same answer whether GitHub rendered a comment-only body or a
+broken `gh` printed nothing, and the constructs that render to nothing are
+more than one: measured on 2026-09-15, an HTML comment block, a link
+reference definition (`[a]: https://example.com`) and a footnote definition
+(`[^fn]: a footnote`) each come back as rc 0 and zero bytes. Deciding from the
+body instead would mean knowing which bodies must render, which is the
+CommonMark block grammar this module deleted.
+
+So the line is drawn where the transport can draw it. A non-zero exit, an
+unrunnable `gh` and a timeout are unusable and still raise; an empty document
+is a render. What the empty case gets instead of a raise is a `note:` line
+naming it, so the log tells "rendered nothing" apart from "rendered a document
+with no close directive" -- and the outcome of a broken renderer is then a
+missed close that every keyword in the body reports, rather than an abort that
+asks for a hand-close.
 
 ### Nothing is silently unmatched
 
@@ -750,6 +789,12 @@ def render_markdown(body: str, repo: str, *, run: object = None) -> str:
     refused -- see the module docstring. Unescaped it is 262,213 bytes and
     renders. That makes the encoding of stdin load-bearing too, so it is named
     rather than inherited from the runner's locale.
+
+    An empty document is returned, not raised on: `gh` exiting 0 having
+    printed nothing is a successful render of a body with nothing renderable,
+    which is what `<!-- Closes #N -->` is. See "An empty document is an
+    answer" in the module docstring for why the raise cannot be kept for the
+    exit-0 case, and what the caller gets instead.
     """
     run = subprocess.run if run is None else run
     payload = json.dumps(
@@ -779,8 +824,13 @@ def render_markdown(body: str, repo: str, *, run: object = None) -> str:
             f"{argv[0]} exited {proc.returncode} rendering the body: {detail}"
         )
     if not proc.stdout.strip():
-        raise RendererUnavailable(
-            f"{argv[0]} rendered a {len(body)}-character body as nothing"
+        # A render, not a failure. See "An empty document is an answer" in
+        # the module docstring. Said out loud, because the log must tell it
+        # apart from a document that rendered and held no directive.
+        print(
+            f"note: GitHub rendered the {len(body)}-character body as an "
+            "empty document, so it links nothing.",
+            file=sys.stderr,
         )
     return proc.stdout
 

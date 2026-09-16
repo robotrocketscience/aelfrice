@@ -1448,15 +1448,108 @@ def test_a_non_zero_renderer_exit_raises_rather_than_returning_nothing() -> None
     assert "503" in str(exc.value), "the failure must name what GitHub said"
 
 
-def test_an_empty_render_of_a_non_empty_body_raises() -> None:
-    """The unparseable case that matters: a 200 carrying nothing.
+def test_an_empty_render_is_a_render_and_not_a_failure() -> None:
+    """A 200 carrying nothing is GitHub's answer for a body with nothing in it.
 
-    Returning `([], [])` here is indistinguishable from a body with no
-    keyword, which is the silence AC5 forbids.
+    This raised. `<!-- Closes #1549 -->` renders as the empty string with `gh`
+    exiting 0, so the raise made `main` return 2 and the workflow print
+    `merge-train could not determine the linked issues ... Close them by
+    hand.` -- an invitation to make exactly the wrong close, for a body whose
+    GitHub answer is "nothing is linked".
     """
     runner = _Runner(stdout="")
-    with pytest.raises(RendererUnavailable):
-        render_markdown("Closes #7", _CONTEXT, run=runner)
+    assert render_markdown("<!-- Closes #1549 -->", _CONTEXT, run=runner) == ""
+
+
+def test_an_empty_render_is_said_out_loud_rather_than_passed_over(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The half of the old raise that survives: the log still tells them apart.
+
+    "Rendered nothing" and "rendered a document with no directive" are
+    different answers, and only one of them means the body had nothing in it.
+    """
+    render_markdown("<!-- Closes #1549 -->", _CONTEXT, run=_Runner(stdout=""))
+    empty = capsys.readouterr().err
+    render_markdown("prose", _CONTEXT, run=_Runner(stdout="<p>prose</p>"))
+    rendered = capsys.readouterr().err
+
+    assert "empty document" in empty
+    assert str(len("<!-- Closes #1549 -->")) in empty
+    assert rendered == ""
+
+
+def test_a_comment_only_body_closes_nothing_and_is_still_not_silent() -> None:
+    """AC5 is what the raise was defending, and the source scan keeps it.
+
+    The keyword inside the comment is reported as NOT_LINKED, which is true
+    of it: GitHub renders no anchor there, so a merge commit would not close
+    it either. That report is what makes exit 0 the right answer rather than
+    a silence.
+    """
+    body = "<!-- Closes #1549 -->\n"
+    found, refused = parse(body, _CONTEXT, render=lambda b, r: "")
+    assert found == []
+    assert [(r.text, r.reason, r.line) for r in refused] == [
+        ("Closes #1549", NOT_LINKED, 1)
+    ]
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_shipped_cli_does_not_abort_on_a_comment_only_body(
+    tmp_path: Path,
+) -> None:
+    """End to end, because what the workflow reads is the exit code.
+
+    A template stripped to its guidance comments is a realistic body, and
+    exit 2 on it puts an `::error::` in the step log telling a human to close
+    the linked issues by hand.
+    """
+    bin_dir = _fake_gh(tmp_path, "")
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="<!-- Closes #7 -->\n")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == ""
+    assert "empty document" in proc.stderr
+    assert NOT_LINKED in proc.stderr
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_a_renderer_that_answers_nothing_reports_every_keyword_it_lost(
+    tmp_path: Path,
+) -> None:
+    """The case the old raise was written for, and what replaces it.
+
+    A `gh` that exits 0 having printed nothing is byte-for-byte a
+    comment-only body's answer, so no rule on the transport can tell them
+    apart. What the step does either way is close nothing and name every
+    keyword in the body -- a missed close a human sees, which is this
+    module's standing asymmetry, rather than an abort that asks for a
+    hand-close.
+    """
+    bin_dir = _fake_gh(tmp_path, "")
+    proc = _run_cli(
+        ["--repo", _CONTEXT], bin_dir=bin_dir, stdin="Closes #7\n\nFixes #8\n"
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == ""
+    assert "Closes #7" in proc.stderr
+    assert "Fixes #8" in proc.stderr
+    assert proc.stderr.count(NOT_LINKED) == 2
+
+
+def test_the_docstring_rules_on_the_empty_document() -> None:
+    """A reversed raise has to be readable as reversed, and argued.
+
+    The distinction the review asked for -- a successful empty render against
+    an unusable answer -- cannot be drawn on the exit-0 side, and the file has
+    to say that rather than leave the raise's disappearance unexplained.
+    """
+    doc = module.__doc__ or ""
+    assert "An empty document is an answer" in doc
+    assert "Close them by hand" in doc
+    for construct in ("comment", "link\nreference definition", "footnote"):
+        assert construct in doc, f"the docstring does not name the {construct} case"
+    assert "still raise" in doc
 
 
 def test_a_missing_gh_raises_rather_than_closing_nothing_quietly() -> None:
