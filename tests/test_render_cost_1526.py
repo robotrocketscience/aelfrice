@@ -67,13 +67,59 @@ from aelfrice.store import MemoryStore
 # to 16, and `BELIEF_LINE_WRAPPER_CHARS` is stated for that width.
 _ID = "0123456789abcdef"
 
-# Padding for the SessionStart fixture's belief content, chosen so each
-# belief runs past `hook_search_tool.PER_LINE_CHAR_CAP` (200) — the per-line
-# truncation a sibling injection lane already applies. A lock shorter than
-# that cap is invisible to it, so the guard that asserts no lock is trimmed
-# would pass on a block where every line had been cut. The test asserts the
-# resulting length against the shipped cap rather than trusting this number.
-_PAD_CHARS = 200
+# Naming shapes this repo gives a character bound on injected text. A
+# constant is discovered by its name rather than listed by hand because the
+# point of the discovery is to catch the cap nobody thought to list: sizing
+# the SessionStart fixture against one named constant is what let
+# `STOP_PROMPT_MAX_CONTENT` — 1000, five times the cap the fixture was built
+# against — sit above it unnoticed.
+_CONTENT_CAP_SUFFIXES = ("CHAR_CAP", "MAX_CONTENT", "_CHARS")
+
+# The two named caps that must be in the discovered set. Over-inclusion is
+# safe here (a cap that bounds something other than belief text only raises
+# the floor), but a *rename* would shrink the set silently, so both are
+# required by name.
+_KNOWN_CONTENT_CAPS = frozenset(
+    {
+        "aelfrice.hook.STOP_PROMPT_MAX_CONTENT",
+        "aelfrice.hook_search_tool.PER_LINE_CHAR_CAP",
+    }
+)
+
+
+def _shipped_content_caps() -> dict[str, int]:
+    """Every per-belief character cap the two injection modules ship.
+
+    `aelfrice.hook` renders the SessionStart block, so a cap added there is
+    the one that would trim it; `aelfrice.hook_search_tool` is the sibling
+    lane that already truncates, and is what proves this class of regression
+    ships rather than being hypothetical.
+
+    Discovered, not enumerated. The fixture below has to be larger than the
+    largest of these, and a maximum taken over a discovered set rises on its
+    own when a cap is added — which is the whole difference between this and
+    a fixture sized for one constant.
+    """
+    caps: dict[str, int] = {}
+    for mod in (aelfrice.hook, aelfrice.hook_search_tool):
+        for name, value in vars(mod).items():
+            if not name.isupper() or isinstance(value, bool):
+                continue
+            if not isinstance(value, int):
+                continue
+            if name.endswith(_CONTENT_CAP_SUFFIXES):
+                caps[f"{mod.__name__}.{name}"] = value
+    return caps
+
+
+# Padding for the SessionStart fixture's belief content, sized above every
+# cap `_shipped_content_caps()` finds (the largest is
+# `hook.STOP_PROMPT_MAX_CONTENT = 1000`). A lock shorter than a cap is
+# invisible to it, so the guard that asserts no lock is trimmed would pass
+# on a block where every line had been cut. The test asserts the resulting
+# length against that discovered maximum rather than trusting this number,
+# so a cap added later fails the assert instead of slipping under it.
+_PAD_CHARS = 1200
 
 
 def _mk(
@@ -831,16 +877,21 @@ def test_session_start_lane_never_trims_its_l0_pool(
     are checked, because a formatter that packed the block would leave the
     hit list whole.
 
-    **The block is held to content, not to ids, and the fixture is sized for
-    the cap that would trim it.** An id-presence assert passes on a block
-    whose every line has been truncated: the id sits in the `<belief id="…"`
-    attribute ahead of the content, so a per-line cap leaves every id in
-    place, leaves `hits` whole, and leaves the block length identical across
-    arms. `hook_search_tool.PER_LINE_CHAR_CAP = 200` is that regression
-    already shipped on a sibling lane, so the locks here carry more than 200
-    characters of content and each one's content is required in the block
-    verbatim. Under 200 characters this arm would pass on a cap of the
-    shipped size.
+    **The block is held to content, not to ids, and the fixture is sized
+    above every cap that could trim it.** An id-presence assert passes on a
+    block whose every line has been truncated: the id sits in the
+    `<belief id="…"` attribute ahead of the content, so a per-belief cap
+    leaves every id in place, leaves `hits` whole, and leaves the block
+    length identical across arms. Each lock's content is therefore required
+    in the block verbatim, and the locks are sized above
+    `max(_shipped_content_caps().values())` rather than above one named
+    constant. Sizing against one constant is how this arm was wrong before:
+    it was built against `hook_search_tool.PER_LINE_CHAR_CAP = 200`, the
+    truncation a sibling lane already ships, while `hook` — the module that
+    renders this very block — ships `STOP_PROMPT_MAX_CONTENT = 1000` for the
+    identical reason. Truncating every lock at 1000 characters here passed
+    the whole suite. A maximum over a discovered set rises on its own when
+    the next cap lands.
 
     **The two store sizes are not a sweep; each catches a mutation the other
     cannot, so neither may be dropped.** Any fixture is blind to a cap above
@@ -854,7 +905,7 @@ def test_session_start_lane_never_trims_its_l0_pool(
     300 the locks fill it and dedupe away, so no decoy is admitted and the
     mutation passes. Measured with the empty query replaced by "locked
     baseline belief", at this fixture's content length — at (10, 60): 10 hits
-    and 0 decoys at budgets 1 and 10, 21 hits and 11 decoys at 1500, 50 hits
+    and 0 decoys at budgets 1 and 10, 12 hits and 2 decoys at 1500, 50 hits
     and 40 decoys at 100000; at (300, 1800): 300 hits and 0 decoys at all
     four.
     """
@@ -893,13 +944,24 @@ def test_session_start_lane_never_trims_its_l0_pool(
         store.close()
     locked_ids = set(locked)
     assert len(locked_ids) == n_locked, len(locked_ids)
-    # The fixture has to be able to see the cap it is guarding against.
+    # The fixture has to be able to see every cap it is guarding against,
+    # so it is sized against the largest one the injection modules ship and
+    # not against any single named constant.
+    caps = _shipped_content_caps()
+    missing_caps = _KNOWN_CONTENT_CAPS - set(caps)
+    assert not missing_caps, (
+        f"{sorted(missing_caps)} was not discovered by "
+        f"_shipped_content_caps(), which found {sorted(caps)}. A rename "
+        "shrinks that set silently and drops this fixture's floor."
+    )
+    tightest_name, largest_cap = max(caps.items(), key=lambda kv: (kv[1], kv[0]))
     shortest = min(len(c) for c in locked.values())
-    assert shortest > aelfrice.hook_search_tool.PER_LINE_CHAR_CAP, (
-        f"the locks are {shortest} characters, which is at or under the "
-        f"{aelfrice.hook_search_tool.PER_LINE_CHAR_CAP}-character per-line "
-        "cap the sibling Grep|Glob lane already applies. A cap of that size "
-        "added here would leave every id in place and pass this test."
+    assert shortest > largest_cap, (
+        f"the locks are {shortest} characters, which is at or under "
+        f"{tightest_name} = {largest_cap}, the largest per-belief character "
+        f"cap these modules ship (all of them: {caps}). A cap of that size "
+        "added to this lane would leave every id in place and pass this "
+        "test. Raise _PAD_CHARS above it."
     )
     monkeypatch.setattr(
         aelfrice.hook, "_open_store", lambda: MemoryStore(str(db))
