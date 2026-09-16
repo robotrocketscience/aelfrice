@@ -517,6 +517,18 @@ def test_the_producer_names_which_budget_ended_every_pack(
     there; removing 5,950 from `LENGTH_GRID` and restoring `min` together give
     `49 passed`, which is what the grid length buys.
 
+    That grid length is held by a condition rather than by its own value.
+    5,950 is referenced nowhere else, and the module fixture's runtime is
+    standing pressure to trim the grid, so a length pinned by nothing restores
+    the inert state above with no test, no marker and no reviewer signal to
+    report it. What is asserted is that *some* grid length charges one `<core>`
+    line at or below `core_budget` in the pre-#1526 currency and above it as
+    shipped — the window 5,934 to 6,003 inclusive, whatever numeric length
+    occupies it. Dropping 5,950 back to the eight-length tuple gives
+    `1 failed, 48 passed`; moving it to 5,900 — still a ninth length, 34
+    characters below the window at 1,475 pre-#1526 against 1,492 as shipped —
+    gives `1 failed, 48 passed` too. Both left `49 passed` before.
+
     Only the after arm's half is falsifiable, and that is arithmetic rather
     than a gap in the grid: the pre-#1526 charge is below the shipped charge at
     every length, so `shipped > budget` is implied by `legacy > budget` and
@@ -574,6 +586,16 @@ def test_the_producer_names_which_budget_ended_every_pack(
                 row["before_binds_on"] == "pool"
                 and row["after_binds_on"] == "pool"
             ), (lane, chars)
+    costs = {int(c): _core_pack_costs_at(int(c)) for c in fig["lengths"]}
+    assert any(
+        legacy <= fig["core_budget"] < shipped
+        for legacy, shipped in costs.values()
+    ), (
+        "no grid length charges one <core> line at or below "
+        f"{fig['core_budget']} tokens in the pre-#1526 currency and above it "
+        "as shipped, so the two accountings agree at every length and the "
+        f"per-arm half of the exemption above decides nothing: {costs}"
+    )
     assert "l25_subbudget" in seen, (
         "no arm in the grid ended on the L2.5 sub-budget, so the "
         "multi-budget binding probe is not exercised by this run"
