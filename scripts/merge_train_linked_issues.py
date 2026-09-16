@@ -520,13 +520,47 @@ NOISY_COUNT = 20
 
 # The renderer is one HTTPS round trip on a step that already holds the
 # merge-train's only concurrency slot, so it is bounded. A timeout raises
-# `RendererUnavailable` like any other failure and closes nothing.
+# `RendererUnavailable` like any other failure and closes nothing -- which is
+# why the value is generous rather than tight: every second saved by trimming
+# it buys nothing, and one render slow enough to cross it aborts the close of
+# every issue in the body.
+#
+# Measured against the live endpoint on 2026-09-15, from this worktree:
+#
+#     python3 - <<'PY'
+#     import statistics, sys, time
+#     sys.path.insert(0, "scripts")
+#     from merge_train_linked_issues import render_markdown
+#     body = "\n".join(["prose line, and more of it"] * 9780)
+#     elapsed = []
+#     for _ in range(5):
+#         start = time.monotonic()
+#         render_markdown(body, "robotrocketscience/aelfrice")
+#         elapsed.append(time.monotonic() - start)
+#     print(min(elapsed), statistics.median(elapsed), max(elapsed))
+#     PY
+#
+# 17 renders over three body sizes -- one line, the 264,096-character body the
+# docstring builds, and the 262,213-byte astral payload below -- ran between
+# 0.37s and 1.03s, the worst of them on the largest body. 30 seconds is a
+# ruling on top of that measurement, not a derivation from it: roughly thirty
+# times the worst observed render, which is the headroom a shared, loaded
+# GitHub-hosted runner is worth given that the cost of being too generous is
+# one slow step and the cost of being too tight is a merge that closes nothing.
 RENDER_TIMEOUT_SECONDS = 30
 
 # GitHub's published cap on a `POST /markdown` request: above this it answers
 # HTTP 403 `too_large`. Measured, not assumed -- the module docstring carries
-# the command. Recorded here so a test can assert that the largest body GitHub
-# would accept still fits, rather than a reader having to trust a paragraph.
+# the command.
+#
+# Neither this constant nor `MAX_BODY_CHARACTERS` is read by any code path
+# here, and that is the point rather than an oversight: this module applies no
+# input bound of its own, because an input bound was #1541's whole defect. They
+# are assertions ABOUT GitHub, written where a test can bracket them from both
+# sides -- the escaped payload for the largest acceptable body must EXCEED this
+# cap, which is what makes `ensure_ascii=False` load-bearing, and the unescaped
+# one must fall under it, which is what makes the cap unreachable. A figure
+# pinned from one side only can be widened until the prose beside it is false.
 RENDER_LIMIT_BYTES = 400 * 1024
 
 # The largest body GitHub accepts on an issue or pull request, in characters.
@@ -559,7 +593,7 @@ MAX_BODY_CHARACTERS = 65_536
 # the raise is actually for.
 _ANCHOR_CLASS = "issue-link"
 _ISSUE_HREF_RE = re.compile(
-    r"^https?://github\.com/(?P<owner>" + _NAME + r")/(?P<repo>" + _NAME + r")"
+    r"^https?://github\.com/(?P<owner>[^/?#]+)/(?P<repo>[^/?#]+)"
     r"/(?:issues|pull)/(?P<number>\d+)(?:[/?#].*)?$"
 )
 
