@@ -210,18 +210,128 @@ def test_the_block_does_not_grow_in_tokens(store, monkeypatch, capsys) -> None:
     would not be enough. The slot must free at least what it spends, or it is
     a budget increase in disguise and its own coverage measurement is
     confounded.
+
+    Counted in `_ups_belief_line_cost` (#1551), the cost function this lane
+    packs and renders with, because that is the currency the guarantee is
+    made in. `retrieval._belief_tokens` charges a belief's whole content,
+    which the lane stopped emitting when the per-belief cap landed.
     """
-    from aelfrice.retrieval import _belief_tokens
+    from aelfrice.hook import _ups_belief_line_cost
 
     _seed_pool(store)
     _fire(store, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
-    before = sum(_belief_tokens(b) for b in _run(store, hits, capsys))
+    before = sum(_ups_belief_line_cost(b) for b in _run(store, hits, capsys))
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
-    after = sum(_belief_tokens(b) for b in _run(store, hits, capsys))
+    after = sum(_ups_belief_line_cost(b) for b in _run(store, hits, capsys))
 
     assert after <= before
+
+
+# The per-belief cap is 1,200 characters, so any content well over it renders
+# the same capped element. 35,012 is the length of the belief #1551's own
+# ceiling fixture seeds, kept so the two prices quoted below are one belief's.
+_OVER_CAP_CHARS = 35_012
+# The two prices of a `_OVER_CAP_CHARS` belief behind a six-character id,
+# measured on this tree: `_ups_belief_line_cost` charges the capped element
+# the lane renders, `retrieval._belief_tokens` the whole of the content. Both
+# ids below are six characters wide, so one pair of prices covers every belief
+# in these two tests.
+_CAPPED_PRICE = 314
+_UNCAPPED_PRICE = 8_766
+
+
+def _long(bid: str) -> Belief:
+    """A belief that matches the pool query and is far over the render cap.
+
+    `bid` goes into the content as well, because `content_hash` is derived
+    from it and the store rejects a second belief with the same hash. The
+    padding absorbs the difference, so every belief here is the same length.
+    """
+    assert len(bid) == 6, bid
+    head = f"exploration probe widget {bid} "
+    return _mk(bid, head + "x" * (_OVER_CAP_CHARS - len(head)))
+
+
+def _seed_long_pool(store: MemoryStore, n: int = 4) -> list[str]:
+    ids = []
+    for i in range(n):
+        b = _long(f"pool{i:02d}")
+        store.insert_belief(b)
+        ids.append(b.id)
+    return ids
+
+
+def test_a_drawn_belief_is_priced_at_the_element_the_lane_renders(
+    store, monkeypatch, capsys,
+) -> None:
+    """The displacement `need`, in the currency the lane ships (#1551).
+
+    `_ups_belief_line_cost` charges the capped element this lane emits;
+    `retrieval._belief_tokens`, which this computed before, charges the whole
+    of the content. On the belief below the two are 314 tokens and 8,766 — a
+    factor of 27 — so a drawn belief over the cap demanded thousands of tokens
+    of displacement it would never occupy, and the slot skipped the turn.
+
+    The tail is three 400-character hits, which pay 333 tokens between them:
+    enough for the 314 the lane actually spends and nowhere near the 8,766 the
+    old price asked. So the two arms of that mutation differ in the outcome,
+    not merely in an internal number.
+    """
+    from aelfrice.hook import _ups_belief_line_cost
+    from aelfrice.retrieval import _belief_tokens
+
+    pool_ids = _seed_long_pool(store)
+    drawn_probe = store.get_belief(pool_ids[0])
+    assert _ups_belief_line_cost(drawn_probe) == _CAPPED_PRICE
+    assert _belief_tokens(drawn_probe) == _UNCAPPED_PRICE
+
+    _fire(store, _FIRING)
+    monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
+    hits = [_mk(f"h{i}", f"ranked hit {i} " + "z" * 400) for i in range(3)]
+    # The tail pays for the capped price and not for the uncapped one.
+    tail = sum(_ups_belief_line_cost(b) for b in hits)
+    assert _CAPPED_PRICE <= tail < _UNCAPPED_PRICE, tail
+
+    out = _run(store, hits, capsys)
+    assert any(b.id.startswith("pool") for b in out), [b.id for b in out]
+
+
+def test_a_displaced_belief_frees_only_what_the_lane_would_have_shipped(
+    store, monkeypatch, capsys,
+) -> None:
+    """The other side of the trade, and it fails the opposite way.
+
+    A displaced belief over the cap was credited with freeing its whole
+    content — 8,766 tokens for the belief below — when the lane had already
+    decided to ship 314 of it. That buys a draw the block cannot actually pay
+    for, which is the budget increase the substitution rule exists to refuse.
+
+    Two arms on one fixture, because "returns `hits` unchanged" is also what
+    every fail-soft path in this function returns. With two slots the draw
+    costs 628 tokens: one over-cap hit frees 314 and is refused, two free 628
+    and are taken. Pricing the tail at `_belief_tokens` makes the first arm
+    substitute as well, on 8,766 tokens of budget that were never in the
+    block.
+    """
+    from aelfrice.hook import _ups_belief_line_cost
+
+    _seed_long_pool(store)
+    monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
+    monkeypatch.setenv("AELFRICE_EXPLORATION_SLOTS", "2")
+
+    one = [_long("tail00")]
+    assert sum(_ups_belief_line_cost(b) for b in one) < 2 * _CAPPED_PRICE
+    _fire(store, _FIRING)
+    assert _run(store, one, capsys) == one
+
+    two = [_long("tail00"), _long("tail01")]
+    assert sum(_ups_belief_line_cost(b) for b in two) >= 2 * _CAPPED_PRICE
+    _fire(store, _FIRING)
+    after = _run(store, two, capsys)
+    assert [b.id for b in after] != [b.id for b in two]
+    assert any(b.id.startswith("pool") for b in after), [b.id for b in after]
 
 
 def test_the_draw_is_deterministic(store, monkeypatch, capsys) -> None:

@@ -2882,13 +2882,24 @@ def _substitute_exploration_slots(
       so an explored belief is recorded as injected. Substituting without
       recording the exposure would leave the loop exactly as closed as it was.
 
+    Both sides of the displacement are priced in `_ups_belief_line_cost`, the
+    cost function this lane packs and renders with (#1551). They were
+    `retrieval._belief_tokens`, which charges a belief's whole content — and
+    since #1551 this lane emits at most `BELIEF_CONTENT_CHAR_CAP` characters
+    of it. On the 35,012-character belief `test_exploration_slot_1279.py`
+    seeds, the two prices are 8,766 tokens and 314: a drawn belief over the
+    cap demanded thousands of tokens of displacement it would never occupy,
+    so the slot skipped every turn a long belief was drawn, and a displaced
+    belief over the cap was credited with freeing budget it had already been
+    trimmed out of. "The block did not grow" is a claim about what the block
+    ships, so it has to be counted in what the block ships.
+
     Returns `hits` unchanged on every non-firing turn and on any error — the
     exploration slot is a research lane and must never be the reason a hook
     fails.
     """
     try:
         from aelfrice.retrieval import (  # noqa: PLC0415
-            _belief_tokens,
             is_exploration_enabled,
             resolve_exploration_cadence,
             resolve_exploration_slots,
@@ -2934,7 +2945,7 @@ def _substitute_exploration_slots(
         # non-locked tail. `>=` rather than a 1-for-1 swap because an explored
         # belief can be longer than the hit it replaces, and "the block did not
         # grow" has to hold on tokens, not on cardinality.
-        need = sum(_belief_tokens(b) for b in drawn)
+        need = sum(_ups_belief_line_cost(b) for b in drawn)
         displaced: list[Belief] = []
         freed = 0
         for cand in reversed(hits):
@@ -2943,7 +2954,7 @@ def _substitute_exploration_slots(
             if cand.lock_level == LOCK_USER:
                 continue
             displaced.append(cand)
-            freed += _belief_tokens(cand)
+            freed += _ups_belief_line_cost(cand)
         if freed < need:
             # Nothing but locks, or the tail is too small to pay for the draw.
             # Skipping is correct: the alternative is growing the block.
