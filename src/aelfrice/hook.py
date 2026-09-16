@@ -2233,6 +2233,12 @@ def user_prompt_submit(
             # through `_write_memory_block` rather than `sout` directly so
             # this branch cannot drift away from its two siblings.
             outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            # Load-bearing, and the only consumer is `rendered_block=`
+            # below: without it the audit row stores the PRE-trim block
+            # and derives `tokens` from it, which is the over-report
+            # #1551 is filed on, while nothing else in the suite moves.
+            # The test that reds:
+            # test_ups_audit_row_records_the_block_the_retrieval_branch_emitted
             body = outcome.body
             # A dropped belief was not injected. Everything below that
             # claims the model saw a belief — the audit record's
@@ -2482,6 +2488,11 @@ def user_prompt_submit(
                     _format_hits_with_session_start([], session_start_block)
                     + MEMORY_BLOCK_HINT
                 )
+                # Reassigned for the audit row below, as in the sibling
+                # branch. This branch writes no `beliefs[]`, so
+                # `rendered_block` is the only description of it the log
+                # holds. The test that reds:
+                # test_gate_skip_audit_row_records_the_block_it_emitted
                 body = _write_memory_block(
                     body, stdout=sout, stderr=serr
                 ).body
@@ -2994,7 +3005,8 @@ def _substitute_exploration_slots(
       reached the model. Re-derive with `uv run python
       scripts/measure_block_ceiling.py --exploration`.
       <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_block_tokens = 5923 -->
-      <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_drawn_emitted = 0 --> That is deliberate rather than an oversight of the #1551 sweep:
+      <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_drawn_emitted = 0 -->
+      That is deliberate rather than an oversight of the #1551 sweep:
       this row is the replay record of a *pack decision* — `fire_idx`, the
       seed, the candidate pool, what was drawn and what paid for it — and
       `derive_seed` is only auditable if every firing turn leaves one.
@@ -5226,6 +5238,11 @@ def session_start(
             # is deliberate: subtracting the dropped set from `hits` here
             # selected `hits` from `hits`, and no fixture can make it do
             # otherwise. Do not re-add it.
+            # `.body` for the audit row below, as at both sibling sites.
+            # No fixture can red its removal here — this lane has nothing
+            # droppable, so the trim is the identity. The test says that
+            # in full rather than implying a guard it is not:
+            # test_session_start_audit_row_records_the_block_it_emitted
             body = _write_memory_block(body, stdout=sout, stderr=serr).body
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
