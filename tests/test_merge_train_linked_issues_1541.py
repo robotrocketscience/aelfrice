@@ -273,8 +273,7 @@ def test_main_returns_zero_for_a_body_on_stdin(
 ) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO("Fixes #5.\n"))
     monkeypatch.setattr(
-        "merge_train_linked_issues.render_markdown",
-        lambda body, repo: _one_paragraph(body, repo),
+        "merge_train_linked_issues.render_markdown", _one_paragraph
     )
     assert main(["--repo", _CONTEXT]) == 0
     assert capsys.readouterr().out.split() == ["5"]

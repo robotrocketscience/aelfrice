@@ -58,26 +58,30 @@ _RECORDS_FILE = _REPO / "tests" / "data" / "merge_train_github_renders.json"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 import merge_train_linked_issues as module  # noqa: E402
-from merge_train_linked_issues import (  # noqa: E402
-    ADJACENT_RE,
-    CROSS_REPO,
-    DECLINED_SEPARATOR,
-    FROM_DISCUSSION,
-    IN_QUOTE,
-    KEYWORDS,
-    MAX_BODY_CHARACTERS,
-    NOT_AN_ISSUE,
-    NOT_LINKED,
-    RENDER_LIMIT_BYTES,
-    RENDER_TIMEOUT_SECONDS,
-    UNLABELLED_TARGET,
-    RendererUnavailable,
-    close_directives,
-    discussion_targets,
-    linked_issues,
-    parse,
-    render_markdown,
-)
+
+# Bound off the one module object rather than imported a second way. Several
+# tests monkeypatch and read attributes through `module`, so that name has to
+# exist; adding `from merge_train_linked_issues import ...` beside it imports
+# the same module twice and trips CodeQL's py/import-and-import-from. Binding
+# here says explicitly that every name below is an attribute of that object.
+ADJACENT_RE = module.ADJACENT_RE
+CROSS_REPO = module.CROSS_REPO
+DECLINED_SEPARATOR = module.DECLINED_SEPARATOR
+FROM_DISCUSSION = module.FROM_DISCUSSION
+IN_QUOTE = module.IN_QUOTE
+KEYWORDS = module.KEYWORDS
+MAX_BODY_CHARACTERS = module.MAX_BODY_CHARACTERS
+NOT_AN_ISSUE = module.NOT_AN_ISSUE
+NOT_LINKED = module.NOT_LINKED
+RENDER_LIMIT_BYTES = module.RENDER_LIMIT_BYTES
+RENDER_TIMEOUT_SECONDS = module.RENDER_TIMEOUT_SECONDS
+UNLABELLED_TARGET = module.UNLABELLED_TARGET
+RendererUnavailable = module.RendererUnavailable
+close_directives = module.close_directives
+discussion_targets = module.discussion_targets
+linked_issues = module.linked_issues
+parse = module.parse
+render_markdown = module.render_markdown
 
 _RECORDS = json.loads(_RECORDS_FILE.read_text(encoding="utf-8"))
 _CONTEXT = _RECORDS["_context"]
