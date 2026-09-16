@@ -248,6 +248,18 @@ GitHub's documented character set, ended by the literal that must follow it --
 question: `DISCUSSION_RE` decides a refusal, so a repository whose name the
 grammar could not spell had no protection at all from the wrong close below.
 
+### One case fold, in one place
+
+GitHub canonicalises `data-url` to lower case and leaves the body exactly as
+the author typed it, so
+`Closes https://github.com/RobotRocketScience/aelfrice/discussions/1549`
+reaches `close_directives` as a lower-cased anchor and `discussion_targets` as
+a mixed-case source. The comparison between them is correct only if both sides
+fold, and folding in two places is a drift waiting to happen: either half could
+be deleted on its own, and deleting the source half re-opens exactly the wrong
+close below. `_identity` is the single place it happens, and both callers go
+through it.
+
 ### The render is not an oracle for which object a reference names
 
 Reading the render answers "is this text a reference?" It does **not** answer
@@ -770,6 +782,21 @@ def _keyword_before(tail: str, *, clipped: bool) -> tuple[str | None, str | None
     return None, None
 
 
+def _identity(owner: str, repo: str, number: str | int) -> tuple[str, str, int]:
+    """One `(owner, repo, number)` triple, folded the single way both sides use.
+
+    The discussions refusal compares a triple read from the *source* body
+    against one read from GitHub's *rendered* anchor, and the two sides do not
+    agree on case: GitHub canonicalises `data-url` to lower case while the body
+    keeps whatever the author typed, so
+    `Closes https://github.com/RobotRocketScience/aelfrice/discussions/1549`
+    matches the anchor only once both are folded. Folding in two places is a
+    drift waiting to happen -- half of it can be deleted with the suite still
+    green -- so it is done here, once, and both callers go through it.
+    """
+    return owner.lower(), repo.lower(), int(number)
+
+
 def close_directives(
     html: str,
     repo: str,
@@ -814,11 +841,7 @@ def close_directives(
                 f"an issue-link anchor carried an unreadable URL: {anchor.url!r}"
             )
         quoted = f"{anchor.keyword} {anchor.text}".strip()
-        named = (
-            target["owner"].lower(),
-            target["repo"].lower(),
-            int(target["number"]),
-        )
+        named = _identity(target["owner"], target["repo"], target["number"])
         if named in discussion_sources:
             # First, because it is the only refusal where the anchor lies
             # about which object the reference named.
@@ -835,9 +858,13 @@ def close_directives(
 
 
 def discussion_targets(body: str) -> frozenset[tuple[str, str, int]]:
-    """Every `(owner, repo, number)` the body spells as a discussions URL."""
+    """Every `(owner, repo, number)` the body spells as a discussions URL.
+
+    Folded through `_identity`, because these triples are compared against ones
+    built from GitHub's lower-cased `data-url`.
+    """
     return frozenset(
-        (m["owner"].lower(), m["repo"].lower(), int(m["number"]))
+        _identity(m["owner"], m["repo"], m["number"])
         for m in DISCUSSION_RE.finditer(body)
     )
 
