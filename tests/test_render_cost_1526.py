@@ -532,6 +532,30 @@ def test_the_producer_names_which_budget_ended_every_pack(
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 moves it to around 8,000
     characters, off every grid length, and gives `1 failed, 48 passed` on a
     grid that still holds 5,950; that mutation also left `49 passed` before.
+    Both edges of the window are measured, not inferred: a ninth grid length
+    at 5,934 and one at 6,003 each give `49 passed`, and one at 5,933
+    (1,483 against 1,500, the shipped charge not yet over) or at 6,004 (1,501
+    against 1,518, the pre-#1526 charge already over) each give
+    `1 failed, 48 passed` here.
+
+    Both of those assertions are arithmetic. They re-derive the two charges
+    from `LENGTH_GRID` and the budget scalar and never read the curve the
+    producer emitted, so a producer that stopped emptying the crossing cell
+    would restore the inert state above with the grid untouched. The
+    asymmetry is therefore also asserted off the produced `<core>` curve:
+    some cell must pack a line in the before arm and none in the after arm.
+    Two producer-side mutations separate that from the arithmetic. Packing
+    both arms under the pre-#1526 cost function — `_pack_core_candidates(
+    candidates, budget, lambda b: max(1, len(b.content) // 4))` in
+    `_render_core` — makes 5,950 emit 6,017 bytes in both arms and gives
+    `2 failed, 47 passed`: this test on the curve assertion, and
+    `test_the_effect_is_length_dependent_and_changes_sign` on `0.0 < 0.0`.
+    Before the curve assertion existed that mutation left this test green and
+    reported `1 failed, 48 passed`. Refilling an empty pack from the top
+    candidate — `if not packed and candidates: packed = candidates[:1]` in the
+    same function — gives `2 failed, 47 passed`, this test and
+    `test_the_core_section_empties_once_one_belief_exceeds_its_budget`, where
+    before it gave `1 failed, 48 passed` on the sibling alone.
 
     Both halves are falsifiable, but only one of them by a test-side mutation,
     which is why an earlier revision of this docstring called the before arm's
@@ -606,6 +630,18 @@ def test_the_producer_names_which_budget_ended_every_pack(
         f"{fig['core_budget']} tokens in the pre-#1526 currency and above it "
         "as shipped, so the two accountings agree at every length and the "
         f"per-arm half of the exemption above decides nothing: {costs}"
+    )
+    core_curve = fig["core_curve"]
+    crossing = [
+        int(c)
+        for c in fig["lengths"]
+        if core_curve[str(c)]["before"] > 0 and core_curve[str(c)]["after"] == 0
+    ]
+    assert crossing, (
+        "no <core> cell packs a line in the before arm and none in the after "
+        "arm, so the produced curve no longer shows the asymmetry the "
+        "exemption above reads: "
+        f"{ {int(c): core_curve[str(c)] for c in fig['lengths']} }"
     )
     assert "l25_subbudget" in seen, (
         "no arm in the grid ended on the L2.5 sub-budget, so the "
