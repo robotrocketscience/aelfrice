@@ -49,6 +49,7 @@ from aelfrice.hook import (
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.rebuild_log import _rebuild_log_dir_for_db
 from aelfrice.session_ring import read_ring_state
 from aelfrice.store import MemoryStore
 
@@ -212,6 +213,23 @@ def _fire_ups(
     # stderr trace and rc 0 — indistinguishable from a small block.
     assert "Traceback" not in serr.getvalue(), serr.getvalue()
     return sout.getvalue(), serr.getvalue()
+
+
+def _packed_ids(db: Path, session_id: str) -> set[str]:
+    """Ids of the hits the retrieval branch packed, before the ceiling ran.
+
+    `_emit_user_prompt_submit_rebuild_log` is handed the same `hits` list the
+    ceiling then filters into `emitted_hits`, and records every member as a
+    `packed` candidate. So this set is exactly what a sum over `hits` charges,
+    read off a surface that is not the one under test.
+    """
+    path = _rebuild_log_dir_for_db(db) / f"{session_id}.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(records) == 1, records
+    return {
+        c["belief_id"] for c in records[0]["candidates"]
+        if c["decision"] == "packed"
+    }
 
 
 def _fire_session_start(
@@ -643,6 +661,75 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     assert expected != capped_everywhere, (expected, capped_everywhere)
     assert total_chars == expected, (total_chars, expected)
     assert total_chars != len(out), "recorded rendered-block bytes, not content"
+
+
+def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The telemetry field must charge the emitted set, not the retrieved one.
+
+    `test_ups_total_chars_stays_in_one_unit_across_the_ceiling` cannot see
+    this. Its store carries `<core>` beliefs, and the lane order sheds those
+    first — `<core>` is built by `_retrieve_session_start_block`, a separate
+    retrieval, so none of its ids is in `hits`. `dropped_ids` therefore
+    intersects `hits` in nothing, `emitted_hits` is `hits`, and reverting
+    `for h in emitted_hits` to `for h in hits` leaves the whole suite
+    byte-identical at 8867 passed.
+
+    This fixture seeds no `<core>`, so the trim comes out of the hit lane and
+    the two lists differ. Measured on it: 66 beliefs packed, 3 hit elements
+    dropped, and the field reads 10,776 characters against the 12,012 a sum
+    over `hits` charges — 1,236 characters, 11.5%, of content the ceiling
+    deleted, reported by `aelf doctor` as "injection size p50/p95: N chars".
+    The overstatement lands only on the over-ceiling fires, which are the tail
+    of that distribution.
+
+    The assertions are derived from the store rather than written as literals,
+    so a ranking change moves them together; the two `!=` lines are what keep
+    the fixture from going vacuous if it ever stops dropping a hit.
+    """
+    db = tmp_path / "memory.db"
+    session_id = "s-chars"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    out, err = _fire_ups(tmp_path, db, monkeypatch, session_id=session_id)
+    assert "dropped" in err, err
+
+    tel = read_user_prompt_submit_telemetry(_telemetry_path_for_db(db))
+    assert len(tel) == 1
+    total_chars = tel[0]["total_chars"]
+
+    ups = [
+        r for r in read_hook_audit(_audit_path_for_db(db))
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    assert len(ups) == 1
+    emitted = ups[0]["beliefs"]  # type: ignore[index]
+    emitted_ids = {row["id"] for row in emitted}  # type: ignore[union-attr]
+    retrieved_ids = _packed_ids(db, session_id)
+    # The trim took hit-lane elements: without that the two sums are equal
+    # and every assertion below passes on both.
+    assert emitted_ids < retrieved_ids, (len(emitted_ids), len(retrieved_ids))
+
+    store = MemoryStore(str(db))
+    try:
+        def _charged(bid: str) -> int:
+            b = store.get_belief(bid)
+            assert b is not None
+            return len(
+                _cap_belief_content(b.content, locked=b.lock_level == LOCK_USER)
+            )
+
+        emitted_sum = sum(_charged(bid) for bid in emitted_ids)
+        retrieved_sum = sum(_charged(bid) for bid in retrieved_ids)
+    finally:
+        store.close()
+
+    assert emitted_sum != retrieved_sum, (emitted_sum, retrieved_sum)
+    assert total_chars == emitted_sum, (total_chars, emitted_sum)
+    assert total_chars != retrieved_sum, (total_chars, retrieved_sum)
+    # Every id the sum charged is in the block the reader can see.
+    assert all(bid in out for bid in emitted_ids)
 
 
 def test_ups_caps_one_oversized_belief_instead_of_dropping_the_block(
