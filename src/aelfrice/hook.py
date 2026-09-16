@@ -288,12 +288,12 @@ operator's asserted ground truth and truncating it mid-clause can invert
 what it says, so the same rule the ceiling follows applies here: bounds
 stop at `lock="user"`, and a store whose locks alone are oversized gets a
 stderr note rather than a silent edit. The reference tier (#1016-B) is
-the intended home for long-form locked material, but it does not bound
-this lane: `_build_session_start_subblock` renders every lock verbatim,
-so a 30,026-character lock costs the same 7,700 estimated tokens on the
-gate-skip branch whether it is frozen or reference. #1558 tracks the
-render gap; until it lands the only bound on an oversized lock is that
-the operator writes a shorter one.
+the intended home for long-form locked material, and it bounds this lane
+from the second prompt of a session onwards — a 30,026-character lock
+costs 7,683 estimated tokens frozen against 244 as a reference. On the
+first prompt it bounds nothing, because `_build_session_start_subblock`
+renders every lock verbatim: the same lock costs 7,700 on the gate-skip
+branch at either tier. #1558 tracks that render gap.
 
 The cap is otherwise deliberately generous. It is a guard against a
 pathological row, not a retrieval-quality knob; trimming to fit the budget
@@ -695,20 +695,32 @@ def _write_memory_block(
 
     **The overrun note prescribes no remedy, and that omission is
     measured.** It used to say "move long-form locks to `aelf lock
-    --reference`", which is a no-op on both paths that print it:
+    --reference`". That advice is right on some of the writes that reach
+    here and wrong on the ones most likely to reach here, so it was
+    withdrawn rather than qualified.
+
     `_build_session_start_subblock`'s `<locked>` loop renders every lock
     verbatim with no `is_reference_lock` branch, unlike `_split_belief_lines`
     and `_core_belief_line`, which both divert a reference lock to
-    `retrieval.lock_manifest_line`. Measured on one 30,026-character lock,
-    demoting it to the reference tier moves nothing: the gate-skip branch
-    emits 7,700 estimated tokens carrying the full text at either tier, and
-    the retrieval branch emits 7,784 at either tier — carrying the full text
-    *and*, on the reference tier, a `ref` pointer to the text three lines
-    above it. Only `session_start`'s baseline path honours the tier (221
-    tokens, no verbatim content). Closing that gap is #1558; until it lands
-    the note says what is true — the block is over and no further span is
-    droppable — and cites the issue rather than an instruction that costs
-    the operator a `aelf lock` round trip for nothing.
+    `retrieval.lock_manifest_line`. So the tier is honoured everywhere except
+    the envelope that embeds the session-start sub-block — which is a
+    session's first prompt, and a first prompt is when a lock-only store
+    overruns. Measured on one 30,026-character lock:
+
+    * first prompt, gate-skip branch: 7,700 estimated tokens at either tier;
+    * first prompt, retrieval branch: 7,784 at either tier, and on the
+      reference tier the block carries the full text *and* a `ref` pointer to
+      it a few lines below;
+    * turn two, retrieval branch: 7,683 frozen against **244** reference —
+      the tier works, because no `<session-start>` sub-block is in the
+      envelope;
+    * `session_start` itself: 7,660 frozen against 221 reference.
+
+    This function sees only an assembled body, so it cannot tell which of
+    those it is bounding without parsing for the sub-block. Until #1558
+    closes the render gap the note therefore says what is true on every one
+    of them — the block is over and no further span is droppable — and cites
+    the issue rather than an instruction that is a no-op on the first prompt.
 
     An empty `body` is written as-is (a suppressed fire, `#1359`), which
     is a no-op on the stream and costs nothing on the ceiling.
@@ -4581,7 +4593,10 @@ def _build_session_start_subblock(
     # `<session-start>` sub-block three lines above the `ref` pointer the
     # per-turn pack emitted for the same id. Measured: one 30,026-character
     # lock costs 7,700 estimated tokens on the gate-skip branch and 7,784 on
-    # the retrieval branch, identically at both tiers.
+    # the retrieval branch, identically at both tiers. From the second prompt
+    # of a session this sub-block is absent, `_split_belief_lines` renders the
+    # locks, and the tier works — 244 tokens against 7,683 — so the gap is
+    # this loop rather than the feature.
     #
     # So a store whose locks alone exceed the ceiling overruns it, and
     # `_write_memory_block` says so on stderr rather than trimming.

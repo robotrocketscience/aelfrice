@@ -493,7 +493,9 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     # The note names the open issue, not a remedy. `aelf lock --reference`
     # was the remedy until it was measured: the `<locked>` loop of
     # `_build_session_start_subblock` renders a reference lock verbatim, so
-    # demoting a lock moves neither of the two paths that print this note.
+    # on a session's first prompt — the fire a lock-only store overruns on —
+    # demoting a lock changes nothing (#1558). It does bound from turn two,
+    # and this function cannot tell the two apart from a body.
     assert "#1558" in err
     assert "--reference" not in err
 
