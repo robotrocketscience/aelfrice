@@ -276,8 +276,12 @@ def _assert_audit_row_is_the_emitted_block(
     Seven surfaces charge the emitted set — `beliefs[]`, `n_beliefs`,
     `injection_events`, the session ring, `belief_touches`, the #1382
     ledger, the `feedback_history` exposure row and `total_chars`. The
-    audit record's own two fields were not among them, and they are the
-    two `aelf tail` prints beside the belief list. Each emit site keeps
+    audit record's own two fields were not among them, and both are read
+    downstream: `hook_tail._render_record` prints `tokens` in the header
+    line directly above the `beliefs[]` list, and
+    `benchmarks/order_policy_movable_bound.py` and
+    `benchmarks/two_tier_render_bound.py` both replay `rendered_block` as
+    the block the model saw. Each emit site keeps
     the trimmed body only by assigning `_write_memory_block`'s outcome
     back over `body`, and `rendered_block=body` is that assignment's
     ONLY consumer at all three sites — so deleting it moved nothing
@@ -884,7 +888,9 @@ def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
     retrieval, so none of its ids is in `hits`. `dropped_ids` therefore
     intersects `hits` in nothing, `emitted_hits` is `hits`, and reverting
     `for h in emitted_hits` to `for h in hits` leaves the whole suite
-    byte-identical at 8867 passed.
+    green: no test in it names the difference. A survival is a zero, not
+    a total — the suite's own size moves under every rebase, and a
+    published total goes stale without the claim it carries changing.
 
     This fixture seeds no `<core>`, so the trim comes out of the hit lane and
     the two lists differ. Measured on it: 66 beliefs packed, 3 hit elements
@@ -999,7 +1005,7 @@ def test_ups_does_not_cap_a_user_locked_belief_on_a_later_turn(
     `test_ups_does_not_cap_a_user_locked_belief` above, which fires once,
     leaves it uncovered. Dropping `locked=` from that call site truncated
     a 5,000-character lock on turn 2 while `pytest tests -k hook` stayed
-    at 1005 passed.
+    green — the mutant survived every hook test there was.
 
     The turn-2 assertions are distinguishing on purpose: the block must
     contain the whole content AND no truncation marker. Either alone
@@ -1180,9 +1186,10 @@ def test_session_start_audit_row_records_the_block_it_emitted(
     produce.
 
     It is asserted anyway, and it is not a test that proves nothing: it
-    is the only test in the suite that reds when this site's
+    is the only test in this file that reds when this site's
     `rendered_block=body` stops naming the stream at all — replacing it
-    with `""` fails here and nowhere else. What it pins is that the
+    with `""` fails here and nowhere else in the file. What it pins is
+    that the
     `<aelfrice-baseline>` envelope is the entire stdout of a non-compact
     SessionStart, the post-compaction rebuild block that
     `source == "compact"` appends after it being the one thing that
