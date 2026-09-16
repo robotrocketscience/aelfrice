@@ -113,8 +113,11 @@ def _shipped_content_caps() -> dict[str, int]:
 
 
 # Padding for the SessionStart fixture's belief content, sized above every
-# cap `_shipped_content_caps()` finds (the largest is
-# `hook.STOP_PROMPT_MAX_CONTENT = 1000`). A lock shorter than a cap is
+# cap `_shipped_content_caps()` finds. The largest was
+# `hook.STOP_PROMPT_MAX_CONTENT = 1000` until #1551 added
+# `hook.BELIEF_CONTENT_CHAR_CAP = 1200`, which the name shapes below
+# discover; the lock content is 1225 characters, so it clears that by 25.
+# A lock shorter than a cap is
 # invisible to it, so the guard that asserts no lock is trimmed would pass
 # on a block where every line had been cut. The test asserts the resulting
 # length against that discovered maximum rather than trusting this number,
