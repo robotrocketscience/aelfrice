@@ -527,18 +527,8 @@ def test_the_producer_says_the_session_start_number_is_its_own_probe() -> None:
     of this module and the `derived-figures` gate green, which is why the
     label carries an assertion of its own. Both directions are asserted: a
     label that said "passes none" on every lane would be just as wrong.
-
-    The probe value is pinned beside it because it is published — it is the
-    `session_start` row of the CHANGELOG's budget column — and the marker in
-    that entry is what re-derives it from this module.
     """
     m = _producer_module()
-    assert m.SESSION_START_PROBE_BUDGET == 1500, (
-        "benchmarks/injection_budget_bytes.py SESSION_START_PROBE_BUDGET is "
-        f"{m.SESSION_START_PROBE_BUDGET}, but CHANGELOG/unreleased/"
-        "1526-render-line-budgets.md publishes 1500 in the SessionStart row "
-        "of its budget column. Move both together (#1546)."
-    )
     probed = m._budget_label("session_start", m.SESSION_START_PROBE_BUDGET)
     assert "passes none" in probed, (
         f"the session_start legend reads {probed!r}, which presents this "
@@ -551,6 +541,37 @@ def test_the_producer_says_the_session_start_number_is_its_own_probe() -> None:
         shipped = m._budget_label(lane, 1500)
         assert "passes none" not in shipped, (lane, shipped)
         assert "unchanged" in shipped, (lane, shipped)
+
+
+def test_the_producer_reads_the_session_start_budget_off_its_own_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`shipped_budget` is wired to the constant, not spelling the same number.
+
+    The probe value is published — it is the `session_start` row of the
+    CHANGELOG's budget column — and a derived-figure marker on that row
+    re-derives it from this module through `shipped_budget`. Written as
+    `"session_start": 1500`, that marker compares a literal against a
+    literal: the suite stays green, the `derived-figures` job exits 0, and
+    moving `SESSION_START_PROBE_BUDGET` to 3000 leaves the CHANGELOG
+    publishing 1500 with nothing failing. So the wire is asserted with a
+    value no other constant on this module carries, and the published value
+    is pinned separately.
+    """
+    m = _producer_module()
+    assert m.SESSION_START_PROBE_BUDGET == 1500, (
+        "benchmarks/injection_budget_bytes.py SESSION_START_PROBE_BUDGET is "
+        f"{m.SESSION_START_PROBE_BUDGET}, but CHANGELOG/unreleased/"
+        "1526-render-line-budgets.md publishes 1500 in the SessionStart row "
+        "of its budget column. Move both together (#1546)."
+    )
+    monkeypatch.setattr(m, "SESSION_START_PROBE_BUDGET", 4242)
+    assert m.shipped_budget("session_start") == 4242, (
+        "shipped_budget('session_start') does not read "
+        "SESSION_START_PROBE_BUDGET, so the derived-figure marker on the "
+        "CHANGELOG's SessionStart budget row is checking a literal against "
+        "a literal (#1546)."
+    )
 
 
 def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
