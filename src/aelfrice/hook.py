@@ -180,6 +180,7 @@ _LAZY_RETRIEVAL_NAMES: Final[dict[str, str]] = {
     "read_recent_turns_aelfrice": "aelfrice.context_rebuilder",
     "read_recent_turns_claude_transcript": "aelfrice.context_rebuilder",
     "rebuild_v14": "aelfrice.context_rebuilder",
+    "record_retrieval": "aelfrice.hook_search",
     "retrieve": "aelfrice.retrieval",
     "search_for_prompt": "aelfrice.hook_search",
 }
@@ -1966,21 +1967,21 @@ def user_prompt_submit(
                     # Fail-soft: surface the trace, retrieve on prompt.
                     traceback.print_exc(file=serr)
                     retrieval_query = prompt
-            # #1359: the fourth exposure writer, gated on the same
-            # answer as the three below. `search_for_prompt` writes one
-            # `feedback_history` row per hit tagged `source='hook'` —
+            # #1359 / #1551: the fourth exposure writer does not run
+            # here. `search_for_prompt` writes one `feedback_history` row
+            # per hit tagged `source='hook'` —
             # `models.EXPOSURE_ONLY_FEEDBACK_SOURCES` is exactly that
             # set, i.e. the row IS this codebase's exposure record — and
             # `store.exploration_pool` (#1176) draws from beliefs with no
-            # such row. Written on a suppressed fire it evicts a belief
-            # from the never-shown pool permanently, having never shown
-            # it; under `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` it also
-            # moves the posterior. Retrieval itself still runs — the
-            # correction and relevance lanes read these hits.
-            hits = _retrieve(
-                retrieval_query, budget, store=ups_store,
-                record_exposure=emit_memory_block,
-            )
+            # such row, so the row is what evicts a belief from the
+            # never-shown pool, permanently. #1359 gated the write on the
+            # memory-block switch here, which is the right answer for a
+            # suppressed fire and still too early for a trimmed one: the
+            # block has not been assembled and the ceiling has not run,
+            # so a belief the ceiling is about to delete collects the row
+            # anyway. The write moved to the emit boundary below, where
+            # the emitted set is known; this call is the read alone.
+            hits = _retrieve(retrieval_query, budget, store=ups_store)
             # #858 defect 3: drop hits whose stored project_context is
             # non-empty AND does not match the active in-process
             # context. '' on either side means "no filter": legacy
@@ -2183,6 +2184,32 @@ def user_prompt_submit(
             # each of these beliefs `referenced=0` by construction. An
             # off-switch must not manufacture negative evidence.
             if emit_memory_block:
+                # #1551: the `feedback_history` exposure row, written
+                # here rather than inside `_retrieve`, and against
+                # `emitted_hits`. The row is this codebase's record that
+                # a belief was shown, and `store.exploration_pool` reads
+                # it as "has been shown at least once" — a belief with
+                # one is never drawn as unexplored again, which makes the
+                # eviction permanent. Measured on a 60-lock / 20-hit
+                # store at the shipped ceiling: one default fire dropped
+                # 3 elements, and with the write upstream all 3 collected
+                # a row and a `last_retrieved_at` stamp and left the pool
+                # (20 -> 14, 3 of the 6 departures never rendered).
+                #
+                # The whole call moves, not part of it: `record_retrieval`
+                # resolves one timestamp and writes the audit row and the
+                # `last_retrieved_at` mirror inside a single
+                # `store.transaction()`, which is #1373's invariant, and a
+                # call that is either made or not made per fire preserves
+                # it exactly. The handle is `_store_handle` for the same
+                # reason `_retrieve` opens one: `ups_store` is None on an
+                # in-memory DB, where the helper yields None and there is
+                # nothing to write to.
+                with _store_handle(ups_store) as exposure_store:
+                    if exposure_store is not None:
+                        _lazy("record_retrieval")(
+                            exposure_store, emitted_hits, stderr=serr,
+                        )
                 # `total_chars` is belief-content characters as injected,
                 # and stays in that unit here. An earlier #1551 revision
                 # overwrote it with `len(body)` — whole rendered-block
@@ -2881,6 +2908,9 @@ def _substitute_exploration_slots(
     - **Upstream of the ledger.** This runs *before* `_record_injection_events`
       so an explored belief is recorded as injected. Substituting without
       recording the exposure would leave the loop exactly as closed as it was.
+      Since #1551 the `feedback_history` exposure row is written at the emit
+      boundary as well, so a drawn belief that survives the ceiling leaves the
+      unexplored pool by both of its exits rather than only one.
 
     Both sides of the displacement are priced in `_ups_belief_line_cost`, the
     cost function this lane packs and renders with (#1551). They were
@@ -3198,7 +3228,6 @@ def _retrieve(
     token_budget: int,
     *,
     store: MemoryStore | None = None,
-    record_exposure: bool = True,
 ) -> list[Belief]:
     """Run retrieval for the given prompt and return the raw hit list.
 
@@ -3209,11 +3238,12 @@ def _retrieve(
     handle) is used as-is and left open; without one the legacy
     open-per-call behaviour applies.
 
-    `record_exposure=False` (#1359) keeps the read and drops the
-    `feedback_history` exposure row `search_for_prompt` would otherwise
-    write per hit. The caller passes the memory-block switch here: a
-    fire whose block is suppressed retrieved these beliefs but never
-    showed them.
+    **The read only.** `record_exposure=False` is hard-coded rather than
+    offered as a parameter (#1551). A `feedback_history` row is the claim
+    that the model saw the belief, and nothing visible from here decides
+    that: the #1359 suppression switch does not, and neither does the
+    ceiling, which deletes elements after the block is assembled. The one
+    caller writes the rows itself, against the emitted set.
     """
     search = _lazy("search_for_prompt")
     # Resolve the handle first, then make one call. The two arms used to
@@ -3227,7 +3257,7 @@ def _retrieve(
             store if store is not None else owned,
             prompt,
             token_budget=token_budget,
-            record_exposure=record_exposure,
+            record_exposure=False,
             # #1551: this lane renders `_belief_element_line`, whose
             # content is capped, not the uncapped element
             # `retrieval._belief_tokens` charges. See `_ups_belief_line_cost`.

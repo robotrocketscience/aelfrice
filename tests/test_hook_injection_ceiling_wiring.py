@@ -519,6 +519,88 @@ def test_ups_exposure_writes_omit_the_beliefs_the_ceiling_dropped(
     } == {"ring": [], "belief_touches": [], "injection_events": []}
 
 
+def test_ups_exposure_rows_leave_a_dropped_belief_unexplored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fourth exposure writer, and the one whose damage does not expire.
+
+    A `source='hook'` `feedback_history` row is this codebase's exposure
+    record (`models.EXPOSURE_ONLY_FEEDBACK_SOURCES`), and
+    `store.exploration_pool` (#1176) selects beliefs that have no such row —
+    "never been shown". So a row written for a belief the ceiling deleted does
+    not merely miscount one turn: that belief can never again be drawn as
+    unexplored, and #1279's slot exists precisely because a belief with no
+    exposure can never earn its way into a pack. #1359 wrote the argument at
+    this call site for the suppression switch; the ceiling is the same
+    argument one step later.
+
+    Measured on this fixture with the write left inside `_retrieve`: one fire
+    on shipped defaults dropped 3 elements, all 3 collected a row and a
+    `last_retrieved_at` stamp, and the pool went 20 -> 14 with 3 of the 6
+    departures never rendered. With the write at the emit boundary it is 63
+    rows, 0 unrendered, and the pool goes 20 -> 17.
+
+    `record_retrieval` moves whole rather than in pieces, so #1373's
+    invariant survives: it resolves one timestamp and writes the audit row
+    and the `last_retrieved_at` mirror inside one `store.transaction()`, and
+    a call either happens for a fire or does not.
+
+    Two non-vacuity guards, because they answer different mutants. The
+    non-empty `exposed` / `stamped` sets are what a deleted
+    `record_retrieval` call fails; `pool_after < pool_before` alone does not,
+    because `_record_injection_events` evicts from the same pool. And
+    `pool_after < pool_before` is what a pool query that has gone inert
+    fails.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    store = MemoryStore(str(db))
+    try:
+        pool_before = set(store.exploration_pool(_PROMPT))
+    finally:
+        store.close()
+    assert pool_before, "the pool query returned nothing to explore"
+
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+    assert "dropped" in err, err
+    rendered = set(re.findall(r'<belief id="([^"]+)"', out))
+    dropped = _packed_ids(db, "s1") - rendered
+    assert dropped, sorted(rendered)[:4]
+
+    store = MemoryStore(str(db))
+    try:
+        exposed = {
+            str(row["belief_id"]) for row in store._conn.execute(
+                "SELECT belief_id FROM feedback_history WHERE source = 'hook'"
+            )
+        }
+        stamped = {
+            str(row["id"]) for row in store._conn.execute(
+                "SELECT id FROM beliefs WHERE last_retrieved_at IS NOT NULL"
+            )
+        }
+        pool_after = set(store.exploration_pool(_PROMPT))
+    finally:
+        store.close()
+
+    assert exposed and stamped, (len(exposed), len(stamped))
+    assert pool_after < pool_before, (len(pool_before), len(pool_after))
+    # One assertion over all three, so no one of them can go dead while
+    # another reports the failure.
+    assert {
+        "feedback_history": sorted(exposed - rendered),
+        "last_retrieved_at": sorted(stamped - rendered),
+        "evicted from the pool": sorted((pool_before - pool_after) - rendered),
+    } == {
+        "feedback_history": [],
+        "last_retrieved_at": [],
+        "evicted from the pool": [],
+    }
+    # And the beliefs the ceiling deleted are still drawable as never-shown.
+    assert dropped <= pool_after
+
+
 def test_ups_seen_pointer_on_turn_two_names_a_belief_turn_one_rendered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
