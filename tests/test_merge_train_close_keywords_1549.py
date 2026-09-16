@@ -610,8 +610,12 @@ def test_the_comparison_is_case_insensitive_like_github() -> None:
 
 
 def test_a_near_miss_repository_name_is_refused_not_closed() -> None:
-    """The control for the case fold: a different repo is still a different repo."""
-    html = f"<p>Closes {_anchor(7, repo='robotrocketscience/aelfrice-lab')}</p>"
+    """The control for the case fold: a different repo is still a different repo.
+
+    The near-miss name is a suffix of this repository's, so a comparison that
+    fell back to a prefix or substring test would close #7 here.
+    """
+    html = f"<p>Closes {_anchor(7, repo='robotrocketscience/aelfrice-x')}</p>"
     found, refused = close_directives(html, _CONTEXT)
     assert found == []
     assert [r.reason for r in refused] == [CROSS_REPO]
