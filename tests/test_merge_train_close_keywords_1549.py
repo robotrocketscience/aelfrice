@@ -66,9 +66,11 @@ from merge_train_linked_issues import (  # noqa: E402
     IN_QUOTE,
     KEYWORDS,
     MAX_BODY_CHARACTERS,
+    NOT_AN_ISSUE,
     NOT_LINKED,
     RENDER_LIMIT_BYTES,
     RENDER_TIMEOUT_SECONDS,
+    UNLABELLED_TARGET,
     RendererUnavailable,
     close_directives,
     discussion_targets,
@@ -248,9 +250,11 @@ def test_the_module_names_exactly_githubs_nine_keywords() -> None:
     )
 
 
-def _anchor(number: int, repo: str = _CONTEXT, text: str | None = None) -> str:
+def _anchor(
+    number: int, repo: str = _CONTEXT, text: str | None = None, *, kind: str = "issue"
+) -> str:
     """One issue-link anchor shaped like GitHub's, for the logic tests."""
-    return issue_anchor(number, repo, text)
+    return issue_anchor(number, repo, text, kind=kind)
 
 
 @pytest.mark.parametrize("keyword", KEYWORDS)
@@ -482,7 +486,7 @@ def test_the_self_closing_spelling_behaves_like_the_start_and_end_pair() -> None
         f"<p>Closes <some-future-element/>{_anchor(7)}</p>", _CONTEXT
     ) == ([], [])
     self_closed = (
-        '<a class="issue-link" '
+        '<a class="issue-link" data-hovercard-type="issue" '
         f'data-url="https://github.com/{_CONTEXT}/issues/7"/>'
     )
     assert close_directives(f"<p>Closes {self_closed}</p>", _CONTEXT) == ([7], [])
@@ -698,6 +702,12 @@ def test_every_anchor_in_every_recorded_render_is_readable() -> None:
         ("https://github.com/robotrocketscience/aelfrice/issues/5/", True),
         ("https://github.com/robotrocketscience/aelfrice/issues/5?utm_source=x", True),
         ("https://github.com/robotrocketscience/aelfrice/issues/5#issuecomment-1", True),
+        # A `/pull/` path, which the pattern must read: `href` is the
+        # fallback when an anchor carries no `data-url`, and GitHub spells a
+        # pull request's `href` that way. It closes here because the path is
+        # not what refuses a pull request -- `data-hovercard-type` is, and
+        # every anchor in this sweep carries `issue`. The refusal has its own
+        # rows in `test_a_pull_request_is_refused_in_every_spelling`.
         ("https://github.com/robotrocketscience/aelfrice/pull/5", True),
     ],
     ids=lambda v: str(v)[-40:],
@@ -713,7 +723,10 @@ def test_no_url_a_legal_anchor_can_carry_aborts_the_step(
     its length or spelling. Being wider than the legal set decides nothing,
     because the segments are only ever compared against `--repo`.
     """
-    html = f'<p>Closes <a class="issue-link js-issue-link" data-url="{url}">#5</a></p>'
+    html = (
+        '<p>Closes <a class="issue-link js-issue-link" '
+        f'data-hovercard-type="issue" data-url="{url}">#5</a></p>'
+    )
     found, refused = close_directives(html, _CONTEXT)
     if closes:
         assert (found, refused) == ([5], [])
@@ -815,12 +828,15 @@ def test_a_discussions_url_is_refused_rather_than_closing_that_issue_number() ->
 def test_the_other_rewritten_url_forms_are_ruled_on_one_by_one() -> None:
     """The audit in the module docstring, replayed against the recorded render.
 
-    A pull-request URL and a comment fragment name an object in the issues'
-    own number space, so they close; `/pull/N/files`, `/commit/SHA` and an
-    organisation discussion are not issue references at all.
+    A comment fragment names the issue the comment is on, so it closes. A
+    pull-request URL renders the same anchor and does not close: GitHub
+    labels it `pull_request`, and a pull request is not a closing reference.
+    `/pull/N/files`, `/commit/SHA` and an organisation discussion are not
+    issue references at all.
     """
     found, refused = _parse("urlforms")
-    assert found == [1504, 1511]
+    assert found == [1511], "a comment fragment closes; a pull request does not"
+    assert ("Closes #1504", NOT_AN_ISSUE) in refused
     assert ("Closes #1504", FROM_DISCUSSION) not in refused
     assert ("Closes cli/cli#8", FROM_DISCUSSION) in refused
     # `/pull/N/files` renders an ordinary link, so only the source scan sees it.
@@ -925,6 +941,196 @@ def test_a_discussion_shadows_an_issue_of_the_same_number_deliberately() -> None
     found, refused = parse(body, _CONTEXT, render=lambda b, r: html)
     assert found == []
     assert [r.reason for r in refused] == [FROM_DISCUSSION, FROM_DISCUSSION]
+
+
+# --------------------------------------------------------------------------
+# A pull request is not a closing reference.
+# --------------------------------------------------------------------------
+
+# GitHub's `data-hovercard-type`, spelled out here rather than imported. The
+# attribute name and the one value that closes are the whole rule, so reading
+# them back off the module would pass for any spelling -- including one that
+# never matches, which closes nothing, and one that matches everything, which
+# closes pull requests again.
+_KIND_ATTRIBUTE = "data-hovercard-type"
+_KIND_THAT_CLOSES = "issue"
+
+
+def test_the_module_reads_githubs_own_attribute_and_only_issue_closes() -> None:
+    assert module._ANCHOR_KIND_ATTRIBUTE == _KIND_ATTRIBUTE
+    assert module._ISSUE_KIND == _KIND_THAT_CLOSES
+
+
+def test_github_labels_every_issue_link_anchor_with_what_it_names() -> None:
+    """The premise, read off GitHub's own bytes rather than off the parser.
+
+    `data-url` cannot answer this: GitHub rewrites a `/pull/N` reference into
+    an `/issues/N` `data-url`, so the URL of a pull-request anchor is
+    byte-for-byte an issue's. The label is the only thing that differs, it is
+    on every anchor in every record, and the corpus holds both values -- which
+    is what lets the rows below prove a refusal AND a close.
+    """
+    labels: list[str] = []
+    for name, record in _RECORDS["records"].items():
+        for tag in re.findall(r"<a [^>]*>", record["html"]):
+            if "issue-link" not in tag:
+                continue
+            found = re.search(rf'{_KIND_ATTRIBUTE}="([^"]*)"', tag)
+            assert found is not None, f"{name}: an anchor carried no label: {tag}"
+            labels.append(found.group(1))
+    assert len(labels) >= 25, f"the sweep only found {len(labels)} anchors"
+    assert set(labels) == {"issue", "pull_request"}
+
+
+def test_the_kinds_record_is_one_issue_and_four_pull_requests() -> None:
+    """The control for the row below: the numbers really are what it claims.
+
+    Every spelling in that body names a pull request except the first, so a
+    rule that closed everything would answer five and one that closed nothing
+    would answer none.
+    """
+    html = _RECORDS["records"]["kinds"]["html"]
+    for number, label in (
+        (1509, "issue"),
+        (1504, "pull_request"),
+        (1505, "pull_request"),
+        (1506, "pull_request"),
+        (1507, "pull_request"),
+    ):
+        anchor = re.search(rf'<a [^>]*/issues/{number}"[^>]*>', html)
+        assert anchor is not None, number
+        assert f'{_KIND_ATTRIBUTE}="{label}"' in anchor.group(0), number
+
+
+def test_a_pull_request_is_refused_in_every_spelling() -> None:
+    """GitHub links issues. `Closes #1504` on a pull request closes nothing.
+
+    An earlier round on this branch ruled the other way for the `/pull/N` URL
+    -- pull requests and issues share one number space, so the anchor names
+    "the same object GitHub would close". They do share the space; that is
+    what makes the reference render, not what makes it close. The train would
+    have acted on it: step 7/7 asks `gh issue view N --json state`, which
+    resolves a pull request and answers MERGED rather than CLOSED, so the
+    idempotency skip does not fire and `gh issue close N` runs.
+    """
+    found, refused = _parse("kinds")
+    assert found == [1509], "only the issue closes"
+    assert refused == [
+        ("Closes #1504", NOT_AN_ISSUE),  # `#N`
+        ("Closes GH-1505", NOT_AN_ISSUE),  # `GH-N`
+        ("Closes #1506", NOT_AN_ISSUE),  # a full `/pull/N` URL
+        ("Closes #1507", NOT_AN_ISSUE),  # `OWNER/NAME#N`
+    ]
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_shipped_cli_closes_nothing_for_a_pull_request(tmp_path: Path) -> None:
+    """End to end, because what the workflow reads is stdout.
+
+    Exit 0 and an empty stdout, not exit 2: nothing failed, and the body
+    genuinely links no issue. The reason still has to reach the log.
+    """
+    record = _RECORDS["records"]["kinds"]
+    bin_dir = _fake_gh(tmp_path, record["html"])
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin=record["body"])
+    assert proc.returncode == 0
+    assert proc.stdout.split() == ["1509"]
+    assert proc.stderr.count(NOT_AN_ISSUE) == 4
+    assert "1504" in proc.stderr
+
+
+def test_the_label_and_not_the_url_path_is_what_refuses_a_pull_request() -> None:
+    """The two are separable, and only one of them may decide.
+
+    `data-url` is `/issues/N` for a pull request, and `href` -- the fallback
+    when an anchor carries no `data-url` -- is `/pull/N` for a pull request
+    and `/issues/N` for an issue. So a rule written on the path would refuse
+    by accident here and miss every `#N` spelling, which is four of the five
+    rows above.
+    """
+    pull_url = f"https://github.com/{_CONTEXT}/pull/5"
+    as_issue = (
+        f'<p>Closes <a class="issue-link" {_KIND_ATTRIBUTE}="issue" '
+        f'data-url="{pull_url}">#5</a></p>'
+    )
+    as_pull = (
+        f'<p>Closes <a class="issue-link" {_KIND_ATTRIBUTE}="pull_request" '
+        f'data-url="https://github.com/{_CONTEXT}/issues/5">#5</a></p>'
+    )
+    assert close_directives(as_issue, _CONTEXT) == ([5], [])
+    found, refused = close_directives(as_pull, _CONTEXT)
+    assert found == []
+    assert [(r.text, r.reason) for r in refused] == [("Closes #5", NOT_AN_ISSUE)]
+
+
+def test_a_pull_request_in_another_repository_still_reads_as_cross_repo() -> None:
+    """The order of the two refusals, pinned because both apply.
+
+    `cli/cli#1` is a pull request AND another repository. The train would not
+    close it either way, and "a link to another repository" is the sentence
+    that tells a reader why -- so the repository check stays in front.
+    """
+    html = f"<p>Closes {_anchor(1, repo='cli/cli', kind='pull_request')}</p>"
+    _, refused = close_directives(html, _CONTEXT)
+    assert [r.reason for r in refused] == [CROSS_REPO]
+
+
+def test_an_unlabelled_anchor_is_refused_and_not_raised() -> None:
+    """The absence must not become a new way to abort the whole step.
+
+    Raising here would cost every close in the body and print the workflow's
+    `::error::`, which tells a human to close the linked issues by hand --
+    an invitation to make exactly the wrong close. A refusal costs one open
+    issue and one warning line, which is this module's standing asymmetry.
+    """
+    html = f"<p>Closes {_anchor(7, kind='')}</p><p>Fixes {_anchor(8)}</p>"
+    assert _KIND_ATTRIBUTE not in html.split("</p>")[0]
+    found, refused = close_directives(html, _CONTEXT)
+    assert found == [8], "one unlabelled anchor must not silence the body"
+    assert [(r.text, r.reason) for r in refused] == [("Closes #7", UNLABELLED_TARGET)]
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_an_unlabelled_anchor_leaves_the_cli_exiting_zero(tmp_path: Path) -> None:
+    """The half of the row above that the workflow can actually see."""
+    bin_dir = _fake_gh(tmp_path, f"<p>Closes {_anchor(7, kind='')}</p>")
+    proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin="Closes #7\n")
+    assert proc.returncode == 0, "an absent label must not abort the step"
+    assert proc.stdout == ""
+    assert UNLABELLED_TARGET in proc.stderr
+
+
+def test_a_label_github_has_not_emitted_yet_names_itself() -> None:
+    """One code path for every non-issue label, so the warning never lies.
+
+    Writing "a link to a pull request" for whatever GitHub sends next would
+    put a sentence in the merge-train log that is not true of the anchor it
+    describes.
+    """
+    html = f"<p>Closes {_anchor(7, kind='discussion')}</p>"
+    _, refused = close_directives(html, _CONTEXT)
+    assert [r.reason for r in refused] == [
+        "a reference GitHub labelled discussion, and this train closes an issue only"
+    ]
+    assert refused[0].reason != NOT_AN_ISSUE
+
+
+def test_the_docstring_corrects_the_earlier_ruling_rather_than_editing_it_away() -> None:
+    """A reversed ruling has to be readable as reversed.
+
+    The file said a `/pull/N` URL "names the same object GitHub would close".
+    A reader who found that sentence gone would have no way to know it had
+    been decided against, or why.
+    """
+    doc = module.__doc__ or ""
+    assert "A pull request is not a closing reference" in doc
+    assert "ruled the opposite" in doc
+    assert "gh issue view" in doc, "the docstring must say what the wrong close costs"
+    assert _KIND_ATTRIBUTE in doc
+    assert "names the same object GitHub would close" in doc, (
+        "the corrected ruling is quoted, so the correction is legible"
+    )
+    assert "When the attribute is absent" in doc
 
 
 # --------------------------------------------------------------------------

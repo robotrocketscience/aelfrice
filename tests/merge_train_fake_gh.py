@@ -23,12 +23,24 @@ from pathlib import Path
 CLI_TIMEOUT = 30 * int(os.environ.get("AELF_TEST_TIMEOUT_SCALE", "4"))
 
 
-def issue_anchor(number: int | str, repo: str, text: str | None = None) -> str:
-    """One issue-link anchor shaped like the ones GitHub's renderer emits."""
+def issue_anchor(
+    number: int | str, repo: str, text: str | None = None, *, kind: str = "issue"
+) -> str:
+    """One issue-link anchor shaped like the ones GitHub's renderer emits.
+
+    `kind` is `data-hovercard-type`, which is what says whether the number is
+    an issue or a pull request; GitHub puts it on every issue-link anchor, and
+    only `issue` is a closing reference. It defaults to `issue` because that
+    is the case almost every test is about, and the tests that are about the
+    attribute itself pass it. Passing `kind=""` omits the attribute, which is
+    the shape GitHub does not emit.
+    """
     shown = text if text is not None else f"#{number}"
+    hovercard = f'data-hovercard-type="{kind}" ' if kind else ""
     return (
         '<a class="issue-link js-issue-link" '
         f'data-url="https://github.com/{repo}/issues/{number}" '
+        f"{hovercard}"
         f'href="https://github.com/{repo}/pull/{number}">{shown}</a>'
     )
 

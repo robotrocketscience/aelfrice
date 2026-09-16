@@ -186,11 +186,13 @@ to, so this module can compare the two. That is new: the emulating revision
 held no repository identity and therefore had to refuse `owner/repo#N` and full
 issue URLs indiscriminately, its own spellings included. Now:
 
-* An anchor resolving to this repository is closed, however it was spelled --
-  `#N`, `GH-N`, `OWNER/NAME#N`, or a full
+* An anchor resolving to an *issue* of this repository is closed, however it
+  was spelled -- `#N`, `GH-N`, `OWNER/NAME#N`, or a full
   `https://github.com/OWNER/NAME/issues/N`. GitHub renders all four identically
   and closes all four, so this does too.
 * An anchor resolving anywhere else is refused out loud; see divergence 2.
+* An anchor resolving to a pull request is refused out loud whatever
+  repository it names; see "A pull request is not a closing reference".
 
 ### Reading GitHub's own URL must not be able to abort the step
 
@@ -289,11 +291,13 @@ Every other shape was audited against the live renderer rather than reasoned
 about, one `POST /markdown` per row, and each is ruled on here:
 
 * `/issues/N` -> `issue-link`, `/issues/N`. Closes N. The plain case.
-* `/pull/N` -> `issue-link`, `/issues/N`. Closes N. Pull requests and issues
-  share one number space, so this names the same object GitHub would close.
+* `/pull/N` -> `issue-link`, `/issues/N`. **Refused**, because N is a pull
+  request; see "A pull request is not a closing reference" below. An earlier
+  round on this branch ruled the opposite here, and that ruling was wrong.
 * `/issues/N#issuecomment-...` and `/pull/N#discussion_r...` -> `issue-link`,
-  `/issues/N`, anchor text `#N (comment)`. Closes N. The fragment names a
-  comment *on* N, so N is still the object referenced.
+  `/issues/N`, anchor text `#N (comment)`. The fragment names a comment *on*
+  N, so N is still the object referenced: the first closes N, the second is
+  refused with every other pull-request reference.
 * `/discussions/N` -> `issue-link`, `/issues/N`. **Refused**, per above.
 * `/pull/N/files` -> an ordinary `<a href>`, no `issue-link` class. Not a
   reference; the source scan reports it as `NOT_LINKED`.
@@ -306,6 +310,52 @@ about, one `POST /markdown` per row, and each is ruled on here:
 `tests/data/merge_train_github_renders.json` holds the `urlforms` record this
 audit came from, so the rulings are replayed against GitHub's own bytes; rerun
 `python3 scripts/record_merge_train_renders.py --dry-run` if GitHub changes.
+
+### A pull request is not a closing reference
+
+GitHub's linked-issue mechanism links *issues*. A body writing `Closes #1504`
+where 1504 is a pull request links nothing: the reference renders, and it
+stays a mention. The same holds for `GH-1504`, `OWNER/NAME#1504` and a full
+`/pull/1504` URL.
+
+An earlier round on this branch ruled the opposite, writing above that a
+`/pull/N` URL "names the same object GitHub would close" because pull requests
+and issues share one number space. They do share a number space -- that is
+what makes the reference render, and it is why GitHub answers a `/pull/N` URL
+with an `/issues/N` `data-url`. It is not what makes a reference close, and
+the ruling is corrected here rather than edited away, because the merge train
+would have carried the wrong close out: step 7/7 checks idempotency with
+`gh issue view N --json state`, which resolves a pull request and answers
+MERGED rather than CLOSED, so the skip does not fire and `gh issue close N`
+runs against the pull request.
+
+The render says which object an anchor names. Every `issue-link` anchor
+carries `data-hovercard-type`, which is `issue` for an issue and
+`pull_request` for a pull request, whatever spelling produced it. Measured on
+2026-09-15 against `robotrocketscience/aelfrice`, one `POST /markdown` per
+row, and recorded as the `kinds` record:
+
+    Closes #1509                  -> issue
+    Closes #1504                  -> pull_request
+    Closes GH-1505                -> pull_request
+    Closes .../pull/1506          -> pull_request
+    Closes robotrocketscience/aelfrice#1507 -> pull_request
+
+Only `issue` is acted on. Anything else is refused out loud, and the warning
+names the label GitHub gave it, so a new label reads as itself rather than as
+"pull request".
+
+#### When the attribute is absent
+
+It is on every `issue-link` anchor in every recorded render, so an anchor
+without it is not a shape GitHub emits today. If one ever arrives it is
+refused -- and refused rather than raised, which is the distinction that
+matters. A raise costs every close in the body and turns the step into an
+`::error::` telling a human to close the issues by hand, which is an
+invitation to make exactly the wrong close this section exists to stop. A
+refusal costs one open issue and one `warning:` line. That is the standing
+asymmetry applied to the one attribute that says what an anchor names, and it
+means the attribute cannot become a new way to abort the step.
 
 ### Failure policy: loud, and closing nothing
 
@@ -359,6 +409,11 @@ https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-f
 -- gives five rows for four distinct forms; its `Username/Repository#N` and
 `Organization_name/Repository#N` rows are one form written twice:
 
+Each row below links when what it names is an issue of this repository, and is
+refused out loud otherwise. The form decides nothing on its own: all four
+arrive as the same anchor, and what separates them is `data-url` and
+`data-hovercard-type`.
+
 * `#N` (`Closes #10`) links.
 * `GH-N` (`Closes GH-10`) links, in any case. GitHub's renderer anchors `GH-`,
   `gh-`, `Gh-` and `gH-` to the same issue as `#10`, so nothing here has to
@@ -366,8 +421,10 @@ https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-f
 * `OWNER/REPOSITORY#N` links when it names this repository and is refused out
   loud when it names another. When GitHub cannot resolve the repository it
   renders no anchor, and the source scan reports it as `NOT_LINKED`.
-* A full issue or pull-request URL behaves identically, for the same reason:
-  GitHub renders it as an anchor to the issue it names.
+* A full issue URL behaves identically, for the same reason: GitHub renders it
+  as an anchor to the issue it names. A full *pull-request* URL renders the
+  same anchor and is refused, because a pull request is not a closing
+  reference.
 * Nothing else is a reference. `Closes issue #10`, `Closes 10` and a bare `#10`
   are not forms GitHub acts on, so not matching them is fidelity.
 
@@ -512,6 +569,22 @@ DECLINED_SEPARATOR = (
     "and the reference"
 )
 
+
+def wrong_kind_reason(kind: str) -> str:
+    """Why an anchor GitHub did not label `issue` is refused.
+
+    One code path, so a label GitHub has not emitted yet reads as itself
+    rather than as "pull request". `NOT_AN_ISSUE` and `UNLABELLED_TARGET`
+    below are the two spellings that exist today, named so a test can compare
+    against them without rebuilding the sentence.
+    """
+    what = f"labelled {kind}" if kind else "did not label at all"
+    return f"a reference GitHub {what}, and this train closes an issue only"
+
+
+NOT_AN_ISSUE = wrong_kind_reason("pull_request")
+UNLABELLED_TARGET = wrong_kind_reason("")
+
 # Above this many distinct issues in one body, say so on stderr. Not a cap:
 # every issue found is still printed. A body naming this many is more likely
 # a template or a paste than a real set of links, and the merge-train log is
@@ -592,6 +665,19 @@ MAX_BODY_CHARACTERS = 65_536
 # not a github.com issue or pull URL at all, which is the output-shape change
 # the raise is actually for.
 _ANCHOR_CLASS = "issue-link"
+
+# What the anchor names. `data-url` says which repository and which number;
+# it does NOT say whether that number is an issue or a pull request, because
+# GitHub answers a `/pull/N` reference with an `/issues/N` `data-url`. This
+# attribute is the only thing in the render that does, and only an issue is a
+# closing reference -- see "A pull request is not a closing reference".
+#
+# Absent, the anchor is refused rather than closed AND rather than raised: a
+# raise costs every close in the body, and the step then tells a human to
+# close the issues by hand, which is an invitation to make the wrong close.
+_ANCHOR_KIND_ATTRIBUTE = "data-hovercard-type"
+_ISSUE_KIND = "issue"
+
 _ISSUE_HREF_RE = re.compile(
     r"^https?://github\.com/(?P<owner>[^/?#]+)/(?P<repo>[^/?#]+)"
     r"/(?:issues|pull)/(?P<number>\d+)(?:[/?#].*)?$"
@@ -707,6 +793,7 @@ class _Anchor:
     declined: str | None
     text: str
     url: str
+    kind: str
     in_quote: bool
 
 
@@ -726,7 +813,7 @@ class _AnchorScanner(HTMLParser):
         self._tail = ""
         self._clipped = False
         self._quote_depth = 0
-        self._open: tuple[str | None, str | None, str, bool] | None = None
+        self._open: tuple[str | None, str | None, str, str, bool] | None = None
         self._anchor_text = ""
 
     # -- text ------------------------------------------------------------
@@ -767,8 +854,9 @@ class _AnchorScanner(HTMLParser):
             self._end_run()
             return
         url = attributes.get("data-url") or attributes.get("href", "")
+        kind = attributes.get(_ANCHOR_KIND_ATTRIBUTE, "").strip().lower()
         keyword, declined = _keyword_before(self._tail, clipped=self._clipped)
-        self._open = (keyword, declined, url, self._quote_depth > 0)
+        self._open = (keyword, declined, url, kind, self._quote_depth > 0)
         self._anchor_text = ""
 
     def handle_startendtag(
@@ -784,13 +872,14 @@ class _AnchorScanner(HTMLParser):
         if tag == _QUOTE_TAG and self._quote_depth:
             self._quote_depth -= 1
         if tag == "a" and self._open is not None:
-            keyword, declined, url, in_quote = self._open
+            keyword, declined, url, kind, in_quote = self._open
             self.anchors.append(
                 _Anchor(
                     keyword=keyword,
                     declined=declined,
                     text=self._anchor_text,
                     url=url,
+                    kind=kind,
                     in_quote=in_quote,
                 )
             )
@@ -839,9 +928,11 @@ def close_directives(
 ) -> tuple[list[int], list[Rejection]]:
     """Split the rendered document's close directives into acted-on and refused.
 
-    A directive is an issue-link anchor with one of the nine keywords
-    immediately before it in the same block. Everything else in the document,
-    anchor or not, is a mention.
+    A directive is an issue-link anchor that names an issue of `repo`, with
+    one of the nine keywords immediately before it in the same block.
+    Everything else in the document, anchor or not, is a mention. An anchor
+    GitHub did not label `issue` is refused rather than closed: a pull request
+    is not a closing reference, whatever its number.
 
     `discussion_sources` holds the `(owner, repo, number)` triples the *source*
     body spelled as a discussions URL. It cannot be recovered from `html`:
@@ -886,6 +977,14 @@ def close_directives(
             continue
         if f"{named[0]}/{named[1]}" != repo.lower():
             refused.append(Rejection(text=quoted, reason=CROSS_REPO))
+            continue
+        if anchor.kind != _ISSUE_KIND:
+            # Last, so a pull request in another repository still reads as
+            # CROSS_REPO -- the train would not close it either way, and that
+            # is the more useful sentence in the step log.
+            refused.append(
+                Rejection(text=quoted, reason=wrong_kind_reason(anchor.kind))
+            )
             continue
         found.add(named[2])
     return sorted(found), refused

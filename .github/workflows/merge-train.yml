@@ -420,6 +420,13 @@ jobs:
               echo "  no linked issues parsed from PR body."
           else
               for n in ${linked_issues}; do
+                  # Every number here is an ISSUE: the script refuses an
+                  # anchor GitHub labelled anything else (#1549). That is
+                  # what this loop needs — `gh issue view` resolves a pull
+                  # request too, and answers MERGED rather than CLOSED, so
+                  # the skip below would not fire and `gh issue close` would
+                  # run against the pull request.
+                  #
                   # Skip if already closed — idempotent.
                   state=$(gh issue view "${n}" --repo "${REPO}" \
                       --json state --jq '.state' 2>/dev/null || echo "")
