@@ -397,10 +397,31 @@ def producer_figures() -> dict[str, object]:
     per-test timeout CI pins with `AELF_TEST_TIMEOUT_SCALE=1`. A fixture
     errors once and reports the rest as errors rather than re-running.
 
-    The run itself is fast because there is nothing to search: #1526 ships
-    unchanged budgets, so the producer renders two arms per cell instead of
-    sweeping a budget range for a byte-neutral band. Measured at about 8
-    seconds for the full grid after #1547 extended it to 18,600 characters.
+    There is nothing to search: #1526 ships unchanged budgets, so the producer
+    renders two arms per cell instead of sweeping a budget range for a
+    byte-neutral band. That still costs **15.5 seconds** for the full grid
+    after #1547 extended it to 18,600 characters, reported as the `setup` row
+    for the first test below by
+
+        uv run pytest tests/test_render_cost_1526.py -q -p no:randomly \
+            --durations=0
+
+    and ranging 14.7 to 16.4 seconds over seven runs on an unloaded machine.
+    An earlier revision of this docstring published "about 8 seconds", which
+    was measured before the grid reached 18,600 characters and which no run on
+    this tree reproduces.
+
+    That figure is half the budget, not a footnote, because the timeout covers
+    setup: a `@pytest.mark.timeout(5)` on the first test below errors *inside*
+    this fixture with `Failed: Timeout (>5.0s) from pytest-timeout`, charged to
+    the item that requested it. So the first test to ask for these figures
+    spends about 15.5 of its 30 seconds here and has roughly 14 left for its
+    own body, which is why the grid is nine lengths and not more, and why
+    `_CORE_CROSSING_LOW`/`_CORE_CROSSING_HIGH` pin the ninth length by a
+    condition rather than leaving it to be trimmed under that pressure. The
+    figure is not asserted anywhere: a wall-clock assertion would be the
+    non-deterministic thing this suite forbids, so it is published here and
+    re-measured by hand.
 
     Every `AELFRICE_` variable is removed for the duration. `figures()` is
     already hermetic against `.aelfrice.toml` — it chdirs into a tempdir with
