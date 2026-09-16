@@ -356,9 +356,9 @@ def _synthetic_store(
 
     Separate corpora rather than a changed one, deliberately: this module is
     the producer for every #1526 figure the repo publishes, and folding either
-    flag into its one store would re-denominate all of them — twelve markers
-    that `scripts/check_derived_figures.py` re-derives — while leaving nothing
-    to attribute the change to. Three corpora make the attribution explicit:
+    flag into its one store would re-denominate all of them — every marker
+    naming this file that `scripts/check_derived_figures.py --mode all`
+    re-derives — while leaving nothing to attribute the change to. Three corpora make the attribution explicit:
     control (neither flag), prose (`sentences` alone), snapshot (both). The
     class effect is prose → snapshot; control → prose is the cost of the text
     change, which is measured rather than asserted to be nil.
