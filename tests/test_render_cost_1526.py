@@ -527,7 +527,11 @@ def test_the_producer_names_which_budget_ended_every_pack(
     occupies it. Dropping 5,950 back to the eight-length tuple gives
     `1 failed, 48 passed`; moving it to 5,900 — still a ninth length, 34
     characters below the window at 1,475 pre-#1526 against 1,492 as shipped —
-    gives `1 failed, 48 passed` too. Both left `49 passed` before.
+    gives `1 failed, 48 passed` too. Both left `49 passed` before. The window
+    is read off the budget rather than named, so raising
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 moves it to around 8,000
+    characters, off every grid length, and gives `1 failed, 48 passed` on a
+    grid that still holds 5,950; that mutation also left `49 passed` before.
 
     Both halves are falsifiable, but only one of them by a test-side mutation,
     which is why an earlier revision of this docstring called the before arm's
