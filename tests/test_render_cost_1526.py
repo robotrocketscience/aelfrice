@@ -470,12 +470,12 @@ def test_the_corrected_accounting_shrinks_what_each_budget_buys(
 # `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` in the pre-#1526 currency and above
 # it as shipped, so the two accountings disagree about whether the section can
 # hold a line. The window is what holds the ninth `LENGTH_GRID` entry in place,
-# and both edges are asserted rather than left to a grid length: no grid length
-# sits on either edge, so an edge that moves is invisible to every assertion
-# written over `LENGTH_GRID`. That is how the newline charge below shipped as a
-# revertible change — the whole of it could be undone and the suite stayed
-# green, because 5,950 is 16 characters inside the window and the edge it moved
-# is at the rim.
+# and both edges are asserted here rather than left to a grid length: no grid
+# length sits on either edge, so an edge that moves is invisible to every
+# assertion written over `LENGTH_GRID`. That is how the newline charge below
+# shipped as a revertible change — the whole of it could be undone and the
+# suite stayed green, because 5,950 is 16 characters inside the window and the
+# edge it moved is at the rim.
 #
 # Re-derive with `_core_pack_costs_at`: the lower edge is the first length
 # whose shipped charge exceeds the budget, the upper edge the last whose
@@ -519,105 +519,109 @@ def test_the_producer_names_which_budget_ended_every_pack(
     arm's half.
 
     Reading the arm's own half is the whole content of the exemption, and one
-    grid length makes it load-bearing. The pre-#1526 charge
+    grid length makes it decide anything at all. The pre-#1526 charge
     `max(1, len(content) // 4)` is strictly below the shipped charge
     `chars_to_tokens(len(line) + 1)` at every content length — 0 exceptions
     over 1..20,000 step 37 — so the two cross `core_budget = 1500` at
     different places: the shipped charge at 5,934 content characters and the
-    pre-#1526 charge at 6,004. Every other grid length sits outside that gap
-    and the two agree there (10/27 at 40 characters, 250/267 at 1,000,
+    pre-#1526 charge at 6,004. Every other grid length sits outside that
+    window and the two agree there (10/27 at 40 characters, 250/267 at 1,000,
     1,792/1,810 at 7,170, 4,650/4,667 at 18,600), which is why the earlier
-    `min(legacy, shipped)` form was inert: `min` of the pair is always the
-    pre-#1526 half, and replacing it with either operand alone left
-    `49 passed`. 5,950 is inside the gap — 1,487 pre-#1526 against 1,505 as
-    shipped — so the before arm packs one line (6,017 bytes) and the after arm
-    packs none, and charging that zero to the pre-#1526 currency fails on
-    `assert 1487 > 1500`. Restoring `min(legacy_cost, shipped_cost)`, and
-    separately swapping the two arms' halves, each give `1 failed, 48 passed`
-    there; removing 5,950 from `LENGTH_GRID` and restoring `min` together give
-    `49 passed`, which is what the grid length buys.
+    `min(legacy, shipped)` form decided nothing: `min` of the pair is always
+    the pre-#1526 half. 5,950 is inside the window — 1,487 pre-#1526 against
+    1,505 as shipped — so the before arm packs one line (6,017 bytes) and the
+    after arm packs none.
 
     That grid length is held by a condition rather than by its own value.
     5,950 is referenced nowhere else, and the module fixture's runtime is
-    standing pressure to trim the grid, so a length pinned by nothing restores
-    the inert state above with no test, no marker and no reviewer signal to
-    report it. What is asserted is that *some* grid length charges one `<core>`
-    line at or below `core_budget` in the pre-#1526 currency and above it as
-    shipped — the window 5,934 to 6,003 inclusive, whatever numeric length
-    occupies it. Dropping 5,950 back to the eight-length tuple gives
-    `1 failed, 48 passed`; moving it to 5,900 — still a ninth length, 34
-    characters below the window at 1,475 pre-#1526 against 1,492 as shipped —
-    gives `1 failed, 48 passed` too. Both left `49 passed` before. The window
-    is read off the budget rather than named, so raising
-    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 moves it to around 8,000
-    characters, off every grid length, and gives `1 failed, 48 passed` on a
-    grid that still holds 5,950; that mutation also left `49 passed` before.
-    Both edges of the window are measured, not inferred: a ninth grid length
-    at 5,934 and one at 6,003 each give `49 passed`, and one at 5,933
-    (1,483 against 1,500, the shipped charge not yet over) or at 6,004 (1,501
-    against 1,518, the pre-#1526 charge already over) each give
-    `1 failed, 48 passed` here.
+    standing pressure to trim the grid, so a length pinned by nothing would
+    restore the inert state above with no test and no reviewer signal. What
+    is asserted is that *some* grid length charges one `<core>` line at or
+    below `core_budget` in the pre-#1526 currency and above it as shipped,
+    read off the budget rather than named.
 
     The window's own edges are asserted too, at `_CORE_CROSSING_LOW` and
-    `_CORE_CROSSING_HIGH`. The condition above only asks that a grid length
-    fall *inside* the window; 5,950 is 16 characters in, so an edge could move
-    a character and no assertion written over `LENGTH_GRID` would notice. That
-    is exactly what happened: the newline `"\\n".join` puts after a `<core>`
-    line — the character `_core_belief_cost` charges, and the one
-    `_core_pack_costs_at` was corrected to charge so that the enforced lower
-    edge equalled the published 5,934 — could be dropped again with the suite
-    green. The edges are now read directly: 5,933 and 6,004 must fall outside
-    the window and 5,934 and 6,003 inside it.
+    `_CORE_CROSSING_HIGH`, and that is the round-7 repair. The condition above
+    only asks that a grid length fall *inside* the window; 5,950 is 16
+    characters in, so an edge could move a character and no assertion written
+    over `LENGTH_GRID` would notice. That is exactly what happened: the
+    newline `"\\n".join` puts after a `<core>` line — the character
+    `_core_belief_cost` charges and this file's `_core_pack_costs_at` and the
+    sibling guard now charge with it — was added to make the enforced lower
+    edge equal the published 5,934, and the whole of that change could be
+    reverted with the suite green. The edges are now read directly: 5,933 and
+    6,004 must fall outside the window and 5,934 and 6,003 inside it.
 
     Both of those assertions are arithmetic. They re-derive the two charges
-    from `LENGTH_GRID` and the budget scalar and never read the curve the
-    producer emitted, so a producer that stopped emptying the crossing cell
-    would restore the inert state above with the grid untouched. The
-    asymmetry is therefore also asserted off the produced `<core>` curve:
-    some cell must pack a line in the before arm and none in the after arm.
-    Two producer-side mutations separate that from the arithmetic. Packing
-    both arms under the pre-#1526 cost function — `_pack_core_candidates(
-    candidates, budget, lambda b: max(1, len(b.content) // 4))` in
-    `_render_core` — makes 5,950 emit 6,017 bytes in both arms and gives
-    `2 failed, 47 passed`: this test on the curve assertion, and
-    `test_the_effect_is_length_dependent_and_changes_sign` on `0.0 < 0.0`.
-    Before the curve assertion existed that mutation left this test green and
-    reported `1 failed, 48 passed`. Refilling an empty pack from the top
-    candidate — `if not packed and candidates: packed = candidates[:1]` in the
-    same function — gives `2 failed, 47 passed`, this test and
-    `test_the_core_section_empties_once_one_belief_exceeds_its_budget`, where
-    before it gave `1 failed, 48 passed` on the sibling alone.
+    from the budget scalar and never read the curve the producer emitted, so a
+    producer that stopped emptying the crossing cell would restore the inert
+    state above with the grid untouched. The asymmetry is therefore also
+    asserted off the produced `<core>` curve: some cell must pack a line in
+    the before arm and none in the after arm.
 
-    Both halves are falsifiable, but only one of them by a test-side mutation,
-    which is why an earlier revision of this docstring called the before arm's
-    half a weaker claim no cell could refute. Charging the before arm in the
-    shipped currency does leave `49 passed` on the shipped producer, because
-    the pre-#1526 charge is below the shipped charge at every length and
-    `shipped > budget` is implied by `legacy > budget` there. The producer side
-    separates them: an oversize guard in `_render_core` returning `Arm(0, 0)`
-    for the one 6,017-byte cell gives `1 failed, 48 passed` on the assertion
-    below, naming the before arm — `assert 1487 > 1500` — and with that guard
-    in place, charging the before arm in the shipped currency gives
-    `49 passed` again. The before arm's half is what catches a suppressed
-    `<core>` cell, which is the property the first line of this docstring
-    claims. The emptiness itself is pinned separately by
-    `test_the_core_section_empties_once_one_belief_exceeds_its_budget`.
+    Mutations, measured on this branch rebased onto `github/main` at bc35845d,
+    with `uv run pytest tests/test_render_cost_1526.py -q`. Names and
+    assertions rather than pass counts, because that rebase moved the file
+    from 43 collected cases to 52 and turned every count published here stale
+    at once.
+
+    * Drop the `+ 1` from `_core_pack_costs_at` — this test, on
+      `assert (1483 <= 1500 < 1500) is True` at 5,934 content characters.
+    * Drop it from the sibling guard's `charged()` as well —
+      `test_the_core_section_empties_once_one_belief_exceeds_its_budget` on
+      `assert 1500 > 1500`, and this test as above.
+    * Drop 5,950 from `LENGTH_GRID`, or move it to 5,900 — this test, on
+      `assert False` from the `any(...)` over `costs`, which reports the pair
+      at every remaining length.
+    * Raise `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 — the same
+      `assert False`, plus the sibling guard on `assert 1501 > 2000`: the
+      window moves to around 8,000 characters, off every grid length, and the
+      published edges stop being the enforced ones.
+    * Pack both arms under the pre-#1526 cost function —
+      `_pack_core_candidates(candidates, budget, lambda b: max(1,
+      len(b.content) // 4))` in `_render_core` — this test on the curve
+      assertion `assert []`, and
+      `test_the_effect_is_length_dependent_and_changes_sign` on
+      `assert 0.0 < 0.0`.
+    * Refill an empty pack from the top candidate — `if not packed and
+      candidates: packed = candidates[:1]` in the same function — this test on
+      `assert []`, and the sibling guard on its own `assert []`.
+    * An oversize guard in `_render_core` returning `Arm(0, 0)` for the one
+      6,017-byte cell — this test, on the exemption below, naming the before
+      arm: `assert 1487 > 1500`.
+
+    The before arm's half of the exemption is stricter than the after arm's
+    and is not independently falsifiable on this grid, which is a correction
+    to what an earlier revision of this docstring published. It claimed a
+    pair: that the oversize guard above reds the exemption, and that with the
+    guard in place, charging the before arm in the shipped currency goes green
+    again — so the before-arm half is what catches a suppressed `<core>` cell.
+    The first half still holds. The second does not: that pair now reds this
+    test on the curve assertion `assert []`, because the guard also destroys
+    the produced asymmetry, and the curve assertion was added after the pair
+    was measured. The two assertions overlap exactly on this grid — 5,950 is
+    the only cell inside the window, so it is the only cell where the shipped
+    currency could hide a suppression — and charging the before arm in the
+    shipped currency on the shipped producer leaves the file green. The half
+    is kept because it is the stricter of the two currencies (`legacy <=
+    shipped` at every length, so requiring `legacy > budget` admits strictly
+    fewer zeros) and because it names the arm and its charge in the failure
+    message. It is not kept on the strength of a mutation, and it is not
+    claimed to be.
 
     A floor relaxed to `>= 0` across all eight lanes and all nine lengths, on
-    the strength of that one cell, is what this replaces. It let any lane emit
-    nothing at any length with the suite green: an oversize guard on
-    `_render_session_start` that returns `Arm(0, 0)` above 100,000 bytes turns
-    that lane's 112,456-byte cell at 18,600 content characters into a published
-    zero, and `uv run pytest tests/test_render_cost_1526.py -q` reported
-    `49 passed` under it, with the per-lane floor that accompanied the
-    relaxation in place. The same mutation now fails this test, on the
-    `lane == "core"` assertion.
+    the strength of that one cell, is what the zero branch replaces. It let
+    any lane emit nothing at any length with the suite green. An oversize
+    guard on `_render_session_start` that returns `Arm(0, 0)` above 100,000
+    bytes turns that lane's 112,456-byte cell at 18,600 content characters
+    into a published zero, and the relaxed floor reported it green; the same
+    mutation now reds this test on `assert 'session_start' == 'core'`.
 
     An `else: assert row[arm] > 0` beside that branch is not written, because
     it could not fail. The `isinstance` check above and the zero branch beside
     it leave it only a negative int, and every value it would guard is an
-    `Arm.n_bytes` summed from lengths. Replacing its body with `pass` left
-    `49 passed`.
+    `Arm.n_bytes` summed from lengths, so replacing its body with `pass` left
+    the file green.
     """
     fig = producer_figures
     m = _producer_module()
@@ -1297,15 +1301,9 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
 
     The line is charged with the newline `"\\n".join` puts after it, because
     that is what `_core_belief_cost` charges and therefore what decides
-    whether the section empties. Charging the bare line understates the
-    packer by one character, which moves this guard's lower edge one content
-    character above the real one: the two charges cross `budget` at 6,004
-    content characters in the pre-#1526 currency and at 5,934 as shipped, so
-    the window where the two arms disagree is 5,934 to 6,003 inclusive, and a
-    ninth grid length at 5,934 — inside that window, and the length
-    `test_the_producer_names_which_budget_ended_every_pack` blesses — reported
-    `1 failed, 48 passed` here on `assert 1500 > 1500` before the newline was
-    charged.
+    whether the section empties. Charging the bare line understates the packer
+    by one character and moves this guard's lower edge one content character
+    up, from 5,934 to 5,935.
 
     That edge is asserted here rather than left to `smallest_empty`. The
     smallest emptied grid length is 5,950, where the line is charged 1,505
@@ -1315,6 +1313,19 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     reaches it, so the two cells either side of it are charged directly: one
     line at 5,934 content characters must cost more than `budget` and one at
     5,933 must not.
+
+    Mutations, measured on this branch rebased onto `github/main` at bc35845d,
+    with `uv run pytest tests/test_render_cost_1526.py -q`:
+
+    * Drop the `+ 1` from `charged()` — this test, on `assert 1500 > 1500`.
+    * Raise `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 — this test, on
+      `assert 1501 > 2000`, and
+      `test_the_producer_names_which_budget_ended_every_pack` on its
+      `any(...)` over the grid.
+    * Refill an empty `<core>` pack from the top candidate — `if not packed
+      and candidates: packed = candidates[:1]` in `_render_core` — this test
+      on `assert []`, the emptied-lengths list, and the sibling on its curve
+      assertion.
     """
     fig = producer_figures
     curve = fig["core_curve"]
