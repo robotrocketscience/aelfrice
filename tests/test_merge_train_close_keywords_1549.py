@@ -156,7 +156,12 @@ def test_github_renders_no_anchor_for_a_keyword_it_reads_as_code(
 
 @pytest.mark.parametrize(
     ("record", "issue"),
-    [("blocks", 7), ("blocks", 13), ("template", 10), ("template", 11)],
+    [
+        ("blocks", 1546),
+        ("blocks", 1548),
+        ("template", 1522),
+        ("template", 1521),
+    ],
 )
 def test_github_does_anchor_the_references_those_bodies_close(
     record: str, issue: int
@@ -168,13 +173,13 @@ def test_github_does_anchor_the_references_those_bodies_close(
 
 def test_a_body_documenting_the_syntax_closes_nothing_and_says_so() -> None:
     found, refused = _parse("blocks")
-    assert found == [7, 13], "the prose keyword and the GH- form still link"
+    assert found == [1546, 1548], "the prose keyword and the GH- form still link"
     assert (
         "Fixes #8",
         NOT_LINKED,
     ) in refused, "a refused keyword must never be silent"
     assert {text for text, _ in refused} == {
-        "Closes #10",
+        "Closes #1547",
         "Fixes #8",
         "Resolves #9",
         "Closes #11",
@@ -192,7 +197,7 @@ def test_the_pull_request_template_no_longer_wrong_closes() -> None:
     found, refused = _parse("template")
     assert 7 not in found
     assert ("Fixed #7", NOT_LINKED) in refused
-    assert found == [10, 11, 15]
+    assert found == [1513, 1521, 1522]
 
 
 @pytest.mark.parametrize("issue", [8, 9, 12, 13])
@@ -215,7 +220,7 @@ def test_a_table_row_and_a_heading_do_close() -> None:
     like any other.
     """
     found, _ = _parse("template")
-    assert 10 in found and 11 in found
+    assert 1522 in found and 1521 in found
 
 
 # --------------------------------------------------------------------------
@@ -296,10 +301,10 @@ def test_the_separator_rulings_hold_against_a_real_github_render() -> None:
     keyword is silent.
     """
     found, refused = _parse("separators")
-    assert found == [1, 2, 3, 9, 10]
+    assert found == [1526, 1527, 1541, 1542, 1556]
     assert refused == [
-        ("Closes : #4", DECLINED_SEPARATOR),
-        ("Closes::#5", DECLINED_SEPARATOR),
+        ("Closes : #1558", DECLINED_SEPARATOR),
+        ("Closes::#1528", DECLINED_SEPARATOR),
     ]
 
 
@@ -336,7 +341,7 @@ def test_only_a_declined_keyword_warns_and_a_mention_stays_quiet(
 
 def test_a_keyword_split_across_a_line_still_arms_the_anchor() -> None:
     """`Resolves\\n#9` in the recorded body; GitHub renders a `<br>`."""
-    assert 9 in _parse("separators")[0]
+    assert 1527 in _parse("separators")[0]
 
 
 def test_a_line_break_does_not_break_the_run() -> None:
@@ -358,7 +363,7 @@ def test_one_keyword_arms_one_anchor() -> None:
     An anchor ends the run of text, so nothing before the first anchor can
     reach the second.
     """
-    assert 11 not in _parse("separators")[0]
+    assert 1523 not in _parse("separators")[0]
     assert close_directives(
         f"<p>Closes {_anchor(10)} {_anchor(11)}</p>", _CONTEXT
     ) == ([10], [])
@@ -580,7 +585,7 @@ def test_a_link_to_another_repository_is_refused_out_loud() -> None:
         ("Closes cli/cli#1", CROSS_REPO),
         ("Fixes cli/cli#2", CROSS_REPO),
     ]
-    assert found == [3]
+    assert found == [1549]
 
 
 def test_a_full_url_to_this_repository_now_closes_it() -> None:
@@ -592,7 +597,7 @@ def test_a_full_url_to_this_repository_now_closes_it() -> None:
     anchor's `data-url`, so `Resolves <this repo>/issues/3` closes #3 -- which
     is what GitHub does with the same body.
     """
-    assert _parse("elsewhere")[0] == [3]
+    assert _parse("elsewhere")[0] == [1549]
 
 
 def test_the_comparison_is_case_insensitive_like_github() -> None:
@@ -634,7 +639,7 @@ def test_a_legal_repository_name_is_a_refusal_and_not_an_abort() -> None:
     anchor resolving elsewhere is CROSS_REPO, so that is what it has to be.
     """
     found, refused = _parse("identity")
-    assert found == [22], "the abort took this repository's own close with it"
+    assert found == [1553], "the abort took this repository's own close with it"
     assert ("Closes github/.github#5", CROSS_REPO) in refused
 
 
@@ -647,7 +652,7 @@ def test_the_shipped_cli_closes_its_own_issue_beside_a_dotted_name(
     bin_dir = _fake_gh(tmp_path, _RECORDS["records"]["identity"]["html"])
     proc = _run_cli(["--repo", _CONTEXT], bin_dir=bin_dir, stdin=body)
     assert proc.returncode == 0
-    assert proc.stdout.split() == ["22"]
+    assert proc.stdout.split() == ["1553"]
     assert CROSS_REPO in proc.stderr
 
 
@@ -765,7 +770,7 @@ def test_a_block_quote_is_refused_out_loud() -> None:
     grammar. It is a ruling; GitHub publishes nothing either way.
     """
     _, refused = _parse("blocks")
-    assert ("Closes #10", IN_QUOTE) in refused
+    assert ("Closes #1547", IN_QUOTE) in refused
 
 
 def test_leaving_a_quote_makes_the_next_anchor_live_again() -> None:
@@ -790,9 +795,9 @@ def test_github_rewrites_a_discussions_url_into_an_issue_anchor() -> None:
     is why the check has to run against the source body.
     """
     html = _RECORDS["records"]["urlforms"]["html"]
-    assert 'href="https://github.com/robotrocketscience/aelfrice/pull/3"' in html
-    assert 'data-url="https://github.com/robotrocketscience/aelfrice/issues/3"' in html
-    assert "discussions/3" not in html
+    assert 'href="https://github.com/robotrocketscience/aelfrice/issues/1512"' in html
+    assert 'data-url="https://github.com/robotrocketscience/aelfrice/issues/1512"' in html
+    assert "discussions/1512" not in html
 
 
 def test_a_discussions_url_is_refused_rather_than_closing_that_issue_number() -> None:
@@ -803,8 +808,8 @@ def test_a_discussions_url_is_refused_rather_than_closing_that_issue_number() ->
     and the train would have run `gh issue close` on it.
     """
     found, refused = _parse("urlforms")
-    assert 3 not in found
-    assert ("Closes #3", FROM_DISCUSSION) in refused
+    assert 1512 not in found
+    assert ("Closes #1512", FROM_DISCUSSION) in refused
 
 
 def test_the_other_rewritten_url_forms_are_ruled_on_one_by_one() -> None:
@@ -815,12 +820,12 @@ def test_the_other_rewritten_url_forms_are_ruled_on_one_by_one() -> None:
     organisation discussion are not issue references at all.
     """
     found, refused = _parse("urlforms")
-    assert found == [4, 5], "a pull URL and a comment fragment name issue numbers"
-    assert ("Closes #4", FROM_DISCUSSION) not in refused
+    assert found == [1504, 1511]
+    assert ("Closes #1504", FROM_DISCUSSION) not in refused
     assert ("Closes cli/cli#8", FROM_DISCUSSION) in refused
-    # `/pull/6/files` renders an ordinary link, so only the source scan sees it.
+    # `/pull/N/files` renders an ordinary link, so only the source scan sees it.
     assert (
-        "Closes https://github.com/robotrocketscience/aelfrice/pull/6",
+        "Closes https://github.com/robotrocketscience/aelfrice/pull/1505",
         NOT_LINKED,
     ) in refused
     # A commit link and an organisation discussion are not references at all.
@@ -837,9 +842,9 @@ def test_github_lower_cases_the_url_it_hangs_on_a_mixed_case_reference() -> None
     the source, one from the anchor -- meet only if both are folded.
     """
     record = _RECORDS["records"]["identity"]
-    assert "RobotRocketScience/AelfRice/discussions/21" in record["body"]
+    assert "RobotRocketScience/AelfRice/discussions/1551" in record["body"]
     assert (
-        'data-url="https://github.com/robotrocketscience/aelfrice/issues/21"'
+        'data-url="https://github.com/robotrocketscience/aelfrice/issues/1551"'
         in record["html"]
     )
     assert "RobotRocketScience" not in record["html"]
@@ -855,13 +860,13 @@ def test_a_mixed_case_discussions_url_is_refused_like_a_lower_case_one() -> None
     closed the unrelated issue 21.
     """
     found, refused = _parse("identity")
-    assert 21 not in found
-    assert ("Closes #21", FROM_DISCUSSION) in refused
+    assert 1551 not in found
+    assert ("Closes #1551", FROM_DISCUSSION) in refused
 
 
 def test_a_mixed_case_spelling_of_this_repository_still_closes() -> None:
     """The control: folding must not turn every mixed-case reference away."""
-    assert _parse("identity")[0] == [22]
+    assert _parse("identity")[0] == [1553]
 
 
 def test_the_source_scan_is_what_finds_a_discussion_not_the_render() -> None:
