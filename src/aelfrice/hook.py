@@ -575,11 +575,20 @@ def enforce_block_ceiling(
     about the block it sits in — the model is told to look up text that is
     not there. Reproduced on the first prompt of a session, where #1547's
     dedupe renders a belief verbatim in `<core>` and as a `seen` pointer in
-    the same envelope, against the shipped 6,000-token ceiling::
+    the same envelope, against the shipped 6,000-token ceiling. Each store
+    is fired twice, once with the pointer splice below removed and once
+    with it, counting `seen` lines whose `<core>` element is no longer in
+    the block::
 
-        [locks55 + core40x2000] tokens=5873 elements=55 seen=57 DANGLING=2
-        [locks80 + core20x2000] tokens=8385 elements=80 seen=82 DANGLING=2
-        control [core-only 40x4000] tokens=1701 elements=4  seen=4 DANGLING=0
+                                   without the drop      shipped
+        [locks80 + core20x2000]  80 el 82 seen  D=2   80 el 80 seen  D=0
+        [locks70 + core30x2000]  70 el 72 seen  D=2   70 el 70 seen  D=0
+        [locks60 + core40x2000]  61 el 62 seen  D=1   61 el 61 seen  D=0
+        control [core40x4000]     4 el  4 seen  D=0    4 el  4 seen  D=0
+
+    The control fits under the ceiling, so it drops nothing and dangles
+    nothing on either arm: it is what separates "the splice removes the
+    pointer" from "the block never had one".
 
     The pointer is dropped rather than the element made non-droppable,
     because the alternative inverts what the ceiling is for. A pointed-at
