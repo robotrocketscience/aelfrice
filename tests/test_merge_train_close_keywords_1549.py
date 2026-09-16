@@ -60,6 +60,7 @@ import merge_train_linked_issues as module  # noqa: E402
 from merge_train_linked_issues import (  # noqa: E402
     ADJACENT_RE,
     CROSS_REPO,
+    DECLINED_SEPARATOR,
     FROM_DISCUSSION,
     IN_QUOTE,
     KEYWORDS,
@@ -284,14 +285,50 @@ def test_the_separator_rulings_hold_against_a_real_github_render() -> None:
     """The rows above, driven through the body GitHub actually rendered.
 
     `Closes : #4`, `Closes::#5`, `Closes#6`, `precloses #7` and
-    `Closes issue #8` close nothing. The first two are rulings; the last
-    three are forms GitHub itself does not act on, so refusing them is
-    fidelity rather than a decision, and each is silent for the same reason a
-    body with no keyword is silent -- there is no close directive in it.
+    `Closes issue #8` close nothing, and the split between them is the point.
+    The first two are this module's rulings against a keyword GitHub anchored,
+    so they are refusals and AC5 requires each to say so. The last three are
+    forms GitHub itself does not act on, so there is no close directive in
+    them to report and they are silent for the same reason a body with no
+    keyword is silent.
     """
     found, refused = _parse("separators")
     assert found == [1, 2, 3, 9, 10]
-    assert refused == []
+    assert refused == [
+        ("Closes : #4", DECLINED_SEPARATOR),
+        ("Closes::#5", DECLINED_SEPARATOR),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("before", "warned"),
+    [
+        ("Closes : ", "Closes : #7"),  # the colon must touch the keyword
+        ("Closes::", "Closes::#7"),  # one colon, not a run of them
+        ("Resolves :: ", "Resolves :: #7"),  # both at once
+        ("Fixed:\n : ", "Fixed: : #7"),  # normalised across the line break
+        ("precloses ", None),  # GitHub does not act on it either
+        ("Closes issue ", None),  # nor on this
+        ("See ", None),  # an ordinary mention
+        ("", None),  # an anchor with nothing before it
+    ],
+    ids=lambda v: repr(v)[:20],
+)
+def test_only_a_declined_keyword_warns_and_a_mention_stays_quiet(
+    before: str, warned: str | None
+) -> None:
+    """The line between a refusal and an absence.
+
+    Warning about `See #7` would teach a reader to ignore the warnings, which
+    is the same failure as not warning at all.
+    """
+    _, refused = close_directives(f"<p>{before}{_anchor(7)}</p>", _CONTEXT)
+    if warned is None:
+        assert refused == []
+    else:
+        assert [(r.text, r.reason) for r in refused] == [
+            (warned, DECLINED_SEPARATOR)
+        ]
 
 
 def test_a_keyword_split_across_a_line_still_arms_the_anchor() -> None:
@@ -365,6 +402,127 @@ def test_an_ordinary_link_is_not_an_issue_reference() -> None:
     assert close_directives(
         f'<p>Closes <a href="{url}">docs</a> {_anchor(7)}</p>', _CONTEXT
     ) == ([], [])
+
+
+def test_an_unterminated_link_still_ends_the_run_before_it() -> None:
+    """The case the reset on a non-issue-link `<a>` start tag is actually for.
+
+    With a `</a>` the end-tag handler ends the run, so the reset on the start
+    tag changes nothing and the row above passes either way. `html.parser`
+    synthesises no close tag, so an unterminated `<a>` -- which is what this
+    module would see if GitHub ever emitted malformed HTML, or if a render
+    arrived truncated -- leaves the keyword in the run and arms the anchor
+    that follows. Deleting the reset turns this into a close of #7.
+    """
+    url = "https://example.invalid/x"
+    assert close_directives(
+        f'<p>Closes <a href="{url}">{_anchor(7)}</p>', _CONTEXT
+    ) == ([], [])
+
+
+def test_the_self_closing_spelling_behaves_like_the_start_and_end_pair() -> None:
+    """The self-closing spelling is the only input reaching `handle_startendtag`.
+
+    GitHub emits `<br>`, so nothing in the recorded renders reaches that
+    handler; it exists for HTML this module did not write. It must run both
+    halves: `<br/>` leaves the run alone like `<br>`, an unknown element still
+    ends it, and a self-closing anchor is only ever recorded by the end-tag
+    half, so dropping that call loses the close entirely.
+    """
+    assert close_directives(f"<p>Resolves<br/>{_anchor(7)}</p>", _CONTEXT) == ([7], [])
+    assert close_directives(
+        f"<p>Closes <some-future-element/>{_anchor(7)}</p>", _CONTEXT
+    ) == ([], [])
+    self_closed = (
+        '<a class="issue-link" '
+        f'data-url="https://github.com/{_CONTEXT}/issues/7"/>'
+    )
+    assert close_directives(f"<p>Closes {self_closed}</p>", _CONTEXT) == ([7], [])
+
+
+# --------------------------------------------------------------------------
+# The adjacency window, which is a cost bound and must not be a ruling.
+# --------------------------------------------------------------------------
+
+# Prose words that end in one of the nine keywords. Each is a wrong close
+# waiting for a window short enough to cut the letters in front of it away.
+_PROSE_ENDING_IN_A_KEYWORD = (
+    "prefixed",
+    "prefixes",
+    "affixed",
+    "unresolved",
+    "disclosed",
+    "foreclosed",
+)
+
+
+@pytest.mark.parametrize("word", _PROSE_ENDING_IN_A_KEYWORD)
+def test_no_window_size_turns_prose_into_a_close(
+    word: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clipping the run must never invent a boundary that was not there.
+
+    The window is a suffix of the run, so a window short enough to start
+    exactly at `fixed` used to let `(?:^|\\W)` read the cut as the start of a
+    block: at a six-character window `... the last one is prefixed #7` closes
+    #7. Requiring a real non-word character in a clipped window makes every
+    match on the window a match on the whole run, so clipping can only lose a
+    close. Every window size is swept rather than the one that flips, because
+    which size flips depends on the keyword -- 6 for `prefixed`, 9 for
+    `unresolved`.
+    """
+    lead = "a long paragraph of prose whose last word is "
+    html = f"<p>{lead}{word} {_anchor(7)}</p>"
+    for window in range(1, 65):
+        monkeypatch.setattr(module, "_TAIL", window)
+        assert close_directives(html, _CONTEXT) == ([], []), (
+            f"a {window}-character window turned {word!r} into a close"
+        )
+
+
+def test_a_real_close_survives_every_window_the_bound_allows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control: the sweep above would also pass if nothing ever closed."""
+    lead = "a long paragraph of prose that ends in a directive. "
+    html = f"<p>{lead}Resolves: {_anchor(7)}</p>"
+    for window in range(12, 65):
+        monkeypatch.setattr(module, "_TAIL", window)
+        assert close_directives(html, _CONTEXT) == ([7], []), (
+            f"a {window}-character window lost a real close"
+        )
+
+
+def test_a_long_block_does_not_poison_the_block_after_it() -> None:
+    """The clipped flag has to come back down with the run it describes.
+
+    A directive that opens a block starts at position 0 of a window that was
+    never cut, so `^` is a real boundary there and must stay accepted. Left
+    set from the previous block, the flag makes the rule demand a non-word
+    character that a block-opening keyword cannot have, and the close is lost
+    in silence -- the same shape of failure as one quote silencing a body.
+    """
+    long_block = "x" * (module._TAIL * 3)
+    assert close_directives(
+        f"<p>{long_block}</p><p>Closes {_anchor(7)}</p>", _CONTEXT
+    ) == ([7], [])
+    assert close_directives(
+        f"<p>{long_block} Closes {_anchor(7)}</p>", _CONTEXT
+    ) == ([7], []), "and clipping mid-block must not lose it either"
+
+
+def test_the_adjacency_window_cannot_be_trimmed_silently() -> None:
+    """`_TAIL` carries a comment inviting a trim, so the bound is asserted.
+
+    The lower bound is what the accepted spellings need: the longest keyword,
+    its colon, one space and the non-word character in front of it. The
+    equality is a change detector on a constant whose comment calls the rest
+    slack -- a trim below the bound loses real closes silently, and the sweep
+    above is what stops one from inventing closes.
+    """
+    longest = max(len(keyword) for keyword in KEYWORDS)
+    assert module._TAIL >= longest + 3
+    assert module._TAIL == 64, "the adjacency window changed; re-run the sweep above"
 
 
 # --------------------------------------------------------------------------

@@ -108,6 +108,17 @@ ruling and not a measurement. They are refusals rather than links because a
 wrong close is worse in kind than a missed one: a missed close leaves an open
 issue a human notices, a wrong one closes an issue nobody asked to close.
 
+A ruling is not allowed to be silent. `Closes : #10` is a keyword the tool
+found and declined, so it prints a `warning:` line naming the spelling and
+`DECLINED_SEPARATOR` as the reason, exactly like every other refusal -- see
+"Nothing is silently unmatched". `DECLINED_RE` is what recognises it: the text
+before the anchor ends in a keyword followed by nothing but colons and
+whitespace, and `ADJACENT_RE` did not accept it. A form GitHub itself does not
+act on is *not* a declined keyword and stays silent, because there is no close
+directive in it to report: `precloses #7`, `Closes issue #8` and `Closes#6`
+(which renders no anchor at all) are silent for the same reason a body with no
+keyword is silent.
+
 ### The colon admits a prose false positive, knowingly
 
 A colon after one of the nine words is also how English introduces a list, and
@@ -306,12 +317,30 @@ _ALTERNATION = "|".join(sorted(KEYWORDS, key=len, reverse=True))
 
 # What decides a close: the text immediately before an anchor, in the same
 # block, ending in a keyword plus an optional colon bound to it and any
-# whitespace. `(?:^|\W)` is the word boundary at the front, so `precloses #4`
-# does not fire; `:?\s*$` is why `Closes : #4` and `Closes::#4` do not.
-ADJACENT_RE = re.compile(
-    r"(?:^|\W)(?P<keyword>" + _ALTERNATION + r"):?\s*$",
-    re.IGNORECASE,
-)
+# whitespace. `:?\s*$` is why `Closes : #4` and `Closes::#4` do not fire.
+#
+# The front is the word boundary, and it comes in two spellings because the
+# run of text is kept as a bounded suffix (see `_TAIL`). `_FRONT` allows `^`,
+# which is right when the run really does start there -- a block boundary, or
+# an anchor. `_CLIPPED_FRONT` does not, because in a window that was cut short
+# `^` is an artefact of the cut: `... the last one is prefixed #7` would put
+# `fixed` at position 0 of a six-character window and close #7. Requiring a
+# real non-word character makes a match on the window a match on the whole run
+# as well, so clipping can lose a close but can never invent one.
+_FRONT = r"(?:^|\W)"
+_CLIPPED_FRONT = r"\W"
+
+# A keyword the adjacency rule accepts, and a keyword it declines. The second
+# is what keeps a ruling from being silent: `Closes : #4` ends in a keyword
+# followed by nothing but separators, so it is reported rather than passed
+# over. `precloses #7` matches neither, because the boundary fails.
+_ACCEPTED = r"(?P<keyword>" + _ALTERNATION + r"):?\s*$"
+_DECLINED = r"(?P<keyword>" + _ALTERNATION + r")[\s:]*$"
+
+ADJACENT_RE = re.compile(_FRONT + _ACCEPTED, re.IGNORECASE)
+DECLINED_RE = re.compile(_FRONT + _DECLINED, re.IGNORECASE)
+_CLIPPED_ADJACENT_RE = re.compile(_CLIPPED_FRONT + _ACCEPTED, re.IGNORECASE)
+_CLIPPED_DECLINED_RE = re.compile(_CLIPPED_FRONT + _DECLINED, re.IGNORECASE)
 
 # An owner or repository name as GitHub allows it: alphanumerics, `.`, `_` and
 # `-`, neither leading nor trailing with a separator.
@@ -350,6 +379,10 @@ FROM_DISCUSSION = (
     "written as a discussions URL, which GitHub renders as an issue link "
     "although discussions carry their own numbers"
 )
+DECLINED_SEPARATOR = (
+    "written with a separator this train does not accept between the keyword "
+    "and the reference"
+)
 
 # Above this many distinct issues in one body, say so on stderr. Not a cap:
 # every issue found is still printed. A body naming this many is more likely
@@ -385,9 +418,16 @@ _INLINE_TAGS = frozenset(
     }
 )
 
-# How much of the preceding text `ADJACENT_RE` can need. The longest keyword
-# is nine characters; the rest is slack for the colon, whitespace and the
-# non-word character in front.
+# How much of the preceding text the adjacency rules see. This is a
+# performance knob and nothing else: because a clipped window refuses `^` as a
+# boundary (see `_CLIPPED_FRONT`), every match on the window is also a match on
+# the whole run, so no value of `_TAIL` can turn prose into a close. Shrinking
+# it can only lose a close -- a keyword separated from its anchor by more than
+# `_TAIL` characters of whitespace -- which is the safe direction and the
+# reason the constant is allowed to exist at all. It must stay at least as long
+# as the longest keyword plus its colon, its whitespace and the boundary
+# character in front; `test_the_adjacency_window_cannot_be_trimmed_silently`
+# pins both the bound and the shipped value.
 _TAIL = 64
 
 
@@ -455,35 +495,57 @@ def render_markdown(body: str, repo: str, *, run: object = None) -> str:
     return proc.stdout
 
 
+@dataclass(frozen=True)
+class _Anchor:
+    """One issue-link anchor, and what the text in front of it decided."""
+
+    keyword: str | None
+    declined: str | None
+    text: str
+    url: str
+    in_quote: bool
+
+
 class _AnchorScanner(HTMLParser):
-    """Collects `(keyword, anchor_text, url, in_quote)` for every issue link.
+    """Collects an `_Anchor` for every issue link in the rendered document.
 
     One left-to-right pass. `_tail` holds the text since the last block
-    boundary, trimmed to the few characters `ADJACENT_RE` can need, so a
-    paragraph of any length costs the same.
+    boundary, trimmed to the few characters the adjacency rules can need, so a
+    paragraph of any length costs the same; `_clipped` records that the trim
+    actually cut something, which is what stops the cut from being readable as
+    the start of a block. See `_TAIL`.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.anchors: list[tuple[str | None, str, str, bool]] = []
+        self.anchors: list[_Anchor] = []
         self._tail = ""
+        self._clipped = False
         self._quote_depth = 0
-        self._open: tuple[str, str, bool] | None = None
+        self._open: tuple[str | None, str | None, str, bool] | None = None
         self._anchor_text = ""
 
     # -- text ------------------------------------------------------------
+    def _end_run(self) -> None:
+        self._tail = ""
+        self._clipped = False
+
     def handle_data(self, data: str) -> None:
         if self._open is not None:
             self._anchor_text += data
-        else:
-            self._tail = (self._tail + data)[-_TAIL:]
+            return
+        joined = self._tail + data
+        if len(joined) > _TAIL:
+            self._clipped = True
+            joined = joined[-_TAIL:]
+        self._tail = joined
 
     # -- tags ------------------------------------------------------------
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == _QUOTE_TAG:
             self._quote_depth += 1
         if tag not in _INLINE_TAGS:
-            self._tail = ""
+            self._end_run()
             return
         if tag != "a":
             # Every other inline tag, `<br>` included, leaves the run alone.
@@ -494,40 +556,60 @@ class _AnchorScanner(HTMLParser):
             return
         attributes = {k: (v or "") for k, v in attrs}
         if _ANCHOR_CLASS not in attributes.get("class", "").split():
-            # An ordinary link. It ends the run either way: a keyword before
-            # `[see](url)` must not arm whatever anchor comes after it.
-            self._tail = ""
+            # An ordinary link. `handle_endtag` ends the run at its `</a>`,
+            # so this reset is for the anchor that has none: html.parser does
+            # not synthesise a close tag, and without it `Closes <a href=...>`
+            # left unterminated would arm the issue-link anchor that follows.
+            self._end_run()
             return
         url = attributes.get("data-url") or attributes.get("href", "")
-        keyword = _keyword_before(self._tail)
-        self._open = (keyword or "", url, self._quote_depth > 0)
+        keyword, declined = _keyword_before(self._tail, clipped=self._clipped)
+        self._open = (keyword, declined, url, self._quote_depth > 0)
         self._anchor_text = ""
 
     def handle_startendtag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
+        # The self-closing spelling, `<br/>`, is the only input that reaches
+        # here; GitHub emits `<br>`. Both halves run for it exactly as they
+        # would for a start tag followed by an end tag.
         self.handle_starttag(tag, attrs)
-        if tag != "br":
-            self.handle_endtag(tag)
+        self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
         if tag == _QUOTE_TAG and self._quote_depth:
             self._quote_depth -= 1
         if tag == "a" and self._open is not None:
-            keyword, url, in_quote = self._open
+            keyword, declined, url, in_quote = self._open
             self.anchors.append(
-                (keyword or None, self._anchor_text, url, in_quote)
+                _Anchor(
+                    keyword=keyword,
+                    declined=declined,
+                    text=self._anchor_text,
+                    url=url,
+                    in_quote=in_quote,
+                )
             )
             self._open = None
         # An anchor ends the run whether or not it was an issue link, so
         # `Closes #1 #2` arms only #1.
         if tag not in _INLINE_TAGS or tag == "a":
-            self._tail = ""
+            self._end_run()
 
 
-def _keyword_before(tail: str) -> str | None:
-    m = ADJACENT_RE.search(tail)
-    return m.group("keyword") if m is not None else None
+def _keyword_before(tail: str, *, clipped: bool) -> tuple[str | None, str | None]:
+    """The keyword the run of text ends in, and the spelling that was declined.
+
+    Exactly one of the two is ever set. `clipped` says the run was cut to
+    `_TAIL`, which forbids reading the cut as the start of a block.
+    """
+    accepted = (_CLIPPED_ADJACENT_RE if clipped else ADJACENT_RE).search(tail)
+    if accepted is not None:
+        return accepted.group("keyword"), None
+    declined = (_CLIPPED_DECLINED_RE if clipped else DECLINED_RE).search(tail)
+    if declined is not None:
+        return None, tail[declined.start("keyword") :]
+    return None, None
 
 
 def close_directives(
@@ -557,15 +639,23 @@ def close_directives(
 
     found: set[int] = set()
     refused: list[Rejection] = []
-    for keyword, text, url, in_quote in scanner.anchors:
-        if keyword is None:
+    for anchor in scanner.anchors:
+        if anchor.keyword is None:
+            if anchor.declined is not None:
+                # A ruling of this module's own, and rulings are not silent.
+                refused.append(
+                    Rejection(
+                        text=" ".join(f"{anchor.declined}{anchor.text}".split()),
+                        reason=DECLINED_SEPARATOR,
+                    )
+                )
             continue
-        target = _ISSUE_HREF_RE.match(url)
+        target = _ISSUE_HREF_RE.match(anchor.url)
         if target is None:
             raise RendererUnavailable(
-                f"an issue-link anchor carried an unreadable URL: {url!r}"
+                f"an issue-link anchor carried an unreadable URL: {anchor.url!r}"
             )
-        quoted = f"{keyword} {text}".strip()
+        quoted = f"{anchor.keyword} {anchor.text}".strip()
         named = (
             target["owner"].lower(),
             target["repo"].lower(),
@@ -576,7 +666,7 @@ def close_directives(
             # about which object the reference named.
             refused.append(Rejection(text=quoted, reason=FROM_DISCUSSION))
             continue
-        if in_quote:
+        if anchor.in_quote:
             refused.append(Rejection(text=quoted, reason=IN_QUOTE))
             continue
         if f"{named[0]}/{named[1]}" != repo.lower():
