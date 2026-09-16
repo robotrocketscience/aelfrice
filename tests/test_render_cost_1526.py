@@ -930,7 +930,12 @@ def test_session_start_lane_never_trims_its_l0_pool(
     renders this very block — ships `STOP_PROMPT_MAX_CONTENT = 1000` for the
     identical reason. Truncating every lock at 1000 characters here passed
     the whole suite. A maximum over a discovered set rises on its own when
-    the next cap lands.
+    the next cap lands **under one of the name shapes in
+    `_CONTENT_CAP_SUFFIXES`**. A cap named otherwise -- `SESSION_START_CAP`,
+    `BASELINE_MAX_BYTES` -- is not discovered, the floor does not rise, and a
+    trim at it above this fixture's padding would pass. The two known caps
+    are required by name so a rename fails loudly rather than shrinking the
+    set, but discovery is a name convention, not a proof.
 
     **The two store sizes are not a sweep; each catches a mutation the other
     cannot, so neither may be dropped.** Any fixture is blind to a cap above
