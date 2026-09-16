@@ -63,9 +63,11 @@ from typing import Any
 
 import pytest
 
-import aelfrice.retrieval
 from aelfrice import hook
-from aelfrice.retrieval import ENV_RETRIEVAL_TOKEN_BUDGET, resolve_token_budget
+# The module object, not its names: `monkeypatch.setattr` below has to install
+# the recorder on the module `hook._lazy` resolves, and importing the same
+# module both ways trips CodeQL's py/import-and-import-from.
+from aelfrice import retrieval
 from aelfrice.store import MemoryStore
 
 
@@ -144,7 +146,7 @@ def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
         calls.append(kwargs)
         return []
 
-    monkeypatch.setattr(aelfrice.retrieval, "retrieve", recorder)
+    monkeypatch.setattr(retrieval, "retrieve", recorder)
     monkeypatch.setattr(
         hook, "_open_store", lambda: MemoryStore(str(tmp_path / "memory.db"))
     )
@@ -154,7 +156,7 @@ def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
     # `resolve_token_budget` walks up from the process's cwd, and the
     # environment variable outranks every other tier, so both have to be set
     # before the call for the TOML tier to be the one under test.
-    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    monkeypatch.delenv(retrieval.ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
     monkeypatch.chdir(tmp_path)
 
     hook._retrieve_baseline_with_block()
@@ -170,7 +172,7 @@ def test_the_lane_hands_retrieve_no_budget_so_the_toml_key_reaches_it(
     # would reduce to `resolve_token_budget(None) == 77` -- the resolver
     # returning the literal this test wrote to disk four lines ago, and never
     # reached at all under the mutation it exists to catch.
-    resolved = resolve_token_budget(calls[0].get("token_budget"))
+    resolved = retrieval.resolve_token_budget(calls[0].get("token_budget"))
     assert resolved == 77, (
         f"with [retrieval] token_budget = 77 on disk and the caller passing "
         f"token_budget={calls[0].get('token_budget')!r}, the lane resolves to "
