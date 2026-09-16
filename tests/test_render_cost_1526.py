@@ -481,9 +481,11 @@ def test_the_producer_names_which_budget_ended_every_pack(
     `l25_subbudget` value the earlier probe could not produce, which must
     actually occur somewhere in the grid or the fix is untested.
 
-    The per-cell floor is `> 0` at every lane and every length but one, and
-    that one is admitted by re-deriving the condition that empties it rather
-    than by widening the floor. #1547 extended the grid past every lane's own
+    The per-cell floor is the zero branch itself: a cell that is zero has to
+    name itself as the one measured zero, and every other lane and length
+    reaches that branch and fails. The one zero is admitted by re-deriving the
+    condition that empties it rather than by widening the floor. #1547
+    extended the grid past every lane's own
     budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` a single
     `<core>` line no longer fits: `_pack_core_candidates` skips an oversized
     belief rather than breaking, so at 7,170 content characters it packs none
@@ -515,7 +517,14 @@ def test_the_producer_names_which_budget_ended_every_pack(
     that lane's 112,456-byte cell at 18,600 content characters into a published
     zero, and `uv run pytest tests/test_render_cost_1526.py -q` reported
     `49 passed` under it, with the per-lane floor that accompanied the
-    relaxation in place. The same mutation now fails this test.
+    relaxation in place. The same mutation now fails this test, on the
+    `lane == "core"` assertion.
+
+    An `else: assert row[arm] > 0` beside that branch is not written, because
+    it could not fail. The `isinstance` check above and the zero branch beside
+    it leave it only a negative int, and every value it would guard is an
+    `Arm.n_bytes` summed from lengths. Replacing its body with `pass` left
+    `49 passed`.
     """
     fig = producer_figures
     m = _producer_module()
@@ -539,8 +548,6 @@ def test_the_producer_names_which_budget_ended_every_pack(
                         f"budget of {fig['core_budget']}, so it fits in at "
                         f"least one arm's currency"
                     )
-                else:
-                    assert row[arm] > 0, (lane, chars, arm, row[arm])
                 binds_on = row[f"{arm}_binds_on"]
                 assert binds_on in {
                     "token_budget", "l25_subbudget", "both", "pool",
