@@ -483,34 +483,49 @@ def test_the_producer_names_which_budget_ended_every_pack(
 
     The per-cell floor is the zero branch itself: a cell that is zero has to
     name itself as the one measured zero, and every other lane and length
-    reaches that branch and fails. The one zero is admitted by re-deriving the
+    reaches that branch and fails. A zero is admitted by re-deriving the
     condition that empties it rather than by widening the floor. #1547
     extended the grid past every lane's own
     budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` a single
     `<core>` line no longer fits: `_pack_core_candidates` skips an oversized
-    belief rather than breaking, so at 7,170 content characters it packs none
-    of 300 candidates and `<core>` emits nothing. Zero is that lane's measured
-    value there, not a suppressed cell — the property this test exists to
-    defend — so a zero is accepted only from `<core>`, and only where
-    `<core>`'s own line at that length costs more than `<core>`'s own budget
-    under *both* accountings: the pre-#1526 content-character charge the before
-    arm packs under and the rendered line the after arm packs under.
-    `_core_pack_costs_at` returns the pair.
+    belief rather than breaking, so at 5,950 content characters the after arm
+    packs none of 300 candidates and `<core>` emits nothing. Zero is that
+    lane's measured value there, not a suppressed cell — the property this
+    test exists to defend — so a zero is accepted only from `<core>`, and only
+    where `<core>`'s own line at that length costs more than `<core>`'s own
+    budget **in the currency the emitting arm packs under**: the pre-#1526
+    content-character charge for the before arm, the rendered line for the
+    after arm. `_core_pack_costs_at` returns the pair and the branch picks the
+    arm's half.
 
-    Asserting both, rather than the one the emitting arm packed under, is what
-    makes the claim testable. The two currencies do not separate anywhere on
-    this grid — measured against `core_budget = 1500` they read 10/27 at 40
-    content characters, 250/267 at 1,000, 1,792/1,810 at 7,170 and 4,650/4,667
-    at 18,600, crossing the budget at 6,004 and 5,934 characters while the grid
-    steps 1,000 → 7,170 — so a branch on the arm's accounting decides nothing
-    here and either half could be deleted with the suite green. No mutation can
-    single one half out; what the pair does state is the property that makes
-    the exemption legitimate whichever arm produced the cell, and a
-    `_pack_core_candidates` that empties `<core>` at a length where one line
-    does fit fails it. The emptiness it admits is pinned separately by
+    Reading the arm's own half is the whole content of the exemption, and one
+    grid length makes it load-bearing. The pre-#1526 charge
+    `max(1, len(content) // 4)` is strictly below the shipped charge
+    `chars_to_tokens(len(line) + 1)` at every content length — 0 exceptions
+    over 1..20,000 step 37 — so the two cross `core_budget = 1500` at
+    different places: the shipped charge at 5,934 content characters and the
+    pre-#1526 charge at 6,004. Every other grid length sits outside that gap
+    and the two agree there (10/27 at 40 characters, 250/267 at 1,000,
+    1,792/1,810 at 7,170, 4,650/4,667 at 18,600), which is why the earlier
+    `min(legacy, shipped)` form was inert: `min` of the pair is always the
+    pre-#1526 half, and replacing it with either operand alone left
+    `49 passed`. 5,950 is inside the gap — 1,487 pre-#1526 against 1,505 as
+    shipped — so the before arm packs one line (6,017 bytes) and the after arm
+    packs none, and charging that zero to the pre-#1526 currency fails on
+    `assert 1487 > 1500`. Restoring `min(legacy_cost, shipped_cost)`, and
+    separately swapping the two arms' halves, each give `1 failed, 48 passed`
+    there; removing 5,950 from `LENGTH_GRID` and restoring `min` together give
+    `49 passed`, which is what the grid length buys.
+
+    Only the after arm's half is falsifiable, and that is arithmetic rather
+    than a gap in the grid: the pre-#1526 charge is below the shipped charge at
+    every length, so `shipped > budget` is implied by `legacy > budget` and
+    charging the before arm in the shipped currency is a weaker claim that no
+    cell can refute. That mutation leaves `49 passed` and no grid length can
+    change it. The emptiness itself is pinned separately by
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget`.
 
-    A floor relaxed to `>= 0` across all eight lanes and all eight lengths, on
+    A floor relaxed to `>= 0` across all eight lanes and all nine lengths, on
     the strength of that one cell, is what this replaces. It let any lane emit
     nothing at any length with the suite green: an oversize guard on
     `_render_session_start` that returns `Arm(0, 0)` above 100,000 bytes turns
@@ -541,12 +556,14 @@ def test_the_producer_names_which_budget_ended_every_pack(
                         f"content chars; only <core> has a measured zero"
                     )
                     legacy_cost, shipped_cost = _core_pack_costs_at(int(chars))
-                    assert min(legacy_cost, shipped_cost) > fig["core_budget"], (
+                    charged = legacy_cost if arm == "before" else shipped_cost
+                    assert charged > fig["core_budget"], (
                         f"<core> emitted nothing at {chars} content chars in "
-                        f"the {arm} arm, but one line costs {legacy_cost} "
-                        f"pre-#1526 and {shipped_cost} as shipped against a "
-                        f"budget of {fig['core_budget']}, so it fits in at "
-                        f"least one arm's currency"
+                        f"the {arm} arm, but that arm charges {charged} for "
+                        f"one line against a budget of {fig['core_budget']}, "
+                        f"so a line fits in the currency the arm packs under "
+                        f"(the other arm charges "
+                        f"{shipped_cost if arm == 'before' else legacy_cost})"
                     )
                 binds_on = row[f"{arm}_binds_on"]
                 assert binds_on in {
@@ -1141,17 +1158,24 @@ def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
 def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     producer_figures: dict[str, object],
 ) -> None:
-    """A zero in the grid is a measurement, and this is the one that produces it.
+    """A zero in the grid is a measurement, and this is what produces it.
 
     `_pack_core_candidates` skips an oversized belief rather than breaking, so
     once a single `<core>` line costs more than
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` the section packs none of 300
     candidates and emits nothing. The grid reached that for the first time when
     #1547 extended it past 300 characters, and
-    `test_the_producer_names_which_budget_ended_every_pack` admits this one
-    zero, and no other, by re-deriving the same condition through
+    `test_the_producer_names_which_budget_ended_every_pack` admits those zeros,
+    and no others, by re-deriving the same condition through
     `_core_pack_costs_at`. Pinned here so the exemption is backed by an
     assertion that the threshold is crossed rather than by a tolerance.
+
+    The assertion is on the after arm's zeros, so the threshold it names is
+    the shipped one: the first emptied length is 5,950 characters, where the
+    rendered line costs 1,505 tokens against a budget of 1,500. The before arm
+    charges 1,487 for the same belief and still emits there, which is the
+    disagreement `test_the_producer_names_which_budget_ended_every_pack` reads
+    per arm.
     """
     fig = producer_figures
     curve = fig["core_curve"]
@@ -1200,13 +1224,15 @@ def _core_pack_costs_at(content_chars: int) -> tuple[int, int]:
     """What `<core>`'s packer charges for one belief of that length, both arms.
 
     Returns `(legacy, shipped)`: the pre-#1526 `max(1, len(content) // 4)` the
-    before arm packs under, and the rendered line the after arm packs under. A
-    zero cell is legitimate only if one line overruns the budget in both, so
-    both are returned rather than the one the emitting arm used — see
-    `test_the_producer_names_which_budget_ended_every_pack` for why a branch on
-    the arm would assert nothing on this grid. The shipped side is written as
-    the emitted line and not as a call to `hook._core_belief_cost`, for the
-    reason `test_the_core_section_empties_once_one_belief_exceeds_its_budget`
+    before arm packs under, and the rendered line the after arm packs under.
+    Both are returned because the caller picks the half belonging to the arm
+    whose cell it is reading — a zero cell is legitimate only when the arm
+    that produced it could not afford one line in its own currency, and at
+    5,950 content characters the two halves disagree about that. See
+    `test_the_producer_names_which_budget_ended_every_pack`. The shipped side
+    is written as the emitted line and not as a call to `_core_belief_cost`,
+    for the reason
+    `test_the_core_section_empties_once_one_belief_exceeds_its_budget`
     gives: the claim is about what the section emits, so a cost function must
     not be the thing that decides it.
     """
