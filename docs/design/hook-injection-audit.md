@@ -56,9 +56,11 @@ JSON payload on stdin from the harness.
    typed (`hook.py:_extract_prompt`, line 118).
 3. Calls `hook_search.search_for_prompt(store, prompt,
    token_budget=hook.DEFAULT_HOOK_TOKEN_BUDGET)`.
-   - `search_for_prompt` calls `retrieval.retrieve()` then writes
-     a `feedback_history` row per hit with `valence=0.1`
-     (`hook_search.py`).
+   - `search_for_prompt` calls `retrieval.retrieve()`. Since #1551 the
+     hook passes `record_exposure=False` and writes the
+     `feedback_history` rows itself, after the block ceiling has run, so
+     the `valence=0.1` row per hit covers what was emitted rather than
+     what was retrieved (`hook_search.py`, `hook.py`).
 4. Formats non-empty results as:
    ```
    <aelfrice-memory>

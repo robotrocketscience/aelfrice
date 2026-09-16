@@ -21,15 +21,27 @@ This module exists because:
    setting `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` (benchmark A/B and
    rollback).
 
-The module exposes two functions: `search_for_prompt`, the hook's
-top-level call (retrieve + record), and `record_retrieval`, the audit
-half on its own. Both are best-effort on the write side: a failure to
-record does not prevent the retrieved beliefs from being returned.
+The module exposes two functions: `search_for_prompt`, the read plus an
+optional record, and `record_retrieval`, the audit half on its own. Both
+are best-effort on the write side: a failure to record does not prevent
+the retrieved beliefs from being returned.
 
-Exposure is a claim that the model saw the belief, so the caller may
-decline it: `search_for_prompt(..., record_exposure=False)` runs the
-read and skips the write. The #1359 off-switch passes it, because the
-block built from those hits never reaches the prompt.
+**Which half production actually uses, as of #1551.** Exposure is a claim
+that the model saw the belief, and nothing the read can see decides that:
+the #1359 off-switch may discard the block, and the block ceiling deletes
+elements after the block is assembled. So `aelfrice.hook._retrieve` — the
+one production caller of `search_for_prompt` — hard-codes
+`record_exposure=False` and calls `record_retrieval` itself at the emit
+boundary, against the set of beliefs the block actually carried. The other
+production caller of `record_retrieval` is
+`hook_agent_context`, on its own lane. That leaves the `if
+record_exposure:` branch inside `search_for_prompt` exercised only by this
+repo's tests and by out-of-tree callers; it is kept, and kept defaulting
+to True, because the alternative readings are both worse — a function that
+always records could not be used by the hook at all, and one that never
+records is a rename of `retrieve` with two kwargs pinned. A future caller
+that wants the pair back should first be able to say what makes its read
+an exposure.
 
 Non-blocking guarantee: `record_retrieval` swallows write-side failures
 with a stderr trace; the caller still gets the retrieval results. The
@@ -98,24 +110,28 @@ def search_for_prompt(
     record_exposure: bool = True,
     belief_cost_fn: Callable[[Belief], int] | None = None,
 ) -> list[Belief]:
-    """Retrieve hits for a hook prompt and record them to feedback_history.
+    """Retrieve hits for a hook prompt, optionally recording the exposure.
 
-    Wraps `retrieve(store, prompt, token_budget=...)` and, after the
-    read, calls `record_retrieval` to write one audit row per returned
-    belief.
+    Wraps `retrieve(store, prompt, token_budget=...)` and, when
+    `record_exposure` is left True, calls `record_retrieval` to write one
+    audit row per returned belief.
 
-    `record_exposure=False` performs the read and skips that write
-    entirely (#1359). The caller passes it when the block built from
-    these hits will not reach the prompt: a `source='hook'`
-    feedback_history row is this codebase's canonical exposure record
-    (`models.EXPOSURE_ONLY_FEEDBACK_SOURCES`), and its live consumer
-    `store.exploration_pool` selects beliefs with no such row — so
-    writing one for a suppressed fire permanently evicts a belief from
-    the never-shown pool without ever having shown it. Retrieval itself
-    still runs, because the correction and relevance lanes read its
-    output. Skipping the whole call (rather than parts of it) keeps the
-    audit row and the `last_retrieved_at` mirror in agreement, which is
-    the invariant #1373 established.
+    **The production hook passes False, always.** `aelfrice.hook._retrieve`
+    is the only production caller and hard-codes it (#1551), so the record
+    half below runs for tests and out-of-tree callers only. A
+    `source='hook'` feedback_history row is this codebase's canonical
+    exposure record (`models.EXPOSURE_ONLY_FEEDBACK_SOURCES`), and its live
+    consumer `store.exploration_pool` selects beliefs with no such row — so
+    a row written for a belief the model never saw permanently evicts it
+    from the never-shown pool. Two things upstream of the model can discard
+    a retrieved belief after this function has returned: the #1359
+    suppression switch throws the block away, and the block ceiling deletes
+    elements at the emit boundary. Neither is visible from here, which is
+    why the hook writes the rows itself against what it emitted. Retrieval
+    still runs on a suppressed fire, because the correction and relevance
+    lanes read its output. Declining the whole call rather than parts of it
+    keeps the audit row and the `last_retrieved_at` mirror in agreement,
+    which is the invariant #1373 established.
 
     `belief_cost_fn` (#1551) is handed to `retrieve` unchanged. The
     UserPromptSubmit hook passes `hook._ups_belief_line_cost`, because
@@ -147,6 +163,15 @@ def record_retrieval(
     stderr: IO[str] | None = None,
 ) -> int:
     """Write one feedback_history row per belief; return rows written.
+
+    **Call this with the beliefs that reached the model, not the ones a
+    retrieval returned.** The two production callers both do: the
+    UserPromptSubmit hook calls it at the emit boundary with the elements
+    that survived the block ceiling (#1551); `hook_agent_context` calls it
+    with its post-filter hits, which that lane renders in full and does not
+    trim. The row is permanent evidence that a
+    belief has been shown, and `store.exploration_pool` will never draw a
+    belief that has one.
 
     For each belief, calls `apply_feedback(store, belief.id, valence,
     source)`. Since #1086 that writes an audit row only — the
