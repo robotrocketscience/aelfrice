@@ -833,8 +833,12 @@ def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
     of that distribution.
 
     The assertions are derived from the store rather than written as literals,
-    so a ranking change moves them together; the two `!=` lines are what keep
-    the fixture from going vacuous if it ever stops dropping a hit.
+    so a ranking change moves them together. Two guards keep the fixture from
+    going vacuous if it ever stops dropping a hit: `emitted_ids <
+    retrieved_ids` and `emitted_sum != retrieved_sum`. A third assertion,
+    `total_chars != retrieved_sum`, stood here until it was read carefully —
+    it follows from the two lines above it, so no mutation of the hook could
+    ever be the reason it failed.
     """
     db = tmp_path / "memory.db"
     session_id = "s-chars"
@@ -875,7 +879,6 @@ def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
 
     assert emitted_sum != retrieved_sum, (emitted_sum, retrieved_sum)
     assert total_chars == emitted_sum, (total_chars, emitted_sum)
-    assert total_chars != retrieved_sum, (total_chars, retrieved_sum)
     # Every id the sum charged is in the block the reader can see.
     assert all(bid in out for bid in emitted_ids)
 
