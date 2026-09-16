@@ -287,9 +287,13 @@ element-level number is left as the simple one.
 operator's asserted ground truth and truncating it mid-clause can invert
 what it says, so the same rule the ceiling follows applies here: bounds
 stop at `lock="user"`, and a store whose locks alone are oversized gets a
-stderr note rather than a silent edit. `aelf lock --reference` is the
-supported home for long-form locked material — it renders as a one-line
-manifest entry with the text read on demand (#1016-B).
+stderr note rather than a silent edit. The reference tier (#1016-B) is
+the intended home for long-form locked material, but it does not bound
+this lane: `_build_session_start_subblock` renders every lock verbatim,
+so a 30,026-character lock costs the same 7,700 estimated tokens on the
+gate-skip branch whether it is frozen or reference. #1558 tracks the
+render gap; until it lands the only bound on an oversized lock is that
+the operator writes a shorter one.
 
 The cap is otherwise deliberately generous. It is a guard against a
 pathological row, not a retrieval-quality knob; trimming to fit the budget
@@ -347,17 +351,22 @@ _SEEN_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
 )
 """One `seen <id>` manifest line, as `_split_belief_lines` emits it.
 
-This is the only manifest form that *points into the block it is in*.
+A `seen` entry points into the block it is in.
 `retrieval.seen_manifest_line`'s docstring states the contract: "the full
 text is already in this context window, above — so the entry points at it
 rather than telling the reader to go fetch it". The dropper matches these
 so a trim cannot leave the pointer without its referent; see
 `enforce_block_ceiling`.
 
-The sibling `ref <id>` form is deliberately not matched. A reference lock's
-text is *never* in the block by construction (#1016-B), so a `ref` line
-points outward and no drop can dangle it — and a reference lock is
-`lock="user"`, which the dropper never removes anyway.
+The sibling `ref <id>` form is deliberately not matched, but not because
+its referent is absent: on a session's first prompt the `<locked>` loop of
+`_build_session_start_subblock` renders a reference lock verbatim (#1558),
+so a `ref` line and the text it names do share an envelope — measured on a
+30,026-character reference lock, which the retrieval branch emitted in full
+alongside its own `ref` pointer at 7,784 estimated tokens. The reason the
+dropper skips the form is narrower and holds regardless: a reference lock
+carries `lock="user"`, and the dropper never removes a `lock="user"`
+element, so no trim can dangle a `ref` line.
 
 Two spaces of indent and the `: "` separator are both required, so the id
 group cannot run past the line's own punctuation. The pattern is only ever
@@ -678,6 +687,23 @@ def _write_memory_block(
     `test_hook_injection_ceiling.py` pins that there is exactly one caller
     of `enforce_block_ceiling` and that it is this function.
 
+    **The overrun note prescribes no remedy, and that omission is
+    measured.** It used to say "move long-form locks to `aelf lock
+    --reference`", which is a no-op on both paths that print it:
+    `_build_session_start_subblock`'s `<locked>` loop renders every lock
+    verbatim with no `is_reference_lock` branch, unlike `_split_belief_lines`
+    and `_core_belief_line`, which both divert a reference lock to
+    `retrieval.lock_manifest_line`. Measured on one 30,026-character lock,
+    demoting it to the reference tier moves nothing: the gate-skip branch
+    emits 7,700 estimated tokens carrying the full text at either tier, and
+    the retrieval branch emits 7,784 at either tier — carrying the full text
+    *and*, on the reference tier, a `ref` pointer to the text three lines
+    above it. Only `session_start`'s baseline path honours the tier (221
+    tokens, no verbatim content). Closing that gap is #1558; until it lands
+    the note says what is true — the block is over and no further span is
+    droppable — and cites the issue rather than an instruction that costs
+    the operator a `aelf lock` round trip for nothing.
+
     An empty `body` is written as-is (a suppressed fire, `#1359`), which
     is a no-op on the stream and costs nothing on the ceiling.
 
@@ -695,9 +721,10 @@ def _write_memory_block(
     if outcome.over_ceiling:
         stderr.write(
             f"aelfrice hook: block still over the {limit}-token ceiling at "
-            f"{_audit_tokens_from_block(outcome.body)} tokens; user-locked "
-            "beliefs are never dropped (#379). Move long-form locks to "
-            "`aelf lock --reference` to bound them.\n"
+            f"{_audit_tokens_from_block(outcome.body)} tokens; it could not "
+            "be trimmed further without dropping a user lock, which never "
+            "happens (#379). A bounded form of a long lock does not yet "
+            "reach this render path (#1558).\n"
         )
     stdout.write(outcome.body)
     return outcome
@@ -4511,8 +4538,18 @@ def _build_session_start_subblock(
     # always-injected pool. A truncated lock is worse than a large one: cut
     # mid-clause it can assert the opposite of what the operator locked,
     # and unlike a retrieval hit there is no ranking that put it here for
-    # the model to discount. `aelf lock --reference` is the bounded form of
-    # a long lock and renders as a one-line manifest entry instead.
+    # the model to discount.
+    #
+    # #1558, stated here because this is the loop that causes it: this
+    # render has no `is_reference_lock` branch, so a lock demoted to the
+    # bounded reference tier is still emitted verbatim from here.
+    # `_split_belief_lines` and `_core_belief_line` both divert such a lock
+    # to `retrieval.lock_manifest_line`; this loop does not, which is why a
+    # single oversized reference lock can appear in full inside the
+    # `<session-start>` sub-block three lines above the `ref` pointer the
+    # per-turn pack emitted for the same id. Measured: one 30,026-character
+    # lock costs 7,700 estimated tokens on the gate-skip branch and 7,784 on
+    # the retrieval branch, identically at both tiers.
     #
     # So a store whose locks alone exceed the ceiling overruns it, and
     # `_write_memory_block` says so on stderr rather than trimming.

@@ -975,7 +975,7 @@ def test_gate_skip_branch_keeps_every_lock_and_reports_the_overrun(
     assert [b for b in lock_ids if b not in out] == []
     assert _audit_tokens_from_block(out) > _CEILING
     assert "still over the 6000-token ceiling" in err
-    assert "never dropped" in err
+    assert "never happens (#379)" in err
 
 
 # ---------------------------------------------------------------------------

@@ -148,7 +148,9 @@ def test_user_locked_content_is_never_capped() -> None:
 
     A lock cut mid-clause can assert the opposite of what the operator
     locked, and unlike a retrieval hit nothing ranked it here for the
-    model to discount. `aelf lock --reference` is the bounded form.
+    model to discount. So an oversized lock is emitted whole; the
+    bounded alternative is the reference tier, which does not yet reach
+    the UserPromptSubmit `<locked>` render (#1558).
     """
     content = "a" * 35_164
     assert _cap_belief_content(content, locked=True) == content
@@ -487,8 +489,13 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     assert out.dropped_ids == ()
     err = serr.getvalue()
     assert "still over the 6000-token ceiling" in err
-    assert "never dropped" in err
-    assert "--reference" in err
+    assert "never happens (#379)" in err
+    # The note names the open issue, not a remedy. `aelf lock --reference`
+    # was the remedy until it was measured: the `<locked>` loop of
+    # `_build_session_start_subblock` renders a reference lock verbatim, so
+    # demoting a lock moves neither of the two paths that print this note.
+    assert "#1558" in err
+    assert "--reference" not in err
 
 
 def test_write_memory_block_is_silent_on_a_block_that_fits(
