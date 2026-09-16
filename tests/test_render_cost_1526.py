@@ -512,7 +512,9 @@ def test_the_effect_is_length_dependent_and_changes_sign(
     assert st["300"]["pct"] > 0, st["300"]
 
 
-def test_the_producer_says_the_session_start_number_is_its_own_probe() -> None:
+def test_the_producer_says_the_session_start_number_is_its_own_probe(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """The one lane whose budget column is not a setting says so, in the run.
 
     Every other lane in `benchmarks/injection_budget_bytes.py` is measured at
@@ -523,24 +525,40 @@ def test_the_producer_says_the_session_start_number_is_its_own_probe() -> None:
     same legend on that row would tell a reader the lane ships a 1500-token
     budget: the misreading the CHANGELOG spent an entry removing.
 
-    Reverting `_budget_label` to the single pre-branch string leaves the rest
-    of this module and the `derived-figures` gate green, which is why the
-    label carries an assertion of its own. Both directions are asserted: a
-    label that said "passes none" on every lane would be just as wrong.
+    **Asserted on `main`'s stdout, not on `_budget_label` in isolation.**
+    The helper is not what a reader sees; its two call sites are. Reverting
+    only those call sites to the pre-branch f-strings — leaving the helper,
+    its docstring and a helper-level assert all in place — puts
+    `session_start: budget 1500 unchanged` back on stdout with the full
+    suite green. So the run is executed here and its lines are read.
+
+    `--curve` because both call sites print: the per-lane summary line and
+    the per-lane curve header. One run covers both.
+
+    Both directions are asserted: a legend that said "passes none" on every
+    lane would be just as wrong, and every lane must be found in the output
+    or a lane that silently stopped printing would pass vacuously.
     """
     m = _producer_module()
-    probed = m._budget_label("session_start", m.SESSION_START_PROBE_BUDGET)
-    assert "passes none" in probed, (
-        f"the session_start legend reads {probed!r}, which presents this "
-        "module's probe value as a budget the lane ships. It ships none "
-        "(#1546)."
-    )
+    assert m.main(["--curve"]) == 0
+    out = capsys.readouterr().out
+
     for lane in _producer_lanes():
-        if lane == "session_start":
-            continue
-        shipped = m._budget_label(lane, 1500)
-        assert "passes none" not in shipped, (lane, shipped)
-        assert "unchanged" in shipped, (lane, shipped)
+        summary = [ln for ln in out.splitlines() if ln.startswith(f"{lane}: ")]
+        header = [ln for ln in out.splitlines() if ln.startswith(f"--- {lane} (")]
+        assert len(summary) == 1, (lane, summary)
+        assert len(header) == 1, (lane, header)
+        for line in (*summary, *header):
+            if lane == "session_start":
+                assert "passes none" in line, (
+                    f"the producer printed {line!r}, which presents this "
+                    "module's probe value as a budget the lane ships. It "
+                    "ships none (#1546)."
+                )
+                assert "unchanged" not in line, line
+            else:
+                assert "passes none" not in line, (lane, line)
+                assert "unchanged" in line, (lane, line)
 
 
 def test_the_producer_reads_the_session_start_budget_off_its_own_constant(
