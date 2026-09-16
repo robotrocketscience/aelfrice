@@ -26,20 +26,6 @@ from pathlib import Path
 import pytest
 
 import aelfrice.hook as hook_mod
-from aelfrice.hook import (
-    BELIEF_CONTENT_CHAR_CAP,
-    HOOK_BLOCK_TOKEN_CEILING,
-    _audit_tokens_from_block,
-    _belief_element_line,
-    _cap_belief_content,
-    _escape_for_hook_block,
-    _format_hits,
-    _split_belief_lines,
-    _ups_belief_line_cost,
-    _write_memory_block,
-    enforce_block_ceiling,
-    resolve_block_ceiling,
-)
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
@@ -48,6 +34,23 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
 )
+
+# Bound off the one module object rather than imported a second way. Two
+# tests reach for attributes through `hook_mod`, so that name has to exist;
+# adding `from aelfrice.hook import ...` beside it imports the same module
+# twice and trips CodeQL's py/import-and-import-from.
+BELIEF_CONTENT_CHAR_CAP = hook_mod.BELIEF_CONTENT_CHAR_CAP
+HOOK_BLOCK_TOKEN_CEILING = hook_mod.HOOK_BLOCK_TOKEN_CEILING
+_audit_tokens_from_block = hook_mod._audit_tokens_from_block
+_belief_element_line = hook_mod._belief_element_line
+_cap_belief_content = hook_mod._cap_belief_content
+_escape_for_hook_block = hook_mod._escape_for_hook_block
+_format_hits = hook_mod._format_hits
+_split_belief_lines = hook_mod._split_belief_lines
+_ups_belief_line_cost = hook_mod._ups_belief_line_cost
+_write_memory_block = hook_mod._write_memory_block
+enforce_block_ceiling = hook_mod.enforce_block_ceiling
+resolve_block_ceiling = hook_mod.resolve_block_ceiling
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
 
@@ -150,6 +153,18 @@ def test_shipped_constants_are_pinned() -> None:
     """
     assert BELIEF_CONTENT_CHAR_CAP == 1200
     assert HOOK_BLOCK_TOKEN_CEILING == 6000
+    # The arithmetic the fixtures in this file are sized by, asserted
+    # rather than left in a comment: the audit estimator charges four
+    # characters per token, so `_CEILING_CHARS` is the shipped ceiling
+    # expressed in the unit the fixtures build bodies in. A test that
+    # states the relation in prose and sizes its bodies by hand cannot
+    # notice the estimator changing underneath it.
+    assert _audit_tokens_from_block("x" * _CEILING_CHARS) == (
+        HOOK_BLOCK_TOKEN_CEILING
+    )
+    assert _audit_tokens_from_block("x" * (_CEILING_CHARS + 4)) > (
+        HOOK_BLOCK_TOKEN_CEILING
+    )
 
 
 # ---------------------------------------------------------------------------
