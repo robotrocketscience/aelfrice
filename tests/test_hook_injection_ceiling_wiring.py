@@ -827,8 +827,11 @@ def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
     This fixture seeds no `<core>`, so the trim comes out of the hit lane and
     the two lists differ. Measured on it: 66 beliefs packed, 3 hit elements
     dropped, and the field reads 10,776 characters against the 12,012 a sum
-    over `hits` charges — 1,236 characters, 11.5%, of content the ceiling
-    deleted, reported by `aelf doctor` as "injection size p50/p95: N chars".
+    over `hits` charges. The difference is 1,236 characters of content the
+    ceiling deleted: 10.3% of the 12,012 retrieved, and an 11.5%
+    overstatement of the 10,776 the field should report. `aelf doctor`
+    prints it as "injection size p50/p95: N chars", so the overstatement is
+    what an operator reads.
     The overstatement lands only on the over-ceiling fires, which are the tail
     of that distribution.
 
