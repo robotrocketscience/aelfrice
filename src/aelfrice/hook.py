@@ -329,6 +329,17 @@ What "reports" means at those counts is the #379 exemption below: the
 locks are emitted whole and the overrun goes to stderr. A store trims
 only once it holds non-locked material for the ceiling to drop.
 
+**Scope: this bounds the `<aelfrice-memory>` envelope, not everything the
+fire writes to stdout.** `user_prompt_submit` writes the
+`<cadence-checkpoint>` block first, at its own `sout.write`, and that
+block carries the rebuilder's budget rather than this one. Neither bounds
+their sum, so a cadence-enabled store can exceed this number across the
+payload while the memory block is inside it. Filed as #1560 rather than
+folded in here: the shed order below deletes prompt-independent lanes
+before the prompt's own hits, and extending it over the cadence block
+would make the hook drop retrieved beliefs to make room for a rebuild
+recap — a trade nobody has measured.
+
 Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
 Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
 gate and is deliberately not attempted here.
