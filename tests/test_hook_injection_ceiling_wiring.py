@@ -323,6 +323,42 @@ def test_ups_retrieval_branch_trims_to_the_ceiling(
     assert any(b not in out for b in hit_ids)
 
 
+def test_ups_notes_a_malformed_ceiling_on_the_hooks_own_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The malformed-value note has to reach the operator's stderr.
+
+    `resolve_block_ceiling` writes it only when handed a stream, and
+    `_write_memory_block` is the one caller that holds one. Dropping the
+    `stderr=` argument there leaves the rest of this file and all of
+    `test_hook_injection_ceiling.py` green — the ceiling still falls back
+    to the default, so the trim still runs — while the note the fallback
+    exists to raise goes nowhere a user looks. A typo that silently
+    removed the only bound on the injected block is the failure
+    `resolve_block_ceiling` was written to prevent, and `-1` used to do
+    exactly that.
+
+    The store is over the ceiling too, so one fire proves the fallback
+    took effect and not merely that a string was printed.
+    """
+    monkeypatch.setenv(_CEILING_ENV, "-1")
+    db = tmp_path / "memory.db"
+    lock_ids, _, hit_ids = _seed(
+        db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400
+    )
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+
+    assert f"{_CEILING_ENV}='-1' is negative" in err
+    assert f"using the default ceiling of {_CEILING} tokens" in err
+    assert "only 0 disables it" in err
+    # The fallback applied: the block is bounded by the default, not left
+    # unbounded by a negative limit.
+    assert _audit_tokens_from_block(out) <= _CEILING
+    assert "dropped" in err
+    assert [b for b in lock_ids if b not in out] == []
+    assert any(b not in out for b in hit_ids)
+
+
 def test_ups_retrieval_branch_leaves_a_fitting_block_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
