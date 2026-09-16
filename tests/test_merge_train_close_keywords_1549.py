@@ -1123,7 +1123,10 @@ def test_the_docstring_corrects_the_earlier_ruling_rather_than_editing_it_away()
     been decided against, or why.
     """
     doc = module.__doc__ or ""
-    assert "A pull request is not a closing reference" in doc
+    assert "\n### A pull request is not a closing reference\n" in doc, (
+        "the section is cross-referenced from three bullets, so the phrase "
+        "alone survives deleting the section that argues it"
+    )
     assert "ruled the opposite" in doc
     assert "gh issue view" in doc, "the docstring must say what the wrong close costs"
     assert _KIND_ATTRIBUTE in doc
@@ -1545,7 +1548,10 @@ def test_the_docstring_rules_on_the_empty_document() -> None:
     to say that rather than leave the raise's disappearance unexplained.
     """
     doc = module.__doc__ or ""
-    assert "An empty document is an answer" in doc
+    assert "\n### An empty document is an answer\n" in doc, (
+        "the failure-policy section points at this one by name, so the phrase "
+        "alone survives deleting the section that argues it"
+    )
     assert "Close them by hand" in doc
     for construct in ("comment", "link\nreference definition", "footnote"):
         assert construct in doc, f"the docstring does not name the {construct} case"
