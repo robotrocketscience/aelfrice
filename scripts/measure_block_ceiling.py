@@ -35,12 +35,53 @@ lock, and reading it as the content length is worth 675 tokens here
 (16,526 for a lock of exactly 150 characters).
 <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
 
+`--reference-tier` answers the fourth: **does demoting a long lock to the
+bounded reference tier shrink the block?** It fires the four writes against
+one 30,026-character lock, once per tier. Estimated tokens emitted, frozen
+against reference:
+
+* first prompt, gate-skip branch, 7700 frozen and 7700 reference;
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 7700 -->
+* first prompt, retrieval branch, 7796 frozen and 7796 reference, the
+  reference arm carrying the full text *and* a `ref` pointer to it;
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
+* turn two, retrieval branch, 7683 frozen against 256 reference;
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
+* `session_start`, 7660 frozen against 233 reference.
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_frozen = 7660 -->
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_reference = 233 -->
+
+So the answer is no on a session's first prompt and yes after it, which is
+#1558 — the `<locked>` loop of `_build_session_start_subblock` has no
+`is_reference_lock` branch — and that is why `_write_memory_block`'s
+overrun note prescribes no remedy. An earlier revision of this table
+published 7,784 / 244 / 221 on the three writes that carry a manifest line,
+from a fixture nothing recorded. Those three are a function of the lock's
+*content*, not only its length, because `lock_manifest_line` embeds
+`_lock_topic` of it; the fixture is a module constant here for that reason.
+
+`--exploration` answers the fifth: **does the #1279 slot change the block
+the ceiling emits?** It fires one 60-lock / 20-core / 12-hit store twice,
+with the slot on and off, and compares the bytes. At the shipped ceiling
+they are identical at 5923 estimated tokens — the drawn belief is appended
+to the tail of the pack and the per-turn lane is shed tail-first, so the
+draw is the first element deleted, and 0 of the drawn ids are in the
+emitted block — while `exploration_events`, written before the ceiling
+runs, still records one draw and one displacement.
+<!-- derived: scripts/measure_block_ceiling.py#exploration_slot_block_tokens = 5923 -->
+<!-- derived: scripts/measure_block_ceiling.py#exploration_slot_drawn_emitted = 0 -->
+
 Usage:
     uv run python scripts/measure_block_ceiling.py
     uv run python scripts/measure_block_ceiling.py --lock-chars 150 200 700
     uv run python scripts/measure_block_ceiling.py --max-locks 400 --json
     uv run python scripts/measure_block_ceiling.py --lanes
     uv run python scripts/measure_block_ceiling.py --gate-skip
+    uv run python scripts/measure_block_ceiling.py --reference-tier
+    uv run python scripts/measure_block_ceiling.py --exploration
     uv run python scripts/measure_block_ceiling.py --dry-run
     uv run python scripts/measure_block_ceiling.py --emit-figures
 
@@ -51,11 +92,15 @@ sweep and hard-fails when a published crossing no longer matches it.
 Exits non-zero if no crossing is found below `--max-locks`, which means
 either the ceiling moved or the fixture stopped growing the block. Under
 `--lanes` it exits non-zero if the ceiling dropped nothing, which would
-make the comparison vacuous.
+make the comparison vacuous; under `--reference-tier` if the two tiers
+agree on every write, which would mean the tier is inert everywhere rather
+than only on the first prompt; and under `--exploration` if the slot never
+fired or the ceiling dropped nothing.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -71,11 +116,14 @@ if str(REPO_ROOT / "src") not in sys.path:
 from aelfrice.hook import (  # noqa: E402
     HOOK_BLOCK_TOKEN_CEILING,
     _audit_tokens_from_block,
+    session_start,
     user_prompt_submit,
 )
 from aelfrice.models import (  # noqa: E402
     BELIEF_FACTUAL,
     LOCK_NONE,
+    LOCK_TIER_FROZEN,
+    LOCK_TIER_REFERENCE,
     LOCK_USER,
     Belief,
 )
@@ -268,6 +316,281 @@ def fire_lanes(ceiling: int | None) -> dict[str, object]:
     }
 
 
+REF_LOCK_CHARS = 30_026
+REF_LOCK_CONTENT = "lockword " + "q" * (REF_LOCK_CHARS - len("lockword "))
+REF_LOCK_ID = "L" + "0" * 31
+# A second prompt of the same session. Any prompt over `_MIN_PROMPT_LEN`
+# does; it is spelled out so the turn-two arm is reproducible.
+REF_TURN_TWO_PROMPT = "turn two: tell me more about the locked material"
+REF_WRITES = (
+    "gate_skip_first", "retrieval_first", "turn_two", "session_start",
+)
+
+
+def _reference_lock_store(tier: str) -> tuple[Path, Path]:
+    """A store holding exactly one 30,026-character lock at `tier`."""
+    work = Path(tempfile.mkdtemp(prefix="aelf-reflock-"))
+    db = work / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            Belief(
+                id=REF_LOCK_ID,
+                content=REF_LOCK_CONTENT,
+                content_hash="h_reflock",
+                alpha=1.0,
+                beta=1.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_USER,
+                lock_tier=tier,
+                locked_at="2026-04-26T00:00:00Z",
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+            )
+        )
+    finally:
+        store.close()
+    return work, db
+
+
+def _fire_for_reference(
+    work: Path, db: Path, *, prompt: str | None, session_id: str,
+) -> str:
+    """One hook fire against `db` with the ceiling disabled.
+
+    `prompt=None` fires `session_start` instead of `user_prompt_submit`.
+    The ceiling is off for the same reason `gate_skip_tokens` turns it
+    off: what is being measured is what the render path produces, and a
+    lock-only store is exempt from the drop anyway, so the two arms
+    would differ only in the stderr note.
+    """
+    os.environ["AELFRICE_DB"] = str(db)
+    previous = os.environ.get("AELFRICE_HOOK_BLOCK_CEILING")
+    os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = "0"
+    try:
+        sout, serr = io.StringIO(), io.StringIO()
+        payload: dict[str, object] = {
+            "session_id": session_id,
+            "transcript_path": "/dev/null",
+            "cwd": str(work),
+        }
+        if prompt is None:
+            payload["hook_event_name"] = "SessionStart"
+            rc = session_start(
+                stdin=io.StringIO(json.dumps(payload)),
+                stdout=sout,
+                stderr=serr,
+            )
+        else:
+            payload["hook_event_name"] = "UserPromptSubmit"
+            payload["prompt"] = prompt
+            rc = user_prompt_submit(
+                stdin=io.StringIO(json.dumps(payload)),
+                stdout=sout,
+                stderr=serr,
+            )
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return sout.getvalue()
+    finally:
+        if previous is None:
+            os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        else:
+            os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = previous
+
+
+def reference_tier_table() -> dict[str, dict[str, int]]:
+    """Both tiers, with the vacuity guard the figures depend on.
+
+    Equal columns would mean the reference tier is inert on every write,
+    not that #1558 scopes it to the first prompt — and every figure below
+    would still be publishable. The guard is here rather than in the CLI
+    arm so `--emit-figures` inherits it.
+    """
+    rows = {
+        tier: reference_tier(tier)
+        for tier in (LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE)
+    }
+    if all(
+        rows[LOCK_TIER_FROZEN][w] == rows[LOCK_TIER_REFERENCE][w]
+        for w in REF_WRITES
+    ):
+        raise SystemExit(
+            "the two lock tiers agree on every write: the table would be "
+            "vacuous"
+        )
+    return rows
+
+
+def reference_tier(tier: str) -> dict[str, int]:
+    """Estimated tokens of each write, for one lock demoted to `tier`.
+
+    The #1558 render gap, measured: `_build_session_start_subblock`'s
+    `<locked>` loop renders every lock verbatim with no
+    `is_reference_lock` branch, unlike `_split_belief_lines` and
+    `_core_belief_line`, which both divert a reference lock to
+    `retrieval.lock_manifest_line`. So the bounded tier is honoured
+    everywhere except the envelope that embeds the session-start
+    sub-block — which is a session's first prompt, and a first prompt is
+    when a lock-only store overruns. Running this for both tiers is what
+    makes the pair a measurement rather than an assertion: the two are
+    equal on the first prompt and differ by an order of magnitude after
+    it.
+
+    **The fixture is the figure.** These numbers are a function of the
+    lock's content, not just its length: on the reference arm the block
+    carries `lock_manifest_line`, whose topic is `_lock_topic` of that
+    content, capped at 80 characters. An earlier revision of this table
+    published 7,784 / 244 / 221 on the three manifest-bearing writes —
+    48 characters, 12 estimated tokens, below what the fixture above
+    produces — from a store nothing recorded. That is why the fixture is
+    a module constant and the table has a producer.
+    """
+    out: dict[str, int] = {}
+    work, db = _reference_lock_store(tier)
+    out["gate_skip_first"] = _audit_tokens_from_block(
+        _fire_for_reference(
+            work, db, prompt=GATED_PROMPT, session_id=f"gs-{tier}",
+        )
+    )
+    work, db = _reference_lock_store(tier)
+    out["retrieval_first"] = _audit_tokens_from_block(
+        _fire_for_reference(work, db, prompt=PROMPT, session_id=f"r1-{tier}")
+    )
+    # Same store and same session id, so the second fire is turn two and
+    # the `<session-start>` sub-block is gone from the envelope.
+    out["turn_two"] = _audit_tokens_from_block(
+        _fire_for_reference(
+            work, db, prompt=REF_TURN_TWO_PROMPT, session_id=f"r1-{tier}",
+        )
+    )
+    work, db = _reference_lock_store(tier)
+    out["session_start"] = _audit_tokens_from_block(
+        _fire_for_reference(work, db, prompt=None, session_id=f"ss-{tier}")
+    )
+    return out
+
+
+def exploration_slot() -> dict[str, object]:
+    """Does the #1279 slot change the block the ceiling emits?
+
+    The drawn belief is appended to the tail of the pack and the ceiling
+    sheds the per-turn lane tail-first, so on an over-ceiling block the
+    draw is the first element deleted: the `exploration_events` row —
+    written upstream, before the ceiling runs — can name a belief the
+    model never saw. This fires one store twice, with the slot on and
+    off, and compares the emitted bytes.
+
+    Returns the emitted token count, whether the two blocks are
+    byte-identical, and how many of the ledger's drawn and displaced ids
+    reached the block.
+
+    **The vacuity guard is in here, not in the caller.** A run in which
+    the slot never fired, or in which the ceiling dropped nothing,
+    satisfies `drawn_emitted == 0` and reports the same token count as
+    the shipped fixture — so a `--emit-figures` run that had lost the
+    slot would publish figures identical to a run that had it. Guarding
+    only the `--exploration` CLI arm left exactly that hole: running
+    both arms with the slot off passed the derived-figures gate.
+    """
+    n_locks, n_core, n_hits = 60, 20, 12
+    slot_env = (
+        "AELFRICE_EXPLORATION",
+        "AELFRICE_EXPLORATION_CADENCE",
+        "AELFRICE_EXPLORATION_SLOTS",
+    )
+
+    def build() -> tuple[Path, Path]:
+        work = Path(tempfile.mkdtemp(prefix="aelf-explore-"))
+        db = work / "memory.db"
+        store = MemoryStore(str(db))
+        try:
+            for i in range(n_locks):
+                store.insert_belief(_lock(i, 150))
+            for i in range(n_core):
+                store.insert_belief(
+                    _belief(
+                        f"C{i:031d}",
+                        "coreword unrelated material " + "w" * 200,
+                        alpha=4.0,
+                    )
+                )
+            for i in range(n_hits):
+                store.insert_belief(
+                    _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
+                )
+        finally:
+            store.close()
+        return work, db
+
+    def run(work: Path, db: Path, *, slot_on: bool) -> tuple[str, str]:
+        os.environ["AELFRICE_DB"] = str(db)
+        os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        for name in slot_env:
+            os.environ.pop(name, None)
+        if slot_on:
+            for name in slot_env:
+                os.environ[name] = "1"
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps(
+            {
+                "session_id": "explore",
+                "transcript_path": "/dev/null",
+                "cwd": str(work),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": LANE_PROMPT,
+            }
+        )
+        rc = user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=sout, stderr=serr
+        )
+        for name in slot_env:
+            os.environ.pop(name, None)
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return sout.getvalue(), serr.getvalue()
+
+    work_off, db_off = build()
+    off, _ = run(work_off, db_off, slot_on=False)
+    work_on, db_on = build()
+    on, err_on = run(work_on, db_on, slot_on=True)
+
+    rendered = set(_ELEMENT_ID_RE.findall(on))
+    store = MemoryStore(str(db_on))
+    try:
+        rows = [
+            (json.loads(r["drawn_ids"]), json.loads(r["displaced_ids"]))
+            for r in store._conn.execute(
+                "SELECT drawn_ids, displaced_ids FROM exploration_events"
+            )
+        ]
+    finally:
+        store.close()
+    drawn = [bid for row in rows for bid in row[0]]
+    displaced = [bid for row in rows for bid in row[1]]
+    dropped_match = re.search(r"dropped (\d+) belief element", err_on)
+    n_dropped = int(dropped_match.group(1)) if dropped_match else 0
+    if not rows:
+        raise SystemExit(
+            "exploration slot did not fire: the comparison would be vacuous"
+        )
+    if not n_dropped:
+        raise SystemExit(
+            "the ceiling dropped nothing: the comparison would be vacuous"
+        )
+    return {
+        "tokens": _audit_tokens_from_block(on),
+        "identical": on == off,
+        "sha256": hashlib.sha256(on.encode()).hexdigest(),
+        "ledger_rows": len(rows),
+        "drawn": len(drawn),
+        "drawn_emitted": sum(1 for b in drawn if b in rendered),
+        "displaced": len(displaced),
+        "displaced_emitted": sum(1 for b in displaced if b in rendered),
+        "dropped": n_dropped,
+    }
+
+
 def crossing(chars: int, max_locks: int, step: int) -> dict[str, object]:
     """First lock count at which the ceiling reports a trim or an overrun."""
     for n in range(step, max_locks + 1, step):
@@ -298,6 +621,15 @@ def main(argv: list[str] | None = None) -> int:
         help="print the untrimmed gate-skip block size at 300 locks",
     )
     ap.add_argument(
+        "--reference-tier", action="store_true",
+        help="print each write's size for one 30,026-character lock, "
+             "frozen tier against reference tier",
+    )
+    ap.add_argument(
+        "--exploration", action="store_true",
+        help="compare the emitted block with the #1279 slot on and off",
+    )
+    ap.add_argument(
         "--dry-run", action="store_true",
         help="print what would be swept and exit 0 without firing the hook",
     )
@@ -320,10 +652,30 @@ def main(argv: list[str] | None = None) -> int:
             for chars in (150, 200)
         }
         figures["gate_skip_tokens_300_locks_150"] = gate_skip_tokens(300, 150)
+        for tier, writes in reference_tier_table().items():
+            for write, tokens in writes.items():
+                figures[f"ref_lock_30026_{write}_{tier}"] = tokens
+        slot = exploration_slot()
+        figures["exploration_slot_block_tokens"] = slot["tokens"]
+        figures["exploration_slot_drawn_emitted"] = slot["drawn_emitted"]
         print(json.dumps(figures))
         return 0
 
     if args.dry_run:
+        if args.reference_tier:
+            print(
+                "would fire four writes against a one-lock store of "
+                f"{REF_LOCK_CHARS} characters, once per lock tier, with the "
+                "ceiling disabled"
+            )
+            return 0
+        if args.exploration:
+            print(
+                "would fire one 60-lock / 20-core / 12-hit store twice at "
+                f"{HOOK_BLOCK_TOKEN_CEILING} tokens, with the #1279 "
+                "exploration slot on and off"
+            )
+            return 0
         if args.gate_skip:
             print(
                 "would fire one 300-lock store of 159-character locks at the "
@@ -341,6 +693,45 @@ def main(argv: list[str] | None = None) -> int:
             f"step {args.step} for lock lengths {args.lock_chars}, against "
             f"a ceiling of {HOOK_BLOCK_TOKEN_CEILING} tokens"
         )
+        return 0
+
+    if args.reference_tier:
+        rows = reference_tier_table()
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print(
+                f"one {REF_LOCK_CHARS}-character user lock, estimated tokens "
+                "emitted per write"
+            )
+            print(f"  {'write':<18}{'frozen':>10}{'reference':>12}")
+            for write in REF_WRITES:
+                print(
+                    f"  {write:<18}{rows[LOCK_TIER_FROZEN][write]:>10}"
+                    f"{rows[LOCK_TIER_REFERENCE][write]:>12}"
+                )
+        # Vacuity is refused inside `reference_tier_table`.
+        return 0
+
+    if args.exploration:
+        slot = exploration_slot()
+        if args.json:
+            print(json.dumps(slot, indent=2))
+        else:
+            print(
+                f"  block: {slot['tokens']} tokens, identical with the slot "
+                f"on and off: {slot['identical']}"
+            )
+            print(f"  sha256: {slot['sha256']}")
+            print(
+                f"  ledger: {slot['ledger_rows']} row(s), "
+                f"{slot['drawn']} drawn ({slot['drawn_emitted']} emitted), "
+                f"{slot['displaced']} displaced "
+                f"({slot['displaced_emitted']} emitted)"
+            )
+            print(f"  ceiling dropped: {slot['dropped']} element(s)")
+        # Vacuity is refused inside `exploration_slot`, so reaching here
+        # means the slot fired and the ceiling acted.
         return 0
 
     if args.gate_skip:
