@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.hook import (
+    AUDIT_HOOK_SESSION_START,
     AUDIT_HOOK_USER_PROMPT_SUBMIT,
     CLOSE_TAG,
     OPEN_TAG,
@@ -257,6 +258,43 @@ def _fire_session_start(
     return sout.getvalue(), serr.getvalue()
 
 
+def _only_audit_row(db: Path, hook: str) -> dict[str, object]:
+    """The single audit row this fire wrote for `hook`."""
+    rows = [
+        r for r in read_hook_audit(_audit_path_for_db(db))
+        if r.get("hook") == hook
+    ]
+    assert len(rows) == 1, [r.get("hook") for r in rows]
+    return rows[0]
+
+
+def _assert_audit_row_is_the_emitted_block(
+    db: Path, hook: str, out: str
+) -> None:
+    """The eighth accounting surface: `rendered_block` and `tokens`.
+
+    Seven surfaces charge the emitted set — `beliefs[]`, `n_beliefs`,
+    `injection_events`, the session ring, `belief_touches`, the #1382
+    ledger, the `feedback_history` exposure row and `total_chars`. The
+    audit record's own two fields were not among them, and they are the
+    two `aelf tail` prints beside the belief list. Each emit site keeps
+    the trimmed body only by assigning `_write_memory_block`'s outcome
+    back over `body`, and `rendered_block=body` is that assignment's
+    ONLY consumer at all three sites — so deleting it moved nothing
+    except this record, and left the whole suite byte-identical while
+    the row stored the pre-trim block and derived `tokens` from it.
+    That is verbatim the over-report #1551 is filed on: the audit
+    records the overrun.
+
+    The pair is asserted rather than the token count alone, because
+    `tokens` is `len(block) // 4` rounded up and a 1-3 character
+    difference does not move it.
+    """
+    row = _only_audit_row(db, hook)
+    assert row["rendered_block"] == out
+    assert row["tokens"] == _audit_tokens_from_block(out)
+
+
 # ---------------------------------------------------------------------------
 # user_prompt_submit — the retrieval branch
 # ---------------------------------------------------------------------------
@@ -420,6 +458,30 @@ def test_ups_audit_record_omits_the_beliefs_the_ceiling_dropped(
     assert audited, ups[0]
     assert all(bid in out for bid in audited)
     assert ups[0]["n_beliefs"] == len(audited)
+
+
+def test_ups_audit_row_records_the_block_the_retrieval_branch_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rendered_block` and `tokens` are the emitted block, not the packed one.
+
+    The sibling above pins `beliefs[]` and `n_beliefs` to the emitted
+    set. These two fields sat in the same record describing the packed
+    one, so `aelf tail` printed a token count over a block the reader
+    could not find beside the belief list under it. Measured on this
+    fixture with the assignment removed: 25,129 characters and 6,283
+    tokens recorded against 23,689 and 5,923 emitted.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+    # Non-vacuity: without a trim the packed and emitted blocks are the
+    # same string and the assertion holds on either arm.
+    assert "dropped" in err, err
+    _assert_audit_row_is_the_emitted_block(
+        db, AUDIT_HOOK_USER_PROMPT_SUBMIT, out
+    )
 
 
 def test_ups_never_emits_a_seen_pointer_to_a_dropped_element(
@@ -996,6 +1058,29 @@ def test_gate_skip_branch_trims_to_the_ceiling(
     assert any(b not in out for b in core_ids)
 
 
+def test_gate_skip_audit_row_records_the_block_it_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same pair on the branch where the over-report is largest.
+
+    This branch carries no `beliefs[]` — it writes `n_beliefs=0` and an
+    empty list, because retrieval never ran — so `rendered_block` and
+    `tokens` are the only description of it the audit log holds, and
+    nothing else in the record could contradict a stale one. Measured on
+    this fixture with the assignment removed: 29,204 characters and
+    7,301 tokens recorded against 23,984 and 5,996 emitted, a 21.8%
+    over-report.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=100, lock_chars=150, n_core=30, core_chars=200)
+    out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)
+    assert "dropped" in err, err
+    _assert_audit_row_is_the_emitted_block(
+        db, AUDIT_HOOK_USER_PROMPT_SUBMIT, out
+    )
+
+
 def test_gate_skip_branch_leaves_a_fitting_block_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1075,6 +1160,45 @@ def test_session_start_keeps_every_lock_and_reports_the_overrun(
     assert [b for b in lock_ids if b not in out] == []
     assert _audit_tokens_from_block(out) > _CEILING
     assert "still over the 6000-token ceiling" in err
+
+
+def test_session_start_audit_row_records_the_block_it_emitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same pair at the third site, and it cannot be falsified here.
+
+    Said plainly, because a reader is entitled to know which of these
+    three is a guard and which is a statement: **no fixture can red this
+    one.** The two siblings kill the removal of `body = ….body` at their
+    own emit site; this one cannot, because the trim it would undo is
+    the identity here. The baseline comes from `retrieve(store, "", …)`,
+    every relevance lane in `retrieve_with_tiers` is gated on
+    `query.strip()`, so L0 is the only tier that contributes and every
+    element it renders carries `lock="user"` — which
+    `enforce_block_ceiling` filters out of its droppable set before the
+    loop runs. `outcome.body is body` on every input this site can
+    produce.
+
+    It is asserted anyway, and it is not a test that proves nothing: it
+    is the only test in the suite that reds when this site's
+    `rendered_block=body` stops naming the stream at all — replacing it
+    with `""` fails here and nowhere else. What it pins is that the
+    `<aelfrice-baseline>` envelope is the entire stdout of a non-compact
+    SessionStart, the post-compaction rebuild block that
+    `source == "compact"` appends after it being the one thing that
+    would break the equality. And a lane that ever gains a droppable
+    element — a `<core>` section in the baseline, a non-lock tier —
+    inherits a failing test rather than a silent over-report.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    _seed(db, n_locks=130, lock_chars=200)
+    out, err = _fire_session_start(tmp_path, db, monkeypatch)
+    # The block is over the ceiling, so the trim ran and declined to act:
+    # the one state in which a pre-trim body could differ, if this lane
+    # had anything droppable in it.
+    assert "still over the 6000-token ceiling" in err, err
+    _assert_audit_row_is_the_emitted_block(db, AUDIT_HOOK_SESSION_START, out)
 
 
 def test_session_start_leaves_a_fitting_baseline_alone(
