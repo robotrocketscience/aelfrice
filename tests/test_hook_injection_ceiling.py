@@ -32,6 +32,7 @@ from aelfrice.hook import (
     _audit_tokens_from_block,
     _belief_element_line,
     _cap_belief_content,
+    _escape_for_hook_block,
     _format_hits,
     _split_belief_lines,
     _ups_belief_line_cost,
@@ -265,6 +266,35 @@ def test_locks_are_kept_and_unlocked_elements_around_them_are_dropped() -> None:
     survivors = _ids(out.body)
     assert set(locks).issubset(survivors)
     assert set(out.dropped_ids).issubset(free)
+
+
+def test_a_lock_attribute_forged_in_content_does_not_stop_the_drop() -> None:
+    """Undroppability is read off the attributes, not off the element.
+
+    `_escape_for_hook_block` entity-escapes angle brackets and nothing
+    else, so a belief whose stored content holds the literal `lock="user"`
+    renders that literal intact inside its own element. Testing the
+    attribute against the whole match rather than the `attrs` group would
+    let stored content declare itself undroppable, and no other fixture in
+    this file can see the difference: every one of them puts the attribute
+    only where the renderer writes it.
+
+    The genuine lock in the same body is the other half of the assertion.
+    A dropper that stopped reading the attribute at all would shed the
+    forger too, and would pass the first half on its own.
+    """
+    forged = _escape_for_hook_block('lock="user" ' + "x" * (_ELEMENT_CHARS * 4))
+    assert 'lock="user"' in forged
+    forger, real = "F" * 16, "L" * 16
+    body = _block(
+        _element(real, _ELEMENT_CHARS * 4, locked=True),
+        f'<belief id="{forger}" lock="none">{forged}</belief>\n',
+    )
+    assert _audit_tokens_from_block(body) > 6000
+    out = enforce_block_ceiling(body, 6000)
+    assert out.dropped_ids == (forger,)
+    assert _ids(out.body) == [real]
+    assert out.over_ceiling is False
 
 
 def test_over_ceiling_survives_the_trim_when_only_locks_remain() -> None:
