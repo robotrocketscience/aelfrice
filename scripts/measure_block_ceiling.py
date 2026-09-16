@@ -4,9 +4,15 @@
 `HOOK_BLOCK_TOKEN_CEILING`'s docstring used to say it was "set well above
 the sum of the per-lane budgets so it does not fire on a healthy store".
 That was not measured and is not true: the first prompt of a session puts
-the `<locked>` sub-block and the per-turn hits in one envelope, and 68
-ordinary locks are enough. This script is how that number is produced, so
-it can be re-derived rather than taken on trust when either constant moves.
+the `<locked>` sub-block and the per-turn hits in one envelope, and 66
+ordinary locks of 150 characters are enough, or 58 of 200. This script is
+how those numbers are produced, so they can be re-derived rather than taken
+on trust when either constant moves. This docstring published 68 while the
+script's own default run printed 66, which is what the constant's docstring
+and the CHANGELOG entry both said; `--emit-figures` lets CI re-run the sweep
+so the pair cannot drift again.
+<!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_150 = 66 -->
+<!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_200 = 58 -->
 
 It drives the real `user_prompt_submit` hook against a temporary store of
 N identical user locks, walking N upwards until the ceiling first reports
@@ -25,6 +31,11 @@ Usage:
     uv run python scripts/measure_block_ceiling.py --max-locks 400 --json
     uv run python scripts/measure_block_ceiling.py --lanes
     uv run python scripts/measure_block_ceiling.py --dry-run
+    uv run python scripts/measure_block_ceiling.py --emit-figures
+
+`--emit-figures` is the protocol `scripts/check_derived_figures.py` speaks: a
+JSON object of key -> value on stdout and nothing else, so CI re-runs this
+sweep and hard-fails when a published crossing no longer matches it.
 
 Exits non-zero if no crossing is found below `--max-locks`, which means
 either the ceiling moved or the fixture stopped growing the block. Under
@@ -219,7 +230,25 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true",
         help="print what would be swept and exit 0 without firing the hook",
     )
+    ap.add_argument(
+        "--emit-figures", action="store_true",
+        help="print the published crossings as JSON for "
+             "scripts/check_derived_figures.py",
+    )
     args = ap.parse_args(argv)
+
+    if args.emit_figures:
+        # The two lengths the docstring, `HOOK_BLOCK_TOKEN_CEILING` and the
+        # CHANGELOG entry all publish. Fixed here rather than read off
+        # `--lock-chars`, because the key names are what the markers cite:
+        # a sweep the caller re-pointed would emit keys nothing published.
+        print(json.dumps({
+            f"first_trim_locks_{chars}": crossing(
+                chars, args.max_locks, args.step,
+            )["locks"]
+            for chars in (150, 200)
+        }))
+        return 0
 
     if args.dry_run:
         if args.lanes:

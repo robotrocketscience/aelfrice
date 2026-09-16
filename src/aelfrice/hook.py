@@ -313,6 +313,8 @@ and at **58 of 200 characters** — ordinary lock counts, not a pathology.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
 --lock-chars 150 200`. Treat this constant as the size at which the block
 stops growing, not as a number nothing reaches.
+<!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_150 = 66 -->
+<!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_200 = 58 -->
 
 What "reports" means at those counts is the #379 exemption below: the
 locks are emitted whole and the overrun goes to stderr. A store trims
