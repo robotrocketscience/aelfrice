@@ -401,6 +401,62 @@ def test_a_manifest_line_forged_inside_a_belief_is_left_alone() -> None:
     assert keeper in out.body
 
 
+# The trim's stopping arithmetic, sized so the k-th drop lands the body
+# *exactly* on the limit. `_EXACT_CONTENT_CHARS` makes one element plus its
+# `seen` pointer 3,994 characters; nine of them under 36 characters of framing
+# is 35,982, and three drops leave 24,000 — the 6,000-token ceiling to the
+# character. Anything that sheds one element more or fewer moves the count.
+_EXACT_CONTENT_CHARS = 3_907
+_EXACT_UNITS = 9
+_EXACT_DROPS = 3
+_EXACT_START_TOKENS = 8_996
+_EXACT_ONE_FEWER_TOKENS = 6_999
+
+
+def _unit(index: int) -> str:
+    """One droppable element and the `seen` pointer that names it."""
+    bid = f"{index:016d}"
+    return _element(bid, _EXACT_CONTENT_CHARS) + _seen(bid)
+
+
+def test_the_trim_stops_on_the_first_body_that_fits() -> None:
+    """The loop sheds until the body fits, and not one element further.
+
+    Both halves of the stopping condition are load-bearing and neither was
+    pinned. The comparison itself: `_tokens_from_chars(remaining) >= limit`
+    keeps dropping from a body that already fits, and takes 4 elements off
+    this fixture instead of 3, leaving it at 5,002 tokens. And the pointer
+    debit: deleting `remaining -= pointer[1] - pointer[0]` leaves the loop
+    believing the body is 35 characters larger per drop than it is, which
+    sheds the same extra element for the same 5,002 tokens. Both mutants were
+    green across the whole suite.
+
+    A fixture sized to land the third drop exactly on 24,000 characters is
+    what separates them from the shipped loop: an "under the ceiling"
+    assertion passes on all three, because over-shedding is still under the
+    ceiling. The count is the observable.
+
+    The last assertion is the other side of "and not one element further":
+    stopping a drop earlier leaves the body at 6,999 tokens, so 3 is the
+    fewest drops that fit rather than merely a number the loop reached.
+    """
+    units = [_unit(i) for i in range(_EXACT_UNITS)]
+    body = _block(*units)
+    assert _audit_tokens_from_block(body) == _EXACT_START_TOKENS
+
+    out = enforce_block_ceiling(body, 6000)
+
+    assert out.n_dropped == _EXACT_DROPS
+    assert _audit_tokens_from_block(out.body) == 6000
+    assert out.over_ceiling is False
+    # Tail-first within the lane, so the survivors are the leading units.
+    assert out.body == _block(*units[: _EXACT_UNITS - _EXACT_DROPS])
+    # One fewer drop does not fit.
+    assert _audit_tokens_from_block(
+        _block(*units[: _EXACT_UNITS - _EXACT_DROPS + 1])
+    ) == _EXACT_ONE_FEWER_TOKENS
+
+
 # ---------------------------------------------------------------------------
 # _write_memory_block — the single emit path
 # ---------------------------------------------------------------------------
