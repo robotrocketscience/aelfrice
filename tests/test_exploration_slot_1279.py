@@ -240,6 +240,13 @@ _OVER_CAP_CHARS = 35_012
 # in these two tests.
 _CAPPED_PRICE = 314
 _UNCAPPED_PRICE = 8_766
+# The rendered width of one tail hit below: 400 characters of padding, the
+# `ranked hit N ` prefix and the `<belief id="..." lock="...">` wrapper.
+# Pinned because the docstring that uses it publishes the width and the
+# 113-token price that follows from it, and because `_CAPPED_PRICE` does not
+# pin the wrapper — it is a 4-character-wide bucket, so a wrapper that lost
+# three characters left that constant true and this figure wrong.
+_TAIL_ELEMENT_CHARS = 450
 
 
 def _long(bid: str) -> Belief:
@@ -274,12 +281,16 @@ def test_a_drawn_belief_is_priced_at_the_element_the_lane_renders(
     factor of 27 — so a drawn belief over the cap demanded thousands of tokens
     of displacement it would never occupy, and the slot skipped the turn.
 
-    The tail is three 400-character hits, which pay 333 tokens between them:
-    enough for the 314 the lane actually spends and nowhere near the 8,766 the
-    old price asked. So the two arms of that mutation differ in the outcome,
-    not merely in an internal number.
+    The tail is three hits of 400 padding characters each. 400 is the only
+    length `_mk` is handed; what the lane charges is the rendered element,
+    which is `_TAIL_ELEMENT_CHARS` = 450 characters — the padding, the
+    `ranked hit N ` prefix and the `<belief id="..." lock="...">` wrapper —
+    for 113 tokens each and 339 between them. That is enough for the 314
+    the lane actually spends and nowhere near the 8,766 the old price
+    asked, so the two arms of that mutation differ in the outcome, not
+    merely in an internal number.
     """
-    from aelfrice.hook import _ups_belief_line_cost
+    from aelfrice.hook import _belief_element_line, _ups_belief_line_cost
     from aelfrice.retrieval import _belief_tokens
 
     pool_ids = _seed_long_pool(store)
@@ -290,6 +301,7 @@ def test_a_drawn_belief_is_priced_at_the_element_the_lane_renders(
     _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "z" * 400) for i in range(3)]
+    assert len(_belief_element_line(hits[0])) == _TAIL_ELEMENT_CHARS
     # The tail pays for the capped price and not for the uncapped one.
     tail = sum(_ups_belief_line_cost(b) for b in hits)
     assert _CAPPED_PRICE <= tail < _UNCAPPED_PRICE, tail
