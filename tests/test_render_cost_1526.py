@@ -464,6 +464,26 @@ def test_the_corrected_accounting_shrinks_what_each_budget_buys(
     ), {lane: fig[f"{lane}_pct"] for lane in _producer_lanes()}
 
 
+# The `<core>` crossing window this branch publishes, as content characters.
+#
+# Inside it, one `<core>` line is charged at or below
+# `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` in the pre-#1526 currency and above
+# it as shipped, so the two accountings disagree about whether the section can
+# hold a line. The window is what holds the ninth `LENGTH_GRID` entry in place,
+# and both edges are asserted rather than left to a grid length: no grid length
+# sits on either edge, so an edge that moves is invisible to every assertion
+# written over `LENGTH_GRID`. That is how the newline charge below shipped as a
+# revertible change — the whole of it could be undone and the suite stayed
+# green, because 5,950 is 16 characters inside the window and the edge it moved
+# is at the rim.
+#
+# Re-derive with `_core_pack_costs_at`: the lower edge is the first length
+# whose shipped charge exceeds the budget, the upper edge the last whose
+# pre-#1526 charge does not.
+_CORE_CROSSING_LOW = 5934
+_CORE_CROSSING_HIGH = 6003
+
+
 def test_the_producer_names_which_budget_ended_every_pack(
     producer_figures: dict[str, object],
 ) -> None:
@@ -537,6 +557,17 @@ def test_the_producer_names_which_budget_ended_every_pack(
     (1,483 against 1,500, the shipped charge not yet over) or at 6,004 (1,501
     against 1,518, the pre-#1526 charge already over) each give
     `1 failed, 48 passed` here.
+
+    The window's own edges are asserted too, at `_CORE_CROSSING_LOW` and
+    `_CORE_CROSSING_HIGH`. The condition above only asks that a grid length
+    fall *inside* the window; 5,950 is 16 characters in, so an edge could move
+    a character and no assertion written over `LENGTH_GRID` would notice. That
+    is exactly what happened: the newline `"\\n".join` puts after a `<core>`
+    line — the character `_core_belief_cost` charges, and the one
+    `_core_pack_costs_at` was corrected to charge so that the enforced lower
+    edge equalled the published 5,934 — could be dropped again with the suite
+    green. The edges are now read directly: 5,933 and 6,004 must fall outside
+    the window and 5,934 and 6,003 inside it.
 
     Both of those assertions are arithmetic. They re-derive the two charges
     from `LENGTH_GRID` and the budget scalar and never read the curve the
@@ -631,6 +662,24 @@ def test_the_producer_names_which_budget_ended_every_pack(
         "as shipped, so the two accountings agree at every length and the "
         f"per-arm half of the exemption above decides nothing: {costs}"
     )
+    # ...and the window that grid length has to fall inside is the window this
+    # branch publishes. Asserted at its own edges, because no grid length
+    # reaches either one: an edge that moves passes every assertion written
+    # over `LENGTH_GRID` while the published 5,934 stops being true.
+    for chars, inside in (
+        (_CORE_CROSSING_LOW - 1, False),
+        (_CORE_CROSSING_LOW, True),
+        (_CORE_CROSSING_HIGH, True),
+        (_CORE_CROSSING_HIGH + 1, False),
+    ):
+        legacy, shipped = _core_pack_costs_at(chars)
+        assert (legacy <= fig["core_budget"] < shipped) is inside, (
+            f"at {chars} content characters one <core> line is charged "
+            f"{legacy} in the pre-#1526 currency and {shipped} as shipped "
+            f"against a budget of {fig['core_budget']}, so the published "
+            f"crossing window {_CORE_CROSSING_LOW}-{_CORE_CROSSING_HIGH} is "
+            "not the window the two charges enforce"
+        )
     core_curve = fig["core_curve"]
     crossing = [
         int(c)
@@ -1257,6 +1306,15 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     `test_the_producer_names_which_budget_ended_every_pack` blesses — reported
     `1 failed, 48 passed` here on `assert 1500 > 1500` before the newline was
     charged.
+
+    That edge is asserted here rather than left to `smallest_empty`. The
+    smallest emptied grid length is 5,950, where the line is charged 1,505
+    with the newline and 1,504 without it — both over the 1,500-token budget,
+    so the whole of the newline charge could be reverted and this guard stayed
+    green. `_CORE_CROSSING_LOW` is the published edge and no grid length
+    reaches it, so the two cells either side of it are charged directly: one
+    line at 5,934 content characters must cost more than `budget` and one at
+    5,933 must not.
     """
     fig = producer_figures
     curve = fig["core_curve"]
@@ -1264,10 +1322,34 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     budget = fig["core_budget"]
     emptied = [c for c in lengths if curve[str(c)]["after"] == 0]
     assert emptied, {c: curve[str(c)]["after"] for c in lengths}
-    # A cost function is not consulted here; the line the section emits is,
-    # plus the newline that joins it to the next one.
+
+    def charged(content_chars: int) -> int:
+        """The line the section emits, plus the newline that joins it on.
+
+        A cost function is not consulted: the claim is about what `<core>`
+        emits, so `_core_belief_cost` must not be the thing that decides it.
+        The newline is charged because `_core_belief_cost` charges it, and
+        that sum is what empties the section.
+        """
+        return chars_to_tokens(len(_core_line_at(content_chars)) + 1)
+
     smallest_empty = min(emptied)
-    assert chars_to_tokens(len(_core_line_at(smallest_empty)) + 1) > budget
+    assert charged(smallest_empty) > budget
+    # The threshold is at the published lower edge, not one character above
+    # it. No grid length reaches the edge, so it is asserted directly: with
+    # the newline dropped this guard enforces 5,935 while the docstring above
+    # and the CHANGELOG publish 5,934, and nothing in the grid notices.
+    assert charged(_CORE_CROSSING_LOW) > budget, (
+        f"one <core> line at {_CORE_CROSSING_LOW} content characters is "
+        f"charged {charged(_CORE_CROSSING_LOW)} against a budget of {budget}, "
+        "so the section does not empty at the lower edge this branch publishes"
+    )
+    assert charged(_CORE_CROSSING_LOW - 1) <= budget, (
+        f"one <core> line at {_CORE_CROSSING_LOW - 1} content characters is "
+        f"charged {charged(_CORE_CROSSING_LOW - 1)} against a budget of "
+        f"{budget}, so the section already empties below the lower edge this "
+        "branch publishes"
+    )
     # Everything below the first empty length still emits, so the zero is a
     # threshold this lane crosses and not a lane that never emitted.
     for c in lengths:
