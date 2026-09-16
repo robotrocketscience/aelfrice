@@ -135,6 +135,53 @@ issue URLs indiscriminately, its own spellings included. Now:
   and closes all four, so this does too.
 * An anchor resolving anywhere else is refused out loud; see divergence 2.
 
+### The render is not an oracle for which object a reference names
+
+Reading the render answers "is this text a reference?" It does **not** answer
+"which object does that reference name", because GitHub normalises several
+distinct URL shapes into the same `issue-link` anchor with an `/issues/N`
+`data-url`, and one of them names a different number space entirely. A
+discussions URL is the wrong close this section exists to stop:
+
+    Closes https://github.com/robotrocketscience/aelfrice/discussions/1549
+
+renders as `<a class="issue-link" data-url=".../issues/1549">#1549</a>`.
+Discussions are numbered independently of issues, this repository has
+discussions enabled (`gh api repos/robotrocketscience/aelfrice --jq
+'.has_discussions'` prints `true`), so acting on that anchor closes an
+unrelated issue. It is refused, out loud.
+
+The check has to be at *source* level: by the time the anchor is read, GitHub
+has already rewritten `data-url`, and the anchor is byte-for-byte what a plain
+`#1549` produces. `DISCUSSION_RE` therefore scans the body for a discussions
+URL and `parse` passes the `(owner, repo, number)` triples it found to
+`close_directives`, which refuses any anchor resolving to one of them. That is
+deliberately blunt: a body that writes both `Closes #1549` and a discussions
+URL for 1549 loses the close and gets a warning, which is the module's standing
+asymmetry -- a missed close is an open issue a human sees.
+
+Every other shape was audited against the live renderer rather than reasoned
+about, one `POST /markdown` per row, and each is ruled on here:
+
+* `/issues/N` -> `issue-link`, `/issues/N`. Closes N. The plain case.
+* `/pull/N` -> `issue-link`, `/issues/N`. Closes N. Pull requests and issues
+  share one number space, so this names the same object GitHub would close.
+* `/issues/N#issuecomment-...` and `/pull/N#discussion_r...` -> `issue-link`,
+  `/issues/N`, anchor text `#N (comment)`. Closes N. The fragment names a
+  comment *on* N, so N is still the object referenced.
+* `/discussions/N` -> `issue-link`, `/issues/N`. **Refused**, per above.
+* `/pull/N/files` -> an ordinary `<a href>`, no `issue-link` class. Not a
+  reference; the source scan reports it as `NOT_LINKED`.
+* `/commit/SHA` -> `<a class="commit-link">`. Not an issue reference at all.
+* `https://github.com/orgs/ORG/discussions/N` -> an ordinary `<a href>`. Only
+  repository-level discussions are rewritten, so nothing to refuse.
+* `/milestone/N`, `/projects/N`, `/releases/tag/...`, `/blob/...`, `/wiki/...`
+  -> ordinary `<a href>`. Not references.
+
+`tests/data/merge_train_github_renders.json` holds the `urlforms` record this
+audit came from, so the rulings are replayed against GitHub's own bytes; rerun
+`python3 scripts/record_merge_train_renders.py --dry-run` if GitHub changes.
+
 ### Failure policy: loud, and closing nothing
 
 The renderer is a network call, so it can be unreachable, answer non-200, or
@@ -282,11 +329,27 @@ SOURCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A repository discussion written as a URL. GitHub rewrites this into an
+# `issue-link` anchor whose `data-url` is the `/issues/N` spelling, so by the
+# time the render is read the discussion is indistinguishable from an issue of
+# the same number -- and discussions are numbered separately. The check must
+# therefore run against the source. See "The render is not an oracle for which
+# object a reference names" in the module docstring.
+DISCUSSION_RE = re.compile(
+    r"https?://github\.com/(?P<owner>" + _NAME + r")/(?P<repo>" + _NAME + r")"
+    r"/discussions/(?P<number>\d+)",
+    re.IGNORECASE,
+)
+
 # Why a refused candidate was refused. Each string lands verbatim in the
 # merge-train step log and reads as the end of "ignored ... because it is".
 CROSS_REPO = "a link to another repository, which this train does not close"
 IN_QUOTE = "inside a block quote"
 NOT_LINKED = "not linked by GitHub's renderer, so a merge commit would not close it"
+FROM_DISCUSSION = (
+    "written as a discussions URL, which GitHub renders as an issue link "
+    "although discussions carry their own numbers"
+)
 
 # Above this many distinct issues in one body, say so on stderr. Not a cap:
 # every issue found is still printed. A body naming this many is more likely
@@ -467,12 +530,23 @@ def _keyword_before(tail: str) -> str | None:
     return m.group("keyword") if m is not None else None
 
 
-def close_directives(html: str, repo: str) -> tuple[list[int], list[Rejection]]:
+def close_directives(
+    html: str,
+    repo: str,
+    *,
+    discussion_sources: frozenset[tuple[str, str, int]] = frozenset(),
+) -> tuple[list[int], list[Rejection]]:
     """Split the rendered document's close directives into acted-on and refused.
 
     A directive is an issue-link anchor with one of the nine keywords
     immediately before it in the same block. Everything else in the document,
     anchor or not, is a mention.
+
+    `discussion_sources` holds the `(owner, repo, number)` triples the *source*
+    body spelled as a discussions URL. It cannot be recovered from `html`:
+    GitHub has already rewritten such a reference into an anchor identical to
+    a plain `#N`. `parse` supplies it; a caller that does not gets no
+    protection from it, which is why the wiring is pinned by its own test.
     """
     scanner = _AnchorScanner()
     try:
@@ -492,14 +566,32 @@ def close_directives(html: str, repo: str) -> tuple[list[int], list[Rejection]]:
                 f"an issue-link anchor carried an unreadable URL: {url!r}"
             )
         quoted = f"{keyword} {text}".strip()
+        named = (
+            target["owner"].lower(),
+            target["repo"].lower(),
+            int(target["number"]),
+        )
+        if named in discussion_sources:
+            # First, because it is the only refusal where the anchor lies
+            # about which object the reference named.
+            refused.append(Rejection(text=quoted, reason=FROM_DISCUSSION))
+            continue
         if in_quote:
             refused.append(Rejection(text=quoted, reason=IN_QUOTE))
             continue
-        if f"{target['owner']}/{target['repo']}".lower() != repo.lower():
+        if f"{named[0]}/{named[1]}" != repo.lower():
             refused.append(Rejection(text=quoted, reason=CROSS_REPO))
             continue
-        found.add(int(target["number"]))
+        found.add(named[2])
     return sorted(found), refused
+
+
+def discussion_targets(body: str) -> frozenset[tuple[str, str, int]]:
+    """Every `(owner, repo, number)` the body spells as a discussions URL."""
+    return frozenset(
+        (m["owner"].lower(), m["repo"].lower(), int(m["number"]))
+        for m in DISCUSSION_RE.finditer(body)
+    )
 
 
 def unrendered_candidates(
@@ -543,7 +635,9 @@ def parse(
     if not body.strip():
         return [], []
     html = render(body, repo)  # type: ignore[operator]
-    found, refused = close_directives(html, repo)
+    found, refused = close_directives(
+        html, repo, discussion_sources=discussion_targets(body)
+    )
     accounted = set(found)
     for rejection in refused:
         number = re.search(r"(\d+)\s*$", rejection.text)

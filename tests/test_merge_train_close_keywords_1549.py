@@ -56,15 +56,18 @@ _RECORDS_FILE = _REPO / "tests" / "data" / "merge_train_github_renders.json"
 
 sys.path.insert(0, str(_REPO / "scripts"))
 
+import merge_train_linked_issues as module  # noqa: E402
 from merge_train_linked_issues import (  # noqa: E402
     ADJACENT_RE,
     CROSS_REPO,
+    FROM_DISCUSSION,
     IN_QUOTE,
     KEYWORDS,
     NOT_LINKED,
     RENDER_TIMEOUT_SECONDS,
     RendererUnavailable,
     close_directives,
+    discussion_targets,
     linked_issues,
     parse,
     render_markdown,
@@ -422,6 +425,116 @@ def test_leaving_a_quote_makes_the_next_anchor_live_again() -> None:
     found, refused = close_directives(html, _CONTEXT)
     assert found == [8]
     assert [r.reason for r in refused] == [IN_QUOTE]
+
+
+# --------------------------------------------------------------------------
+# The render says a reference exists. It does not say what the reference named.
+# --------------------------------------------------------------------------
+
+
+def test_github_rewrites_a_discussions_url_into_an_issue_anchor() -> None:
+    """The premise of the refusal below, read off GitHub's own bytes.
+
+    `.../discussions/3` comes back as an `issue-link` anchor whose `data-url`
+    is `.../issues/3` and whose text is `#3` -- byte-for-byte what a plain
+    `#3` produces. Nothing in the rendered document distinguishes them, which
+    is why the check has to run against the source body.
+    """
+    html = _RECORDS["records"]["urlforms"]["html"]
+    assert 'href="https://github.com/robotrocketscience/aelfrice/pull/3"' in html
+    assert 'data-url="https://github.com/robotrocketscience/aelfrice/issues/3"' in html
+    assert "discussions/3" not in html
+
+
+def test_a_discussions_url_is_refused_rather_than_closing_that_issue_number() -> None:
+    """A live wrong close: discussions are numbered independently of issues.
+
+    This repository has discussions enabled, so `Closes <a discussion URL>`
+    named an object that has nothing to do with the issue of the same number
+    and the train would have run `gh issue close` on it.
+    """
+    found, refused = _parse("urlforms")
+    assert 3 not in found
+    assert ("Closes #3", FROM_DISCUSSION) in refused
+
+
+def test_the_other_rewritten_url_forms_are_ruled_on_one_by_one() -> None:
+    """The audit in the module docstring, replayed against the recorded render.
+
+    A pull-request URL and a comment fragment name an object in the issues'
+    own number space, so they close; `/pull/N/files`, `/commit/SHA` and an
+    organisation discussion are not issue references at all.
+    """
+    found, refused = _parse("urlforms")
+    assert found == [4, 5], "a pull URL and a comment fragment name issue numbers"
+    assert ("Closes #4", FROM_DISCUSSION) not in refused
+    assert ("Closes cli/cli#8", FROM_DISCUSSION) in refused
+    # `/pull/6/files` renders an ordinary link, so only the source scan sees it.
+    assert (
+        "Closes https://github.com/robotrocketscience/aelfrice/pull/6",
+        NOT_LINKED,
+    ) in refused
+    # A commit link and an organisation discussion are not references at all.
+    assert not any("abc1234" in text for text, _ in refused)
+    assert not any("orgs/robotrocketscience" in text for text, _ in refused)
+
+
+def test_the_source_scan_is_what_finds_a_discussion_not_the_render() -> None:
+    """`discussion_targets` reads the body, because the render cannot say."""
+    body = "Closes https://github.com/robotrocketscience/aelfrice/discussions/3\n"
+    assert discussion_targets(body) == frozenset(
+        {("robotrocketscience", "aelfrice", 3)}
+    )
+    assert discussion_targets("Closes #3\n") == frozenset()
+
+
+def test_parse_is_what_wires_the_source_scan_to_the_render() -> None:
+    """The edge, not the two ends.
+
+    `close_directives` cannot find a discussion on its own and does not
+    pretend to: called without the triples it closes #3 like any anchor. What
+    makes the refusal real is that `parse` passes them, so this drives `parse`
+    rather than asserting the helper works when handed the right argument.
+    """
+    body = "Closes https://github.com/robotrocketscience/aelfrice/discussions/3\n"
+    html = f"<p>Closes {_anchor(3)}</p>"
+    assert close_directives(html, _CONTEXT) == ([3], [])
+    found, refused = parse(body, _CONTEXT, render=lambda b, r: html)
+    assert found == []
+    assert [(r.text, r.reason) for r in refused] == [("Closes #3", FROM_DISCUSSION)]
+
+
+@pytest.mark.timeout(_CLI_TIMEOUT)
+def test_the_shipped_cli_refuses_a_discussions_url(tmp_path: Path) -> None:
+    """End to end, because the defect was a number on the shipped stdout."""
+    html = f"<p>Closes {_anchor(3)}</p>"
+    bin_dir = _fake_gh(tmp_path, html)
+    proc = _run_cli(
+        ["--repo", _CONTEXT],
+        bin_dir=bin_dir,
+        stdin="Closes https://github.com/robotrocketscience/aelfrice/discussions/3\n",
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == "", "the train must not close an issue for a discussion"
+    assert FROM_DISCUSSION in proc.stderr
+
+
+def test_a_discussion_shadows_an_issue_of_the_same_number_deliberately() -> None:
+    """The blunt edge of the rule, pinned so it is a decision and not a bug.
+
+    A body that writes both spellings for one number loses the close. The
+    anchors are identical, so no rule on the render can tell which of them the
+    discussion produced; the module's standing asymmetry says a missed close
+    is an open issue a human sees.
+    """
+    body = (
+        "Closes #3\n\n"
+        "Closes https://github.com/robotrocketscience/aelfrice/discussions/3\n"
+    )
+    html = f"<p>Closes {_anchor(3)}</p><p>Closes {_anchor(3)}</p>"
+    found, refused = parse(body, _CONTEXT, render=lambda b, r: html)
+    assert found == []
+    assert [r.reason for r in refused] == [FROM_DISCUSSION, FROM_DISCUSSION]
 
 
 # --------------------------------------------------------------------------
@@ -945,6 +1058,26 @@ def test_the_docstring_enumerates_every_documented_reference_form() -> None:
     assert "Every documented reference form is acted on or refused out loud" in doc
     for form in ("`#N`", "`GH-N`", "`OWNER/REPOSITORY#N`", "full issue"):
         assert form in doc, f"the docstring does not rule on {form}"
+
+
+def test_the_docstring_audits_what_github_rewrites_into_an_issue_anchor() -> None:
+    """A URL shape ruled on in review and left out of the file is not ruled on.
+
+    The audit is the finding, not the discussions fix alone: the renderer
+    normalises several shapes into one anchor, and each had to be decided.
+    """
+    doc = _SCRIPT.read_text(encoding="utf-8")
+    assert "The render is not an oracle for which object a reference names" in doc
+    for shape in (
+        "`/issues/N`",
+        "`/pull/N`",
+        "`/discussions/N`",
+        "`/pull/N/files`",
+        "`/commit/SHA`",
+        "issuecomment",
+        "orgs/ORG/discussions",
+    ):
+        assert shape in doc, f"the docstring does not rule on {shape}"
 
 
 def test_the_docstring_states_what_still_diverges_from_github() -> None:
