@@ -290,10 +290,14 @@ stop at `lock="user"`, and a store whose locks alone are oversized gets a
 stderr note rather than a silent edit. The reference tier (#1016-B) is
 the intended home for long-form locked material, and it bounds this lane
 from the second prompt of a session onwards — a 30,026-character lock
-costs 7,683 estimated tokens frozen against 244 as a reference. On the
+costs 7683 estimated tokens frozen against 256 as a reference. On the
 first prompt it bounds nothing, because `_build_session_start_subblock`
-renders every lock verbatim: the same lock costs 7,700 on the gate-skip
-branch at either tier. #1558 tracks that render gap.
+renders every lock verbatim: the same lock costs 7700 on the gate-skip
+branch at either tier. #1558 tracks that render gap. Re-derive with
+`uv run python scripts/measure_block_ceiling.py --reference-tier`.
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
 
 The cap is otherwise deliberately generous. It is a guard against a
 pathological row, not a retrieval-quality knob; trimming to fit the budget
@@ -363,7 +367,10 @@ its referent is absent: on a session's first prompt the `<locked>` loop of
 `_build_session_start_subblock` renders a reference lock verbatim (#1558),
 so a `ref` line and the text it names do share an envelope — measured on a
 30,026-character reference lock, which the retrieval branch emitted in full
-alongside its own `ref` pointer at 7,784 estimated tokens. The reason the
+alongside its own `ref` pointer at 7796 estimated tokens
+(`scripts/measure_block_ceiling.py --reference-tier`).
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
+The reason the
 dropper skips the form is narrower and holds regardless: a reference lock
 carries `lock="user"`, and the dropper never removes a `lock="user"`
 element, so no trim can dangle a `ref` line.
@@ -705,16 +712,33 @@ def _write_memory_block(
     `retrieval.lock_manifest_line`. So the tier is honoured everywhere except
     the envelope that embeds the session-start sub-block — which is a
     session's first prompt, and a first prompt is when a lock-only store
-    overruns. Measured on one 30,026-character lock:
+    overruns. Measured on one 30,026-character lock, re-derivable with
+    `uv run python scripts/measure_block_ceiling.py --reference-tier`,
+    whose module constant is the fixture:
 
-    * first prompt, gate-skip branch: 7,700 estimated tokens at either tier;
-    * first prompt, retrieval branch: 7,784 at either tier, and on the
+    * first prompt, gate-skip branch: 7700 estimated tokens at either tier;
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 7700 -->
+    * first prompt, retrieval branch: 7796 at either tier, and on the
       reference tier the block carries the full text *and* a `ref` pointer to
       it a few lines below;
-    * turn two, retrieval branch: 7,683 frozen against **244** reference —
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
+    * turn two, retrieval branch: 7683 frozen against **256** reference —
       the tier works, because no `<session-start>` sub-block is in the
       envelope;
-    * `session_start` itself: 7,660 frozen against 221 reference.
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
+    * `session_start` itself: 7660 frozen against 233 reference.
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_frozen = 7660 -->
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_reference = 233 -->
+
+    The three figures that carry a manifest line are a function of the
+    lock's *content*, not only its length — `lock_manifest_line` embeds
+    `_lock_topic` of it, capped at 80 characters — which is why the
+    fixture is pinned in the producer rather than described in prose. An
+    earlier revision of this table published 7,784 / 244 / 221 for them,
+    48 characters of topic below what the pinned fixture emits.
 
     This function sees only an assembled body, so it cannot tell which of
     those it is bounding without parsing for the sub-block. Until #1558
@@ -2964,10 +2988,13 @@ def _substitute_exploration_slots(
       belief still reaches.** The drawn belief is appended to the tail of
       `hits`, and the ceiling sheds the per-turn lane last but tail-first, so
       the drawn belief is the first per-turn element deleted. Measured at the
-      shipped ceiling on a 60-lock / 20-core / 12-hit / 4-pool store: the
-      block was byte-identical with the slot on and off, and the ledger still
-      recorded one draw and one displacement, neither of which reached the
-      model. That is deliberate rather than an oversight of the #1551 sweep:
+      shipped ceiling on a 60-lock / 20-core / 12-hit store: the block was
+      byte-identical with the slot on and off at 5923 estimated tokens, and
+      the ledger still recorded one draw and one displacement, 0 of which
+      reached the model. Re-derive with `uv run python
+      scripts/measure_block_ceiling.py --exploration`.
+      <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_block_tokens = 5923 -->
+      <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_drawn_emitted = 0 --> That is deliberate rather than an oversight of the #1551 sweep:
       this row is the replay record of a *pack decision* — `fire_idx`, the
       seed, the candidate pool, what was drawn and what paid for it — and
       `derive_seed` is only auditable if every firing turn leaves one.
@@ -4592,11 +4619,17 @@ def _build_session_start_subblock(
     # single oversized reference lock can appear in full inside the
     # `<session-start>` sub-block three lines above the `ref` pointer the
     # per-turn pack emitted for the same id. Measured: one 30,026-character
-    # lock costs 7,700 estimated tokens on the gate-skip branch and 7,784 on
+    # lock costs 7700 estimated tokens on the gate-skip branch and 7796 on
     # the retrieval branch, identically at both tiers. From the second prompt
     # of a session this sub-block is absent, `_split_belief_lines` renders the
-    # locks, and the tier works — 244 tokens against 7,683 — so the gap is
-    # this loop rather than the feature.
+    # locks, and the tier works — 256 tokens against 7683 — so the gap is
+    # this loop rather than the feature. The whole table, and the fixture
+    # these come from, is `scripts/measure_block_ceiling.py
+    # --reference-tier`.
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
     #
     # So a store whose locks alone exceed the ceiling overruns it, and
     # `_write_memory_block` says so on stderr rather than trimming.
