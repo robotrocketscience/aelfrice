@@ -680,9 +680,15 @@ def _write_memory_block(
     wrote the same envelope unbounded. That gate-skip branch is reached
     whenever the #674 prompt-shape gate refuses BM25 on a session's first
     prompt — a first prompt under 12 characters, an acknowledgement — so
-    it was not a corner: measured on a 300-lock store it emitted 16,526
-    estimated tokens against a 6,000-token ceiling with nothing on
-    stderr. Routing the write itself through the trim is what keeps a
+    it was not a corner. On a store of 300 user locks of 159 characters
+    (`"lockword "` plus 150 of padding, the fixture
+    `scripts/measure_block_ceiling.py` and
+    `test_hook_injection_ceiling_wiring.py` both seed) it emits **17,201**
+    estimated tokens against a 6,000-token ceiling, and emitted them with
+    nothing on stderr. Re-derive with `uv run python
+    scripts/measure_block_ceiling.py --gate-skip`.
+    <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
+    Routing the write itself through the trim is what keeps a
     fourth emit site from being added unbounded;
     `test_hook_injection_ceiling.py` pins that there is exactly one caller
     of `enforce_block_ceiling` and that it is this function.
@@ -2429,10 +2435,13 @@ def user_prompt_submit(
                 # `<core>` sub-block on a session's first prompt whenever
                 # the #674 shape gate refuses BM25 — a first prompt under
                 # 12 characters, an acknowledgement — and on shipped
-                # defaults that is routine, not a corner. Measured on
-                # pristine `bac77038`: 16,526 estimated tokens from 300
-                # locks of 150 characters against a 6,000-token ceiling,
-                # with nothing on stderr.
+                # defaults that is routine, not a corner. 17,201 estimated
+                # tokens from 300 user locks of 159 characters against a
+                # 6,000-token ceiling, with nothing on stderr; re-derive
+                # with `scripts/measure_block_ceiling.py --gate-skip`,
+                # which disables the ceiling to measure what this branch
+                # emitted before the routing below.
+                # <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
                 body = (
                     _format_hits_with_session_start([], session_start_block)
                     + MEMORY_BLOCK_HINT

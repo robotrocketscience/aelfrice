@@ -25,11 +25,22 @@ ceiling off and with it on, and prints how many of each survived. That is
 the pair `_ceiling_drop_order` quotes, and the reason the drop order is by
 lane rather than by position in the body.
 
+`--gate-skip` answers the third: **how big was the branch that had no
+bound?** It fires the `elif gate_skip:` path — the one a first prompt under
+12 characters reaches — on a 300-lock store with the ceiling disabled, and
+prints the untrimmed size. That is the 17,201 the CHANGELOG entry, both
+`hook.py` sites and the wiring test publish. `--lock-chars` and the
+`_lock` fixture both name the *padding*: `chars=150` is a 159-character
+lock, and reading it as the content length is worth 675 tokens here
+(16,526 for a lock of exactly 150 characters).
+<!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
+
 Usage:
     uv run python scripts/measure_block_ceiling.py
     uv run python scripts/measure_block_ceiling.py --lock-chars 150 200 700
     uv run python scripts/measure_block_ceiling.py --max-locks 400 --json
     uv run python scripts/measure_block_ceiling.py --lanes
+    uv run python scripts/measure_block_ceiling.py --gate-skip
     uv run python scripts/measure_block_ceiling.py --dry-run
     uv run python scripts/measure_block_ceiling.py --emit-figures
 
@@ -73,6 +84,10 @@ from aelfrice.store import MemoryStore  # noqa: E402
 # Long enough to clear the #674 prompt-shape gate, so the fire takes the
 # retrieval branch rather than the gate-skip one.
 PROMPT = "tell me everything about the locked material please"
+
+# Under `hook._MIN_PROMPT_LEN` (12), so `_should_skip_bm25` refuses BM25 and
+# the fire takes the `elif gate_skip:` emit path instead of the retrieval one.
+GATED_PROMPT = "ok"
 
 # The term the `--lanes` prompt is built around. Only the hit lane carries
 # it, so a surviving-element count separates prompt-matched content from
@@ -131,6 +146,58 @@ def fire(n_locks: int, chars: int) -> tuple[int, str]:
     if rc != 0:
         raise SystemExit(f"hook returned {rc}")
     return _audit_tokens_from_block(sout.getvalue()), serr.getvalue()
+
+
+def gate_skip_tokens(n_locks: int, chars: int) -> int:
+    """Size of the untrimmed gate-skip block, in estimated tokens.
+
+    The figure `hook._write_memory_block`, the `elif gate_skip:` branch, the
+    CHANGELOG entry and `test_hook_injection_ceiling_wiring.py` all publish
+    for "the branch that was unbounded". The ceiling is disabled for the
+    fire, because the shipped code now bounds this branch and the published
+    number is what it emits without that bound — the locks are exempt from
+    the drop, so on a lock-only store the two differ only in the stderr note.
+
+    `chars` is the padding, not the content length: `_lock` prepends
+    `"lockword "`, so `chars=150` is a 159-character lock. The distinction is
+    worth 675 tokens at 300 locks (17,201 against 16,526), which is the size
+    of the confusion this key exists to prevent.
+    """
+    work = Path(tempfile.mkdtemp(prefix="aelf-gateskip-"))
+    db = work / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        for i in range(n_locks):
+            store.insert_belief(_lock(i, chars))
+    finally:
+        store.close()
+    os.environ["AELFRICE_DB"] = str(db)
+    previous = os.environ.get("AELFRICE_HOOK_BLOCK_CEILING")
+    os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = "0"
+    try:
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps(
+            {
+                "session_id": f"gateskip-{chars}-{n_locks}",
+                "transcript_path": "/dev/null",
+                "cwd": str(work),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": GATED_PROMPT,
+            }
+        )
+        rc = user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=sout, stderr=serr
+        )
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return _audit_tokens_from_block(sout.getvalue())
+    finally:
+        # Restore, so a later crossing sweep in the same process is not
+        # measured against a disabled ceiling.
+        if previous is None:
+            os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        else:
+            os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = previous
 
 
 def fire_lanes(ceiling: int | None) -> dict[str, object]:
@@ -227,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
         help="report which lane the ceiling sheds, trimmed vs untrimmed",
     )
     ap.add_argument(
+        "--gate-skip", action="store_true",
+        help="print the untrimmed gate-skip block size at 300 locks",
+    )
+    ap.add_argument(
         "--dry-run", action="store_true",
         help="print what would be swept and exit 0 without firing the hook",
     )
@@ -242,15 +313,23 @@ def main(argv: list[str] | None = None) -> int:
         # CHANGELOG entry all publish. Fixed here rather than read off
         # `--lock-chars`, because the key names are what the markers cite:
         # a sweep the caller re-pointed would emit keys nothing published.
-        print(json.dumps({
+        figures: dict[str, object] = {
             f"first_trim_locks_{chars}": crossing(
                 chars, args.max_locks, args.step,
             )["locks"]
             for chars in (150, 200)
-        }))
+        }
+        figures["gate_skip_tokens_300_locks_150"] = gate_skip_tokens(300, 150)
+        print(json.dumps(figures))
         return 0
 
     if args.dry_run:
+        if args.gate_skip:
+            print(
+                "would fire one 300-lock store of 159-character locks at the "
+                "gate-skip branch with the ceiling disabled"
+            )
+            return 0
         if args.lanes:
             print(
                 "would fire one 50-lock / 20-core / 20-hit store twice, with "
@@ -262,6 +341,18 @@ def main(argv: list[str] | None = None) -> int:
             f"step {args.step} for lock lengths {args.lock_chars}, against "
             f"a ceiling of {HOOK_BLOCK_TOKEN_CEILING} tokens"
         )
+        return 0
+
+    if args.gate_skip:
+        tokens = gate_skip_tokens(300, 150)
+        if args.json:
+            print(json.dumps({"gate_skip_tokens_300_locks_150": tokens}))
+        else:
+            print(
+                f"gate-skip branch, untrimmed: {tokens} estimated tokens from "
+                f"300 locks of 159 characters (\"lockword \" + 150 padding), "
+                f"against a {HOOK_BLOCK_TOKEN_CEILING}-token ceiling"
+            )
         return 0
 
     if args.lanes:

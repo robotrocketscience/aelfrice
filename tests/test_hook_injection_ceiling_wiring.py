@@ -11,8 +11,12 @@ Three emit sites carry the same envelope and all three are exercised:
 * its `elif gate_skip:` branch, reached when the #674 prompt-shape gate
   refuses BM25 on a session's first prompt — a first prompt under 12
   characters, an acknowledgement. On shipped defaults that is routine,
-  and it was unbounded: 16,526 estimated tokens from a 300-lock store
-  against a 6,000-token ceiling, with nothing on stderr;
+  and it was unbounded: 17,201 estimated tokens from 300 user locks of
+  159 characters — `"lockword "` plus the 150 of padding `_seed` is asked
+  for — against a 6,000-token ceiling, with nothing on stderr. Re-derive
+  with `uv run python scripts/measure_block_ceiling.py --gate-skip`,
+  which seeds the same fixture and disables the ceiling;
+  <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
 * `session_start`, likewise unbounded.
 
 The drop policy under test: **both bounds stop at `lock="user"`.** Every
