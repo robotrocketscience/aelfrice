@@ -379,7 +379,11 @@ the entries a session can emit at all — together with `_TOPIC_MAX`, which
 truncates the topic on each line. Those are an entry count and a
 character length; neither is a token budget, and nothing compares either
 note against one. Those four are the whole of what `user_prompt_submit`
-sends to stdout. The `<cadence-resume>` recap (#871) is not a fifth: it is
+sends to stdout, and that is re-derived rather than asserted:
+`test_hook_payload_per_block_bound_1560.py` parses the function and
+compares its stdout writers against the same four, so a fifth one reds a
+test instead of quietly falsifying this sentence.
+The `<cadence-resume>` recap (#871) is not a fifth: it is
 prepended to the session-start sub-block and emitted *inside* this
 envelope, so it is charged here.
 

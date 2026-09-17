@@ -1,9 +1,16 @@
 """#1560: the payload is bounded per block, and nothing bounds their sum.
 
 The ruling these tests pin is the one `HOOK_BLOCK_TOKEN_CEILING`'s
-docstring states: every block `user_prompt_submit` writes names its own
-bound, and no bound spans them. The rejected alternative was a single
-payload ceiling with the `<cadence-checkpoint>` block shedding first.
+docstring states: every block `user_prompt_submit` writes is bounded on
+its own, and no bound spans two of them. The rejected alternative was a
+single payload ceiling with the `<cadence-checkpoint>` block shedding
+first.
+
+Which four blocks those are is itself pinned here rather than left to a
+reader: `test_the_stdout_writer_enumeration_is_re_derived_from_the_source`
+parses `user_prompt_submit` and compares its stdout writers against
+`_STDOUT_WRITERS`, so a fifth one reds instead of quietly falsifying the
+docstring's "those four are the whole of it".
 
 **Both options pass a test that checks each block separately**, which is
 why neither test below does that. What separates them is a payload whose
@@ -60,6 +67,7 @@ the cache it would have been read from.
 """
 from __future__ import annotations
 
+import ast
 import io
 import json
 from pathlib import Path
@@ -308,6 +316,190 @@ def _stop_fire(
     cache = hook._cadence_resume_cache_path()
     assert cache is not None
     return cache, serr.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# The writer enumeration, re-derived rather than trusted
+# ---------------------------------------------------------------------------
+
+# Every stdout writer in `user_prompt_submit`, keyed by the site shape
+# `_stdout_writer_sites` reports, and valued by the block it emits. The
+# ceiling docstring's "those four are the whole of what
+# `user_prompt_submit` sends to stdout" is this table, and a fifth writer
+# is a key this table does not carry.
+_STDOUT_WRITERS = {
+    "call:_write_memory_block": "<aelfrice-memory>",
+    "write:cadence_checkpoint_block": "<cadence-checkpoint>",
+    "write:phantom_block": "<aelfrice-phantom-opportunity>",
+    "write:promotion_block": "<aelfrice-phantom-promotion-opportunity>",
+}
+
+# The stream expressions `user_prompt_submit` starts with: its own
+# `stdout` parameter, and the process stream it falls back to.
+_STREAM_ROOTS = frozenset({"stdout", "sys.stdout"})
+_WRITE_METHODS = frozenset({"write", "writelines"})
+
+
+def _ups_function() -> ast.FunctionDef:
+    """`user_prompt_submit` as parsed from the shipped source file."""
+    tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "user_prompt_submit"
+        ):
+            return node
+    raise AssertionError("user_prompt_submit not found in hook.py")
+
+
+def _stream_names(fn: ast.FunctionDef) -> set[str]:
+    """The names inside `fn` that hold the stdout stream.
+
+    Seeded with `_STREAM_ROOTS` and grown to a fixed point over plain
+    aliasing assignments only — `x = <stream>` and
+    `x = <stream> if ... else <stream>`, which is the shape
+    `sout = stdout if stdout is not None else sys.stdout` has. A value
+    that merely *mentions* the stream (`outcome = f(stdout=sout)`) is not
+    an alias, and admitting it would make every result downstream of a
+    write look like another stream.
+    """
+    names = set(_STREAM_ROOTS)
+
+    def is_stream(node: ast.expr) -> bool:
+        return (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and ast.unparse(node) in names
+        )
+
+    for _ in range(len(list(ast.walk(fn)))):
+        grown = False
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Assign):
+                continue
+            value = node.value
+            if isinstance(value, ast.IfExp):
+                ok = is_stream(value.body) and is_stream(value.orelse)
+            else:
+                ok = is_stream(value)
+            if not ok:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in names:
+                    names.add(target.id)
+                    grown = True
+        if not grown:
+            break
+    return names
+
+
+def _stdout_writer_sites() -> dict[str, list[int]]:
+    """Every site in `user_prompt_submit` that can reach stdout.
+
+    Parsed rather than grepped: a substring scan cannot tell a write from
+    the same identifier in one of the comments around it, and the
+    enumeration this pins is a claim about the function body.
+
+    Three shapes reach the stream:
+
+    * a write method called on it, `sout.write(...)`, keyed by the names
+      in the written expression;
+    * a call handed it as an argument, `_write_memory_block(...,
+      stdout=sout, ...)`, keyed by the callee;
+    * `print(...)` with no `file=`, which goes to stdout by default, or
+      with a `file=` naming the stream.
+
+    Returns site key -> the line numbers carrying it, so a failure names
+    where to look.
+    """
+    fn = _ups_function()
+    names = _stream_names(fn)
+    sites: dict[str, list[int]] = {}
+
+    def add(key: str, lineno: int) -> None:
+        sites.setdefault(key, []).append(lineno)
+
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in _WRITE_METHODS
+            and ast.unparse(func.value) in names
+        ):
+            written = sorted({
+                sub.id for arg in node.args for sub in ast.walk(arg)
+                if isinstance(sub, ast.Name)
+            })
+            add("write:" + "+".join(written or ["<literal>"]), node.lineno)
+            continue
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        if isinstance(func, ast.Name) and func.id == "print":
+            target = keywords.get("file")
+            if target is None or ast.unparse(target) in names:
+                add("print:" + ast.unparse(node)[:60], node.lineno)
+            continue
+        passed = [
+            arg for arg in list(node.args) + list(keywords.values())
+            if isinstance(arg, (ast.Name, ast.Attribute))
+            and ast.unparse(arg) in names
+        ]
+        if passed:
+            add("call:" + ast.unparse(func), node.lineno)
+    return sites
+
+
+def test_the_stdout_writer_enumeration_is_re_derived_from_the_source() -> None:
+    """A fifth stdout writer reds here rather than rotting a docstring.
+
+    `HOOK_BLOCK_TOKEN_CEILING`'s docstring names four blocks and says they
+    are the whole of what `user_prompt_submit` writes to stdout. That was
+    true when written and nothing held it there: the only way to check it
+    was to read the function. This re-derives the set from the function's
+    own AST, so adding a writer without adding it to `_STDOUT_WRITERS` —
+    and to the docstring `_STDOUT_WRITERS` mirrors — fails.
+
+    The stream is resolved by aliasing rather than by the name `sout`, so
+    renaming the local does not silently empty this.
+    """
+    sites = _stdout_writer_sites()
+    assert sites, (
+        "no stdout writer sites found in user_prompt_submit — either the "
+        "function stopped writing to stdout, or this scan stopped being "
+        "able to see it, and in both cases the comparison below is vacuous"
+    )
+    unexpected = {k: v for k, v in sites.items() if k not in _STDOUT_WRITERS}
+    assert not unexpected, (
+        f"user_prompt_submit writes to stdout at {unexpected}, which the "
+        "four-writer enumeration does not carry. Add the block to "
+        "`_STDOUT_WRITERS` here and to `HOOK_BLOCK_TOKEN_CEILING`'s "
+        "docstring, which says these four are the whole of it."
+    )
+    missing = sorted(set(_STDOUT_WRITERS) - set(sites))
+    assert not missing, (
+        f"{missing} is enumerated here and in the ceiling docstring but no "
+        "longer writes to stdout in user_prompt_submit"
+    )
+
+
+def test_the_writer_scan_follows_the_stream_alias() -> None:
+    """The scan's own premise, asserted rather than assumed.
+
+    `_stdout_writer_sites` finds three of the four writers only because
+    `_stream_names` resolves the local the parameter is assigned to. If
+    that resolution silently returned the seed set, the scan would still
+    find `_write_memory_block` — it takes `stdout=` by keyword — and
+    would report three writers missing rather than a hole, which is a
+    confusing failure for the wrong reason.
+    """
+    names = _stream_names(_ups_function())
+    aliases = names - _STREAM_ROOTS
+    assert aliases, (
+        "no local alias of the stdout parameter was resolved; the writer "
+        "scan can only see calls that name `stdout` or `sys.stdout`"
+    )
+    # An alias-only assignment is followed; a call result is not.
+    assert "outcome" not in names, sorted(names)
 
 
 def _split(out: str) -> tuple[str, str]:
