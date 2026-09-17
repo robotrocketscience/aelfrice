@@ -1301,7 +1301,11 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
         f"BELIEF_CONTENT_CHAR_CAP = {cap}, so it is not bounded by the cap: "
         f"{ {c: table[str(c)]['snapshot']['ratio'] for c in above} }"
     )
-    assert ceiling.pop() > 1.0, table[str(top)]["snapshot"]
+    # Read the single ratio out before asserting on it: `set.pop` mutates, and
+    # an expression with a side effect inside an `assert` is stripped whole
+    # under `python -O` (CodeQL `py/side-effect-in-assert`).
+    bounded_ratio = ceiling.pop()
+    assert bounded_ratio > 1.0, table[str(top)]["snapshot"]
     # The grid reaches a range where the undercharge is an order of magnitude.
     # Not on `snapshot`, which the cap holds at its ceiling, but on
     # `transient`: the threshold is the same 10.0 read against the class that
