@@ -214,6 +214,36 @@ def is_readonly_open_failure(exc: BaseException) -> bool:
     return "readonly" in text or "unable to open database file" in text
 
 
+def read_only_uri(path: str) -> str:
+    """Build the `mode=ro` SQLite URI for `path`, percent-encoded.
+
+    #1416. The URI used to be `f"file:{path}?mode=ro"`, which pastes an
+    unescaped filesystem path into a slot where `#` starts a fragment and
+    `?` starts the query string. Either character truncates the path *and*
+    discards `mode=ro`, so SQLite opens a different, shorter path
+    read-**write** and creates it as a zero-byte file. The #1416 schema
+    floor then finds no tables in that empty file and tells the user to
+    migrate a store that was already current. Measured on SQLite 3.50.4:
+    `<tmp>/repo#1/memory.db` and `<tmp>/repo?x/memory.db` both opened an
+    empty database and left a stray `<tmp>/repo` behind, and
+    `<tmp>/repo%41/memory.db` failed outright with "unable to open
+    database file". `as_uri()` opens all three correctly and writes
+    nothing.
+
+    Absolutised with `os.path.abspath` rather than `Path.resolve()`,
+    deliberately: `resolve()` follows symlinks, while `self._db_path`
+    keeps the caller's spelling and is what places the `.bm25f` sidecar
+    and fills the error strings, so resolving here would let the engine's
+    path and the store's reported path drift on a symlinked store.
+    `abspath` normalises lexically only, which leaves symlink resolution
+    with the OS exactly where the old string form left it — the bytes
+    opened are unchanged for every path that already worked.
+    """
+    from pathlib import Path
+
+    return Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+
+
 def _is_write_log_authoritative_inline() -> bool:
     """Inline reader to avoid the store→derivation_worker→store cycle."""
     raw = os.environ.get(_ENV_WRITE_LOG_AUTHORITATIVE)
@@ -1433,7 +1463,7 @@ class MemoryStore:
             # here rather than silently creating an empty store, which is
             # the right failure for a diagnostic pointed at the wrong file.
             self._conn: sqlite3.Connection = sqlite3.connect(
-                f"file:{path}?mode=ro", uri=True
+                read_only_uri(path), uri=True
             )
             # #1416: prove the handle can actually READ before handing it
             # back. `sqlite3.connect` is lazy — it does not touch the

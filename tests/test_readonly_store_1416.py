@@ -438,3 +438,134 @@ def test_writable_store_still_gets_a_writable_handle(
         assert store.read_only is False
     finally:
         store.close()
+
+
+# --- regime 4: a URI metacharacter in the store path -----------------------
+
+
+@pytest.fixture()
+def metachar_store(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """A seeded store under a directory literally named `request.param`.
+
+    Yields the store directory; its parent — where a truncated path lands
+    — is `tmp_path`, which stays writable on purpose. Freezing it too
+    would mask the defect by denying the stray write rather than not
+    attempting it.
+    """
+    d = tmp_path / str(request.param)
+    d.mkdir()
+    monkeypatch.setenv("AELFRICE_DB", str(d / "memory.db"))
+    _seed(d / "memory.db")
+    try:
+        yield d
+    finally:
+        d.chmod(0o755)
+        for child in d.iterdir():
+            child.chmod(0o644)
+
+
+@pytest.mark.parametrize(
+    "metachar_store", ["store#1", "store?1", "store%41"], indirect=True,
+)
+def test_a_uri_metacharacter_in_the_path_opens_the_intended_database(
+    metachar_store: Path,
+) -> None:
+    """`file:{path}?mode=ro` is string concatenation, and paths are data.
+
+    `#` starts a URI fragment and `?` starts a second query string, so
+    either one truncates the path **and** discards `mode=ro`; SQLite then
+    opens the shorter path read-write and creates it as a zero-byte file.
+    `%` starts a percent-escape, which decodes to a path that does not
+    exist. Measured before the fix on SQLite 3.50.4, and the three cases
+    fail differently, so they are asserted together only on the outcome
+    they share *after* it:
+
+    * `store#1`, `store?1` -> opened an empty database and left a stray
+      `<tmp>/store` behind, so the #1416 schema floor raised
+      `StoreSchemaTooOld` and told the user to migrate a store that was
+      already current;
+    * `store%41` -> `sqlite3.OperationalError: unable to open database
+      file`, because `%41` decodes to `A`. The escape must be a complete
+      two-hex-digit one to bite: a bare `%1` is malformed, SQLite leaves
+      it alone, and such a path opens either way — which is why the
+      parameters are whole directory names rather than a bare
+      metacharacter spliced into one.
+
+    A space, an apostrophe and a non-ASCII letter open correctly with the
+    plain concatenation, so they are not regression coverage for this and
+    are deliberately absent.
+    """
+    db = metachar_store / "memory.db"
+    parent_of_parent = metachar_store.parent
+    before = sorted(p.name for p in parent_of_parent.iterdir())
+
+    store = MemoryStore(str(db), read_only=True)
+    try:
+        assert store.read_only is True
+        assert [b.content for b in store.list_locked_beliefs()] == [
+            "codex scratch fact"
+        ]
+    finally:
+        store.close()
+
+    assert sorted(p.name for p in parent_of_parent.iterdir()) == before, (
+        "a truncated URI opened a different path and created it"
+    )
+
+
+@pytest.mark.parametrize("metachar_store", ["store#1"], indirect=True)
+def test_search_under_a_hash_path_reports_the_real_failure(
+    metachar_store: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The user-visible half: the wrong diagnosis, on the filed command.
+
+    Regime 2 (no sidecars, frozen directory) has one correct answer —
+    `ReadOnlyStoreUnavailable`, "grant write access to that directory".
+    Before the fix the truncated URI opened an empty database somewhere
+    else entirely, which passed the sidecar probe and failed the schema
+    floor, so the command instead demanded a migration of a store that
+    needed none. `StoreSchemaTooOld` subclasses `ReadOnlyStoreUnavailable`,
+    so the type alone does not separate them; the message does.
+    """
+    db = metachar_store / "memory.db"
+    parent_of_parent = metachar_store.parent
+    assert not (metachar_store / "memory.db-shm").exists()
+    _freeze(metachar_store)
+    before = sorted(p.name for p in parent_of_parent.iterdir())
+    capsys.readouterr()
+
+    rc = main(["search", "codex"])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "Traceback" not in err
+    assert "-shm" in err, "the real failure is the missing WAL sidecars"
+    assert "needs a migration" not in err, (
+        "a truncated URI made an empty file look like an old schema"
+    )
+    assert sorted(p.name for p in parent_of_parent.iterdir()) == before
+
+
+def test_the_read_only_uri_is_built_by_the_uri_builder() -> None:
+    """Percent-encoding, and the abspath-not-resolve choice, pinned.
+
+    `_db_path` keeps the caller's spelling — it places the `.bm25f`
+    sidecar and fills the error strings — so the URI is absolutised
+    lexically rather than resolved: `resolve()` would follow symlinks and
+    let the engine's path drift from the one the store reports.
+    """
+    from aelfrice.store import read_only_uri
+
+    uri = read_only_uri("/tmp/store#1/memory.db")
+    assert uri == "file:///tmp/store%231/memory.db?mode=ro"
+    assert read_only_uri("/tmp/store?1/x.db").startswith(
+        "file:///tmp/store%3F1/"
+    )
+    assert read_only_uri("/tmp/store%1/x.db").startswith(
+        "file:///tmp/store%251/"
+    )
+    assert read_only_uri("relative.db").startswith("file:///")
