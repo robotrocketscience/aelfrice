@@ -1091,11 +1091,23 @@ def _probe_budget(store: Any) -> int:
     """A budget at which every belief in `store` is affordable to every packer.
 
     The sum, over every belief, of the largest per-belief charge any arm or
-    packer this module drives can bill for it: the shipped pack cost
-    (`_charged_tokens`), its pre-#1526 body (`_legacy_belief_tokens`), and
-    `<core>`'s two (`hook._core_belief_cost` and `_legacy_core_cost`). A pack
-    run at this budget can afford every candidate it was offered, so a pack
-    that still does not move at it was not ended by a budget.
+    packer this module drives can bill for it. That is every cost path on the
+    module, not a representative subset, because a bound that misses one is
+    not a bound on the lane that pays it: the shipped pack cost
+    (`_charged_tokens`), its pre-#1526 body (`_legacy_belief_tokens`),
+    `<core>`'s two (`hook._core_belief_cost` and `_legacy_core_cost`), and the
+    two line costs #1551/#1552 wired onto lanes here — `hook`'s, which `ups`
+    and `first_prompt` pay, and `hook_search_tool`'s, which the two PreToolUse
+    lanes pay. A pack run at this budget can afford every candidate it was
+    offered, so a pack that still does not move at it was not ended by a
+    budget.
+
+    The last two are in the max for the claim's sake and not for the number's:
+    on every corpus this module builds, at every grid length, neither exceeds
+    the four-way max of the others for any belief, so adding them leaves every
+    probe — and therefore every label and every published figure — unchanged.
+    What they remove is a bound that was true by measurement and stated as
+    though it were true by construction.
 
     **This replaces a factor with a bound, and the factor was wrong.**
     `SATURATION_PROBE_FACTOR = 4` was sized for a grid topping out at 300
@@ -1128,7 +1140,7 @@ def _probe_budget(store: Any) -> int:
     The sum is the smallest bound that survives both, and it is an upper bound
     rather than a search, so it does not depend on where the plateaus fall.
     """
-    from aelfrice import hook
+    from aelfrice import hook, hook_search_tool
 
     key = store._db_path
     memo = _PROBE_BUDGETS.get(key)
@@ -1144,6 +1156,8 @@ def _probe_budget(store: Any) -> int:
             _legacy_belief_tokens(b),
             hook._core_belief_cost(b),
             _legacy_core_cost(b),
+            hook._ups_belief_line_cost(b),
+            hook_search_tool._belief_line_cost(b),
         )
     _PROBE_BUDGETS[key] = total
     return total
@@ -1403,7 +1417,13 @@ def _pack_charge(lane: str, store: Any, budget: int, sub: int) -> dict[str, int]
     from aelfrice.render_cost import chars_to_tokens
 
     hits = _lane_hits(lane, store, budget, sub, legacy=False)
-    cost_fn = _lane_belief_cost(lane, legacy=False) or _charged_tokens
+    # `is None` and not `or`: `_lane_belief_cost` returns a function or None,
+    # and None is a meaningful answer here — "this lane passes no
+    # `belief_cost_fn`, so it pays `_charged_tokens`". A truthiness test reads
+    # the returned value rather than its absence, which is the same test only
+    # for as long as every entry in that table happens to be a function object.
+    lane_cost = _lane_belief_cost(lane, legacy=False)
+    cost_fn = _charged_tokens if lane_cost is None else lane_cost
     unlocked = [h for h in hits if h.lock_level != LOCK_USER]
     charged = sum(cost_fn(h) for h in unlocked)
     emitted = sum(chars_to_tokens(_emitted_chars(h)) for h in unlocked)
