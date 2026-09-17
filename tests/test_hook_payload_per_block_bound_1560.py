@@ -24,13 +24,23 @@ payload.
 **Reachability, so nothing here is read as a defect everyone is exposed
 to.** `[cadence] enabled` is unset by default and
 `_maybe_run_ups_cadence_checkpoint` returns None without it, so a stock
-install never writes the second block. Both tests enable cadence
-explicitly through `.aelfrice.toml`.
+install never writes the second block. The two contract tests enable
+cadence explicitly through `.aelfrice.toml`; the reachability test
+*omits* the `[cadence]` section, and also fires with no config file at
+all, because writing `enabled = false` pins an explicit off rather than
+the shipped default — and its fire index is a P1 boundary under the
+shipped `k` as well as this module's, so the silence is the flags' doing
+rather than a missed boundary.
 
 The cadence body is stubbed rather than rebuilt, because these tests are
 about what the emit boundary does with a block of a known size, not about
 what the rebuilder packs into one. The measured sizes of the real blocks
 are `scripts/measure_block_ceiling.py --cadence`.
+
+What this module does *not* cover is the `<cadence-resume>` recap (#871),
+which rides inside the `<aelfrice-memory>` envelope rather than beside
+it: `test_hook_ceiling_cadence_resume_1560.py` covers that, and the
+reachability test here asserts a stock install gets no recap either.
 """
 from __future__ import annotations
 
@@ -41,6 +51,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice import hook
+from aelfrice.cadence import DEFAULT_K
 from aelfrice.context_rebuilder import RecentTurn
 from aelfrice.hook import (
     HOOK_BLOCK_TOKEN_CEILING,
@@ -59,6 +70,10 @@ _MEMORY_OPEN = "<aelfrice-memory>"
 _WORD = "banana"
 _PROMPT = f"tell me everything about the {_WORD} please"
 _K = 5
+# A fire index both this module's `k` and the shipped default divide, so
+# the P1 boundary is reached whichever `k` is in force. The product is
+# the cheap way to stay divisible by both if either constant moves.
+_FIRE_IDX = _K * DEFAULT_K
 
 # The store the first test fires: small enough that the memory block
 # stays under its ceiling untrimmed, so "emitted whole" is a claim about
@@ -133,35 +148,54 @@ def _stub_rebuilder(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _cadence_toml(*, enabled: bool) -> str:
+    """The `[cadence]` section, switched on or explicitly off."""
+    return (
+        "[cadence]\n"
+        f"enabled = {'true' if enabled else 'false'}\n"
+        'policy = "p1_every_k_turns"\n'
+        f"k = {_K}\n"
+    )
+
+
+# A config that omits the `[cadence]` section entirely, and the absence of
+# a config file at all. Both are what a stock install looks like; neither
+# is `enabled = false`, which pins a setting rather than the default.
+_NO_CADENCE_SECTION = "[retrieval]\ntoken_budget = 1500\n"
+_NO_CONFIG_FILE = None
+
+
 def _fire(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    cadence: bool,
+    config: str | None,
     n_locks: int,
     n_hits: int,
     name: str,
 ) -> tuple[str, str]:
-    """One real `user_prompt_submit` fire; return its stdout and stderr."""
+    """One real `user_prompt_submit` fire; return its stdout and stderr.
+
+    `config` is the `.aelfrice.toml` to write, or None to write no config
+    file at all.
+    """
     work = tmp_path / name
     work.mkdir()
     db = work / "memory.db"
     _seed(db, n_locks=n_locks, n_hits=n_hits)
-    (work / ".aelfrice.toml").write_text(
-        "[cadence]\n"
-        f"enabled = {'true' if cadence else 'false'}\n"
-        'policy = "p1_every_k_turns"\n'
-        f"k = {_K}\n",
-        encoding="utf-8",
-    )
+    if config is not None:
+        (work / ".aelfrice.toml").write_text(config, encoding="utf-8")
     # The ring `_maybe_run_ups_cadence_checkpoint` reads its fire index
-    # from. `k` divides it, so the P1 policy says fire.
+    # from. Both this module's `k` and the shipped `DEFAULT_K` divide it,
+    # so the P1 policy says fire under either — which is what makes the
+    # stock-install arm's silence attributable to the default flags
+    # rather than to a fire index that happened to miss the boundary.
     (db.parent / "session_injected_ids.json").write_text(
         json.dumps({
             "session_id": "sess",
             "ring": [],
             "ring_max": 200,
-            "next_fire_idx": _K,
+            "next_fire_idx": _FIRE_IDX,
             "evicted_total": 0,
         }),
         encoding="utf-8",
@@ -214,7 +248,8 @@ def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
     _stub_rebuilder(monkeypatch)
     out, err = _fire(
         tmp_path, monkeypatch,
-        cadence=True, n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="fits",
+        config=_cadence_toml(enabled=True),
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="fits",
     )
     cadence_block, memory_block = _split(out)
 
@@ -260,11 +295,13 @@ def test_the_ceiling_sheds_the_same_bytes_with_and_without_a_cadence_block(
     _stub_rebuilder(monkeypatch)
     on, err_on = _fire(
         tmp_path, monkeypatch,
-        cadence=True, n_locks=60, n_hits=20, name="on",
+        config=_cadence_toml(enabled=True),
+        n_locks=60, n_hits=20, name="on",
     )
     off, err_off = _fire(
         tmp_path, monkeypatch,
-        cadence=False, n_locks=60, n_hits=20, name="off",
+        config=_cadence_toml(enabled=False),
+        n_locks=60, n_hits=20, name="off",
     )
     assert _CADENCE_OPEN not in off
     _, memory_on = _split(on)
@@ -280,8 +317,16 @@ def test_the_ceiling_sheds_the_same_bytes_with_and_without_a_cadence_block(
     assert _audit_tokens_from_block(on) > HOOK_BLOCK_TOKEN_CEILING
 
 
+@pytest.mark.parametrize(
+    ("label", "config"),
+    [
+        ("no-section", _NO_CADENCE_SECTION),
+        ("no-file", _NO_CONFIG_FILE),
+    ],
+)
 def test_the_cadence_fire_is_off_on_a_stock_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    label: str, config: str | None,
 ) -> None:
     """The exposure is cadence-enabled-only, and this says so.
 
@@ -289,13 +334,25 @@ def test_the_cadence_fire_is_off_on_a_stock_install(
     payload the two tests above construct is unreachable on a default
     install. The `_stub_rebuilder` patch is applied so the absence is the
     flag's doing rather than an empty rebuild window's.
+
+    **The section is omitted, not set to `false`.** This test used to
+    write `enabled = false`, which pins what an explicit off does and
+    says nothing about the shipped default — a default flipped to on
+    would have left it green. Both stock spellings are fired: a config
+    file with no `[cadence]` section, and no config file at all. The
+    first is what separates "the section is absent" from "the file is
+    absent"; the second is what a fresh checkout actually looks like.
     """
     _stub_rebuilder(monkeypatch)
     out, err = _fire(
-        tmp_path, monkeypatch,
-        cadence=False, n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="stock",
+        tmp_path, monkeypatch, config=config,
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name=f"stock-{label}",
     )
     assert _CADENCE_OPEN not in out
     assert _CADENCE_BODY not in out
     assert "ups cadence checkpoint" not in err
     assert out.startswith(_MEMORY_OPEN)
+    # The other half of a stock install: no prior Stop-side cadence fire,
+    # so nothing wrote a resume cache and no #871 recap rides the
+    # envelope either.
+    assert "<cadence-resume" not in out
