@@ -804,23 +804,75 @@ def _render_ups(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
     return Arm(len(hits), len(hook._format_hits(hits)))
 
 
+# One entry per (store, cwd, `<core>` cost function) the run composes a
+# session-start sub-block for. See `_session_start_block`. Cleared by
+# `figures()` so a second run in one process cannot be served a first run's
+# block.
+_SESSION_START_BLOCKS: dict[tuple[str, str, Any], str] = {}
+
+# When true, a cache hit is rebuilt and compared instead of trusted, and a
+# disagreement raises. Off in a published run — the rebuild is the cost the
+# cache exists to avoid — and turned on by the test that holds the key down.
+VERIFY_SESSION_START_BLOCKS = False
+
+# Hits served from `_SESSION_START_BLOCKS` during the current run. Read by that
+# same test, so it fails if the cache silently stops being consulted and the
+# verification above therefore stops verifying anything.
+SESSION_START_BLOCK_HITS = 0
+
+
 def _session_start_block(store: Any) -> str:
     """The `<session-start>` sub-block, built on a cwd that carries no git.
 
     `_build_session_start_subblock` appends a `<recent-work>` section resolved
     from git plumbing under `cwd`, which would make this lane's byte count a
     function of the branch name and the commit subjects
-    `hook.DEFAULT_RECENT_WORK_COMMIT_LIMIT` admits — eight at the shipped
-    value — of whatever
+    `hook.DEFAULT_RECENT_WORK_COMMIT_LIMIT` admits of whatever
     checkout the producer happened to run in. `figures()` has already chdir'd
     into a tempdir for the same hermeticity reason the `[retrieval]` flags
     need, so `Path.cwd()` is a non-git directory and `_resolve_branch` returns
     None before any subprocess reads a log. The measured size of that section
     is published as `first_prompt_recent_work_chars` rather than asserted here.
+
+    **Built once per distinct answer.** Every lane that composes an envelope
+    calls this, at every grid length and on both arms, and each call sends
+    `_resolve_branch` out to `git symbolic-ref` — a subprocess, carrying
+    `hook._RECENT_WORK_GIT_TIMEOUT_S`, whose result is a read of ambient
+    filesystem state in the one block of this module documented as reaching
+    none. They resolve to nothing here, but a spawn whose outcome is decided
+    by a timeout is decided by machine load, and this producer gates required
+    CI.
+
+    The key is every input the block varies on: the store it is built from,
+    the cwd `<recent-work>` is resolved under, and `hook._core_belief_cost` —
+    the one name in `LEGACY_COST_REBINDS` this path reaches, through
+    `_pack_core_candidates`, and the reason a store's block is not the same
+    string on both arms. The cost function is held in the key by identity, so
+    an arm that rebinds it cannot be served the other arm's `<core>`.
+    `VERIFY_SESSION_START_BLOCKS` rebuilds and compares instead of trusting,
+    which is how that claim is tested rather than asserted in a docstring.
     """
+    global SESSION_START_BLOCK_HITS
     from aelfrice import hook
 
-    return hook._build_session_start_subblock(store, cwd=Path.cwd())
+    cwd = Path.cwd()
+    key = (str(getattr(store, "_db_path", id(store))), str(cwd),
+           hook._core_belief_cost)
+    cached = _SESSION_START_BLOCKS.get(key)
+    if cached is not None:
+        SESSION_START_BLOCK_HITS += 1
+        if not VERIFY_SESSION_START_BLOCKS:
+            return cached
+        fresh = hook._build_session_start_subblock(store, cwd=cwd)
+        if fresh != cached:
+            raise AssertionError(
+                "the session-start block moved under a key that did not: "
+                f"{len(cached)} chars cached against {len(fresh)} rebuilt"
+            )
+        return fresh
+    block = hook._build_session_start_subblock(store, cwd=cwd)
+    _SESSION_START_BLOCKS[key] = block
+    return block
 
 
 def _recent_work_chars_in(block: str) -> int:
@@ -1713,9 +1765,16 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     shorter one, which is how `tests/test_render_cost_1526.py` keeps its
     acceptance run inside the CI per-test timeout.
     """
+    global SESSION_START_BLOCK_HITS
     from aelfrice import hook
     from aelfrice.render_cost import BELIEF_LINE_WRAPPER_CHARS
     from aelfrice.retrieval import resolve_use_type_aware_compression
+
+    # Per run: the stores below are new, and a block cached against a path a
+    # previous run's tempdir happened to reuse would be a figure from a corpus
+    # that no longer exists.
+    _SESSION_START_BLOCKS.clear()
+    SESSION_START_BLOCK_HITS = 0
 
     values: dict[str, Any] = {}
     with tempfile.TemporaryDirectory() as td, _hermetic_environment():

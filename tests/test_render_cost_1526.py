@@ -1625,6 +1625,36 @@ def test_the_recent_work_reader_finds_the_section_the_lane_suppresses(
 
 
 @_pays_for_the_producer_run
+def test_the_session_start_block_cache_serves_what_a_fresh_build_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The composed lanes build one session-start block per distinct answer.
+
+    Every call to `_session_start_block` used to send `_resolve_branch` out to
+    `git symbolic-ref`, in the one block of the producer whose docstring says
+    it reaches no ambient state, with a timeout whose outcome is decided by
+    machine load. The block is now keyed and reused, and the key is a claim:
+    that the store, the cwd and `hook._core_belief_cost` are the only inputs
+    it varies on.
+
+    That claim is tested rather than described. `VERIFY_SESSION_START_BLOCKS`
+    rebuilds every hit and raises on any disagreement, so a key missing an
+    input fails here: dropping the cost function from it collides the before
+    arm's `<core>` with the after arm's and the rebuild no longer matches.
+
+    The hit count is asserted first. A cache that is never consulted verifies
+    nothing, and would leave this test green on exactly the regression it
+    exists to catch.
+    """
+    m = _producer_module()
+    monkeypatch.setattr(m, "VERIFY_SESSION_START_BLOCKS", True)
+    m.figures(lengths=(max(m.LENGTH_GRID),))  # type: ignore[attr-defined]
+    assert m.SESSION_START_BLOCK_HITS > 0, (  # type: ignore[attr-defined]
+        "nothing was served from the cache, so nothing was verified"
+    )
+
+
+@_pays_for_the_producer_run
 def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
     producer_figures: dict[str, object],
 ) -> None:
