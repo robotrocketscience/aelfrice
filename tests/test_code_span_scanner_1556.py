@@ -659,9 +659,12 @@ def _keys_under(text: str, bounded: bool) -> set[str]:
     difference between the two rules; run-length pairing stays on in both, so
     what this measures is the bound and nothing else.
     """
+    def one_region(whole: str) -> list[tuple[int, int]]:
+        return [(0, len(whole))]
+
     saved = cdf.paragraph_regions
     if not bounded:
-        cdf.paragraph_regions = lambda t: [(0, len(t))]
+        cdf.paragraph_regions = one_region
     try:
         masked = cdf.mask_document(text)
     finally:
