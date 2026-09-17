@@ -324,7 +324,7 @@ def test_an_active_belief_is_labelled_active(isolated_db: Path) -> None:
     assert "valid-to: (none)" in out
 
 
-# --- AC5: the store opens read-only ----------------------------------------
+# --- AC5: it reads a store it cannot write (see the note below) ------------
 
 _POSIX_ONLY = pytest.mark.skipif(
     os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
@@ -378,7 +378,7 @@ def frozen_store(
 def test_show_reads_a_store_it_cannot_write(
     frozen_store: tuple[Path, str]
 ) -> None:
-    """AC5, behaviourally.
+    """The half of AC5 this branch does deliver, behaviourally.
 
     Distinguishing, and not a call-site grep: against a store whose
     directory is read-only and whose schema is one table short, a
@@ -396,11 +396,19 @@ def test_show_reads_a_store_it_cannot_write(
 
 
 # There is deliberately no "and it writes nothing when the store *is*
-# writable" test here. `open_store_for_read` attempts the writable open
-# first and only a permission failure falls back, so on a writable store
-# the two handles are the same object: such a test passes identically
-# against `_open_store()` and would prove nothing about the routing.
-# The frozen-store arm above is the one that can tell them apart.
+# writable" test here, and it is not an omission: there is nothing to
+# assert. `open_store_for_read` attempts the writable open first and
+# only a permission failure falls back, so on a writable store the two
+# handles are the same object and the open pays the full DDL battery,
+# the migrations, the scope-id mint and the expired-lock sweep.
+#
+# AC5 as written asks for that cost to be gone, and this branch does not
+# remove it. The operator's ruling was to ship `show` on the existing
+# #1416 routing and re-file the cost as its own issue over every
+# read-only verb, so the missing half is tracked there rather than
+# papered over with a test that would pass identically against
+# `_open_store()`. The frozen-store arm above is the one arm that can
+# tell the two routings apart at all.
 
 
 # --- AC6: the subcommand is registered -------------------------------------

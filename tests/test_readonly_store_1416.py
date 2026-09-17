@@ -220,18 +220,36 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     `search`, `status`, `locked` and `speculative`, and held the rest —
     "each needing its own read-only audit rather than a blanket change".
 
-    `_cmd_show` is the fifth, added by an explicit operator ruling on
-    #1553 AC5 rather than by the blanket change the #1416 ruling
-    refused, and it has had the per-command audit the ruling asks for.
-    It reads one `beliefs` row and prints it, so no migration is needed:
-    it projects `b.*`, and `_row_to_belief` already defaults every
-    post-v1.6 column an older store lacks. The audit's one finding is
-    that on the *fallback* handle no expired-lock sweep has run
-    (#1314), so a lock past its `lock_expires_at` still prints
-    `lock: user` — the same staleness `aelf locked` carries there, on a
-    command that reports a stored field rather than acting on it.
-    The behavioural proof that the routing is live is
+    `_cmd_show` is the fifth. The operator's ruling on #1553 was to ship
+    the command on this existing routing with honest documentation, and
+    to re-file the store-open cost as its own issue covering *every*
+    read-only verb — not to bless the routing as satisfying #1553's
+    AC5. So this is a per-command decision about one more handler
+    joining the set, not the blanket change the #1416 ruling refused,
+    and the per-command audit that ruling asks for is below.
+
+    **#1553's AC5 is NOT met by this branch, and this file says so
+    rather than around it.** AC5 asks that the store open read-only so
+    that printing one row pays no DDL battery, no migration, no scope-id
+    mint and no expired-lock sweep. `open_store_for_read` attempts the
+    *writable* open first and falls back to `mode=ro` only on a
+    permission failure, so against an ordinary writable store `show`
+    pays all of it, exactly as `search`, `status`, `locked` and
+    `speculative` do. What the routing genuinely buys is the other half:
+    the command changes no belief and reads a store the caller cannot
+    write, proved by
     `tests/test_cli_show_1553.py::test_show_reads_a_store_it_cannot_write`.
+    The cost half is tracked in the re-filed issue, not here.
+
+    The audit itself: `show` reads one `beliefs` row and prints it, so
+    no migration is needed — it projects `b.*`, and `_row_to_belief`
+    already defaults every post-v1.6 column an older store lacks. The
+    audit's one finding is that on the *fallback* handle no expired-lock
+    sweep has run (#1314), so a lock past its `lock_expires_at` still
+    prints `lock: user` — the same staleness `aelf locked` carries
+    there, on a command that reports a stored field rather than acting
+    on it.
+
     The held commands are not merely unfinished: on the fallback path a
     read-only handle runs no migration and no expired-lock sweep, which
     is the per-command semantics the audit is *for*. `feed` never opens
