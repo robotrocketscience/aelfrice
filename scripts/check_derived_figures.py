@@ -120,6 +120,43 @@ definitions, and fences nested in a blockquote or list item, which need
 container parsing this scanner does not do. A fence indented into a list item
 is therefore read at its literal column.
 
+### The inline pass: run length, and one paragraph
+
+Blocks are masked first and the inline rule then runs on what is left, region
+by region. Inside a region the rule is CommonMark's own, and the property it
+turns on is **backtick run length**: a code span opens on a maximal run of
+backticks and closes on the next run of *exactly* that length. A run with no
+equal-length partner is literal text, not a dangling opener.
+
+That is the half of the defect a block scanner alone does not reach. Run
+length is what makes a three-backtick delimiter unpairable with the single
+backtick that follows it, and an odd run needs no fence to do damage:
+`docs/user/CONFIG.md` publishes a table row naming fences in code font, three
+backticks in the middle of a sentence, and under the old rule the two spare
+backticks ate forward from there. A fence scanner would not have looked at
+that line at all, because it is not a delimiter line.
+
+The second bound is the paragraph. Markdown parses inline content inside one
+block, so a backtick in one paragraph cannot pair with one in the next.
+Without it a single mistyped backtick pairs with the next backtick anywhere
+below it -- and masking blocks first makes that *worse*, not better, because
+the stray no longer has a fence delimiter to pair against and reaches forward
+past a marker instead.
+
+Together they give an absolute property rather than a comparison, and the
+property is the acceptance bar: **a marker outside every fenced block, in a
+paragraph carrying no backtick, is always parsed, at its true line.**
+`tests/test_code_span_scanner_1556.py` fuzzes it over a seeded corpus of
+generated fence arrangements.
+
+One residual, stated rather than closed, and bounded by that property.
+Bounding a span shifts where one can start: when a run can no longer reach
+across a blank line, a later run in the next paragraph becomes an opener and
+blanks a region the unbounded rule left alone. That can cost a marker the
+unbounded rule kept -- `test_the_paragraph_bound_costs_a_marker_only_where_backticks_surround_it`
+is the witness -- and every such marker sits in a paragraph carrying
+backticks, so it was never covered by the bar above.
+
 ## Usage
 
     python3 scripts/check_derived_figures.py                # text checks only
@@ -216,10 +253,89 @@ OVERCLAIM_RES: tuple[re.Pattern[str], ...] = (
 # mention of itself is a checker with an exemption list, which is worse. Quoting
 # the sentence inside backticks is the escape, and it is the same convention the
 # repo already uses for naming code in prose.
-# Double-backtick spans first: a citation of the sentence has to be able to
-# contain a backtick, because the sentence itself names a script in code font.
-_INLINE_CODE_RE = re.compile(r"``.*?``|`[^`]*`", re.S)
+# A citation of the sentence has to be able to contain a backtick, because the
+# sentence itself names a script in code font, so the rule cannot be "one
+# backtick to the next". It is CommonMark's: a span opens on a maximal run of
+# backticks and closes on the next run of exactly that length, within one
+# paragraph. See "### The inline pass" in the module docstring.
 _NON_NEWLINE_RE = re.compile(r"[^\n]")
+
+# A blank line. An inline span may straddle lines but never a blank one.
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t\r]*\n")
+
+# A maximal run of backticks. Run length is the whole point: a run of three is
+# a fence delimiter, not two openers and a spare, and it can only ever pair
+# with another run of three.
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def paragraph_regions(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` offsets of each blank-line-delimited region of `text`.
+
+    The regions tile the text and never overlap, so a span found in one cannot
+    reach into another. The blank line itself is the boundary; which side of it
+    the newlines land on does not matter, because a region boundary can only
+    ever fall on whitespace.
+    """
+    out: list[tuple[int, int]] = []
+    lo = 0
+    for match in _PARAGRAPH_BREAK_RE.finditer(text):
+        out.append((lo, match.start() + 1))
+        lo = match.end()
+    out.append((lo, len(text)))
+    return out
+
+
+def code_span_spans(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` offsets of every inline code span in `text`.
+
+    CommonMark's rule, with the paragraph bound Markdown's block structure
+    already implies. Walk the backtick runs of one paragraph left to right; the
+    first run that has a later run of the same length opens a span that closes
+    on it, and scanning resumes after the closer. A run with no equal-length
+    partner is ordinary text and the walk steps past it -- which is the whole
+    repair: under the old rule a run of three left a spare opener behind, and
+    everything down to the next backtick in the file disappeared.
+    """
+    spans: list[tuple[int, int]] = []
+    for lo, hi in paragraph_regions(text):
+        runs = [
+            (m.start(), m.end() - m.start())
+            for m in _BACKTICK_RUN_RE.finditer(text, lo, hi)
+        ]
+        i = 0
+        while i < len(runs):
+            start, length = runs[i]
+            j = i + 1
+            while j < len(runs) and runs[j][1] != length:
+                j += 1
+            if j == len(runs):
+                i += 1
+                continue
+            spans.append((start, runs[j][0] + length))
+            i = j + 1
+    return spans
+
+
+def sub_code_spans(text: str, repl: Callable[[str], str]) -> str:
+    """`text` with `repl` applied to each inline code span, in order.
+
+    The replacement for `re.sub` over a span pattern. A regex cannot express
+    "a run of n backticks closed by a run of n backticks" -- a backreference
+    matches the same *text*, not the same length under a maximality rule -- so
+    the spans are found first and spliced here.
+    """
+    spans = code_span_spans(text)
+    if not spans:
+        return text
+    out: list[str] = []
+    prev = 0
+    for start, end in spans:
+        out.append(text[prev:start])
+        out.append(repl(text[start:end]))
+        prev = end
+    out.append(text[prev:])
+    return "".join(out)
 
 
 def split_lines(text: str) -> list[str]:
@@ -246,7 +362,7 @@ def split_lines(text: str) -> list[str]:
 
 def _uncited(text: str) -> str:
     """`text` with inline-code spans blanked, for claim detection."""
-    return _INLINE_CODE_RE.sub(" ", text)
+    return sub_code_spans(text, lambda span: " ")
 
 
 def _uncited_inplace(text: str) -> str:
@@ -261,7 +377,7 @@ def _uncited_inplace(text: str) -> str:
     # Newlines are kept, not blanked with the rest. A code span can straddle
     # lines, and eating its newlines shifts every reported line number after it
     # -- `src/aelfrice/hook.py` markers came back two lines early.
-    return _INLINE_CODE_RE.sub(lambda m: _NON_NEWLINE_RE.sub(" ", m.group(0)), text)
+    return sub_code_spans(text, lambda span: _NON_NEWLINE_RE.sub(" ", span))
 
 
 # --------------------------------------------------------------------------
@@ -453,16 +569,16 @@ def _mask_code_spans(text: str) -> str:
     also carries words -- ``93.69% of rows`` -- is still invisible here.
     """
 
-    def repl(match: re.Match[str]) -> str:
-        inner = match.group(0).strip("`")
+    def repl(span: str) -> str:
+        inner = span.strip("`")
         return f" {inner} " if _BARE_FIGURE_SPAN_RE.match(inner) else " "
 
-    return _INLINE_CODE_RE.sub(repl, text)
+    return sub_code_spans(text, repl)
 
 
 def _mask_every_code_span(text: str) -> str:
-    """The rule this file shipped with. Kept for `--mask-delta` only."""
-    return _INLINE_CODE_RE.sub(" ", text)
+    """Every span masked, the bare-number exception included. `--mask-delta`."""
+    return sub_code_spans(text, lambda span: " ")
 
 
 def _mask_no_code_span(text: str) -> str:
