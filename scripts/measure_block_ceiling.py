@@ -114,6 +114,51 @@ them fires), and the two phantom notes. Every lane is default-off and
 this arm enables each explicitly; the figure describes a configured
 store, never a stock install.
 
+**The `--cadence` figures exclude the `<cadence-resume>` recap**, and the
+arm refuses to print them if that stops being true. The recap is read
+from a cache a *prior* session's Stop-side cadence fire wrote, and this
+arm's work directory is fresh, so `_maybe_read_cadence_resume` returns
+empty and nothing is prepended to the sub-block. The recap is charged to
+the same `<aelfrice-memory>` envelope when it is present — it simply is
+not present here, which is why it needs an arm of its own.
+
+`--resume-drop` is that arm, and answers the seventh question: **what
+does the ceiling's dropper do to the #871 recap, and what does the
+envelope lose to it?** It fires one Stop-side P1 cadence checkpoint to
+write a genuine resume cache, then fires three independently seeded
+`RESUME_LOCKS` / `RESUME_CORE` / `RESUME_HITS` stores: the recap
+untrimmed, the recap at the shipped ceiling, and the same prompt at the
+same ceiling with no recap.
+
+* the recap's own `<belief>` elements, 65 untrimmed against 34 after the
+  trim. The dropper sheds them like any other element: the recap is
+  prepended to the session-start sub-block, so it sits outside `<core>`
+  and `<recent-work>` and its elements are bucketed with the per-turn
+  hits, and the rebuilder spells a lock `locked="true"` where
+  `_LOCKED_ATTR` reads `lock="user"`, so not even a locked row inside it
+  is exempt. Only the `<cadence-resume>` wrapper survives, by not being a
+  `<belief>` element at all;
+  <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
+  <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 34 -->
+* prompt-matched beliefs reaching the model, 6 without the recap against
+  0 with it, of 20 seeded. Both an element and a `seen` pointer count as
+  reaching it, so #1547's dedupe is not read as a loss. This is the trade
+  `HOOK_BLOCK_TOKEN_CEILING`'s scope paragraph used to say nobody had
+  measured, happening inside one envelope.
+  <!-- derived: scripts/measure_block_ceiling.py#resume_hits_without_recap = 6 -->
+  <!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 0 -->
+
+The three arms get a store each rather than sharing one, because a fire
+writes `last_retrieved_at` on every belief it renders and so reorders the
+next fire's retrieval; on a shared store part of the reported difference
+would be the arms' order rather than the recap.
+
+`transcript_path` is `/dev/null` on the three fires under test, and that
+is load-bearing: with a real window the rebuild lane re-queries and the
+per-turn hit lane comes back empty, and a fixture with no hits cannot
+show a hit being displaced. The Stop-side fire that writes the cache is
+the one that gets the window.
+
 Usage:
     uv run python scripts/measure_block_ceiling.py
     uv run python scripts/measure_block_ceiling.py --lock-chars 150 200 700
@@ -123,6 +168,7 @@ Usage:
     uv run python scripts/measure_block_ceiling.py --reference-tier
     uv run python scripts/measure_block_ceiling.py --exploration
     uv run python scripts/measure_block_ceiling.py --cadence
+    uv run python scripts/measure_block_ceiling.py --resume-drop
     uv run python scripts/measure_block_ceiling.py --dry-run
     uv run python scripts/measure_block_ceiling.py --emit-figures
 
@@ -141,7 +187,14 @@ ceiling dropped nothing; and under `--cadence` if any one of the four
 writers was absent (the total would be a sum over fewer lanes than it
 names), if the memory envelope overran its own ceiling, or if the
 payload did not exceed it, or if the cadence block carried no
-`budget_used` attribute to read the soft bound off.
+`budget_used` attribute to read the soft bound off, or if the fire
+carried a `<cadence-resume>` recap the figures are published as
+excluding; and under `--resume-drop` if any arm's recap is not the one
+it was supposed to have, if the Stop-side fire wrote no cache, if the
+untrimmed recap carries no `<belief>` element for the dropper to act on,
+if the ceiling dropped nothing, or if the control arm reached no
+prompt-matched belief — a fall from nothing to nothing would print as a
+displacement figure while saying nothing.
 
 The `--reference-tier` guard is per write rather than over the set on
 purpose. An "equal on every write" guard passes as long as one write
@@ -202,6 +255,10 @@ LANE_WORD = "banana"
 LANE_PROMPT = f"tell me everything about the {LANE_WORD} please"
 
 _ELEMENT_ID_RE = re.compile(r'<belief id="([^"]+)"')
+# The manifest form of the same belief. `hook._SEEN_MANIFEST_RE` is the
+# authority on the shape; this is the id-only reader the arms below need,
+# and it is kept identical to that pattern's prefix on purpose.
+_SEEN_ID_RE = re.compile(r'^  seen (.+?): ".*"$', re.MULTILINE)
 
 
 def _belief(
@@ -684,6 +741,11 @@ CADENCE_PHANTOM_ID = "P" + "0" * 31
 # records that this can read N > M; reading it off the fire is what makes
 # "the second bound is soft" a measurement rather than a citation.
 CADENCE_BUDGET_USED_RE = re.compile(r'budget_used="(\d+)/(\d+)"')
+# The #871 recap's own tags. Named up here because `cadence_payload`
+# asserts their *absence* — its figures are published as excluding the
+# recap — and `resume_drop` below asserts their presence.
+RESUME_OPEN = "<cadence-resume"
+RESUME_CLOSE = "</cadence-resume>"
 CADENCE_BLOCKS = (
     ("cadence_checkpoint", "<cadence-checkpoint>", "</cadence-checkpoint>"),
     ("memory", "<aelfrice-memory>", "</aelfrice-memory>"),
@@ -754,7 +816,7 @@ def _cadence_store(work: Path) -> Path:
     return db
 
 
-def _cadence_transcript(work: Path) -> Path:
+def _cadence_transcript(work: Path, session: str) -> Path:
     """A host-format transcript, so the real rebuilder has a window.
 
     `_read_recent_for_pre_compact` prefers the canonical
@@ -769,7 +831,7 @@ def _cadence_transcript(work: Path) -> Path:
     for i in range(CADENCE_TURNS):
         lines.append(json.dumps({
             "type": "user",
-            "sessionId": CADENCE_SESSION,
+            "sessionId": session,
             "message": {
                 "role": "user",
                 "content": f"what do we know about the {LANE_WORD} store {i}",
@@ -777,7 +839,7 @@ def _cadence_transcript(work: Path) -> Path:
         }))
         lines.append(json.dumps({
             "type": "assistant",
-            "sessionId": CADENCE_SESSION,
+            "sessionId": session,
             "message": {
                 "role": "assistant",
                 "content": [{
@@ -818,7 +880,7 @@ def cadence_payload() -> dict[str, object]:
     """
     work = Path(tempfile.mkdtemp(prefix="aelf-cadence-"))
     db = _cadence_store(work)
-    transcript = _cadence_transcript(work)
+    transcript = _cadence_transcript(work, CADENCE_SESSION)
     (work / ".aelfrice.toml").write_text(
         "[cadence]\n"
         "enabled = true\n"
@@ -908,7 +970,276 @@ def cadence_payload() -> dict[str, object]:
             "the payload fits inside the block ceiling: this fire does not "
             "show a payload exceeding it and the figure would be vacuous"
         )
+    if RESUME_OPEN in out:
+        raise SystemExit(
+            "this fire carried a <cadence-resume> recap: the figures above "
+            "are published as excluding it, so a recap in the fixture would "
+            "make that statement false while the sum still printed"
+        )
     return rows
+
+
+# --- #1560 round two: what the ceiling does to the #871 recap -------------
+#
+# The same three-lane store as `--lanes`, fired twice at the shipped
+# ceiling: once with a `<cadence-resume>` recap in the envelope and once
+# without. Counting prompt-matched beliefs on each arm is what separates
+# "the recap is charged to this envelope" from "the recap costs the
+# prompt its own hits".
+RESUME_LOCKS = 40
+RESUME_CORE = 20
+RESUME_HITS = 20
+RESUME_PREV_SESSION = "resume-prev"
+RESUME_K = 5
+
+
+def _resume_store(work: Path) -> Path:
+    """Locks, prompt-independent `<core>` rows, and prompt-matched hits.
+
+    Identical in shape to the `--lanes` fixture, so the two arms are
+    comparable: only `LANE_WORD` rows are selected by the prompt, which
+    is what makes "a prompt-matched belief reached the model" countable.
+    """
+    db = work / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        for i in range(RESUME_LOCKS):
+            store.insert_belief(_lock(i, 150))
+        for i in range(RESUME_CORE):
+            store.insert_belief(
+                _belief(
+                    f"C{i:031d}",
+                    "coreword unrelated material " + "w" * 200,
+                    alpha=4.0,
+                )
+            )
+        for i in range(RESUME_HITS):
+            store.insert_belief(
+                _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
+            )
+    finally:
+        store.close()
+    return db
+
+
+def _write_resume_cache(work: Path, db: Path) -> str:
+    """Fire the real Stop-side cadence and return the cache it wrote.
+
+    Nothing is stubbed. The recap the UPS hook later injects is whatever
+    `_rebuild_and_format` packed on a genuine P1 fire, so its `<belief>`
+    elements carry the attribute spelling the rebuilder actually emits —
+    which is the half of this measurement a canned body would decide
+    rather than observe.
+    """
+    from aelfrice.hook import _maybe_fire_cadence_checkpoint  # noqa: PLC0415
+
+    (work / ".aelfrice.toml").write_text(
+        "[cadence]\n"
+        "enabled = true\n"
+        'policy = "p1_every_k_turns"\n'
+        f"k = {RESUME_K}\n",
+        encoding="utf-8",
+    )
+    (db.parent / "session_injected_ids.json").write_text(
+        json.dumps({
+            "session_id": RESUME_PREV_SESSION,
+            "ring": [],
+            "ring_max": 200,
+            "next_fire_idx": RESUME_K,
+            "evicted_total": 0,
+        }),
+        encoding="utf-8",
+    )
+    transcript = _cadence_transcript(work, RESUME_PREV_SESSION)
+    # The cache path is derived from `db_path()`, so the Stop-side fire
+    # writes it beside this store rather than beside whatever store a
+    # previous arm in the same process left exported.
+    os.environ["AELFRICE_DB"] = str(db)
+    serr = io.StringIO()
+    _maybe_fire_cadence_checkpoint(
+        {
+            "session_id": RESUME_PREV_SESSION,
+            "transcript_path": str(transcript),
+            "cwd": str(work),
+            "hook_event_name": "Stop",
+        },
+        RESUME_PREV_SESSION,
+        serr,
+    )
+    cache = db.parent / "cadence_resume_cache.json"
+    if not cache.exists():
+        raise SystemExit(
+            "the Stop-side cadence fire wrote no resume cache, so the arm "
+            f"has no recap to measure: {serr.getvalue().strip()!r}"
+        )
+    return cache.read_text(encoding="utf-8")
+
+
+def _resume_fire(work: Path, db: Path, session: str) -> tuple[str, str]:
+    """One first-prompt UPS fire at the shipped ceiling.
+
+    `transcript_path` is `/dev/null` deliberately: a real window here
+    re-queries the rebuild lane and empties the per-turn hit lane, and a
+    fixture with no hits cannot show a hit being displaced. The recap the
+    arm injects came from the Stop-side fire above, which had the window.
+    """
+    os.environ["AELFRICE_DB"] = str(db)
+    os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": session,
+        "transcript_path": "/dev/null",
+        "cwd": str(work),
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": LANE_PROMPT,
+    })
+    rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+    if rc != 0:
+        raise SystemExit(f"hook returned {rc}")
+    return sout.getvalue(), serr.getvalue()
+
+
+def _reached(out: str) -> set[str]:
+    """Ids of prompt-matched beliefs the model can read in this payload.
+
+    An element and a `seen` pointer both count: the pointer's contract is
+    that the text is elsewhere in this window, so a belief that kept
+    either form was not lost. Counting elements alone would read #1547's
+    dedupe as a loss.
+    """
+    ids = set(_ELEMENT_ID_RE.findall(out))
+    ids |= set(_SEEN_ID_RE.findall(out))
+    return {i for i in ids if i.startswith("H")}
+
+
+def resume_drop() -> dict[str, object]:
+    """What the ceiling's dropper does to a `<cadence-resume>` recap.
+
+    Three arms, each a freshly seeded store of its own: the recap
+    untrimmed, the recap at the shipped ceiling, and the same prompt at
+    the same ceiling with no recap at all. The first pair makes the
+    recap's element count before and after the trim a difference rather
+    than an assertion; the third is the control that says what the prompt
+    reaches when the recap is not there to displace it.
+
+    **A store per arm, not one store fired three times.** A fire writes
+    `last_retrieved_at` on every belief it renders, which reorders the
+    next fire's retrieval — so shared-store arms would differ by their
+    position in the sequence as well as by the variable under test, and
+    the reported difference would be part artefact.
+
+    The recap is prepended to the session-start sub-block, so it sits
+    *outside* `<core>` and `<recent-work>` and its elements are bucketed
+    with the per-turn hits. It is also rendered by the context rebuilder,
+    which spells a lock `locked="true"` where `_LOCKED_ATTR` reads
+    `lock="user"` — so no element of the recap is exempt, a user lock
+    inside it included, and only the wrapper survives by not being a
+    `<belief>` element at all.
+    """
+    producer = Path(tempfile.mkdtemp(prefix="aelf-resume-cache-"))
+    cached = _write_resume_cache(producer, _resume_store(producer))
+
+    def arm(name: str, *, recap: bool, ceiling: int | None) -> tuple[str, str]:
+        work = Path(tempfile.mkdtemp(prefix=f"aelf-resume-{name}-"))
+        db = _resume_store(work)
+        # Cadence off for the fires under test: the recap is read from
+        # the cache on a first prompt regardless, and leaving the
+        # UPS-side checkpoint enabled would add a second block this arm
+        # is not about.
+        (work / ".aelfrice.toml").write_text(
+            "[cadence]\nenabled = false\n", encoding="utf-8",
+        )
+        if recap:
+            (db.parent / "cadence_resume_cache.json").write_text(
+                cached, encoding="utf-8",
+            )
+        if ceiling is None:
+            return _resume_fire(work, db, f"resume-{name}")
+        return _resume_fire_with_ceiling(work, db, f"resume-{name}", ceiling)
+
+    untrimmed, _ = arm("untrimmed", recap=True, ceiling=0)
+    trimmed, trimmed_err = arm("trimmed", recap=True, ceiling=None)
+    control, _ = arm("control", recap=False, ceiling=None)
+
+    for label, out, want in (
+        ("untrimmed", untrimmed, True),
+        ("trimmed", trimmed, True),
+        ("control", control, False),
+    ):
+        if (RESUME_OPEN in out) is not want:
+            raise SystemExit(
+                f"the {label} arm "
+                f"{'lost' if want else 'grew'} its <cadence-resume> recap: "
+                "the arms differ by something other than the recap and the "
+                "comparison would not be about it"
+            )
+    if "dropped" not in trimmed_err:
+        raise SystemExit(
+            "the ceiling dropped nothing on the recap arm: the figures "
+            "would describe a trim that never ran"
+        )
+    recap_untrimmed = _count_recap_elements(untrimmed)
+    recap_trimmed = _count_recap_elements(trimmed)
+    if recap_untrimmed == 0:
+        raise SystemExit(
+            "the untrimmed recap carries no <belief> element, so there is "
+            "nothing for the dropper to shed and the arm is vacuous"
+        )
+    if not _reached(control):
+        raise SystemExit(
+            "the control arm reached no prompt-matched belief, so the pair "
+            "of counts would be a fall from nothing to nothing and would "
+            "say nothing about what the recap displaces"
+        )
+    return {
+        "recap_elements_untrimmed": recap_untrimmed,
+        "recap_elements_trimmed": recap_trimmed,
+        "recap_wrapper_survives": RESUME_CLOSE in trimmed,
+        "hits_without_recap": len(_reached(control)),
+        "hits_with_recap": len(_reached(trimmed)),
+        "n_hits": RESUME_HITS,
+        "ceiling": HOOK_BLOCK_TOKEN_CEILING,
+        "tokens_untrimmed": _audit_tokens_from_block(untrimmed),
+        "tokens_trimmed": _audit_tokens_from_block(trimmed),
+    }
+
+
+def _resume_fire_with_ceiling(
+    work: Path, db: Path, session: str, ceiling: int,
+) -> tuple[str, str]:
+    """`_resume_fire` with the ceiling overridden; `0` disables the trim."""
+    previous = os.environ.get("AELFRICE_HOOK_BLOCK_CEILING")
+    os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = str(ceiling)
+    try:
+        os.environ["AELFRICE_DB"] = str(db)
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps({
+            "session_id": session,
+            "transcript_path": "/dev/null",
+            "cwd": str(work),
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": LANE_PROMPT,
+        })
+        rc = user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=sout, stderr=serr,
+        )
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return sout.getvalue(), serr.getvalue()
+    finally:
+        if previous is None:
+            os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        else:
+            os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = previous
+
+
+def _count_recap_elements(out: str) -> int:
+    """`<belief>` elements between the recap's own tags, or 0 when absent."""
+    if RESUME_OPEN not in out or RESUME_CLOSE not in out:
+        return 0
+    start = out.index(RESUME_OPEN)
+    end = out.index(RESUME_CLOSE)
+    return len(_ELEMENT_ID_RE.findall(out[start:end]))
 
 
 def crossing(chars: int, max_locks: int, step: int) -> dict[str, object]:
@@ -953,6 +1284,11 @@ def main(argv: list[str] | None = None) -> int:
         "--cadence", action="store_true",
         help="print the whole UserPromptSubmit payload of one "
              "cadence-enabled fire, and each writer's share of it",
+    )
+    ap.add_argument(
+        "--resume-drop", action="store_true",
+        help="print what the ceiling's dropper does to a <cadence-resume> "
+             "recap, and what the same prompt reaches without one",
     )
     ap.add_argument(
         "--dry-run", action="store_true",
@@ -1010,10 +1346,32 @@ def main(argv: list[str] | None = None) -> int:
         figures["cadence_fire_rebuild_budget_chars"] = (
             cadence["rebuild_budget_chars"]
         )
+        # #1560 round two. The recap's charge to the envelope, and what
+        # the envelope loses to it. Both counts are published, so a
+        # change in either reddens rather than quietly restating the
+        # sentence the docstring used to get wrong.
+        resume = resume_drop()
+        figures["resume_recap_elements_untrimmed"] = (
+            resume["recap_elements_untrimmed"]
+        )
+        figures["resume_recap_elements_trimmed"] = (
+            resume["recap_elements_trimmed"]
+        )
+        figures["resume_hits_without_recap"] = resume["hits_without_recap"]
+        figures["resume_hits_with_recap"] = resume["hits_with_recap"]
         print(json.dumps(figures))
         return 0
 
     if args.dry_run:
+        if args.resume_drop:
+            print(
+                f"would fire one {RESUME_LOCKS}-lock / {RESUME_CORE}-core "
+                f"/ {RESUME_HITS}-hit store three times — recap untrimmed, "
+                f"recap at {HOOK_BLOCK_TOKEN_CEILING} tokens, and no recap "
+                "at the same ceiling — after one Stop-side P1 cadence fire "
+                "to write the resume cache"
+            )
+            return 0
         if args.cadence:
             print(
                 f"would fire one {CADENCE_LOCKS}-lock / {CADENCE_CORE}-core "
@@ -1056,6 +1414,38 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.resume_drop:
+        row = resume_drop()
+        if args.json:
+            print(json.dumps(row, indent=2))
+        else:
+            print(
+                f"one first prompt carrying a <cadence-resume> recap, "
+                f"against a {row['ceiling']}-token block ceiling"
+            )
+            print(
+                f"  recap <belief> elements  "
+                f"{row['recap_elements_untrimmed']:>4} untrimmed -> "
+                f"{row['recap_elements_trimmed']:>4} at the ceiling"
+            )
+            print(
+                f"  recap wrapper survives   "
+                f"{str(row['recap_wrapper_survives']):>4}"
+            )
+            print(
+                f"  prompt-matched beliefs   "
+                f"{row['hits_without_recap']:>4} without the recap -> "
+                f"{row['hits_with_recap']:>4} with it "
+                f"(of {row['n_hits']} seeded)"
+            )
+            print(
+                f"  envelope tokens          "
+                f"{row['tokens_untrimmed']:>4} untrimmed -> "
+                f"{row['tokens_trimmed']:>4} at the ceiling"
+            )
+        # Vacuity is refused inside `resume_drop`.
+        return 0
+
     if args.cadence:
         row = cadence_payload()
         if args.json:
@@ -1076,7 +1466,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(
                 f"  <aelfrice-memory>     {row['memory_tokens']:>6}  "
-                f"(block ceiling {row['ceiling']}, hard)"
+                f"(block ceiling {row['ceiling']}, hard except for the "
+                "#379 lock exemption)"
             )
             print(
                 "  phantom opportunity   "
