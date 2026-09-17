@@ -1258,11 +1258,14 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
         c for c in lengths
         if rows[str(c)]["snapshot_items"] > rows[str(c)]["prose_items"]
     ]
+    admitted = {
+        c: (rows[str(c)]["prose_items"], rows[str(c)]["snapshot_items"])
+        for c in lengths
+    }
     assert moved, (
         f"the retention class changes nothing {head} admits at any arm "
         f"length, so the arm measures no class effect on the one lane that "
-        f"still charges the compressed form: "
-        f"{ {c: (rows[str(c)]['prose_items'], rows[str(c)]['snapshot_items']) for c in lengths} }"
+        f"still charges the compressed form: {admitted}"
     )
     row = rows[str(max(moved))]
     assert row["snapshot_bytes"] > row["prose_bytes"], (head, row)
