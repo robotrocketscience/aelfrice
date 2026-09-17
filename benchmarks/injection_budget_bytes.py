@@ -273,16 +273,18 @@ LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 6004, 7170, 18600)
 # edge**, which is in `LENGTH_GRID` for an accounting this arm does not
 # measure.
 #
-# That exclusion is the rule and not an oversight, and the comment here said
-# otherwise until #1559. `LENGTH_GRID` carried no crossing entry when this
-# constant was written, so "the grid above `MAX_HEADLINE_CHARS`" was then
-# exactly right; adding the entry made the sentence false without touching the
-# line below it. The arm measures a retention class against a budget, the
-# crossing entry exists to put the *before* arm's `<core>` charge one token
-# either side of `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`, and the arm does
-# not run a before arm at all — so a fourth pair of stores at that length would
-# cost two builds of 300 beliefs of 6,004 characters to report a row between
-# the two it already has.
+# The comment here said otherwise until #1559, and it was not wrong when it was
+# written: `LENGTH_GRID` carried no crossing entry then, so "the grid above
+# `MAX_HEADLINE_CHARS`" was exactly right. Adding the entry made the sentence
+# false without touching the line below it, and whether that was a decision or
+# an omission is not recoverable from the history. What is recoverable is that
+# the exclusion is right either way, which is why it is kept and stated rather
+# than closed by adding the length. The arm measures a retention class against
+# a budget; the crossing entry exists to put the *before* arm's `<core>` charge
+# one token either side of `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`, and the
+# arm runs no before arm at all — every side of it calls `_measure` with
+# `legacy=False`. A fourth pair of stores there would cost two builds of 300
+# beliefs of 6,004 characters to report a row between the two it already has.
 SNAPSHOT_ARM_LENGTHS: tuple[int, ...] = (92, 300, 1000, 7170, 18600)
 
 # Lanes the snapshot arm is measured on. All three compose `<belief>` elements
