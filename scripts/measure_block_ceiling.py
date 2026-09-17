@@ -795,15 +795,16 @@ def cadence_payload() -> dict[str, object]:
     exclusive retrieval and `elif gate_skip:` branches, so at most one
     fires), and the two phantom notes.
 
-    Every lane here is default-off and enabled explicitly, so the figure
-    describes a configured store and not a stock install: `[cadence]
-    enabled` alone gates the largest of the three.
+    Each of the three lanes this arm enables is default-off, so the
+    figure describes a configured store and never a stock install; of the
+    three, `[cadence] enabled` gates by far the largest block.
 
     The guards below refuse a vacuous run. A fire missing any writer
     would still print a total — a smaller one, with nothing saying a lane
-    was absent — and a memory envelope over its own ceiling would make
-    "each block is within its own bound" false while the sum it feeds
-    stayed publishable.
+    was absent; a memory envelope over its own ceiling would make "each
+    block is within its own bound" false while the sum it feeds stayed
+    publishable; and a payload that fits inside the ceiling is not the
+    arithmetic this arm exists to report.
     """
     work = Path(tempfile.mkdtemp(prefix="aelf-cadence-"))
     db = _cadence_store(work)
