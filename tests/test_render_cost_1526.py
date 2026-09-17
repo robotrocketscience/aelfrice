@@ -613,26 +613,35 @@ def test_the_producer_names_which_budget_ended_every_pack(
 
     * Drop 6,004 from `LENGTH_GRID` — the sibling guard
       `test_the_core_section_empties_once_one_belief_exceeds_its_budget`, on
-      `assert [7170, 18600] == [6004, 7170, 18600]`. It does **not** red the
-      `any(...)` here: 7,170 and 18,600 satisfy the condition too, which is
-      why the grid entry is pinned by the exact list over there and not by
-      this test's existence check.
+      `assert 7170 == 6004`. It does **not** red the `any(...)` here: 7,170
+      and 18,600 satisfy the condition too, which is why the grid entry is
+      pinned by the first-emptied length over there and not by this test's
+      existence check.
     * Raise `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 — this test on
-      the edge assertion, `assert (320 <= 2000 < 1501) is True`, and the
-      sibling on `assert [18600] == [6004, 7170, 18600]`. The edge moves to
+      the edge assertion, `assert (2000 < 1501) is True` at 6,004 content
+      characters, and the sibling on `assert 18600 == 6004`. The edge moves to
       around 8,004 characters and the published one stops being enforced.
-    * Pack both arms under the pre-#1526 cost function —
-      `_pack_core_candidates(candidates, budget, lambda b: max(1,
-      len(b.content) // 4))` in `_render_core` — this test on the curve
-      assertion `assert []`: with both arms charging the same thing the
-      after-arm-emits / before-arm-empty asymmetry disappears.
+    * Raise it to 5,000 instead — this test on the `any(...)` itself, `assert
+      False`, because no grid length's pre-#1526 charge reaches 5,000. That is
+      the mutation the existence check is for; the budget rise to 2,000 is
+      caught one assertion later.
     * Refill an empty pack from the top candidate — `if not packed and
-      candidates: packed = candidates[:1]` in the same function — this test on
-      `assert []`, and the sibling guard on its own emptied-lengths list.
-    * Revert `_probe_budget` to the old factor — `return budget *
-      SATURATION_PROBE_FACTOR` in `_measure` — this test on the probe
-      assertion, and then on `PoolProbeTooSmall` in the fixture itself.
-    * Delete the fail-closed `confirm` render in `_measure` — this test on
+      candidates: packed = candidates[:1]` in `_render_core` — this test on the
+      curve assertion `assert []`, because the before arm stops emptying and
+      the asymmetry disappears, and the sibling guard on `assert [] == [6004,
+      7170, 18600]`.
+    * Revert `_probe_budget` to the old factor — `probe = max(budget * f, sub
+      * f)` in `_measure` — the **fixture**, not an assertion here:
+      `PoolProbeTooSmall` is raised for `agent_context` at 7,170 content
+      characters (43,887 bytes held at a probe of 2,400, 45,152 at twice it),
+      so 10 items error and one fails. The fail-closed render gets there before
+      any assertion can, which is what it is for.
+    * Publish the factor instead of the probe — `row[f"{name}_probe_budget"] =
+      budget * SATURATION_PROBE_FACTOR` in `_curve` — this test on the probe
+      assertion, `assert 6000 > 6000`. That is the mutation the probe assertion
+      is for: the label stays correct and only its audit trail is wrong.
+    * Delete the fail-closed `confirm` render in `_measure` —
+      `test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label` on
       `DID NOT RAISE <class 'PoolProbeTooSmall'>`.
     * An oversize guard on `_render_session_start` returning `Arm(0, 0)` above
       100,000 bytes — this test on `assert 'session_start' == 'core'`.
@@ -1037,6 +1046,14 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     returns it unchanged, and the ratio is 1.0 for every class that is not
     `transient`. A grid that stopped there would measure nothing, which is
     what the pre-#1547 grid did.
+
+    Mutation, measured with `uv run pytest tests/test_render_cost_1526.py -q`:
+    removing `_cap_belief_content` from `_belief_element_line` reds this test
+    on `assert 3 == 1`, the emitted side going back to
+    `{6004: 6056, 7170: 7222, 18600: 18652}` characters. The ceiling assertion
+    below pins the same cap on the `snapshot` column and is not separately
+    falsifiable — the only mutation that moves it is the one that moves the
+    emission, and that reaches the verbatim assertion first.
     """
     fig = producer_figures
     m = _producer_module()
@@ -1153,6 +1170,14 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
 
     All three sides go through `_measure`, so both budgets are varied on each,
     and the `binds_on` each reports is the #1546 property applied to the arm.
+
+    Mutation, measured with `uv run pytest tests/test_render_cost_1526.py -q`:
+    dropping `"ups"` from `_lane_belief_cost`'s table — putting that lane back
+    on the compressed charge the producer used to model — reds this test on
+    `assert 20 == 17` at 300 content characters, the snapshot pack admitting
+    three beliefs the prose pack does not because it is charging them a
+    headline price. That is the producer defect #1559 fixed, and it is what the
+    equalities above exist to keep fixed.
     """
     fig = producer_figures
     m = _producer_module()
@@ -1581,10 +1606,12 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     * Drop the `+ 1` from `charged()` — this test, on `assert 54 == 55` at 150
       content characters.
     * Remove `_cap_belief_content` from `_core_belief_line` — this test, on the
-      shipped-arm bound `assert 4667 < 1500`.
+      shipped-arm bound `assert 30017 < 1500`, which is one line at the top of
+      the sweep.
     * Raise `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` to 2,000 — this test, on
-      `assert [18600] == [6004, 7170, 18600]`: the crossing moves to about
-      8,004 characters and 6,004 stops being the edge.
+      `assert 18600 == 6004`: the crossing moves to about 8,004 characters and
+      6,004 stops being the edge. The emptied list itself still agrees with the
+      re-derived one, which is why the first member is asserted separately.
     * Drop 6,004 from `LENGTH_GRID` — this test, on
       `assert 7170 == 6004`, the first emptied length.
     * Refill an empty `<core>` pack from the top candidate — `if not packed
