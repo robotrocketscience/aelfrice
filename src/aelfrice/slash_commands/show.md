@@ -1,6 +1,6 @@
 ---
 name: aelf:show
-description: Print one belief by its exact id — content in full, origin, lock level, retention class, posterior, timestamps, and scope. Read-only, and it reaches retired beliefs.
+description: Print one belief by id, or by an unambiguous id prefix — content in full, origin, lock level, retention class, posterior, timestamps, and scope. It changes no belief, and it reaches retired ones.
 argument-hint: The belief ID to print (a prefix works when only one belief starts with it)
 allowed-tools:
   - Bash

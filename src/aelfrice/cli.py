@@ -9131,7 +9131,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # belief's full text, so this is a workflow verb, not a diagnostic.
     p_show = sub.add_parser(
         "show",
-        help="print one belief by id (exact-id lookup, read-only)",
+        help="print one belief by id, or by an unambiguous id prefix",
     )
     p_show.add_argument(
         "belief_id",
