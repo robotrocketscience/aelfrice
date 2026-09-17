@@ -1068,9 +1068,12 @@ class PoolProbeTooSmall(RuntimeError):
 
 
 # `_probe_budget` keyed by the store's file. Memoised because it is a scan of
-# every belief in the store and `_measure` is called 2-3 times per lane per
-# cell against the same handful of stores — 1,192 calls against 21 stores on
-# the full grid. Keyed by path rather than by `id(store)`: these stores are
+# every belief in the store, it has exactly one call site — `_measure`, which
+# runs two or three times per lane per grid cell — and the stores it is handed
+# are an order of magnitude fewer than the calls. The memo turns that into one
+# scan per store. No call or store count is published here: an earlier revision
+# gave 1,192 calls against 21 stores, and instrumenting the full grid returns
+# neither. Keyed by path rather than by `id(store)`: these stores are
 # closed and freed between `figures()` calls and CPython reuses addresses, so
 # an identity key can serve one store's bound for another's. Every store this
 # module builds has its own file under a per-run tempdir, so the key is unique
