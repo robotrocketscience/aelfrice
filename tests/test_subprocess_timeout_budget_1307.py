@@ -138,13 +138,31 @@ def _reaches_subprocess(tree: ast.Module) -> set[str]:
 
 
 def _is_timeout_mark(node: ast.expr) -> bool:
-    """`pytest.mark.timeout` / `pytest.mark.timeout(N)`, either spelling."""
-    node = node.func if isinstance(node, ast.Call) else node
+    """A `pytest.mark.timeout(...)` mark that actually carries a budget.
+
+    The call is required, and so is a value inside it. `pytest-timeout` reads
+    the number off the marker -- `marker.args[0]`, or the `timeout=` keyword --
+    so a bare `pytest.mark.timeout` and an empty `pytest.mark.timeout()` both
+    leave the test on the suite default, which is the thing this module exists
+    to stop a spawning test from resting on. Accepting either spelling let a
+    module-level `_x = pytest.mark.timeout` satisfy the gate for every test it
+    decorated while setting no timeout at all.
+
+    Only the value is checked for, not its type: `pytest.mark.timeout(N)` names
+    a module constant, and resolving one would mean evaluating the file.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    carries_budget = bool(node.args) or any(
+        kw.arg == "timeout" for kw in node.keywords
+    )
     return (
-        isinstance(node, ast.Attribute)
-        and node.attr == "timeout"
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "mark"
+        carries_budget
+        and isinstance(func, ast.Attribute)
+        and func.attr == "timeout"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "mark"
     )
 
 
@@ -430,6 +448,53 @@ def test_a_module_alias_for_the_mark_is_a_budget() -> None:
     # ...and without the alias set in hand the same decorator is not a budget,
     # which is what keeps the widening from being a blanket pass on any name.
     assert not _has_timeout_marker(fn, frozenset())
+
+
+def test_a_mark_that_sets_no_timeout_is_not_a_budget() -> None:
+    """The mark has to carry a number, in every position the rule reads.
+
+    `pytest-timeout` takes the budget off the marker -- `marker.args[0]` or
+    the `timeout=` keyword -- so `pytest.mark.timeout` with no call and
+    `pytest.mark.timeout()` with an empty one both leave the test on the suite
+    default. Bound to a module name, either one would have satisfied this gate
+    for every test it decorated while setting nothing, which is the hole this
+    case pins. Asserted in all three positions the rule accepts a mark in --
+    module alias, `pytestmark`, class decorator -- because each reads
+    `_is_timeout_mark` separately.
+
+    The control is the same file with the argument put back: it must be a
+    budget, or this test would pass on a walk that had stopped seeing marks.
+    """
+    for spelling in ("pytest.mark.timeout", "pytest.mark.timeout()"):
+        tree = ast.parse(
+            "import pytest\n"
+            "import subprocess\n"
+            f"_pays = {spelling}\n"
+            f"pytestmark = {spelling}\n"
+            f"@{spelling}\n"
+            "class TestGroup:\n"
+            "    def test_leaf(self):\n"
+            "        subprocess.run(['x'])\n"
+        )
+        assert _module_timeout_aliases(tree) == frozenset(), spelling
+        assert not _module_has_timeout_pytestmark(tree), spelling
+        assert _class_marked_tests(tree) == set(), spelling
+    live = ast.parse(
+        "import pytest\n"
+        "import subprocess\n"
+        "_pays = pytest.mark.timeout(30)\n"
+        "pytestmark = pytest.mark.timeout(30)\n"
+        "@pytest.mark.timeout(timeout=30)\n"
+        "class TestGroup:\n"
+        "    def test_leaf(self):\n"
+        "        subprocess.run(['x'])\n"
+    )
+    # `pytestmark` is a module-level binding like any other, so the alias walk
+    # returns it too; the `pytestmark` rule is what reads it as a file-wide
+    # budget.
+    assert _module_timeout_aliases(live) == frozenset({"_pays", "pytestmark"})
+    assert _module_has_timeout_pytestmark(live)
+    assert _class_marked_tests(live) == {"test_leaf"}
 
 
 def test_a_module_name_bound_to_something_else_is_not_a_budget() -> None:
