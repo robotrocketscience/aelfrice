@@ -31,6 +31,19 @@ _STABLE = "import json\nprint(json.dumps({'k': 20}))\n"
 # function of the source: the process id.
 _UNSTABLE = "import json, os\nprint(json.dumps({'k': os.getpid()}))\n"
 
+# The `--in-process` arm calls `figures()` rather than a command line, so its
+# emitters expose one. The unstable half cannot use the process id -- every run
+# shares an interpreter, which is the whole point of the arm -- so it moves on
+# module state instead, which is the class the subprocess arm cannot see.
+_STABLE_IN_PROCESS = "def figures():\n    return {'k': 20}\n"
+_UNSTABLE_IN_PROCESS = (
+    "_n = 0\n"
+    "def figures():\n"
+    "    global _n\n"
+    "    _n += 1\n"
+    "    return {'k': _n}\n"
+)
+
 
 @pytest.fixture()
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -61,6 +74,54 @@ def test_a_producer_that_moves_between_runs_fails(
     err = capsys.readouterr().err
     assert "diverged" in err, err
     assert "differs in: k" in err, err
+
+
+@pytest.mark.timeout(60)
+def test_the_in_process_arm_passes_a_producer_that_does_not_move(
+    repo: Path,
+) -> None:
+    (repo / "benchmarks" / "p.py").write_text(_STABLE_IN_PROCESS)
+    assert soak.main(["benchmarks/p.py", "--runs", "3", "--in-process"]) == 0
+
+
+@pytest.mark.timeout(60)
+def test_the_in_process_arm_catches_what_the_subprocess_arm_cannot(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A producer that moves on module state, soaked both ways.
+
+    The subprocess arm runs each call in a cold interpreter, so a module global
+    that accumulates across calls is reset before every one of its runs and it
+    reports the producer stable. That is not a gap in this emitter: it is the
+    class of instability the default arm is blind to by construction, which is
+    why the in-process arm exists. Both halves are asserted here, because "the
+    new arm passes" says nothing unless the old one fails to.
+    """
+    (repo / "benchmarks" / "p.py").write_text(_UNSTABLE_IN_PROCESS)
+    assert soak.main(["benchmarks/p.py", "--runs", "3", "--in-process"]) == 1
+    err = capsys.readouterr().err
+    assert "diverged" in err, err
+    assert "differs in: k" in err, err
+    # ...and the same emitter, soaked the default way, is reported stable.
+    (repo / "benchmarks" / "q.py").write_text(
+        _UNSTABLE_IN_PROCESS + "import json\nprint(json.dumps(figures()))\n"
+    )
+    assert soak.main(["benchmarks/q.py", "--runs", "3"]) == 0
+
+
+@pytest.mark.timeout(60)
+def test_the_in_process_arm_refuses_to_run_concurrently(repo: Path) -> None:
+    """`--jobs` is refused rather than ignored.
+
+    `figures()` chdirs, so two in one interpreter would interleave their cwds
+    and the soak would be measuring itself. Accepting the flag and silently
+    running serially would leave an operator believing they had soaked under
+    concurrency when they had not.
+    """
+    (repo / "benchmarks" / "p.py").write_text(_STABLE_IN_PROCESS)
+    assert soak.main(
+        ["benchmarks/p.py", "--runs", "3", "--in-process", "--jobs", "2"]
+    ) == 2
 
 
 @pytest.mark.timeout(60)
