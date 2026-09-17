@@ -40,13 +40,13 @@ bounded reference tier shrink the block?** It fires the four writes against
 one 30,026-character lock, once per tier. Estimated tokens emitted, frozen
 against reference:
 
-* first prompt, gate-skip branch, 7700 frozen and 7700 reference;
+* first prompt, gate-skip branch, 7700 frozen against 273 reference;
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
-  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 7700 -->
-* first prompt, retrieval branch, 7796 frozen and 7796 reference, the
-  reference arm carrying the full text *and* a `ref` pointer to it;
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 273 -->
+* first prompt, retrieval branch, 7796 frozen against 273 reference, the
+  reference arm carrying one `ref` pointer and no copy of the text;
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
-  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
+  <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
 * turn two, retrieval branch, 7683 frozen against 256 reference;
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
@@ -54,14 +54,17 @@ against reference:
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_frozen = 7660 -->
   <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_reference = 233 -->
 
-So the answer is no on a session's first prompt and yes after it, which is
-#1558 — the `<locked>` loop of `_build_session_start_subblock` has no
-`is_reference_lock` branch — and that is why `_write_memory_block`'s
-overrun note prescribes no remedy. An earlier revision of this table
-published 7,784 / 244 / 221 on the three writes that carry a manifest line,
-from a fixture nothing recorded. Those three are a function of the lock's
-*content*, not only its length, because `lock_manifest_line` embeds
-`_lock_topic` of it; the fixture is a module constant here for that reason.
+So the answer is yes on every write. It was no on a session's first prompt
+until #1558 gave the `<locked>` loop of `_build_session_start_subblock` the
+`is_reference_lock` branch the other renderers had: this table read 7700
+and 7796 at *both* tiers on the two first-prompt writes, and the retrieval
+arm carried the full text plus a `ref` pointer to it. That is why
+`_write_memory_block`'s overrun note prescribes the remedy again. An
+earlier revision of this table published 7,784 / 244 / 221 on the three
+writes that carried a manifest line then, from a fixture nothing recorded.
+Every manifest-bearing figure is a function of the lock's *content*, not
+only its length, because `lock_manifest_line` embeds `_lock_topic` of it;
+the fixture is a module constant here for that reason.
 
 `--exploration` answers the fifth: **does the #1279 slot change the block
 the ceiling emits?** It fires one 60-lock / 20-core / 12-hit store twice,
@@ -402,22 +405,31 @@ def _fire_for_reference(
 def reference_tier_table() -> dict[str, dict[str, int]]:
     """Both tiers, with the vacuity guard the figures depend on.
 
-    Equal columns would mean the reference tier is inert on every write,
-    not that #1558 scopes it to the first prompt — and every figure below
-    would still be publishable. The guard is here rather than in the CLI
-    arm so `--emit-figures` inherits it.
+    Equal columns mean the reference tier is inert on that write, and the
+    figures would still be publishable — a run that had lost the bound
+    would emit a table, not an error. The guard is here rather than in the
+    CLI arm so `--emit-figures` inherits it.
+
+    **Per write, not over the set.** Until #1558 the two first-prompt
+    writes were equal at both tiers while turn two and `session_start`
+    differed, so an "equal on every write" guard was satisfied by the
+    defect it was meant to catch. Every write now bounds, so a single
+    equal column is a regression rather than a scope.
     """
     rows = {
         tier: reference_tier(tier)
         for tier in (LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE)
     }
-    if all(
-        rows[LOCK_TIER_FROZEN][w] == rows[LOCK_TIER_REFERENCE][w]
+    inert = [
+        w
         for w in REF_WRITES
-    ):
+        if rows[LOCK_TIER_FROZEN][w] == rows[LOCK_TIER_REFERENCE][w]
+    ]
+    if inert:
         raise SystemExit(
-            "the two lock tiers agree on every write: the table would be "
-            "vacuous"
+            "the two lock tiers agree on "
+            f"{', '.join(inert)}: the reference tier is inert there and the "
+            "table would be vacuous"
         )
     return rows
 
@@ -425,17 +437,17 @@ def reference_tier_table() -> dict[str, dict[str, int]]:
 def reference_tier(tier: str) -> dict[str, int]:
     """Estimated tokens of each write, for one lock demoted to `tier`.
 
-    The #1558 render gap, measured: `_build_session_start_subblock`'s
-    `<locked>` loop renders every lock verbatim with no
+    What #1558 closed, measured: `_build_session_start_subblock`'s
+    `<locked>` loop rendered every lock verbatim with no
     `is_reference_lock` branch, unlike `_split_belief_lines` and
     `_core_belief_line`, which both divert a reference lock to
-    `retrieval.lock_manifest_line`. So the bounded tier is honoured
+    `retrieval.lock_manifest_line`. So the bounded tier was honoured
     everywhere except the envelope that embeds the session-start
     sub-block — which is a session's first prompt, and a first prompt is
-    when a lock-only store overruns. Running this for both tiers is what
-    makes the pair a measurement rather than an assertion: the two are
-    equal on the first prompt and differ by an order of magnitude after
-    it.
+    when a lock-only store overruns. That loop diverts too now, and the
+    two first-prompt writes moved from equal columns to an order of
+    magnitude apart. Running this for both tiers is what makes the pair a
+    measurement rather than an assertion.
 
     **The fixture is the figure.** These numbers are a function of the
     lock's content, not just its length: on the reference arm the block
