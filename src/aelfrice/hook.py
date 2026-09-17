@@ -387,33 +387,35 @@ The `<cadence-resume>` recap (#871) is not a fifth: it is
 prepended to the session-start sub-block and emitted *inside* this
 envelope, so it is charged here.
 
-**And the dropper sheds it.** An earlier revision of this paragraph said
-the recap was exempt "like a user lock", and that is false twice over.
-`_maybe_read_cadence_resume` wraps a body the context rebuilder rendered,
-whose `<belief>` elements are ordinary droppable elements; only the
-`<cadence-resume>` wrapper is exempt, and only because it is not a
-`<belief>` element for `_BELIEF_ELEMENT_RE` to match. Nor does a lock
-inside the recap save it: the rebuilder writes `locked="true"` where
-`_LOCKED_ATTR` reads `lock="user"`, so the #379 exemption does not
-recognise the recap's own locks. Measured on a real P1 resume cache
-against a 40-lock / 20-core / 20-hit store, 65 of the recap's `<belief>`
-elements survive untrimmed and 34 survive the ceiling.
+**And the dropper sheds it first.** An earlier revision of this paragraph
+said the recap was exempt "like a user lock", and that was false twice
+over. `_maybe_read_cadence_resume` wraps a body the context rebuilder
+rendered, whose `<belief>` elements are ordinary droppable elements; nor
+does a lock inside the recap save it, because the rebuilder writes
+`locked="true"` where `_LOCKED_ATTR` reads `lock="user"`, so the #379
+exemption does not recognise the recap's own locks. Measured on a real P1
+resume cache against a 40-lock / 20-core / 20-hit store, 65 of the recap's
+`<belief>` elements survive untrimmed and 0 survive the ceiling: the recap
+sheds whole, wrapper included.
 <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
-<!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 34 -->
+<!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 0 -->
 
-**Where the drop order puts them is the consequence.** The recap is
-prepended, so it sits outside `<core>` and outside `<recent-work>`, and
-`_ceiling_drop_order` buckets everything outside those two sections with
-the per-turn hits. Within that bucket the order is tail-first and the
-recap is at its *head*, so the prompt's own hits are shed before the
-recap is touched: the recap outranks the lane it was filed into. On the
-same fixture, 6 prompt-matched beliefs reach the model without a recap
-and 0 reach it with one — counting an element and a `seen` pointer alike,
-so #1547's dedupe is not miscounted as a loss. Re-derive with `uv run
-python scripts/measure_block_ceiling.py --resume-drop`;
-`test_hook_ceiling_cadence_resume_1560.py` pins it.
+**Where the drop order puts it is the point (#1564).** The recap used to
+sit outside `<core>` and outside `<recent-work>`, in the bucket
+`_ceiling_drop_order` filed as the per-turn hits — at that bucket's
+*head*, so the tail-first order shed the prompt's own hits before
+touching the recap. On this fixture 6 prompt-matched beliefs reached the
+model without a recap and 0 reached it with one. The operator ruled on
+2026-09-17 that the recap sheds first, and whole, and never suppresses a
+hit; it is now a lane ahead of `<core>`, its span is cut in one piece, and
+its ids are outside the envelope dedupe, so the same fixture reaches 6 of
+6 either way. Re-derive with `uv run python
+scripts/measure_block_ceiling.py --resume-drop`;
+`test_hook_recap_shed_order_1564.py` pins the directions. Both counts take
+an element and a `seen` pointer alike, so #1547's dedupe is not miscounted
+as a loss.
 <!-- derived: scripts/measure_block_ceiling.py#resume_hits_without_recap = 6 -->
-<!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 0 -->
+<!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 6 -->
 
 So a payload can exceed this number while every block in it is inside its
 own bound, and under the ruling that payload is correct. Measured on one
@@ -429,15 +431,15 @@ Re-derive with `uv run python scripts/measure_block_ceiling.py
 contract against captured stdout.
 
 **Why per block, and not one ceiling across them.** The per-block ruling
-stands; the argument for it does not rest on the trade being unmeasured,
-because inside this envelope the trade already happens. The shed order
-below deletes prompt-independent lanes before the prompt's own hits, but
-the recap is not one of those lanes — it is bucketed with the hits and
-sits ahead of them, so the hook already drops retrieved beliefs to keep a
-rebuild recap, and on the fixture above that cost the prompt every one of
-its matched beliefs. An earlier revision of this paragraph called that
-"a trade nobody has measured"; what is unmeasured is the *other* one —
-extending a bound
+stands, and the trade inside this envelope is now measured rather than
+assumed. The shed order below deletes prompt-independent lanes before the
+prompt's own hits; until #1564 the recap was not treated as one of those
+lanes, so the hook dropped retrieved beliefs to keep a rebuild recap and
+on the fixture above that cost the prompt every one of its matched
+beliefs. The recap is a lane now and the trade runs the other way. An
+earlier revision of this paragraph called it "a trade nobody has
+measured"; what is still unmeasured is the *other* one — extending a
+bound
 across blocks, so that the `<aelfrice-memory>` envelope and the separate
 `<cadence-checkpoint>` block compete for a single budget. Today's code
 does the within-envelope trade and does not do the cross-block one:

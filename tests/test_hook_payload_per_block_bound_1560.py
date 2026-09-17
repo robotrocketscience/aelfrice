@@ -61,7 +61,7 @@ are `scripts/measure_block_ceiling.py --cadence`.
 
 What this module does *not* cover is the `<cadence-resume>` recap (#871),
 which rides inside the `<aelfrice-memory>` envelope rather than beside
-it: `test_hook_ceiling_cadence_resume_1560.py` covers that, and the
+it: `test_hook_recap_shed_order_1564.py` covers that, and the
 reachability tests here assert a stock install gets neither the recap nor
 the cache it would have been read from.
 """

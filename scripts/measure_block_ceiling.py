@@ -128,25 +128,25 @@ envelope lose to it?** It fires one Stop-side P1 cadence checkpoint to
 write a genuine resume cache, then fires three independently seeded
 `RESUME_LOCKS` / `RESUME_CORE` / `RESUME_HITS` stores: the recap
 untrimmed, the recap at the shipped ceiling, and the same prompt at the
-same ceiling with no recap.
+same ceiling with no recap. It is the producer #1564 was ruled on, so the
+two pairs below are its before and after.
 
-* the recap's own `<belief>` elements, 65 untrimmed against 34 after the
-  trim. The dropper sheds them like any other element: the recap is
-  prepended to the session-start sub-block, so it sits outside `<core>`
-  and `<recent-work>` and its elements are bucketed with the per-turn
-  hits, and the rebuilder spells a lock `locked="true"` where
-  `_LOCKED_ATTR` reads `lock="user"`, so not even a locked row inside it
-  is exempt. Only the `<cadence-resume>` wrapper survives, by not being a
-  `<belief>` element at all;
+* the recap's own `<belief>` elements, 65 untrimmed against 0 after the
+  trim. Since #1564 the recap is a lane of its own ahead of `<core>` and
+  sheds whole, wrapper included, rather than being trimmed to a fragment:
+  the rebuilder spells a lock `locked="true"` where `_LOCKED_ATTR` reads
+  `lock="user"`, so not even a locked row inside it is exempt from the
+  shed;
   <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
-  <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 34 -->
-* prompt-matched beliefs reaching the model, 6 without the recap against
-  0 with it, of 20 seeded. Both an element and a `seen` pointer count as
-  reaching it, so #1547's dedupe is not read as a loss. This is the trade
-  `HOOK_BLOCK_TOKEN_CEILING`'s scope paragraph used to say nobody had
-  measured, happening inside one envelope.
+  <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 0 -->
+* prompt-matched beliefs reaching the model, 6 without the recap and 6
+  with it, of 20 seeded. Both an element and a `seen` pointer count as
+  reaching it, so #1547's dedupe is not read as a loss. Before #1564 this
+  pair read 6 against 0: the recap sat at the head of the per-turn hits
+  bucket, so the hits shed first, and the recap's ids also collapsed the
+  surviving hits to `seen` pointers the trim then deleted.
   <!-- derived: scripts/measure_block_ceiling.py#resume_hits_without_recap = 6 -->
-  <!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 0 -->
+  <!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 6 -->
 
 The three arms get a store each rather than sharing one, because a fire
 writes `last_retrieved_at` on every belief it renders and so reorders the
@@ -189,12 +189,14 @@ names), if the memory envelope overran its own ceiling, or if the
 payload did not exceed it, or if the cadence block carried no
 `budget_used` attribute to read the soft bound off, or if the fire
 carried a `<cadence-resume>` recap the figures are published as
-excluding; and under `--resume-drop` if any arm's recap is not the one
-it was supposed to have, if the Stop-side fire wrote no cache, if the
-untrimmed recap carries no `<belief>` element for the dropper to act on,
-if the ceiling dropped nothing, or if the control arm reached no
-prompt-matched belief — a fall from nothing to nothing would print as a
-displacement figure while saying nothing.
+excluding; and under `--resume-drop` if the untrimmed or the control arm's recap is
+not the one it was supposed to have, if the Stop-side fire wrote no
+cache, if the untrimmed recap carries no `<belief>` element for the
+dropper to act on, if the ceiling dropped nothing, or if the control arm
+reached no prompt-matched belief — a comparison from nothing to nothing
+would print as a figure while saying nothing. The trimmed arm's recap is
+deliberately not a precondition: since #1564 the ceiling sheds it whole,
+so requiring the wrapper there would refuse to print the result.
 
 The `--reference-tier` guard is per write rather than over the set on
 purpose. An "equal on every write" guard passes as long as one write
@@ -1129,12 +1131,13 @@ def resume_drop() -> dict[str, object]:
     the reported difference would be part artefact.
 
     The recap is prepended to the session-start sub-block, so it sits
-    *outside* `<core>` and `<recent-work>` and its elements are bucketed
-    with the per-turn hits. It is also rendered by the context rebuilder,
-    which spells a lock `locked="true"` where `_LOCKED_ATTR` reads
-    `lock="user"` — so no element of the recap is exempt, a user lock
-    inside it included, and only the wrapper survives by not being a
-    `<belief>` element at all.
+    *outside* `<core>` and `<recent-work>`. Until #1564 that put its
+    elements in the per-turn hits bucket, at its head, so the hits shed
+    first; the recap is a lane of its own ahead of `<core>` now and sheds
+    whole. It is also rendered by the context rebuilder, which spells a
+    lock `locked="true"` where `_LOCKED_ATTR` reads `lock="user"` — so no
+    element of the recap is exempt, a user lock inside it included, and the
+    wrapper goes with them.
     """
     producer = Path(tempfile.mkdtemp(prefix="aelf-resume-cache-"))
     cached = _write_resume_cache(producer, _resume_store(producer))
