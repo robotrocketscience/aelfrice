@@ -333,12 +333,19 @@ only once it holds non-locked material for the ceiling to drop.
 
 **Scope: this bounds the `<aelfrice-memory>` envelope, not everything the
 fire writes to stdout. The payload is bounded per block.** That is the
-contract #1560 ruled, stated positively: every block a fire writes names
-its own bound, and no bound spans them. There is deliberately no payload
-ceiling, and a reader should not expect the sum of the blocks to be under
-this number.
+contract #1560 ruled, stated positively: every block a fire writes is
+bounded on its own, and no bound spans two of them. An earlier revision
+of this sentence said each block "names its own bound", which the
+enumeration below contradicts: only two of the four writers name a token
+budget, and the two phantom notes name none. What bounds those is a
+per-session fire budget and a per-entry truncation — a count and a
+character length, not tokens. So "bounded on its own" is the claim that
+holds across all four, and "each names a token budget" is not. There is
+deliberately no payload ceiling either way, and a reader should not
+expect the sum of the blocks to be under this number.
 
-The two blocks with a bound, and the two mechanisms that enforce them:
+The two blocks with a token bound, and the two mechanisms that enforce
+them:
 
 | block | bound | enforced by |
 | --- | --- | --- |
@@ -365,10 +372,14 @@ of 4000.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuilder_budget = 4000 -->
 Two further writers carry no token bound of either kind:
 `_maybe_phantom_opportunity_block` (#980) and
-`_maybe_phantom_promotion_block` (#1132), each a short note capped by a
-per-session fire budget and a per-entry topic length rather than by
-tokens. Those four are the whole of what `user_prompt_submit` sends to
-stdout. The `<cadence-resume>` recap (#871) is not a fifth: it is
+`_maybe_phantom_promotion_block` (#1132). Each renders a fixed header and
+one line per opportunity, and what bounds it is `max_fires_per_session`
+— which both triggers spend per *entry* rather than per note, so it caps
+the entries a session can emit at all — together with `_TOPIC_MAX`, which
+truncates the topic on each line. Those are an entry count and a
+character length; neither is a token budget, and nothing compares either
+note against one. Those four are the whole of what `user_prompt_submit`
+sends to stdout. The `<cadence-resume>` recap (#871) is not a fifth: it is
 prepended to the session-start sub-block and emitted *inside* this
 envelope, so it is charged here.
 
