@@ -553,7 +553,13 @@ def test_a_dash_line_in_a_python_file_is_not_a_changelog_entry(repo: Path) -> No
 def test_every_non_blank_line_of_the_corpus_lands_in_exactly_one_entry() -> None:
     """The invariant the splitter's docstring claims, asserted rather than
     claimed. `--list-unmarked` and the overclaim rule both iterate entries, so
-    a line in no entry is a line neither of them can ever guard."""
+    a line in no entry is a line neither of them can ever guard.
+
+    Lines are counted with `cdf.split_lines`, the splitter `split_entries`
+    numbers by. Counting them with `str.splitlines()` here would assert the
+    invariant against a different line numbering than the gate uses, and the
+    two disagree on any file carrying a vertical tab or a U+2028 (#1556).
+    """
     files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
     assert len(files) > 100, "an empty scan would pass this test vacuously"
     for path in files:
@@ -562,7 +568,7 @@ def test_every_non_blank_line_of_the_corpus_lands_in_exactly_one_entry() -> None
         for start, block in cdf.split_entries(path, text):
             for off in range(block.count("\n") + 1):
                 seen[start + off] = seen.get(start + off, 0) + 1
-        for idx, line in enumerate(text.splitlines(), start=1):
+        for idx, line in enumerate(cdf.split_lines(text), start=1):
             if not line.strip():
                 continue
             assert seen.get(idx, 0) == 1, f"{path}:{idx} is in {seen.get(idx, 0)} entries"
