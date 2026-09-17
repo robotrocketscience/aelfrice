@@ -1670,6 +1670,41 @@ def shipped_budget(lane: str) -> int:
     }[lane]
 
 
+ENV_PREFIX = "AELFRICE_"
+
+
+@contextlib.contextmanager
+def _hermetic_environment() -> Iterator[None]:
+    """Remove every `AELFRICE_`-prefixed variable for the duration of a run.
+
+    The chdir below closes one half of the ambient state this module reads
+    through: no ancestor `.aelfrice.toml` reaches the resolvers from a
+    tempdir. The environment is the other half, and it outranks both the file
+    *and* the caller — `retrieval.resolve_token_budget_with_provenance` checks
+    `AELFRICE_RETRIEVAL_TOKEN_BUDGET` before it looks at the budget its caller
+    passed in, so an exported value silently re-denominates every lane figure
+    below it rather than being overridden by the shipped constant this module
+    means to measure at.
+
+    Cleared here rather than in the caller, because the callers do not agree:
+    `tests/test_render_cost_1526.py` cleared the prefix around its fixture
+    while `scripts/check_derived_figures.py` runs this module as a subprocess
+    with the operator's environment inherited, so the same command produced
+    one set of figures under the test and another under the gate. A producer
+    that publishes figures is the right place for its own hermeticity.
+
+    Cleared as a prefix class rather than a name list, so a resolver added
+    later is covered without an edit here.
+    """
+    saved = {k: v for k, v in os.environ.items() if k.startswith(ENV_PREFIX)}
+    for name in saved:
+        del os.environ[name]
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
 def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     """Re-derive every #1526 figure this repo publishes.
 
@@ -1683,7 +1718,7 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     from aelfrice.retrieval import resolve_use_type_aware_compression
 
     values: dict[str, Any] = {}
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td, _hermetic_environment():
         tmp = Path(td)
         # Hermetic: `retrieve()` resolves ~22 `[retrieval]` flags by walking
         # up from the process cwd, and this repo sits under a home directory

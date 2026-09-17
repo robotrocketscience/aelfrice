@@ -446,25 +446,62 @@ def producer_figures() -> dict[str, object]:
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget` pin the
     ninth length rather than leaving it to be trimmed under time pressure.
 
-    Every `AELFRICE_` variable is removed for the duration. `figures()` is
-    already hermetic against `.aelfrice.toml` — it chdirs into a tempdir with
-    no ancestor config — but a dozen of the resolvers it reaches check an
-    environment variable first, `AELFRICE_TYPE_AWARE_COMPRESSION` among them,
-    and a value exported in the operator's shell must not change a published
-    figure or the assertions below. The prefix is cleared as a class rather
-    than a list of names, so a resolver added later is covered too.
+    The environment is not cleared here. `figures()` clears the `AELFRICE_`
+    prefix itself, inside `_hermetic_environment`, and this fixture calls it
+    the way `scripts/check_derived_figures.py` does so that the two callers
+    measure the same thing. Clearing it here as well would hide a producer
+    that stopped clearing it, and
+    `test_the_producer_is_hermetic_against_an_exported_budget` is what holds
+    that property down.
     """
-    mp = pytest.MonkeyPatch()
-    try:
-        for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
-            mp.delenv(name, raising=False)
-        return _producer_module().figures()  # type: ignore[attr-defined]
-    finally:
-        mp.undo()
+    return _producer_module().figures()  # type: ignore[attr-defined]
 
 
 def _producer_lanes() -> tuple[str, ...]:
     return _producer_module().LANES  # type: ignore[attr-defined]
+
+
+@_pays_for_the_producer_run
+def test_the_producer_is_hermetic_against_an_exported_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exported `AELFRICE_` variable must not move a published figure.
+
+    The resolvers the producer reaches are env-FIRST:
+    `retrieval.resolve_token_budget_with_provenance` returns
+    `AELFRICE_RETRIEVAL_TOKEN_BUDGET` *ahead of* the budget its caller passed
+    in, so the shipped constant each lane is measured at loses to whatever the
+    operator happens to have exported. That precedence is asserted here first,
+    on the resolver itself with an explicit kwarg in hand, so this test cannot
+    pass because the variable it exports turned out to be inert.
+
+    Then the same narrowed grid is produced twice — once with the prefix
+    cleared, once with that variable exported — and the two blobs must be
+    equal. Deleting `_hermetic_environment` from `figures()` reds this: under
+    the export the arm admits beliefs the lane's own budget does not afford
+    and charges for them, so the snapshot cell's items, unlocked hits and
+    charge all move.
+
+    The top grid length, alone: the property is per-resolve rather than
+    per-cell, the top is where the arm corpus is measured, and two full-grid
+    runs would not fit the budget above.
+    """
+    m = _producer_module()
+    for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name, raising=False)
+    top = (max(m.LENGTH_GRID),)  # type: ignore[attr-defined]
+    clean = m.figures(lengths=top)  # type: ignore[attr-defined]
+
+    # Larger than every lane's shipped budget, so it can only widen a pack.
+    exported = 2 * max(m.shipped_budget(lane) for lane in _producer_lanes())
+    monkeypatch.setenv("AELFRICE_RETRIEVAL_TOKEN_BUDGET", str(exported))
+    from aelfrice.retrieval import resolve_token_budget_with_provenance
+
+    assert resolve_token_budget_with_provenance(1) == (exported, False), (
+        "the exported variable must beat an explicit kwarg, or this test "
+        "proves nothing about hermeticity"
+    )
+    assert m.figures(lengths=top) == clean  # type: ignore[attr-defined]
 
 
 @_pays_for_the_producer_run
