@@ -102,9 +102,12 @@ Two deliberate divergences, both measured on this tree rather than argued:
 * **An unterminated opener masks nothing.** CommonMark runs such a block to the
   end of its container; here the container would be the document, and blanking
   to the end of the document is the exact shape of the defect being fixed. It
-  costs nothing to diverge: no file in the scanned corpus carries an
+  costs nothing to diverge *today*: no file in the scanned corpus carries an
   unterminated opener, so the two readings report the same figures and the same
-  markers on this tree. The costs either way are not symmetric: masking prose
+  markers on this tree. `unterminated_fence` is what keeps that true -- a file
+  that grows one raises an advisory naming the line, because the divergence is
+  only free while nothing exercises it, and a silent divergence is how a gate
+  goes quiet. The costs either way are not symmetric: masking prose
   makes a marker vanish while the gate prints success, whereas leaving an
   unclosed block's body visible makes a marker inside it parse, and the binding
   and producer checks then run on it, loudly. A second property falls out of it
@@ -396,22 +399,22 @@ _FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>
 MAX_FENCE_INDENT = 3
 
 
-def code_block_spans(text: str) -> list[tuple[int, int]]:
-    """`(start, end)` character offsets of every *terminated* fenced block.
+def _scan_fences(text: str) -> tuple[list[tuple[int, int]], tuple[int, str] | None]:
+    """Every terminated fenced block, and the opener left dangling, if any.
 
-    A block runs from the first character of its opening delimiter line to the
-    last character of its closing delimiter line, newline excluded. Offsets, so
-    the caller can blank the span in place and keep every line number.
-
-    The rules are CommonMark's, with one divergence stated in the module
-    docstring: an unterminated opener yields no span at all.
+    One state machine answering both questions, because two would drift: the
+    advisory exists to say "this document exercises the divergence", and it can
+    only say that if it is reading the same fences the masker read.
     """
     spans: list[tuple[int, int]] = []
     pos = 0
     open_char = ""
     open_len = 0
     open_start = 0
+    open_line = 0
+    line_no = 0
     for line in text.split("\n"):
+        line_no += 1
         end = pos + len(line)
         match = _FENCE_LINE_RE.match(line)
         if match is not None:
@@ -442,8 +445,35 @@ def code_block_spans(text: str) -> list[tuple[int, int]]:
                 # line this repo has in prose,
                 # `tests/test_noise_harness_and_fences_1371.py:198`.
                 open_char, open_len, open_start = fence[0], len(fence), pos
+                open_line = line_no
         pos = end + 1
-    return spans
+    dangling = (open_line, open_char * open_len) if open_char else None
+    return spans, dangling
+
+
+def code_block_spans(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` character offsets of every *terminated* fenced block.
+
+    A block runs from the first character of its opening delimiter line to the
+    last character of its closing delimiter line, newline excluded. Offsets, so
+    the caller can blank the span in place and keep every line number.
+
+    The rules are CommonMark's, with one divergence stated in the module
+    docstring: an unterminated opener yields no span at all.
+    """
+    return _scan_fences(text)[0]
+
+
+def unterminated_fence(text: str) -> tuple[int, str] | None:
+    """`(line, delimiter)` of an opening fence never closed, or None.
+
+    The divergence from CommonMark, made visible. Nothing here masks such a
+    block, so its body is read as prose: a figure inside it becomes a published
+    claim and a marker inside it becomes a real marker. That is the safe
+    direction -- it fails loudly rather than quietly -- but it is still a
+    reading no author asked for, so the gate says so.
+    """
+    return _scan_fences(text)[1]
 
 
 def _blank_blocks(text: str, outside: Callable[[str], str]) -> str:
@@ -961,7 +991,25 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
     """Grammar, binding, self-consistency, staleness and the overclaim."""
     markers: list[Marker] = []
     for path in files:
-        text = read_scannable(path)
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        # The divergence, announced. Advisory rather than hard: an unterminated
+        # opener is usually a typo in prose, and prose that fails a figure gate
+        # is a gate authors route around. What it must not be is silent.
+        dangling = unterminated_fence(raw)
+        if dangling is not None:
+            line, delimiter = dangling
+            report.warn(
+                path,
+                line,
+                f"code fence {delimiter!r} opens here and is never closed. "
+                "This scanner masks nothing for an unterminated fence, so "
+                "everything below it is read as prose: a figure there is a "
+                "published claim and a marker there is a real marker. Close "
+                f"the block with a line of at least {len(delimiter)} "
+                f"{delimiter[0]!r}, or -- if the line was never meant as a "
+                "fence -- indent it by four spaces so it cannot open one.",
+            )
+        text = mask_document(raw)
         if "derived:" in text:
             markers.extend(parse_markers(path, text))
 
