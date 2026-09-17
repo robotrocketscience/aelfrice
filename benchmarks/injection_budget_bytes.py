@@ -2007,6 +2007,16 @@ def _print_1547(values: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Print the figures, or emit them as JSON.
+
+    `--lengths` is the same knob `figures()` already takes, reached from the
+    command line. Without it the grid is `LENGTH_GRID` and the run is what
+    every published figure is derived from; with it the grid is whatever was
+    asked for, which is how a caller that only needs the *shape* of the
+    output — the legends, the per-lane lines — pays for one store per length
+    instead of nineteen. `values["lengths"]` carries the grid that ran, so a
+    narrowed `--emit-figures` blob says so about itself.
+    """
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument(
         "--emit-figures",
@@ -2018,9 +2028,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print the per-length curve for each lane as well as the summary",
     )
+    ap.add_argument(
+        "--lengths",
+        metavar="N[,N...]",
+        help=(
+            "content lengths to measure, comma-separated; the default is the "
+            "published grid and is what every published figure is read from"
+        ),
+    )
     args = ap.parse_args(argv)
 
-    values = figures()
+    lengths = LENGTH_GRID
+    if args.lengths:
+        lengths = tuple(int(n) for n in args.lengths.split(","))
+    values = figures(lengths=lengths)
     if args.emit_figures:
         json.dump(values, sys.stdout, sort_keys=True)
         sys.stdout.write("\n")

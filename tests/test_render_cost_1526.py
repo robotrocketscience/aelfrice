@@ -858,12 +858,21 @@ def test_the_producer_says_the_session_start_number_is_its_own_probe(
     `--curve` because both call sites print: the per-lane summary line and
     the per-lane curve header. One run covers both.
 
+    `--lengths` because what is asserted here is the *legend*, which is the
+    same string at every content length, while a default-grid `main()` runs
+    `figures()` over all nine lengths a second time — a second full producer
+    run, 16-22 s measured on this tree, inside a 30 s per-test timeout that
+    CI pins unscaled. One length is 2 s and asserts exactly the same thing.
+    `CORPUS_MEDIAN_CHARS` rather than a literal: `_lane_figures` picks the
+    headline cell by proximity to it, so the summary line printed here is
+    the one the full-grid run prints.
+
     Both directions are asserted: a legend that said "passes none" on every
     lane would be just as wrong, and every lane must be found in the output
     or a lane that silently stopped printing would pass vacuously.
     """
     m = _producer_module()
-    assert m.main(["--curve"]) == 0
+    assert m.main(["--curve", "--lengths", str(m.CORPUS_MEDIAN_CHARS)]) == 0
     out = capsys.readouterr().out
 
     for lane in _producer_lanes():
