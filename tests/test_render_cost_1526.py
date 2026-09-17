@@ -393,12 +393,13 @@ def _producer_module() -> object:
 # The fixture is module-scoped, so exactly one test pays the producer run as
 # its `setup` — and which one is decided by collection order, which
 # `pytest-randomly` shuffles. There is therefore no first test to nominate,
-# and the budget is raised on all ten consumers rather than on one of them.
+# and the budget is raised on every consumer rather than on one of them.
 #
 # It has to be raised. `ci.yml` pins `AELF_TEST_TIMEOUT_SCALE: "1"`, so the
 # ini `timeout = 30` applies as written there, and the run has been measured
-# over 30 seconds on a machine under load — 33.7 s at load average 30, by the
-# `--durations=0` command in the fixture docstring below. A budget a loaded
+# over that on a machine under load, by the `--durations=0` command in the
+# fixture docstring below — which is where it is measured rather than
+# published. A budget a loaded
 # machine crosses on a healthy run is not hang detection, it is a coin toss,
 # and this repo has lost PR gates to exactly that (#1472).
 #
@@ -441,10 +442,11 @@ def producer_figures() -> dict[str, object]:
     *inside* this fixture with `Failed: Timeout (>5.0s) from pytest-timeout`,
     charged to the item that requested it. That is what
     `_pays_for_the_producer_run` above is for, and it is also why the grid is
-    nine lengths and not more, and why `_CORE_CROSSING` and the
-    emptied-lengths list in
+    no longer than it is, and why `_CORE_CROSSING` and the emptied-lengths
+    list in
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget` pin the
-    ninth length rather than leaving it to be trimmed under time pressure.
+    lengths at the top of it rather than leaving them to be trimmed under time
+    pressure.
 
     The environment is not cleared here. `figures()` clears the `AELFRICE_`
     prefix itself, inside `_hermetic_environment`, and this fixture calls it
@@ -553,11 +555,12 @@ def test_the_corrected_accounting_shrinks_what_each_budget_buys(
 # pre-#1526 currency, so the two accountings disagree about whether the section
 # can hold a line. It is a half-line and not a window, which is the #1552
 # correction: `_core_belief_line` truncates content at
-# `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge plateaus at 320 tokens
-# for any content past 1,200 characters and can never reach a 1,500-token
-# budget again. The pre-#1526 charge `max(1, len(content) // 4)` is uncapped
-# and crosses at exactly 6,004 — 1,500 at 6,003, 1,501 here — so every length
-# from here up is on the disagreeing side and every length below it is not.
+# `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge plateaus past that cap
+# and can never reach the budget again. The pre-#1526 charge
+# `max(1, len(content) // 4)` is uncapped and crosses it at exactly this
+# length — one token under at the character below, one token over here — so
+# every length from here up is on the disagreeing side and every length below
+# it is not.
 #
 # The relation used to run the other way. Before #1552 the shipped charge was
 # the larger of the two and overran the budget first, at 5,934, and the
@@ -602,8 +605,9 @@ def test_the_producer_names_which_budget_ended_every_pack(
     budget, and above `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` a single
     `<core>` line no longer fits — **in the before arm**.
     `_pack_core_candidates` skips an oversized belief rather than breaking, so
-    at 6,004 content characters the before arm packs none of 300 candidates and
-    `<core>` emits nothing, while the after arm packs four. Zero is that
+    from `_CORE_CROSSING` up the before arm packs none of the store's
+    candidates and `<core>` emits nothing, while the after arm still packs
+    lines. Zero is that
     lane's measured value there, not a suppressed cell — the property this
     test exists to defend — so a zero is accepted only from `<core>`, and only
     where `<core>`'s own line at that length costs more than `<core>`'s own
@@ -615,27 +619,25 @@ def test_the_producer_names_which_budget_ended_every_pack(
     Reading the arm's own half is the whole content of the exemption, and
     #1552 inverted which half is the strict one. `_core_belief_line` truncates
     content at `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge
-    `chars_to_tokens(len(line) + 1)` plateaus at 320 tokens for any content
-    past 1,200 characters while the pre-#1526 charge `max(1, len(content) //
-    4)` keeps growing: the pair is 10/27 at 40 content characters, 250/267 at
-    1,000, and then 1,501/320 at 6,004, 1,792/320 at 7,170 and 4,650/320 at
-    18,600. The shipped charge crosses `core_budget = 1500` nowhere; the
-    pre-#1526 charge crosses it at 6,004. So `legacy <= budget < shipped` —
-    what this test asserted before the rebase — is now unsatisfiable at every
-    content length, and the true relation is `shipped <= budget < legacy` for
-    every length from 6,004 up. It is a half-line, not a window.
+    `chars_to_tokens(len(line) + 1)` plateaus past that cap while the
+    pre-#1526 charge `max(1, len(content) // 4)` keeps growing. The shipped
+    charge crosses `core_budget` nowhere; the pre-#1526 charge crosses it at
+    `_CORE_CROSSING`. So `legacy <= budget < shipped` — what this test
+    asserted before the rebase — is now unsatisfiable at every content length,
+    and the true relation is `shipped <= budget < legacy` from the crossing up.
+    It is a half-line, not a window.
 
     What is asserted is that *some* grid length charges one `<core>` line at or
     below `core_budget` as shipped and above it in the pre-#1526 currency, read
-    off the budget rather than named. Three grid lengths satisfy it — 6,004,
-    7,170 and 18,600 — which is why the edge is not left to the grid: any one
-    of the three could be dropped and the `any(...)` would still pass. The edge
+    off the budget rather than named. More than one grid length satisfies it,
+    which is why the edge is not left to the grid: any one of them could be
+    dropped and the `any(...)` would still pass. The edge
     itself is charged directly at `_CORE_CROSSING` and one character below it,
     so an edge that moves within a grid step is still caught. The sibling guard
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget` is what
-    holds the grid entry at 6,004 specifically: it asserts the *exact list* of
-    lengths whose before arm is empty, so a producer whose edge moved off 6,004
-    reds there.
+    holds the crossing entry in `LENGTH_GRID` specifically: it asserts the
+    *exact list* of lengths whose before arm is empty, so a producer whose edge
+    moved off `_CORE_CROSSING` reds there.
 
     Those assertions are arithmetic. They re-derive the two charges from the
     budget scalar and never read the curve the producer emitted, so a producer
@@ -651,11 +653,12 @@ def test_the_producer_names_which_budget_ended_every_pack(
     and a reader takes that from the probe the producer raised the caps to. The
     probe was `budget * SATURATION_PROBE_FACTOR`, sized for a grid topping out
     at 300 characters — a multiple of the lane's budget, not of what a belief
-    costs. At 18,600 the cells that read `pool` first move at a `token_budget`
-    near 9,300, twice a single belief's charge, which only `cli_search`'s 4x
-    probe of 9,600 clears; every other lane's is below it, `ups`'s 6,000
-    included, so a 4x probe could not admit even one more belief there and 20
-    of the 45 `pool` labels on the extended grid were false. Two assertions
+    costs. At the top of the grid the cells that read `pool` first move at a
+    `token_budget` of about twice a single belief's charge, which only
+    `cli_search`'s factor probe clears; every other lane's is below it, `ups`'s
+    included, so the factor probe could not admit even one more belief there
+    and the labels it produced were false. The producer's own module docstring
+    carries the share that were, and re-derives none of it here. Two assertions
     replace the membership check:
 
     1. Every published `{arm}_probe_budget` at the top of the grid must exceed
@@ -694,10 +697,11 @@ def test_the_producer_names_which_budget_ended_every_pack(
       7170, 18600]`.
     * Revert `_probe_budget` to the old factor — `probe = max(budget * f, sub
       * f)` in `_measure` — the **fixture**, not an assertion here:
-      `PoolProbeTooSmall` is raised for `agent_context` at 7,170 content
-      characters (43,887 bytes held at a probe of 2,400, 45,152 at twice it),
-      so 10 items error and one fails. The fail-closed render gets there before
-      any assertion can, which is what it is for.
+      `PoolProbeTooSmall` is raised for `agent_context` before the grid
+      finishes — the arm holds its bytes at the factor probe and moves at twice
+      it — so every item sharing the fixture errors and this one fails. The
+      fail-closed render gets there before any assertion can, which is what it
+      is for.
     * Publish the factor instead of the probe — `row[f"{name}_probe_budget"] =
       budget * SATURATION_PROBE_FACTOR` in `_curve` — this test on the probe
       assertion, `assert 6000 > 6000`. That is the mutation the probe assertion
@@ -713,8 +717,8 @@ def test_the_producer_names_which_budget_ended_every_pack(
     the `+ 1` in `_core_pack_costs_at` — the character `"\\n".join` puts after
     a `<core>` line, which `_core_belief_cost` charges — load-bearing, because
     it moved the shipped charge's crossing point by one content character.
-    #1552 removed that crossing: the shipped charge is capped at 320 tokens
-    and never approaches the budget, so one character in it cannot change any
+    #1552 removed that crossing: the shipped charge is capped and never
+    approaches the budget, so one character in it cannot change any
     comparison this file makes. The charge is kept because it is what the
     packer bills, and it is pinned by a direct equality against
     `hook._core_belief_cost` in the sibling guard instead — dropping it reds
@@ -726,12 +730,12 @@ def test_the_producer_names_which_budget_ended_every_pack(
     is kept for the same reason the `isinstance` check above it is, as the
     statement of what would have to be true if it ever did.
 
-    A floor relaxed to `>= 0` across all eight lanes and all nine lengths, on
-    the strength of that one cell, is what the zero branch replaces. It let
+    A floor relaxed to `>= 0` across every lane and every length, on the
+    strength of that one cell, is what the zero branch replaces. It let
     any lane emit nothing at any length with the suite green. An oversize
     guard on `_render_session_start` that returns `Arm(0, 0)` above 100,000
-    bytes turns that lane's 112,456-byte cell at 18,600 content characters
-    into a published zero, and the relaxed floor reported it green; the same
+    bytes turns that lane's cell at the top of the grid into a published zero,
+    and the relaxed floor reported it green; the same
     mutation now reds this test on `assert 'session_start' == 'core'`.
 
     An `else: assert row[arm] > 0` beside that branch is not written, because
@@ -811,10 +815,10 @@ def test_the_producer_names_which_budget_ended_every_pack(
     )
     assert "token_budget" in seen, seen
     assert seen <= {"token_budget", "l25_subbudget", "both", "pool"}, seen
-    # Falsifiability 1 for the `pool` label. At the top of the grid a cell that
-    # is still flat at 4x does not move until `token_budget` is near 9,300 —
-    # twice one belief's charge — which is above every lane's 4x probe but
-    # `cli_search`'s, so a probe that is a multiple of the cap cannot admit
+    # Falsifiability 1 for the `pool` label. At the top of the grid a cell
+    # still flat at the factor probe does not move until `token_budget` reaches
+    # about twice one belief's charge, which is above every lane's factor probe
+    # but `cli_search`'s, so a probe that is a multiple of the cap cannot admit
     # even one more belief and every label it produces is arithmetic rather
     # than evidence. Every published probe there
     # must therefore be above the floor `SATURATION_PROBE_FACTOR` leaves under
@@ -848,15 +852,16 @@ def test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label(
     the #1546 finding that no budget can bind on `session_start` — is only as
     good as the probe the caps were raised to, and the probe used to be
     `budget * SATURATION_PROBE_FACTOR` — a multiple of the lane's budget and
-    not of what a belief costs. At 18,600 content characters a flat cell does
-    not move until `token_budget` is near 9,300, twice one belief's charge,
-    which is above every lane's 4x probe but `cli_search`'s; so that probe
-    could not admit one more belief in the cell and returned `pool` for arms a
-    larger probe moves: 20 of 45 labels were false and the emitted figures
+    not of what a belief costs. At the top of the grid a flat cell does not
+    move until `token_budget` reaches about twice one belief's charge, which is
+    above every lane's factor probe but `cli_search`'s; so that probe could not
+    admit one more belief in the cell and returned `pool` for arms a larger
+    probe moves. The labels it produced were false and the emitted figures
     showed nothing, because the probe behind them was published nowhere.
 
     `_probe_budget` is stubbed to 0, which drops `_measure` back onto exactly
-    that old probe — `max(0, budget * 4, sub * 4)` — and the producer must
+    that old probe — `max(0, budget * f, sub * f)` at the shipped factor — and
+    the producer must
     raise rather than emit the label. Deleting the `confirm` render in
     `_measure` reds this on `DID NOT RAISE`.
 
@@ -928,9 +933,10 @@ def test_the_producer_says_the_session_start_number_is_its_own_probe(
 
     `--lengths` because what is asserted here is the *legend*, which is the
     same string at every content length, while a default-grid `main()` runs
-    `figures()` over all nine lengths a second time — a second full producer
-    run, 16-22 s measured on this tree, inside a 30 s per-test timeout that
-    CI pins unscaled. One length is 2 s and asserts exactly the same thing.
+    `figures()` over the whole grid a second time — a second full producer run,
+    inside a per-test timeout CI pins unscaled. One length asserts exactly the
+    same thing for a fraction of it, and no duration is published for either,
+    for the reason the `producer_figures` docstring gives.
     `CORPUS_MEDIAN_CHARS` rather than a literal: `_lane_figures` picks the
     headline cell by proximity to it, so the summary line printed here is
     the one the full-grid run prints.
@@ -1015,9 +1021,9 @@ def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
 # These assert on the same producer and the same `producer_figures` run as the
 # block above, which is why they live in this file rather than beside
 # `tests/test_envelope_dedupe_1547.py`: a second module-scoped fixture would
-# pay for that run twice to assert on the same numbers. What it costs, and how
-# much of the per-test timeout that leaves, is published once — in the
-# `producer_figures` docstring above — so this file carries one figure for it.
+# pay for that run twice to assert on the same numbers. What it costs is not
+# written down anywhere in this file: the `producer_figures` docstring above
+# names the command that reports it, and says why no duration is published.
 # ---------------------------------------------------------------------------
 
 
@@ -1092,8 +1098,8 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     halves now. Below `hook.BELIEF_CONTENT_CHAR_CAP` they charge exactly what
     they emit — without that a table where every ratio was large would be
     evidence of a broken measurement rather than of a defect. Above it the
-    renderer truncates and the charge does not, so they **over**charge: 4,663
-    tokens against 317 emitted at 18,600 content characters. That is the
+    renderer truncates and the charge does not, so they **over**charge at
+    every grid length above the cap. That is the
     mirror of the defect this file is about and it is asserted rather than
     tolerated, because it is what a capped renderer and an uncapped cost
     function do to each other.
@@ -1101,25 +1107,25 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     The overcharge is asserted through the two facts that produce it rather
     than through `charged > emitted` at every length above the cap: the emitted
     side is flat above the cap and the charged side is strictly increasing.
-    Between about 1,201 and 1,270 content characters the growing charge has not
-    yet passed the capped emission, and no grid length falls in that band, so
+    Just above the cap the growing charge has not yet passed the capped
+    emission, and no grid length falls in that band, so
     a direct inequality written over the grid would be asserting something the
     grid cannot see the edge of.
 
     `snapshot` must charge less than it emits wherever the headline strategy
     fires, and the ratio must grow with belief length — up to a ceiling.
-    **That ceiling is the #1552 finding.** The headline charge is a fixed 44
-    tokens and the emitted side is capped at 1,265 characters, so the ratio
-    plateaus at 7.2x and cannot grow past it however long the belief is. It is
-    asserted as an equality across every above-cap grid length: an uncapped
-    renderer would make those three ratios differ, and 18,600 characters would
-    read 106.0x, which is what this table published before the rebase.
+    **That ceiling is the #1552 finding.** The headline charge is a fixed size
+    and the emitted side is capped, so the ratio plateaus and cannot grow past
+    that however long the belief is. It is asserted as an equality across every
+    above-cap grid length: an uncapped renderer would make those ratios differ,
+    and the top length would read the order-of-magnitude figure this table
+    published before the rebase.
 
     The order-of-magnitude claim therefore no longer belongs to `snapshot`, and
     the threshold is not moved down to fit it. It belongs to `transient`, whose
-    stub strategy charges 25 tokens against the same 317 — 12.7x, over the same
-    unchanged 10.0. Asserting it on `snapshot` at 7.2x would be publishing a
-    ratio from a code path the cap has closed.
+    stub strategy charges a fraction of the same capped emission and clears the
+    same unchanged 10.0. Asserting it on `snapshot` would be publishing a ratio
+    from a code path the cap has closed.
 
     The two shortest grid points are the arm's inert control: below
     `SENTENCE_CHARS` a belief carries no sentence boundary, `_headline`
@@ -1129,8 +1135,8 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
 
     Mutation, measured with `uv run pytest tests/test_render_cost_1526.py -q`:
     removing `_cap_belief_content` from `_belief_element_line` reds this test
-    on `assert 3 == 1`, the emitted side going back to
-    `{6004: 6056, 7170: 7222, 18600: 18652}` characters. The ceiling assertion
+    on the emitted-side equality — the emitted characters go back to tracking
+    the content length at every above-cap grid length. The ceiling assertion
     below pins the same cap on the `snapshot` column and is not separately
     falsifiable — the only mutation that moves it is the one that moves the
     emission, and that reaches the verbatim assertion first.
@@ -1185,8 +1191,8 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     assert ratios == sorted(ratios), dict(zip(compressing, ratios))
     # The ceiling. `snapshot`'s charge is a fixed-size headline and its
     # emission is capped, so the ratio stops growing once the cap binds; every
-    # above-cap length must report the same one. Removing the cap makes these
-    # three differ and 18,600 characters read 106.0x again.
+    # above-cap length must report the same one. Removing the cap makes them
+    # differ, and the top length reads its pre-cap ratio again.
     ceiling = {table[str(c)]["snapshot"]["ratio"] for c in above}
     assert len(ceiling) == 1, (
         "the snapshot undercharge still grows above "
@@ -1230,13 +1236,13 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
 
     `agent_context` is where the gap survives: it passes no cost function, so
     its pack still charges the compressed form. The class changes what it
-    admits at exactly one arm length, 300 characters, and that length is
-    selected by a stated rule — the largest arm length at which the snapshot
-    corpus admits a belief the prose corpus does not — rather than named. At
-    7,170 and 18,600 the lane is lock-starved: its 600-token budget is spent by
-    six user locks whose content `BELIEF_CONTENT_CHAR_CAP` exempts, before the
-    pack loop reaches a candidate, so all three corpora return the same six
-    locks, there is no non-locked hit to sum over and the ratio is `None`. That
+    admits at one arm length only, and that length is selected by a stated
+    rule — the largest arm length at which the snapshot corpus admits a belief
+    the prose corpus does not — rather than named. At the arm lengths above it
+    the lane is lock-starved: its budget is spent by the store's user locks,
+    whose content `BELIEF_CONTENT_CHAR_CAP` exempts, before the pack loop
+    reaches a candidate, so all three corpora return the same locks, there is
+    no non-locked hit to sum over and the ratio is `None`. That
     starvation is asserted too, because those are the cells `_flat_1547_keys`
     publishes and a reader of the emitted figures needs to know the zeros are
     measured.
@@ -1303,11 +1309,11 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     # byte-identically to the control everywhere *is* the control, and the
     # attribution below would be a comparison of a corpus with itself. It is
     # asserted over the arm and not per lane because it is a property of the
-    # corpus: `ups` and `first_prompt` differ at 300 content characters, where
-    # the headline the sentence boundary makes available is longer than the
-    # hard truncation it replaces, while `agent_context` renders the two
-    # identically at every arm length — which is what makes its own class
-    # effect at 300 attributable to the class alone.
+    # corpus: `ups` and `first_prompt` differ where the headline the sentence
+    # boundary makes available is longer than the hard truncation it replaces,
+    # while `agent_context` renders the two identically at every arm length —
+    # which is what makes its own class effect attributable to the class
+    # alone.
     assert [
         (lane, c)
         for lane, rows in arm.items()
@@ -1362,9 +1368,9 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     # sentence boundaries the class needs.
     assert row["prose_bytes"] == row["control_bytes"], (head, row)
     # At the top of the grid this lane is lock-starved rather than measured.
-    # Its six user locks are exempt from `BELIEF_CONTENT_CHAR_CAP` and spend
-    # the 600-token budget before the pack loop reaches a candidate, so all
-    # three corpora return the same six and there is nothing to charge. Those
+    # Its user locks are exempt from `BELIEF_CONTENT_CHAR_CAP` and spend the
+    # lane's budget before the pack loop reaches a candidate, so all three
+    # corpora return the same locks and there is nothing to charge. Those
     # are the cells `_flat_1547_keys` publishes, so the zeros are pinned here.
     top = rows[str(lengths[-1])]
     assert top["snapshot_items"] == top["prose_items"] == top[
@@ -1410,13 +1416,13 @@ def test_every_1526_cost_function_is_rebound_or_named_as_an_exception() -> None:
     `hook._core_belief_cost` in it: that lane packs `<core>` through
     `_build_session_start_subblock`, which has no `cost_fn` parameter to pass
     a legacy body into, so every composed before cell mixed pre-#1526
-    retrieval cost with post-#1526 `<core>` cost. Measured at 92 content
-    characters, the before arm read 15,861 bytes against a true legacy 19,999
-    and the change was published as -15.7% where it is -33.2%.
+    retrieval cost with post-#1526 `<core>` cost. The composed before arm read
+    fewer bytes than a consistent legacy arm does, and the change was published
+    as a smaller one than the accounting actually makes.
 
     So the set is scanned out of the shipped tree and must partition exactly
     into the names the producer rebinds and the names it declares it does not,
-    each with a reason. A sixth cost function added to #1526's set lands in
+    each with a reason. The next cost function added to #1526's set lands in
     neither table and fails here, which is the check that was missing.
     """
     import importlib
@@ -1686,36 +1692,36 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     **1. The shipped arm cannot empty, at any content length.**
     `_core_belief_line` truncates content at `hook.BELIEF_CONTENT_CHAR_CAP`,
     so `hook._core_belief_cost` — the function `_pack_core_candidates` charges
-    with — plateaus at 320 tokens for anything past 1,200 characters, measured
-    flat out to 120,000. The pathological case is content that is entirely
-    angle brackets, which `_escape_for_hook_block` expands fourfold: that costs
-    1,220. Both are under `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`, so
-    no belief of any length or content can make the packer skip every
-    candidate, and the `<core>` after-arm curve bottoms out at 5,120 bytes
-    rather than at zero.
+    with — plateaus past that cap, measured flat by this test two orders of
+    magnitude beyond it. The pathological case is content that is entirely
+    angle brackets, which `_escape_for_hook_block` expands fourfold; that costs
+    more, and still less than the budget. Both bounds are computed here rather
+    than written down, so no belief of any length or content can make the
+    packer skip every candidate, and the `<core>` after-arm curve bottoms out
+    above zero.
 
     This is *stronger* than the guard it replaces, which asserted that the
     shipped arm does empty somewhere and re-derived the threshold it emptied
     at. It fails the moment the cap is raised or removed — uncapped, one line
-    at 18,600 content characters costs 4,667 against the same budget — and it
-    fails if the core budget drops below the 1,220-token pathological bound.
+    at the top grid length costs several times the budget — and it fails if the
+    core budget drops below the pathological bound.
 
     **2. The before arm still empties, and that is where the grid's zeros
     are.** The pre-#1526 charge `max(1, len(content) // 4)` is uncapped and
-    crosses the budget at `_CORE_CROSSING`, so the before arm packs none of 300
-    candidates at 6,004 content characters and above. The emptied set is
-    asserted as an exact list against the lengths whose pre-#1526 charge
-    exceeds the budget, and the first member of that list is asserted to be
-    `_CORE_CROSSING` itself. That is what holds the 6,004 entry in
-    `LENGTH_GRID`: drop it and the list starts at 7,170.
+    crosses the budget at `_CORE_CROSSING`, so the before arm packs none of
+    the store's candidates from that length up. The emptied set is asserted as
+    an exact list against the lengths whose pre-#1526 charge exceeds the
+    budget, and the first member of that list is asserted to be
+    `_CORE_CROSSING` itself. That is what holds the crossing entry in
+    `LENGTH_GRID`: drop it and the list starts at the grid length above it.
 
     The line is charged with the newline `"\\n".join` puts after it, because
     that is what `_core_belief_cost` charges. It is no longer the crossing
     point that pins the character — the shipped charge is capped and crosses
     nothing — so the transcription is pinned directly instead: `charged()` must
-    equal `hook._core_belief_cost` at every grid length. The two differ by a
-    token at 150 content characters, where the line is 216 characters and the
-    newline rounds it up from 54 to 55.
+    equal `hook._core_belief_cost` at every grid length. Without the newline
+    the two differ by a token at the grid length where it tips the division,
+    which is the mutation below.
 
     Mutations, re-measured on this branch rebased onto post-#1552
     `github/main`, with `uv run pytest tests/test_render_cost_1526.py -q`:
@@ -1754,7 +1760,8 @@ def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
 
     # 1. The shipped arm cannot empty. Measured past the cap by two orders of
     # magnitude, because the claim is about every content length and not about
-    # the grid: uncapped, `charged(18600)` is 4,667.
+    # the grid: uncapped, one line at the top grid length overruns the budget
+    # several times over.
     cap = BELIEF_CONTENT_CHAR_CAP
     sweep = sorted(set(lengths) | {1, cap, cap + 1, 20000, 120000})
     worst = max(charged(n) for n in sweep)
@@ -1807,7 +1814,7 @@ def _core_probe_at(content_chars: int) -> Belief:
 
     `synthetic_content` returns content of exactly `content_chars`, so every
     candidate in a producer store at a given grid length is the same length and
-    this one stands for all 300 of them.
+    this one stands for all of them.
     """
     import random
 
