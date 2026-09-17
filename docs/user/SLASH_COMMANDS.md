@@ -1,8 +1,8 @@
 # Slash commands
 
-`src/aelfrice/slash_commands/` holds thirty markdown files. Each file is a thin wrapper over the command-line interface (CLI): `/aelf:foo` invokes `aelf foo` against the active project's database. After you run `aelf setup`, the files appear as `/aelf:*` in the host.
+`src/aelfrice/slash_commands/` holds thirty-one markdown files. Each file is a thin wrapper over the command-line interface (CLI): `/aelf:foo` invokes `aelf foo` against the active project's database. After you run `aelf setup`, the files appear as `/aelf:*` in the host.
 
-The set tracks the release history: the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, the v2.x `eval` calibration surface, the v3.3.0 `/aelf:graph` visualization (#629) and `/aelf:scope-out` session-scoped retrieval exclusion (#856), the v3.5 belief-hygiene additions (`/aelf:feed`, `/aelf:stale`, `/aelf:review`, `/aelf:speculative`, `/aelf:audit-claude-memory`), the v4.0 belief-curation additions (`/aelf:introspect`, `/aelf:retire`, `/aelf:restore`, #1081), and the v4.x `/aelf:category` keyword-triggered categories (#1126).
+The set tracks the release history: the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, the v2.x `eval` calibration surface, the v3.3.0 `/aelf:graph` visualization (#629) and `/aelf:scope-out` session-scoped retrieval exclusion (#856), the v3.5 belief-hygiene additions (`/aelf:feed`, `/aelf:stale`, `/aelf:review`, `/aelf:speculative`, `/aelf:audit-claude-memory`), the v4.0 belief-curation additions (`/aelf:introspect`, `/aelf:retire`, `/aelf:restore`, #1081), the v4.x `/aelf:category` keyword-triggered categories (#1126), and the v4.x `/aelf:show` belief-by-id lookup (#1553).
 
 The slash files cover the everyday user-facing surface, plus a few operator workflows where one keystroke matters (`/aelf:uninstall`, `/aelf:upgrade`). The hidden subcommands include `bench`, `cadence-score`, `clamp-ghosts`, `demote`, `export-canvas`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `spine`, `stats`, `statusline`, `unsetup`, `upgrade-cmd`, and `validate`. Those subcommands and the per-hook entry points stay callable from the CLI for scripting and backward compatibility, and neither group appears as a slash command.
 
@@ -16,6 +16,7 @@ The visible CLI verbs `migrate`, `sweep-feedback`, and `scan-derivation` are als
 |---|---|
 | `/aelf:onboard` | the path to the project directory |
 | `/aelf:search` | a keyword query |
+| `/aelf:show` | a belief id, or a prefix of one that exactly one belief starts with. Prints that belief: the content in full, and the origin, lock level, retention class, posterior, timestamps, and scope. It addresses the row by id rather than searching the content, so an ambiguous prefix names the candidates and exits 1 instead of guessing. A retired belief is reachable, and prints `status: retired`. Read-only. v4.x+ ([#1553](https://github.com/robotrocketscience/aelfrice/issues/1553)). |
 | `/aelf:lock` | the statement to lock |
 | `/aelf:unlock` | a belief id. Drops the lock without changing the origin tier. |
 | `/aelf:locked` | (none) |
