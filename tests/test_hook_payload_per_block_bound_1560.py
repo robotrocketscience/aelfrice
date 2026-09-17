@@ -25,12 +25,23 @@ payload.
 to.** `[cadence] enabled` is unset by default and
 `_maybe_run_ups_cadence_checkpoint` returns None without it, so a stock
 install never writes the second block. The two contract tests enable
-cadence explicitly through `.aelfrice.toml`; the reachability test
-*omits* the `[cadence]` section, and also fires with no config file at
+cadence explicitly through `.aelfrice.toml`; the reachability tests
+*omit* the `[cadence]` section, and also fire with no config file at
 all, because writing `enabled = false` pins an explicit off rather than
-the shipped default — and its fire index is a P1 boundary under the
+the shipped default — and their fire index is a P1 boundary under the
 shipped `k` as well as this module's, so the silence is the flags' doing
 rather than a missed boundary.
+
+**Reachability has a Stop half, and it is fired rather than inferred.**
+The resume cache the #871 recap reads is written by
+`_maybe_fire_cadence_checkpoint`, which only the Stop hook calls, so a
+UPS fire finding no `<cadence-resume>` in its envelope cannot say why:
+it never ran the code that would have created the file. The stock-install
+Stop test calls `stop()` on both stock spellings and asserts the path
+`_cadence_resume_cache_path` resolves does not exist afterwards, and a
+cadence-enabled control fires the same helper and finds the file
+written — otherwise an absence would be evidence of a fixture no policy
+fires on rather than of the default being off.
 
 A third test guards the fixture itself: the two literals below sit
 between three bounds, and the distances are asserted rather than
@@ -44,7 +55,8 @@ are `scripts/measure_block_ceiling.py --cadence`.
 What this module does *not* cover is the `<cadence-resume>` recap (#871),
 which rides inside the `<aelfrice-memory>` envelope rather than beside
 it: `test_hook_ceiling_cadence_resume_1560.py` covers that, and the
-reachability test here asserts a stock install gets no recap either.
+reachability tests here assert a stock install gets neither the recap nor
+the cache it would have been read from.
 """
 from __future__ import annotations
 
@@ -187,7 +199,7 @@ _NO_CADENCE_SECTION = "[retrieval]\ntoken_budget = 1500\n"
 _NO_CONFIG_FILE = None
 
 
-def _fire(
+def _prepare(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -195,11 +207,12 @@ def _fire(
     n_locks: int,
     n_hits: int,
     name: str,
-) -> tuple[str, str]:
-    """One real `user_prompt_submit` fire; return its stdout and stderr.
+) -> Path:
+    """Seed one work directory and point `AELFRICE_DB` at its store.
 
     `config` is the `.aelfrice.toml` to write, or None to write no config
-    file at all.
+    file at all. The returned directory is the store's parent, which is
+    also where `_cadence_resume_cache_path` resolves the resume cache.
     """
     work = tmp_path / name
     work.mkdir()
@@ -207,10 +220,12 @@ def _fire(
     _seed(db, n_locks=n_locks, n_hits=n_hits)
     if config is not None:
         (work / ".aelfrice.toml").write_text(config, encoding="utf-8")
-    # The ring `_maybe_run_ups_cadence_checkpoint` reads its fire index
-    # from. Both this module's `k` and the shipped `DEFAULT_K` divide it,
-    # so the P1 policy says fire under either — which is what makes the
-    # stock-install arm's silence attributable to the default flags
+    # The ring both cadence dispatchers read their fire index from —
+    # `_maybe_run_ups_cadence_checkpoint` on the UPS side and
+    # `_maybe_fire_cadence_checkpoint` on the Stop side. Both this
+    # module's `k` and the shipped `DEFAULT_K` divide it, so the P1
+    # policy says fire under either — which is what makes the
+    # stock-install arms' silence attributable to the default flags
     # rather than to a fire index that happened to miss the boundary.
     (db.parent / "session_injected_ids.json").write_text(
         json.dumps({
@@ -223,6 +238,23 @@ def _fire(
         encoding="utf-8",
     )
     monkeypatch.setenv("AELFRICE_DB", str(db))
+    return work
+
+
+def _fire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    config: str | None,
+    n_locks: int,
+    n_hits: int,
+    name: str,
+) -> tuple[str, str]:
+    """One real `user_prompt_submit` fire; return its stdout and stderr."""
+    work = _prepare(
+        tmp_path, monkeypatch,
+        config=config, n_locks=n_locks, n_hits=n_hits, name=name,
+    )
     sout, serr = io.StringIO(), io.StringIO()
     payload = json.dumps({
         "session_id": "sess",
@@ -239,6 +271,43 @@ def _fire(
     # trace and rc 0 — indistinguishable from a small payload.
     assert "Traceback" not in serr.getvalue(), serr.getvalue()
     return sout.getvalue(), serr.getvalue()
+
+
+def _stop_fire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    config: str | None,
+    name: str,
+) -> tuple[Path, str]:
+    """One real `stop()` fire; return the resume-cache path and stderr.
+
+    The path is resolved by the shipped `_cadence_resume_cache_path`
+    rather than rebuilt here, so a move of the cache file cannot leave
+    this asserting the absence of something at an address nothing writes.
+    """
+    work = _prepare(
+        tmp_path, monkeypatch,
+        config=config, n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name=name,
+    )
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": "sess",
+        "transcript_path": "/dev/null",
+        "cwd": str(work),
+        "hook_event_name": "Stop",
+    })
+    rc = hook.stop(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+    assert rc == 0
+    # Stop fails soft too, so an exception inside it becomes a stderr
+    # trace and rc 0 — indistinguishable from a policy that declined.
+    assert "Traceback" not in serr.getvalue(), serr.getvalue()
+    # Stop has no `additionalContext` channel; nothing it does belongs on
+    # stdout, and a cache write that leaked there would not be one.
+    assert sout.getvalue() == "", sout.getvalue()[:200]
+    cache = hook._cadence_resume_cache_path()
+    assert cache is not None
+    return cache, serr.getvalue()
 
 
 def _split(out: str) -> tuple[str, str]:
@@ -416,7 +485,61 @@ def test_the_cadence_fire_is_off_on_a_stock_install(
     assert _CADENCE_BODY not in out
     assert "ups cadence checkpoint" not in err
     assert out.startswith(_MEMORY_OPEN)
-    # The other half of a stock install: no prior Stop-side cadence fire,
-    # so nothing wrote a resume cache and no #871 recap rides the
-    # envelope either.
+    # No #871 recap rides the envelope either. That is all this arm
+    # shows: it never runs the Stop side, so it cannot say why the cache
+    # the recap would have come from is missing.
+    # `test_a_stock_install_writes_no_resume_cache_on_stop` runs it.
     assert "<cadence-resume" not in out
+
+
+def test_the_stop_side_writes_a_resume_cache_when_cadence_is_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control for the two arms below.
+
+    A test that fires `stop()` and finds no cache proves nothing on its
+    own — the fixture might simply be one no cadence policy would fire
+    on, whatever the flags said. So this arm enables cadence at a P1
+    boundary the shipped `k` also divides and shows the write happening,
+    with the stubbed body round-tripped through the file: the harness
+    reaches the writer, and what the stock arms are missing is the flag.
+    """
+    _stub_rebuilder(monkeypatch)
+    cache, err = _stop_fire(
+        tmp_path, monkeypatch,
+        config=_cadence_toml(enabled=True), name="stop-on",
+    )
+    assert cache.exists(), err
+    record = json.loads(cache.read_text(encoding="utf-8"))
+    assert record["body"] == _CADENCE_BODY
+    assert record["session_id"] == "sess"
+    assert "cadence checkpoint fired" in err, err
+
+
+@pytest.mark.parametrize(
+    ("label", "config"),
+    [
+        ("no-section", _NO_CADENCE_SECTION),
+        ("no-file", _NO_CONFIG_FILE),
+    ],
+)
+def test_a_stock_install_writes_no_resume_cache_on_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    label: str, config: str | None,
+) -> None:
+    """The Stop half of the reachability claim, run rather than inferred.
+
+    `HOOK_BLOCK_TOKEN_CEILING`'s docstring says a stock install gets no
+    #871 recap *because* no Stop-side fire writes a resume cache. The UPS
+    arm above can only show the recap's absence from one envelope; the
+    cache is written by `_maybe_fire_cadence_checkpoint`, which only the
+    Stop hook calls. This fires that hook on the same two stock spellings
+    and asserts the file the recap reads was never created.
+    """
+    _stub_rebuilder(monkeypatch)
+    cache, err = _stop_fire(
+        tmp_path, monkeypatch, config=config, name=f"stop-stock-{label}",
+    )
+    assert not cache.exists(), cache.read_text(encoding="utf-8")[:400]
+    assert "cadence checkpoint fired" not in err, err
+    assert "cadence resume cache write failed" not in err, err

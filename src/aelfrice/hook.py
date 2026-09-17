@@ -446,7 +446,11 @@ naming it. The exposure is narrow either way, and saying so is part of
 the contract: `[cadence] enabled` is unset by default, so
 `_maybe_run_ups_cadence_checkpoint` returns None, no Stop-side fire
 writes a resume cache, and a stock install gets neither the second block
-nor a recap.
+nor a recap. Both halves are fired rather than inferred in
+`test_hook_payload_per_block_bound_1560.py`: the UPS side on the two
+stock spellings of the flag's absence, and `stop()` itself on the same
+two, against a cadence-enabled control that shows the cache write the
+stock arms decline to make.
 
 Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
 Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
