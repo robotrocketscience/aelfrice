@@ -49,9 +49,8 @@ multiple of what a belief costs, and at the top of the extended grid the cells
 that read `pool` first move at a `token_budget` of about twice a single
 belief's charge — which only `cli_search`, the lane with the largest shipped
 budget, clears at `SATURATION_PROBE_FACTOR`. Every other lane's factor probe is
-below it, `ups`'s included, so it could not admit even one more belief there
-and 20 of the 45 `pool` labels on the
-extended grid were false. Every label is
+below it, `ups`'s included, so it could not admit even one more belief there and
+20 of the 45 `pool` labels on the extended grid were false. Every label is
 published with the probe that produced it (`{arm}_probe_budget`), and a `pool`
 is re-rendered at `POOL_CONFIRM_MULTIPLE` times the probe before it is
 published — a probe that turns out to be too small raises `PoolProbeTooSmall`
@@ -187,17 +186,19 @@ SPECULATIVE_EVERY = 5
 # the control corpus passes no stride and measures zero of them (`corpus_shape`
 # reports the count either way, so the reader sees which corpus is which).
 #
-# The stride is not a model of the live rate. Live stores run 0.09% `snapshot`
-# by candidate count, and 0.09% of 300 beliefs is zero — which is exactly the
-# corpus that made the undercharge invisible, whatever its size (#1547 priced
-# it at 150x on an uncapped renderer; `undercharge_table` measures what the
-# post-#1552 cap leaves — it publishes the figure as
-# `undercharge_top_snapshot_ratio` — and a corpus with no snapshot belief in it
-# reports neither). The
-# arm exists so the class is
-# reachable by every lane's pack, including the Bash lane's `l1_limit` — the
-# smallest any lane here carries — so the stride is set where a pool that small
-# still contains one.
+# The stride is not a model of the live rate. The live `snapshot` share by
+# candidate count is a fraction of a percent — measured off a replay corpus no
+# public runner has, recorded with its population in
+# `retrieval._coverage_and_weights`, and not restated here, because nothing in
+# this repo re-derives it — and a share that small over 300 beliefs rounds to
+# no snapshot belief at all. That is exactly the corpus that made the
+# undercharge invisible, whatever its size (#1547 priced it at 150x on an
+# uncapped renderer; `undercharge_table` measures what the post-#1552 cap
+# leaves — it publishes the figure as `undercharge_top_snapshot_ratio` — and a
+# corpus with no snapshot belief in it reports neither). The arm exists so the
+# class is reachable by every lane's pack, including the Bash lane's
+# `l1_limit` — the smallest any lane here carries — so the stride is set where
+# a pool that small still contains one.
 #
 # It is deliberately coprime with neither of the strides above: a belief that is
 # both speculative-origin and snapshot-class, or both locked and snapshot-class,
@@ -215,12 +216,12 @@ SNAPSHOT_EVERY = 7
 # longer) — two different code paths with two different byte counts, and
 # neither is what this arm measures. The generator this module shipped before
 # #1547 joined vocabulary words with spaces and produced no boundary at any
-# length, so it never reached the branch. This is set to half that cap, so
-# the first boundary lands well inside it at every longer grid length and the
+# length, so it never reached the branch. This is set to half that cap, so the
+# first boundary lands well inside it at every longer grid length and the
 # headline is a first sentence rather than a truncation. At a shorter one a
 # belief carries no boundary at all and the headline strategy returns it
-# unchanged,
-# which is why the two shortest grid points are the arm's inert control.
+# unchanged, which is why the two shortest grid points are the arm's inert
+# control.
 SENTENCE_CHARS = 120
 
 # Content lengths the curve is reported at, in characters. Each point, and why
@@ -268,7 +269,20 @@ LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 6004, 7170, 18600)
 # arm's corpus is a second set of stores, and building one at every grid length
 # would double the producer's runtime to report the same shape twice. 92 is the
 # control point (no sentence boundary, so the class changes nothing); the rest
-# are the grid above `MAX_HEADLINE_CHARS`.
+# are the grid above `MAX_HEADLINE_CHARS` **other than the `<core>` crossing
+# edge**, which is in `LENGTH_GRID` for an accounting this arm does not
+# measure.
+#
+# That exclusion is the rule and not an oversight, and the comment here said
+# otherwise until #1559. `LENGTH_GRID` carried no crossing entry when this
+# constant was written, so "the grid above `MAX_HEADLINE_CHARS`" was then
+# exactly right; adding the entry made the sentence false without touching the
+# line below it. The arm measures a retention class against a budget, the
+# crossing entry exists to put the *before* arm's `<core>` charge one token
+# either side of `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`, and the arm does
+# not run a before arm at all — so a fourth pair of stores at that length would
+# cost two builds of 300 beliefs of 6,004 characters to report a row between
+# the two it already has.
 SNAPSHOT_ARM_LENGTHS: tuple[int, ...] = (92, 300, 1000, 7170, 18600)
 
 # Lanes the snapshot arm is measured on. All three compose `<belief>` elements
