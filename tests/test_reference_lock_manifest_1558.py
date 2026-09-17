@@ -1,22 +1,31 @@
 """A reference-tier lock renders as a manifest entry on every path (#1558).
 
 `aelf lock --reference` exists so long-form locked material costs one line
-and is read on demand (#1016-B). Two of the three renderers honoured that:
-`_split_belief_lines` and `_core_belief_line` both divert a reference lock to
-`retrieval.lock_manifest_line`, and the `<locked>` loop of
+and is read on demand (#1016-B). Two lanes render a lock, and only one of
+them honoured the tier: `_split_belief_lines` diverts a reference lock to
+`retrieval.lock_manifest_line`, while the `<locked>` loop of
 `_build_session_start_subblock` rendered every row verbatim. The sub-block is
 what a session's *first* prompt carries, so the tier was a measured no-op
 exactly where a lock-only store overruns the block ceiling, and on the
 retrieval branch the envelope carried the full text **and** a `ref` pointer
 to that same text a few lines below.
 
+`<core>` is the third `<belief>` renderer and is not a third case of this
+defect. `_core_belief_line` has no `is_reference_lock` branch and would emit
+a full element for a reference lock if it were handed one; it is not handed
+one, because `_build_session_start_subblock` filters every id in
+`store.list_locked_beliefs()` out of `core_candidates`. That is exclusion,
+not diversion, and it is a different mechanism with a different failure
+mode, so it is pinned separately below rather than counted as a renderer
+that "already honoured" the tier.
+
 Three things these tests are careful about:
 
-**A test per emit path.** The defect is that two of three call sites agreed
-and the third was never asked, so each of `user_prompt_submit`'s gate-skip
-branch, its retrieval branch and the `session_start` baseline is fired
-separately here. A renderer that picks up the old behaviour by omission has
-to red one of the three.
+**A test per emit path.** The defect is that one of the two lock-rendering
+call sites diverted and the other was never asked, so each of
+`user_prompt_submit`'s gate-skip branch, its retrieval branch and the
+`session_start` baseline is fired separately here. A renderer that picks up
+the old behaviour by omission has to red one of the three.
 
 **The frozen arm is a byte comparison, not a shape assertion.** The golden
 below was produced by running the pre-#1558 `_build_session_start_subblock`

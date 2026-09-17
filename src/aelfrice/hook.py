@@ -378,13 +378,16 @@ so a trim cannot leave the pointer without its referent; see
 The sibling `ref <id>` form is deliberately not matched, and since #1558
 the reason is the plain one: a `ref` entry names text that is *not* in
 this envelope, so no trim can separate it from a referent it never had.
-Every renderer now diverts a reference lock — `_split_belief_lines`,
-`_core_belief_line` and the `<locked>` loop of
-`_build_session_start_subblock` — so the body carries no element for that
-id to drop. Measured on a 30,026-character lock, the retrieval branch of a
-first prompt used to emit a reference lock in full alongside its own `ref`
-pointer, at the 7796 estimated tokens a frozen lock still costs there; the
-same lock at reference tier now costs 273
+No `<belief>` element carries a reference lock's id on any path now:
+`_split_belief_lines` and, since #1558, the `<locked>` loop of
+`_build_session_start_subblock` divert the row to a manifest line, and
+`<core>` never receives a lock at all — `_build_session_start_subblock`
+filters every id in `store.list_locked_beliefs()` out of
+`core_candidates` before `_core_belief_line` is called, which is
+exclusion rather than diversion. Measured on a 30,026-character lock, the
+retrieval branch of a first prompt used to emit a reference lock in full
+alongside its own `ref` pointer, at the 7796 estimated tokens a frozen
+lock still costs there; the same lock at reference tier now costs 273
 (`scripts/measure_block_ceiling.py --reference-tier`).
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
@@ -724,9 +727,14 @@ def _write_memory_block(
     until #1551 measured it a no-op on the writes most likely to reach
     here, and #1552 withdrew it rather than qualifying it. #1558 gave the
     `<locked>` loop of `_build_session_start_subblock` the
-    `is_reference_lock` branch `_split_belief_lines` and
-    `_core_belief_line` already had, so the tier is now honoured on every
-    render path and the advice is true on every write that reaches here.
+    `is_reference_lock` branch `_split_belief_lines` already had, so every
+    lane that renders a lock is now bounded by the tier: those two divert
+    the row, and `<core>` — whose renderer `_core_belief_line` has no such
+    branch and would emit the full element if it were handed one — never
+    receives a lock, because `_build_session_start_subblock` filters every
+    id in `store.list_locked_beliefs()` out of `core_candidates`. So the
+    advice is true on each of the four writes that reach here, which is
+    the only claim the note makes.
     Measured on one 30,026-character lock, re-derivable with
     `uv run python scripts/measure_block_ceiling.py --reference-tier`,
     whose module constant is the fixture:
@@ -785,7 +793,8 @@ def _write_memory_block(
             f"{_audit_tokens_from_block(outcome.body)} tokens; it could not "
             "be trimmed further without dropping a user lock, which never "
             "happens (#379). Move long-form locks to `aelf lock "
-            "--reference`, which bounds them on every render path.\n"
+            "--reference`, which bounds them on every write this hook "
+            "makes.\n"
         )
     stdout.write(outcome.body)
     return outcome
@@ -4687,8 +4696,13 @@ def _build_session_start_subblock(
     # the model to discount.
     #
     # #1558: a reference-tier lock is diverted out of this loop and into the
-    # manifest emitted below it, exactly as `_split_belief_lines` and
-    # `_core_belief_line` divert one. Until this branch existed the loop
+    # manifest emitted below it, exactly as `_split_belief_lines` diverts
+    # one. It was the only renderer that did before this branch existed —
+    # `<core>`'s renderer, `_core_belief_line`, has no `is_reference_lock`
+    # branch either, and does not need one: the `core_candidates` loop above
+    # skips every id in `store.list_locked_beliefs()`, and a reference lock
+    # is `lock_level = LOCK_USER`, so `<core>` is covered by exclusion and
+    # never sees a lock of either tier. This loop had neither, so it
     # rendered every lock verbatim, so `aelf lock --reference` was a measured
     # no-op on the two writes that carry a session's first prompt, and on the
     # retrieval one the block carried the full text and a `ref` pointer to
@@ -4738,7 +4752,9 @@ def _build_session_start_subblock(
         if is_reference_lock(b):
             # Same two-space indent and same escaping as every other
             # manifest line this repo emits, so the entry cannot spoof the
-            # envelope (#1037) and the three renderers stay one shape.
+            # envelope (#1037) and the three sites that build one — here,
+            # `_split_belief_lines` and `_ups_belief_line_cost` — stay one
+            # shape.
             lock_manifest_lines.append(
                 "  " + _escape_for_hook_block(lock_manifest_line(b))
             )

@@ -56,7 +56,7 @@ against reference:
 
 So the answer is yes on every write. It was no on a session's first prompt
 until #1558 gave the `<locked>` loop of `_build_session_start_subblock` the
-`is_reference_lock` branch the other renderers had: this table read 7700
+`is_reference_lock` branch `_split_belief_lines` had: this table read 7700
 and 7796 at *both* tiers on the two first-prompt writes, and the retrieval
 arm carried the full text plus a `ref` pointer to it. That is why
 `_write_memory_block`'s overrun note prescribes the remedy again. An
@@ -439,9 +439,13 @@ def reference_tier(tier: str) -> dict[str, int]:
 
     What #1558 closed, measured: `_build_session_start_subblock`'s
     `<locked>` loop rendered every lock verbatim with no
-    `is_reference_lock` branch, unlike `_split_belief_lines` and
-    `_core_belief_line`, which both divert a reference lock to
-    `retrieval.lock_manifest_line`. So the bounded tier was honoured
+    `is_reference_lock` branch, unlike `_split_belief_lines`, which
+    diverts a reference lock to `retrieval.lock_manifest_line`. Those are
+    the only two lanes that ever render a lock — `<core>`'s renderer,
+    `_core_belief_line`, has no such branch either, but the
+    `core_candidates` loop above it skips every id in
+    `store.list_locked_beliefs()`, so `<core>` is covered by exclusion and
+    is handed no lock of either tier. So the bounded tier was honoured
     everywhere except the envelope that embeds the session-start
     sub-block — which is a session's first prompt, and a first prompt is
     when a lock-only store overruns. That loop diverts too now, and the

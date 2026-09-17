@@ -204,7 +204,7 @@ def test_user_locked_content_is_never_capped() -> None:
     locked, and unlike a retrieval hit nothing ranked it here for the
     model to discount. So an oversized lock is emitted whole; the
     bounded alternative is the reference tier, which since #1558 reaches
-    the UserPromptSubmit `<locked>` render as well as the other two.
+    the first-prompt `<locked>` render as well as the per-turn one.
     """
     content = "a" * 35_164
     assert _cap_belief_content(content, locked=True) == content
@@ -548,9 +548,12 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     # loop of `_build_session_start_subblock` rendered a reference lock
     # verbatim, because on a session's first prompt — the fire a lock-only
     # store overruns on — demoting a lock changed nothing. #1558 gave that
-    # loop the diversion the other two renderers had, so the advice is now
+    # loop the diversion `_split_belief_lines` had, so the advice is now
     # true on every write this function bounds and it no longer has to tell
-    # them apart from a body.
+    # them apart from a body. Re-derived at 273 / 273 / 256 / 233 reference
+    # against 7700 / 7796 / 7683 / 7660 frozen by
+    # `scripts/measure_block_ceiling.py --reference-tier`, whose own
+    # per-write vacuity guard reds if any one of those pairs is equal.
     assert "`aelf lock --reference`" in err
     assert "#1558" not in err
 
