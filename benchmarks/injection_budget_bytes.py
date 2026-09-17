@@ -92,9 +92,24 @@ at. `--curve` prints the whole grid.
 ## #1547: the arm this module did not have, and why it could not see the defect
 
 `retrieve_with_tiers._cost` charges `compress_for_retrieval(b).rendered_tokens`
-whenever `use_type_aware_compression` is on, which is the shipped default, and
-nothing renders that compressed form. On a `snapshot` belief the packer pays a
-headline price and the hook emits the whole document.
+when `use_type_aware_compression` is on — the shipped default — and **no caller
+passes it a `belief_cost_fn`**, and nothing renders that compressed form. On a
+`snapshot` belief the packer pays a headline price and the hook emits the
+document.
+
+Both halves of that sentence moved after this arm was built, and the arm now
+measures what is left rather than what it was built for. #1551 and #1552 wired
+`hook._ups_belief_line_cost` onto the UPS lane as a `belief_cost_fn`, which
+short-circuits `_cost` at `retrieval.py:4798` before compression is reached, so
+`ups` and `first_prompt` charge the line they emit and their pack ratio is 1.0
+in every retention class at every grid length. #1552 also capped the rendered
+content at `hook.BELIEF_CONTENT_CHAR_CAP = 1200`, which bounds the gap that is
+left: `undercharge_table`'s snapshot ratio plateaus at 7.2x rather than growing
+with belief length. `agent_context` is the only lane here that still passes no
+cost function, so it is the lane the charge-vs-emit claim is quoted from — see
+`SNAPSHOT_ARM_HEADLINE_LANE`. The two closed lanes are kept in the arm, because
+"closed here" is a measurement and it is what would regress if the cost
+function were unwired.
 
 Two properties of this module made that invisible, and both are now closed:
 
@@ -113,9 +128,9 @@ Two properties of this module made that invisible, and both are now closed:
 
 Three figures come out of this, none of which the seven-lane version could
 produce. `undercharge` is charged tokens against emitted tokens for one belief
-at each grid length in each retention class. `snapshot_arm` is the two corpora
-run through the two composing lanes, with `_measure`'s binding probe on both
-sides. `dedupe` is what #1547's AC2 envelope dedupe recovers — that fix shipped
+at each grid length in each retention class. `snapshot_arm` is the three
+corpora run through `SNAPSHOT_ARM_LANES`, with `_measure`'s binding probe on
+every side. `dedupe` is what #1547's AC2 envelope dedupe recovers — that fix shipped
 with no producer able to measure it, because it only fires where a belief
 appears in both halves of a composed envelope.
 
@@ -167,7 +182,10 @@ SPECULATIVE_EVERY = 5
 #
 # The stride is not a model of the live rate. Live stores run 0.09% `snapshot`
 # by candidate count, and 0.09% of 300 beliefs is zero — which is exactly the
-# corpus that made a 150x undercharge invisible. The arm exists so the class is
+# corpus that made the undercharge invisible, whatever its size (#1547 priced
+# it at 150x on an uncapped renderer; `undercharge_table` measures 7.2x
+# post-#1552, and a corpus with no snapshot belief in it reports neither). The
+# arm exists so the class is
 # reachable by every lane's pack, including the Bash lane's `l1_limit` of 5, so
 # the stride is set where a pool that small still contains one.
 #
@@ -1272,23 +1290,43 @@ def undercharge_table(lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     """Charged tokens against emitted tokens, per retention class, per length.
 
     One belief, one text, four retention classes — the same design as #1547's
-    own table, so the two are comparable cell for cell. The ratio is not a
-    constant: the headline is a fixed-size prefix and the emitted element is
-    not, so it grows with belief length, and any single multiplier quoted from
-    it is unreadable without the length beside it.
+    own table, so the two are comparable cell for cell. **It is
+    `agent_context`'s table and no other lane's.** `_emitted_chars` renders
+    through `hook._split_belief_lines`, which is what `ups`, `first_prompt` and
+    `agent_context` all emit, but #1551 and #1552 gave the first two a
+    `belief_cost_fn` that short-circuits `retrieve_with_tiers._cost` before
+    compression; `agent_context` passes none, so it is the one lane that still
+    pays `_charged_tokens` for a line it renders in full. See
+    `SNAPSHOT_ARM_HEADLINE_LANE`.
 
-    **This disagrees with #1547's prior, and the producer wins.** At 18,600
-    characters the issue's table reads snapshot 150.4x and transient 388.6x;
-    this measures 106.0x and 186.5x. The emitted side agrees exactly — 4,663
-    tokens on both. The charged side does not: 44 tokens here against the
-    issue's 31, and 25 against 12. The whole of both gaps is the `<belief>`
-    wrapper. `_render_wrapper_tokens` adds 13 tokens to every compressed
-    render, which is #1526's correction and postdates the figure the issue
-    quotes; net of it the two tables agree cell for cell (31 and 31, 12 and
-    12). So they measure the same compressor and disagree only about whether
-    the element around the shortened content is part of the charge. It is:
-    that element is emitted whether or not the content was shortened. The
-    smaller ratio is the one to carry.
+    The ratio grows with belief length and then stops. The headline is a
+    fixed-size prefix, so the charged side is flat at 44 tokens from 150
+    content characters up; the emitted side grows until
+    `hook.BELIEF_CONTENT_CHAR_CAP` binds and is flat at 1,265 characters — 317
+    tokens — from 1,201 up. So the undercharge has a **ceiling of 7.2x** on
+    this text, reached at 1,201 characters and unchanged at 18,600, and any
+    single multiplier quoted from this table is still unreadable without the
+    length beside it.
+
+    **This disagrees with #1547's prior, and #1552 moved the disagreement to
+    the other column.** At 18,600 characters the issue's table reads snapshot
+    150.4x and transient 388.6x; this measures 7.2x and 12.7x. The charged side
+    is 44 tokens here against the issue's 31, and 25 against 12, all of which
+    is the `<belief>` wrapper: `_render_wrapper_tokens` adds 13 tokens to every
+    compressed render, which is #1526's correction and postdates the figure the
+    issue quotes; net of it the two charges agree (31 and 31, 12 and 12). The
+    emitted side used to agree exactly at 4,663 tokens. It no longer does,
+    because `_belief_element_line` caps the content it renders at 1,200
+    characters (#1552), so the element the issue measured at 18,600 characters
+    is the element this measures at 1,201. The gap the issue reported is real
+    and was measured on an uncapped renderer; what is left of it is bounded by
+    the cap.
+
+    **The verbatim classes now run the other way.** `fact` and `unknown` are
+    charged the whole content and emit the capped line, so above the cap they
+    **over**charge: 4,663 charged against 317 emitted at 18,600 characters,
+    0.1x. That is the same cap seen from the other side and it is published in
+    the same columns rather than filtered out.
 
     The ratio is still a property of the corpus as much as of the defect — it
     is set by where the first sentence ends, which here is character 122 for a
