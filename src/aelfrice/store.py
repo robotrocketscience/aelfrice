@@ -3224,6 +3224,67 @@ class MemoryStore:
         row = cur.fetchone()
         return _row_to_belief(row) if row else None
 
+    def find_beliefs_by_id_prefix(
+        self, prefix: str, *, limit: int = 10
+    ) -> list[Belief]:
+        """Resolve an id, or an id prefix, to belief rows (#1553).
+
+        Tombstones are **included**, unlike :meth:`get_belief`. This is
+        an addressing surface rather than a retrieval one, and the id a
+        user holds — copied out of an injected block that may be weeks
+        old — can perfectly well name a retired belief. A caller that
+        wants active rows only filters on ``valid_to`` itself.
+
+        An exact id wins outright: when some row's id equals ``prefix``
+        that row comes back alone, so a short id that happens to prefix
+        a longer one still addresses itself instead of reporting an
+        ambiguity against its own neighbour.
+
+        Otherwise every row whose id starts with ``prefix`` comes back,
+        id-ascending, at most ``limit`` of them. Returning the whole
+        matching set rather than the first row is the point: the caller
+        names the ambiguity, and never guesses among them.
+
+        An empty ``prefix`` matches nothing. "Every belief in the store"
+        is the one answer an addressing call cannot have meant.
+
+        The prefix arm is a table scan — ``substr(id, 1, ?) = ?`` uses
+        no index — and is written that way on purpose. ``LIKE prefix ||
+        '%'`` would index-scan, but a ``%`` or ``_`` anywhere in the id
+        the user pasted would silently become a wildcard, turning the
+        exact lookup this method exists to provide back into a search.
+        """
+        if not prefix:
+            return []
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1; got {limit!r}")
+        cur = self._conn.execute(
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.id = ?
+            """,
+            (prefix,),
+        )
+        exact = cur.fetchone()
+        if exact is not None:
+            return [_row_to_belief(exact)]
+        cur = self._conn.execute(
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE substr(b.id, 1, ?) = ?
+            ORDER BY b.id ASC
+            LIMIT ?
+            """,
+            (len(prefix), prefix, limit),
+        )
+        return [_row_to_belief(row) for row in cur.fetchall()]
+
     def update_belief(self, b: Belief) -> None:
         """Full-row update; every column on the `beliefs` row that is
         a property of the `Belief` dataclass round-trips through here."""
