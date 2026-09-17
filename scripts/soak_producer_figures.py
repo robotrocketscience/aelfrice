@@ -58,7 +58,16 @@ other.
 It is still not the whole population -- a pytest session that has already run
 other tests carries state this script never creates -- and that is stated
 rather than papered over. What it does close is the half that does not need
-pytest to reproduce.
+pytest to reproduce. It has not caught anything yet: the report above did not
+reproduce in either arm, and this one is here because the report was right
+about what the default arm cannot see, not because it found the thing.
+
+One thing this arm does NOT carry is the bytecode-cache policy the default arm
+gets from `check_derived_figures.producer_env`: there is no child process to
+hand an environment to, and the module is imported by whatever interpreter you
+started. CPython validates a cached `.pyc` on the source's (mtime-seconds,
+size) alone, so after a same-size edit run this arm under
+`PYTHONDONTWRITEBYTECODE=1` or it can soak code the tree no longer contains.
 """
 from __future__ import annotations
 
