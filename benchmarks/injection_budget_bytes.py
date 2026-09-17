@@ -35,9 +35,21 @@ through the shipped renderer and the counts are of rendered bytes.
 
 A budget that ends no pack is not evidence about that budget. This module
 checks that by re-running an arm with **every budget that can end its pack**
-raised by `SATURATION_PROBE_FACTOR` — `token_budget` *and*
-`l25_token_subbudget`, because the L2.5 sub-pack has its own cap and a pack
-ended by that cap does not move when `token_budget` alone is raised.
+raised to `_probe_budget(store)` — `token_budget` *and* `l25_token_subbudget`,
+because the L2.5 sub-pack has its own cap and a pack ended by that cap does not
+move when `token_budget` alone is raised.
+
+The probe is a bound, not a factor: the sum over the store of the largest
+per-belief charge any packer here can bill, so a pack run at it can afford
+every candidate it was offered. `SATURATION_PROBE_FACTOR` survives as a floor
+under it. It used to be the whole probe, and it was sized for a grid topping
+out at 300 content characters; at 18,600 one belief costs more than four times
+`ups`'s whole budget, so a 4x probe could not admit even one more belief and
+16 of the 41 `pool` labels on the extended grid were false. Every label is
+published with the probe that produced it (`{arm}_probe_budget`), and a `pool`
+is re-rendered at `POOL_CONFIRM_MULTIPLE` times the probe before it is
+published — a probe that turns out to be too small raises `PoolProbeTooSmall`
+rather than emitting the label.
 
 Round 2 of #1526 found exactly that error, and it reproduces on the shipped
 tree. On `ups` at 92 content characters, against a store of 300 beliefs, the
@@ -243,10 +255,16 @@ RETENTION_CLASSES_MEASURED: tuple[str, ...] = (
 # published ratio depend on how many stores had been built first.
 UNDERCHARGE_SEED = 1547
 
-# The saturation probe re-runs an arm with every pack-ending budget raised by
-# this factor. Both `token_budget` and `l25_token_subbudget` are raised: the
-# L2.5 sub-pack has its own cap, and raising `token_budget` alone leaves a pack
-# that ended on that cap unchanged, which reads as "the budget does not bind".
+# The floor under `_probe_budget`, as a multiple of the cap being probed. Both
+# `token_budget` and `l25_token_subbudget` are raised: the L2.5 sub-pack has
+# its own cap, and raising `token_budget` alone leaves a pack that ended on
+# that cap unchanged, which reads as "the budget does not bind".
+#
+# This was the whole probe until the grid reached lengths where one belief
+# costs several times a lane's entire budget; see `_probe_budget` for what it
+# got wrong and what replaced it. It is kept as a floor so that no cell is
+# probed more weakly than it was before, which on this corpus binds only on
+# `cli_search` at 40 content characters (9,600 against an 8,100 bound).
 SATURATION_PROBE_FACTOR = 4
 
 # A query broad enough that the L1 candidate cap, not the query, decides how
@@ -942,10 +960,125 @@ def _subbudget() -> int:
     return DEFAULT_L25_TOKEN_SUBBUDGET
 
 
-def _measure(lane: str, store: Any, budget: int, *, legacy: bool) -> tuple[Arm, str]:
+class PoolProbeTooSmall(RuntimeError):
+    """A cell about to be labelled `pool` moved when the probe was doubled.
+
+    `pool` is defined in-module as "this arm is not evidence about any budget",
+    and a reader who takes that at face value takes it from the probe. So the
+    label is confirmed before it is published rather than asserted from the
+    probe's arithmetic: a probe that turns out to be too small is a crash here,
+    not a false label in the emitted figures.
+
+    That confirmation is not redundant with `_probe_budget`'s upper bound.
+    `_charged_tokens` is a hand transcription of a closure with no reachable
+    name (`retrieve_with_tiers._cost`), and `_legacy_core_cost` and
+    `_legacy_belief_tokens` are hand transcriptions of bodies on `github/main`.
+    Any of them drifting from the shipped code makes the bound too low and
+    every `pool` label unsafe. This render is what turns that drift into a
+    failure instead of a silent under-size.
+    """
+
+    def __init__(
+        self,
+        lane: str,
+        chars: int,
+        arm_bytes: int,
+        probe: int,
+        moved_bytes: int,
+    ) -> None:
+        super().__init__(
+            f"{lane} at {chars} content chars was about to be labelled `pool`: "
+            f"{arm_bytes} bytes held at a probe of {probe} on both caps, but "
+            f"moved to {moved_bytes} at {POOL_CONFIRM_MULTIPLE}x that probe. "
+            f"`_probe_budget` is too small for this cell — one of the cost "
+            f"transcriptions it sums has drifted from the shipped code."
+        )
+        self.lane = lane
+        self.chars = chars
+        self.arm_bytes = arm_bytes
+        self.probe = probe
+        self.moved_bytes = moved_bytes
+
+
+# `_probe_budget` keyed by the store's file. Memoised because it is a scan of
+# every belief in the store and `_measure` is called 2-3 times per lane per
+# cell against the same handful of stores — 1,192 calls against 21 stores on
+# the full grid. Keyed by path rather than by `id(store)`: these stores are
+# closed and freed between `figures()` calls and CPython reuses addresses, so
+# an identity key can serve one store's bound for another's. Every store this
+# module builds has its own file under a per-run tempdir, so the key is unique
+# for as long as the value is valid.
+_PROBE_BUDGETS: dict[str, int] = {}
+
+# `_measure` confirms a `pool` label by re-rendering at this multiple of the
+# probe on both caps. 2, because the probe is already an upper bound on what
+# any candidate can cost and the question this render answers is whether that
+# bound is sound, not how far past it the cell might move.
+POOL_CONFIRM_MULTIPLE = 2
+
+
+def _probe_budget(store: Any) -> int:
+    """A budget at which every belief in `store` is affordable to every packer.
+
+    The sum, over every belief, of the largest per-belief charge any arm or
+    packer this module drives can bill for it: the shipped pack cost
+    (`_charged_tokens`), its pre-#1526 body (`_legacy_belief_tokens`), and
+    `<core>`'s two (`hook._core_belief_cost` and `_legacy_core_cost`). A pack
+    run at this budget can afford every candidate it was offered, so a pack
+    that still does not move at it was not ended by a budget.
+
+    **This replaces a factor with a bound, and the factor was wrong.**
+    `SATURATION_PROBE_FACTOR = 4` was sized for a grid topping out at 300
+    content characters. At 18,600 one belief costs 4,663 tokens against
+    `ups`'s 1,500-token budget, so a 4x probe of 6,000 could not admit even one
+    more belief and `_measure` returned `pool` — "not evidence about any
+    budget" — for cells a larger probe moves. 41 of 144 arm labels read `pool`
+    and 16 of them were false.
+
+    Two other sizings were measured and both fail:
+
+    * *Double until two successive renders agree.* Packs are integer-quantised,
+      so bytes sit flat across wide budget ranges and then jump.
+      `agent_context` and `search_tool` at 18,600 are flat at 4x and 8x and
+      move at 16x; `search_tool_bash` at 18,600 is flat at 4x, 8x **and** 16x
+      and moves at 32x. The loop stops on the first plateau and republishes the
+      false label.
+    * *The largest single-belief charge.* Too small. At 18,600 that is 4,667
+      tokens, but the six items in the pack are locks consuming ~4,663 each, so
+      the seventh candidate needs a budget past their **cumulative** charge:
+      the first `token_budget` that moves the cell is 12,000, 2.6x the largest
+      single charge.
+
+    The sum is the smallest bound that survives both, and it is an upper bound
+    rather than a search, so it does not depend on where the plateaus fall.
+    """
+    from aelfrice import hook
+
+    key = store._db_path
+    memo = _PROBE_BUDGETS.get(key)
+    if memo is not None:
+        return memo
+    total = 0
+    for bid in store.list_belief_ids():
+        b = store.get_belief(bid)
+        if b is None:
+            continue
+        total += max(
+            _charged_tokens(b),
+            _legacy_belief_tokens(b),
+            hook._core_belief_cost(b),
+            _legacy_core_cost(b),
+        )
+    _PROBE_BUDGETS[key] = total
+    return total
+
+
+def _measure(
+    lane: str, store: Any, budget: int, *, chars: int, legacy: bool,
+) -> tuple[Arm, str, int]:
     """Render one arm, and name which budget ended its pack.
 
-    Returns `(arm, binds_on)`, where `binds_on` is one of:
+    Returns `(arm, binds_on, probe)`, where `binds_on` is one of:
 
     * `token_budget` — raising `token_budget` alone moves the bytes.
     * `l25_subbudget` — raising `l25_token_subbudget` alone moves them; the
@@ -967,23 +1100,54 @@ def _measure(lane: str, store: Any, budget: int, *, legacy: bool) -> tuple[Arm, 
     The arm is returned in every case. A `pool` arm is weak evidence about
     the budget; its bytes are still the bytes the model receives, and
     suppressing them is how the earlier version hid a +53% deviation.
+
+    The probe is `_probe_budget(store)`, floored at
+    `budget * SATURATION_PROBE_FACTOR` so no cell is probed more weakly than it
+    was before. It is returned so every label is auditable from the emitted
+    figures rather than from the constant behind it, and it is confirmed by a
+    render at `POOL_CONFIRM_MULTIPLE` times itself before any `pool` is
+    published — see `PoolProbeTooSmall`.
+
+    `arm` itself is rendered at the shipped `budget` and the shipped `sub` in
+    every case, so nothing about the probe moves a published byte or item
+    count. Only the label moves.
     """
     render = _RENDERERS[lane]
     sub = _subbudget()
     f = SATURATION_PROBE_FACTOR
+    # `sub * f` is in the floor for the same reason `budget * f` is: the old
+    # constant survives as a floor on **both** caps. On this corpus it is never
+    # the binding term (`_probe_budget` is 8,100 at the shortest grid length
+    # against a 1,600 sub-floor), which is why it costs nothing to keep.
+    probe = max(_probe_budget(store), budget * f, sub * f)
     ctx = _legacy_accounting if legacy else contextlib.nullcontext
     with ctx():
         arm = render(store, budget, sub, legacy=legacy)
-        wide_budget = render(store, budget * f, sub, legacy=legacy)
-        wide_sub = render(store, budget, sub * f, legacy=legacy)
-        wide_both = render(store, budget * f, sub * f, legacy=legacy)
+        wide_budget = render(store, probe, sub, legacy=legacy)
+        wide_sub = render(store, budget, probe, legacy=legacy)
+        wide_both = render(store, probe, probe, legacy=legacy)
+        if (
+            wide_budget.n_bytes == arm.n_bytes
+            and wide_sub.n_bytes == arm.n_bytes
+            and wide_both.n_bytes == arm.n_bytes
+        ):
+            confirm = render(
+                store,
+                probe * POOL_CONFIRM_MULTIPLE,
+                probe * POOL_CONFIRM_MULTIPLE,
+                legacy=legacy,
+            )
     if wide_budget.n_bytes != arm.n_bytes:
-        return (arm, "token_budget")
+        return (arm, "token_budget", probe)
     if wide_sub.n_bytes != arm.n_bytes:
-        return (arm, "l25_subbudget")
+        return (arm, "l25_subbudget", probe)
     if wide_both.n_bytes != arm.n_bytes:
-        return (arm, "both")
-    return (arm, "pool")
+        return (arm, "both", probe)
+    if confirm.n_bytes != arm.n_bytes:
+        raise PoolProbeTooSmall(
+            lane, chars, arm.n_bytes, probe, confirm.n_bytes,
+        )
+    return (arm, "pool", probe)
 
 
 # --- #1547: what the pack charges against what the lane emits ---------------
@@ -1194,19 +1358,28 @@ def snapshot_arm(
         budget = shipped_budget(lane)
         rows: dict[str, Any] = {}
         for chars in lengths:
-            c_arm, c_binds = _measure(lane, control[chars], budget, legacy=False)
-            p_arm, p_binds = _measure(lane, prose[chars], budget, legacy=False)
-            s_arm, s_binds = _measure(lane, snapshot[chars], budget, legacy=False)
+            c_arm, c_binds, c_probe = _measure(
+                lane, control[chars], budget, chars=chars, legacy=False,
+            )
+            p_arm, p_binds, p_probe = _measure(
+                lane, prose[chars], budget, chars=chars, legacy=False,
+            )
+            s_arm, s_binds, s_probe = _measure(
+                lane, snapshot[chars], budget, chars=chars, legacy=False,
+            )
             row: dict[str, Any] = {
                 "control_items": c_arm.n_items,
                 "control_bytes": c_arm.n_bytes,
                 "control_binds_on": c_binds,
+                "control_probe_budget": c_probe,
                 "prose_items": p_arm.n_items,
                 "prose_bytes": p_arm.n_bytes,
                 "prose_binds_on": p_binds,
+                "prose_probe_budget": p_probe,
                 "snapshot_items": s_arm.n_items,
                 "snapshot_bytes": s_arm.n_bytes,
                 "snapshot_binds_on": s_binds,
+                "snapshot_probe_budget": s_probe,
                 "bytes_ratio": (
                     round(s_arm.n_bytes / p_arm.n_bytes, 2)
                     if p_arm.n_bytes
@@ -1535,6 +1708,12 @@ def _curve(
     two numbers say nothing about any budget because they are the same
     candidate pool rendered twice.
 
+    `before_probe_budget` / `after_probe_budget` carry the budget those labels
+    were established at, so a reader can check the label against the number
+    that produced it instead of against the constant behind it. The old
+    `SATURATION_PROBE_FACTOR` probe was published nowhere, which is part of why
+    16 false `pool` labels survived a review that read the emitted figures.
+
     A byte count of **zero** is a measurement, not a suppressed cell, and the
     extended grid produces several: at 5,950, 7,170 and 18,600 content
     characters a single `<core>` line costs 1,505, 1,810 and 4,667 tokens by
@@ -1556,10 +1735,13 @@ def _curve(
         store = stores[chars]
         row: dict[str, Any] = {}
         for name, legacy in (("before", True), ("after", False)):
-            arm, binds_on = _measure(lane, store, budget, legacy=legacy)
+            arm, binds_on, probe = _measure(
+                lane, store, budget, chars=chars, legacy=legacy,
+            )
             row[name] = arm.n_bytes
             row[f"{name}_items"] = arm.n_items
             row[f"{name}_binds_on"] = binds_on
+            row[f"{name}_probe_budget"] = probe
         row["pool_equality"] = (
             row["before_binds_on"] == "pool" and row["after_binds_on"] == "pool"
         )
