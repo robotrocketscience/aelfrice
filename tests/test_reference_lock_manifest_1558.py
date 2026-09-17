@@ -40,9 +40,11 @@ have made both of them lie.
 """
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -69,6 +71,15 @@ from aelfrice.models import (
     Belief,
 )
 from aelfrice.store import MemoryStore
+
+_REPO = Path(__file__).resolve().parents[1]
+_MBC_SCRIPT = _REPO / "scripts" / "measure_block_ceiling.py"
+_mbc_spec = importlib.util.spec_from_file_location("_mbc_1558", _MBC_SCRIPT)
+assert _mbc_spec and _mbc_spec.loader
+# `Any` on purpose: pyright runs `tests/` strict, and an implicitly-typed
+# module object turns every attribute read into an `Unknown`.
+_mbc: Any = importlib.util.module_from_spec(_mbc_spec)
+_mbc_spec.loader.exec_module(_mbc)
 
 _FROZEN_ID = "F" * 16
 _REFERENCE_ID = "R" * 16
@@ -502,3 +513,63 @@ def test_a_frozen_lock_is_excluded_from_core_too(tmp_path: Path) -> None:
     block = _sub_block(_store(tmp_path, frozen), tmp_path)
     assert _FROZEN_ID not in _core_section(block)
     assert f'<belief id="{_FROZEN_ID}" lock="user">' in block
+
+
+# ---------------------------------------------------------------------------
+# The producer's vacuity guard is per write
+# ---------------------------------------------------------------------------
+
+
+def _tier_rows(equal_on: str) -> dict[str, int]:
+    """Reference-arm figures that match the frozen arm on `equal_on` alone."""
+    return {w: (100 if w == equal_on else 10) for w in _mbc.REF_WRITES}
+
+
+@pytest.mark.parametrize("write", list(_mbc.REF_WRITES))
+def test_the_reference_tier_guard_trips_on_one_equal_write(
+    write: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One equal column is enough, and the message names which one.
+
+    The producer's own docstring publishes this, so it is pinned rather than
+    described. An "equal on every write" guard — which is what this was
+    before #1558 — passes as long as one write differs, and until #1558 one
+    did: turn two and `session_start` bounded while both first-prompt writes
+    read the same figure at either tier. Parametrised over every write so
+    the guard cannot come to hold on three of the four.
+    """
+    frozen = {w: 100 for w in _mbc.REF_WRITES}
+    monkeypatch.setattr(
+        _mbc,
+        "reference_tier",
+        lambda tier: (
+            frozen if tier == LOCK_TIER_FROZEN else _tier_rows(write)
+        ),
+    )
+    with pytest.raises(SystemExit) as exc:
+        _mbc.reference_tier_table()
+    message = str(exc.value)
+    assert write in message
+    for other in _mbc.REF_WRITES:
+        if other != write:
+            assert other not in message
+
+
+def test_the_reference_tier_guard_passes_when_every_write_differs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control.
+
+    Without it the test above would also pass for a guard that raised on
+    every input, which proves nothing about the condition.
+    """
+    monkeypatch.setattr(
+        _mbc,
+        "reference_tier",
+        lambda tier: {
+            w: (100 if tier == LOCK_TIER_FROZEN else 10)
+            for w in _mbc.REF_WRITES
+        },
+    )
+    rows = _mbc.reference_tier_table()
+    assert set(rows) == {LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE}

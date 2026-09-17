@@ -96,9 +96,16 @@ Exits non-zero if no crossing is found below `--max-locks`, which means
 either the ceiling moved or the fixture stopped growing the block. Under
 `--lanes` it exits non-zero if the ceiling dropped nothing, which would
 make the comparison vacuous; under `--reference-tier` if the two tiers
-agree on every write, which would mean the tier is inert everywhere rather
-than only on the first prompt; and under `--exploration` if the slot never
-fired or the ceiling dropped nothing.
+agree on **any one** write, naming the writes they agree on, because every
+write is bounded by the tier now and a single equal column is a
+regression; and under `--exploration` if the slot never fired or the
+ceiling dropped nothing.
+
+The `--reference-tier` guard is per write rather than over the set on
+purpose. An "equal on every write" guard passes as long as one write
+differs, and until #1558 one did: turn two and `session_start` bounded
+while both first-prompt writes read the same figure at either tier. The
+guard that was meant to catch that defect was satisfied by it.
 """
 from __future__ import annotations
 
