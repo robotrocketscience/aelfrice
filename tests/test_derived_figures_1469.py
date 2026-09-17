@@ -755,12 +755,19 @@ def test_a_producer_runs_the_source_on_disk_and_not_a_stale_pycache(
     (bench / "emitter.py").write_text(
         "import json\nimport k\nprint(json.dumps({'k': k.VALUE}))\n"
     )
-    # Compile the helper beside its source, with any prefix this test run
-    # inherited removed -- the poison has to land in `benchmarks/__pycache__`.
+    # Compile the helper beside its source, with the two variables that would
+    # stop that removed -- the poison has to land in `benchmarks/__pycache__`.
+    # `PYTHONPYCACHEPREFIX` would put it somewhere else; `PYTHONDONTWRITEBYTECODE`
+    # would mean nothing is written at all, and this test then fails on
+    # "nothing was cached to go stale" for a reason that has nothing to do with
+    # the gate. That is not hypothetical: CONTRIBUTING tells an author to run a
+    # same-size mutation under `PYTHONDONTWRITEBYTECODE=1`, which is exactly
+    # when they are most likely to run this file.
+    _POISONED_BY = ("PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE")
     subprocess.run(
         [sys.executable, "-c", "import k"],
         cwd=str(bench),
-        env={k: v for k, v in os.environ.items() if k != "PYTHONPYCACHEPREFIX"},
+        env={k: v for k, v in os.environ.items() if k not in _POISONED_BY},
         check=True,
         timeout=30,
     )
