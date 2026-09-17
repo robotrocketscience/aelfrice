@@ -77,6 +77,49 @@ third of the entry's numbers. That sentence is only permitted in an entry where
 every figure carries a marker, and that check is **hard**. Making a strong claim
 is allowed; making it for free is not.
 
+## Which text is code
+
+Fenced code is excluded before anything else reads a document, so a figure
+quoted in a shell transcript is not mistaken for a published claim. The
+exclusion is a line-by-line block scanner (`code_block_spans`) following
+CommonMark's fenced-code rules: an opener of three or more backticks or tildes
+indented at most three spaces, a backtick opener's info string carrying no
+backtick, and a closer of the same character, at least as long, with nothing
+after it but whitespace.
+
+It replaced a rule that had no notion of a block at all. The inline-code regex
+paired backticks across the whole document, so a three-backtick fence line --
+an odd run -- left a dangling opener that blanked every line down to the next
+backtick anywhere below it. `docs/user/PRIVACY.md` is the witness: six
+delimiter lines, and every marker placed on that page parsed as nothing, which
+is the count a page with no markers in it also reports. A marker that never
+parses is indistinguishable from a figure nobody annotated, so the gate
+reported success over an unguarded figure -- the #1160 defect class, inside the
+gate built to stop it.
+
+Two deliberate divergences, both measured on this tree rather than argued:
+
+* **An unterminated opener masks nothing.** CommonMark runs such a block to the
+  end of its container; here the container would be the document, and blanking
+  to the end of the document is the exact shape of the defect being fixed. It
+  costs nothing to diverge: no file in the scanned corpus carries an
+  unterminated opener, so the two readings report the same figures and the same
+  markers on this tree. The costs either way are not symmetric: masking prose
+  makes a marker vanish while the gate prints success, whereas leaving an
+  unclosed block's body visible makes a marker inside it parse, and the binding
+  and producer checks then run on it, loudly. A second property falls out of it
+  -- masking a fragment can never blank more than masking the whole document,
+  so a caller holding half a block is safe.
+* **Indented code blocks are not masked.** Four-space indentation is the body
+  of every Python function in the corpus, and `.py` files are scanned, so
+  masking them would blank most of `src/`. The previous rule did not mask them
+  either, and nothing regresses.
+
+Not masked, and not previously masked either: HTML blocks, link reference
+definitions, and fences nested in a blockquote or list item, which need
+container parsing this scanner does not do. A fence indented into a list item
+is therefore read at its literal column.
+
 ## Usage
 
     python3 scripts/check_derived_figures.py                # text checks only
@@ -179,6 +222,28 @@ _INLINE_CODE_RE = re.compile(r"``.*?``|`[^`]*`", re.S)
 _NON_NEWLINE_RE = re.compile(r"[^\n]")
 
 
+def split_lines(text: str) -> list[str]:
+    """`text` split into the lines this file numbers by.
+
+    A newline, and nothing else. `str.splitlines()` also breaks on VT, FF, FS,
+    GS, RS, NEL, LS, PS and a lone CR, none of which an editor, a diff, or a
+    GitHub annotation counts as a line, and none of which `parse_markers`
+    counts either -- every line number here is a `count("\\n", 0, offset) + 1`.
+    Mixing the two splitters is not cosmetic: `scannable_entries` indexes the
+    masked line list with numbers taken from the raw one, masking replaces a
+    block's body with spaces, and one VT inside a fenced block therefore made
+    the masked list one line shorter and slid every entry after it. The gate
+    then reported a hard binding failure, on a correct page, at the wrong line.
+
+    The trailing empty element `split` leaves on a newline-terminated file is
+    dropped, so this matches `splitlines()` on the text that has neither.
+    """
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def _uncited(text: str) -> str:
     """`text` with inline-code spans blanked, for claim detection."""
     return _INLINE_CODE_RE.sub(" ", text)
@@ -197,6 +262,148 @@ def _uncited_inplace(text: str) -> str:
     # lines, and eating its newlines shifts every reported line number after it
     # -- `src/aelfrice/hook.py` markers came back two lines early.
     return _INLINE_CODE_RE.sub(lambda m: _NON_NEWLINE_RE.sub(" ", m.group(0)), text)
+
+
+# --------------------------------------------------------------------------
+# Fenced code. See "## Which text is code" in the module docstring.
+# --------------------------------------------------------------------------
+
+# One candidate delimiter line: optional indent, a run of three or more
+# backticks or tildes, then the rest of the line. Whether the line is an
+# opener, a closer or ordinary text is decided by `code_block_spans`, not here
+# -- that decision needs the scanner's state, and no regex has it.
+_FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+
+# CommonMark: a code fence may be indented by at most three spaces. The fourth
+# space starts an indented code block instead, which is a different construct
+# and one this scanner deliberately does not mask -- see the docstring.
+MAX_FENCE_INDENT = 3
+
+
+def code_block_spans(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` character offsets of every *terminated* fenced block.
+
+    A block runs from the first character of its opening delimiter line to the
+    last character of its closing delimiter line, newline excluded. Offsets, so
+    the caller can blank the span in place and keep every line number.
+
+    The rules are CommonMark's, with one divergence stated in the module
+    docstring: an unterminated opener yields no span at all.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    open_char = ""
+    open_len = 0
+    open_start = 0
+    for line in text.split("\n"):
+        end = pos + len(line)
+        match = _FENCE_LINE_RE.match(line)
+        if match is not None:
+            fence = match.group("fence")
+            info = match.group("info")
+            # Tabs are worth four columns, so a tab-indented delimiter is not
+            # smuggled under the three-space limit.
+            indented = len(match.group("indent").expandtabs(4)) > MAX_FENCE_INDENT
+            if open_char:
+                # A closer is the same character, at least as long, and carries
+                # no info string. ``` ```python ``` inside an open block is body
+                # text, not a closer. `info.strip()` rather than `info` is what
+                # makes a CRLF document work: the carriage return is trailing
+                # whitespace on the delimiter line, which CommonMark allows,
+                # and reading it as an info string leaves every block in the
+                # document unterminated.
+                if (
+                    not indented
+                    and fence[0] == open_char
+                    and len(fence) >= open_len
+                    and not info.strip()
+                ):
+                    spans.append((open_start, end))
+                    open_char, open_len = "", 0
+            elif not indented and not (fence[0] == "`" and "`" in info):
+                # A backtick opener's info string may not contain a backtick.
+                # That rule alone disqualifies the one live delimiter-looking
+                # line this repo has in prose,
+                # `tests/test_noise_harness_and_fences_1371.py:198`.
+                open_char, open_len, open_start = fence[0], len(fence), pos
+        pos = end + 1
+    return spans
+
+
+def _blank_blocks(text: str, outside: Callable[[str], str]) -> str:
+    """Blank every fenced block in `text`; run `outside` on what is left.
+
+    `outside` is applied per region rather than to the joined result because an
+    inline code span may not straddle a fenced block. Running the span rule
+    over a document whose blocks are already blank would let it.
+
+    Length-preserving, which is the contract the rest of this file depends on:
+    every reported line number is a `count("\\n", 0, offset)`, so a masker that
+    changed any offset would move diagnostics off the line they describe.
+    `outside` must preserve length too.
+    """
+    spans = code_block_spans(text)
+    if not spans:
+        return outside(text)
+    out: list[str] = []
+    prev = 0
+    for start, end in spans:
+        out.append(outside(text[prev:start]))
+        out.append(_NON_NEWLINE_RE.sub(" ", text[start:end]))
+        prev = end
+    out.append(outside(text[prev:]))
+    return "".join(out)
+
+
+def mask_code_blocks(text: str) -> str:
+    """`text` with fenced code blanked and nothing else touched."""
+    return _blank_blocks(text, lambda region: region)
+
+
+def mask_document(text: str) -> str:
+    """`text` with fenced code blanked and inline code blanked around it.
+
+    The form every marker scan reads. `read_scannable` is the same thing off
+    disk.
+    """
+    return _blank_blocks(text, _uncited_inplace)
+
+
+def scannable_entries(path: Path) -> list[tuple[int, str]]:
+    """`split_entries` over `path`, with fenced code blanked in each entry.
+
+    Blocks are masked over the whole document and the entries are then sliced
+    out of the result; the boundaries themselves are still read off the raw
+    file. Splitting the masked text instead would let masking redraw the
+    entries -- a blanked block is a run of whitespace-only lines, and
+    `split_entries` ends an entry at a blank line. Masking is
+    length-preserving and both line lists come from `split_lines`, so the two
+    correspond exactly -- see that function for the splitter that made them
+    disagree.
+
+    The inline-code rule is deliberately *not* applied here: it stays with
+    `extract_figures`, per entry, where #1469 put it. Only the block decision
+    needs the whole document.
+    """
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    masked_lines = split_lines(mask_code_blocks(raw))
+    out: list[tuple[int, str]] = []
+    for start, body in split_entries(path, raw):
+        stop = start + body.count("\n") + 1
+        out.append((start, "\n".join(masked_lines[start - 1 : stop - 1])))
+    return out
+
+
+def read_scannable(path: Path) -> str:
+    """`path`'s text, masked once, ready for every whole-file scan here.
+
+    Whole-file: a block's opener and its closer can land in different entries
+    once `split_entries` has run, and a scanner handed half a block has to
+    guess which half it is holding. That guess is the defect. `scannable_entries`
+    is the per-entry form, and it makes the block decision over the whole
+    document for the same reason.
+    """
+    return mask_document(path.read_text(encoding="utf-8", errors="replace"))
 
 
 # Figure extraction. Applied only inside an entry that carries an overclaim
@@ -462,7 +669,7 @@ def split_entries(path: Path, text: str) -> list[tuple[int, str]]:
 
     Returns `(first_line_number, block_text)` pairs, in file order.
     """
-    lines = text.splitlines()
+    lines = split_lines(text)
     bulleted = path.suffix == ".md"
     entries: list[tuple[int, str]] = []
     start: int | None = None
@@ -608,8 +815,7 @@ def check_binding(files: list[Path], markers: list[Marker], report: Report) -> N
     for marker in markers:
         by_path.setdefault(marker.path, []).append(marker)
     for path, group in sorted(by_path.items(), key=lambda kv: str(kv[0])):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        entries = split_entries(path, text)
+        entries = scannable_entries(path)
         for marker in group:
             block = next(
                 (
@@ -639,7 +845,7 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
     """Grammar, binding, self-consistency, staleness and the overclaim."""
     markers: list[Marker] = []
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_scannable(path)
         if "derived:" in text:
             markers.extend(parse_markers(path, text))
 
@@ -697,10 +903,10 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
 
     # The overclaim sentence. Hard.
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_scannable(path)
         if not any(p.search(_uncited(text)) for p in OVERCLAIM_RES):
             continue
-        for start, block in split_entries(path, text):
+        for start, block in scannable_entries(path):
             if not any(p.search(_uncited(block)) for p in OVERCLAIM_RES):
                 continue
             published = {normalise(m.value) for m in parse_markers(path, block)}
@@ -833,7 +1039,9 @@ def restamp(files: list[Path]) -> int:
         if "derived:" not in text:
             continue
         out = text
-        for marker in parse_markers(path, text):
+        # Parsed from the masked text, rewritten into the raw text: a stamp
+        # inside a fenced block is an example of the syntax, not a figure.
+        for marker in parse_markers(path, mask_document(text)):
             if marker.sha is None:
                 continue
             current = producer_sha(marker.producer)
@@ -854,8 +1062,7 @@ def unmarked_total(files: list[Path], mask_spans: Callable[[str], str]) -> int:
     """How many figures carry no marker under a given inline-code rule."""
     total = 0
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for start, block in split_entries(path, text):
+        for start, block in scannable_entries(path):
             published = {normalise(m.value) for m in parse_markers(path, block)}
             total += sum(
                 1
@@ -889,8 +1096,7 @@ def list_unmarked(files: list[Path]) -> int:
     """Enumerate figures that carry no marker. Reporting only; always exit 0."""
     total = 0
     for path in files:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for start, block in split_entries(path, text):
+        for start, block in scannable_entries(path):
             published = {normalise(m.value) for m in parse_markers(path, block)}
             missing = [f for f in extract_figures(block) if normalise(f) not in published]
             if not missing:
