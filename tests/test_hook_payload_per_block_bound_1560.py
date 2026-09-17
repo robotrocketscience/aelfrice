@@ -60,6 +60,12 @@ _WORD = "banana"
 _PROMPT = f"tell me everything about the {_WORD} please"
 _K = 5
 
+# The store the first test fires: small enough that the memory block
+# stays under its ceiling untrimmed, so "emitted whole" is a claim about
+# the payload rather than about what survived a trim.
+_FITS_LOCKS = 20
+_FITS_HITS = 6
+
 # Sized so the checkpoint block lands inside
 # `DEFAULT_REBUILDER_TOKEN_BUDGET`, wrapper tags included, at the shipped
 # 4-chars-per-token estimator. The tests assert that containment rather
@@ -208,7 +214,7 @@ def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
     _stub_rebuilder(monkeypatch)
     out, err = _fire(
         tmp_path, monkeypatch,
-        cadence=True, n_locks=20, n_hits=6, name="fits",
+        cadence=True, n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="fits",
     )
     cadence_block, memory_block = _split(out)
 
@@ -225,7 +231,13 @@ def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
     # The claim: the payload is emitted whole anyway.
     assert _CADENCE_BODY in out
     assert memory_block.startswith(_MEMORY_OPEN)
-    assert f'<belief id="H{0:031d}"' in memory_block
+    # Every seeded hit is still in the envelope. An `in` on one id would
+    # pass a payload that had shed most of the lane to fit a bound.
+    missing = [
+        i for i in range(_FITS_HITS)
+        if f'<belief id="H{i:031d}"' not in memory_block
+    ]
+    assert not missing, missing
     # Nothing was trimmed and nothing overran: a payload ceiling that
     # sheds would have had to say so here, on the stream the ceiling
     # reports to.
@@ -281,7 +293,7 @@ def test_the_cadence_fire_is_off_on_a_stock_install(
     _stub_rebuilder(monkeypatch)
     out, err = _fire(
         tmp_path, monkeypatch,
-        cadence=False, n_locks=20, n_hits=6, name="stock",
+        cadence=False, n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="stock",
     )
     assert _CADENCE_OPEN not in out
     assert _CADENCE_BODY not in out
