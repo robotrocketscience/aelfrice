@@ -556,12 +556,17 @@ def test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree(
     work = tmp_path / "planted"
     scratch = work / "scratch"
     scratch.mkdir(parents=True)
+    # `-b` for the same reason `tests/test_hook_session_start_recent_work_wired`
+    # passes it: an unnamed default branch is a git config the runner owns, and
+    # what this test needs is a branch, not a particular one.
     subprocess.run(
-        ["git", "init", "-q", str(work)], check=True, capture_output=True,
+        ["git", "init", "-q", "-b", "main", str(work)],
+        check=True, capture_output=True, timeout=30,
     )
     probe = subprocess.run(
         ["git", "symbolic-ref", "--short", "HEAD"],
         cwd=str(scratch), capture_output=True, text=True, check=False,
+        timeout=30,
     )
     assert probe.returncode == 0 and probe.stdout.strip(), (
         "git resolves no branch from inside the planted work tree, so this "
