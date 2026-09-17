@@ -148,6 +148,41 @@ def _is_timeout_mark(node: ast.expr) -> bool:
     )
 
 
+def _module_timeout_aliases(tree: ast.Module) -> frozenset[str]:
+    """Module-level names bound to a `pytest.mark.timeout(...)` mark.
+
+    A decorator does not have to be spelled `@pytest.mark.timeout(N)` to be
+    one. `tests/test_render_cost_1526.py` binds the mark once --
+    `_pays_for_the_producer_run = pytest.mark.timeout(120)` -- and decorates
+    thirteen tests with the name, so that every consumer of one expensive
+    fixture carries the same budget and the reason for it is written down in
+    one place instead of thirteen.
+
+    Reading only the literal spelling reports such a test as unbudgeted, and
+    the only way to satisfy the report is to add a *second* timeout decorator
+    beside the alias. That is the same failure this module's `pytestmark` rule
+    exists to prevent, one level down: a duplicated budget drifts from the one
+    it duplicates, and `get_closest_marker` makes the duplicate win silently.
+
+    Deliberately narrow. Only a module-level assignment, in this same file,
+    whose value is a `pytest.mark.timeout` mark. A name imported from
+    elsewhere, or bound to anything else, is not a budget as far as this walk
+    is concerned -- it would have to read another module to know, and a gate
+    that guesses is worse than one with a stated limit.
+    """
+    aliases: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        if node.value is None or not _is_timeout_mark(node.value):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for t in targets:
+            if isinstance(t, ast.Name):
+                aliases.add(t.id)
+    return frozenset(aliases)
+
+
 def _module_has_timeout_pytestmark(tree: ast.Module) -> bool:
     """A module-level `pytestmark` budget covering every test in the file.
 
@@ -190,8 +225,15 @@ def _class_marked_tests(tree: ast.Module) -> set[str]:
     return marked
 
 
-def _has_timeout_marker(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(_is_timeout_mark(dec) for dec in fn.decorator_list)
+def _has_timeout_marker(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, aliases: frozenset[str],
+) -> bool:
+    """A literal `pytest.mark.timeout` decorator, or a module alias for one."""
+    return any(
+        _is_timeout_mark(dec)
+        or (isinstance(dec, ast.Name) and dec.id in aliases)
+        for dec in fn.decorator_list
+    )
 
 
 def unbudgeted_subprocess_tests() -> list[str]:
@@ -210,6 +252,7 @@ def unbudgeted_subprocess_tests() -> list[str]:
         if _module_has_timeout_pytestmark(tree):
             continue
         class_marked = _class_marked_tests(tree)
+        aliases = _module_timeout_aliases(tree)
         rel = path.relative_to(TESTS_ROOT.parent)
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -218,7 +261,7 @@ def unbudgeted_subprocess_tests() -> list[str]:
                 continue
             if fn.name not in reaching:
                 continue
-            if _has_timeout_marker(fn) or fn.name in class_marked:
+            if _has_timeout_marker(fn, aliases) or fn.name in class_marked:
                 continue
             ident = f"{rel}::{fn.name}"
             if ident in _ALLOWLIST:
@@ -356,4 +399,58 @@ def test_a_marker_on_the_test_satisfies_the_rule() -> None:
     fn = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
     )
-    assert _has_timeout_marker(fn)
+    assert _has_timeout_marker(fn, frozenset())
+
+
+def test_a_module_alias_for_the_mark_is_a_budget() -> None:
+    """A mark bound to a name once and used as a decorator is still a budget.
+
+    The live case is `tests/test_render_cost_1526.py`, which binds
+    `_pays_for_the_producer_run = pytest.mark.timeout(120)` and decorates
+    every consumer of one expensive fixture with it. Before this, the rule
+    reported such a test as unbudgeted and the only way to clear the report
+    was a second timeout decorator beside the alias — the duplicated-budget
+    failure the `pytestmark` rule above exists to prevent, one scope down.
+    """
+    tree = ast.parse(
+        "import pytest\n"
+        "import subprocess\n"
+        "_pays = pytest.mark.timeout(120)\n"
+        "@_pays\n"
+        "def test_leaf():\n"
+        "    subprocess.run(['x'])\n"
+    )
+    aliases = _module_timeout_aliases(tree)
+    assert aliases == frozenset({"_pays"})
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "test_leaf"
+    )
+    assert _has_timeout_marker(fn, aliases)
+    # ...and without the alias set in hand the same decorator is not a budget,
+    # which is what keeps the widening from being a blanket pass on any name.
+    assert not _has_timeout_marker(fn, frozenset())
+
+
+def test_a_module_name_bound_to_something_else_is_not_a_budget() -> None:
+    """The widening admits a `pytest.mark.timeout` mark and nothing else.
+
+    Two shapes that must stay out: another mark bound to a name, and a name
+    bound to a plain value. Both are decorators or module constants a test file
+    can carry for unrelated reasons, and treating either as a budget would let
+    a spawning test through on the suite's default.
+    """
+    tree = ast.parse(
+        "import pytest\n"
+        "_slow = pytest.mark.regression\n"
+        "_limit = 120\n"
+    )
+    assert _module_timeout_aliases(tree) == frozenset()
+    # A binding inside a function body is not module-level and does not count.
+    nested = ast.parse(
+        "import pytest\n"
+        "def _make():\n"
+        "    _pays = pytest.mark.timeout(120)\n"
+        "    return _pays\n"
+    )
+    assert _module_timeout_aliases(nested) == frozenset()
