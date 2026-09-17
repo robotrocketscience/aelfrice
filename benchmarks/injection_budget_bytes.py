@@ -843,18 +843,28 @@ def _session_start_block(store: Any) -> str:
     `hook.DEFAULT_RECENT_WORK_COMMIT_LIMIT` admits of whatever
     checkout the producer happened to run in. `figures()` has already chdir'd
     into a tempdir for the same hermeticity reason the `[retrieval]` flags
-    need, so `Path.cwd()` is a non-git directory and `_resolve_branch` returns
-    None before any subprocess reads a log. The measured size of that section
-    is published as `first_prompt_recent_work_chars` rather than asserted here.
+    need, and `_hermetic_environment` has put `GIT_CEILING_DIRECTORIES` at
+    that tempdir's parent, so `Path.cwd()` is a directory git cannot discover
+    a repository from and `_resolve_branch` returns None before any subprocess
+    reads a log. The measured size of that section is published as
+    `first_prompt_recent_work_chars` rather than asserted here.
+
+    **The ceiling is what makes that a property.** Without it the sentence
+    above is a property of `$TMPDIR` and not of this tree: point `$TMPDIR`
+    inside any git work tree and the same run resolves a branch, fills
+    `<recent-work>` with commit subjects, and moves eight published scalars.
+    `test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree` is
+    what holds it down; it plants a work tree, establishes that git resolves a
+    branch from inside it, and requires the produced blob to be the one the
+    default `$TMPDIR` produces.
 
     **Built once per distinct answer.** Every lane that composes an envelope
     calls this, at every grid length and on both arms, and each call sends
-    `_resolve_branch` out to `git symbolic-ref` — a subprocess, carrying
-    `hook._RECENT_WORK_GIT_TIMEOUT_S`, whose result is a read of ambient
-    filesystem state in the one block of this module documented as reaching
-    none. They resolve to nothing here, but a spawn whose outcome is decided
-    by a timeout is decided by machine load, and this producer gates required
-    CI.
+    `_resolve_branch` out to `git symbolic-ref` — a subprocess carrying
+    `hook._RECENT_WORK_GIT_TIMEOUT_S`. Under the ceiling both of its outcomes,
+    a refusal and a timeout, are None, so a loaded machine cannot move a
+    figure through one; what is left is the spawn, and the memo is what keeps
+    the count at one per distinct answer rather than one per call.
 
     The key is every input the block varies on: the store it is built from,
     the cwd `<recent-work>` is resolved under, and `hook._core_belief_cost` —
@@ -1740,10 +1750,55 @@ def shipped_budget(lane: str) -> int:
 
 ENV_PREFIX = "AELFRICE_"
 
+# Git's own location variables, cleared for the duration of a run, and the
+# ceiling that replaces them.
+#
+# `_session_start_block` composes the shipped `<session-start>` sub-block,
+# which resolves `<recent-work>` from git plumbing run under `Path.cwd()`.
+# `figures()` chdirs into `tempfile.TemporaryDirectory()`, and that docstring
+# used to call "the cwd is a non-git directory" a property of this module. It
+# was not one: it was a property of `$TMPDIR`. Point `$TMPDIR` at any
+# directory inside a git work tree — a scratch checkout, a runner's workspace,
+# a worktree under `/tmp` — and git ascends out of the tempdir, finds the
+# enclosing repository, and eight published scalars move with it, seven of
+# them markers `scripts/check_derived_figures.py` re-derives on every PR
+# (`first_prompt_bytes_before` / `_after`, `dedupe_bytes_before` / `_after`,
+# `first_prompt_recent_work_chars`, and the composed lane's two arm byte
+# counts), plus `first_prompt_pct`, which the CHANGELOG quotes as -33.2%.
+#
+# `GIT_CEILING_DIRECTORIES` at the tempdir's **parent** stops the ascent at the
+# tempdir itself, so discovery fails whatever `$TMPDIR` is. The parent and not
+# the tempdir: git ignores a ceiling entry that is not strictly above the
+# directory the walk starts from, so an entry naming the tempdir itself is
+# inert and the ascent runs to the root — measured both ways, from a tempdir
+# planted inside this work tree, before this was written.
+#
+# The other three name a repository outright and outrank discovery, so a
+# ceiling alone would not close the hole for an operator who exports one. They
+# are enumerated rather than cleared as a `GIT_` prefix class because that
+# prefix also carries names git needs to run at all (`GIT_EXEC_PATH`), and a
+# producer that cannot spawn git measures a different thing from one whose git
+# finds nothing.
+#
+# The spawns are kept rather than stubbed out. `_build_recent_work_subblock`
+# is the shipped composition this lane exists to measure, and with the ceiling
+# in place both of its outcomes — a ceiling refusal and a
+# `_RECENT_WORK_GIT_TIMEOUT_S` timeout — return None, so a loaded machine
+# cannot move a figure through them. What they cost is a spawn each:
+# `figures()` issues 28 over a full-grid run, one per distinct
+# `_SESSION_START_BLOCKS` key, none of which reached a tenth of that timeout
+# over 32 instrumented runs on a machine at load average 12-18.
+_GIT_LOCATION_VARS = (
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+)
+
 
 @contextlib.contextmanager
-def _hermetic_environment() -> Iterator[None]:
-    """Remove every `AELFRICE_`-prefixed variable for the duration of a run.
+def _hermetic_environment(tmp: Path) -> Iterator[None]:
+    """Pin the environment this run reads through, for its duration.
 
     The chdir below closes one half of the ambient state this module reads
     through: no ancestor `.aelfrice.toml` reaches the resolvers from a
@@ -1761,15 +1816,32 @@ def _hermetic_environment() -> Iterator[None]:
     one set of figures under the test and another under the gate. A producer
     that publishes figures is the right place for its own hermeticity.
 
-    Cleared as a prefix class rather than a name list, so a resolver added
-    later is covered without an edit here.
+    The `AELFRICE_` half is cleared as a prefix class rather than a name list,
+    so a resolver added later *that reads an `AELFRICE_` variable* is covered
+    without an edit here. That is the whole of what the prefix buys: a reader
+    of ambient state outside the prefix is not covered, and `_GIT_LOCATION_VARS`
+    above is the worked example — the git environment `<recent-work>` reaches
+    through had to be enumerated, and `tmp` had to be threaded in to put a
+    ceiling under it.
+
+    `tmp` is the run's tempdir. It is a parameter and not a `Path.cwd()` read
+    because the ceiling has to be set *before* anything chdirs, and because a
+    cwd read would make the value this pins a function of the thing it is
+    pinning.
     """
-    saved = {k: v for k, v in os.environ.items() if k.startswith(ENV_PREFIX)}
+    saved = {
+        k: v
+        for k, v in os.environ.items()
+        if k.startswith(ENV_PREFIX) or k in _GIT_LOCATION_VARS
+    }
     for name in saved:
         del os.environ[name]
+    os.environ["GIT_CEILING_DIRECTORIES"] = str(tmp.parent)
     try:
         yield
     finally:
+        for name in _GIT_LOCATION_VARS:
+            os.environ.pop(name, None)
         os.environ.update(saved)
 
 
@@ -1793,7 +1865,7 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     SESSION_START_BLOCK_HITS = 0
 
     values: dict[str, Any] = {}
-    with tempfile.TemporaryDirectory() as td, _hermetic_environment():
+    with tempfile.TemporaryDirectory() as td, _hermetic_environment(Path(td)):
         tmp = Path(td)
         # Hermetic: `retrieve()` resolves ~22 `[retrieval]` flags by walking
         # up from the process cwd, and this repo sits under a home directory

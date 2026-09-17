@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import ast
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -504,6 +506,76 @@ def test_the_producer_is_hermetic_against_an_exported_budget(
         "proves nothing about hermeticity"
     )
     assert m.figures(lengths=top) == clean  # type: ignore[attr-defined]
+
+
+@_pays_for_the_producer_run
+def test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `$TMPDIR` inside a git work tree must not move a published figure.
+
+    `figures()` chdirs into `tempfile.TemporaryDirectory()` and composes the
+    shipped `<session-start>` sub-block there, and that sub-block resolves
+    `<recent-work>` from git plumbing run under `Path.cwd()`. The producer
+    documented "that cwd is not a git work tree" as a property of this module.
+    It was a property of `$TMPDIR`: with `$TMPDIR` inside a checkout, git
+    ascends out of the tempdir, finds the enclosing repository, and eight
+    published scalars move — `first_prompt_bytes_before` / `_after`,
+    `dedupe_bytes_before` / `_after`, `first_prompt_recent_work_chars`, the
+    composed lane's two arm byte counts and `first_prompt_pct` — seven of them
+    markers `scripts/check_derived_figures.py` re-derives on every PR.
+
+    Asserted the way the sibling hermeticity test asserts its own: the leak is
+    established **first**, by requiring a bare `git symbolic-ref` run from
+    inside the planted tree to resolve a branch. Without that check this test
+    would pass on a fixture that is not a repository, which is the failure
+    mode it exists to rule out. Then the same narrowed grid is produced twice
+    — once under the default `$TMPDIR`, once with `tempfile.tempdir` pointed
+    inside the planted tree — and the two blobs must be equal.
+
+    `tempfile.tempdir` rather than the `TMPDIR` variable, because
+    `tempfile.gettempdir()` caches its answer on first use and a variable set
+    mid-process reaches a run that has already looked. The variable is the
+    thing an operator sets; the attribute is where it lands, and it is the
+    seam a test can move.
+
+    The top grid length, alone, for the reason the sibling gives: the property
+    is per-resolve, and two full-grid runs would not fit the budget above.
+
+    Mutation: deleting the `GIT_CEILING_DIRECTORIES` line from
+    `_hermetic_environment` reds this on `first_prompt_recent_work_chars`,
+    which is the assertion below the blob equality and is there so the failure
+    names the leak rather than a diff of two dicts.
+    """
+    m = _producer_module()
+    for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name, raising=False)
+    top = (max(m.LENGTH_GRID),)  # type: ignore[attr-defined]
+    clean = m.figures(lengths=top)  # type: ignore[attr-defined]
+
+    work = tmp_path / "planted"
+    scratch = work / "scratch"
+    scratch.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "-q", str(work)], check=True, capture_output=True,
+    )
+    probe = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        cwd=str(scratch), capture_output=True, text=True, check=False,
+    )
+    assert probe.returncode == 0 and probe.stdout.strip(), (
+        "git resolves no branch from inside the planted work tree, so this "
+        "test would pass on a directory that is not a repository: "
+        f"{probe.returncode} {probe.stderr.strip()!r}"
+    )
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    planted = m.figures(lengths=top)  # type: ignore[attr-defined]
+    assert planted["first_prompt_recent_work_chars"] == 0, (
+        "<recent-work> filled from the repository enclosing $TMPDIR, so the "
+        "composed lane's byte counts are a function of where the tempdir "
+        f"landed: {planted['first_prompt_recent_work_chars']} chars"
+    )
+    assert planted == clean
 
 
 @_pays_for_the_producer_run
