@@ -2475,6 +2475,96 @@ def _cmd_context(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+#: How many candidate ids `aelf show` lists when a prefix is ambiguous.
+#: The store is asked for one more than this, so the message can say
+#: "more than N" honestly instead of implying the list is the whole set.
+_SHOW_AMBIGUITY_LIST: Final[int] = 10
+
+
+def _cmd_show(args: argparse.Namespace, out: object) -> int:
+    """Read one belief back by id (#1553).
+
+    Every injected `<belief>` element carries an id, and nothing until
+    now turned that id back into the belief's full text: `search` is
+    FTS5 over *content*, so an id matches on whatever it happens to
+    tokenize into; `graph` is anchored by id but returns neighbours;
+    `locked`, `core` and `speculative` are tier listings.
+
+    Addressing, not search. An exact id resolves to itself; a partial id
+    resolves only when exactly one belief starts with it, and otherwise
+    names the candidates and exits non-zero. It never picks one.
+
+    Retired beliefs are reachable and labelled `status: retired`, because
+    the id in an injected block from a week ago may name one.
+
+    The store opens read-only: the contract is observational, and a
+    writable open would pay DDL, migrations, the scope-id mint and the
+    expired-lock sweep to print one row.
+    """
+    from aelfrice.scoring import posterior_mean
+
+    belief_id: str = args.belief_id
+    store = open_store_for_read()
+    try:
+        matches = store.find_beliefs_by_id_prefix(
+            belief_id, limit=_SHOW_AMBIGUITY_LIST + 1,
+        )
+    finally:
+        store.close()
+
+    if not matches:
+        print(
+            f"aelf show: no belief with id {belief_id!r}", file=sys.stderr,
+        )
+        return 1
+    if len(matches) > 1:
+        listed = matches[:_SHOW_AMBIGUITY_LIST]
+        count = (
+            f"more than {_SHOW_AMBIGUITY_LIST}"
+            if len(matches) > _SHOW_AMBIGUITY_LIST
+            else str(len(matches))
+        )
+        print(
+            f"aelf show: ambiguous id {belief_id!r}: "
+            f"{count} beliefs start with it",
+            file=sys.stderr,
+        )
+        for candidate in listed:
+            print(f"  {candidate.id}", file=sys.stderr)
+        print(
+            "aelf show: pass more of the id; this command never guesses.",
+            file=sys.stderr,
+        )
+        return 1
+
+    b = matches[0]
+    print(f"belief: {b.id}", file=out)  # type: ignore[arg-type]
+    print(
+        f"status: {'retired' if b.valid_to else 'active'}",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(f"origin: {b.origin}", file=out)  # type: ignore[arg-type]
+    print(f"lock: {b.lock_level}", file=out)  # type: ignore[arg-type]
+    print(f"retention: {b.retention_class}", file=out)  # type: ignore[arg-type]
+    print(
+        f"posterior: {posterior_mean(b.alpha, b.beta):.3f} "
+        f"(alpha={b.alpha:g}, beta={b.beta:g})",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(f"created: {b.created_at}", file=out)  # type: ignore[arg-type]
+    print(
+        f"valid-to: {b.valid_to if b.valid_to else '(none)'}",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(f"scope: {b.scope}", file=out)  # type: ignore[arg-type]
+    # Content last, and unindented: it is the one field that can be long
+    # or multi-line, so anything printed after it would be ambiguous to
+    # read and to parse. Verbatim — `show` exists to undo a truncation.
+    print("content:", file=out)  # type: ignore[arg-type]
+    print(b.content, file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     """List beliefs that look stale by age + retrieval recency (#933).
 
@@ -9029,6 +9119,22 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="id of the belief whose source-turn context to recover",
     )
     p_context.set_defaults(func=_cmd_context)
+
+    # #1553: read one belief back by id. Visible — an injected `<belief>`
+    # element carries an id and nothing else turned that id into the
+    # belief's full text, so this is a workflow verb, not a diagnostic.
+    p_show = sub.add_parser(
+        "show",
+        help="print one belief by id (exact-id lookup, read-only)",
+    )
+    p_show.add_argument(
+        "belief_id",
+        help=(
+            "id of the belief to print; a prefix is accepted only when "
+            "exactly one belief starts with it"
+        ),
+    )
+    p_show.set_defaults(func=_cmd_show)
 
     # Explicit unlock — clears user-lock, writes lock:unlock audit row.
     p_unlock = sub.add_parser(

@@ -214,11 +214,24 @@ def test_speculative_survives_a_frozen_store(
 
 
 def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
-    """The routed set is exactly the four the ruling named.
+    """The routed set is exactly the four the ruling named, plus `show`.
 
     #1416's 2026-08-09 operator ruling sanctioned this partial for
     `search`, `status`, `locked` and `speculative`, and held the rest —
     "each needing its own read-only audit rather than a blanket change".
+
+    `_cmd_show` is the fifth, added by an explicit operator ruling on
+    #1553 AC5 rather than by the blanket change the #1416 ruling
+    refused, and it has had the per-command audit the ruling asks for.
+    It reads one `beliefs` row and prints it, so no migration is needed:
+    it projects `b.*`, and `_row_to_belief` already defaults every
+    post-v1.6 column an older store lacks. The audit's one finding is
+    that on the *fallback* handle no expired-lock sweep has run
+    (#1314), so a lock past its `lock_expires_at` still prints
+    `lock: user` — the same staleness `aelf locked` carries there, on a
+    command that reports a stored field rather than acting on it.
+    The behavioural proof that the routing is live is
+    `tests/test_cli_show_1553.py::test_show_reads_a_store_it_cannot_write`.
     The held commands are not merely unfinished: on the fallback path a
     read-only handle runs no migration and no expired-lock sweep, which
     is the per-command semantics the audit is *for*. `feed` never opens
@@ -244,6 +257,7 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     }
     assert routed == {
         "_cmd_search", "_cmd_stats", "_cmd_locked", "_cmd_speculative",
+        "_cmd_show",
     }, "amend the #1416 ruling before routing another command"
 
 

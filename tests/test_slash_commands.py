@@ -103,6 +103,13 @@ EXPECTED_COMMANDS = (
     # fired category's members. Nested actions (init/add/list/show/
     # set-trigger/assign/unassign/delete) live under the visible verb.
     "category",
+    # (#1553) — read one belief back by id. Every injected `<belief>`
+    # element carries an id and nothing turned that id into the belief's
+    # full text: `search` is FTS5 over content, `graph` returns
+    # neighbours, and `locked` / `core` / `speculative` are tier
+    # listings. Visible per the operator's ruling — a workflow verb, not
+    # a diagnostic. Distinct from the nested `category show`.
+    "show",
 )
 
 
