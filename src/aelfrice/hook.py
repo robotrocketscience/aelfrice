@@ -1058,6 +1058,22 @@ SESSION_START_SUBBLOCK_CLOSE: Final[str] = "</session-start>"
 CORE_OPEN_TAG: Final[str] = "<core>"
 CORE_CLOSE_TAG: Final[str] = "</core>"
 
+# The #871 `<cadence-resume>` recap, prepended to that sub-block on a
+# session's first prompt. Named for the same reason `<core>` is: the
+# ceiling locates the recap by tag to decide which lane an element belongs
+# to and how far the wrapper reaches, and `_maybe_read_cadence_resume`
+# writes the tag. A second literal would let the writer and the dropper
+# disagree silently.
+#
+# The open tag is the element name alone, without its `>`: the writer
+# emits `from`, `policy` and `ts` attributes after it, so a whole-tag
+# literal would match nothing. `str.find` on this prefix still cannot hit
+# belief content -- the recap body is rendered by `context_rebuilder`,
+# which `_xml_escape`s every angle bracket, and the envelope's own
+# elements go through `_escape_for_hook_block`.
+RESUME_OPEN_TAG: Final[str] = "<cadence-resume"
+RESUME_CLOSE_TAG: Final[str] = "</cadence-resume>"
+
 # Fixed framing header rendered inside <aelfrice-memory> and
 # <aelfrice-baseline> blocks. Per docs/design/hook_hardening.md (#280) the
 # trust boundary must be structurally legible. #1016 splits that boundary
@@ -6248,10 +6264,10 @@ def _maybe_read_cadence_resume(serr: IO[str]) -> str:
         ts_short = ts if isinstance(ts, str) else "?"
         policy_short = policy if isinstance(policy, str) else "?"
         wrapper = (
-            f"<cadence-resume from='{prev_sid_short}' "
+            f"{RESUME_OPEN_TAG} from='{prev_sid_short}' "
             f"policy='{policy_short}' ts='{ts_short}'>\n"
             f"{body_obj}\n"
-            f"</cadence-resume>"
+            f"{RESUME_CLOSE_TAG}"
         )
         print(
             f"aelfrice: cadence-resume injection "
