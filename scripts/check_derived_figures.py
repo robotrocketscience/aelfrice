@@ -94,9 +94,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -717,6 +719,27 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
     return markers
 
 
+def producer_env(cache_root: str) -> dict[str, str]:
+    """The environment a producer subprocess runs under.
+
+    `PYTHONPYCACHEPREFIX` points at a directory this run owns, so the child
+    compiles every module from the source that is on disk now. Without it the
+    child reads `__pycache__` beside the source, and CPython validates a cached
+    entry on the source's (mtime-seconds, size) alone: an edit and a revert of
+    the same size inside one mtime second leave the interpreter running the
+    other version's bytecode while the working tree is clean and every hash
+    matches. That is not a hypothetical here — a same-size mutation is exactly
+    how the arms in `tests/test_render_cost_1526.py` are checked, and a gate
+    that re-derives published figures must read the tree it is gating.
+
+    Everything else is inherited. The `AELFRICE_` prefix is cleared by the
+    producer itself (`figures()` in `benchmarks/injection_budget_bytes.py`),
+    not stripped here, so a producer that stops clearing it fails this gate
+    instead of being covered by it.
+    """
+    return {**os.environ, "PYTHONPYCACHEPREFIX": cache_root}
+
+
 def check_producers(markers: list[Marker], report: Report) -> None:
     """Run every store-free producer and diff its output against the prose."""
     by_producer: dict[str, list[Marker]] = {}
@@ -725,67 +748,69 @@ def check_producers(markers: list[Marker], report: Report) -> None:
             continue
         by_producer.setdefault(marker.producer, []).append(marker)
 
-    for producer, group in sorted(by_producer.items()):
-        path = producer_path(producer)
-        if path is None or not path.is_file():
-            continue  # already reported by check_text
-        proc = subprocess.run(
-            [sys.executable, str(path), "--emit-figures"],
-            capture_output=True,
-            text=True,
-            cwd=str(REPO_ROOT),
-            timeout=300,
-            check=False,
-        )
-        if proc.returncode != 0:
-            for marker in group:
-                report.fail(
-                    marker.path,
-                    marker.line,
-                    f"producer {producer} exited {proc.returncode} under "
-                    f"--emit-figures: {proc.stderr.strip()[:400]}",
-                )
-            continue
-        decoded: object
-        try:
-            decoded = json.loads(proc.stdout)
-        except json.JSONDecodeError as exc:
-            for marker in group:
-                report.fail(
-                    marker.path,
-                    marker.line,
-                    f"producer {producer} did not emit JSON on stdout ({exc})",
-                )
-            continue
-        if not isinstance(decoded, dict):
-            for marker in group:
-                report.fail(
-                    marker.path,
-                    marker.line,
-                    f"producer {producer} emitted {type(decoded).__name__}, "
-                    "expected a JSON object of key -> value",
-                )
-            continue
-        emitted = cast("dict[str, object]", decoded)
-        for marker in group:
-            if marker.key not in emitted:
-                report.fail(
-                    marker.path,
-                    marker.line,
-                    f"producer {producer} emits no key {marker.key!r}; it emits "
-                    f"{sorted(emitted)}",
-                )
+    with tempfile.TemporaryDirectory(prefix="derived-figures-pyc-") as pyc:
+        for producer, group in sorted(by_producer.items()):
+            path = producer_path(producer)
+            if path is None or not path.is_file():
+                continue  # already reported by check_text
+            proc = subprocess.run(
+                [sys.executable, str(path), "--emit-figures"],
+                capture_output=True,
+                text=True,
+                cwd=str(REPO_ROOT),
+                env=producer_env(pyc),
+                timeout=300,
+                check=False,
+            )
+            if proc.returncode != 0:
+                for marker in group:
+                    report.fail(
+                        marker.path,
+                        marker.line,
+                        f"producer {producer} exited {proc.returncode} under "
+                        f"--emit-figures: {proc.stderr.strip()[:400]}",
+                    )
                 continue
-            got = normalise(emitted[marker.key])
-            want = normalise(marker.value)
-            if got != want:
-                report.fail(
-                    marker.path,
-                    marker.line,
-                    f"published {marker.ident} = {marker.value}, but "
-                    f"{producer} now emits {emitted[marker.key]}. The figure is "
-                    "stale: re-derive it, or fix the producer.",
-                )
+            decoded: object
+            try:
+                decoded = json.loads(proc.stdout)
+            except json.JSONDecodeError as exc:
+                for marker in group:
+                    report.fail(
+                        marker.path,
+                        marker.line,
+                        f"producer {producer} did not emit JSON on stdout ({exc})",
+                    )
+                continue
+            if not isinstance(decoded, dict):
+                for marker in group:
+                    report.fail(
+                        marker.path,
+                        marker.line,
+                        f"producer {producer} emitted {type(decoded).__name__}, "
+                        "expected a JSON object of key -> value",
+                    )
+                continue
+            emitted = cast("dict[str, object]", decoded)
+            for marker in group:
+                if marker.key not in emitted:
+                    report.fail(
+                        marker.path,
+                        marker.line,
+                        f"producer {producer} emits no key {marker.key!r}; it emits "
+                        f"{sorted(emitted)}",
+                    )
+                    continue
+                got = normalise(emitted[marker.key])
+                want = normalise(marker.value)
+                if got != want:
+                    report.fail(
+                        marker.path,
+                        marker.line,
+                        f"published {marker.ident} = {marker.value}, but "
+                        f"{producer} now emits {emitted[marker.key]}. The figure is "
+                        "stale: re-derive it, or fix the producer.",
+                    )
 
 
 def restamp(files: list[Path]) -> int:

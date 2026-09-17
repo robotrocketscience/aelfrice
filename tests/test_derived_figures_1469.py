@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -722,6 +723,57 @@ def test_a_store_backed_marker_is_never_executed(repo: Path) -> None:
     for the wrong reason and the gate would be turned off."""
     (repo / "benchmarks" / "emitter.py").write_text("raise SystemExit('needs a store')\n")
     (repo / "a.md").write_text(_published("benchmarks/emitter.py#k", 20, CORPUS, SHA))
+    report = cdf.Report(github=False)
+    markers = cdf.check_text([repo / "a.md"], report)
+    cdf.check_producers(markers, report)
+    assert report.hard == []
+
+
+@pytest.mark.timeout(60)
+def test_a_producer_runs_the_source_on_disk_and_not_a_stale_pycache(
+    repo: Path,
+) -> None:
+    """The gate must re-derive from the tree it is gating.
+
+    CPython validates a `__pycache__` entry against the source's
+    (mtime-seconds, size) and nothing else. An edit and a revert of the same
+    length inside one mtime second therefore leave a *fresh* interpreter
+    running the other version's bytecode while the working tree is clean and
+    every file hash matches -- which is what a same-size mutation check does
+    to this repo routinely. A gate that inherits that cache re-derives
+    published figures from code that is not in the repo: it reports drift on a
+    pristine checkout, and it misses drift that is really there.
+
+    Built rather than described. The helper's cached bytecode holds a value
+    its source no longer does, and the gate must read the source. Dropping
+    `env=producer_env(...)` from `check_producers` reds this with
+    `now emits 21`.
+    """
+    bench = repo / "benchmarks"
+    helper = bench / "k.py"
+    helper.write_text("VALUE = 21\n")
+    (bench / "emitter.py").write_text(
+        "import json\nimport k\nprint(json.dumps({'k': k.VALUE}))\n"
+    )
+    # Compile the helper beside its source, with any prefix this test run
+    # inherited removed -- the poison has to land in `benchmarks/__pycache__`.
+    subprocess.run(
+        [sys.executable, "-c", "import k"],
+        cwd=str(bench),
+        env={k: v for k, v in os.environ.items() if k != "PYTHONPYCACHEPREFIX"},
+        check=True,
+        timeout=30,
+    )
+    stale = os.stat(helper)
+    helper.write_text("VALUE = 20\n")
+    os.utime(helper, (stale.st_atime, stale.st_mtime))
+    assert helper.stat().st_size == stale.st_size, (
+        "the rewrite must be the same size, or CPython invalidates the cache "
+        "and this test proves nothing"
+    )
+    assert list(bench.glob("__pycache__/k.*.pyc")), "nothing was cached to go stale"
+
+    (repo / "a.md").write_text(_published("benchmarks/emitter.py#k", 20))
     report = cdf.Report(github=False)
     markers = cdf.check_text([repo / "a.md"], report)
     cdf.check_producers(markers, report)
