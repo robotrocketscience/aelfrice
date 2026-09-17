@@ -1753,22 +1753,40 @@ def _flat_1547_keys(
     # ratio off its 300-character row. The lane's *single-belief* ratio is
     # `undercharge_top_snapshot_ratio` above, which is this lane's number and
     # no other lane's now that `ups` and `first_prompt` charge what they emit.
-    head = SNAPSHOT_ARM_HEADLINE_LANE
-    hcell = values["snapshot_arm"][head][top]
-    out[f"snapshot_arm_{head}_snapshot_items"] = hcell["snapshot_items"]
-    out[f"snapshot_arm_{head}_snapshot_unlocked_hits"] = hcell[
-        "snapshot_unlocked_hits"
-    ]
-    out[f"snapshot_arm_{head}_snapshot_charged_tokens"] = hcell[
-        "snapshot_charged_tokens"
-    ]
-    out[f"snapshot_arm_{head}_snapshot_emitted_tokens"] = hcell[
-        "snapshot_emitted_tokens"
-    ]
-    out[f"snapshot_arm_{head}_snapshot_pack_ratio"] = hcell[
-        "snapshot_pack_ratio"
-    ]
+    #
+    # `ups` gets the same five, because the sentence they back is the one the
+    # mixed denominator was found in and it quotes all of them at once.
+    for lane in ("ups", SNAPSHOT_ARM_HEADLINE_LANE):
+        out.update(_arm_cell_keys(values["snapshot_arm"][lane][top], lane))
     return out
+
+
+def _arm_cell_keys(cell: dict[str, Any], lane: str) -> dict[str, Any]:
+    """One snapshot-arm cell's five snapshot-side figures, as scalar keys.
+
+    They are lifted as a set rather than one at a time because the CHANGELOG
+    sentence they back reads all five in one breath, and the defect they were
+    added for was a sentence that mixed two of them: "admitting 22 beliefs
+    charged 723 tokens whose emitted text is 74,616 tokens, 103.2x" put
+    `Arm.n_items` — 22, six of them locks — in the same clause as a charge
+    `_pack_charge` summed over the 16 non-locked hits. No set of beliefs was
+    both. Gated together, a sentence that says "admitting N of which the M
+    non-locked ones are charged X against Y" cannot have N and M drift apart
+    without the marker check failing.
+    """
+    return {
+        f"snapshot_arm_{lane}_snapshot_items": cell["snapshot_items"],
+        f"snapshot_arm_{lane}_snapshot_unlocked_hits": cell[
+            "snapshot_unlocked_hits"
+        ],
+        f"snapshot_arm_{lane}_snapshot_charged_tokens": cell[
+            "snapshot_charged_tokens"
+        ],
+        f"snapshot_arm_{lane}_snapshot_emitted_tokens": cell[
+            "snapshot_emitted_tokens"
+        ],
+        f"snapshot_arm_{lane}_snapshot_pack_ratio": cell["snapshot_pack_ratio"],
+    }
 
 
 def _lane_figures(
