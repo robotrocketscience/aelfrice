@@ -4910,7 +4910,8 @@ def _cmd_doctor_codex(
     a hook command not present on disk, a partially installed hook set, the
     Codex ``hooks`` feature disabled while our handlers are installed, or an
     installed ``$aelf-*`` skill that does not match what this build
-    generates. **Exit 0** when the wiring is simply absent — a machine that
+    generates, or an unresolvable ``aelf`` on ``PATH`` (#1413).
+    **Exit 0** when the wiring is simply absent — a machine that
     never ran ``aelf setup --host codex`` is a normal machine — and when
     zero ``[hooks.state]`` approvals are recorded, since approval keying is
     positional upstream and a zero count cannot distinguish "unapproved"
@@ -5011,6 +5012,22 @@ def _cmd_doctor_codex(
             "(renamed or removed): "
             + ", ".join(orphaned)
             + " — re-run `aelf setup --host codex`",
+        )
+    # #1413: the installed hooks and the generated `$aelf-*` skills both
+    # invoke the CLI by bare name, so wiring that is installed while `aelf`
+    # is unresolvable on PATH is a broken install — every dispatch fails at
+    # exec, and doctor is the only place that says so. Same wiring gate as
+    # every fault above, and for the same reason: a source checkout or a CI
+    # run with no `uv tool` install has no Codex wiring and stays exit 0.
+    from aelfrice import launcher
+
+    if report.owned_handler_count and launcher.which_on_path("aelf") is None:
+        faults.append(
+            "Codex wiring is installed but `aelf` is not on PATH — the "
+            "hooks and the $aelf-* skills invoke `aelf` by name and will "
+            "fail to launch; install the CLI with `uv tool install "
+            "aelfrice`, then put its bin directory on PATH with "
+            "`uv tool update-shell`",
         )
     for fault in faults:
         print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
