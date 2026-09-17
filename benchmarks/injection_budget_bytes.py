@@ -557,6 +557,14 @@ LEGACY_COST_NOT_REBOUND: tuple[tuple[str, str, str], ...] = (
         "as `belief_cost_fn`, and `_render_search_tool`'s before arm passes "
         "None in its place, so a rebind here would reach nothing.",
     ),
+    (
+        "hook",
+        "_ups_belief_line_cost",
+        "Not read off a module global. The UPS lane passes it in as "
+        "`belief_cost_fn` (`hook.py:3385`), and the before arms of "
+        "`_render_ups` and `_render_first_prompt` pass None in its place to "
+        "reproduce the pre-#1526 lane, so a rebind here would reach nothing.",
+    ),
 )
 
 
@@ -646,14 +654,72 @@ def _render_core(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
     return Arm(len(packed), sum(len(hook._core_belief_line(b)) + 1 for b in packed))
 
 
-def _render_ups(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
-    del legacy
-    from aelfrice import hook, retrieval
+def _lane_belief_cost(lane: str, *, legacy: bool) -> Callable[[Any], int] | None:
+    """The `belief_cost_fn` `lane` passes to `retrieve()`, or None if it passes none.
 
-    hits = retrieval.retrieve(
-        store, QUERY, token_budget=budget, l25_token_subbudget=sub,
-        manifest_reference_locks=True,
+    `retrieve_with_tiers._cost` short-circuits to this function when the caller
+    supplies one (`retrieval.py:4798`), *before* compression is consulted. So a
+    lane that passes one does not charge what `_charged_tokens` transcribes,
+    and a producer that omits it models a cost path the lane does not run.
+
+    `None` on the before arm for the same reason `_render_search_tool`'s before
+    arm passes None: these names are not read off a module global, so
+    `_legacy_accounting` cannot reach them, and passing None is what reproduces
+    the pre-#1526 lane. Both are listed in `LEGACY_COST_NOT_REBOUND` with that
+    reason.
+
+    The lanes absent from this mapping — `agent_context` above all — pass no
+    cost function and still charge through compression, which is what makes
+    `agent_context` the surviving charge-vs-emit exposure after #1551/#1552.
+    """
+    from aelfrice import hook, hook_search_tool
+
+    if legacy:
+        return None
+    return {
+        # #1551, `hook.py:3385` in `hook._retrieve`.
+        "ups": hook._ups_belief_line_cost,
+        "first_prompt": hook._ups_belief_line_cost,
+        # #1526 item 4, `hook_search_tool.py:866`.
+        "search_tool": hook_search_tool._belief_line_cost,
+        "search_tool_bash": hook_search_tool._belief_line_cost,
+    }.get(lane)
+
+
+def _lane_hits(
+    lane: str, store: Any, budget: int, sub: int, *, legacy: bool,
+) -> list[Any]:
+    """The hits `lane`'s renderer packs, retrieved the way that lane retrieves.
+
+    One retrieval per lane, called by the renderer *and* by `_pack_charge`, so
+    the pack a byte count is read off and the pack a charge is summed over
+    cannot be two different packs. They were: `_pack_charge` passed no
+    `belief_cost_fn` while the lane passes one, so its `unlocked_hits` counted
+    a pack `snapshot_items` was never taken from.
+
+    Only the lanes the #1547 arm measures are routed through here. The rest
+    build their own call because nothing else reads their hit list.
+    """
+    from aelfrice import hook_agent_context, retrieval
+
+    kwargs: dict[str, Any] = {}
+    if lane == "agent_context":
+        kwargs["l1_limit"] = hook_agent_context.INJECTED_L1_LIMIT
+    cost_fn = _lane_belief_cost(lane, legacy=legacy)
+    if cost_fn is not None:
+        kwargs["belief_cost_fn"] = cost_fn
+    return list(
+        retrieval.retrieve(
+            store, QUERY, token_budget=budget, l25_token_subbudget=sub,
+            manifest_reference_locks=True, **kwargs,
+        )
     )
+
+
+def _render_ups(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
+    from aelfrice import hook
+
+    hits = _lane_hits("ups", store, budget, sub, legacy=legacy)
     return Arm(len(hits), len(hook._format_hits(hits)))
 
 
@@ -716,22 +782,22 @@ def _render_first_prompt(store: Any, budget: int, sub: int, *, legacy: bool) -> 
     `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. They are in the byte count
     because the model receives them, which is the whole point of composing.
 
-    `legacy` is unused because it does not need to be used: both halves reach
-    their cost functions through module globals `_legacy_accounting` rebinds —
-    the pack through `retrieval._belief_tokens` and friends, `<core>` through
-    `hook._core_belief_cost`, which `_pack_core_candidates` resolves per call.
-    That fifth name was missing from the rebind set when this lane shipped, and
-    the composed before arm was a hybrid: 15,861 bytes at 92 content characters
-    against a true legacy 19,999, published as -15.7% where the consistent
-    figure is -33.2%.
-    """
-    del legacy
-    from aelfrice import hook, retrieval
+    `<core>` reaches its cost function through a module global
+    `_legacy_accounting` rebinds — `hook._core_belief_cost`, which
+    `_pack_core_candidates` resolves per call. That fifth name was missing from
+    the rebind set when this lane shipped, and the composed before arm was a
+    hybrid: 15,861 bytes at 92 content characters against a true legacy 19,999,
+    published as -15.7% where the consistent figure is -33.2%.
 
-    hits = retrieval.retrieve(
-        store, QUERY, token_budget=budget, l25_token_subbudget=sub,
-        manifest_reference_locks=True,
-    )
+    The per-turn half is not reached that way. Since #1551 the lane passes
+    `hook._ups_belief_line_cost` as `belief_cost_fn` (`hook.py:3385`), which no
+    rebind can reach, so `_lane_belief_cost` selects it on the after arm and
+    returns None on the before arm, the same way `_render_search_tool` selects
+    its lane's cost function.
+    """
+    from aelfrice import hook
+
+    hits = _lane_hits("first_prompt", store, budget, sub, legacy=legacy)
     block = _session_start_block(store)
     return Arm(len(hits), len(hook._format_hits_with_session_start(list(hits), block)))
 
@@ -760,17 +826,19 @@ def _render_session_start(store: Any, budget: int, sub: int, *, legacy: bool) ->
 
 
 def _render_agent_context(store: Any, budget: int, sub: int, *, legacy: bool) -> Arm:
-    del legacy
-    from aelfrice import hook_agent_context, retrieval
+    """The Agent/Task worker-context block.
 
-    hits = retrieval.retrieve(
-        store,
-        QUERY,
-        token_budget=budget,
-        l25_token_subbudget=sub,
-        l1_limit=hook_agent_context.INJECTED_L1_LIMIT,
-        manifest_reference_locks=True,
-    )
+    This lane passes no `belief_cost_fn`, so its pack charges
+    `retrieve_with_tiers._cost`'s compression branch — the one
+    `_charged_tokens` transcribes — while `hook_agent_context._build_block`
+    renders through `hook._split_belief_lines`, the whole `<belief …>` element.
+    That is the charge-vs-emit gap #1547 opened on, and after #1551/#1552 wired
+    a cost function onto the UPS lane it is the only lane in this module still
+    carrying it.
+    """
+    from aelfrice import hook_agent_context
+
+    hits = _lane_hits("agent_context", store, budget, sub, legacy=legacy)
     return Arm(len(hits), len(hook_agent_context._build_block(list(hits))))
 
 
@@ -931,10 +999,21 @@ def _charged_tokens(b: Any) -> int:
     measurement can reach — the same reason `_render_wrapper_tokens` was given
     a module-level name in the first place.
 
-    The `belief_cost_fn` and `compress_on=False` branches are not reproduced:
+    The `compress_on=False` branch is not reproduced:
     `resolve_use_type_aware_compression()` is published with these figures and
-    defaults True, and the two lanes that pass their own `belief_cost_fn` are
-    not in `SNAPSHOT_ARM_LANES` precisely because they never read compression.
+    defaults True.
+
+    The `belief_cost_fn` branch is not reproduced either, and that is now a
+    statement about *which lanes this applies to* rather than about none of
+    them. An earlier revision of this docstring said "the two lanes that pass
+    their own `belief_cost_fn` are not in `SNAPSHOT_ARM_LANES`"; since #1551
+    wired `hook._ups_belief_line_cost` onto the UPS lane (`hook.py:3385`) that
+    is the opposite of the truth — `ups` and `first_prompt` short-circuit
+    `_cost` at `retrieval.py:4798` and never reach compression at all. This
+    function is what a lane pays when it passes **no** `belief_cost_fn`, which
+    among the lanes this module drives is `agent_context` alone. `_pack_charge`
+    therefore charges each lane through `_lane_belief_cost`, not through this
+    name unconditionally.
     """
     from aelfrice.compression import compress_for_retrieval
     from aelfrice.models import LOCK_USER
@@ -1037,8 +1116,20 @@ def undercharge_table(lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     return out
 
 
-def _pack_charge(store: Any, budget: int, sub: int) -> dict[str, int]:
-    """Charged against emitted, summed over one pack's non-locked hits.
+def _pack_charge(lane: str, store: Any, budget: int, sub: int) -> dict[str, int]:
+    """Charged against emitted, summed over one lane's pack's non-locked hits.
+
+    Both halves are the lane's own. The hits come from `_lane_hits`, the same
+    call the renderer makes, so `unlocked_hits` is a subset of the `n_items`
+    published beside it. The charge comes from the lane's `belief_cost_fn`
+    where it has one and from `_charged_tokens` where it does not, so the ratio
+    is the lane's charge against the lane's emission and not a comparison of
+    two lanes' accountings.
+
+    That is what makes the ratio readable. On `ups` and `first_prompt` it is
+    1.0 by #1551/#1552 — the cost function *is* the emitted line — and a
+    producer that charged `_charged_tokens` there would publish a discount from
+    a branch (`retrieval.py:4802`) the lane short-circuits past.
 
     Locks are excluded from both sums. L0 is never trimmed (#379), so a lock's
     charge is not what bought it a place in the pack; including them would
@@ -1046,16 +1137,13 @@ def _pack_charge(store: Any, budget: int, sub: int) -> dict[str, int]:
     corpus at 18,600 characters the locks are the *only* thing the control
     pack admits, so the ratio would be exactly 1.0 by selection.
     """
-    from aelfrice import retrieval
     from aelfrice.models import LOCK_USER
     from aelfrice.render_cost import chars_to_tokens
 
-    hits = retrieval.retrieve(
-        store, QUERY, token_budget=budget, l25_token_subbudget=sub,
-        manifest_reference_locks=True,
-    )
+    hits = _lane_hits(lane, store, budget, sub, legacy=False)
+    cost_fn = _lane_belief_cost(lane, legacy=False) or _charged_tokens
     unlocked = [h for h in hits if h.lock_level != LOCK_USER]
-    charged = sum(_charged_tokens(h) for h in unlocked)
+    charged = sum(cost_fn(h) for h in unlocked)
     emitted = sum(chars_to_tokens(_emitted_chars(h)) for h in unlocked)
     return {
         "hits": len(hits),
@@ -1126,7 +1214,7 @@ def snapshot_arm(
                 ),
             }
             for name, store in (("prose", prose), ("snapshot", snapshot)):
-                charge = _pack_charge(store[chars], budget, sub)
+                charge = _pack_charge(lane, store[chars], budget, sub)
                 row[f"{name}_charged_tokens"] = charge["charged_tokens"]
                 row[f"{name}_emitted_tokens"] = charge["emitted_tokens"]
                 row[f"{name}_unlocked_hits"] = charge["unlocked_hits"]
@@ -1156,14 +1244,9 @@ def dedupe_effect(store: Any, budget: int, sub: int) -> dict[str, Any]:
     measure it, which is the same gap as the snapshot arm's and is why both
     are closed in one change.
     """
-    from aelfrice import hook, retrieval
+    from aelfrice import hook
 
-    hits = list(
-        retrieval.retrieve(
-            store, QUERY, token_budget=budget, l25_token_subbudget=sub,
-            manifest_reference_locks=True,
-        )
-    )
+    hits = _lane_hits("first_prompt", store, budget, sub, legacy=False)
     block = _session_start_block(store)
     after = hook._format_hits_with_session_start(hits, block)
 
