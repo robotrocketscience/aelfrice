@@ -57,9 +57,15 @@ def _top_level_test_count(rel_path: str) -> int:
 
 def figures() -> dict[str, Any]:
     """Every store-free published figure, re-derived from the shipped code."""
-    from aelfrice import hook, sentiment_feedback
+    from aelfrice import hook, retrieval, sentiment_feedback
 
     return {
+        # #1556 — the two retrieval budgets `docs/user/PRIVACY.md` publishes as
+        # the mitigation a reader is asked to trust. They are shipped
+        # constants, so they re-derive here; they carried no marker until now
+        # because every marker on that page parsed as nothing.
+        "hook_token_budget": hook.DEFAULT_HOOK_TOKEN_BUDGET,
+        "retrieval_token_budget": retrieval.DEFAULT_TOKEN_BUDGET,
         # #1442 — the Stop-block bounds. The *distribution* they were chosen
         # off needs a store and lives in stop_prompt_block_bounds.py; the
         # shipped limits themselves are code and belong here.

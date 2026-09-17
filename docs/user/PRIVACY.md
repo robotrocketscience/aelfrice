@@ -164,6 +164,8 @@ To turn the feature off after you enabled it, remove the configuration line, or 
 The cloud LLM that receives your prompt sees everything that aelfrice injects. That property is inherent in the use of a cloud LLM. aelfrice applies these mitigations:
 
 - **A token budget for each query.** The default is 1,500 tokens for the UserPromptSubmit hook and 2,400 tokens for the library retrieval API. The budget trims the query-relevant lanes, so aelfrice never injects the full memory. It doesn't trim your locks: aelfrice injects every locked belief, by design ([#379](https://github.com/robotrocketscience/aelfrice/issues/379)).
+  <!-- derived: benchmarks/published_constants.py#hook_token_budget = 1,500 -->
+  <!-- derived: benchmarks/published_constants.py#retrieval_token_budget = 2,400 -->
 - **No token budget on the SessionStart block, and none to set.** The baseline block that opens each session carries no token budget. It retrieves on an empty query, so only your locks reach it, and locks are never trimmed. Your lock count is what bounds it: to make that block smaller, hold fewer locks. Run `aelf locked` to see what each session opens with ([#1546](https://github.com/robotrocketscience/aelfrice/issues/1546)).
 - **The L0/L1 ordering** surfaces the locks and the matches that are relevant to your query, not a dump of the memory.
 - **The per-project isolation** keeps the context of one project out of another project. That context crosses only if you declare peer DBs explicitly in `knowledge_deps.json`.
