@@ -106,9 +106,15 @@ Both halves of that sentence moved after this arm was built, and the arm now
 measures what is left rather than what it was built for. #1551 and #1552 wired
 `hook._ups_belief_line_cost` onto the UPS lane as a `belief_cost_fn`, which
 short-circuits `_cost` at `retrieval.py:4798` before compression is reached, so
-`ups` and `first_prompt` charge the line they emit and their pack ratio is 1.0
-in every retention class at every grid length. #1552 also capped the rendered
-content at `hook.BELIEF_CONTENT_CHAR_CAP`, which bounds the gap that is
+`ups` and `first_prompt` charge the line they emit. Their pack ratio is 1.0 at
+every `SNAPSHOT_ARM_LENGTHS` entry on the snapshot corpus, which is the
+population `snapshot_arm` measures and what
+`test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford` asserts; the
+other grid lengths and the `fact` and `transient` classes are
+`undercharge_table`'s, and that table is `agent_context`'s alone. The reason
+the ratio does not vary with the class is that the class is only read on the
+compression path the cost function short-circuits past. #1552 also capped
+the rendered content at `hook.BELIEF_CONTENT_CHAR_CAP`, which bounds the gap that is
 left: `undercharge_table`'s snapshot ratio plateaus rather than growing
 with belief length, and the plateau is published as
 `undercharge_top_snapshot_ratio`. `agent_context` is the only lane here that still passes no
