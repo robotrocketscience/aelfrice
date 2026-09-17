@@ -619,14 +619,12 @@ def test_the_reference_tier_guard_trips_on_one_equal_write(
     read the same figure at either tier. Parametrised over every write so
     the guard cannot come to hold on three of the four.
     """
-    frozen = {w: 100 for w in _mbc.REF_WRITES}
-    monkeypatch.setattr(
-        _mbc,
-        "reference_tier",
-        lambda tier: (
-            frozen if tier == LOCK_TIER_FROZEN else _tier_rows(write)
-        ),
-    )
+    frozen: dict[str, int] = {w: 100 for w in _mbc.REF_WRITES}
+
+    def _rows(tier: str) -> dict[str, int]:
+        return frozen if tier == LOCK_TIER_FROZEN else _tier_rows(write)
+
+    monkeypatch.setattr(_mbc, "reference_tier", _rows)
     with pytest.raises(SystemExit) as exc:
         _mbc.reference_tier_table()
     message = str(exc.value)
@@ -644,13 +642,10 @@ def test_the_reference_tier_guard_passes_when_every_write_differs(
     Without it the test above would also pass for a guard that raised on
     every input, which proves nothing about the condition.
     """
-    monkeypatch.setattr(
-        _mbc,
-        "reference_tier",
-        lambda tier: {
-            w: (100 if tier == LOCK_TIER_FROZEN else 10)
-            for w in _mbc.REF_WRITES
-        },
-    )
+    def _rows(tier: str) -> dict[str, int]:
+        value = 100 if tier == LOCK_TIER_FROZEN else 10
+        return {w: value for w in _mbc.REF_WRITES}
+
+    monkeypatch.setattr(_mbc, "reference_tier", _rows)
     rows = _mbc.reference_tier_table()
     assert set(rows) == {LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE}
