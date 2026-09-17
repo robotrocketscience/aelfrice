@@ -2439,6 +2439,29 @@ def user_prompt_submit(
                 already_rendered = read_rendered(session_id)
             # #578: inject session-start sub-block on first prompt.
             if session_start_block:
+                # #1564: augment BEFORE the render, not inside it. The
+                # renderer unions the sub-block's own ids into the set it
+                # dedupes against, and the #1382 ledger write below was
+                # handed the caller's set instead -- `read_rendered` and
+                # nothing more. That is the second, independent derivation
+                # of the manifest-vs-verbatim predicate that #1382 AC4
+                # forbids by name, and the two sets differ on exactly the
+                # hits the sub-block collapsed to a `seen` pointer: the
+                # ledger recorded every one of them as rendered verbatim,
+                # which is not what the block did.
+                #
+                # It is a drift, not yet a false claim. A surviving `seen`
+                # pointer's referent is in the same envelope -- `<locked>`
+                # is exempt from the trim, and `enforce_block_ceiling`
+                # removes a pointer with the element it names -- so the
+                # recorded id does name text the model saw. The repair is
+                # that one set reaches both, which is the property #1382
+                # AC4 asks for and the one that survives a change to either
+                # half. The union is idempotent, so the renderer
+                # recomputing it changes nothing about the block.
+                already_rendered = already_rendered | _session_start_dedupe_ids(
+                    session_start_block
+                )
                 body = _format_hits_with_session_start(
                     hits, session_start_block,
                     already_rendered=already_rendered,
@@ -2701,6 +2724,18 @@ def user_prompt_submit(
             # renderer used, so a belief that rendered as a reference this
             # turn is not re-recorded and one suppressed this turn stays in
             # the ledger through the union inside record_rendered.
+            #
+            # #1564 made that sentence true. It used to be the CALLER's set
+            # -- `read_rendered(session_id)` and nothing else -- while the
+            # renderer deduped against that set unioned with the
+            # session-start sub-block's own ids, so the ledger recorded as
+            # verbatim every hit the sub-block had collapsed to a `seen`
+            # pointer. The augmentation now happens at the render site above
+            # and this call reads what the renderer read.
+            #
+            # The non-recap sub-block had the same divergence, which is why
+            # the fix is at the render site and not in the recap's span
+            # arithmetic. `test_hook_recap_shed_order_1564.py` pins it.
             if emit_memory_block and _turn_differential_enabled():
                 try:
                     from aelfrice.injection_ledger import (  # noqa: PLC0415

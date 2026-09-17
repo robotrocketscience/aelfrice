@@ -27,7 +27,10 @@ tests are the old claims turned over:
    beliefs with a resume cache and without one, which is the A/B of AC3
    and AC7 as restated -- a prompt hit must not be lost because a recap
    displaced or collapsed it;
-5. a `lock="user"` element inside a recap keeps the wrapper, because the
+5. the #1382 ledger is handed the set the renderer deduped against, not
+   the caller's -- #1382 AC4's one-derivation rule, which the call site
+   broke for every session-start sub-block, recap or not;
+6. a `lock="user"` element inside a recap keeps the wrapper, because the
    #379 always-injected contract outranks the whole-shed rule. No shipped
    render produces one -- `context_rebuilder` spells a lock
    `locked="true"` -- so this arm is built by hand against
@@ -53,9 +56,10 @@ fails claim 2 and nothing else. Skipping the whole-shed branch in
 `enforce_block_ceiling`, so the recap sheds an element at a time, fails
 claim 1: the wrapper comes back holding a fragment. Putting
 `_ids_rendered_verbatim_in` back in place of `_session_start_dedupe_ids`,
-so the recap's ids dedupe again, fails claims 3 and 4. Removing the
-`lock="user"` fallback from `_recap_shed`, so the span is always cut
-whole, fails claim 5.
+so the recap's ids dedupe again, fails claims 3 and 4. Dropping the
+augmentation at the render site, so the ledger reads the caller's set
+again, fails claim 5. Removing the `lock="user"` fallback from
+`_recap_shed`, so the span is always cut whole, fails claim 6.
 """
 from __future__ import annotations
 
@@ -420,8 +424,65 @@ def test_the_recap_costs_the_envelope_no_prompt_matched_belief(
     )
 
 
+def test_the_ledger_records_only_what_the_envelope_rendered_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim 5: the #1382 ledger reads the set the renderer deduped against.
+
+    #1382 AC4 is that the ledger "must be derived from the same predicate
+    the renderer used -- a second, independent derivation is how the ledger
+    and the block drift apart". The call site had one anyway: it passed the
+    caller's `read_rendered(session_id)`, while the renderer deduped
+    against that set unioned with the session-start sub-block's own ids.
+    The two differ on exactly the hits the sub-block collapsed to a `seen`
+    pointer, and the ledger recorded every one of them as verbatim.
+
+    **This asserts the drift, not a harm.** A surviving `seen` pointer's
+    referent is in the same envelope -- `<locked>` is exempt from the trim
+    and `enforce_block_ceiling` removes a pointer with the element it names
+    -- so on this tree the recorded ids do name text the model saw. The
+    guard is that one set reaches both halves, which is what survives a
+    change to either.
+
+    The ceiling is off here on purpose. The trim is the other way a
+    recorded id can go wrong, #1551 closed that one through `emitted_hits`,
+    and leaving the trim on would let it decide this result.
+
+    Latent on shipped defaults -- `AELFRICE_TURN_DIFFERENTIAL` is off --
+    which is why the arm sets it rather than waiting for the default to
+    move.
+    """
+    from aelfrice.injection_ledger import (
+        TURN_DIFFERENTIAL_ENV_VAR,
+        read_rendered,
+    )
+
+    monkeypatch.setenv(TURN_DIFFERENTIAL_ENV_VAR, "1")
+    out, _ = _arm(
+        tmp_path, monkeypatch, name="ledger", recap=True, ceiling=0,
+    )
+    recorded = read_rendered("resume-ledger")
+    assert recorded, (
+        "the ledger recorded nothing, so a subset claim over it would hold "
+        "vacuously"
+    )
+    pointed = set(_SEEN_ID_RE.findall(out))
+    assert pointed, (
+        "no belief was collapsed to a `seen` pointer on this fire, so the "
+        "renderer's set and the caller's set cannot be told apart here"
+    )
+    assert not (recorded & pointed), (
+        "the ledger recorded a belief the envelope emitted as a `seen` "
+        f"pointer: {sorted(recorded & pointed)}"
+    )
+    assert recorded <= _element_ids(out), (
+        "the ledger recorded a belief the envelope did not render at all: "
+        f"{sorted(recorded - _element_ids(out))}"
+    )
+
+
 def test_a_user_locked_element_inside_a_recap_keeps_the_wrapper() -> None:
-    """Claim 5: #379 outranks the whole-shed rule.
+    """Claim 6: #379 outranks the whole-shed rule.
 
     Built by hand rather than fired, and deliberately so: no shipped render
     puts `lock="user"` inside a recap, because `context_rebuilder` spells a
