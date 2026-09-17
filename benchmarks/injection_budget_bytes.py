@@ -879,28 +879,34 @@ def _session_start_block(store: Any) -> str:
     `hook.DEFAULT_RECENT_WORK_COMMIT_LIMIT` admits of whatever
     checkout the producer happened to run in. `figures()` has already chdir'd
     into a tempdir for the same hermeticity reason the `[retrieval]` flags
-    need, and `_hermetic_environment` has put `GIT_CEILING_DIRECTORIES` at
-    that tempdir's parent, so `Path.cwd()` is a directory git cannot discover
-    a repository from and `_resolve_branch` returns None before any subprocess
-    reads a log. The measured size of that section is published as
+    need, and `_hermetic_environment` has pointed `GIT_DIR` at a repository
+    inside that tempdir that does not exist and put `GIT_CEILING_DIRECTORIES`
+    at its parent, so git finds no repository from `Path.cwd()` and
+    `_resolve_branch` returns None before any subprocess reads a log. The
+    measured size of that section is published as
     `first_prompt_recent_work_chars` rather than asserted here.
 
-    **The ceiling is what makes that a property.** Without it the sentence
-    above is a property of `$TMPDIR` and not of this tree: point `$TMPDIR`
-    inside any git work tree and the same run resolves a branch, fills
-    `<recent-work>` with commit subjects, and moves eight published scalars.
+    **Those two barriers are what make that a property.** Without them the
+    sentence above is a property of `$TMPDIR` and not of this tree: point
+    `$TMPDIR` inside any git work tree and the same run resolves a branch,
+    fills `<recent-work>` with commit subjects, and moves eight published
+    scalars. The ceiling alone does not cover every `$TMPDIR`: git splits it
+    on `:` and discards the relative halves a colon in the path leaves behind,
+    so a tempdir under a path containing one gets no ceiling. `GIT_DIR` is
+    single-valued and is what closes that case.
     `test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree` is
-    what holds it down; it plants a work tree, establishes that git resolves a
-    branch from inside it, and requires the produced blob to be the one the
-    default `$TMPDIR` produces.
+    what holds it down; it plants a work tree at an ordinary path and at one
+    containing a colon, establishes that git resolves a branch from inside
+    each, and requires the produced blob to be the one the default `$TMPDIR`
+    produces.
 
     **Built once per distinct answer.** Every lane that composes an envelope
     calls this, at every grid length and on both arms, and each call sends
     `_resolve_branch` out to `git symbolic-ref` — a subprocess carrying
-    `hook._RECENT_WORK_GIT_TIMEOUT_S`. Under the ceiling both of its outcomes,
-    a refusal and a timeout, are None, so a loaded machine cannot move a
-    figure through one; what is left is the spawn, and the memo is what keeps
-    the count at one per distinct answer rather than one per call.
+    `hook._RECENT_WORK_GIT_TIMEOUT_S`. Under those barriers both of its
+    outcomes, a refusal and a timeout, are None, so a loaded machine cannot
+    move a figure through one; what is left is the spawn, and the memo is what
+    keeps the count at one per distinct answer rather than one per call.
 
     The key is every input the block varies on: the store it is built from,
     the cwd `<recent-work>` is resolved under, and `hook._core_belief_cost` —
@@ -1802,23 +1808,48 @@ ENV_PREFIX = "AELFRICE_"
 # `first_prompt_recent_work_chars`, and the composed lane's two arm byte
 # counts), plus `first_prompt_pct`, which the CHANGELOG quotes as -33.2%.
 #
-# `GIT_CEILING_DIRECTORIES` at the tempdir's **parent** stops the ascent at the
-# tempdir itself, so discovery fails whatever `$TMPDIR` is. The parent and not
-# the tempdir: git ignores a ceiling entry that is not strictly above the
-# directory the walk starts from, so an entry naming the tempdir itself is
-# inert and the ascent runs to the root — measured both ways, from a tempdir
-# planted inside this work tree, before this was written.
+# Two barriers go up, because neither one closes the hole alone.
 #
-# The other three name a repository outright and outrank discovery, so a
-# ceiling alone would not close the hole for an operator who exports one. They
-# are enumerated rather than cleared as a `GIT_` prefix class because that
-# prefix also carries names git needs to run at all (`GIT_EXEC_PATH`), and a
-# producer that cannot spawn git measures a different thing from one whose git
-# finds nothing.
+# `GIT_DIR` at a path under the tempdir that does not exist names a repository
+# outright, and git that is told where its repository is does not go looking:
+# every `hook._git_text` spawn exits 128 `not a git repository` and
+# `_resolve_branch` returns None, whatever encloses the tempdir. It is the
+# barrier that holds in the case the ceiling cannot cover, because git reads
+# it as a single value and never splits it.
+#
+# `GIT_CEILING_DIRECTORIES` at the tempdir's **parent** stops the discovery
+# walk at the tempdir itself. The parent and not the tempdir: git ignores a
+# ceiling entry that is not strictly above the directory the walk starts from,
+# so an entry naming the tempdir itself is inert and the ascent runs to the
+# root — measured both ways, from a tempdir planted inside this work tree,
+# before this was written.
+#
+# **The ceiling is a `PATH`-style list, and that is a hole it cannot close on
+# its own.** Git splits the value on `:` and discards any entry that is not an
+# absolute path, so a `$TMPDIR` whose parent path contains a colon yields no
+# usable ceiling at all: `/a/b:c/tmp` becomes `/a/b` — not an ancestor of the
+# walk — and `c/tmp`, relative and dropped. Measured, from a work tree planted
+# at a path containing a colon with `$TMPDIR` inside it: under the ceiling
+# alone `<recent-work>` fills and the scalars listed above move; under
+# `GIT_DIR` the produced blob is the one the default `$TMPDIR` produces. A
+# colon is a legal character in a POSIX directory name and the list has no
+# escaping form for one — so the ceiling is kept for the ordinary case and
+# `GIT_DIR` is what makes the property unconditional. The
+# colon planting in
+# `test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree` is what
+# holds that down.
+#
+# The other three name a repository outright and outrank discovery, so the
+# barriers would not close the hole for an operator who exports one — and
+# `GIT_DIR` in particular is a barrier this contextmanager can only raise once
+# it has cleared the caller's. They are enumerated rather than cleared as a
+# `GIT_` prefix class because that prefix also carries names git needs to run
+# at all (`GIT_EXEC_PATH`), and a producer that cannot spawn git measures a
+# different thing from one whose git finds nothing.
 #
 # The spawns are kept rather than stubbed out. `_build_recent_work_subblock`
-# is the shipped composition this lane exists to measure, and with the ceiling
-# in place both of its outcomes — a ceiling refusal and a
+# is the shipped composition this lane exists to measure, and with the barriers
+# in place both of its outcomes — a refusal to find a repository and a
 # `_RECENT_WORK_GIT_TIMEOUT_S` timeout — return None, so a loaded machine
 # cannot move a figure through them. What they cost is a spawn each, and the
 # memo is what bounds the count: one per distinct `_SESSION_START_BLOCKS` key
@@ -1835,6 +1866,11 @@ _GIT_LOCATION_VARS = (
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
 )
+
+# The repository `GIT_DIR` is pointed at, inside the run's tempdir. Nothing
+# creates it: a `GIT_DIR` naming a directory that does not exist is what makes
+# every spawn exit 128 rather than read a repository.
+_NO_SUCH_REPOSITORY = "no-such-repository.git"
 
 
 @contextlib.contextmanager
@@ -1866,8 +1902,8 @@ def _hermetic_environment(tmp: Path) -> Iterator[None]:
     ceiling under it.
 
     `tmp` is the run's tempdir. It is a parameter and not a `Path.cwd()` read
-    because the ceiling has to be set *before* anything chdirs, and because a
-    cwd read would make the value this pins a function of the thing it is
+    because the barriers have to be set *before* anything chdirs, and because a
+    cwd read would make the values this pins a function of the thing it is
     pinning.
     """
     saved = {
@@ -1877,6 +1913,10 @@ def _hermetic_environment(tmp: Path) -> Iterator[None]:
     }
     for name in saved:
         del os.environ[name]
+    # Both, for the reason `_GIT_LOCATION_VARS` above gives: the ceiling is
+    # list-parsed and a colon anywhere in `$TMPDIR`'s parent path voids it,
+    # while `GIT_DIR` is single-valued and stops discovery outright.
+    os.environ["GIT_DIR"] = str(tmp / _NO_SUCH_REPOSITORY)
     os.environ["GIT_CEILING_DIRECTORIES"] = str(tmp.parent)
     try:
         yield

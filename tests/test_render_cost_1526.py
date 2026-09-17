@@ -533,11 +533,22 @@ def test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree(
 
     Asserted the way the sibling hermeticity test asserts its own: the leak is
     established **first**, by requiring a bare `git symbolic-ref` run from
-    inside the planted tree to resolve a branch. Without that check this test
+    inside each planted tree to resolve a branch. Without that check this test
     would pass on a fixture that is not a repository, which is the failure
-    mode it exists to rule out. Then the same narrowed grid is produced twice
-    — once under the default `$TMPDIR`, once with `tempfile.tempdir` pointed
-    inside the planted tree — and the two blobs must be equal.
+    mode it exists to rule out. Then the same narrowed grid is produced once
+    under the default `$TMPDIR` and once with `tempfile.tempdir` pointed inside
+    each planted tree, and every blob must equal the first.
+
+    **Two plantings, and the second is the one the ceiling cannot hold.** Git
+    reads `GIT_CEILING_DIRECTORIES` as a `PATH`-style list: it splits the value
+    on `:` and discards every entry that is not absolute, so a tempdir whose
+    parent path contains a colon — a legal character in a POSIX directory
+    name, and the list has no escaping form for it — gets no usable ceiling
+    and the ascent runs to the root. The second
+    planting puts a colon in the directory name for exactly that reason, and it
+    is why `_hermetic_environment` also points `GIT_DIR` at a repository inside
+    the tempdir that does not exist: a single-valued variable git does not
+    split, which makes every spawn exit 128 instead of discovering anything.
 
     `tempfile.tempdir` rather than the `TMPDIR` variable, because
     `tempfile.gettempdir()` caches its answer on first use and a variable set
@@ -546,12 +557,16 @@ def test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree(
     seam a test can move.
 
     The top grid length, alone, for the reason the sibling gives: the property
-    is per-resolve, and two full-grid runs would not fit the budget above.
+    is per-resolve, and full-grid runs would not fit the budget above.
 
-    Mutation: deleting the `GIT_CEILING_DIRECTORIES` line from
-    `_hermetic_environment` reds this on `first_prompt_recent_work_chars`,
-    which is the assertion below the blob equality and is there so the failure
-    names the leak rather than a diff of two dicts.
+    Mutation, run on the committed tree: deleting the `GIT_DIR` line from
+    `_hermetic_environment` reds the colon planting on
+    `first_prompt_recent_work_chars`, which is the assertion below the blob
+    equality and is there so the failure names the leak rather than a diff of
+    two dicts; deleting both barrier lines reds the ordinary planting, which
+    is the earlier of the two. Deleting the ceiling line alone reds neither —
+    with `GIT_DIR` in place, no case in this tree distinguishes the ceiling. It
+    is kept as a second barrier, not sold as a load-bearing one.
     """
     m = _producer_module()
     for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
@@ -559,34 +574,38 @@ def test_the_producer_is_hermetic_against_a_tempdir_inside_a_work_tree(
     top = (max(m.LENGTH_GRID),)  # type: ignore[attr-defined]
     clean = m.figures(lengths=top)  # type: ignore[attr-defined]
 
-    work = tmp_path / "planted"
-    scratch = work / "scratch"
-    scratch.mkdir(parents=True)
-    # `-b` for the same reason `tests/test_hook_session_start_recent_work_wired`
-    # passes it: an unnamed default branch is a git config the runner owns, and
-    # what this test needs is a branch, not a particular one.
-    subprocess.run(
-        ["git", "init", "-q", "-b", "main", str(work)],
-        check=True, capture_output=True, timeout=30,
-    )
-    probe = subprocess.run(
-        ["git", "symbolic-ref", "--short", "HEAD"],
-        cwd=str(scratch), capture_output=True, text=True, check=False,
-        timeout=30,
-    )
-    assert probe.returncode == 0 and probe.stdout.strip(), (
-        "git resolves no branch from inside the planted work tree, so this "
-        "test would pass on a directory that is not a repository: "
-        f"{probe.returncode} {probe.stderr.strip()!r}"
-    )
-    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
-    planted = m.figures(lengths=top)  # type: ignore[attr-defined]
-    assert planted["first_prompt_recent_work_chars"] == 0, (
-        "<recent-work> filled from the repository enclosing $TMPDIR, so the "
-        "composed lane's byte counts are a function of where the tempdir "
-        f"landed: {planted['first_prompt_recent_work_chars']} chars"
-    )
-    assert planted == clean
+    # The colon is the whole point of the second name; see the docstring.
+    for name in ("planted", "pl:anted"):
+        work = tmp_path / name
+        scratch = work / "scratch"
+        scratch.mkdir(parents=True)
+        # `-b` for the same reason
+        # `tests/test_hook_session_start_recent_work_wired` passes it: an
+        # unnamed default branch is a git config the runner owns, and what this
+        # test needs is a branch, not a particular one.
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(work)],
+            check=True, capture_output=True, timeout=30,
+        )
+        probe = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=str(scratch), capture_output=True, text=True, check=False,
+            timeout=30,
+        )
+        assert probe.returncode == 0 and probe.stdout.strip(), (
+            f"git resolves no branch from inside {name}, so this test would "
+            "pass on a directory that is not a repository: "
+            f"{probe.returncode} {probe.stderr.strip()!r}"
+        )
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        planted = m.figures(lengths=top)  # type: ignore[attr-defined]
+        assert planted["first_prompt_recent_work_chars"] == 0, (
+            f"<recent-work> filled from the repository enclosing {name}, so "
+            "the composed lane's byte counts are a function of where the "
+            f"tempdir landed: {planted['first_prompt_recent_work_chars']} "
+            "chars"
+        )
+        assert planted == clean, name
 
 
 @_pays_for_the_producer_run
