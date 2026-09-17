@@ -213,6 +213,41 @@ def test_speculative_survives_a_frozen_store(
         holder.close()
 
 
+def _calls_by_enclosing_function() -> dict[str, set[str]]:
+    """Map every `def` in `aelfrice.cli` to the names it actually calls.
+
+    Resolved by abstract syntax tree rather than by searching the
+    handler's source text, because a substring search cannot tell a call
+    from prose: this file's own pin was defeated for four handlers by the
+    docstrings that describe their routing. Only `ast.Call` nodes count,
+    and each is attributed to the *innermost* enclosing `def`, so a
+    nested helper's call does not leak into its parent.
+    """
+    import ast
+    import inspect
+
+    from aelfrice import cli
+
+    out: dict[str, set[str]] = {}
+
+    def visit(node: ast.AST, owner: str | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.setdefault(child.name, set())
+                visit(child, child.name)
+                continue
+            if isinstance(child, ast.Call) and owner is not None:
+                func = child.func
+                if isinstance(func, ast.Name):
+                    out.setdefault(owner, set()).add(func.id)
+                elif isinstance(func, ast.Attribute):
+                    out.setdefault(owner, set()).add(func.attr)
+            visit(child, owner)
+
+    visit(ast.parse(inspect.getsource(cli)), None)
+    return out
+
+
 def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     """The routed set is exactly the commands audited one at a time.
 
@@ -283,23 +318,21 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     store they cannot write, and the regime-1 arm proves the file's
     digest is unchanged afterwards, which is what "reads only" means.
 
-    Asserted over the handlers' source rather than by driving them,
-    because the observable difference only appears on a store that is
-    unwritable — a routing added back for a *writable* store is
+    Asserted over the handlers' *call graph* rather than by driving
+    them, because the observable difference only appears on a store that
+    is unwritable — a routing added back for a writable store is
     invisible behaviourally, which is exactly how the first version of
-    this branch shipped it.
+    this branch shipped it. The call graph is read by
+    `_calls_by_enclosing_function`, an AST walk, not by searching the
+    source text: the first version of this pin searched the text, and
+    the docstrings above — which name `open_store_for_read()` in prose —
+    kept it green through a full revert of all four call sites.
     """
-    import inspect
-
-    from aelfrice import cli
-
+    calls = _calls_by_enclosing_function()
     routed = {
         name
-        for name in dir(cli)
-        if name.startswith("_cmd_")
-        and callable(getattr(cli, name))
-        and getattr(getattr(cli, name), "__module__", "") == cli.__name__
-        and "open_store_for_read()" in inspect.getsource(getattr(cli, name))
+        for name, called in calls.items()
+        if name.startswith("_cmd_") and "open_store_for_read" in called
     }
     assert routed == {
         "_cmd_search", "_cmd_stats", "_cmd_locked", "_cmd_speculative",
@@ -309,9 +342,8 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     # The adjacent writers, named so a future edit that lands one line
     # off is caught here rather than in a user's store.
     for writer in ("_cmd_confirm", "_cmd_resolve"):
-        source = inspect.getsource(getattr(cli, writer))
-        assert "open_store_for_read()" not in source
-        assert "_open_store()" in source
+        assert "open_store_for_read" not in calls[writer]
+        assert "_open_store" in calls[writer]
 
 
 def test_observational_read_writes_no_bm25f_sidecar(
