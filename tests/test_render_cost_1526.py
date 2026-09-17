@@ -393,9 +393,15 @@ def _producer_module() -> object:
 # Every test below that requests `producer_figures` carries this mark.
 #
 # The fixture is module-scoped, so exactly one test pays the producer run as
-# its `setup` — and which one is decided by collection order, which
-# `pytest-randomly` shuffles. There is therefore no first test to nominate,
-# and the budget is raised on every consumer rather than on one of them.
+# its `setup` — and which one is decided by collection order, which nothing
+# here pins. It is definition order today, because the tree installs no
+# shuffling plugin; a `-k`, a `--deselect`, a rerun of one test by node id or a
+# plugin a developer has in their own environment all move it, and none of
+# those is visible from this file. There is therefore no first test to
+# nominate, and the budget is raised on every consumer rather than on one of
+# them. The comment here named `pytest-randomly` as the thing that moved it
+# until #1559; that plugin is in no dependency group in `pyproject.toml`, and
+# the conclusion does not need it.
 #
 # It has to be raised. `ci.yml` pins `AELF_TEST_TIMEOUT_SCALE: "1"`, so the
 # ini `timeout = 30` applies as written there, and the run has been measured
