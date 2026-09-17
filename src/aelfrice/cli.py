@@ -1369,7 +1369,11 @@ def _cmd_graph(args: argparse.Namespace, out: object) -> int:
     ids. Walks `expand_bfs` with the supplied hops/budget/fanout, then
     serialises via `graph_export.export_dot` or `export_graph_json`.
 
-    Read-only: never writes to the store.
+    Read-only: never writes to the store, and since #1416 it opens
+    through `open_store_for_read()`, so a store the caller cannot write
+    is read through a `mode=ro` fallback instead of dying in the open.
+    On that fallback no migration and no expired-lock sweep have run, so
+    the walk sees the `edges` rows as they stand.
     """
     from aelfrice.graph_export import (
         DEFAULT_PREVIEW_CHARS,
@@ -1379,7 +1383,7 @@ def _cmd_graph(args: argparse.Namespace, out: object) -> int:
     from aelfrice.models import EDGE_TYPES
     import json as _json
 
-    store = _open_store()
+    store = open_store_for_read()
     try:
         seeds: list = []
         seed_scopes: dict[str, str | None] = {}
@@ -2581,6 +2585,11 @@ def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     No decay model, no relevance score — the user sets the thresholds
     and the SQL returns exactly the rows that match. Per #605, the
     consuming agent (or user) decides what to do with the list.
+
+    Opens through `open_store_for_read()` since #1416. On the read-only
+    fallback no expired-lock sweep has run (#1314), so `--locked-only`
+    still lists a belief past its `lock_expires_at` there — the same
+    staleness `aelf locked` carries on that path.
     """
     from datetime import datetime, timedelta, timezone as _tz
 
@@ -2612,7 +2621,7 @@ def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     params.append(limit)
     sql = " ".join(sql_parts)
 
-    store = _open_store()
+    store = open_store_for_read()
     try:
         rows = list(store._conn.execute(sql, params).fetchall())
     finally:
@@ -3506,11 +3515,16 @@ def _introspect_report_to_json(report: object) -> dict:
 
 
 def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
-    """Read-only honest-signal view over stored beliefs, grouped + de-noised (#1081)."""
+    """Read-only honest-signal view over stored beliefs, grouped + de-noised (#1081).
+
+    Opens through `open_store_for_read()` since #1416: `build_report`
+    projects beliefs and their entities and writes nothing, so a store
+    the caller cannot write is still reportable.
+    """
     from aelfrice.introspect import build_report
 
     limit = None if args.limit == 0 else args.limit
-    store = _open_store()
+    store = open_store_for_read()
     try:
         report = build_report(
             store,
@@ -3677,8 +3691,13 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
 
     Spec: docs/design/feature-aelf-core.md. No new store method — composition over
     list_locked_beliefs(), list_belief_ids(), and get_belief().
+
+    Opens through `open_store_for_read()` since #1416. All three reads,
+    so a store the caller cannot write is still listable; on the
+    read-only fallback no expired-lock sweep has run (#1314), so the
+    locked arm carries the same staleness `aelf locked` does there.
     """
-    store = _open_store()
+    store = open_store_for_read()
     try:
         locked: list[object] = [] if args.no_locked else store.list_locked_beliefs()
         candidates: list[object] = []

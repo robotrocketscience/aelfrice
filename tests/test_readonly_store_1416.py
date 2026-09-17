@@ -214,11 +214,12 @@ def test_speculative_survives_a_frozen_store(
 
 
 def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
-    """The routed set is exactly the four the ruling named, plus `show`.
+    """The routed set is exactly the commands audited one at a time.
 
     #1416's 2026-08-09 operator ruling sanctioned this partial for
     `search`, `status`, `locked` and `speculative`, and held the rest —
     "each needing its own read-only audit rather than a blanket change".
+    The 2026-09-17 ruling releases four more, and their audits are below.
 
     `_cmd_show` is the fifth. The operator's ruling on #1553 was to ship
     the command on this existing routing with honest documentation, and
@@ -255,6 +256,33 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     is the per-command semantics the audit is *for*. `feed` never opens
     the store at all (it reads a JSONL log), so it is held trivially.
 
+    The four the 2026-09-17 ruling releases, audited one at a time. Each
+    has exactly one store-open call site, and each was mapped back to its
+    enclosing `def` by AST before the edit, because the issue comment's
+    line numbers point one handler off — at `_cmd_confirm`
+    (`apply_feedback(..., respect_lock=False)`) and `_cmd_resolve`
+    (`auto_resolve_all_contradictions`), which are writers. Routing
+    either onto a read-only handle would ship a bug, so neither is here.
+
+    * `_cmd_graph` resolves seeds (`get_belief`, `find_foreign_owner`, or
+      a BM25 top-1), walks `expand_bfs`, and serialises through
+      `graph_export`. Reads only. On the fallback handle the walk sees
+      whatever `edges` rows exist, unmigrated.
+    * `_cmd_stale` runs one `SELECT` over `beliefs` with two date
+      thresholds. Reads only. Its one finding: no expired-lock sweep has
+      run there, so `--locked-only` still lists a belief past its
+      `lock_expires_at` — the same staleness `aelf locked` carries.
+    * `_cmd_introspect` hands the store to `introspect.build_report`,
+      which projects beliefs and their entities. Reads only.
+    * `_cmd_core` composes `list_locked_beliefs`, `list_belief_ids` and
+      `get_belief`. Reads only, and carries the same expired-lock finding
+      as `stale`, since `locked` is one of the three sets it unions.
+
+    The audit is asserted, not just asserted-to: `test_observational_
+    commands_report_instead_of_tracebacking` drives all four against a
+    store they cannot write, and the regime-1 arm proves the file's
+    digest is unchanged afterwards, which is what "reads only" means.
+
     Asserted over the handlers' source rather than by driving them,
     because the observable difference only appears on a store that is
     unwritable — a routing added back for a *writable* store is
@@ -275,8 +303,15 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     }
     assert routed == {
         "_cmd_search", "_cmd_stats", "_cmd_locked", "_cmd_speculative",
-        "_cmd_show",
+        "_cmd_show", "_cmd_graph", "_cmd_stale", "_cmd_introspect",
+        "_cmd_core",
     }, "amend the #1416 ruling before routing another command"
+    # The adjacent writers, named so a future edit that lands one line
+    # off is caught here rather than in a user's store.
+    for writer in ("_cmd_confirm", "_cmd_resolve"):
+        source = inspect.getsource(getattr(cli, writer))
+        assert "open_store_for_read()" not in source
+        assert "_open_store()" in source
 
 
 def test_observational_read_writes_no_bm25f_sidecar(
@@ -569,3 +604,111 @@ def test_the_read_only_uri_is_built_by_the_uri_builder() -> None:
         "file:///tmp/store%251/"
     )
     assert read_only_uri("relative.db").startswith("file:///")
+
+
+# --- the four observational commands released on 2026-09-17 ----------------
+
+#: `(argv, exit code on the happy path)` for the commands the 2026-09-17
+#: ruling routes. `graph` exits 2 when its anchor matches nothing, which
+#: is a resolution failure, not a store failure — and the seeded store
+#: holds one locked belief, which `expand_bfs` reaches.
+_RELEASED_COMMANDS: list[tuple[list[str], int]] = [
+    (["core"], 0),
+    (["introspect"], 0),
+    (["graph", "codex"], 0),
+    (["stale", "--older-than", "0", "--cold-for", "0"], 0),
+]
+
+
+def _deny_write_control(d: Path) -> None:
+    """Prove the fixture is actually frozen before trusting the result.
+
+    A `chmod` that silently did not take — a permissive umask, an ACL, a
+    filesystem mounted without permission support — would turn every
+    assertion below into a tautology about a perfectly writable store.
+    """
+    canary = d / "write-denial-canary"
+    with pytest.raises(OSError):
+        canary.touch()
+    assert not canary.exists()
+
+
+@pytest.mark.parametrize(
+    "argv", [c for c, _ in _RELEASED_COMMANDS], ids=lambda a: a[0]
+)
+def test_observational_commands_report_instead_of_tracebacking(
+    store_dir: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    """Regime 2 for the four handlers the 2026-09-17 ruling releases.
+
+    Before the routing these called `_open_store()`, so a store the
+    caller cannot write dumped a raw `sqlite3.OperationalError` traceback
+    out of `MemoryStore.__init__` — `main` catches
+    `ReadOnlyStoreUnavailable` and nothing else, so the exception escaped
+    the CLI entirely. The assertion that separates the two is the call
+    itself: unrouted, `main` *raises* here rather than returning 1.
+    """
+    db = store_dir / "memory.db"
+    assert not (store_dir / "memory.db-shm").exists()
+    _freeze(store_dir)
+    _deny_write_control(store_dir)
+    manifest = sorted(p.name for p in store_dir.iterdir())
+    before = _digest(db)
+    capsys.readouterr()
+
+    rc = main(argv)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "Traceback" not in captured.err
+    # The typed message quotes the SQLite error rather than being it, so
+    # the discriminator is the `aelf <cmd>: ` prefix the CLI's #1416
+    # handler adds and the remediation sentence, not the engine's words.
+    assert captured.err.startswith(f"aelf {argv[0]}: ")
+    assert str(db) in captured.err
+    assert "write access" in captured.err
+    assert "-shm" in captured.err
+    assert sorted(p.name for p in store_dir.iterdir()) == manifest
+    assert _digest(db) == before
+
+
+@pytest.mark.parametrize(
+    "argv,code",
+    _RELEASED_COMMANDS,
+    ids=[argv[0] for argv, _ in _RELEASED_COMMANDS],
+)
+def test_observational_commands_read_a_store_they_cannot_write(
+    store_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    code: int,
+) -> None:
+    """Regime 1: the half the routing buys, rather than a politer failure.
+
+    The dropped table is load-bearing: a frozen store whose schema is
+    already complete gives the *writable* open nothing to write, so it
+    succeeds and the fallback is never exercised. `exploration_events` is
+    one the open-time DDL battery recreates and no observational command
+    queries.
+    """
+    db = store_dir / "memory.db"
+    holder = _hold_sidecars(db)
+    try:
+        sqlite3.connect(str(db)).executescript(
+            "DROP TABLE IF EXISTS exploration_events;"
+        )
+        _freeze(store_dir)
+        _deny_write_control(store_dir)
+        manifest = sorted(p.name for p in store_dir.iterdir())
+        before = _digest(db)
+        capsys.readouterr()
+
+        rc = main(argv)
+
+        captured = capsys.readouterr()
+        assert rc == code, captured.err
+        assert "Traceback" not in captured.err
+        assert _digest(db) == before, "an observational command wrote"
+        assert sorted(p.name for p in store_dir.iterdir()) == manifest
+    finally:
+        holder.close()
