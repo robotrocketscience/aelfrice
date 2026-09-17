@@ -87,11 +87,15 @@ estimated tokens:
 
 * the whole payload on stdout, 11926;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
-* `<cadence-checkpoint>`, 5813, against the rebuilder's budget of 4000 —
-  the second bound is **soft** (#1546) and this arm is what shows it,
-  rather than a claim that it holds;
+* `<cadence-checkpoint>`, 5813, against the rebuilder's budget of 4000.
+  The second bound is **soft**, and this arm measures that rather than
+  citing #1546 for it: on the same fire the lane's own `budget_used`
+  attribute reports 22106 characters packed against a budget of 16000,
+  which is N > M in the block the reader receives;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuilder_budget = 4000 -->
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuild_budget_used_chars = 22106 -->
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuild_budget_chars = 16000 -->
 * the `<aelfrice-memory>` envelope as `_write_memory_block` wrote it,
   5898, inside its ceiling of 6000 after the trim;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
@@ -136,7 +140,8 @@ regression; under `--exploration` if the slot never fired or the
 ceiling dropped nothing; and under `--cadence` if any one of the four
 writers was absent (the total would be a sum over fewer lanes than it
 names), if the memory envelope overran its own ceiling, or if the
-payload did not exceed it.
+payload did not exceed it, or if the cadence block carried no
+`budget_used` attribute to read the soft bound off.
 
 The `--reference-tier` guard is per write rather than over the set on
 purpose. An "equal on every write" guard passes as long as one write
@@ -674,6 +679,11 @@ CADENCE_PROMPT = (
     "ZorbaxQuux, /srv/zorbax/quux.txt and v9.9.9"
 )
 CADENCE_PHANTOM_ID = "P" + "0" * 31
+# The rebuild lane's own report of what it packed against what it was
+# given, in characters, as `<retrieved-beliefs budget_used="N/M">`. #1546
+# records that this can read N > M; reading it off the fire is what makes
+# "the second bound is soft" a measurement rather than a citation.
+CADENCE_BUDGET_USED_RE = re.compile(r'budget_used="(\d+)/(\d+)"')
 CADENCE_BLOCKS = (
     ("cadence_checkpoint", "<cadence-checkpoint>", "</cadence-checkpoint>"),
     ("memory", "<aelfrice-memory>", "</aelfrice-memory>"),
@@ -872,6 +882,17 @@ def cadence_payload() -> dict[str, object]:
         rows[f"{name}_tokens"] = tokens
         if name == "memory":
             memory_body_tokens = tokens
+    used = CADENCE_BUDGET_USED_RE.search(
+        out[: out.index("</cadence-checkpoint>")]
+    )
+    if used is None:
+        raise SystemExit(
+            "the cadence block carries no budget_used attribute: the "
+            "measured evidence that its bound is soft would be missing "
+            "while the rest of the table still published"
+        )
+    rows["rebuild_budget_used_chars"] = int(used.group(1))
+    rows["rebuild_budget_chars"] = int(used.group(2))
     payload_tokens = _audit_tokens_from_block(out)
     rows["payload_tokens"] = payload_tokens
     rows["ceiling"] = HOOK_BLOCK_TOKEN_CEILING
@@ -983,6 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
         # size means nothing without the bound it is compared to.
         figures["cadence_fire_block_ceiling"] = cadence["ceiling"]
         figures["cadence_fire_rebuilder_budget"] = cadence["rebuilder_budget"]
+        figures["cadence_fire_rebuild_budget_used_chars"] = (
+            cadence["rebuild_budget_used_chars"]
+        )
+        figures["cadence_fire_rebuild_budget_chars"] = (
+            cadence["rebuild_budget_chars"]
+        )
         print(json.dumps(figures))
         return 0
 
@@ -1042,7 +1069,10 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  <cadence-checkpoint>  "
                 f"{row['cadence_checkpoint_tokens']:>6}  "
-                f"(rebuilder budget {row['rebuilder_budget']}, soft)"
+                f"(rebuilder budget {row['rebuilder_budget']}, soft: the "
+                f"lane reports budget_used="
+                f"\"{row['rebuild_budget_used_chars']}/"
+                f"{row['rebuild_budget_chars']}\" characters)"
             )
             print(
                 f"  <aelfrice-memory>     {row['memory_tokens']:>6}  "

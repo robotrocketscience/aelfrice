@@ -347,9 +347,13 @@ The two blocks with a bound, and the two mechanisms that enforce them:
 
 **The second bound is soft, and a contract calling the two equivalent
 would be false.** #1546 records that `<retrieved-beliefs
-budget_used="N/M">` can report `N > M` on the rebuild lane; the fixture
-below emits a checkpoint block of 5813 estimated tokens against that
-budget of 4000.
+budget_used="N/M">` can report `N > M` on the rebuild lane, and the
+measured fire below is an instance of it: that block's own
+`budget_used` attribute reports 22106 characters packed against a budget
+of 16000, and the block comes to 5813 estimated tokens against a budget
+of 4000.
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuild_budget_used_chars = 22106 -->
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuild_budget_chars = 16000 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuilder_budget = 4000 -->
 Two further writers carry no token bound of either kind:
