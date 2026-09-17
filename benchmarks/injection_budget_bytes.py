@@ -379,8 +379,10 @@ def synthetic_content(
 
     Off, this is byte-identical to the generator that shipped before #1547 —
     same shared `rng`, same draw order, same truncation — which is checked by
-    `scripts/check_derived_figures.py --mode all` re-deriving the twelve
-    published figures that read this corpus. What changed is that the running
+    `scripts/check_derived_figures.py --mode all`: it re-runs this producer and
+    diffs every derived-figure marker naming it against the value published
+    beside it. No count of those markers is given, because no command prints
+    one. What changed is that the running
     length is accumulated instead of re-joining the whole word list per word.
     That join was quadratic and was 9.8 of the 12.5 seconds one
     18,600-character store took to build (`cProfile`, 797,843 calls to
@@ -648,7 +650,7 @@ LEGACY_COST_NOT_REBOUND: tuple[tuple[str, str, str], ...] = (
 def _legacy_accounting() -> Iterator[None]:
     """Rebind every cost function #1526 changed to its pre-#1526 body.
 
-    Driven by `LEGACY_COST_REBINDS`, which enumerates the five names rather
+    Driven by `LEGACY_COST_REBINDS`, which enumerates the names rather
     than summarising them, because a before arm that misses one measures a
     hybrid. The `first_prompt` lane shipped exactly that defect: it reaches
     `hook._core_belief_cost` through `_build_session_start_subblock`, that name
@@ -665,8 +667,11 @@ def _legacy_accounting() -> Iterator[None]:
     arm to rebind. `_pack_core_candidates` resolves its default `cost_fn` to
     `_core_belief_cost` per call for the same reason.
 
-    `LEGACY_COST_NOT_REBOUND` holds the two #1526 cost functions this
-    deliberately does not touch, with the reason for each.
+    `LEGACY_COST_NOT_REBOUND` holds the #1526 cost functions this
+    deliberately does not touch, with the reason for each. Neither tuple is
+    published with a length: the count is whatever the tuple holds, nothing
+    asserts it, and it has already gone stale once — it read "two" while
+    `hook._ups_belief_line_cost` made it three.
     """
     import importlib
 
