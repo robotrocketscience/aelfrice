@@ -312,6 +312,26 @@ SNAPSHOT_ARM_LANES: tuple[str, ...] = ("ups", "first_prompt", "agent_context")
 # off a row below that point rather than off the top one.
 SNAPSHOT_ARM_HEADLINE_LANE = "agent_context"
 
+# The arm length that lane's pack-level claim is quoted at, and the row
+# `_flat_1547_keys` lifts whole for it.
+#
+# `_arm_cell_keys` was applied at the *top* of the grid only, where this lane
+# is lock-starved and publishes the zeros the comment above describes. So the
+# CHANGELOG's headline sentence — the one that prices the surviving
+# charge-vs-emit gap, at this length — was quoted from a cell nothing lifted,
+# and the entry could have said any number with the gate at exit 0. The whole
+# row is lifted here under its own key names, both corpora, so every figure in
+# that sentence is re-derived.
+#
+# Not written down as a length this comment picks: it is the length
+# `test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford` derives from
+# the produced figures — the largest arm length at which the snapshot corpus
+# admits a belief the prose corpus does not — and that test asserts the two
+# agree, so a corpus whose class effect moves elsewhere in the grid fails
+# rather than leaves the sentence quoted off the wrong row. The value is itself
+# published as `snapshot_arm_quoted_chars` for the same reason.
+SNAPSHOT_ARM_QUOTED_CHARS = 300
+
 # The retention classes the charged-vs-emitted table is reported for, in the
 # order #1547's own table lists them.
 RETENTION_CLASSES_MEASURED: tuple[str, ...] = (
@@ -2019,11 +2039,30 @@ def _flat_1547_keys(
     # mixed denominator was found in and it quotes all of them at once.
     for lane in ("ups", SNAPSHOT_ARM_HEADLINE_LANE):
         out.update(_arm_cell_keys(values["snapshot_arm"][lane][top], lane))
+    # The headline lane's row at the length its pack-level claim is quoted at.
+    # Everything above is read at the top of the grid, where that lane is
+    # lock-starved; this is the row the CHANGELOG's charge-vs-emit sentence
+    # takes its numbers from, and until it was lifted that sentence was the
+    # one in the entry no marker could reach. Indexed rather than probed, so a
+    # lane or a length dropped out of the arm is a crash.
+    if SNAPSHOT_ARM_QUOTED_CHARS in lengths:
+        out["snapshot_arm_quoted_chars"] = SNAPSHOT_ARM_QUOTED_CHARS
+        out.update(
+            _arm_cell_keys(
+                values["snapshot_arm"][SNAPSHOT_ARM_HEADLINE_LANE][
+                    str(SNAPSHOT_ARM_QUOTED_CHARS)
+                ],
+                SNAPSHOT_ARM_HEADLINE_LANE,
+                at=SNAPSHOT_ARM_QUOTED_CHARS,
+            )
+        )
     return out
 
 
-def _arm_cell_keys(cell: dict[str, Any], lane: str) -> dict[str, Any]:
-    """One snapshot-arm cell's snapshot-side figures, as scalar keys.
+def _arm_cell_keys(
+    cell: dict[str, Any], lane: str, *, at: int | None = None,
+) -> dict[str, Any]:
+    """One snapshot-arm cell, as scalar keys — both corpora, all six figures.
 
     They are lifted as a set rather than one at a time because the CHANGELOG
     sentence they back reads them in one breath, and the defect they were
@@ -2034,20 +2073,31 @@ def _arm_cell_keys(cell: dict[str, Any], lane: str) -> dict[str, Any]:
     both. Gated together, a sentence that says "admitting N of which the M
     non-locked ones are charged X against Y" cannot have N and M drift apart
     without the marker check failing.
+
+    The **prose** side comes out beside the snapshot side for the same reason.
+    Every pack-level claim this arm supports is a comparison — the class
+    admits a belief the prose corpus does not, emits more bytes than it does —
+    and a lifted snapshot figure with an unlifted prose figure next to it in
+    the sentence is half a gate. `bytes_ratio` is the two byte counts' own
+    quotient, published rather than left to a reader to divide.
+
+    `at` names the arm length when the cell is not the one at the top of the
+    grid, so the two rows this module lifts land on distinct key names and
+    neither can be read for the other.
     """
-    return {
-        f"snapshot_arm_{lane}_snapshot_items": cell["snapshot_items"],
-        f"snapshot_arm_{lane}_snapshot_unlocked_hits": cell[
-            "snapshot_unlocked_hits"
-        ],
-        f"snapshot_arm_{lane}_snapshot_charged_tokens": cell[
-            "snapshot_charged_tokens"
-        ],
-        f"snapshot_arm_{lane}_snapshot_emitted_tokens": cell[
-            "snapshot_emitted_tokens"
-        ],
-        f"snapshot_arm_{lane}_snapshot_pack_ratio": cell["snapshot_pack_ratio"],
-    }
+    stem = f"snapshot_arm_{lane}" if at is None else f"snapshot_arm_{lane}_{at}"
+    out: dict[str, Any] = {f"{stem}_bytes_ratio": cell["bytes_ratio"]}
+    for side in ("prose", "snapshot"):
+        for field in (
+            "items",
+            "bytes",
+            "unlocked_hits",
+            "charged_tokens",
+            "emitted_tokens",
+            "pack_ratio",
+        ):
+            out[f"{stem}_{side}_{field}"] = cell[f"{side}_{field}"]
+    return out
 
 
 def _lane_figures(

@@ -1310,7 +1310,12 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     its pack still charges the compressed form. The class changes what it
     admits at one arm length only, and that length is selected by a stated
     rule — the largest arm length at which the snapshot corpus admits a belief
-    the prose corpus does not — rather than named. At the arm lengths above it
+    the prose corpus does not — rather than named. The rule's answer is then
+    required to be `SNAPSHOT_ARM_QUOTED_CHARS`, the length the producer lifts
+    a whole row at and the CHANGELOG quotes its charge-vs-emit sentence from,
+    and every scalar the producer lifts for that row is checked against the
+    row. A constant that drifted off the rule would leave the entry's headline
+    sentence gated against a cell it does not read. At the arm lengths above it
     the lane is lock-starved: its budget is spent by the store's user locks,
     whose content `BELIEF_CONTENT_CHAR_CAP` exempts, before the pack loop
     reaches a candidate, so all three corpora return the same locks, there is
@@ -1426,7 +1431,23 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
         f"length, so the arm measures no class effect on the one lane that "
         f"still charges the compressed form: {admitted}"
     )
+    # ...and that rule must land on the length the CHANGELOG's charge-vs-emit
+    # sentence is quoted at, because that is the row `_flat_1547_keys` lifts to
+    # scalar keys for the marker check. Without this the constant and the rule
+    # could part company and the sentence would be gated against a different
+    # measurement than the one it reads.
+    assert max(moved) == m.SNAPSHOT_ARM_QUOTED_CHARS, (moved, admitted)
+    assert fig["snapshot_arm_quoted_chars"] == m.SNAPSHOT_ARM_QUOTED_CHARS
     row = rows[str(max(moved))]
+    # Every lifted scalar for that row is the cell's own field. A published
+    # key that reads a different cell — the top one, whose zeros sit under
+    # nearly the same name — would satisfy the gate while backing the wrong
+    # sentence.
+    stem = f"snapshot_arm_{head}_{m.SNAPSHOT_ARM_QUOTED_CHARS}_"
+    lifted = {k[len(stem):]: v for k, v in fig.items() if k.startswith(stem)}
+    assert lifted, (stem, sorted(k for k in fig if k.startswith("snapshot_arm")))
+    for field, value in lifted.items():
+        assert value == row[field], (stem, field, value, row)
     assert row["snapshot_bytes"] > row["prose_bytes"], (head, row)
     assert row["snapshot_unlocked_hits"] > row["prose_unlocked_hits"], (
         head, row,
