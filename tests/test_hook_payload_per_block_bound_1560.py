@@ -32,6 +32,10 @@ the shipped default — and its fire index is a P1 boundary under the
 shipped `k` as well as this module's, so the silence is the flags' doing
 rather than a missed boundary.
 
+A third test guards the fixture itself: the two literals below sit
+between three bounds, and the distances are asserted rather than
+intended.
+
 The cadence body is stubbed rather than rebuilt, because these tests are
 about what the emit boundary does with a block of a known size, not about
 what the rebuilder packs into one. The measured sizes of the real blocks
@@ -78,7 +82,7 @@ _FIRE_IDX = _K * DEFAULT_K
 # The store the first test fires: small enough that the memory block
 # stays under its ceiling untrimmed, so "emitted whole" is a claim about
 # the payload rather than about what survived a trim.
-_FITS_LOCKS = 20
+_FITS_LOCKS = 40
 _FITS_HITS = 6
 
 # Sized so the checkpoint block lands inside
@@ -88,10 +92,28 @@ _FITS_HITS = 6
 # over the budget would make the "each block is inside its own bound"
 # premise false, and the payload under test would no longer be the one
 # the ruling is about.
-_CADENCE_BODY_CHARS = 15_600
+#
+# **The margins are asserted, not just intended.** This constant used to
+# sit close enough to the rebuilder budget that a render change of a few
+# hundred characters would have crossed it — a contract test one edit
+# away from being a flake, and nothing said so. `_FITS_LOCKS` grew when
+# this shrank: the first test needs the two blocks' *sum* over the block
+# ceiling while each stays inside its own bound, so buying headroom in
+# the cadence body is paid for by a larger envelope.
+# `test_the_emit_boundary_fixture_keeps_its_margins` holds all three
+# distances at `_MIN_MARGIN_TOKENS`, so the next person to move either
+# literal is told rather than trusted.
+_CADENCE_BODY_CHARS = 10_000
 _CADENCE_BODY = (
     "CADENCE-BODY-" + "c" * (_CADENCE_BODY_CHARS - len("CADENCE-BODY-"))
 )
+
+# How much room each of the fixture's three distances must keep: the
+# cadence block under the rebuilder budget, the memory block under the
+# block ceiling, and their sum over the block ceiling. Chosen as a round
+# number well clear of any plausible single-render drift, not derived —
+# the point is that a margin exists and is checked, not its exact size.
+_MIN_MARGIN_TOKENS = 500
 
 
 @pytest.fixture(autouse=True)
@@ -232,6 +254,48 @@ def _split(out: str) -> tuple[str, str]:
     rest = out[end:]
     assert rest.startswith("\n\n"), repr(rest[:40])
     return out[:end], rest[2:]
+
+
+def test_the_emit_boundary_fixture_keeps_its_margins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fixture's three distances are not near their boundaries.
+
+    The test below asserts three inequalities; each of them is a premise
+    the ruling's comparison rests on, and a fixture sitting a few dozen
+    tokens from any of them is a flake waiting for a render change rather
+    than a contract. This one asserts the *distance* instead of the
+    inequality, so the failure a drift produces names the fixture rather
+    than looking like the contract breaking.
+    """
+    _stub_rebuilder(monkeypatch)
+    out, _ = _fire(
+        tmp_path, monkeypatch,
+        config=_cadence_toml(enabled=True),
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="margins",
+    )
+    cadence_block, memory_block = _split(out)
+    margins = {
+        "cadence block under the rebuilder budget": (
+            DEFAULT_REBUILDER_TOKEN_BUDGET
+            - _audit_tokens_from_block(cadence_block)
+        ),
+        "memory block under the block ceiling": (
+            HOOK_BLOCK_TOKEN_CEILING - _audit_tokens_from_block(memory_block)
+        ),
+        "payload over the block ceiling": (
+            _audit_tokens_from_block(out) - HOOK_BLOCK_TOKEN_CEILING
+        ),
+    }
+    tight = {
+        name: value for name, value in margins.items()
+        if value < _MIN_MARGIN_TOKENS
+    }
+    assert not tight, (
+        f"fixture margins under {_MIN_MARGIN_TOKENS} tokens: {tight}; "
+        f"all three are {margins}. Re-size `_CADENCE_BODY_CHARS` and "
+        "`_FITS_LOCKS` together — they trade against each other."
+    )
 
 
 def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
