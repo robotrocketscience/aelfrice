@@ -332,15 +332,49 @@ locks are emitted whole and the overrun goes to stderr. A store trims
 only once it holds non-locked material for the ceiling to drop.
 
 **Scope: this bounds the `<aelfrice-memory>` envelope, not everything the
-fire writes to stdout.** `user_prompt_submit` writes the
-`<cadence-checkpoint>` block first, at its own `sout.write`, and that
-block carries the rebuilder's budget rather than this one. Neither bounds
-their sum, so a cadence-enabled store can exceed this number across the
-payload while the memory block is inside it. Filed as #1560 rather than
-folded in here: the shed order below deletes prompt-independent lanes
-before the prompt's own hits, and extending it over the cadence block
-would make the hook drop retrieved beliefs to make room for a rebuild
-recap — a trade nobody has measured.
+fire writes to stdout. The payload is bounded per block.** That is the
+contract #1560 ruled, stated positively: every block a fire writes names
+its own bound, and no bound spans them. There is deliberately no payload
+ceiling, and a reader should not expect the sum of the blocks to be under
+this number.
+
+The two blocks with a bound, and the two mechanisms that enforce them:
+
+| block | bound | enforced by |
+| --- | --- | --- |
+| `<aelfrice-memory>` | this constant | `enforce_block_ceiling`, hard |
+| `<cadence-checkpoint>` | `DEFAULT_REBUILDER_TOKEN_BUDGET` | the rebuilder's pack loop, soft |
+
+**The second bound is soft, and a contract calling the two equivalent
+would be false.** #1546 records that `<retrieved-beliefs
+budget_used="N/M">` can report `N > M` on the rebuild lane; the fixture
+below emits a checkpoint block of 5813 estimated tokens against that
+4000-token budget.
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
+Two further writers carry no token bound of either kind:
+`_maybe_phantom_opportunity_block` (#980) and
+`_maybe_phantom_promotion_block` (#1132), each a short note capped by a
+per-session fire budget and a per-entry topic length rather than by
+tokens.
+
+So a payload can exceed this number while every block in it is inside its
+own bound, and under the ruling that payload is correct. Measured on one
+fire with all four writers live: 11926 estimated tokens on stdout, of
+which this ceiling bounded 5898.
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
+Re-derive with `uv run python scripts/measure_block_ceiling.py
+--cadence`; `test_hook_payload_per_block_bound_1560.py` asserts the
+contract against captured stdout.
+
+**Why per block, and not one ceiling across them.** The shed order below
+deletes prompt-independent lanes before the prompt's own hits, so
+extending it over the cadence block would make the hook drop retrieved
+beliefs to make room for a rebuild recap — a trade nobody has measured.
+The exposure is narrow, and saying so is part of the contract:
+`[cadence] enabled` is unset by default, so
+`_maybe_run_ups_cadence_checkpoint` returns None and a stock install
+never writes the second block at all.
 
 Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
 Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
@@ -1953,6 +1987,13 @@ def user_prompt_submit(
             # — mirrors the traceback in the outer except at end of
             # user_prompt_submit. CodeRabbit / Sourcery feedback on PR #874.
             traceback.print_exc(file=serr)
+        # #1560: this write is deliberately NOT routed through
+        # `_write_memory_block`. The payload is bounded per block — this
+        # one by the rebuilder's own budget, softly — and no bound spans
+        # the blocks, so the ceiling that trims the memory envelope below
+        # never sees these bytes and never trims them to make room for
+        # it, or it for them. `HOOK_BLOCK_TOKEN_CEILING`'s docstring
+        # carries the contract and the measured sum.
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
         budget = (
