@@ -3905,6 +3905,46 @@ def _ids_rendered_verbatim_in(block: str) -> frozenset[str]:
     return frozenset(_BELIEF_ID_RE.findall(block))
 
 
+def _session_start_dedupe_ids(session_start_block: str) -> frozenset[str]:
+    """Ids of the embedded sub-block that may dedupe a per-turn hit (#1564).
+
+    `_ids_rendered_verbatim_in` reads every `<belief id="..."` in the string
+    it is given, and by the time `_format_hits_with_session_start` sees one
+    the `<cadence-resume>` recap has already been concatenated onto the
+    front of it. Every id the recap rendered therefore suppressed the
+    prompt's own hit to a `seen` pointer -- and a pointer whose element the
+    ceiling then sheds is a hit lost twice over, because the dropper
+    removes a pointer with the element it names.
+
+    **A recap may not dedupe anything.** The ruling of 2026-09-17 is that
+    the recap sheds first, whole, and never suppresses a hit, so its span
+    is cut out before the scan. What is left is the sub-block's own
+    `<locked>` and `<core>` elements, which is what #1547 meant by "the
+    same envelope": those survive the recap's shed and the pointer is a
+    true statement about the block.
+
+    The cost is the part of #1547's dedupe that fell on recap-carried ids,
+    and it is small: on the `--resume-drop` fixture the untrimmed envelope
+    grows by 444 estimated tokens, from 10302 to 10746, and buys back every
+    prompt-matched belief that fixture was losing. Re-derive the second
+    number with `uv run python scripts/measure_block_ceiling.py
+    --resume-drop`; the first is the same command on this commit's parent.
+
+    Returns an empty set for an empty block, so the caller needs no special
+    case.
+    """
+    if not session_start_block:
+        return frozenset()
+    lo, hi = _section_span(
+        session_start_block, RESUME_OPEN_TAG, RESUME_CLOSE_TAG
+    )
+    if lo < 0:
+        return _ids_rendered_verbatim_in(session_start_block)
+    return _ids_rendered_verbatim_in(
+        session_start_block[:lo] + session_start_block[hi:]
+    )
+
+
 _REF_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
     r'^  ref (?P<id>.+?): ".*"$', re.MULTILINE
 )
@@ -5132,7 +5172,7 @@ def _format_hits_with_session_start(
     manifest_lines: list[str] = []
     lifted: list[str] = []
     if session_start_block:
-        already_rendered = already_rendered | _ids_rendered_verbatim_in(
+        already_rendered = already_rendered | _session_start_dedupe_ids(
             session_start_block
         )
         session_start_block, lifted = _lift_manifest_block(session_start_block)

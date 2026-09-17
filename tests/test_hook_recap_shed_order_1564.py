@@ -12,7 +12,7 @@ earlier session.
 
 The operator ruled on 2026-09-17 that **the recap sheds first, and whole,
 and never suppresses a hit**. This module now pins that ruling, and the
-tests are the shed-order claims turned over:
+tests are the old claims turned over:
 
 1. the ceiling sheds the recap whole -- every `<belief>` element of it and
    the `<cadence-resume>` wrapper with them, so nothing is left holding a
@@ -20,7 +20,14 @@ tests are the shed-order claims turned over:
 2. `_ceiling_drop_order` puts every recap element ahead of every `<core>`
    element and every per-turn hit, so the module reds if the recap is ever
    reclassified into the hits bucket again (AC2);
-3. a `lock="user"` element inside a recap keeps the wrapper, because the
+3. a belief the recap rendered does not come back below it as a `seen`
+   pointer: the recap is outside #1547's envelope dedupe, so it cannot
+   collapse a prompt hit into a pointer the trim then deletes;
+4. the same store and the same prompt reach the same prompt-matched
+   beliefs with a resume cache and without one, which is the A/B of AC3
+   and AC7 as restated -- a prompt hit must not be lost because a recap
+   displaced or collapsed it;
+5. a `lock="user"` element inside a recap keeps the wrapper, because the
    #379 always-injected contract outranks the whole-shed rule. No shipped
    render produces one -- `context_rebuilder` spells a lock
    `locked="true"` -- so this arm is built by hand against
@@ -35,7 +42,7 @@ observing either.
 
 The figures these behaviours produce are
 `scripts/measure_block_ceiling.py --resume-drop`. This module asserts the
-*directions* -- whole, and first -- so a render change moves
+*directions* -- whole, first, and no hit lost -- so a render change moves
 the producer's numbers without reddening a fixture, while a change to what
 the dropper does reddens here.
 
@@ -44,9 +51,11 @@ module re-run green afterwards.** Dropping the recap lane out of
 `_ceiling_drop_order`, so its elements fall into the `else` bucket again,
 fails claim 2 and nothing else. Skipping the whole-shed branch in
 `enforce_block_ceiling`, so the recap sheds an element at a time, fails
-claim 1: the wrapper comes back holding a fragment. Removing the
+claim 1: the wrapper comes back holding a fragment. Putting
+`_ids_rendered_verbatim_in` back in place of `_session_start_dedupe_ids`,
+so the recap's ids dedupe again, fails claims 3 and 4. Removing the
 `lock="user"` fallback from `_recap_shed`, so the span is always cut
-whole, fails claim 3.
+whole, fails claim 5.
 """
 from __future__ import annotations
 
@@ -336,8 +345,83 @@ def test_the_recap_sheds_ahead_of_core_and_of_the_prompts_own_hits(
     )
 
 
+def test_a_recap_id_does_not_suppress_the_prompts_own_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim 3, at the renderer: the recap is outside the envelope dedupe.
+
+    `_format_hits_with_session_start` reads `_ids_rendered_verbatim_in` off
+    the string it is handed, and the recap is concatenated onto the front
+    of that string before it arrives. Every id the recap rendered used to
+    downgrade the prompt's own hit to a `seen` pointer -- and the pointer
+    is then deleted with the element it names, because that is what
+    `enforce_block_ceiling` does to a pointer whose referent it sheds.
+
+    The fixture's `<core>` and the recap render the same beliefs, so the
+    premise is asserted rather than assumed: the recap must carry at least
+    one id the prompt also retrieved, or there is nothing here to suppress.
+    """
+    untrimmed, _ = _arm(
+        tmp_path, monkeypatch, name="untrimmed", recap=True, ceiling=0,
+    )
+    body = _envelope(untrimmed)
+    recap_ids = _recap_elements(body)
+    hit_ids = {i for i in recap_ids if i.startswith("H")}
+    assert hit_ids, (
+        "the recap rendered no belief the prompt also retrieves, so this "
+        "fixture cannot show one being suppressed"
+    )
+    lo, hi = _recap_span(body)
+    below = body[hi:]
+    pointed = set(_SEEN_ID_RE.findall(below))
+    assert not (hit_ids & pointed), (
+        "a belief the recap rendered came back as a `seen` pointer below "
+        f"it: {sorted(hit_ids & pointed)}"
+    )
+    assert hit_ids <= _element_ids(below), (
+        "a prompt hit the recap also carries is missing its own element "
+        "below the recap"
+    )
+
+
+def test_the_recap_costs_the_envelope_no_prompt_matched_belief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim 4 (AC3, and AC7 as restated): the A/B, with and without a cache.
+
+    Same store shape, same prompt, same ceiling; the only difference is
+    whether a resume cache is there to be read. The control arm is what
+    keeps this from passing vacuously -- a fixture that reaches no
+    prompt-matched belief either way would assert nothing.
+
+    Both an element and a `seen` pointer count as reaching the model: the
+    pointer's contract is that the text is elsewhere in this window, so
+    counting elements alone would read #1547's dedupe as a loss.
+    """
+    control, _ = _arm(
+        tmp_path, monkeypatch, name="control", recap=False, ceiling=None,
+    )
+    with_recap, err = _arm(
+        tmp_path, monkeypatch, name="recap", recap=True, ceiling=None,
+    )
+    assert _RESUME_OPEN not in control
+    assert "dropped" in err, err
+
+    reached_without = _reached(control)
+    reached_with = _reached(with_recap)
+    assert reached_without, (
+        "the control arm reached no prompt-matched belief, so equality "
+        "here would be equality between two empty sets"
+    )
+    assert reached_with >= reached_without, (
+        "the recap cost the envelope a prompt-matched belief: "
+        f"{sorted(reached_without)} without it, {sorted(reached_with)} "
+        "with it"
+    )
+
+
 def test_a_user_locked_element_inside_a_recap_keeps_the_wrapper() -> None:
-    """Claim 3: #379 outranks the whole-shed rule.
+    """Claim 5: #379 outranks the whole-shed rule.
 
     Built by hand rather than fired, and deliberately so: no shipped render
     puts `lock="user"` inside a recap, because `context_rebuilder` spells a
