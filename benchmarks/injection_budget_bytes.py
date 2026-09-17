@@ -2064,8 +2064,14 @@ def _flat_1547_keys(
     # Everything above is read at the top of the grid, where that lane is
     # lock-starved; this is the row the CHANGELOG's charge-vs-emit sentence
     # takes its numbers from, and until it was lifted that sentence was the
-    # one in the entry no marker could reach. Indexed rather than probed, so a
-    # lane or a length dropped out of the arm is a crash.
+    # one in the entry no marker could reach.
+    #
+    # The guard is on the *caller's* grid, because a narrowed `lengths` is a
+    # legitimate call this key set does not belong to. Inside it the arm is
+    # indexed and not probed: a length in `LENGTH_GRID` but out of
+    # `SNAPSHOT_ARM_LENGTHS`, or the headline lane out of `SNAPSHOT_ARM_LANES`,
+    # crashes the producer here rather than silently dropping the keys the
+    # CHANGELOG's headline sentence is gated by.
     if SNAPSHOT_ARM_QUOTED_CHARS in lengths:
         out["snapshot_arm_quoted_chars"] = SNAPSHOT_ARM_QUOTED_CHARS
         out.update(
