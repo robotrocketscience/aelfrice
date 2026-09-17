@@ -591,8 +591,8 @@ def test_the_producer_names_which_budget_ended_every_pack(
     and a reader takes that from the probe the producer raised the caps to. The
     probe was `budget * SATURATION_PROBE_FACTOR`, sized for a grid topping out
     at 300 characters; at 18,600 one belief costs more than four times `ups`'s
-    whole budget, so a 4x probe could not admit even one more belief and 16 of
-    the 41 `pool` labels on the extended grid were false. Two assertions
+    whole budget, so a 4x probe could not admit even one more belief and 20 of
+    the 45 `pool` labels on the extended grid were false. Two assertions
     replace the membership check:
 
     1. Every published `{arm}_probe_budget` at the top of the grid must exceed
@@ -786,7 +786,7 @@ def test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label(
     `budget * SATURATION_PROBE_FACTOR`. At 18,600 content characters one
     belief costs more than four times `ups`'s whole budget, so that probe
     could not admit one more belief anywhere in the cell and returned `pool`
-    for arms a larger probe moves: 16 of 41 labels were false and the emitted
+    for arms a larger probe moves: 20 of 45 labels were false and the emitted
     figures showed nothing, because the probe behind them was published
     nowhere.
 

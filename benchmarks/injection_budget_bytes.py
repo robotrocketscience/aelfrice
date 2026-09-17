@@ -45,7 +45,7 @@ every candidate it was offered. `SATURATION_PROBE_FACTOR` survives as a floor
 under it. It used to be the whole probe, and it was sized for a grid topping
 out at 300 content characters; at 18,600 one belief costs more than four times
 `ups`'s whole budget, so a 4x probe could not admit even one more belief and
-16 of the 41 `pool` labels on the extended grid were false. Every label is
+20 of the 45 `pool` labels on the extended grid were false. Every label is
 published with the probe that produced it (`{arm}_probe_budget`), and a `pool`
 is re-rendered at `POOL_CONFIRM_MULTIPLE` times the probe before it is
 published — a probe that turns out to be too small raises `PoolProbeTooSmall`
@@ -1090,8 +1090,9 @@ def _probe_budget(store: Any) -> int:
     content characters. At 18,600 one belief costs 4,663 tokens against
     `ups`'s 1,500-token budget, so a 4x probe of 6,000 could not admit even one
     more belief and `_measure` returned `pool` — "not evidence about any
-    budget" — for cells a larger probe moves. 41 of 144 arm labels read `pool`
-    and 16 of them were false.
+    budget" — for cells a larger probe moves. 45 of this module's 189 arms
+    read `pool` under the factor and 20 of them were false; under the bound 25
+    survive, including all 18 `session_start` arms (#1546).
 
     Two other sizings were measured and both fail:
 
