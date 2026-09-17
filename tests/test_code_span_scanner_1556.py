@@ -51,6 +51,7 @@ import os
 import random
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -509,6 +510,60 @@ def test_the_pre_fix_rule_violated_that_bar_on_this_same_corpus() -> None:
     docs = corpus(SEED, COUNT)
     violated = [d for d in docs if unblankable(d.text) - baseline_parsed_at(d.text)]
     assert len(violated) == 93, "the pre-fix rule's violations of the same bar"
+
+
+def _half_rules() -> dict[str, Callable[[str], str]]:
+    """The two halves of the repair, each without the other.
+
+    `blocks only` is the fenced-block scanner with the pre-fix inline regex
+    running inside each region; `run length only` is the run-length,
+    paragraph-bounded span rule with no block masking at all.
+    """
+    return {
+        "blocks only": lambda s: cdf._blank_blocks(s, baseline_mask),  # noqa: SLF001
+        "run length only": cdf._uncited_inplace,  # noqa: SLF001
+        "both (shipped)": cdf.mask_document,
+    }
+
+
+def _price(rule: Callable[[str], str], docs: list[Doc]) -> tuple[int, int, int]:
+    """`(markers leaked out of a block, documents off the bar, prose lost)`."""
+
+    def keys(text: str) -> set[str]:
+        return {m.group("key") for m in cdf.MARKER_RE.finditer(rule(text))}
+
+    def at(text: str) -> set[tuple[int, str]]:
+        masked = rule(text)
+        return {
+            (masked.count("\n", 0, m.start()) + 1, m.group("key"))
+            for m in cdf.MARKER_RE.finditer(masked)
+        }
+
+    leaked = sum(len(keys(d.text) & d.in_code) for d in docs if not d.ambiguous)
+    off_bar = sum(1 for d in docs if unblankable(d.text) - at(d.text))
+    lost = sum(len(baseline_keys(d.text) - keys(d.text) - d.in_code) for d in docs)
+    return leaked, off_bar, lost
+
+
+def test_neither_half_of_the_rule_holds_both_bars_alone() -> None:
+    """Why the repair is two rules, priced rather than argued.
+
+    The fenced-block scanner alone still violates the absolute bar, because an
+    odd backtick run in prose is not a delimiter line and nothing looks at it
+    -- and it goes further, losing prose markers `main` parsed, because masking
+    a block removes the delimiter a stray backtick used to pair against and the
+    stray then reaches forward past a marker instead.
+
+    The run-length matcher alone holds every bar about prose and leaks markers
+    straight out of fenced blocks, which is AC4 deleted.
+
+    Only together do all three columns read zero.
+    """
+    docs = corpus(SEED, COUNT)
+    priced = {name: _price(rule, docs) for name, rule in _half_rules().items()}
+    assert priced["blocks only"] == (0, 56, 9), priced
+    assert priced["run length only"] == (188, 0, 0), priced
+    assert priced["both (shipped)"] == (0, 0, 0), priced
 
 
 def test_a_stray_backtick_above_a_fence_used_to_delete_the_marker_below_it() -> None:
