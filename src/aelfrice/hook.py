@@ -360,7 +360,11 @@ Two further writers carry no token bound of either kind:
 `_maybe_phantom_opportunity_block` (#980) and
 `_maybe_phantom_promotion_block` (#1132), each a short note capped by a
 per-session fire budget and a per-entry topic length rather than by
-tokens.
+tokens. Those four are the whole of what `user_prompt_submit` sends to
+stdout. The `<cadence-resume>` recap (#871) is not a fifth: it is
+prepended to the session-start sub-block and emitted *inside* this
+envelope, so it is charged here — though, like a user lock, it is not a
+`<belief>` element and the dropper cannot shed it.
 
 So a payload can exceed this number while every block in it is inside its
 own bound, and under the ruling that payload is correct. Measured on one
