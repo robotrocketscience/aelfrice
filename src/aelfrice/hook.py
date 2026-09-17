@@ -342,8 +342,15 @@ The two blocks with a bound, and the two mechanisms that enforce them:
 
 | block | bound | enforced by |
 | --- | --- | --- |
-| `<aelfrice-memory>` | this constant | `enforce_block_ceiling`, hard |
+| `<aelfrice-memory>` | this constant | `enforce_block_ceiling`, hard with the #379 lock exemption |
 | `<cadence-checkpoint>` | `DEFAULT_REBUILDER_TOKEN_BUDGET` | the rebuilder's pack loop, soft |
+
+The first row read a bare "hard" until #1560 round two, which the same
+docstring contradicts fourteen lines above: `enforce_block_ceiling` never
+drops a `lock="user"` element, so a block whose locks alone are oversized
+is emitted over the ceiling with a note on stderr. Hard against everything
+the dropper is allowed to touch is the accurate reading, and it is a
+different claim from hard against the block.
 
 **The second bound is soft, and a contract calling the two equivalent
 would be false.** #1546 records that `<retrieved-beliefs
@@ -363,27 +370,72 @@ per-session fire budget and a per-entry topic length rather than by
 tokens. Those four are the whole of what `user_prompt_submit` sends to
 stdout. The `<cadence-resume>` recap (#871) is not a fifth: it is
 prepended to the session-start sub-block and emitted *inside* this
-envelope, so it is charged here — though, like a user lock, it is not a
-`<belief>` element and the dropper cannot shed it.
+envelope, so it is charged here.
+
+**And the dropper sheds it.** An earlier revision of this paragraph said
+the recap was exempt "like a user lock", and that is false twice over.
+`_maybe_read_cadence_resume` wraps a body the context rebuilder rendered,
+whose `<belief>` elements are ordinary droppable elements; only the
+`<cadence-resume>` wrapper is exempt, and only because it is not a
+`<belief>` element for `_BELIEF_ELEMENT_RE` to match. Nor does a lock
+inside the recap save it: the rebuilder writes `locked="true"` where
+`_LOCKED_ATTR` reads `lock="user"`, so the #379 exemption does not
+recognise the recap's own locks. Measured on a real P1 resume cache
+against a 40-lock / 20-core / 20-hit store, 65 of the recap's `<belief>`
+elements survive untrimmed and 34 survive the ceiling.
+<!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
+<!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 34 -->
+
+**Where the drop order puts them is the consequence.** The recap is
+prepended, so it sits outside `<core>` and outside `<recent-work>`, and
+`_ceiling_drop_order` buckets everything outside those two sections with
+the per-turn hits. Within that bucket the order is tail-first and the
+recap is at its *head*, so the prompt's own hits are shed before the
+recap is touched: the recap outranks the lane it was filed into. On the
+same fixture, 6 prompt-matched beliefs reach the model without a recap
+and 0 reach it with one — counting an element and a `seen` pointer alike,
+so #1547's dedupe is not miscounted as a loss. Re-derive with `uv run
+python scripts/measure_block_ceiling.py --resume-drop`;
+`test_hook_ceiling_cadence_resume_1560.py` pins it.
+<!-- derived: scripts/measure_block_ceiling.py#resume_hits_without_recap = 6 -->
+<!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 0 -->
 
 So a payload can exceed this number while every block in it is inside its
 own bound, and under the ruling that payload is correct. Measured on one
 fire with all four writers live: 11926 estimated tokens on stdout, of
-which this ceiling bounded 5898.
+which this ceiling bounded 5898. That fire carries no recap — its work
+directory holds no resume cache, so `_maybe_read_cadence_resume` returns
+empty — and the arm asserts the absence rather than assuming it, so the
+figures above are a four-writer sum and nothing else.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
 Re-derive with `uv run python scripts/measure_block_ceiling.py
 --cadence`; `test_hook_payload_per_block_bound_1560.py` asserts the
 contract against captured stdout.
 
-**Why per block, and not one ceiling across them.** The shed order below
-deletes prompt-independent lanes before the prompt's own hits, so
-extending it over the cadence block would make the hook drop retrieved
-beliefs to make room for a rebuild recap — a trade nobody has measured.
-The exposure is narrow, and saying so is part of the contract:
-`[cadence] enabled` is unset by default, so
-`_maybe_run_ups_cadence_checkpoint` returns None and a stock install
-never writes the second block at all.
+**Why per block, and not one ceiling across them.** The per-block ruling
+stands; the argument for it does not rest on the trade being unmeasured,
+because inside this envelope the trade already happens. The shed order
+below deletes prompt-independent lanes before the prompt's own hits, but
+the recap is not one of those lanes — it is bucketed with the hits and
+sits ahead of them, so the hook already drops retrieved beliefs to keep a
+rebuild recap, and on the fixture above that cost the prompt every one of
+its matched beliefs. An earlier revision of this paragraph called that
+"a trade nobody has measured"; what is unmeasured is the *other* one —
+extending a bound
+across blocks, so that the `<aelfrice-memory>` envelope and the separate
+`<cadence-checkpoint>` block compete for a single budget. Today's code
+does the within-envelope trade and does not do the cross-block one:
+`_write_memory_block` applies this ceiling to the memory body alone and
+the cadence write is emitted whole beside it.
+
+Whether the within-envelope trade is the right one is #871's question,
+not this bound's, and this docstring takes no position on it beyond
+naming it. The exposure is narrow either way, and saying so is part of
+the contract: `[cadence] enabled` is unset by default, so
+`_maybe_run_ups_cadence_checkpoint` returns None, no Stop-side fire
+writes a resume cache, and a stock install gets neither the second block
+nor a recap.
 
 Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
 Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
@@ -595,10 +647,28 @@ def _ceiling_drop_order(
     posterior descending and the hits by rank, so the tail of each is its
     own weakest member.
 
-    Returns a new list; `droppable` is not mutated. Elements outside both
-    named sections are the per-turn hits by construction -- `<locked>`
-    carries no droppable element, since every one of its members renders
-    `lock="user"`.
+    Returns a new list; `droppable` is not mutated.
+
+    **The third bucket is not only the per-turn hits, and a #1552 claim
+    here said it was.** "Elements outside both named sections are the
+    per-turn hits by construction" holds for `<locked>`, which carries no
+    droppable element because every one of its members renders
+    `lock="user"` -- and it is false for the `<cadence-resume>` recap
+    (#871), which #1560 round two measured. The recap is prepended to the
+    session-start sub-block, so its elements are outside both named
+    sections and land here; they are rendered by the context rebuilder,
+    which writes `locked="true"` rather than `lock="user"`, so every one
+    of them is droppable including the recap's own locks.
+
+    The consequence is the ordering, not the bucketing. The recap is
+    prepended, so within this bucket it sits at the head and the reversal
+    below puts it last: the prompt's own hits are shed first and the
+    prompt-independent recap is shed only after they are gone. That is
+    the inverse of what the first paragraph says this function is for,
+    and it is behaviour rather than an oversight to fix here -- #1560 is
+    a documentation ruling, and re-bucketing the recap would change what
+    the hook injects. `scripts/measure_block_ceiling.py --resume-drop`
+    measures it and `test_hook_ceiling_cadence_resume_1560.py` pins it.
 
     The `<recent-work>` lane is a placeholder today and is kept anyway:
     `_build_recent_work_subblock` emits `<branch>`, `<commit>` and
@@ -640,6 +710,10 @@ def enforce_block_ceiling(
     locks, 20 unrelated `<core>` beliefs and 20 prompt-matching hits, the
     tail-first order took the block from 6 hits to 0 while leaving 17 of
     20 core entries standing.
+
+    "The per-turn hits" names a *bucket*, not a lane: a `<cadence-resume>`
+    recap lands in it too, ahead of the hits, and is therefore shed after
+    them. See `_ceiling_drop_order`, which measures it.
 
     **`lock="user"` elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
