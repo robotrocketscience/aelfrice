@@ -1818,10 +1818,15 @@ ENV_PREFIX = "AELFRICE_"
 # is the shipped composition this lane exists to measure, and with the ceiling
 # in place both of its outcomes — a ceiling refusal and a
 # `_RECENT_WORK_GIT_TIMEOUT_S` timeout — return None, so a loaded machine
-# cannot move a figure through them. What they cost is a spawn each:
-# `figures()` issues 28 over a full-grid run, one per distinct
-# `_SESSION_START_BLOCKS` key, none of which reached a tenth of that timeout
-# over 32 instrumented runs on a machine at load average 12-18.
+# cannot move a figure through them. What they cost is a spawn each, and the
+# memo is what bounds the count: one per distinct `_SESSION_START_BLOCKS` key
+# and none per repeat, which is a property of the memo rather than a figure —
+# `len(_SESSION_START_BLOCKS)` and `SESSION_START_BLOCK_HITS` are what a reader
+# checks it against, and a counting wrapper around `hook._git_text` is what
+# measures the spawns. Measured that way on a machine under load, no single
+# call came within an order of magnitude of the timeout. No duration is
+# published for it here, for the reason every other duration left this file:
+# nothing re-derives one.
 _GIT_LOCATION_VARS = (
     "GIT_CEILING_DIRECTORIES",
     "GIT_DIR",
