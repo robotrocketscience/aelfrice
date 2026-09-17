@@ -913,8 +913,12 @@ def _render_search_tool(
         l1_limit=l1_limit,
         manifest_reference_locks=True,
         # Pre-#1526 this lane had no cost function of its own and was charged
-        # the `<belief …>` element it does not emit.
-        belief_cost_fn=None if legacy else hook_search_tool._belief_line_cost,
+        # the `<belief …>` element it does not emit. Resolved through
+        # `_lane_belief_cost` so this lane's entry in that table is the one
+        # thing that names it, rather than a second copy beside it.
+        belief_cost_fn=_lane_belief_cost(
+            "search_tool_bash" if bash else "search_tool", legacy=legacy,
+        ),
     )
     block = hook_search_tool._format_results(
         QUERY,
