@@ -388,6 +388,26 @@ def _producer_module() -> object:
     return injection_budget_bytes
 
 
+# Every test below that requests `producer_figures` carries this mark.
+#
+# The fixture is module-scoped, so exactly one test pays the producer run as
+# its `setup` — and which one is decided by collection order, which
+# `pytest-randomly` shuffles. There is therefore no first test to nominate,
+# and the budget is raised on all ten consumers rather than on one of them.
+#
+# It has to be raised. `ci.yml` pins `AELF_TEST_TIMEOUT_SCALE: "1"`, so the
+# ini `timeout = 30` applies as written there, and the run has been measured
+# over 30 seconds on a machine under load — 33.7 s at load average 30, by the
+# `--durations=0` command in the fixture docstring below. A budget a loaded
+# machine crosses on a healthy run is not hang detection, it is a coin toss,
+# and this repo has lost PR gates to exactly that (#1472).
+#
+# 120 seconds and not more: four times the ini default, the same step
+# `tests/conftest.py` takes for a loaded developer machine, and still short
+# enough that a genuinely hung producer ends the run inside two minutes.
+_pays_for_the_producer_run = pytest.mark.timeout(120)
+
+
 @pytest.fixture(scope="module")
 def producer_figures() -> dict[str, object]:
     """One producer run, shared by the tests below.
@@ -400,30 +420,31 @@ def producer_figures() -> dict[str, object]:
 
     There is nothing to search: #1526 ships unchanged budgets, so the producer
     renders two arms per cell instead of sweeping a budget range for a
-    byte-neutral band. That still costs **15.5 seconds** for the full grid
-    after #1547 extended it to 18,600 characters, reported as the `setup` row
-    for the first test below by
+    byte-neutral band. It is still tens of seconds of work for the full grid
+    after #1547 extended it to 18,600 characters — a store of 300 beliefs per
+    grid length, two more per snapshot-arm length, and several hundred renders
+    over them. **No duration is published here**, because none of the three
+    this docstring has carried survived a second reading: "about 8 seconds"
+    predated the 18,600-character grid, "15.5 seconds" was measured at 17.06
+    and 17.58 by a reviewer on the same tree, and the run crosses 30 seconds
+    outright on a loaded machine. What is stable is the command that reports
+    it as the `setup` row of whichever test requested the fixture first:
 
         uv run pytest tests/test_render_cost_1526.py -q -p no:randomly \
             --durations=0
 
-    and ranging 14.7 to 16.4 seconds over seven runs on an unloaded machine.
-    An earlier revision of this docstring published "about 8 seconds", which
-    was measured before the grid reached 18,600 characters and which no run on
-    this tree reproduces.
+    Nothing asserts a duration either: a wall-clock assertion would be the
+    non-deterministic thing this suite forbids.
 
-    That figure is half the budget, not a footnote, because the timeout covers
-    setup: a `@pytest.mark.timeout(5)` on the first test below errors *inside*
-    this fixture with `Failed: Timeout (>5.0s) from pytest-timeout`, charged to
-    the item that requested it. So the first test to ask for these figures
-    spends about 15.5 of its 30 seconds here and has roughly 14 left for its
-    own body, which is why the grid is nine lengths and not more, and why
-    `_CORE_CROSSING` and the emptied-lengths list in
+    The cost is charged to a test, not to the fixture, because the timeout
+    covers setup: a `@pytest.mark.timeout(5)` on one of the tests below errors
+    *inside* this fixture with `Failed: Timeout (>5.0s) from pytest-timeout`,
+    charged to the item that requested it. That is what
+    `_pays_for_the_producer_run` above is for, and it is also why the grid is
+    nine lengths and not more, and why `_CORE_CROSSING` and the
+    emptied-lengths list in
     `test_the_core_section_empties_once_one_belief_exceeds_its_budget` pin the
-    ninth length rather than leaving it to be trimmed under that pressure. The
-    figure is not asserted anywhere: a wall-clock assertion would be the
-    non-deterministic thing this suite forbids, so it is published here and
-    re-measured by hand.
+    ninth length rather than leaving it to be trimmed under time pressure.
 
     Every `AELFRICE_` variable is removed for the duration. `figures()` is
     already hermetic against `.aelfrice.toml` — it chdirs into a tempdir with
@@ -446,6 +467,7 @@ def _producer_lanes() -> tuple[str, ...]:
     return _producer_module().LANES  # type: ignore[attr-defined]
 
 
+@_pays_for_the_producer_run
 def test_the_corrected_accounting_shrinks_what_each_budget_buys(
     producer_figures: dict[str, object],
 ) -> None:
@@ -516,6 +538,7 @@ def test_the_corrected_accounting_shrinks_what_each_budget_buys(
 _CORE_CROSSING = 6004
 
 
+@_pays_for_the_producer_run
 def test_the_producer_names_which_budget_ended_every_pack(
     producer_figures: dict[str, object],
 ) -> None:
@@ -795,10 +818,12 @@ def test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label(
     raise rather than emit the label. Deleting the `confirm` render in
     `_measure` reds this on `DID NOT RAISE`.
 
-    One grid length, so the run is about 5 seconds. `producer_figures` is
-    deliberately not requested: this test needs its own producer run at its
-    own monkeypatched module state, and requesting the module fixture as well
-    would charge it 15.5 seconds it cannot use.
+    One grid length — the top one, where the old probe is provably too small.
+    `producer_figures` is deliberately not requested: this test needs its own
+    producer run at its own monkeypatched module state, and requesting the
+    module fixture as well could charge it a second, full-grid run it cannot
+    use. No duration is published for either, for the reason the
+    `producer_figures` docstring gives.
     """
     m = _producer_module()
     for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
@@ -812,6 +837,7 @@ def test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label(
     assert excinfo.value.moved_bytes != excinfo.value.arm_bytes, excinfo.value
 
 
+@_pays_for_the_producer_run
 def test_the_effect_is_length_dependent_and_changes_sign(
     producer_figures: dict[str, object],
 ) -> None:
@@ -924,6 +950,7 @@ def test_the_producer_reads_the_session_start_budget_off_its_own_constant(
     )
 
 
+@_pays_for_the_producer_run
 def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
     producer_figures: dict[str, object],
 ) -> None:
@@ -952,6 +979,7 @@ def test_the_acceptance_corpus_carries_locks_and_speculative_beliefs(
 # ---------------------------------------------------------------------------
 
 
+@_pays_for_the_producer_run
 def test_the_snapshot_arm_is_a_second_corpus_and_the_control_holds_none(
     producer_figures: dict[str, object],
 ) -> None:
@@ -1003,6 +1031,7 @@ def test_the_snapshot_arm_is_a_second_corpus_and_the_control_holds_none(
     assert prose["sentence_headline"] == arm["sentence_headline"], (prose, arm)
 
 
+@_pays_for_the_producer_run
 def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     producer_figures: dict[str, object],
 ) -> None:
@@ -1141,6 +1170,7 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     }
 
 
+@_pays_for_the_producer_run
 def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     producer_figures: dict[str, object],
 ) -> None:
@@ -1412,6 +1442,7 @@ def test_the_before_arm_rebinds_the_core_cost_the_composed_lane_packs_with(
     assert after == shipped
 
 
+@_pays_for_the_producer_run
 def test_the_composed_lane_renders_both_halves_of_the_first_prompt(
     producer_figures: dict[str, object],
 ) -> None:
@@ -1551,6 +1582,7 @@ def test_the_recent_work_reader_finds_the_section_the_lane_suppresses(
     assert len(carrying) > len(hermetic)
 
 
+@_pays_for_the_producer_run
 def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
     producer_figures: dict[str, object],
 ) -> None:
@@ -1571,6 +1603,7 @@ def test_the_envelope_dedupe_is_measurable_only_on_the_composed_lane(
     assert d["pct"] < 0, d
 
 
+@_pays_for_the_producer_run
 def test_the_core_section_empties_once_one_belief_exceeds_its_budget(
     producer_figures: dict[str, object],
 ) -> None:
