@@ -60,13 +60,13 @@ _WORD = "banana"
 _PROMPT = f"tell me everything about the {_WORD} please"
 _K = 5
 
-# 15,600 characters is 3,900 estimated tokens at the shipped 4-chars-per-
-# token estimator, so the checkpoint block lands inside
-# `DEFAULT_REBUILDER_TOKEN_BUDGET` (4000) with room for its wrapper tags.
-# The tests assert that containment rather than trusting this arithmetic,
-# but the literal is sized for it: a body over the budget would make the
-# "each block is inside its own bound" premise false and the payload
-# under test would no longer be the one the ruling is about.
+# Sized so the checkpoint block lands inside
+# `DEFAULT_REBUILDER_TOKEN_BUDGET`, wrapper tags included, at the shipped
+# 4-chars-per-token estimator. The tests assert that containment rather
+# than trusting the arithmetic, but the literal is chosen for it: a body
+# over the budget would make the "each block is inside its own bound"
+# premise false, and the payload under test would no longer be the one
+# the ruling is about.
 _CADENCE_BODY_CHARS = 15_600
 _CADENCE_BODY = (
     "CADENCE-BODY-" + "c" * (_CADENCE_BODY_CHARS - len("CADENCE-BODY-"))
