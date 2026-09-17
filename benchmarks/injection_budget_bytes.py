@@ -8,8 +8,9 @@ repo publishes.
 
 ## What it measures
 
-Eight lanes, each at its own shipped `(budget, l1_limit)` and through its own
-renderer:
+Every lane below, each at its own shipped `(budget, l1_limit)` and through its
+own renderer — the set is `LANES`, and `tests/test_render_cost_1526.py` asserts
+every member of it is measured:
 
 * `ups` — the per-turn `<aelfrice-memory>` block (`hook.DEFAULT_HOOK_TOKEN_BUDGET`).
 * `first_prompt` — the composed first-prompt envelope: the session-start
@@ -44,11 +45,12 @@ per-belief charge any packer here can bill, so a pack run at it can afford
 every candidate it was offered. `SATURATION_PROBE_FACTOR` survives as a floor
 under it. It used to be the whole probe, and it was sized for a grid topping
 out at 300 content characters; a multiple of the *lane's* budget is not a
-multiple of what a belief costs, and at 18,600 content characters the cells
-that read `pool` first move at a `token_budget` near 9,300 — twice a single
-belief's charge — which only `cli_search`'s 4x probe of 9,600 clears. Every
-other lane's is below it, `ups`'s 6,000 included, so a 4x probe could not
-admit even one more belief there and 20 of the 45 `pool` labels on the
+multiple of what a belief costs, and at the top of the extended grid the cells
+that read `pool` first move at a `token_budget` of about twice a single
+belief's charge — which only `cli_search`, the lane with the largest shipped
+budget, clears at `SATURATION_PROBE_FACTOR`. Every other lane's factor probe is
+below it, `ups`'s included, so it could not admit even one more belief there
+and 20 of the 45 `pool` labels on the
 extended grid were false. Every label is
 published with the probe that produced it (`{arm}_probe_budget`), and a `pool`
 is re-rendered at `POOL_CONFIRM_MULTIPLE` times the probe before it is
@@ -107,9 +109,10 @@ measures what is left rather than what it was built for. #1551 and #1552 wired
 short-circuits `_cost` at `retrieval.py:4798` before compression is reached, so
 `ups` and `first_prompt` charge the line they emit and their pack ratio is 1.0
 in every retention class at every grid length. #1552 also capped the rendered
-content at `hook.BELIEF_CONTENT_CHAR_CAP = 1200`, which bounds the gap that is
-left: `undercharge_table`'s snapshot ratio plateaus at 7.2x rather than growing
-with belief length. `agent_context` is the only lane here that still passes no
+content at `hook.BELIEF_CONTENT_CHAR_CAP`, which bounds the gap that is
+left: `undercharge_table`'s snapshot ratio plateaus rather than growing
+with belief length, and the plateau is published as
+`undercharge_top_snapshot_ratio`. `agent_context` is the only lane here that still passes no
 cost function, so it is the lane the charge-vs-emit claim is quoted from — see
 `SNAPSHOT_ARM_HEADLINE_LANE`. The two closed lanes are kept in the arm, because
 "closed here" is a measurement and it is what would regress if the cost
@@ -126,11 +129,11 @@ Two properties of this module made that invisible, and both are now closed:
    generator's arithmetic — the same standard the locked and speculative counts
    are already held to.
 
-2. **No lane composed.** Seven lanes each rendered one block; the first prompt
+2. **No lane composed.** Every lane rendered one block; the first prompt
    of a session renders two into one envelope, and that is the shape #1547's
    live 66,165-character row came from. `first_prompt` renders it.
 
-Three figures come out of this, none of which the seven-lane version could
+Three figures come out of this, none of which the per-block version could
 produce. `undercharge` is charged tokens against emitted tokens for one belief
 at each grid length in each retention class. `snapshot_arm` is the three
 corpora run through `SNAPSHOT_ARM_LANES`, with `_measure`'s binding probe on
@@ -187,11 +190,14 @@ SPECULATIVE_EVERY = 5
 # The stride is not a model of the live rate. Live stores run 0.09% `snapshot`
 # by candidate count, and 0.09% of 300 beliefs is zero — which is exactly the
 # corpus that made the undercharge invisible, whatever its size (#1547 priced
-# it at 150x on an uncapped renderer; `undercharge_table` measures 7.2x
-# post-#1552, and a corpus with no snapshot belief in it reports neither). The
+# it at 150x on an uncapped renderer; `undercharge_table` measures what the
+# post-#1552 cap leaves — it publishes the figure as
+# `undercharge_top_snapshot_ratio` — and a corpus with no snapshot belief in it
+# reports neither). The
 # arm exists so the class is
-# reachable by every lane's pack, including the Bash lane's `l1_limit` of 5, so
-# the stride is set where a pool that small still contains one.
+# reachable by every lane's pack, including the Bash lane's `l1_limit` — the
+# smallest any lane here carries — so the stride is set where a pool that small
+# still contains one.
 #
 # It is deliberately coprime with neither of the strides above: a belief that is
 # both speculative-origin and snapshot-class, or both locked and snapshot-class,
@@ -203,16 +209,17 @@ SNAPSHOT_EVERY = 7
 # Every synthetic belief is terminated into sentences of about this many
 # characters. The headline strategy's first-sentence branch needs a `. ` or
 # `.\n` outside a code fence, ending at or before
-# `compression.MAX_HEADLINE_CHARS` (240). With no such boundary
+# `compression.MAX_HEADLINE_CHARS`. With no such boundary
 # `compression._headline` either returns the content unchanged (content no
 # longer than the cap) or hard-truncates at the last space inside it (content
 # longer) — two different code paths with two different byte counts, and
 # neither is what this arm measures. The generator this module shipped before
 # #1547 joined vocabulary words with spaces and produced no boundary at any
-# length, so it never reached the branch. 120 is half that cap, so
-# the first boundary lands well inside it at every grid length above 120 and the
-# headline is a first sentence rather than a truncation. Below 120 a belief
-# carries no boundary at all and the headline strategy returns it unchanged,
+# length, so it never reached the branch. This is set to half that cap, so
+# the first boundary lands well inside it at every longer grid length and the
+# headline is a first sentence rather than a truncation. At a shorter one a
+# belief carries no boundary at all and the headline strategy returns it
+# unchanged,
 # which is why the two shortest grid points are the arm's inert control.
 SENTENCE_CHARS = 120
 
@@ -237,18 +244,19 @@ SENTENCE_CHARS = 120
 # * 6004 — the edge at which the two arms' accountings of a single `<core>`
 #   line part company, and the first grid length whose **before** arm packs no
 #   `<core>` line at all. #1552 caps the rendered content at
-#   `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge plateaus at 320
-#   tokens for any content past 1,200 characters and can never reach the
-#   1,500-token `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. The pre-#1526
-#   charge `max(1, len(content) // 4)` is uncapped and crosses that budget at
-#   exactly 6,004 characters: 1,500 at 6,003, 1,501 here. A `<core>` zero is
+#   `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge plateaus past that
+#   cap and can never reach `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. The
+#   pre-#1526 charge `max(1, len(content) // 4)` is uncapped and crosses that
+#   budget at exactly this length — one token under it at the character below,
+#   one token over it here, asserted on both sides by
+#   `test_the_producer_names_which_budget_ended_every_pack`. A `<core>` zero is
 #   read in the currency of the arm that packed it (see
 #   `test_the_producer_names_which_budget_ended_every_pack`), and this is the
 #   length that makes the before arm's half of that branch decide something.
 #   It replaces 5,950, which was chosen while the crossing ran the other way —
 #   the shipped charge was the uncapped one and was the half that overran the
-#   budget first. Post-#1552 that relation is inverted and 5,950 sits 54
-#   characters below the new edge, on the side where both arms pack a line.
+#   budget first. Post-#1552 that relation is inverted and 5,950 sits below
+#   the new edge, on the side where both arms pack a line.
 # * 7170 — p99 of that same distribution.
 # * 18600 — the length #1547's charged-vs-emitted table is measured at, and the
 #   only grid point where this producer's ratio can be compared with the
@@ -288,17 +296,20 @@ SNAPSHOT_ARM_LANES: tuple[str, ...] = ("ups", "first_prompt", "agent_context")
 # this lane's table and no other lane's: `_emitted_chars` renders through
 # `_split_belief_lines`, which is what `ups`, `first_prompt` and
 # `agent_context` all emit, but only `agent_context` still pays
-# `_charged_tokens` for it. Its `snapshot` cell — 44 charged against 317
-# emitted, 7.2x at 18,600 content characters — is the arm's headline number.
+# `_charged_tokens` for it. Its `snapshot` cell at the top of the grid is the
+# arm's headline number, and it is published rather than written down here:
+# `undercharge_top_snapshot_charged_tokens` against
+# `undercharge_top_emitted_tokens`, their ratio
+# `undercharge_top_snapshot_ratio`.
 #
 # The pack-level companion to it is weaker than the single-belief cell at the
 # top of the grid, and that is a measurement rather than a gap. This lane's
-# budget is 600 tokens against six user locks whose content is exempt from
-# `BELIEF_CONTENT_CHAR_CAP`; at 7,170 and 18,600 content characters those six
-# spend the budget before the pack loop reaches a candidate, so the pack is all
-# locks, `_pack_charge` has nothing non-locked to sum over and the ratio is
-# undefined. Where the pack is not lock-starved it carries the gap: 1.3x at 300
-# characters, on 4 non-locked hits charged 266 against 352 emitted.
+# budget is small against the store's user locks, whose content is exempt from
+# `BELIEF_CONTENT_CHAR_CAP`; at the longest grid lengths they spend it before
+# the pack loop reaches a candidate, so the pack is all locks, `_pack_charge`
+# has nothing non-locked to sum over and the ratio is undefined. Where the pack
+# is not lock-starved it carries the gap, which is why the arm's ratio is read
+# off a row below that point rather than off the top one.
 SNAPSHOT_ARM_HEADLINE_LANE = "agent_context"
 
 # The retention classes the charged-vs-emitted table is reported for, in the
@@ -321,8 +332,9 @@ UNDERCHARGE_SEED = 1547
 # This was the whole probe until the grid reached lengths where one belief
 # costs several times a lane's entire budget; see `_probe_budget` for what it
 # got wrong and what replaced it. It is kept as a floor so that no cell is
-# probed more weakly than it was before, which on this corpus binds only on
-# `cli_search` at 40 content characters (9,600 against an 8,100 bound).
+# probed more weakly than it was before, which on this corpus binds only where
+# the grid is shortest and one belief is cheapest — `cli_search` at the bottom
+# length, the one lane whose factor probe exceeds the bound there.
 SATURATION_PROBE_FACTOR = 4
 
 # A query broad enough that the L1 candidate cap, not the query, decides how
@@ -384,9 +396,10 @@ def synthetic_content(
     beside it. No count of those markers is given, because no command prints
     one. What changed is that the running
     length is accumulated instead of re-joining the whole word list per word.
-    That join was quadratic and was 9.8 of the 12.5 seconds one
-    18,600-character store took to build (`cProfile`, 797,843 calls to
-    `str.join`), which is the mechanical reason the grid could not previously
+    That join was quadratic and was most of the time a store at the top grid
+    length took to build — `cProfile` attributed it to `str.join`, and no
+    figure for it is published because nothing re-derives one — which is the
+    mechanical reason the grid could not previously
     reach the lengths the defect lives at.
     """
     parts: list[str] = [f"b{i:04d}", _ENTITIES[i % len(_ENTITIES)]]
@@ -655,9 +668,9 @@ def _legacy_accounting() -> Iterator[None]:
     hybrid. The `first_prompt` lane shipped exactly that defect: it reaches
     `hook._core_belief_cost` through `_build_session_start_subblock`, that name
     was not in the set, and every composed before cell mixed pre-#1526
-    retrieval cost with post-#1526 `<core>` cost. Measured at 92 content
-    characters the composed before arm read 15,861 bytes against a true legacy
-    19,999, and the published change read -15.7% against a consistent -33.2%.
+    retrieval cost with post-#1526 `<core>` cost. The composed before arm read
+    materially fewer bytes than a consistent legacy arm does, so the published
+    change understated the accounting effect on that lane.
 
     The packers read these off the module global rather than closing over
     them, so rebinding reaches them. `_render_wrapper_tokens` exists as a
@@ -917,10 +930,10 @@ def _render_first_prompt(store: Any, budget: int, sub: int, *, legacy: bool) -> 
 
     `<core>` reaches its cost function through a module global
     `_legacy_accounting` rebinds — `hook._core_belief_cost`, which
-    `_pack_core_candidates` resolves per call. That fifth name was missing from
+    `_pack_core_candidates` resolves per call. That name was missing from
     the rebind set when this lane shipped, and the composed before arm was a
-    hybrid: 15,861 bytes at 92 content characters against a true legacy 19,999,
-    published as -15.7% where the consistent figure is -33.2%.
+    hybrid: fewer bytes than a consistent legacy arm, published as a smaller
+    change than the one the accounting actually makes.
 
     The per-turn half is not reached that way. Since #1551 the lane passes
     `hook._ups_belief_line_cost` as `belief_cost_fn` (`hook.py:3385`), which no
@@ -1162,32 +1175,31 @@ def _probe_budget(store: Any) -> int:
     though it were true by construction.
 
     **This replaces a factor with a bound, and the factor was wrong.**
-    `SATURATION_PROBE_FACTOR = 4` was sized for a grid topping out at 300
+    `SATURATION_PROBE_FACTOR` was sized for a grid topping out at 300
     content characters, and it multiplies the *lane's* budget, which is not
-    what a belief costs. At 18,600 the cells that read `pool` first move at a
-    `token_budget` near 9,300 — 9,300 on the before arm of every lane, 9,326
-    on `agent_context`'s after arm — and the only 4x probe on this module that
-    reaches it is `cli_search`'s 9,600. Every other lane's is below it,
-    `ups`'s 6,000 included, so `_measure` returned `pool` — "not evidence
-    about any budget" — for cells a larger probe moves. 45 of this module's
-    189 arms read `pool` under the factor and 20 of them were false; under the
-    bound 25 survive, including all 18 `session_start` arms (#1546).
+    what a belief costs. At the top of the extended grid the cells that read
+    `pool` first move at a `token_budget` of about twice one belief's charge,
+    and the only factor probe on this module that reaches it is `cli_search`'s;
+    every other lane's is below it, `ups`'s included, so `_measure` returned
+    `pool` — "not evidence about any budget" — for cells a larger probe moves.
+    The share of `pool` labels that were false under the factor is quoted once,
+    in this module's own docstring, and not restated here. Every
+    `session_start` arm survives the change, and that is a property of the lane
+    rather than of the probe: no budget binds on it at any value (#1546).
 
     Two other sizings were measured and both fail:
 
     * *Double until two successive renders agree.* Packs are integer-quantised,
-      so bytes sit flat across wide budget ranges and then jump.
-      `agent_context` and `search_tool` at 18,600 are flat at 4x and 8x and
-      move at 16x; `search_tool_bash` at 18,600 is flat at 4x, 8x **and** 16x
-      and moves at 32x. The loop stops on the first plateau and republishes the
-      false label.
-    * *The largest single-belief charge.* Too small, by a factor of two. At
-      18,600 that charge is 4,667 tokens, while the arms that are still flat
-      at 4x — six items, all of them the store's user locks, charged 4,663
-      each — first move at 9,300 (`agent_context` after arm: 9,326), which is
-      twice one belief's charge in whichever currency the arm pays. Measured
-      by bisecting `token_budget` against the rendered bytes with
-      `l25_token_subbudget` left at its default.
+      so bytes sit flat across wide budget ranges and then jump: at the top
+      grid length some lanes hold the same byte count across two successive
+      doublings of the factor probe and move only at the third. The loop stops
+      on the first plateau and republishes the false label.
+    * *The largest single-belief charge.* Too small, by a factor of two. The
+      arms still flat at the factor probe are the all-lock packs, and they
+      first move at about twice what one of those beliefs is charged, in
+      whichever currency the arm pays. Measured by bisecting `token_budget`
+      against the rendered bytes with `l25_token_subbudget` left at its
+      default.
 
     The sum is the smallest bound that survives both, and it is an upper bound
     rather than a search, so it does not depend on where the plateaus fall.
@@ -1259,8 +1271,8 @@ def _measure(
     f = SATURATION_PROBE_FACTOR
     # `sub * f` is in the floor for the same reason `budget * f` is: the old
     # constant survives as a floor on **both** caps. On this corpus it is never
-    # the binding term (`_probe_budget` is 8,100 at the shortest grid length
-    # against a 1,600 sub-floor), which is why it costs nothing to keep.
+    # the binding term — the bound exceeds the sub-floor at every grid length,
+    # the shortest included — which is why it costs nothing to keep.
     probe = max(_probe_budget(store), budget * f, sub * f)
     ctx = _legacy_accounting if legacy else contextlib.nullcontext
     # The four labels are a precedence and not a set: the first widening whose
@@ -1386,37 +1398,39 @@ def undercharge_table(lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
     `SNAPSHOT_ARM_HEADLINE_LANE`.
 
     The ratio grows with belief length and then stops. The headline is a
-    fixed-size prefix, so the charged side is flat at 44 tokens from 150
-    content characters up; the emitted side grows until
-    `hook.BELIEF_CONTENT_CHAR_CAP` binds and is flat at 1,265 characters — 317
-    tokens — from 1,201 up. So the undercharge has a **ceiling of 7.2x** on
-    this text, reached at 1,201 characters and unchanged at 18,600, and any
-    single multiplier quoted from this table is still unreadable without the
-    length beside it.
+    fixed-size prefix, so the charged side is flat from the first grid length
+    that carries a sentence boundary up; the emitted side grows until
+    `hook.BELIEF_CONTENT_CHAR_CAP` binds and is flat past it. So the
+    undercharge has a **ceiling** on this text, reached one character past the
+    cap and unchanged at the top of the grid, and any single multiplier quoted
+    from this table is still unreadable without the length beside it. The
+    ceiling is published as `undercharge_top_snapshot_ratio` rather than
+    written down here, and `tests/test_render_cost_1526.py` asserts the
+    plateau.
 
     **This disagrees with #1547's prior, and #1552 moved the disagreement to
-    the other column.** At 18,600 characters the issue's table reads snapshot
-    150.4x and transient 388.6x; this measures 7.2x and 12.7x. The charged side
-    is 44 tokens here against the issue's 31, and 25 against 12, all of which
-    is the `<belief>` wrapper: `_render_wrapper_tokens` adds 13 tokens to every
-    compressed render, which is #1526's correction and postdates the figure the
-    issue quotes; net of it the two charges agree (31 and 31, 12 and 12). The
-    emitted side used to agree exactly at 4,663 tokens. It no longer does,
-    because `_belief_element_line` caps the content it renders at 1,200
-    characters (#1552), so the element the issue measured at 18,600 characters
-    is the element this measures at 1,201. The gap the issue reported is real
-    and was measured on an uncapped renderer; what is left of it is bounded by
-    the cap.
+    the other column.** At the top of the grid the issue's table reads snapshot
+    150.4x and transient 388.6x; this measures the pair published as
+    `undercharge_top_snapshot_ratio` and `undercharge_top_transient_ratio`, and
+    both are far below the issue's. The charged side here exceeds the issue's
+    by the `<belief>` wrapper alone: `_render_wrapper_tokens` adds a fixed
+    count to every compressed render, which is #1526's correction and postdates
+    the figure the issue quotes; net of it the two charges agree. The emitted
+    side used to agree exactly. It no longer does, because
+    `_belief_element_line` caps the content it renders (#1552), so the element
+    the issue measured at the top of the grid is the element this measures one
+    character past the cap. The gap the issue reported is real and was measured
+    on an uncapped renderer; what is left of it is bounded by the cap.
 
     **The verbatim classes now run the other way.** `fact` and `unknown` are
     charged the whole content and emit the capped line, so above the cap they
-    **over**charge: 4,663 charged against 317 emitted at 18,600 characters,
-    0.1x. That is the same cap seen from the other side and it is published in
-    the same columns rather than filtered out.
+    **over**charge and their ratio inverts. That is the same cap seen from the
+    other side and it is published in the same columns rather than filtered
+    out.
 
     The ratio is still a property of the corpus as much as of the defect — it
-    is set by where the first sentence ends, which here is character 122 for a
-    123-character headline — so the charged and emitted columns are published
+    is set by where the first sentence ends, which on this text is a little
+    past `SENTENCE_CHARS` — so the charged and emitted columns are published
     beside it and the multiplier is not quoted alone.
     """
     from aelfrice.compression import compress_for_retrieval
@@ -1506,8 +1520,8 @@ def snapshot_arm(
 
     `_measure` is used on all three sides, so both budgets are varied on each
     and each reports which cap ended it, at `_probe_budget`'s bound rather than
-    at a factor. At 18,600 content characters all three sides of all three
-    lanes end on `token_budget`.
+    at a factor. At the top of the grid every side of every arm lane ends on
+    `token_budget`.
 
     `snapshot_pack_ratio` is that pack's emitted tokens over its charged
     tokens, non-locked hits only: the lane-level form of the
@@ -1521,19 +1535,21 @@ def snapshot_arm(
     measures it closed rather than measuring it. `bytes_ratio` is 1.0 at every
     arm length on both: the retention class buys the pack nothing, because the
     charge no longer reads the class at all. The only column that still moves
-    on them is `control` → `prose`, the cost of the text change alone — 16
-    items to 17 at 300 characters — which is what that middle corpus is for.
+    on them is `control` → `prose`, the cost of the text change alone — a pack
+    item or two at the lengths where a sentence boundary first appears — which
+    is what that middle corpus is for.
 
     `agent_context` is where the gap survives, because it passes no
     `belief_cost_fn` and its pack therefore still charges the compressed form
-    (see `SNAPSHOT_ARM_HEADLINE_LANE`). Its ratio is 1.3x at 300 characters, on
-    4 non-locked hits charged 266 tokens against 352 emitted. At 7,170 and
-    18,600 it is undefined: this lane's 600-token budget is spent by the six
-    user locks — whose content is exempt from `BELIEF_CONTENT_CHAR_CAP` — before
-    the pack loop reaches a candidate, so all three corpora return the same six
-    locks and there is no non-locked hit to sum over. A ratio of `None` there
-    is that starvation reported, not a suppressed cell; the bytes are printed
-    either way.
+    (see `SNAPSHOT_ARM_HEADLINE_LANE`). Its ratio is above 1 where the pack
+    reaches a non-locked candidate, and the row it is read off is published
+    with the charge and the emission beside it. At the longest arm lengths it
+    is undefined: this lane's budget is spent by the store's user locks —
+    whose content is exempt from `BELIEF_CONTENT_CHAR_CAP` — before the pack
+    loop reaches a candidate, so all three corpora return the same locks and
+    there is no non-locked hit to sum over. A ratio of `None` there is that
+    starvation reported, not a suppressed cell; the bytes are printed either
+    way.
 
     An earlier revision of this docstring said the control and prose sides end
     on `pool` at 18,600 and that the snapshot side admits "22 beliefs whose
@@ -1820,7 +1836,7 @@ def figures(*, lengths: tuple[int, ...] = LENGTH_GRID) -> dict[str, Any]:
                 values["snapshot_arm_lengths"] = list(arm_lengths)
                 if arm_lengths:
                     # Read at the *top* of the arm grid, and the control beside
-                    # them at the same length. `arm_lengths[0]` is 92, below
+                    # them at the same length. `arm_lengths[0]` is below
                     # `SENTENCE_CHARS`, where no belief closes a sentence: all
                     # three corpora carry `sentence_headline` 0 there and the
                     # middle column is indistinguishable from the control by
@@ -1887,13 +1903,13 @@ def _flat_1547_keys(
         "undercharge_top_transient_ratio": row["transient"]["ratio"],
     }
     # The arm corpus's shape, flattened. `SNAPSHOT_EVERY` is the one constant
-    # in this module with no scalar key behind it, and it showed: mutating it
-    # from 7 to 3 left `tests/test_render_cost_1526.py` green **and**
+    # in this module with no scalar key behind it, and it showed: shortening
+    # the stride left `tests/test_render_cost_1526.py` green **and**
     # `scripts/check_derived_figures.py --mode all` at exit 0 while the
-    # published corpus went from 43/42 snapshot beliefs to 100/98. The arm's
-    # byte and item figures are insensitive to a 2.3x change in snapshot
-    # density — the packs are ended by budgets and locks, not by how many
-    # candidates carry the class — so they cannot stand in for the stride.
+    # published corpus's snapshot count more than doubled. The arm's byte and
+    # item figures are insensitive to snapshot density — the packs are ended by
+    # budgets and locks, not by how many candidates carry the class — so they
+    # cannot stand in for the stride.
     # Read off `corpus_shape`, which counts the column back off the store, so
     # these keys also fail if the class stops being written.
     shape = values["snapshot_corpus_shape"]
@@ -1912,7 +1928,7 @@ def _flat_1547_keys(
     out["snapshot_arm_first_prompt_prose_bytes"] = cell["prose_bytes"]
     out["snapshot_arm_first_prompt_snapshot_bytes"] = cell["snapshot_bytes"]
     out["snapshot_arm_first_prompt_snapshot_items"] = cell["snapshot_items"]
-    # The headline lane's cell, lifted whole. Its five keys travel together so
+    # The headline lane's cell, lifted whole. Its keys travel together so
     # the denominators cannot drift apart in the prose: `items` is the whole
     # pack, `unlocked_hits` is the subset the charge and the emission are
     # summed over, and the ratio is those two sums. The CHANGELOG previously
@@ -1920,13 +1936,14 @@ def _flat_1547_keys(
     # including six locks, 723 from a sum over 16 non-locked hits, and no
     # single set of beliefs that was both.
     #
-    # At the top of this grid the pack is all locks and the three sums are 0,
-    # 0 and None; see `SNAPSHOT_ARM_HEADLINE_LANE` for why, and read the arm's
-    # ratio off its 300-character row. The lane's *single-belief* ratio is
+    # At the top of this grid the pack is all locks, so the charged and
+    # emitted sums have nothing to run over and the ratio is undefined; see
+    # `SNAPSHOT_ARM_HEADLINE_LANE` for why, and read the arm's ratio off its
+    # 300-character row. The lane's *single-belief* ratio is
     # `undercharge_top_snapshot_ratio` above, which is this lane's number and
     # no other lane's now that `ups` and `first_prompt` charge what they emit.
     #
-    # `ups` gets the same five, because the sentence they back is the one the
+    # `ups` gets the same set, because the sentence they back is the one the
     # mixed denominator was found in and it quotes all of them at once.
     for lane in ("ups", SNAPSHOT_ARM_HEADLINE_LANE):
         out.update(_arm_cell_keys(values["snapshot_arm"][lane][top], lane))
@@ -1934,10 +1951,10 @@ def _flat_1547_keys(
 
 
 def _arm_cell_keys(cell: dict[str, Any], lane: str) -> dict[str, Any]:
-    """One snapshot-arm cell's five snapshot-side figures, as scalar keys.
+    """One snapshot-arm cell's snapshot-side figures, as scalar keys.
 
     They are lifted as a set rather than one at a time because the CHANGELOG
-    sentence they back reads all five in one breath, and the defect they were
+    sentence they back reads them in one breath, and the defect they were
     added for was a sentence that mixed two of them: "admitting 22 beliefs
     charged 723 tokens whose emitted text is 74,616 tokens, 103.2x" put
     `Arm.n_items` — 22, six of them locks — in the same clause as a charge
@@ -2003,28 +2020,28 @@ def _curve(
     were established at, so a reader can check the label against the number
     that produced it instead of against the constant behind it. The old
     `SATURATION_PROBE_FACTOR` probe was published nowhere, which is part of why
-    16 false `pool` labels survived a review that read the emitted figures.
+    the false `pool` labels it produced survived a review that read the emitted
+    figures.
 
-    A byte count of **zero** is a measurement, not a suppressed cell, and the
-    extended grid produces three — **all of them in the before arm**. The
-    pre-#1526 charge `max(1, len(content) // 4)` is uncapped, so at 6,004,
-    7,170 and 18,600 content characters one `<core>` line costs 1,501, 1,792
-    and 4,650 tokens against `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`,
-    and `_pack_core_candidates` — which skips an oversized belief rather than
-    breaking — packs none of 300 candidates and the section emits nothing. The
-    old grid stopped at 300 characters and never reached that.
+    A byte count of **zero** is a measurement, not a suppressed cell, and every
+    one the extended grid produces is **in the before arm**. The pre-#1526
+    charge `max(1, len(content) // 4)` is uncapped, so from the crossing length
+    up one `<core>` line costs more than
+    `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`, and `_pack_core_candidates` —
+    which skips an oversized belief rather than breaking — packs none of the
+    store's candidates and the section emits nothing. The old grid stopped at
+    300 characters and never reached that.
 
     The **after** arm cannot empty at any length. `_core_belief_line` truncates
     the content at `hook.BELIEF_CONTENT_CHAR_CAP` (#1552), so
     `hook._core_belief_cost` — the function `_pack_core_candidates` actually
-    charges with — plateaus at 320 tokens for any content past 1,200
-    characters and 1,220 for the pathological case where every character is an
-    angle bracket `_escape_for_hook_block` expands fourfold. Both are under the
-    budget, so the shipped arm always packs at least one line; its `<core>`
-    curve bottoms out at 5,120 bytes. That is the reverse of the relation this
-    grid was extended to reach, and it is why the ninth length moved from
-    5,950 to 6,004: the two accountings now cross the budget in one place
-    only, and it is the pre-#1526 half that crosses.
+    charges with — plateaus past that cap, and it plateaus under the budget
+    even for the pathological case where every character is an angle bracket
+    `_escape_for_hook_block` expands fourfold. So the shipped arm always packs
+    at least one line and its `<core>` curve bottoms out above zero. That is
+    the reverse of the relation this grid was extended to reach, and it is why
+    the crossing entry in `LENGTH_GRID` moved: the two accountings now cross
+    the budget in one place only, and it is the pre-#1526 half that crosses.
 
     `pct` is None where the before arm is zero, because a percentage of nothing
     is not a number this module is willing to print.
