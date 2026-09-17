@@ -77,6 +77,36 @@ runs, still records one draw and one displacement.
 <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_block_tokens = 5923 -->
 <!-- derived: scripts/measure_block_ceiling.py#exploration_slot_drawn_emitted = 0 -->
 
+`--cadence` answers the sixth: **how big is the whole payload, when the
+ceiling bounds only one block of it?** #1560's ruling is that the
+UserPromptSubmit payload is bounded per block and that no bound spans the
+blocks, so the sum is a figure worth having rather than a bound worth
+adding. It fires one 60-lock / 20-core / 20-hit store with every writer
+live and reports each writer's share, in estimated tokens:
+
+* the whole payload on stdout, 11926;
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
+* `<cadence-checkpoint>`, 5813, against the rebuilder's 4000-token
+  budget — the second bound is **soft** (#1546) and this arm is what
+  shows it, rather than a claim that it holds;
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
+* the `<aelfrice-memory>` envelope as `_write_memory_block` wrote it,
+  5898, inside its 6000-token ceiling after the trim;
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
+* `<aelfrice-phantom-opportunity>`, 99, and
+  `<aelfrice-phantom-promotion-opportunity>`, 116 — the two writers with
+  no token budget of any kind.
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_phantom_opportunity_tokens = 99 -->
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_phantom_promotion_tokens = 116 -->
+
+The four writers are enumerated from `user_prompt_submit` itself, not
+from the two with budgets: the cadence write, the memory envelope
+(through `_write_memory_block`, whose two call sites are the mutually
+exclusive retrieval and `elif gate_skip:` branches, so at most one of
+them fires), and the two phantom notes. Every lane is default-off and
+this arm enables each explicitly; the figure describes a configured
+store, never a stock install.
+
 Usage:
     uv run python scripts/measure_block_ceiling.py
     uv run python scripts/measure_block_ceiling.py --lock-chars 150 200 700
@@ -85,6 +115,7 @@ Usage:
     uv run python scripts/measure_block_ceiling.py --gate-skip
     uv run python scripts/measure_block_ceiling.py --reference-tier
     uv run python scripts/measure_block_ceiling.py --exploration
+    uv run python scripts/measure_block_ceiling.py --cadence
     uv run python scripts/measure_block_ceiling.py --dry-run
     uv run python scripts/measure_block_ceiling.py --emit-figures
 
@@ -98,8 +129,11 @@ either the ceiling moved or the fixture stopped growing the block. Under
 make the comparison vacuous; under `--reference-tier` if the two tiers
 agree on **any one** write, naming the writes they agree on, because every
 write is bounded by the tier now and a single equal column is a
-regression; and under `--exploration` if the slot never fired or the
-ceiling dropped nothing.
+regression; under `--exploration` if the slot never fired or the
+ceiling dropped nothing; and under `--cadence` if any one of the four
+writers was absent (the total would be a sum over fewer lanes than it
+names), if the memory envelope overran its own ceiling, or if the
+payload did not exceed it.
 
 The `--reference-tier` guard is per write rather than over the set on
 purpose. An "equal on every write" guard passes as long as one write
@@ -131,11 +165,17 @@ from aelfrice.hook import (  # noqa: E402
 )
 from aelfrice.models import (  # noqa: E402
     BELIEF_FACTUAL,
+    BELIEF_SPECULATIVE,
     LOCK_NONE,
     LOCK_TIER_FROZEN,
     LOCK_TIER_REFERENCE,
     LOCK_USER,
+    ORIGIN_SPECULATIVE,
+    RETENTION_SNAPSHOT,
     Belief,
+)
+from aelfrice.rebuild_log import (  # noqa: E402
+    DEFAULT_REBUILDER_TOKEN_BUDGET,
 )
 from aelfrice.store import MemoryStore  # noqa: E402
 
@@ -614,6 +654,232 @@ def exploration_slot() -> dict[str, object]:
     }
 
 
+CADENCE_K = 5
+CADENCE_SESSION = "cadence-payload"
+CADENCE_TURNS = 6
+# Novel entities the store has never seen, so the #980 new-entity signal
+# fires deterministically. CamelCase, a path and a version are `named`
+# entity kinds; `detect_novel_entities` skips loose noun phrases.
+CADENCE_PROMPT = (
+    f"tell me everything about the {LANE_WORD} please, and about "
+    "ZorbaxQuux, /srv/zorbax/quux.txt and v9.9.9"
+)
+CADENCE_PHANTOM_ID = "P" + "0" * 31
+CADENCE_BLOCKS = (
+    ("cadence_checkpoint", "<cadence-checkpoint>", "</cadence-checkpoint>"),
+    ("memory", "<aelfrice-memory>", "</aelfrice-memory>"),
+    (
+        "phantom_opportunity",
+        "<aelfrice-phantom-opportunity>",
+        "</aelfrice-phantom-opportunity>",
+    ),
+    (
+        "phantom_promotion",
+        "<aelfrice-phantom-promotion-opportunity>",
+        "</aelfrice-phantom-promotion-opportunity>",
+    ),
+)
+
+
+def _cadence_store(work: Path) -> Path:
+    """A store that fills every lane of the cadence fire.
+
+    Locks, `<core>` beliefs and `LANE_WORD` hits size the
+    `<aelfrice-memory>` envelope past its ceiling, so the hard bound is
+    measured acting rather than idle. The speculative belief with three
+    corroborations across three sessions is what
+    `store.find_promotable_phantoms` selects, which is the only way to
+    reach the fourth writer.
+    """
+    db = work / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        for i in range(60):
+            store.insert_belief(_lock(i, 150))
+        for i in range(20):
+            store.insert_belief(
+                _belief(
+                    f"C{i:031d}",
+                    "coreword unrelated material " + "w" * 200,
+                    alpha=4.0,
+                )
+            )
+        for i in range(20):
+            store.insert_belief(
+                _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
+            )
+        store.insert_belief(
+            Belief(
+                id=CADENCE_PHANTOM_ID,
+                content=f"a speculative claim about the {LANE_WORD} cellar",
+                content_hash="h_phantom",
+                alpha=0.3,
+                beta=1.0,
+                type=BELIEF_SPECULATIVE,
+                origin=ORIGIN_SPECULATIVE,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                created_at="2026-01-01T00:00:00Z",
+                last_retrieved_at=None,
+                retention_class=RETENTION_SNAPSHOT,
+            )
+        )
+        for session in ("s1", "s2", "s3"):
+            store.record_corroboration(
+                CADENCE_PHANTOM_ID,
+                source_type="filesystem_ingest",
+                session_id=session,
+            )
+    finally:
+        store.close()
+    return db
+
+
+def _cadence_transcript(work: Path) -> Path:
+    """A host-format transcript, so the real rebuilder has a window.
+
+    `_read_recent_for_pre_compact` prefers the canonical
+    `turns.jsonl` and falls back to `payload.transcript_path`; the work
+    directory is not a git checkout, so the fallback is what this file
+    feeds. Nothing here is stubbed: the `<cadence-checkpoint>` body is
+    whatever `rebuild_v14` packs against the store above, which is the
+    point — a canned body would measure the fixture, not the lane.
+    """
+    path = work / "transcript.jsonl"
+    lines: list[str] = []
+    for i in range(CADENCE_TURNS):
+        lines.append(json.dumps({
+            "type": "user",
+            "sessionId": CADENCE_SESSION,
+            "message": {
+                "role": "user",
+                "content": f"what do we know about the {LANE_WORD} store {i}",
+            },
+        }))
+        lines.append(json.dumps({
+            "type": "assistant",
+            "sessionId": CADENCE_SESSION,
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": (
+                        f"the {LANE_WORD} store holds coreword unrelated "
+                        f"material {i}"
+                    ),
+                }],
+            },
+        }))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def cadence_payload() -> dict[str, object]:
+    """One cadence-enabled fire: the whole payload, and each writer's share.
+
+    `HOOK_BLOCK_TOKEN_CEILING` bounds the `<aelfrice-memory>` envelope.
+    It is not the only thing `user_prompt_submit` writes to stdout, and
+    #1560's question is what the fire's *total* reaches when every writer
+    is live. All four are enumerated from the source rather than assumed:
+    the `<cadence-checkpoint>` write, the memory envelope through
+    `_write_memory_block` (whose two call sites are the mutually
+    exclusive retrieval and `elif gate_skip:` branches, so at most one
+    fires), and the two phantom notes.
+
+    Every lane here is default-off and enabled explicitly, so the figure
+    describes a configured store and not a stock install: `[cadence]
+    enabled` alone gates the largest of the three.
+
+    The guards below refuse a vacuous run. A fire missing any writer
+    would still print a total — a smaller one, with nothing saying a lane
+    was absent — and a memory envelope over its own ceiling would make
+    "each block is within its own bound" false while the sum it feeds
+    stayed publishable.
+    """
+    work = Path(tempfile.mkdtemp(prefix="aelf-cadence-"))
+    db = _cadence_store(work)
+    transcript = _cadence_transcript(work)
+    (work / ".aelfrice.toml").write_text(
+        "[cadence]\n"
+        "enabled = true\n"
+        'policy = "p1_every_k_turns"\n'
+        f"k = {CADENCE_K}\n"
+        "[phantom_generation]\n"
+        "enabled = true\n"
+        "[phantom_promotion]\n"
+        "enabled = true\n",
+        encoding="utf-8",
+    )
+    # The session ring UPS-side cadence reads its `fire_idx` from. `k`
+    # divides it, so `should_fire` says yes on this fire.
+    (db.parent / "session_injected_ids.json").write_text(
+        json.dumps({
+            "session_id": CADENCE_SESSION,
+            "ring": [],
+            "ring_max": 200,
+            "next_fire_idx": CADENCE_K,
+            "evicted_total": 0,
+        }),
+        encoding="utf-8",
+    )
+    os.environ["AELFRICE_DB"] = str(db)
+    os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": CADENCE_SESSION,
+        "transcript_path": str(transcript),
+        "cwd": str(work),
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": CADENCE_PROMPT,
+    })
+    rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+    if rc != 0:
+        raise SystemExit(f"hook returned {rc}")
+    out = sout.getvalue()
+    missing = [
+        name for name, open_tag, close_tag in CADENCE_BLOCKS
+        if open_tag not in out or close_tag not in out
+    ]
+    if missing:
+        raise SystemExit(
+            f"the fire wrote no {', '.join(missing)} block: the payload total "
+            "would be a sum over fewer writers than it claims"
+        )
+    rows: dict[str, object] = {}
+    memory_body_tokens = 0
+    for name, open_tag, close_tag in CADENCE_BLOCKS:
+        if name == "memory":
+            # The envelope as `_write_memory_block` wrote it, which is
+            # what its bound bounded: `enforce_block_ceiling` is applied
+            # to the body, and the body carries `MEMORY_BLOCK_HINT` after
+            # the closing tag. The tag span alone under-reports it.
+            start = out.index(open_tag)
+            end = out.index("<aelfrice-phantom-opportunity>")
+        else:
+            start = out.index(open_tag)
+            end = out.index(close_tag) + len(close_tag)
+        tokens = _audit_tokens_from_block(out[start:end])
+        rows[f"{name}_tokens"] = tokens
+        if name == "memory":
+            memory_body_tokens = tokens
+    payload_tokens = _audit_tokens_from_block(out)
+    rows["payload_tokens"] = payload_tokens
+    rows["ceiling"] = HOOK_BLOCK_TOKEN_CEILING
+    rows["rebuilder_budget"] = DEFAULT_REBUILDER_TOKEN_BUDGET
+    if memory_body_tokens > HOOK_BLOCK_TOKEN_CEILING:
+        raise SystemExit(
+            f"the memory envelope emitted {memory_body_tokens} tokens against "
+            f"a {HOOK_BLOCK_TOKEN_CEILING}-token ceiling: its own bound did "
+            "not hold, so the per-block contract is not what this fire shows"
+        )
+    if payload_tokens <= HOOK_BLOCK_TOKEN_CEILING:
+        raise SystemExit(
+            "the payload fits inside the block ceiling: this fire does not "
+            "show a payload exceeding it and the figure would be vacuous"
+        )
+    return rows
+
+
 def crossing(chars: int, max_locks: int, step: int) -> dict[str, object]:
     """First lock count at which the ceiling reports a trim or an overrun."""
     for n in range(step, max_locks + 1, step):
@@ -653,6 +919,11 @@ def main(argv: list[str] | None = None) -> int:
         help="compare the emitted block with the #1279 slot on and off",
     )
     ap.add_argument(
+        "--cadence", action="store_true",
+        help="print the whole UserPromptSubmit payload of one "
+             "cadence-enabled fire, and each writer's share of it",
+    )
+    ap.add_argument(
         "--dry-run", action="store_true",
         help="print what would be swept and exit 0 without firing the hook",
     )
@@ -681,10 +952,33 @@ def main(argv: list[str] | None = None) -> int:
         slot = exploration_slot()
         figures["exploration_slot_block_tokens"] = slot["tokens"]
         figures["exploration_slot_drawn_emitted"] = slot["drawn_emitted"]
+        # #1560. Keyed by what each figure describes, not by the dict the
+        # producer returns, because the marker cites the key: a rename
+        # inside `cadence_payload` must not silently orphan a marker.
+        cadence = cadence_payload()
+        figures["cadence_fire_payload_tokens"] = cadence["payload_tokens"]
+        figures["cadence_fire_checkpoint_tokens"] = (
+            cadence["cadence_checkpoint_tokens"]
+        )
+        figures["cadence_fire_memory_tokens"] = cadence["memory_tokens"]
+        figures["cadence_fire_phantom_opportunity_tokens"] = (
+            cadence["phantom_opportunity_tokens"]
+        )
+        figures["cadence_fire_phantom_promotion_tokens"] = (
+            cadence["phantom_promotion_tokens"]
+        )
         print(json.dumps(figures))
         return 0
 
     if args.dry_run:
+        if args.cadence:
+            print(
+                "would fire one 60-lock / 20-core / 20-hit store with "
+                "cadence, phantom generation and phantom promotion all "
+                "enabled, and report the whole payload against a "
+                f"{HOOK_BLOCK_TOKEN_CEILING}-token block ceiling"
+            )
+            return 0
         if args.reference_tier:
             print(
                 "would fire four writes against a one-lock store of "
@@ -716,6 +1010,36 @@ def main(argv: list[str] | None = None) -> int:
             f"step {args.step} for lock lengths {args.lock_chars}, against "
             f"a ceiling of {HOOK_BLOCK_TOKEN_CEILING} tokens"
         )
+        return 0
+
+    if args.cadence:
+        row = cadence_payload()
+        if args.json:
+            print(json.dumps(row, indent=2))
+        else:
+            print(
+                f"one cadence-enabled fire: {row['payload_tokens']} estimated "
+                f"tokens on stdout, against a {row['ceiling']}-token block "
+                "ceiling"
+            )
+            print(
+                f"  <cadence-checkpoint>  "
+                f"{row['cadence_checkpoint_tokens']:>6}  "
+                f"(rebuilder budget {row['rebuilder_budget']}, soft)"
+            )
+            print(
+                f"  <aelfrice-memory>     {row['memory_tokens']:>6}  "
+                f"(block ceiling {row['ceiling']}, hard)"
+            )
+            print(
+                "  phantom opportunity   "
+                f"{row['phantom_opportunity_tokens']:>6}  (no token budget)"
+            )
+            print(
+                "  phantom promotion     "
+                f"{row['phantom_promotion_tokens']:>6}  (no token budget)"
+            )
+        # Vacuity is refused inside `cadence_payload`.
         return 0
 
     if args.reference_tier:
