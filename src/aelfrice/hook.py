@@ -349,8 +349,9 @@ The two blocks with a bound, and the two mechanisms that enforce them:
 would be false.** #1546 records that `<retrieved-beliefs
 budget_used="N/M">` can report `N > M` on the rebuild lane; the fixture
 below emits a checkpoint block of 5813 estimated tokens against that
-4000-token budget.
+budget of 4000.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
+<!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuilder_budget = 4000 -->
 Two further writers carry no token bound of either kind:
 `_maybe_phantom_opportunity_block` (#980) and
 `_maybe_phantom_promotion_block` (#1132), each a short note capped by a

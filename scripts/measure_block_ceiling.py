@@ -81,18 +81,21 @@ runs, still records one draw and one displacement.
 ceiling bounds only one block of it?** #1560's ruling is that the
 UserPromptSubmit payload is bounded per block and that no bound spans the
 blocks, so the sum is a figure worth having rather than a bound worth
-adding. It fires one 60-lock / 20-core / 20-hit store with every writer
-live and reports each writer's share, in estimated tokens:
+adding. It fires the `CADENCE_LOCKS` / `CADENCE_CORE` / `CADENCE_HITS`
+store below with every writer live and reports each writer's share, in
+estimated tokens:
 
 * the whole payload on stdout, 11926;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
-* `<cadence-checkpoint>`, 5813, against the rebuilder's 4000-token
-  budget — the second bound is **soft** (#1546) and this arm is what
-  shows it, rather than a claim that it holds;
+* `<cadence-checkpoint>`, 5813, against the rebuilder's budget of 4000 —
+  the second bound is **soft** (#1546) and this arm is what shows it,
+  rather than a claim that it holds;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_checkpoint_tokens = 5813 -->
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_rebuilder_budget = 4000 -->
 * the `<aelfrice-memory>` envelope as `_write_memory_block` wrote it,
-  5898, inside its 6000-token ceiling after the trim;
+  5898, inside its ceiling of 6000 after the trim;
   <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
+  <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_block_ceiling = 6000 -->
 * `<aelfrice-phantom-opportunity>`, 99, and
   `<aelfrice-phantom-promotion-opportunity>`, 116 — the two writers with
   no token budget of any kind.
@@ -655,6 +658,12 @@ def exploration_slot() -> dict[str, object]:
 
 
 CADENCE_K = 5
+# The store the payload is measured against. Named rather than typed at
+# the loops, so the `--dry-run` line and any prose about the fixture read
+# the same numbers the fire seeds.
+CADENCE_LOCKS = 60
+CADENCE_CORE = 20
+CADENCE_HITS = 20
 CADENCE_SESSION = "cadence-payload"
 CADENCE_TURNS = 6
 # Novel entities the store has never seen, so the #980 new-entity signal
@@ -694,9 +703,9 @@ def _cadence_store(work: Path) -> Path:
     db = work / "memory.db"
     store = MemoryStore(str(db))
     try:
-        for i in range(60):
+        for i in range(CADENCE_LOCKS):
             store.insert_belief(_lock(i, 150))
-        for i in range(20):
+        for i in range(CADENCE_CORE):
             store.insert_belief(
                 _belief(
                     f"C{i:031d}",
@@ -704,7 +713,7 @@ def _cadence_store(work: Path) -> Path:
                     alpha=4.0,
                 )
             )
-        for i in range(20):
+        for i in range(CADENCE_HITS):
             store.insert_belief(
                 _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
             )
@@ -967,15 +976,22 @@ def main(argv: list[str] | None = None) -> int:
         figures["cadence_fire_phantom_promotion_tokens"] = (
             cadence["phantom_promotion_tokens"]
         )
+        # The two bounds the figures above are read against. Emitted so
+        # prose that cites either number is re-derived with the rest of
+        # the table instead of being a literal nothing checks: a block
+        # size means nothing without the bound it is compared to.
+        figures["cadence_fire_block_ceiling"] = cadence["ceiling"]
+        figures["cadence_fire_rebuilder_budget"] = cadence["rebuilder_budget"]
         print(json.dumps(figures))
         return 0
 
     if args.dry_run:
         if args.cadence:
             print(
-                "would fire one 60-lock / 20-core / 20-hit store with "
-                "cadence, phantom generation and phantom promotion all "
-                "enabled, and report the whole payload against a "
+                f"would fire one {CADENCE_LOCKS}-lock / {CADENCE_CORE}-core "
+                f"/ {CADENCE_HITS}-hit store with cadence, phantom "
+                "generation and phantom promotion all enabled, and report "
+                "the whole payload against a "
                 f"{HOOK_BLOCK_TOKEN_CEILING}-token block ceiling"
             )
             return 0
