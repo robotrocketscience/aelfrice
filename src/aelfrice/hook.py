@@ -724,7 +724,10 @@ def enforce_block_ceiling(
 
     "The per-turn hits" names a *bucket*, not a lane: a `<cadence-resume>`
     recap lands in it too, ahead of the hits, and is therefore shed after
-    them. See `_ceiling_drop_order`, which measures it.
+    them. `_ceiling_drop_order` states the bucketing rule;
+    `scripts/measure_block_ceiling.py --resume-drop` is what measures
+    the consequence, and `test_hook_ceiling_cadence_resume_1560.py`
+    pins it.
 
     **`lock="user"` elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
