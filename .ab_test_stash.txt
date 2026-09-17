@@ -1,0 +1,35 @@
+def test_the_recap_costs_the_envelope_no_prompt_matched_belief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim 3 (AC3, and AC7 as restated): the A/B, with and without a cache.
+
+    Same store shape, same prompt, same ceiling; the only difference is
+    whether a resume cache is there to be read. The control arm is what
+    keeps this from passing vacuously -- a fixture that reaches no
+    prompt-matched belief either way would assert nothing.
+
+    Both an element and a `seen` pointer count as reaching the model: the
+    pointer's contract is that the text is elsewhere in this window, so
+    counting elements alone would read #1547's dedupe as a loss.
+    """
+    control, _ = _arm(
+        tmp_path, monkeypatch, name="control", recap=False, ceiling=None,
+    )
+    with_recap, err = _arm(
+        tmp_path, monkeypatch, name="recap", recap=True, ceiling=None,
+    )
+    assert _RESUME_OPEN not in control
+    assert "dropped" in err, err
+
+    reached_without = _reached(control)
+    reached_with = _reached(with_recap)
+    assert reached_without, (
+        "the control arm reached no prompt-matched belief, so equality "
+        "here would be equality between two empty sets"
+    )
+    assert reached_with >= reached_without, (
+        "the recap cost the envelope a prompt-matched belief: "
+        f"{sorted(reached_without)} without it, {sorted(reached_with)} "
+        "with it"
+    )
+

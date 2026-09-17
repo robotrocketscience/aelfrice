@@ -1161,9 +1161,14 @@ def resume_drop() -> dict[str, object]:
     trimmed, trimmed_err = arm("trimmed", recap=True, ceiling=None)
     control, _ = arm("control", recap=False, ceiling=None)
 
+    # The trimmed arm is deliberately absent from this check. Whether its
+    # recap survives is the #1564 figure below, not a precondition: the
+    # ceiling now sheds the recap whole, so requiring the wrapper here
+    # would refuse to print the very result the arm exists to report. That
+    # the arm *had* a recap to shed is what the untrimmed arm shows -- same
+    # store shape, same cache, the trim the only difference.
     for label, out, want in (
         ("untrimmed", untrimmed, True),
-        ("trimmed", trimmed, True),
         ("control", control, False),
     ):
         if (RESUME_OPEN in out) is not want:

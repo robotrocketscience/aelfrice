@@ -642,10 +642,11 @@ def _ceiling_drop_order(
     """Order the droppable elements into the sequence the ceiling sheds them.
 
     **Prompt-independent content is shed before prompt-matched content.**
-    The lanes are emitted in the fixed order `<locked>`, `<core>`,
-    `<recent-work>`, per-turn hits, so popping the body's tail drops the
-    per-turn hits first -- the one lane whose members were selected by
-    *this prompt*. `<core>` is selected by corroboration and posterior and
+    The lanes are emitted in the fixed order `<cadence-resume>` (only on a
+    session's first prompt, and only behind the cadence feature),
+    `<locked>`, `<core>`, `<recent-work>`, per-turn hits, so popping the
+    body's tail drops the per-turn hits first -- the one lane whose
+    members were selected by *this prompt*. `<core>` is selected by corroboration and posterior and
     `<recent-work>` by the git state of the checkout; neither consults the
     prompt, so neither can be the weakest thing in the block with respect
     to the turn being answered. Measured on 50 user locks of 150
@@ -668,26 +669,30 @@ def _ceiling_drop_order(
 
     Returns a new list; `droppable` is not mutated.
 
-    **The third bucket is not only the per-turn hits, and a #1552 claim
-    here said it was.** "Elements outside both named sections are the
-    per-turn hits by construction" holds for `<locked>`, which carries no
-    droppable element because every one of its members renders
-    `lock="user"` -- and it is false for the `<cadence-resume>` recap
-    (#871), which #1560 round two measured. The recap is prepended to the
-    session-start sub-block, so its elements are outside both named
-    sections and land here; they are rendered by the context rebuilder,
-    which writes `locked="true"` rather than `lock="user"`, so every one
-    of them is droppable including the recap's own locks.
+    **The `<cadence-resume>` recap is a lane of its own, shed before
+    every other (#1564).** The recap (#871) is prepended to the
+    session-start sub-block, so its elements sit outside both named
+    sections. They used to fall into the `else` bucket, which a #1552
+    claim here described as "the per-turn hits by construction" -- a
+    negative test that silently accepted a third kind of element. Because
+    the recap is *prepended*, it sat at that bucket's head and the
+    reversal below put it last, so the prompt's own hits were shed first
+    and the recap outranked the lane it had been filed into. Measured on
+    a real P1 resume cache against a 40-lock / 20-core / 20-hit store,
+    that took the prompt from 6 matched beliefs to 0.
 
-    The consequence is the ordering, not the bucketing. The recap is
-    prepended, so within this bucket it sits at the head and the reversal
-    below puts it last: the prompt's own hits are shed first and the
-    prompt-independent recap is shed only after they are gone. That is
-    the inverse of what the first paragraph says this function is for,
-    and it is behaviour rather than an oversight to fix here -- #1560 is
-    a documentation ruling, and re-bucketing the recap would change what
-    the hook injects. `scripts/measure_block_ceiling.py --resume-drop`
-    measures it and `test_hook_ceiling_cadence_resume_1560.py` pins it.
+    The recap is now classified positively, by its own wrapper, and it
+    sheds ahead of `<core>`. It is the most prompt-independent content in
+    the block: a synthesis of a *different session*, carried forward for
+    continuity, selected by neither this prompt nor this checkout.
+    `<locked>` needs no lane of its own, because it carries no droppable
+    element -- every one of its members renders `lock="user"`.
+
+    Bucketing the recap is only half of the ruling. `enforce_block_ceiling`
+    sheds it whole, wrapper included, rather than trimming it to a
+    fragment; this function's part is to put it first.
+    `scripts/measure_block_ceiling.py --resume-drop` measures both and
+    `test_hook_recap_shed_order_1564.py` pins them.
 
     The `<recent-work>` lane is a placeholder today and is kept anyway:
     `_build_recent_work_subblock` emits `<branch>`, `<commit>` and
@@ -696,20 +701,61 @@ def _ceiling_drop_order(
     between the other two, and leaving the position out would put the
     burden of rediscovering where it goes on whoever gives it beliefs.
     """
+    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
     core = _section_span(body, CORE_OPEN_TAG, CORE_CLOSE_TAG)
     recent = _section_span(body, RECENT_WORK_OPEN_TAG, RECENT_WORK_CLOSE_TAG)
-    lanes: tuple[list[re.Match[str]], ...] = ([], [], [])
+    lanes: tuple[list[re.Match[str]], ...] = ([], [], [], [])
     for m in droppable:
-        if core[0] <= m.start() < core[1]:
+        if recap[0] <= m.start() < recap[1]:
             lanes[0].append(m)
-        elif recent[0] <= m.start() < recent[1]:
+        elif core[0] <= m.start() < core[1]:
             lanes[1].append(m)
-        else:
+        elif recent[0] <= m.start() < recent[1]:
             lanes[2].append(m)
+        else:
+            lanes[3].append(m)
     order: list[re.Match[str]] = []
     for lane in lanes:
         order.extend(reversed(lane))
     return order
+
+
+def _recap_shed(
+    body: str, recap: tuple[int, int], recap_elements: list[re.Match[str]]
+) -> tuple[list[tuple[int, int]], list[str]]:
+    """The spans and the ids one whole-recap shed removes (#1564).
+
+    **The recap sheds whole, or not at all.** `enforce_block_ceiling` stops
+    the moment the body fits, so an element-at-a-time shed would routinely
+    leave a `<cadence-resume>` wrapper holding a handful of its original
+    beliefs with nothing saying the rest are missing -- the artifact #1564
+    AC4 rules out, and a recap trimmed that far is worse than no recap. The
+    whole span goes in one cut, wrapper included, and the trailing newlines
+    the envelope joined it with go too, so the `<session-start>` sub-block
+    is not left behind a blank gap.
+
+    The wrapper survives exactly one way: when an element inside it carries
+    `lock="user"`, which no shipped render produces -- `context_rebuilder`
+    spells a lock `locked="true"` -- but which the #379 always-injected
+    contract would require this function to honour if one ever did. In that
+    case the recap's droppable elements still shed together and still shed
+    first; what is left is the locks, which is a remainder a reader can
+    explain rather than an arbitrary fragment.
+
+    Returns `([], [])` for a recap with no droppable element, which is what
+    a body carrying no recap at all reduces to: `recap_elements` is empty,
+    so the loop never reaches this function anyway.
+    """
+    droppable_here = [
+        m for m in recap_elements if _LOCKED_ATTR not in m.group("attrs")
+    ]
+    ids = [m.group("id") for m in droppable_here]
+    if len(droppable_here) != len(recap_elements):
+        return [m.span() for m in droppable_here], ids
+    end = recap[1]
+    while end < len(body) and body[end] == "\n":
+        end += 1
+    return [(recap[0], end)], ids
 
 
 def enforce_block_ceiling(
@@ -730,12 +776,17 @@ def enforce_block_ceiling(
     tail-first order took the block from 6 hits to 0 while leaving 17 of
     20 core entries standing.
 
-    "The per-turn hits" names a *bucket*, not a lane: a `<cadence-resume>`
-    recap lands in it too, ahead of the hits, and is therefore shed after
-    them. `_ceiling_drop_order` states the bucketing rule;
-    `scripts/measure_block_ceiling.py --resume-drop` is what measures
-    the consequence, and `test_hook_ceiling_cadence_resume_1560.py`
-    pins it.
+    **A `<cadence-resume>` recap sheds first, and sheds whole (#1564).**
+    The #871 recap is prepended to the session-start sub-block, so until
+    #1564 its elements fell into the bucket `_ceiling_drop_order` called
+    the per-turn hits -- at that bucket's *head*, so the reversal shed them
+    last and the prompt's own hits went first. It is now a lane of its own
+    ahead of `<core>`, and `_recap_shed` removes the whole span, wrapper
+    and all, in one cut rather than trimming it to a fragment. Measured on
+    a real P1 resume cache against a 40-lock / 20-core / 20-hit store, the
+    prompt's matched beliefs go from 0 of 6 to 6 of 6.
+    `scripts/measure_block_ceiling.py --resume-drop` is the producer and
+    `test_hook_recap_shed_order_1564.py` pins the directions.
 
     **`lock="user"` elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
@@ -819,10 +870,39 @@ def enforce_block_ceiling(
     # `<recent-work>`, then the per-turn hits. See `_ceiling_drop_order`
     # for why the body's own tail is the wrong end to pop from.
     order = _ceiling_drop_order(body, droppable)
+    # #1564: the recap is one unit. `_ceiling_drop_order` puts its elements
+    # at the head of the order, so the first of them the loop reaches sheds
+    # the whole span; the rest are already inside a span in `cut` and are
+    # skipped rather than cut twice.
+    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
+    recap_elements = [
+        m for m in elements if recap[0] <= m.start() < recap[1]
+    ]
+    recap_shed = False
     taken = 0
     while taken < len(order) and _tokens_from_chars(remaining) > limit:
         m = order[taken]
         taken += 1
+        if recap[0] <= m.start() < recap[1]:
+            if recap_shed:
+                continue
+            recap_shed = True
+            spans, recap_ids = _recap_shed(body, recap, recap_elements)
+            for span in spans:
+                cut.append(span)
+                remaining -= span[1] - span[0]
+            for bid in recap_ids:
+                dropped.append(bid)
+                pointer = pointers.pop(bid, None)
+                # A `seen` line inside a span already being cut would be
+                # spliced twice and take the wrong bytes with it the second
+                # time.
+                if pointer is not None and not any(
+                    lo <= pointer[0] < hi for lo, hi in spans
+                ):
+                    cut.append(pointer)
+                    remaining -= pointer[1] - pointer[0]
+            continue
         cut.append(m.span())
         remaining -= m.end() - m.start()
         dropped.append(m.group("id"))
