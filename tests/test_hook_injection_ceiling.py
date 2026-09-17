@@ -203,8 +203,8 @@ def test_user_locked_content_is_never_capped() -> None:
     A lock cut mid-clause can assert the opposite of what the operator
     locked, and unlike a retrieval hit nothing ranked it here for the
     model to discount. So an oversized lock is emitted whole; the
-    bounded alternative is the reference tier, which does not yet reach
-    the UserPromptSubmit `<locked>` render (#1558).
+    bounded alternative is the reference tier, which since #1558 reaches
+    the UserPromptSubmit `<locked>` render as well as the other two.
     """
     content = "a" * 35_164
     assert _cap_belief_content(content, locked=True) == content
@@ -544,14 +544,15 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     err = serr.getvalue()
     assert "still over the 6000-token ceiling" in err
     assert "never happens (#379)" in err
-    # The note names the open issue, not a remedy. `aelf lock --reference`
-    # was the remedy until it was measured: the `<locked>` loop of
-    # `_build_session_start_subblock` renders a reference lock verbatim, so
-    # on a session's first prompt — the fire a lock-only store overruns on —
-    # demoting a lock changes nothing (#1558). It does bound from turn two,
-    # and this function cannot tell the two apart from a body.
-    assert "#1558" in err
-    assert "--reference" not in err
+    # The note names the remedy again. It was withdrawn while the `<locked>`
+    # loop of `_build_session_start_subblock` rendered a reference lock
+    # verbatim, because on a session's first prompt — the fire a lock-only
+    # store overruns on — demoting a lock changed nothing. #1558 gave that
+    # loop the diversion the other two renderers had, so the advice is now
+    # true on every write this function bounds and it no longer has to tell
+    # them apart from a body.
+    assert "`aelf lock --reference`" in err
+    assert "#1558" not in err
 
 
 def test_write_memory_block_is_silent_on_a_block_that_fits(

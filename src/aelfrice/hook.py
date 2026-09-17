@@ -289,15 +289,17 @@ what it says, so the same rule the ceiling follows applies here: bounds
 stop at `lock="user"`, and a store whose locks alone are oversized gets a
 stderr note rather than a silent edit. The reference tier (#1016-B) is
 the intended home for long-form locked material, and it bounds this lane
-from the second prompt of a session onwards — a 30,026-character lock
-costs 7683 estimated tokens frozen against 256 as a reference. On the
-first prompt it bounds nothing, because `_build_session_start_subblock`
-renders every lock verbatim: the same lock costs 7700 on the gate-skip
-branch at either tier. #1558 tracks that render gap. Re-derive with
+on every write — a 30,026-character lock costs 7683 estimated tokens
+frozen against 256 as a reference from the second prompt of a session
+onwards, and 7700 against 273 on the first prompt's gate-skip branch.
+Until #1558 the first prompt was the exception: `<locked>` had no
+`is_reference_lock` branch, so the same lock cost 7700 at either tier.
+Re-derive with
 `uv run python scripts/measure_block_ceiling.py --reference-tier`.
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 273 -->
 
 The cap is otherwise deliberately generous. It is a guard against a
 pathological row, not a retrieval-quality knob; trimming to fit the budget
@@ -373,18 +375,24 @@ rather than telling the reader to go fetch it". The dropper matches these
 so a trim cannot leave the pointer without its referent; see
 `enforce_block_ceiling`.
 
-The sibling `ref <id>` form is deliberately not matched, but not because
-its referent is absent: on a session's first prompt the `<locked>` loop of
-`_build_session_start_subblock` renders a reference lock verbatim (#1558),
-so a `ref` line and the text it names do share an envelope — measured on a
-30,026-character reference lock, which the retrieval branch emitted in full
-alongside its own `ref` pointer at 7796 estimated tokens
+The sibling `ref <id>` form is deliberately not matched, and since #1558
+the reason is the plain one: a `ref` entry names text that is *not* in
+this envelope, so no trim can separate it from a referent it never had.
+Every renderer now diverts a reference lock — `_split_belief_lines`,
+`_core_belief_line` and the `<locked>` loop of
+`_build_session_start_subblock` — so the body carries no element for that
+id to drop. Measured on a 30,026-character lock, the retrieval branch of a
+first prompt used to emit a reference lock in full alongside its own `ref`
+pointer, at the 7796 estimated tokens a frozen lock still costs there; the
+same lock at reference tier now costs 273
 (`scripts/measure_block_ceiling.py --reference-tier`).
-<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
-The reason the
-dropper skips the form is narrower and holds regardless: a reference lock
-carries `lock="user"`, and the dropper never removes a `lock="user"`
-element, so no trim can dangle a `ref` line.
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
+<!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
+The older argument still holds underneath it and is why the form was safe
+to skip before the render gap closed: a reference lock carries
+`lock="user"`, and the dropper never removes a `lock="user"` element.
+`_REF_MANIFEST_RE` matches the same line for the unrelated envelope-level
+dedupe (#1558) and is not consulted here.
 
 Two spaces of indent and the `: "` separator are both required, so the id
 group cannot run past the line's own punctuation. The pattern is only ever
@@ -711,51 +719,51 @@ def _write_memory_block(
     `test_hook_injection_ceiling.py` pins that there is exactly one caller
     of `enforce_block_ceiling` and that it is this function.
 
-    **The overrun note prescribes no remedy, and that omission is
-    measured.** It used to say "move long-form locks to `aelf lock
-    --reference`". That advice is right on some of the writes that reach
-    here and wrong on the ones most likely to reach here, so it was
-    withdrawn rather than qualified.
-
-    `_build_session_start_subblock`'s `<locked>` loop renders every lock
-    verbatim with no `is_reference_lock` branch, unlike `_split_belief_lines`
-    and `_core_belief_line`, which both divert a reference lock to
-    `retrieval.lock_manifest_line`. So the tier is honoured everywhere except
-    the envelope that embeds the session-start sub-block — which is a
-    session's first prompt, and a first prompt is when a lock-only store
-    overruns. Measured on one 30,026-character lock, re-derivable with
+    **The overrun note prescribes a remedy again, and the remedy is
+    measured.** It said "move long-form locks to `aelf lock --reference`"
+    until #1551 measured it a no-op on the writes most likely to reach
+    here, and #1552 withdrew it rather than qualifying it. #1558 gave the
+    `<locked>` loop of `_build_session_start_subblock` the
+    `is_reference_lock` branch `_split_belief_lines` and
+    `_core_belief_line` already had, so the tier is now honoured on every
+    render path and the advice is true on every write that reaches here.
+    Measured on one 30,026-character lock, re-derivable with
     `uv run python scripts/measure_block_ceiling.py --reference-tier`,
     whose module constant is the fixture:
 
-    * first prompt, gate-skip branch: 7700 estimated tokens at either tier;
+    * first prompt, gate-skip branch: 7700 estimated tokens frozen
+      against 273 reference;
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
-      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 7700 -->
-    * first prompt, retrieval branch: 7796 at either tier, and on the
-      reference tier the block carries the full text *and* a `ref` pointer to
-      it a few lines below;
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 273 -->
+    * first prompt, retrieval branch: 7796 frozen against 273 reference,
+      and the reference arm carries one `ref` pointer rather than the full
+      text plus a pointer to it;
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
-      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 7796 -->
+      <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
     * turn two, retrieval branch: 7683 frozen against **256** reference —
-      the tier works, because no `<session-start>` sub-block is in the
-      envelope;
+      unchanged by #1558, because no `<session-start>` sub-block is in the
+      envelope and this was always the arm that worked;
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
-    * `session_start` itself: 7660 frozen against 233 reference.
+    * `session_start` itself: 7660 frozen against 233 reference, also
+      unchanged.
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_frozen = 7660 -->
       <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_session_start_reference = 233 -->
 
-    The three figures that carry a manifest line are a function of the
-    lock's *content*, not only its length — `lock_manifest_line` embeds
+    Every figure that carries a manifest line is a function of the lock's
+    *content*, not only its length — `lock_manifest_line` embeds
     `_lock_topic` of it, capped at 80 characters — which is why the
     fixture is pinned in the producer rather than described in prose. An
-    earlier revision of this table published 7,784 / 244 / 221 for them,
-    48 characters of topic below what the pinned fixture emits.
+    earlier revision of this table published 7,784 / 244 / 221 on the
+    three that carried one then, 48 characters of topic below what the
+    pinned fixture emits.
 
-    This function sees only an assembled body, so it cannot tell which of
-    those it is bounding without parsing for the sub-block. Until #1558
-    closes the render gap the note therefore says what is true on every one
-    of them — the block is over and no further span is droppable — and cites
-    the issue rather than an instruction that is a no-op on the first prompt.
+    This function still sees only an assembled body and cannot tell which
+    write it is bounding, and no longer needs to: the remedy now shrinks
+    every one of them. What the note does not claim is that the remedy
+    will bring *this* block under the ceiling — a store of ordinary short
+    locks overruns at 66 of them, and a reference entry is not free.
+    <!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_150 = 66 -->
 
     An empty `body` is written as-is (a suppressed fire, `#1359`), which
     is a no-op on the stream and costs nothing on the ceiling.
@@ -776,8 +784,8 @@ def _write_memory_block(
             f"aelfrice hook: block still over the {limit}-token ceiling at "
             f"{_audit_tokens_from_block(outcome.body)} tokens; it could not "
             "be trimmed further without dropping a user lock, which never "
-            "happens (#379). A bounded form of a long lock does not yet "
-            "reach this render path (#1558).\n"
+            "happens (#379). Move long-form locks to `aelf lock "
+            "--reference`, which bounds them on every render path.\n"
         )
     stdout.write(outcome.body)
     return outcome
@@ -3646,6 +3654,50 @@ def _ids_rendered_verbatim_in(block: str) -> frozenset[str]:
     return frozenset(_BELIEF_ID_RE.findall(block))
 
 
+_REF_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
+    r'^  ref (?P<id>.+?): ".*"$', re.MULTILINE
+)
+"""One `ref <id>` manifest line, as every renderer of one emits it.
+
+The sibling of `_SEEN_MANIFEST_RE`, matched for a different purpose: that
+one is how the ceiling's dropper finds a pointer whose element it is
+deleting, this one is how the envelope finds a pointer it is about to
+emit twice. Same two-space indent and `: "` separator, so the id group
+cannot run past the line's own punctuation.
+"""
+
+
+def _drop_duplicate_ref_lines(
+    manifest_lines: list[str], rendered_block: str
+) -> list[str]:
+    """Drop `ref` entries `rendered_block` already carries, by id (#1558).
+
+    The session-start sub-block emits a `ref` line for each of its own
+    reference locks, and the per-turn pack reaches the same ids through the
+    same `_renders_as_manifest` predicate, so without this the envelope
+    carried the identical pointer twice — the #1547 duplicate in its
+    manifest form.
+
+    Filtered by id rather than by whole-line equality: two renders of one
+    belief agree on the id by construction and on the topic only as long as
+    both read the same row, and the weaker key is the one that cannot go
+    stale. `seen` lines are not matched and pass through: a `seen` pointer
+    names an element rendered verbatim somewhere in this window, which is a
+    different claim from `ref` and has its own drop accounting in
+    `enforce_block_ceiling`.
+    """
+    already = frozenset(_REF_MANIFEST_RE.findall(rendered_block))
+    if not already:
+        return manifest_lines
+    kept: list[str] = []
+    for line in manifest_lines:
+        m = _REF_MANIFEST_RE.match(line)
+        if m is not None and m.group("id") in already:
+            continue
+        kept.append(line)
+    return kept
+
+
 def _split_belief_lines(
     hits: list[Belief],
     *,
@@ -4634,25 +4686,38 @@ def _build_session_start_subblock(
     # and unlike a retrieval hit there is no ranking that put it here for
     # the model to discount.
     #
-    # #1558, stated here because this is the loop that causes it: this
-    # render has no `is_reference_lock` branch, so a lock demoted to the
-    # bounded reference tier is still emitted verbatim from here.
-    # `_split_belief_lines` and `_core_belief_line` both divert such a lock
-    # to `retrieval.lock_manifest_line`; this loop does not, which is why a
-    # single oversized reference lock can appear in full inside the
-    # `<session-start>` sub-block three lines above the `ref` pointer the
-    # per-turn pack emitted for the same id. Measured: one 30,026-character
-    # lock costs 7700 estimated tokens on the gate-skip branch and 7796 on
-    # the retrieval branch, identically at both tiers. From the second prompt
-    # of a session this sub-block is absent, `_split_belief_lines` renders the
-    # locks, and the tier works — 256 tokens against 7683 — so the gap is
-    # this loop rather than the feature. The whole table, and the fixture
-    # these come from, is `scripts/measure_block_ceiling.py
-    # --reference-tier`.
+    # #1558: a reference-tier lock is diverted out of this loop and into the
+    # manifest emitted below it, exactly as `_split_belief_lines` and
+    # `_core_belief_line` divert one. Until this branch existed the loop
+    # rendered every lock verbatim, so `aelf lock --reference` was a measured
+    # no-op on the two writes that carry a session's first prompt, and on the
+    # retrieval one the block carried the full text and a `ref` pointer to
+    # that same text a few lines below. Measured on one 30,026-character
+    # lock: the gate-skip first prompt now costs 273 estimated tokens at
+    # this tier against 7700 frozen, and the retrieval first prompt 273
+    # against 7796. From the second prompt of a session this sub-block is
+    # absent and `_split_belief_lines` renders the locks, which is why turn
+    # two already read 256 against 7683 before this branch and is unchanged
+    # by it. The table and the fixture are
+    # `scripts/measure_block_ceiling.py --reference-tier`.
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_reference = 273 -->
     # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_gate_skip_first_frozen = 7700 -->
+    # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
     # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
     # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_reference = 256 -->
     # <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_turn_two_frozen = 7683 -->
+    #
+    # **The diverted id must not enter `_ids_rendered_verbatim_in`.** That
+    # set is read off the rendered `<belief id="..."` elements, and a
+    # manifest line is deliberately not one: the text genuinely was not
+    # rendered, so #1547's dedupe must not downgrade the per-turn copy to a
+    # `seen` pointer claiming it is already in the window, and #1382's
+    # ledger must not record an exposure that never happened. Diverting the
+    # row rather than swapping the element's content is what keeps both true
+    # with no second edit anywhere else.
+    #
+    # A frozen lock takes the branch below and is byte-identical to what
+    # this loop emitted before #1558.
     #
     # So a store whose locks alone exceed the ceiling overruns it, and
     # `_write_memory_block` says so on stderr rather than trimming.
@@ -4662,14 +4727,35 @@ def _build_session_start_subblock(
     # 'none'`, so every belief here is L0 and the cap's `locked=` exemption
     # would be True on every row. Calling it would read like a bound and
     # apply none.
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        is_reference_lock,
+        lock_manifest_line,
+    )
+
     lines.append("<locked>")
+    lock_manifest_lines: list[str] = []
     for b in locked:
+        if is_reference_lock(b):
+            # Same two-space indent and same escaping as every other
+            # manifest line this repo emits, so the entry cannot spoof the
+            # envelope (#1037) and the three renderers stay one shape.
+            lock_manifest_lines.append(
+                "  " + _escape_for_hook_block(lock_manifest_line(b))
+            )
+            continue
         content = _escape_for_hook_block(b.content)
         lock_attr = "user" if b.lock_level == LOCK_USER else "none"
         lines.append(
             f'<belief id="{b.id}" lock="{lock_attr}">{content}</belief>'
         )
     lines.append("</locked>")
+    # Outside `</locked>`, inside `<session-start>`: the section above is the
+    # verbatim-element lane the ceiling's dropper walks, and the manifest is
+    # the existing `<aelfrice-locks-manifest>` block, whose note is what
+    # explains `ref` to the model. `_manifest_block_lines` returns [] when
+    # no lock was diverted, so a store without reference locks renders the
+    # sub-block byte-identically to before.
+    lines.extend(_manifest_block_lines(lock_manifest_lines))
 
     # <core> section
     lines.append(CORE_OPEN_TAG)
@@ -4709,6 +4795,14 @@ def _format_hits_with_session_start(
     This recovers bytes, not budget. The pack loop has already spent its
     budget by the time anything is rendered, so the freed space admits no
     further belief; it shortens the envelope and does not lengthen the tail.
+
+    #1558: the same duplicate in its manifest form. The sub-block now emits
+    a `ref` line for each of its own reference locks, and the per-turn pack
+    reaches those ids through `_renders_as_manifest` and points at them
+    again, so `_drop_duplicate_ref_lines` removes the second pointer. It is
+    a separate call because the first dedupe cannot cover it: a diverted
+    reference lock is deliberately absent from `_ids_rendered_verbatim_in`,
+    whose contract is that the text is in this window, and it is not.
     """
     if session_start_block:
         already_rendered = already_rendered | _ids_rendered_verbatim_in(
@@ -4717,6 +4811,10 @@ def _format_hits_with_session_start(
     belief_lines, manifest_lines = _split_belief_lines(
         hits, already_rendered=already_rendered
     )
+    if session_start_block:
+        manifest_lines = _drop_duplicate_ref_lines(
+            manifest_lines, session_start_block
+        )
     lines: list[str] = [OPEN_TAG, _framing_header_for(hits)]
     if session_start_block:
         lines.append(session_start_block)
