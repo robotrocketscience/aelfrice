@@ -237,11 +237,43 @@ LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 5950, 7170, 18600)
 # are the grid above `MAX_HEADLINE_CHARS`.
 SNAPSHOT_ARM_LENGTHS: tuple[int, ...] = (92, 300, 1000, 7170, 18600)
 
-# Lanes the snapshot arm is measured on. Both compose `<belief>` elements out of
-# a budgeted `retrieve()`, which is the pack whose cost function charges the
-# compressed form; the PreToolUse lanes pass their own `belief_cost_fn` and do
-# not read compression at all.
-SNAPSHOT_ARM_LANES: tuple[str, ...] = ("ups", "first_prompt")
+# Lanes the snapshot arm is measured on. All three compose `<belief>` elements
+# out of a budgeted `retrieve()` and render them through
+# `hook._split_belief_lines`; the PreToolUse lanes emit a different shape
+# entirely and are measured by `LANES` alone.
+SNAPSHOT_ARM_LANES: tuple[str, ...] = ("ups", "first_prompt", "agent_context")
+
+# The arm lane the charge-vs-emit claim is quoted from, and the one
+# `_flat_1547_keys` lifts to scalar keys for the CHANGELOG gate.
+#
+# It is `agent_context` and not `ups` because `agent_context` is the only lane
+# left in this module whose pack still charges through compression: it passes
+# no `belief_cost_fn`, so `retrieve_with_tiers._cost` reaches the branch
+# `_charged_tokens` transcribes, while `hook_agent_context._build_block`
+# renders the whole `<belief …>` element through `hook._split_belief_lines`.
+# #1551 and #1552 closed that gap on `ups` and `first_prompt` — they charge
+# `hook._ups_belief_line_cost`, which *is* the emitted line, so their pack
+# ratio is 1.0 at every arm length and in every retention class. Those two arms
+# are kept, because "the defect is closed here" is a measurement worth
+# publishing and is the thing that would regress if the cost function were ever
+# unwired.
+#
+# The consequence for the published ratio is that `undercharge_table` is now
+# this lane's table and no other lane's: `_emitted_chars` renders through
+# `_split_belief_lines`, which is what `ups`, `first_prompt` and
+# `agent_context` all emit, but only `agent_context` still pays
+# `_charged_tokens` for it. Its `snapshot` cell — 44 charged against 317
+# emitted, 7.2x at 18,600 content characters — is the arm's headline number.
+#
+# The pack-level companion to it is weaker than the single-belief cell at the
+# top of the grid, and that is a measurement rather than a gap. This lane's
+# budget is 600 tokens against six user locks whose content is exempt from
+# `BELIEF_CONTENT_CHAR_CAP`; at 7,170 and 18,600 content characters those six
+# spend the budget before the pack loop reaches a candidate, so the pack is all
+# locks, `_pack_charge` has nothing non-locked to sum over and the ratio is
+# undefined. Where the pack is not lock-starved it carries the gap: 1.3x at 300
+# characters, on 4 non-locked hits charged 266 against 352 emitted.
+SNAPSHOT_ARM_HEADLINE_LANE = "agent_context"
 
 # The retention classes the charged-vs-emitted table is reported for, in the
 # order #1547's own table lists them.
@@ -1335,22 +1367,42 @@ def snapshot_arm(
     matter.
 
     `_measure` is used on all three sides, so both budgets are varied on each
-    and each reports which cap ended it. That matters more here than anywhere
-    else in this module, and the measured answer is the reverse of the one a
-    reader would guess. At 18,600 characters the control and prose sides end on
-    `pool`: a single verbatim belief costs 4,663 tokens against a 1,500-token
-    budget, so the pack admits no non-locked belief at all and what is left is
-    the six locks #379 exempts. The snapshot side ends on `token_budget` — the
-    budget binds, and binds *later*, admitting 22 beliefs whose emitted text is
-    74,616 tokens against the 723 they were charged. A budget reporting that it
-    is doing its job is the defect here, not the absence of one.
+    and each reports which cap ended it, at `_probe_budget`'s bound rather than
+    at a factor. At 18,600 content characters all three sides of all three
+    lanes end on `token_budget`.
 
     `snapshot_pack_ratio` is that pack's emitted tokens over its charged
-    tokens, non-locked hits only, and is the lane-level form of the
-    `undercharge_table` cell: 103.2x where the single-belief table reads
-    106.0x. The difference is the verbatim-class beliefs the same pack also
-    admits — they charge what they emit and dilute a lane ratio, which a
-    single-belief table has nothing to dilute it with.
+    tokens, non-locked hits only: the lane-level form of the
+    `undercharge_table` cell, charged through the lane's own cost function
+    (`_pack_charge`).
+
+    **What the three lanes say is no longer the same thing, and that is the
+    finding.** On `ups` and `first_prompt` the ratio is 1.0 at every length —
+    those lanes charge `hook._ups_belief_line_cost`, which is the line they
+    emit, so #1551/#1552 closed the charge-vs-emit gap on them and the arm now
+    measures it closed rather than measuring it. `bytes_ratio` is 1.0 at every
+    arm length on both: the retention class buys the pack nothing, because the
+    charge no longer reads the class at all. The only column that still moves
+    on them is `control` → `prose`, the cost of the text change alone — 16
+    items to 17 at 300 characters — which is what that middle corpus is for.
+
+    `agent_context` is where the gap survives, because it passes no
+    `belief_cost_fn` and its pack therefore still charges the compressed form
+    (see `SNAPSHOT_ARM_HEADLINE_LANE`). Its ratio is 1.3x at 300 characters, on
+    4 non-locked hits charged 266 tokens against 352 emitted. At 7,170 and
+    18,600 it is undefined: this lane's 600-token budget is spent by the six
+    user locks — whose content is exempt from `BELIEF_CONTENT_CHAR_CAP` — before
+    the pack loop reaches a candidate, so all three corpora return the same six
+    locks and there is no non-locked hit to sum over. A ratio of `None` there
+    is that starvation reported, not a suppressed cell; the bytes are printed
+    either way.
+
+    An earlier revision of this docstring said the control and prose sides end
+    on `pool` at 18,600 and that the snapshot side admits "22 beliefs whose
+    emitted text is 74,616 tokens against the 723 they were charged". Both
+    halves are gone: `pool` was a probe too small to admit one belief of that
+    size (`_probe_budget`), and the 22/723 pair was two different sets — 22 is
+    `Arm.n_items` including six locks, 723 was summed over 16 non-locked hits.
     """
     sub = _subbudget()
     out: dict[str, Any] = {}
@@ -1667,6 +1719,34 @@ def _flat_1547_keys(
     out["snapshot_arm_first_prompt_prose_bytes"] = cell["prose_bytes"]
     out["snapshot_arm_first_prompt_snapshot_bytes"] = cell["snapshot_bytes"]
     out["snapshot_arm_first_prompt_snapshot_items"] = cell["snapshot_items"]
+    # The headline lane's cell, lifted whole. Its five keys travel together so
+    # the denominators cannot drift apart in the prose: `items` is the whole
+    # pack, `unlocked_hits` is the subset the charge and the emission are
+    # summed over, and the ratio is those two sums. The CHANGELOG previously
+    # read "admitting 22 beliefs charged 723 tokens" — 22 from `Arm.n_items`
+    # including six locks, 723 from a sum over 16 non-locked hits, and no
+    # single set of beliefs that was both.
+    #
+    # At the top of this grid the pack is all locks and the three sums are 0,
+    # 0 and None; see `SNAPSHOT_ARM_HEADLINE_LANE` for why, and read the arm's
+    # ratio off its 300-character row. The lane's *single-belief* ratio is
+    # `undercharge_top_snapshot_ratio` above, which is this lane's number and
+    # no other lane's now that `ups` and `first_prompt` charge what they emit.
+    head = SNAPSHOT_ARM_HEADLINE_LANE
+    hcell = values["snapshot_arm"][head][top]
+    out[f"snapshot_arm_{head}_snapshot_items"] = hcell["snapshot_items"]
+    out[f"snapshot_arm_{head}_snapshot_unlocked_hits"] = hcell[
+        "snapshot_unlocked_hits"
+    ]
+    out[f"snapshot_arm_{head}_snapshot_charged_tokens"] = hcell[
+        "snapshot_charged_tokens"
+    ]
+    out[f"snapshot_arm_{head}_snapshot_emitted_tokens"] = hcell[
+        "snapshot_emitted_tokens"
+    ]
+    out[f"snapshot_arm_{head}_snapshot_pack_ratio"] = hcell[
+        "snapshot_pack_ratio"
+    ]
     return out
 
 
