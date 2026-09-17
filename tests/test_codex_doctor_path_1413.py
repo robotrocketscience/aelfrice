@@ -166,3 +166,32 @@ class TestWiringAbsent:
         assert rc == 0, out
         assert "not on PATH" not in out, out
 
+
+_REPO = Path(__file__).resolve().parents[1]
+_SLASH_COMMANDS_DOC = _REPO / "docs" / "user" / "SLASH_COMMANDS.md"
+
+
+class TestCodexFeatureKeyIsDocumented:
+    """AC6: the docs must name the current feature key, not the retired one.
+
+    `codex features list` on codex-cli 0.145.0 reports one row for this
+    feature, `hooks  stable  true`, and no `codex_hooks` row at all. The
+    doc told you to turn on a `codex_hooks` flag that no longer exists.
+    """
+
+    def test_the_caveat_names_the_current_hooks_feature(self) -> None:
+        text = _SLASH_COMMANDS_DOC.read_text(encoding="utf-8")
+        assert "with the `hooks` feature on" in text, text[:400]
+        assert "`[features].hooks = false`" in text, text[:400]
+
+    def test_the_caveat_no_longer_names_codex_hooks_as_the_live_flag(
+        self,
+    ) -> None:
+        """The distinguishing assert.
+
+        `codex_hooks` may still appear as the named predecessor — doctor
+        honors it when an old `config.toml` carries it — so the guard is
+        on the instruction, not on the string.
+        """
+        text = _SLASH_COMMANDS_DOC.read_text(encoding="utf-8")
+        assert "`codex_hooks` feature flag on" not in text, text[:400]

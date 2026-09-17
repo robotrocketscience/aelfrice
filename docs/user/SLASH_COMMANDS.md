@@ -73,7 +73,7 @@ The install is idempotent and prunes orphans. The installer writes an `AELFRICE-
 
 Two caveats are specific to the Codex host:
 
-1. Codex runs a hook only after a per-hook trust approval, and only with the `codex_hooks` feature flag on. See the `next:` guidance that `aelf setup --host codex` prints. A skill needs no such approval.
+1. Codex runs a hook only after a per-hook trust approval, and only with the `hooks` feature on. That feature is stable and on by default — `codex features list` reports it as `stable true` on Codex 0.145 — so you only need to act when `config.toml` sets `[features].hooks = false`, which `aelf doctor --host codex` reports as a warning. The `codex_hooks` flag that Codex 0.11x–0.12x used is retired; doctor still honors it when `config.toml` carries it. See the `next:` guidance that `aelf setup --host codex` prints. A skill needs no such approval.
 2. Codex governs shell execution through its own sandbox policy and approval policy, rather than through a per-command `allowed-tools` allowlist. For that reason, the first `uv run aelf …` that a skill issues might prompt for approval.
 
 ## `/aelf:upgrade` orchestrator flow
