@@ -47,10 +47,13 @@ from pathlib import Path
 import pytest
 
 from aelfrice.hook import (
+    CORE_CLOSE_TAG,
+    CORE_OPEN_TAG,
     LOCKS_MANIFEST_CLOSE_TAG,
     LOCKS_MANIFEST_OPEN_TAG,
     SESSION_START_SUBBLOCK_CLOSE,
     _build_session_start_subblock,
+    _core_belief_line,
     _drop_duplicate_ref_lines,
     _format_hits_with_session_start,
     _ids_rendered_verbatim_in,
@@ -59,6 +62,7 @@ from aelfrice.hook import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    LOCK_NONE,
     LOCK_TIER_FROZEN,
     LOCK_TIER_REFERENCE,
     LOCK_USER,
@@ -413,3 +417,88 @@ def test_an_envelope_without_a_sub_block_keeps_its_ref_line() -> None:
     assert _drop_duplicate_ref_lines(
         [f'  ref {_REFERENCE_ID}: "topic"'], ""
     ) == [f'  ref {_REFERENCE_ID}: "topic"']
+
+
+# ---------------------------------------------------------------------------
+# `<core>` is covered by exclusion, and the exclusion is what covers it
+# ---------------------------------------------------------------------------
+
+_CORE_ID = "C" * 16
+# alpha/beta put the posterior at 0.9 over 10 observations, clear of
+# `hook._CORE_MIN_POSTERIOR` (2/3) at `hook._CORE_MIN_ALPHA_BETA` (4) — the
+# `<core>` signal, which has nothing to do with locking.
+_CORE_ALPHA = 9.0
+_CORE_BETA = 1.0
+
+
+def _core_qualifying(bid: str, content: str, *, tier: str | None) -> Belief:
+    """A belief `_belief_qualifies_core` admits; locked when `tier` is given."""
+    return Belief(
+        id=bid,
+        content=content,
+        content_hash=f"h_{bid}",
+        alpha=_CORE_ALPHA,
+        beta=_CORE_BETA,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_USER if tier is not None else LOCK_NONE,
+        lock_tier=tier if tier is not None else LOCK_TIER_FROZEN,
+        locked_at="2026-04-26T00:00:00Z" if tier is not None else None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    )
+
+
+def _core_section(block: str) -> str:
+    start = block.index(CORE_OPEN_TAG) + len(CORE_OPEN_TAG)
+    return block[start : block.index(CORE_CLOSE_TAG)]
+
+
+def test_the_core_renderer_does_not_divert_a_reference_lock() -> None:
+    """The half of the claim that is about the renderer.
+
+    `_core_belief_line` has no `is_reference_lock` branch. Handed a
+    reference-tier lock it returns the belief's full text inside a
+    `<belief>` element, exactly as it would for any other belief — so
+    whatever keeps a reference lock's body out of `<core>`, it is not this
+    function. Pinned so the framing cannot drift back to calling `<core>` a
+    renderer that already honoured the tier.
+    """
+    ref = _core_qualifying(_REFERENCE_ID, _REFERENCE, tier=LOCK_TIER_REFERENCE)
+    line = _core_belief_line(ref)
+    assert line.startswith(f'<belief id="{_REFERENCE_ID}"')
+    assert _SENTINEL in line
+    assert " ref " not in line
+
+
+def test_core_excludes_every_lock_rather_than_diverting_one(
+    tmp_path: Path,
+) -> None:
+    """The half that is about the mechanism, with its own control.
+
+    Both beliefs carry the same `<core>` signal and differ only in whether
+    they are locked. The unlocked one reaches `<core>`, which is what makes
+    the lock's absence a statement about `core_candidates` rather than about
+    a fixture that failed to qualify: `_build_session_start_subblock` skips
+    every id `store.list_locked_beliefs()` returns, and that query selects
+    `lock_level != 'none'`, so it takes both lock tiers alike.
+    """
+    unlocked = _core_qualifying(_CORE_ID, "unlocked core belief", tier=None)
+    ref = _core_qualifying(_REFERENCE_ID, _REFERENCE, tier=LOCK_TIER_REFERENCE)
+    block = _sub_block(_store(tmp_path, unlocked, ref), tmp_path)
+    core = _core_section(block)
+    assert f'<belief id="{_CORE_ID}"' in core
+    assert _REFERENCE_ID not in core
+    assert _SENTINEL not in block
+
+
+def test_a_frozen_lock_is_excluded_from_core_too(tmp_path: Path) -> None:
+    """Exclusion is per lock, not per tier.
+
+    A diversion branch would have to be written twice to get this right;
+    the filter gets it right once. This is the assertion that separates
+    "`<core>` skips locks" from "`<core>` skips reference locks".
+    """
+    frozen = _core_qualifying(_FROZEN_ID, _FROZEN, tier=LOCK_TIER_FROZEN)
+    block = _sub_block(_store(tmp_path, frozen), tmp_path)
+    assert _FROZEN_ID not in _core_section(block)
+    assert f'<belief id="{_FROZEN_ID}" lock="user">' in block
