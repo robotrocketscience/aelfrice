@@ -613,9 +613,12 @@ def test_the_producer_names_which_budget_ended_every_pack(
     label can fail. `pool` means "this arm is not evidence about any budget",
     and a reader takes that from the probe the producer raised the caps to. The
     probe was `budget * SATURATION_PROBE_FACTOR`, sized for a grid topping out
-    at 300 characters; at 18,600 one belief costs more than four times `ups`'s
-    whole budget, so a 4x probe could not admit even one more belief and 20 of
-    the 45 `pool` labels on the extended grid were false. Two assertions
+    at 300 characters — a multiple of the lane's budget, not of what a belief
+    costs. At 18,600 the cells that read `pool` first move at a `token_budget`
+    near 9,300, twice a single belief's charge, which only `cli_search`'s 4x
+    probe of 9,600 clears; every other lane's is below it, `ups`'s 6,000
+    included, so a 4x probe could not admit even one more belief there and 20
+    of the 45 `pool` labels on the extended grid were false. Two assertions
     replace the membership check:
 
     1. Every published `{arm}_probe_budget` at the top of the grid must exceed
@@ -626,9 +629,8 @@ def test_the_producer_names_which_budget_ended_every_pack(
        not a published label. That one is
        `test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label`
        below rather than an assertion here, because it re-runs the producer
-       and stacking a second 5-second run on top of this module's 15.5-second
-       fixture would put one item close to the 30-second per-test timeout CI
-       pins.
+       and stacking a second run on top of this module's full-grid fixture
+       would put one item that much closer to the per-test timeout.
 
     Mutations, re-measured on this branch rebased onto post-#1552
     `github/main`, with `uv run pytest tests/test_render_cost_1526.py -q`.
@@ -772,10 +774,12 @@ def test_the_producer_names_which_budget_ended_every_pack(
     )
     assert "token_budget" in seen, seen
     assert seen <= {"token_budget", "l25_subbudget", "both", "pool"}, seen
-    # Falsifiability 1 for the `pool` label. At the top of the grid one belief
-    # costs more than four times `ups`'s whole budget, so a probe that is a
-    # multiple of the cap cannot admit even one more belief and every label it
-    # produces is arithmetic rather than evidence. Every published probe there
+    # Falsifiability 1 for the `pool` label. At the top of the grid a cell that
+    # is still flat at 4x does not move until `token_budget` is near 9,300 —
+    # twice one belief's charge — which is above every lane's 4x probe but
+    # `cli_search`'s, so a probe that is a multiple of the cap cannot admit
+    # even one more belief and every label it produces is arithmetic rather
+    # than evidence. Every published probe there
     # must therefore be above the floor `SATURATION_PROBE_FACTOR` leaves under
     # `_probe_budget`: reverting the probe to the factor makes the two equal.
     assert m.SATURATION_PROBE_FACTOR > 1
@@ -806,12 +810,13 @@ def test_a_probe_too_small_to_admit_a_belief_is_a_crash_not_a_label(
     budget". Everything downstream of that label — the `pool_equality` legend,
     the #1546 finding that no budget can bind on `session_start` — is only as
     good as the probe the caps were raised to, and the probe used to be
-    `budget * SATURATION_PROBE_FACTOR`. At 18,600 content characters one
-    belief costs more than four times `ups`'s whole budget, so that probe
-    could not admit one more belief anywhere in the cell and returned `pool`
-    for arms a larger probe moves: 20 of 45 labels were false and the emitted
-    figures showed nothing, because the probe behind them was published
-    nowhere.
+    `budget * SATURATION_PROBE_FACTOR` — a multiple of the lane's budget and
+    not of what a belief costs. At 18,600 content characters a flat cell does
+    not move until `token_budget` is near 9,300, twice one belief's charge,
+    which is above every lane's 4x probe but `cli_search`'s; so that probe
+    could not admit one more belief in the cell and returned `pool` for arms a
+    larger probe moves: 20 of 45 labels were false and the emitted figures
+    showed nothing, because the probe behind them was published nowhere.
 
     `_probe_budget` is stubbed to 0, which drops `_measure` back onto exactly
     that old probe — `max(0, budget * 4, sub * 4)` — and the producer must

@@ -43,9 +43,13 @@ The probe is a bound, not a factor: the sum over the store of the largest
 per-belief charge any packer here can bill, so a pack run at it can afford
 every candidate it was offered. `SATURATION_PROBE_FACTOR` survives as a floor
 under it. It used to be the whole probe, and it was sized for a grid topping
-out at 300 content characters; at 18,600 one belief costs more than four times
-`ups`'s whole budget, so a 4x probe could not admit even one more belief and
-20 of the 45 `pool` labels on the extended grid were false. Every label is
+out at 300 content characters; a multiple of the *lane's* budget is not a
+multiple of what a belief costs, and at 18,600 content characters the cells
+that read `pool` first move at a `token_budget` near 9,300 — twice a single
+belief's charge — which only `cli_search`'s 4x probe of 9,600 clears. Every
+other lane's is below it, `ups`'s 6,000 included, so a 4x probe could not
+admit even one more belief there and 20 of the 45 `pool` labels on the
+extended grid were false. Every label is
 published with the probe that produced it (`{arm}_probe_budget`), and a `pool`
 is re-rendered at `POOL_CONFIRM_MULTIPLE` times the probe before it is
 published — a probe that turns out to be too small raises `PoolProbeTooSmall`
@@ -1087,12 +1091,15 @@ def _probe_budget(store: Any) -> int:
 
     **This replaces a factor with a bound, and the factor was wrong.**
     `SATURATION_PROBE_FACTOR = 4` was sized for a grid topping out at 300
-    content characters. At 18,600 one belief costs 4,663 tokens against
-    `ups`'s 1,500-token budget, so a 4x probe of 6,000 could not admit even one
-    more belief and `_measure` returned `pool` — "not evidence about any
-    budget" — for cells a larger probe moves. 45 of this module's 189 arms
-    read `pool` under the factor and 20 of them were false; under the bound 25
-    survive, including all 18 `session_start` arms (#1546).
+    content characters, and it multiplies the *lane's* budget, which is not
+    what a belief costs. At 18,600 the cells that read `pool` first move at a
+    `token_budget` near 9,300 — 9,300 on the before arm of every lane, 9,326
+    on `agent_context`'s after arm — and the only 4x probe on this module that
+    reaches it is `cli_search`'s 9,600. Every other lane's is below it,
+    `ups`'s 6,000 included, so `_measure` returned `pool` — "not evidence
+    about any budget" — for cells a larger probe moves. 45 of this module's
+    189 arms read `pool` under the factor and 20 of them were false; under the
+    bound 25 survive, including all 18 `session_start` arms (#1546).
 
     Two other sizings were measured and both fail:
 
@@ -1102,11 +1109,13 @@ def _probe_budget(store: Any) -> int:
       move at 16x; `search_tool_bash` at 18,600 is flat at 4x, 8x **and** 16x
       and moves at 32x. The loop stops on the first plateau and republishes the
       false label.
-    * *The largest single-belief charge.* Too small. At 18,600 that is 4,667
-      tokens, but the six items in the pack are locks consuming ~4,663 each, so
-      the seventh candidate needs a budget past their **cumulative** charge:
-      the first `token_budget` that moves the cell is 12,000, 2.6x the largest
-      single charge.
+    * *The largest single-belief charge.* Too small, by a factor of two. At
+      18,600 that charge is 4,667 tokens, while the arms that are still flat
+      at 4x — six items, all of them the store's user locks, charged 4,663
+      each — first move at 9,300 (`agent_context` after arm: 9,326), which is
+      twice one belief's charge in whichever currency the arm pays. Measured
+      by bisecting `token_budget` against the rendered bytes with
+      `l25_token_subbudget` left at its default.
 
     The sum is the smallest bound that survives both, and it is an upper bound
     rather than a search, so it does not depend on where the plateaus fall.
