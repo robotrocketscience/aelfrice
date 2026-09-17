@@ -2497,9 +2497,15 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
     Retired beliefs are reachable and labelled `status: retired`, because
     the id in an injected block from a week ago may name one.
 
-    The store opens read-only: the contract is observational, and a
-    writable open would pay DDL, migrations, the scope-id mint and the
-    expired-lock sweep to print one row.
+    The contract is observational — the command changes no belief —
+    and the store opens through `open_store_for_read()` (#1416), so a
+    store the caller cannot write is still readable. That is all the
+    routing buys: the helper attempts the ordinary writable open first
+    and falls back to `mode=ro` only on a permission failure, so against
+    a writable store this command still pays DDL, migrations, the
+    scope-id mint and the expired-lock sweep to print one row. Removing
+    that cost is filed as its own issue, over every read-only verb
+    rather than this one command.
     """
     from aelfrice.scoring import posterior_mean
 

@@ -18,7 +18,15 @@ non-zero — it never picks one for you.
 
 A retired belief is reachable and prints `status: retired`, because the id in
 an old block may name one. An unknown id exits 1 with a "no belief with id"
-message on stderr. The store opens read-only, so the command writes nothing.
+message on stderr.
+
+The command changes no belief, and it reads a store you cannot write: it
+opens through `open_store_for_read()` (#1416), which falls back to a
+read-only handle when the writable open is refused for lack of write
+access. That is the whole of what the routing buys. Against a store you
+*can* write, the handle is the ordinary writable one, so the open still
+pays the schema battery, the migrations, the scope-id mint, and the
+expired-lock sweep — `show` is not a write-free command there.
 </objective>
 
 <process>
