@@ -990,12 +990,47 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
 ) -> None:
     """The defect, at every grid length, in the producer's own numbers.
 
-    `fact` and `unknown` render verbatim and must charge exactly what they
-    emit — that is the control, and without it a table where every ratio was
-    large would be evidence of a broken measurement rather than of a defect.
+    This table is `agent_context`'s and no other lane's. `_emitted_chars`
+    renders through `hook._split_belief_lines`, which is the shape `ups`,
+    `first_prompt` and `agent_context` all emit, but #1551 and #1552 wired
+    `hook._ups_belief_line_cost` onto the first two as a `belief_cost_fn`, so
+    they short-circuit `retrieve_with_tiers._cost` before compression is
+    consulted and charge exactly what they emit. `agent_context` passes no
+    cost function, so it still pays `_charged_tokens` — the compressed branch —
+    for a line it renders in full. See `SNAPSHOT_ARM_HEADLINE_LANE`.
+
+    `fact` and `unknown` render verbatim, and the control they provide has two
+    halves now. Below `hook.BELIEF_CONTENT_CHAR_CAP` they charge exactly what
+    they emit — without that a table where every ratio was large would be
+    evidence of a broken measurement rather than of a defect. Above it the
+    renderer truncates and the charge does not, so they **over**charge: 4,663
+    tokens against 317 emitted at 18,600 content characters. That is the
+    mirror of the defect this file is about and it is asserted rather than
+    tolerated, because it is what a capped renderer and an uncapped cost
+    function do to each other.
+
+    The overcharge is asserted through the two facts that produce it rather
+    than through `charged > emitted` at every length above the cap: the emitted
+    side is flat above the cap and the charged side is strictly increasing.
+    Between about 1,201 and 1,270 content characters the growing charge has not
+    yet passed the capped emission, and no grid length falls in that band, so
+    a direct inequality written over the grid would be asserting something the
+    grid cannot see the edge of.
+
     `snapshot` must charge less than it emits wherever the headline strategy
-    fires, and the ratio must grow with belief length, because the headline is
-    a fixed-size prefix and the element around the emitted content is not.
+    fires, and the ratio must grow with belief length — up to a ceiling.
+    **That ceiling is the #1552 finding.** The headline charge is a fixed 44
+    tokens and the emitted side is capped at 1,265 characters, so the ratio
+    plateaus at 7.2x and cannot grow past it however long the belief is. It is
+    asserted as an equality across every above-cap grid length: an uncapped
+    renderer would make those three ratios differ, and 18,600 characters would
+    read 106.0x, which is what this table published before the rebase.
+
+    The order-of-magnitude claim therefore no longer belongs to `snapshot`, and
+    the threshold is not moved down to fit it. It belongs to `transient`, whose
+    stub strategy charges 25 tokens against the same 317 — 12.7x, over the same
+    unchanged 10.0. Asserting it on `snapshot` at 7.2x would be publishing a
+    ratio from a code path the cap has closed.
 
     The two shortest grid points are the arm's inert control: below
     `SENTENCE_CHARS` a belief carries no sentence boundary, `_headline`
@@ -1010,11 +1045,17 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
     )
     table = fig["undercharge"]
     lengths = [int(c) for c in fig["lengths"]]
+    cap = BELIEF_CONTENT_CHAR_CAP
     for chars in lengths:
         row = table[str(chars)]
         for verbatim in ("fact", "unknown"):
-            assert row[verbatim]["strategy"] == "verbatim", (chars, verbatim)
-            assert row[verbatim]["ratio"] == 1.0, (chars, row[verbatim])
+            cell = row[verbatim]
+            assert cell["strategy"] == "verbatim", (chars, verbatim)
+            if chars <= cap:
+                assert cell["ratio"] == 1.0, (chars, cell)
+                assert cell["charged_tokens"] == cell["emitted_tokens"], (
+                    chars, cell,
+                )
         snap = row["snapshot"]
         if chars < m.SENTENCE_CHARS:
             assert snap["strategy"] == "verbatim", (chars, snap)
@@ -1023,31 +1064,92 @@ def test_a_snapshot_belief_is_charged_less_than_the_lane_emits(
             assert snap["strategy"] == "headline", (chars, snap)
             assert snap["ratio"] > 1.0, (chars, snap)
             assert snap["charged_tokens"] < snap["emitted_tokens"], (chars, snap)
+    # Above the cap the renderer stops growing and the verbatim charge does
+    # not, which is what turns the control into an overcharge. Both halves are
+    # asserted, because either one alone is consistent with no cap at all.
+    above = [c for c in lengths if c > cap]
+    assert len(above) > 1, (cap, lengths)
+    emitted_above = {table[str(c)]["fact"]["emitted_chars"] for c in above}
+    assert len(emitted_above) == 1, (
+        "the emitted side still grows above "
+        f"BELIEF_CONTENT_CHAR_CAP = {cap}: "
+        f"{ {c: table[str(c)]['fact']['emitted_chars'] for c in above} }"
+    )
+    charged_above = [table[str(c)]["fact"]["charged_tokens"] for c in above]
+    assert charged_above == sorted(charged_above) and len(
+        set(charged_above)
+    ) == len(charged_above), dict(zip(above, charged_above))
+    top = max(lengths)
+    for verbatim in ("fact", "unknown"):
+        cell = table[str(top)][verbatim]
+        assert cell["charged_tokens"] > cell["emitted_tokens"], (top, cell)
     compressing = [c for c in lengths if c >= m.SENTENCE_CHARS]
     ratios = [table[str(c)]["snapshot"]["ratio"] for c in compressing]
     assert ratios == sorted(ratios), dict(zip(compressing, ratios))
-    # The grid reaches a range where the undercharge is an order of magnitude,
-    # which is the whole reason #1547 extended it past 300 characters.
-    assert max(ratios) > 10.0, dict(zip(compressing, ratios))
+    # The ceiling. `snapshot`'s charge is a fixed-size headline and its
+    # emission is capped, so the ratio stops growing once the cap binds; every
+    # above-cap length must report the same one. Removing the cap makes these
+    # three differ and 18,600 characters read 106.0x again.
+    ceiling = {table[str(c)]["snapshot"]["ratio"] for c in above}
+    assert len(ceiling) == 1, (
+        "the snapshot undercharge still grows above "
+        f"BELIEF_CONTENT_CHAR_CAP = {cap}, so it is not bounded by the cap: "
+        f"{ {c: table[str(c)]['snapshot']['ratio'] for c in above} }"
+    )
+    assert ceiling.pop() > 1.0, table[str(top)]["snapshot"]
+    # The grid reaches a range where the undercharge is an order of magnitude.
+    # Not on `snapshot`, which the cap holds at its ceiling, but on
+    # `transient`: the threshold is the same 10.0 read against the class that
+    # still reaches it.
+    worst = max(
+        (table[str(c)][cls]["ratio"], c, cls)
+        for c in compressing
+        for cls in ("snapshot", "transient")
+    )
+    assert worst[0] > 10.0, {
+        c: {
+            cls: table[str(c)][cls]["ratio"]
+            for cls in ("snapshot", "transient")
+        }
+        for c in compressing
+    }
 
 
 def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     producer_figures: dict[str, object],
 ) -> None:
-    """A pack that believes it is under budget while emitting 100x its charge.
+    """A pack that believes it is under budget while emitting more than it charged.
 
-    At the top of the grid the prose pack admits no non-locked belief at all —
-    one verbatim belief costs more than the whole `DEFAULT_HOOK_TOKEN_BUDGET` —
-    so it ends on the candidate pool. The snapshot corpus differs from it in
-    one field, and on it the budget binds and admits beliefs whose emitted text
-    is two orders of magnitude more than what they were charged.
+    **The three lanes no longer say the same thing, and that is the finding.**
+    `ups` and `first_prompt` pass `hook._ups_belief_line_cost` as their
+    `belief_cost_fn` (#1551, #1552), which is the line they emit, so their pack
+    charge equals their pack emission in every retention class at every arm
+    length and the retention class buys them nothing: same items, same bytes,
+    ratio 1.0. That is asserted here as an equality rather than dropped,
+    because it is the thing that would regress if the cost function were ever
+    unwired — a producer charging `_charged_tokens` on those lanes would
+    publish a discount from a branch they short-circuit past.
+
+    `agent_context` is where the gap survives: it passes no cost function, so
+    its pack still charges the compressed form. The class changes what it
+    admits at exactly one arm length, 300 characters, and that length is
+    selected by a stated rule — the largest arm length at which the snapshot
+    corpus admits a belief the prose corpus does not — rather than named. At
+    7,170 and 18,600 the lane is lock-starved: its 600-token budget is spent by
+    six user locks whose content `BELIEF_CONTENT_CHAR_CAP` exempts, before the
+    pack loop reaches a candidate, so all three corpora return the same six
+    locks, there is no non-locked hit to sum over and the ratio is `None`. That
+    starvation is asserted too, because those are the cells `_flat_1547_keys`
+    publishes and a reader of the emitted figures needs to know the zeros are
+    measured.
 
     The comparison is prose against snapshot, not control against snapshot.
     Those two corpora differ in exactly one field; the control differs in two,
     and attributing a ratio to the class while the text also moved is the
-    confound this arm was built to avoid. The control is asserted here only for
-    what it is for: its own text change must not be what produced the effect,
-    so `prose` is required to stay close to it.
+    confound this arm was built to avoid. The control is asserted where the
+    attribution is actually made — at the length the class moves the pack, the
+    text change must have moved nothing — rather than at the top of the grid,
+    where post-#1552 there is no class effect to attribute.
 
     All three sides go through `_measure`, so both budgets are varied on each,
     and the `binds_on` each reports is the #1546 property applied to the arm.
@@ -1068,37 +1170,21 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
     # for, or the arm reports on a lane no #1526 figure covers.
     assert "ups" in arm, sorted(arm)
     assert "first_prompt" in arm, sorted(arm)
+    assert "agent_context" in arm, sorted(arm)
+    assert m.SNAPSHOT_ARM_HEADLINE_LANE in arm, (
+        m.SNAPSHOT_ARM_HEADLINE_LANE, sorted(arm),
+    )
     assert set(arm) <= set(m.LANES), (sorted(arm), sorted(m.LANES))
     lengths = sorted(int(c) for c in fig["snapshot_arm_lengths"])
     for lane, rows in arm.items():
-        row = rows[str(lengths[-1])]
-        assert row["snapshot_items"] > row["prose_items"], (lane, row)
-        assert row["snapshot_bytes"] > row["prose_bytes"], (lane, row)
-        assert row["snapshot_pack_ratio"] > 10.0, (lane, row)
-        # The prose pack admits no non-locked belief at all here, so it has no
-        # ratio to report: one verbatim belief of this length costs more than
-        # the whole budget. That None is the control the line above is read
-        # against, and it is asserted rather than skipped over.
-        assert row["prose_unlocked_hits"] == 0, (lane, row)
-        assert row["prose_pack_ratio"] is None, (lane, row)
-        assert row["snapshot_unlocked_hits"] > 0, (lane, row)
-        for side in ("control_binds_on", "prose_binds_on", "snapshot_binds_on"):
-            assert row[side] in {
-                "token_budget", "l25_subbudget", "both", "pool",
-            }, (lane, side, row[side])
-        # The text change on its own moves nothing at the top of the grid:
-        # without the class, sentence boundaries are just characters.
-        assert row["prose_bytes"] == row["control_bytes"], (lane, row)
-        # It does move something somewhere, though, and it has to: a middle
-        # corpus that renders byte-identically to the control at every length
-        # is the control, and the attribution above it would be a comparison
-        # of a corpus with itself. `ups` differs at 300 content characters,
-        # where the headline the sentence boundary makes available is longer
-        # than the hard truncation it replaces.
-        assert [
-            c for c in lengths
-            if rows[str(c)]["prose_bytes"] != rows[str(c)]["control_bytes"]
-        ], (lane, {c: rows[str(c)]["prose_bytes"] for c in lengths})
+        for c in lengths:
+            row = rows[str(c)]
+            for side in (
+                "control_binds_on", "prose_binds_on", "snapshot_binds_on",
+            ):
+                assert row[side] in {
+                    "token_budget", "l25_subbudget", "both", "pool",
+                }, (lane, c, side, row[side])
         # The inert control length: below `SENTENCE_CHARS` no belief carries a
         # sentence boundary, so the class has nothing to shorten and all three
         # corpora must render byte-identically.
@@ -1107,6 +1193,77 @@ def test_the_snapshot_arm_admits_beliefs_the_control_cannot_afford(
             "snapshot_bytes"
         ], (lane, short)
         assert short["snapshot_pack_ratio"] == 1.0, (lane, short)
+    # The middle corpus has to move something somewhere: a corpus that renders
+    # byte-identically to the control everywhere *is* the control, and the
+    # attribution below would be a comparison of a corpus with itself. It is
+    # asserted over the arm and not per lane because it is a property of the
+    # corpus: `ups` and `first_prompt` differ at 300 content characters, where
+    # the headline the sentence boundary makes available is longer than the
+    # hard truncation it replaces, while `agent_context` renders the two
+    # identically at every arm length — which is what makes its own class
+    # effect at 300 attributable to the class alone.
+    assert [
+        (lane, c)
+        for lane, rows in arm.items()
+        for c in lengths
+        if rows[str(c)]["prose_bytes"] != rows[str(c)]["control_bytes"]
+    ], {
+        lane: {c: (rows[str(c)]["control_bytes"], rows[str(c)]["prose_bytes"])
+               for c in lengths}
+        for lane, rows in arm.items()
+    }
+    # The two lanes #1552 closed. The class changes nothing they admit, and
+    # their charge is their emission, at every arm length.
+    for lane in ("ups", "first_prompt"):
+        for c in lengths:
+            row = arm[lane][str(c)]
+            assert row["snapshot_items"] == row["prose_items"], (lane, c, row)
+            assert row["snapshot_bytes"] == row["prose_bytes"], (lane, c, row)
+            assert row["snapshot_pack_ratio"] == 1.0, (lane, c, row)
+            assert row["snapshot_charged_tokens"] == row[
+                "snapshot_emitted_tokens"
+            ], (lane, c, row)
+    # The lane that still charges through compression. The arm length is
+    # selected by a rule read off the produced figures — the largest at which
+    # the class admits a belief the prose corpus does not — so nothing here is
+    # a length chosen for its number.
+    head = m.SNAPSHOT_ARM_HEADLINE_LANE
+    rows = arm[head]
+    moved = [
+        c for c in lengths
+        if rows[str(c)]["snapshot_items"] > rows[str(c)]["prose_items"]
+    ]
+    assert moved, (
+        f"the retention class changes nothing {head} admits at any arm "
+        f"length, so the arm measures no class effect on the one lane that "
+        f"still charges the compressed form: "
+        f"{ {c: (rows[str(c)]['prose_items'], rows[str(c)]['snapshot_items']) for c in lengths} }"
+    )
+    row = rows[str(max(moved))]
+    assert row["snapshot_bytes"] > row["prose_bytes"], (head, row)
+    assert row["snapshot_unlocked_hits"] > row["prose_unlocked_hits"], (
+        head, row,
+    )
+    assert row["snapshot_charged_tokens"] < row["snapshot_emitted_tokens"], (
+        head, row,
+    )
+    assert row["snapshot_pack_ratio"] > 1.0, (head, row)
+    # ...and the text change on its own moved nothing there, which is what
+    # lets the line above be attributed to the class rather than to the
+    # sentence boundaries the class needs.
+    assert row["prose_bytes"] == row["control_bytes"], (head, row)
+    # At the top of the grid this lane is lock-starved rather than measured.
+    # Its six user locks are exempt from `BELIEF_CONTENT_CHAR_CAP` and spend
+    # the 600-token budget before the pack loop reaches a candidate, so all
+    # three corpora return the same six and there is nothing to charge. Those
+    # are the cells `_flat_1547_keys` publishes, so the zeros are pinned here.
+    top = rows[str(lengths[-1])]
+    assert top["snapshot_items"] == top["prose_items"] == top[
+        "control_items"
+    ], (head, top)
+    assert top["snapshot_unlocked_hits"] == 0, (head, top)
+    assert top["snapshot_charged_tokens"] == 0, (head, top)
+    assert top["snapshot_pack_ratio"] is None, (head, top)
 
 
 _1526_COST_NAME_SUFFIXES = ("_tokens", "_cost")
