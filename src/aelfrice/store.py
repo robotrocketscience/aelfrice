@@ -230,18 +230,31 @@ def read_only_uri(path: str) -> str:
     database file". `as_uri()` opens all three correctly and writes
     nothing.
 
-    Absolutised with `os.path.abspath` rather than `Path.resolve()`,
-    deliberately: `resolve()` follows symlinks, while `self._db_path`
-    keeps the caller's spelling and is what places the `.bm25f` sidecar
-    and fills the error strings, so resolving here would let the engine's
-    path and the store's reported path drift on a symlinked store.
-    `abspath` normalises lexically only, which leaves symlink resolution
-    with the OS exactly where the old string form left it — the bytes
-    opened are unchanged for every path that already worked.
+    Absolutised with `Path.absolute()`, which prefixes the working
+    directory and changes nothing else. Neither alternative is safe
+    here, and both were tried:
+
+    * `Path.resolve()` follows symlinks, while `self._db_path` keeps the
+      caller's spelling and is what places the `.bm25f` sidecar and
+      fills the error strings, so resolving would let the engine's path
+      and the store's reported path drift on a symlinked store.
+    * `os.path.abspath()` collapses `..` *lexically*, before the
+      kernel sees the path. On a configured path where a `..` follows a
+      symlinked directory — `AELFRICE_DB` is taken verbatim, so the user
+      picks the spelling — `link/../memory.db` collapses to a sibling of
+      `link`, while the writable `sqlite3.connect(path)` lets the kernel
+      resolve `..` *after* the symlink and reaches a different file.
+      Since `open_store_for_read` tries the writable open first and
+      falls back only on a permission failure, the same user would read
+      one database when the directory is writable and another when it is
+      not, silently. Measured on SQLite 3.50.4.
+
+    `absolute()` percent-encodes identically through `as_uri()` and
+    leaves `..` for the OS, exactly where the old string form left it.
     """
     from pathlib import Path
 
-    return Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+    return Path(path).absolute().as_uri() + "?mode=ro"
 
 
 def _is_write_log_authoritative_inline() -> bool:

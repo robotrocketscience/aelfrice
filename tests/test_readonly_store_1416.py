@@ -586,12 +586,14 @@ def test_search_under_a_hash_path_reports_the_real_failure(
 
 
 def test_the_read_only_uri_is_built_by_the_uri_builder() -> None:
-    """Percent-encoding, and the abspath-not-resolve choice, pinned.
+    """Percent-encoding, and the absolutise-don't-normalise choice, pinned.
 
     `_db_path` keeps the caller's spelling — it places the `.bm25f`
-    sidecar and fills the error strings — so the URI is absolutised
-    lexically rather than resolved: `resolve()` would follow symlinks and
-    let the engine's path drift from the one the store reports.
+    sidecar and fills the error strings — so the URI is only made
+    absolute: `resolve()` would follow symlinks and let the engine's
+    path drift from the one the store reports, and `os.path.abspath()`
+    would collapse `..` lexically, which the next test shows is a
+    different file.
     """
     from aelfrice.store import read_only_uri
 
@@ -604,6 +606,62 @@ def test_the_read_only_uri_is_built_by_the_uri_builder() -> None:
         "file:///tmp/store%251/"
     )
     assert read_only_uri("relative.db").startswith("file:///")
+    assert read_only_uri("/tmp/link/../memory.db") == (
+        "file:///tmp/link/../memory.db?mode=ro"
+    ), "`..` belongs to the OS, which resolves it after the symlink"
+
+
+def _seed_locked(
+    db: Path, text: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seed a store at `db` holding one locked belief reading `text`."""
+    db.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
+    assert main(["lock", text]) == 0
+
+
+def test_a_dotdot_after_a_symlink_opens_the_writable_handles_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both handles must address one file, whatever the spelling.
+
+    `AELFRICE_DB` is honoured verbatim — `db_path()` returns
+    `Path(override)` with no normalisation — so the user chooses the
+    spelling, and a `..` that follows a symlinked directory means two
+    different things depending on who resolves it. The kernel resolves
+    the symlink first, so `link/..` is the parent of the *target*;
+    a lexical collapse deletes `link` and `..` as a pair and lands on
+    the parent of the *link*.
+
+    `MemoryStore`'s writable open hands the path straight to
+    `sqlite3.connect`, so it always gets the kernel's answer. If the
+    read-only URI normalises first, the two diverge — and
+    `open_store_for_read` picks between them by whether the directory
+    happens to be writable, so the same user would read one database
+    inside a sandbox and another outside it, with no error and no stray
+    file to notice.
+    """
+    (tmp_path / "real" / "sub").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / "real" / "sub")
+    # `link/..` is `<tmp>/real` to the kernel, `<tmp>` to a lexical collapse.
+    _seed_locked(tmp_path / "real" / "memory.db", "reached via the kernel", monkeypatch)
+    _seed_locked(tmp_path / "memory.db", "reached by collapsing", monkeypatch)
+
+    configured = str(tmp_path / "link" / ".." / "memory.db")
+    writable = MemoryStore(configured)
+    try:
+        expected = [b.content for b in writable.list_locked_beliefs()]
+    finally:
+        writable.close()
+    assert expected == ["reached via the kernel"], "fixture built wrong"
+
+    store = MemoryStore(configured, read_only=True)
+    try:
+        assert store.read_only is True
+        assert [b.content for b in store.list_locked_beliefs()] == expected
+    finally:
+        store.close()
 
 
 # --- the four observational commands released on 2026-09-17 ----------------
