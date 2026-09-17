@@ -254,7 +254,10 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     #1416's 2026-08-09 operator ruling sanctioned this partial for
     `search`, `status`, `locked` and `speculative`, and held the rest —
     "each needing its own read-only audit rather than a blanket change".
-    The 2026-09-17 ruling releases four more, and their audits are below.
+    The 2026-08-12 ruling releases four more — "route `core` / `stale` /
+    `introspect` / `graph` with the per-command audit the 2026-08-09
+    ruling required, amend the routed-set pin" — restated unchanged on
+    2026-09-01 and again on 2026-09-11. Their audits are below.
 
     `_cmd_show` is the fifth. The operator's ruling on #1553 was to ship
     the command on this existing routing with honest documentation, and
@@ -291,13 +294,21 @@ def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     is the per-command semantics the audit is *for*. `feed` never opens
     the store at all (it reads a JSONL log), so it is held trivially.
 
-    The four the 2026-09-17 ruling releases, audited one at a time. Each
+    The four the 2026-08-12 ruling releases, audited one at a time. Each
     has exactly one store-open call site, and each was mapped back to its
-    enclosing `def` by AST before the edit, because the issue comment's
-    line numbers point one handler off — at `_cmd_confirm`
-    (`apply_feedback(..., respect_lock=False)`) and `_cmd_resolve`
-    (`auto_resolve_all_contradictions`), which are writers. Routing
-    either onto a read-only handle would ship a bug, so neither is here.
+    enclosing `def` by AST before the edit, because five of the six line
+    numbers in the issue's comments land outside the handler they name.
+    Mapped over `main` at the time of the edit: 1382 is `_cmd_graph`'s
+    open, and the rest are `_cmd_show` (2519, cited as `_cmd_stale`),
+    `_cmd_restore` (3417) and `_emit_introspect_text` (3451, both cited
+    as `_cmd_introspect`), and `_cmd_confirm` (3585) and `_posterior`
+    (3615, both cited as `_cmd_core`). The one that bites is 3585: it is
+    the last line of `_cmd_confirm`, which calls `apply_feedback(...,
+    respect_lock=False)` and is a writer. Routing a writer onto a
+    read-only handle would ship a bug, so `_cmd_confirm` and the other
+    mutating command that reads like an observational one —
+    `_cmd_resolve` (`auto_resolve_all_contradictions`) — are pinned as
+    writers below.
 
     * `_cmd_graph` resolves seeds (`get_belief`, `find_foreign_owner`, or
       a BM25 top-1), walks `expand_bfs`, and serialises through
@@ -696,9 +707,9 @@ def test_a_dotdot_after_a_symlink_opens_the_writable_handles_database(
         store.close()
 
 
-# --- the four observational commands released on 2026-09-17 ----------------
+# --- the four observational commands the 2026-08-12 ruling released --
 
-#: `(argv, exit code on the happy path)` for the commands the 2026-09-17
+#: `(argv, exit code on the happy path)` for the commands the 2026-08-12
 #: ruling routes. `graph` exits 2 when its anchor matches nothing, which
 #: is a resolution failure, not a store failure — and the seeded store
 #: holds one locked belief, which `expand_bfs` reaches.
@@ -729,7 +740,7 @@ def _deny_write_control(d: Path) -> None:
 def test_observational_commands_report_instead_of_tracebacking(
     store_dir: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
 ) -> None:
-    """Regime 2 for the four handlers the 2026-09-17 ruling releases.
+    """Regime 2 for the four handlers the 2026-08-12 ruling releases.
 
     Before the routing these called `_open_store()`, so a store the
     caller cannot write dumped a raw `sqlite3.OperationalError` traceback
