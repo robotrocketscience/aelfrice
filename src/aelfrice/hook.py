@@ -3673,19 +3673,73 @@ one is how the ceiling's dropper finds a pointer whose element it is
 deleting, this one is how the envelope finds a pointer it is about to
 emit twice. Same two-space indent and `: "` separator, so the id group
 cannot run past the line's own punctuation.
+
+`_SEEN_MANIFEST_RE`'s caller has to exclude matches that fall inside a
+`<belief>` element, because belief content keeps its newlines through
+`_escape_for_hook_block` and can therefore carry a line shaped like a
+manifest entry. This one needs no such guard, and not because the risk is
+smaller: `_drop_duplicate_ref_lines` is never handed a rendered block. It
+is handed the manifest entries `_lift_manifest_block` cut out of one, so
+belief content is not in its input at all.
+"""
+
+_LOCKS_MANIFEST_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    re.escape(LOCKS_MANIFEST_OPEN_TAG)
+    + r"\n(?P<entries>.*?)\n"
+    + re.escape(LOCKS_MANIFEST_CLOSE_TAG)
+    + r"\n?",
+    re.DOTALL,
+)
+"""One whole `<aelfrice-locks-manifest>` block, wrapper included.
+
+Matched against a block this module rendered, so the tags are the exact
+constants `_manifest_block_lines` emitted and the entries are the lines it
+was given. A belief's content cannot forge either tag: `<` and `>` are
+entity-escaped by `_escape_for_hook_block` before any content reaches a
+rendered block, so the literal `<aelfrice-locks-manifest` cannot appear
+inside an element. Non-greedy, so two blocks in one string are two
+matches rather than one match spanning both.
 """
 
 
+def _lift_manifest_block(block: str) -> tuple[str, list[str]]:
+    """Cut `block`'s manifest out of it, returning the rest and its entries.
+
+    The session-start sub-block renders its own reference locks into its own
+    `<aelfrice-locks-manifest>` wrapper, which is right when that sub-block
+    is read on its own and wrong once it is embedded: the envelope has a
+    manifest of its own, and two wrappers in one envelope repeat the
+    framing note (233 characters of it) for no second reader. This lifts the
+    sub-block's entries so `_format_hits_with_session_start` can emit one
+    wrapper over both sets.
+
+    Returns `(block, [])` unchanged when there is no manifest, which is
+    every store until someone runs `aelf lock --reference`.
+    """
+    m = _LOCKS_MANIFEST_BLOCK_RE.search(block)
+    if m is None:
+        return block, []
+    return block[: m.start()] + block[m.end() :], m.group("entries").split("\n")
+
+
 def _drop_duplicate_ref_lines(
-    manifest_lines: list[str], rendered_block: str
+    manifest_lines: list[str], already_manifested: list[str]
 ) -> list[str]:
-    """Drop `ref` entries `rendered_block` already carries, by id (#1558).
+    """Drop `ref` entries `already_manifested` already carries, by id (#1558).
 
     The session-start sub-block emits a `ref` line for each of its own
     reference locks, and the per-turn pack reaches the same ids through the
     same `_renders_as_manifest` predicate, so without this the envelope
     carried the identical pointer twice — the #1547 duplicate in its
     manifest form.
+
+    Both arguments are manifest entry lines, never a rendered block. That is
+    what keeps this free of the element-span guard its sibling in
+    `enforce_block_ceiling` needs: belief content survives escaping with its
+    newlines intact and can hold a line shaped like a `ref` entry, so
+    scanning a rendered body for one would let stored text decide which
+    pointer the envelope drops. `_lift_manifest_block` does the extraction,
+    against the wrapper tags, which content cannot forge.
 
     Filtered by id rather than by whole-line equality: two renders of one
     belief agree on the id by construction and on the topic only as long as
@@ -3695,7 +3749,11 @@ def _drop_duplicate_ref_lines(
     different claim from `ref` and has its own drop accounting in
     `enforce_block_ceiling`.
     """
-    already = frozenset(_REF_MANIFEST_RE.findall(rendered_block))
+    already = frozenset(
+        m.group("id")
+        for m in (_REF_MANIFEST_RE.match(line) for line in already_manifested)
+        if m is not None
+    )
     if not already:
         return manifest_lines
     kept: list[str] = []
@@ -4819,23 +4877,32 @@ def _format_hits_with_session_start(
     a separate call because the first dedupe cannot cover it: a diverted
     reference lock is deliberately absent from `_ids_rendered_verbatim_in`,
     whose contract is that the text is in this window, and it is not.
+
+    **One manifest wrapper per envelope.** The sub-block wraps its own
+    entries, which is right when it is read alone and redundant here, so
+    `_lift_manifest_block` cuts that wrapper out and its entries are emitted
+    under the envelope's single one, ahead of the per-turn entries. Two
+    wrappers repeated the 233-character framing note for a reader who has
+    already been given it, on the write this branch exists to shrink. The
+    lift also decides what the dedupe sees: manifest entries rather than a
+    rendered body, so no belief's content can be read as a `ref` line.
     """
+    manifest_lines: list[str] = []
+    lifted: list[str] = []
     if session_start_block:
         already_rendered = already_rendered | _ids_rendered_verbatim_in(
             session_start_block
         )
+        session_start_block, lifted = _lift_manifest_block(session_start_block)
     belief_lines, manifest_lines = _split_belief_lines(
         hits, already_rendered=already_rendered
     )
-    if session_start_block:
-        manifest_lines = _drop_duplicate_ref_lines(
-            manifest_lines, session_start_block
-        )
+    manifest_lines = _drop_duplicate_ref_lines(manifest_lines, lifted)
     lines: list[str] = [OPEN_TAG, _framing_header_for(hits)]
     if session_start_block:
         lines.append(session_start_block)
     lines.extend(belief_lines)
-    lines.extend(_manifest_block_lines(manifest_lines))
+    lines.extend(_manifest_block_lines([*lifted, *manifest_lines]))
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)

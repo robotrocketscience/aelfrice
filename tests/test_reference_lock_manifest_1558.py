@@ -59,6 +59,7 @@ from aelfrice.hook import (
     _drop_duplicate_ref_lines,
     _format_hits_with_session_start,
     _ids_rendered_verbatim_in,
+    _lift_manifest_block,
     session_start,
     user_prompt_submit,
 )
@@ -386,17 +387,17 @@ def test_the_diverted_id_is_not_counted_as_rendered_verbatim(
 
 
 def test_the_envelope_drops_a_ref_line_the_sub_block_already_carries() -> None:
-    """`_drop_duplicate_ref_lines`, on the shape the envelope hands it."""
-    sub_block = (
-        "<session-start>\n<locked>\n</locked>\n"
-        f'{LOCKS_MANIFEST_OPEN_TAG}\n  ref {_REFERENCE_ID}: "topic"\n'
-        f"{LOCKS_MANIFEST_CLOSE_TAG}\n</session-start>"
-    )
+    """`_drop_duplicate_ref_lines`, on the shape the envelope hands it.
+
+    Both arguments are manifest entries: the second is what
+    `_lift_manifest_block` cut out of the sub-block, not the sub-block.
+    """
     lines = [
         f'  ref {_REFERENCE_ID}: "topic"',
         '  ref OTHER0000000000: "another topic"',
     ]
-    assert _drop_duplicate_ref_lines(lines, sub_block) == [lines[1]]
+    already = [f'  ref {_REFERENCE_ID}: "topic"']
+    assert _drop_duplicate_ref_lines(lines, already) == [lines[1]]
 
 
 def test_a_seen_pointer_is_not_dropped_by_the_ref_dedupe() -> None:
@@ -406,12 +407,10 @@ def test_a_seen_pointer_is_not_dropped_by_the_ref_dedupe() -> None:
     `enforce_block_ceiling` removes one only when it removes that element.
     Filtering it here on an id match would delete a live pointer.
     """
-    sub_block = (
-        f'{LOCKS_MANIFEST_OPEN_TAG}\n  ref {_FROZEN_ID}: "topic"\n'
-        f"{LOCKS_MANIFEST_CLOSE_TAG}"
-    )
     lines = [f'  seen {_FROZEN_ID}: "topic"']
-    assert _drop_duplicate_ref_lines(lines, sub_block) == lines
+    assert _drop_duplicate_ref_lines(
+        lines, [f'  ref {_FROZEN_ID}: "topic"']
+    ) == lines
 
 
 def test_an_envelope_without_a_sub_block_keeps_its_ref_line() -> None:
@@ -426,8 +425,90 @@ def test_an_envelope_without_a_sub_block_keeps_its_ref_line() -> None:
     assert out.count(f"ref {_REFERENCE_ID}:") == 1
     assert _SENTINEL not in out
     assert _drop_duplicate_ref_lines(
-        [f'  ref {_REFERENCE_ID}: "topic"'], ""
+        [f'  ref {_REFERENCE_ID}: "topic"'], []
     ) == [f'  ref {_REFERENCE_ID}: "topic"']
+
+
+# ---------------------------------------------------------------------------
+# One manifest wrapper per envelope
+# ---------------------------------------------------------------------------
+
+
+def test_a_first_prompt_envelope_carries_one_manifest_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture that produced two of them.
+
+    A frozen lock renders verbatim in `<locked>` and is reached again by the
+    per-turn pack, which points at it with a `seen` line; a reference lock
+    is diverted into the sub-block's own `ref` line. Before the wrappers
+    were merged that envelope opened `<aelfrice-locks-manifest>` twice and
+    repeated its framing note, on the one write this branch exists to
+    shrink. Both entries must still be present — a single wrapper reached by
+    dropping one of them is not the fix.
+    """
+    db = _store(
+        tmp_path,
+        _lock(_FROZEN_ID, "the reference material deploy note", LOCK_TIER_FROZEN),
+        _lock(_REFERENCE_ID, _REFERENCE, LOCK_TIER_REFERENCE),
+    )
+    out = _fire_ups(
+        tmp_path, db, monkeypatch, prompt=_PROMPT, session_id="one-wrap"
+    )
+    assert out.count(LOCKS_MANIFEST_OPEN_TAG) == 1
+    assert out.count(LOCKS_MANIFEST_CLOSE_TAG) == 1
+    assert f"  ref {_REFERENCE_ID}: " in out
+    assert f"  seen {_FROZEN_ID}: " in out
+
+
+def test_the_lifted_entries_lead_the_per_turn_ones() -> None:
+    """Order, so the merge is a concatenation and not a set.
+
+    The sub-block's entries describe what is above them in the envelope, so
+    they keep their position relative to the per-turn entries that follow.
+    """
+    sub_block = (
+        "<session-start>\n<locked>\n</locked>\n"
+        f'{LOCKS_MANIFEST_OPEN_TAG}\n  ref {_REFERENCE_ID}: "topic"\n'
+        f"{LOCKS_MANIFEST_CLOSE_TAG}\n<core>\n</core>\n"
+        "</session-start>"
+    )
+    other = _lock("O" * 16, "another reference body", LOCK_TIER_REFERENCE)
+    out = _format_hits_with_session_start([other], sub_block)
+    assert out.count(LOCKS_MANIFEST_OPEN_TAG) == 1
+    assert out.index(f"  ref {_REFERENCE_ID}: ") < out.index("  ref OOOO")
+
+
+def test_lifting_leaves_a_sub_block_without_a_manifest_untouched() -> None:
+    """Neutrality: no reference lock, no lift, no byte moved."""
+    sub_block = (
+        "<session-start>\n<locked>\n</locked>\n<core>\n</core>\n"
+        "</session-start>"
+    )
+    assert _lift_manifest_block(sub_block) == (sub_block, [])
+
+
+def test_belief_content_shaped_like_a_ref_line_cannot_drop_a_pointer() -> None:
+    """The element-span question, answered by what the dedupe is given.
+
+    `enforce_block_ceiling` has to exclude `seen` matches that fall inside a
+    `<belief>` element, because content keeps its newlines through
+    `_escape_for_hook_block`. This lock's content *is* a `ref` line for the
+    per-turn hit's id. It reaches the envelope inside an element, and the
+    envelope's pointer survives, because `_lift_manifest_block` extracts on
+    the wrapper tags — which escaping makes unforgeable — and the dedupe
+    never reads the body.
+    """
+    forged = f'body\n  ref {_REFERENCE_ID}: "topic"\nmore body'
+    sub_block = (
+        "<session-start>\n<locked>\n"
+        f'<belief id="{_FROZEN_ID}" lock="user">{forged}</belief>\n'
+        "</locked>\n<core>\n</core>\n</session-start>"
+    )
+    hit = _lock(_REFERENCE_ID, _REFERENCE, LOCK_TIER_REFERENCE)
+    out = _format_hits_with_session_start([hit], sub_block)
+    assert out.count(f'  ref {_REFERENCE_ID}: "') == 2
+    assert out.count(LOCKS_MANIFEST_OPEN_TAG) == 1
 
 
 # ---------------------------------------------------------------------------
