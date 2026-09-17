@@ -1180,28 +1180,30 @@ def _measure(
     # against a 1,600 sub-floor), which is why it costs nothing to keep.
     probe = max(_probe_budget(store), budget * f, sub * f)
     ctx = _legacy_accounting if legacy else contextlib.nullcontext
+    # The four labels are a precedence and not a set: the first widening whose
+    # bytes differ from the arm decides, and the widenings below it are never
+    # read. So each one is rendered only if the label above it did not fire.
+    # `render` is a pure function of `(store, budget, sub, legacy)` — it reads
+    # the store and returns counts — so this changes no label and no byte
+    # count; it changes how many renders a cell costs, which on the full grid
+    # is the difference between five per `_measure` call and one for the
+    # common `token_budget` cell.
     with ctx():
         arm = render(store, budget, sub, legacy=legacy)
-        wide_budget = render(store, probe, sub, legacy=legacy)
-        wide_sub = render(store, budget, probe, legacy=legacy)
-        wide_both = render(store, probe, probe, legacy=legacy)
-        if (
-            wide_budget.n_bytes == arm.n_bytes
-            and wide_sub.n_bytes == arm.n_bytes
-            and wide_both.n_bytes == arm.n_bytes
+        for label, wide_budget, wide_sub in (
+            ("token_budget", probe, sub),
+            ("l25_subbudget", budget, probe),
+            ("both", probe, probe),
         ):
-            confirm = render(
-                store,
-                probe * POOL_CONFIRM_MULTIPLE,
-                probe * POOL_CONFIRM_MULTIPLE,
-                legacy=legacy,
-            )
-    if wide_budget.n_bytes != arm.n_bytes:
-        return (arm, "token_budget", probe)
-    if wide_sub.n_bytes != arm.n_bytes:
-        return (arm, "l25_subbudget", probe)
-    if wide_both.n_bytes != arm.n_bytes:
-        return (arm, "both", probe)
+            wide = render(store, wide_budget, wide_sub, legacy=legacy)
+            if wide.n_bytes != arm.n_bytes:
+                return (arm, label, probe)
+        confirm = render(
+            store,
+            probe * POOL_CONFIRM_MULTIPLE,
+            probe * POOL_CONFIRM_MULTIPLE,
+            legacy=legacy,
+        )
     if confirm.n_bytes != arm.n_bytes:
         raise PoolProbeTooSmall(
             lane, chars, arm.n_bytes, probe, confirm.n_bytes,
