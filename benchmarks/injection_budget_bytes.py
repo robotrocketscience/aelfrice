@@ -212,23 +212,27 @@ SENTENCE_CHARS = 120
 #   second half of why the defect was invisible here.
 # * 1000 — p90 of live per-turn `<belief>` element size (#1547 measured 1,005
 #   over n=24,083 elements).
-# * 5950 — the one length where the two arms' accountings of a single `<core>`
-#   line fall on opposite sides of `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`.
-#   The pre-#1526 charge `max(1, len(content) // 4)` is 1,487 and the shipped
-#   charge on the rendered line is 1,505, against a budget of 1,500, so the
-#   before arm packs one belief and the after arm packs none. The two charges
-#   cross that budget at 5,934 (shipped) and 6,004 (pre-#1526) content
-#   characters and the rest of this grid steps 1,000 → 7,170 straight over the
-#   gap, which left every other cell agreeing between the accountings. A
-#   `<core>` zero is read in the currency of the arm that packed it (see
+# * 6004 — the edge at which the two arms' accountings of a single `<core>`
+#   line part company, and the first grid length whose **before** arm packs no
+#   `<core>` line at all. #1552 caps the rendered content at
+#   `hook.BELIEF_CONTENT_CHAR_CAP`, so the shipped charge plateaus at 320
+#   tokens for any content past 1,200 characters and can never reach the
+#   1,500-token `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET`. The pre-#1526
+#   charge `max(1, len(content) // 4)` is uncapped and crosses that budget at
+#   exactly 6,004 characters: 1,500 at 6,003, 1,501 here. A `<core>` zero is
+#   read in the currency of the arm that packed it (see
 #   `test_the_producer_names_which_budget_ended_every_pack`), and this is the
-#   only length at which reading the wrong one is wrong.
+#   length that makes the before arm's half of that branch decide something.
+#   It replaces 5,950, which was chosen while the crossing ran the other way —
+#   the shipped charge was the uncapped one and was the half that overran the
+#   budget first. Post-#1552 that relation is inverted and 5,950 sits 54
+#   characters below the new edge, on the side where both arms pack a line.
 # * 7170 — p99 of that same distribution.
 # * 18600 — the length #1547's charged-vs-emitted table is measured at, and the
 #   only grid point where this producer's ratio can be compared with the
 #   issue's prior.
 CORPUS_MEDIAN_CHARS = 92
-LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 5950, 7170, 18600)
+LENGTH_GRID: tuple[int, ...] = (40, 92, 150, 200, 300, 1000, 6004, 7170, 18600)
 
 # Lengths the snapshot arm builds its own corpus at. A subset of the grid: the
 # arm's corpus is a second set of stores, and building one at every grid length
@@ -1812,20 +1816,28 @@ def _curve(
     16 false `pool` labels survived a review that read the emitted figures.
 
     A byte count of **zero** is a measurement, not a suppressed cell, and the
-    extended grid produces several: at 5,950, 7,170 and 18,600 content
-    characters a single `<core>` line costs 1,505, 1,810 and 4,667 tokens by
-    `hook._core_belief_cost` — the function `_pack_core_candidates` charges
-    with — against `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`, so
-    `_pack_core_candidates` — which skips an oversized belief rather than
+    extended grid produces three — **all of them in the before arm**. The
+    pre-#1526 charge `max(1, len(content) // 4)` is uncapped, so at 6,004,
+    7,170 and 18,600 content characters one `<core>` line costs 1,501, 1,792
+    and 4,650 tokens against `DEFAULT_SESSION_START_CORE_TOKEN_BUDGET = 1500`,
+    and `_pack_core_candidates` — which skips an oversized belief rather than
     breaking — packs none of 300 candidates and the section emits nothing. The
     old grid stopped at 300 characters and never reached that.
 
-    The before arm charges the pre-#1526 `max(1, len(content) // 4)`, which is
-    1,487 at 5,950 characters, so it is **not** zero there: that cell is the
-    one place on this grid where the two accountings disagree about whether a
-    single `<core>` line fits. `pct` is None where the before arm is zero,
-    because a percentage of nothing is not a number this module is willing to
-    print.
+    The **after** arm cannot empty at any length. `_core_belief_line` truncates
+    the content at `hook.BELIEF_CONTENT_CHAR_CAP` (#1552), so
+    `hook._core_belief_cost` — the function `_pack_core_candidates` actually
+    charges with — plateaus at 320 tokens for any content past 1,200
+    characters and 1,220 for the pathological case where every character is an
+    angle bracket `_escape_for_hook_block` expands fourfold. Both are under the
+    budget, so the shipped arm always packs at least one line; its `<core>`
+    curve bottoms out at 5,120 bytes. That is the reverse of the relation this
+    grid was extended to reach, and it is why the ninth length moved from
+    5,950 to 6,004: the two accountings now cross the budget in one place
+    only, and it is the pre-#1526 half that crosses.
+
+    `pct` is None where the before arm is zero, because a percentage of nothing
+    is not a number this module is willing to print.
     """
     rows: dict[str, Any] = {}
     for chars in lengths:
