@@ -1706,6 +1706,19 @@ def _flat_1547_keys(
         "undercharge_top_snapshot_ratio": row["snapshot"]["ratio"],
         "undercharge_top_transient_ratio": row["transient"]["ratio"],
     }
+    # The arm corpus's shape, flattened. `SNAPSHOT_EVERY` is the one constant
+    # in this module with no scalar key behind it, and it showed: mutating it
+    # from 7 to 3 left `tests/test_render_cost_1526.py` green **and**
+    # `scripts/check_derived_figures.py --mode all` at exit 0 while the
+    # published corpus went from 43/42 snapshot beliefs to 100/98. The arm's
+    # byte and item figures are insensitive to a 2.3x change in snapshot
+    # density — the packs are ended by budgets and locks, not by how many
+    # candidates carry the class — so they cannot stand in for the stride.
+    # Read off `corpus_shape`, which counts the column back off the store, so
+    # these keys also fail if the class stops being written.
+    shape = values["snapshot_corpus_shape"]
+    out["snapshot_corpus_snapshot"] = shape["snapshot"]
+    out["snapshot_corpus_snapshot_unlocked"] = shape["snapshot_unlocked"]
     d = values["dedupe"]
     out["dedupe_repeated_ids"] = d["repeated_ids"]
     out["dedupe_bytes_before"] = d["bytes_before"]
