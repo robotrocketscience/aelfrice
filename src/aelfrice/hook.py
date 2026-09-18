@@ -655,14 +655,17 @@ def _ceiling_drop_order(
     """Order the droppable elements into the sequence the ceiling sheds them.
 
     **Prompt-independent content is shed before prompt-matched content.**
-    The lanes are emitted in the fixed order `<cadence-resume>` (only on a
-    session's first prompt, and only behind the cadence feature),
-    `<locked>`, `<core>`, `<recent-work>`, per-turn hits, so popping the
-    body's tail drops the per-turn hits first -- the one lane whose
-    members were selected by *this prompt*. `<core>` is selected by corroboration and posterior and
+    `<locked>`, `<core>`, `<recent-work>` and the per-turn hits are emitted
+    in that fixed order, so popping the body's tail drops the per-turn hits
+    first -- the one lane whose members were selected by *this prompt*.
+    `<core>` is selected by corroboration and posterior and
     `<recent-work>` by the git state of the checkout; neither consults the
     prompt, so neither can be the weakest thing in the block with respect
-    to the turn being answered. Measured on 50 user locks of 150
+    to the turn being answered. The `<cadence-resume>` recap is the
+    exception to that rationale rather than a fifth member of it: it is
+    *prepended*, so popping the tail would reach it last, which is the
+    defect #1564 fixed and not an illustration of the rule. The paragraph
+    below says why it goes first instead. Measured on 50 user locks of 150
     characters, 20 `<core>` beliefs whose content does not mention the
     prompt and 20 hits that do, by `scripts/measure_block_ceiling.py
     --lanes` run once on this ordering and once on the tail-first one it
