@@ -10847,13 +10847,23 @@ def codex_inapplicable_options(
 
 
 def _explicitly_supplied_dests(argv: Sequence[str]) -> frozenset[str]:
-    """The dests `argv` actually sets, ignoring every default.
+    """The dests `argv` sets, ignoring every *action* default.
 
     Re-parses `argv` with a throwaway parser whose action defaults are all
-    `argparse.SUPPRESS`, so the resulting namespace carries only what the
-    caller typed. argparse does the matching, which means an `--opt=value`
-    form or an unambiguous prefix abbreviation counts exactly as it counted
-    in the real parse — a literal scan of `argv` would miss both.
+    `argparse.SUPPRESS`, so no option reaches the namespace unless the
+    caller supplied it. argparse does the matching, which means an
+    `--opt=value` form or an unambiguous prefix abbreviation counts exactly
+    as it counted in the real parse — a literal scan of `argv` would miss
+    both.
+
+    `SUPPRESS` does not reach `set_defaults`, so the result is not only
+    what the caller typed: `_explicitly_supplied_dests(["setup", "--host",
+    "codex"])` returns `cmd`, `func` and `host`. Neither `cmd` nor `func`
+    is an option dest, so neither can match an entry in
+    `codex_inapplicable_options` and produce a false refusal — the bare
+    `--host codex` omission control is what pins that. A caller comparing
+    this set against anything other than an option dest has to exclude
+    them itself.
     """
     probe = build_parser()
     for action in _iter_parser_actions(probe):
