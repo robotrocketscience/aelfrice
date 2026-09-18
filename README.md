@@ -164,7 +164,7 @@ The command has three scopes. `--scope all` exports everything, up to the cap th
 
 ## Status
 
-The latest stable version is **v4.3.0** (2026-08-13). The [4.3.0 changelog entry](CHANGELOG/v4.md) gives the detail for each change. [The roadmap](docs/concepts/ROADMAP.md) gives the history for each version, and [the limitations list](docs/user/LIMITATIONS.md) gives the known limits.
+The latest stable version is **v5.0.0** (2026-09-18). The [5.0.0 changelog entry](CHANGELOG/v5.md) gives the detail for each change. [The roadmap](docs/concepts/ROADMAP.md) gives the history for each version, and [the limitations list](docs/user/LIMITATIONS.md) gives the known limits.
 
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->

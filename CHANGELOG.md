@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Line  | File                                  | Status     |
 | ----- | ------------------------------------- | ---------- |
-| v4.x  | [`CHANGELOG/v4.md`](CHANGELOG/v4.md)  | current    |
+| v5.x  | [`CHANGELOG/v5.md`](CHANGELOG/v5.md)  | current    |
+| v4.x  | [`CHANGELOG/v4.md`](CHANGELOG/v4.md)  | archived   |
 | v3.x  | [`CHANGELOG/v3.md`](CHANGELOG/v3.md)  | archived   |
 | v2.x  | [`CHANGELOG/v2.md`](CHANGELOG/v2.md)  | archived   |
 | v1.x  | [`CHANGELOG/v1.md`](CHANGELOG/v1.md)  | archived   |
