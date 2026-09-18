@@ -689,6 +689,13 @@ def figures(rep: dict[str, Any] | None = None) -> dict[str, Any]:
         "grey_band_pp": rep["grey_band_pp"],
         "violations": len(rep["violations"]),
     }
+    first_lane = next(iter(rep["lanes"].values()))
+    out["degenerate_excluded"] = sum(
+        c["degenerate_excluded"] for c in first_lane["by_corpus"].values()
+    )
+    out["labelled_queries_before_exclusion"] = (
+        out["degenerate_excluded"] + rep["n"]
+    )
     for name, row in rep["lanes"].items():
         out[f"ec_pp.{name}"] = row["ec_pp"]
         out[f"pool_binds.{name}"] = sum(
