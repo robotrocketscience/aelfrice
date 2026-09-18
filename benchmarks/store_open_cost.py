@@ -21,17 +21,33 @@ Every statement the open issues is captured by installing a
 row it changes is read off that connection's `total_changes`. Three
 things come out, and only the first two are published:
 
-* **A statement census.** On an already-migrated store at the repo-store
-  layout the writable open issues 87 statements: 56 `CREATE ... IF NOT
-  EXISTS`, 26 `SELECT` and 5 `PRAGMA`. Not one is `INSERT`, `UPDATE` or
+* **A statement census, decomposed by component.** On a settled store at
+  the repo-store layout the writable open issues 87 statements: 56
+  `CREATE ... IF NOT EXISTS`, 26 `SELECT` and 5 `PRAGMA`. AC1 asks for the
+  four components separately, so the census attributes every statement to
+  the one that issued it — 4 connection `PRAGMA`s, 58 DDL battery, 23
+  migration check, 1 scope-id mint, 1 expired-lock sweep — by execution
+  nesting rather than by leading keyword. Not one is `INSERT`, `UPDATE` or
   `DELETE`, no row changes, and the database file's bytes are identical
   afterwards. The read-only floor — what `mode=ro` pays, which is the
   cheapest open that can exist — is 5 statements, so 82 statements are
   what an ideal fix would remove.
+* **The sweep, on a store that has something for it to do.** The census
+  above is taken where nothing is due, which is the sweep's *empty* cost
+  and not its cost. A separate arm back-dates one lock's
+  `lock_expires_at` and measures the same open again: 95 statements, the
+  sweep's own 9 of them, 6 `INSERT`/`UPDATE`, 6 rows, and the database
+  file's bytes changed. That arm is why the zero-mutation figures are
+  reported against *a settled store* and not against an already-migrated
+  one — see "The invariant" below.
 * **The counts are a property of the shipped schema, not of the corpus.**
   They are identical at 200, 2,000 and 20,000 beliefs, and this module
   refuses to emit a figure unless the whole grid agrees, so a count that
   starts moving with store size fails the gate rather than being averaged.
+  They are *not* independent of what the store holds: the arms above
+  differ by 8 statements on one back-dated column, which is a property of
+  the store's state rather than of its size. The grid pins the second and
+  the expired-lock arm publishes the first.
 * **Wall clock, which is deliberately not published.** The report modes
   print it; `--emit-figures` does not emit it. A latency is a property of
   the machine that ran it, so a marker over one would go stale on the
@@ -64,15 +80,30 @@ corpus.
 
 ## The invariant, and where it is enforced
 
-`rows_mutated = 0` holds on an **already-migrated** store. It is not a
-property of observational opens in general: a store carrying an unrun
-one-shot backfill is migrated by the writable open, and the
-project-context backfill was measured changing 301 rows on such a store.
+`rows_mutated = 0` holds on a **settled** store, which is two conditions
+and not one:
+
+1. every one-shot migration has already run, and
+2. no time-boxed lock is due to expire.
+
+Neither is a hedge and neither is rare in the other direction. A store
+carrying an unrun one-shot backfill is migrated by the writable open —
+the project-context backfill was measured changing 301 rows on such a
+store — and a store holding a lock past its `lock_expires_at` is swept by
+it, which the `expired_lock_*` figures above measure at 6 rows. The
+second condition is the one an ordinary user meets repeatedly: any store
+that has ever held a time-boxed lock reaches the sweep's write path on
+whichever observational command opens it next. Both are the writable-first
+order working as designed, and both are why the zero figures are published
+with their precondition attached rather than as a property of
+observational opens.
+
 That precondition is what makes the figure worth guarding — a future
 migration that stamps its marker on every open rather than once would
-turn a read command into a writer, silently. The permanent guard is
-`tests/test_store_open_cost_1561.py`; this module is the producer for the
-numbers.
+turn a read command into a writer on a settled store, silently. The
+permanent guard is `tests/test_store_open_cost_1561.py`, which pins the
+zero on a settled store and the write on each unsettled one; this module
+is the producer for the numbers.
 
 Usage:
 
@@ -96,7 +127,7 @@ import time
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # Belief counts the published census is required to agree across. Two orders
 # of magnitude, because the claim being published is that the open's cost is
@@ -152,13 +183,69 @@ _IDENTITY_SIDECAR_NAME = "identity"
 
 # Statement classes the census reports. Anything outside this set lands in
 # `other`, which is emitted so a new class cannot be absorbed silently.
-_REPORTED_KINDS: tuple[str, ...] = ("CREATE", "SELECT", "PRAGMA")
+# `BEGIN` and `COMMIT` are named rather than left to `other`: an open that
+# writes wraps its writes in a transaction, and an unnamed transaction pair
+# would make `other` fire with "a statement class this module does not
+# classify" on the one case whose cause is known exactly.
+_REPORTED_KINDS: tuple[str, ...] = (
+    "CREATE",
+    "SELECT",
+    "PRAGMA",
+    "BEGIN",
+    "COMMIT",
+)
 
 # The classes that change rows. Counted separately from `rows_mutated`
 # because they are a different claim: no row changed is compatible with an
 # `UPDATE` that matched nothing, and the published figure is the stronger
 # one — no such statement is issued at all.
 _DML_KINDS: frozenset[str] = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE"})
+
+# The components #1561's AC1 asks to be measured separately — the DDL
+# battery, the migration check, the scope-id mint and the #1314 expired-lock
+# sweep — plus `connection`, which is the set-up `PRAGMA`s that run before
+# any of them. `connection` exists so the parts sum to the total: a
+# decomposition with a residue nobody names is a total wearing four labels.
+COMPONENTS: tuple[str, ...] = (
+    "connection",
+    "ddl",
+    "migration_check",
+    "scope_id",
+    "sweep",
+)
+
+# The component a statement issued outside every instrumented span belongs
+# to. Reached by the four `PRAGMA`s `MemoryStore.__init__` runs on the raw
+# connection, and by nothing else on the paths measured here.
+_UNSPANNED_COMPONENT = "connection"
+
+# (component, dotted attribute of `aelfrice.store`) for every span. Resolved
+# against the live module at instrumentation time, so a rename in the store
+# raises here rather than silently emptying a component and publishing the
+# zero.
+#
+# Attribution is by **execution nesting**, innermost span wins — not by
+# statement index. `_resolve_local_scope_id` runs inside
+# `_apply_open_schema` and keeps its own `SELECT`; `sweep_expired_locks`
+# runs inside `_run_guarded_migration` and keeps its own writes. A
+# positional slice of the trace would agree with this today and have to be
+# re-derived by hand the first time a one-shot is added or reordered.
+_SPAN_TARGETS: tuple[tuple[str, str], ...] = (
+    # The schema battery proper: the stale-log probe, then every statement
+    # of `_SCHEMA`, `_MIGRATIONS` and `_POST_MIGRATION_INDEXES`, all of
+    # which reach the connection through `_execute_reprepare`.
+    ("ddl", "_drop_stale_ingest_log"),
+    ("ddl", "_execute_reprepare"),
+    # What is left inside `_apply_open_schema` once the DDL spans above are
+    # subtracted is the marker-gated work: the `store_generation` seed probe
+    # and the origin-backfill marker. `_run_guarded_migration` wraps each
+    # remaining one-shot.
+    ("migration_check", "MemoryStore._apply_open_schema"),
+    ("migration_check", "MemoryStore._run_guarded_migration"),
+    ("scope_id", "MemoryStore._resolve_local_scope_id"),
+    ("scope_id", "MemoryStore._read_only_scope_id"),
+    ("sweep", "MemoryStore.sweep_expired_locks"),
+)
 
 
 @contextlib.contextmanager
@@ -211,8 +298,101 @@ def _hermetic_environment(tmp: Path) -> Iterator[None]:
         os.environ.update(saved)
 
 
+class Statement(NamedTuple):
+    """One traced statement, and the open component that issued it."""
+
+    component: str
+    sql: str
+
+
+# Innermost open span, maintained by `_instrumented`. Module-level rather
+# than threaded through, because the trace callback is invoked by SQLite
+# from inside `MemoryStore.__init__` and has no other way to learn where it
+# is. Nothing here is thread-safe and nothing here is threaded.
+_SPAN_STACK: list[str] = []
+
+# Per-frame accumulator of time spent in *nested* spans, so the wall clock
+# reported per component is exclusive. Parallel to `_SPAN_STACK`.
+_CHILD_SECONDS: list[float] = []
+
+
+def _current_component() -> str:
+    return _SPAN_STACK[-1] if _SPAN_STACK else _UNSPANNED_COMPONENT
+
+
 @contextlib.contextmanager
-def _traced() -> Iterator[list[tuple[sqlite3.Connection, list[str]]]]:
+def _instrumented() -> Iterator[dict[str, float]]:
+    """Attribute every statement in the block to one open component.
+
+    Each entry point in `_SPAN_TARGETS` is wrapped so that, while it runs,
+    `_current_component()` names it. The trace callback installed by
+    `_traced` reads that, which is what makes the census a decomposition
+    rather than one aggregate by SQL keyword: AC1 asks for the DDL battery,
+    the migration check, the scope-id mint and the #1314 sweep separately,
+    and a leading-keyword count cannot tell them apart.
+
+    Yields a component -> exclusive seconds mapping, filled as the block
+    runs. Exclusive because a nested span's time is subtracted from its
+    parent's: `_execute_reprepare` runs inside `_apply_open_schema`, and
+    charging those statements to both would make the parts sum to more than
+    the open.
+    """
+    import aelfrice.store as store_module
+
+    elapsed = dict.fromkeys(COMPONENTS, 0.0)
+    undo: list[tuple[Any, str, Any]] = []
+
+    def _wrap(component: str, original: Any) -> Any:
+        def span(*args: Any, **kwargs: Any) -> Any:
+            _SPAN_STACK.append(component)
+            _CHILD_SECONDS.append(0.0)
+            start = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                total = time.perf_counter() - start
+                child = _CHILD_SECONDS.pop()
+                _SPAN_STACK.pop()
+                # `.get`, not `[]`. A component named here but absent from
+                # `COMPONENTS` is a live defect — half a rename — and the
+                # census's sum check is what reports it. A `KeyError` raised
+                # from inside a span would instead be swallowed by
+                # `_run_guarded_migration`, which degrades the pass rather
+                # than failing, so the instrumentation would have changed
+                # the behaviour it exists to observe.
+                elapsed[component] = elapsed.get(component, 0.0) + total - child
+                if _CHILD_SECONDS:
+                    _CHILD_SECONDS[-1] += total
+
+        return span
+
+    for component, dotted in _SPAN_TARGETS:
+        *path, name = dotted.split(".")
+        holder: Any = store_module
+        for step in path:
+            holder = getattr(holder, step)
+        if not hasattr(holder, name):
+            raise AssertionError(
+                f"aelfrice.store has no {dotted}: the {component} component "
+                "would be published as zero because its entry point was "
+                "renamed, not because it stopped issuing statements"
+            )
+        original = getattr(holder, name)
+        undo.append((holder, name, original))
+        setattr(holder, name, _wrap(component, original))
+
+    depth = len(_SPAN_STACK)
+    try:
+        yield elapsed
+    finally:
+        for holder, name, original in reversed(undo):
+            setattr(holder, name, original)
+        del _SPAN_STACK[depth:]
+        _CHILD_SECONDS.clear()
+
+
+@contextlib.contextmanager
+def _traced() -> Iterator[list[tuple[sqlite3.Connection, list[Statement]]]]:
     """Record every statement each connection opened in the block executes.
 
     `sqlite3.connect` is replaced for the duration rather than a callback
@@ -224,14 +404,23 @@ def _traced() -> Iterator[list[tuple[sqlite3.Connection, list[str]]]]:
     `id` is only unique among live objects, and a closed-and-collected
     handle's id is reusable — a census keyed on one can be attributed to the
     wrong open.
+
+    Each statement is recorded with the component that was open when SQLite
+    traced it. The callback reads `_current_component()` at trace time,
+    which is inside the `execute()` that issued the statement, so the
+    attribution is the call stack's and not a later reconstruction of it.
     """
     real_connect = sqlite3.connect
-    seen: list[tuple[sqlite3.Connection, list[str]]] = []
+    seen: list[tuple[sqlite3.Connection, list[Statement]]] = []
 
     def wrapper(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         conn = real_connect(*args, **kwargs)
-        statements: list[str] = []
-        conn.set_trace_callback(statements.append)
+        statements: list[Statement] = []
+        conn.set_trace_callback(
+            lambda sql: statements.append(
+                Statement(_current_component(), sql)
+            )
+        )
         seen.append((conn, statements))
         return conn
 
@@ -243,9 +432,9 @@ def _traced() -> Iterator[list[tuple[sqlite3.Connection, list[str]]]]:
 
 
 def _statements_for(
-    seen: list[tuple[sqlite3.Connection, list[str]]],
+    seen: list[tuple[sqlite3.Connection, list[Statement]]],
     conn: sqlite3.Connection,
-) -> list[str]:
+) -> list[Statement]:
     for candidate, statements in seen:
         if candidate is conn:
             return statements
@@ -255,13 +444,20 @@ def _statements_for(
     )
 
 
-def _census(statements: list[str]) -> dict[str, int]:
-    """Classify statements by leading keyword.
+def _kind(sql: str) -> str:
+    words = sql.split()
+    return words[0].upper() if words else ""
 
-    `other` is emitted even when it is zero. A class this file does not
-    name is the one thing a census must not absorb into a total silently.
+
+def _census(statements: list[Statement]) -> dict[str, int]:
+    """Classify statements by leading keyword, and by issuing component.
+
+    Two independent cuts of the same trace. `other` is emitted even when it
+    is zero — a class this file does not name is the one thing a census must
+    not absorb into a total silently — and so is every component, for the
+    same reason.
     """
-    kinds = Counter(s.split()[0].upper() for s in statements if s.split())
+    kinds = Counter(_kind(s.sql) for s in statements if s.sql.split())
     out = {kind.lower(): kinds.get(kind, 0) for kind in _REPORTED_KINDS}
     out["statements"] = len(statements)
     out["dml_statements"] = sum(kinds.get(kind, 0) for kind in _DML_KINDS)
@@ -274,9 +470,28 @@ def _census(statements: list[str]) -> dict[str, int]:
     out["creates_if_not_exists"] = sum(
         1
         for s in statements
-        if s.split() and s.split()[0].upper() == "CREATE"
-        and "IF NOT EXISTS" in " ".join(s.split()).upper()
+        if _kind(s.sql) == "CREATE"
+        and "IF NOT EXISTS" in " ".join(s.sql.split()).upper()
     )
+    for component in COMPONENTS:
+        member = [s for s in statements if s.component == component]
+        out[f"{component}_statements"] = len(member)
+        out[f"{component}_dml_statements"] = sum(
+            1 for s in member if _kind(s.sql) in _DML_KINDS
+        )
+    # A decomposition whose parts do not sum to the whole is not one. This
+    # is the guard on `_SPAN_TARGETS` drifting out of step with the store:
+    # a component that stops being reached lands its statements in
+    # `connection` and is caught by the census agreeing with itself, not by
+    # a reader noticing a zero.
+    parts = sum(out[f"{c}_statements"] for c in COMPONENTS)
+    if parts != out["statements"]:
+        raise AssertionError(
+            f"the component census sums to {parts} but the open issued "
+            f"{out['statements']} statements; a component is missing or "
+            "double-counted, so none of the per-component figures can be "
+            "published"
+        )
     return out
 
 
@@ -299,9 +514,17 @@ def build_fixture(db: Path, beliefs: int, *, seed: int = 1561) -> None:
     Built through `MemoryStore` with the same `project_context_default` that
     `db_paths._open_store` injects, so the rows land already stamped and the
     one-shot project-context backfill is complete before the measurement
-    opens the store. That is the *already-migrated* precondition the
-    published `rows_mutated = 0` is conditioned on, and building the fixture
-    any other way would measure a store mid-migration and publish 301.
+    opens the store. Building the fixture any other way would measure a
+    store mid-migration and publish 301.
+
+    The locked rows carry `locked_at` and **no** `lock_expires_at`, which
+    is the store's other settled condition: nothing is due for the #1314
+    sweep, so the census measures the sweep's empty probe. That is a choice
+    and not an oversight — the cost of a sweep that has work is measured on
+    its own fixture, built by back-dating a lock through `expire_one_lock`,
+    and published under the `expired_lock_*` keys. A fixture that could
+    only produce the empty case would publish the component AC1 calls the
+    load-bearing one as a structural zero.
 
     Deterministic: content is a function of the row index and `seed`, so the
     same arguments always produce the same store.
@@ -352,6 +575,47 @@ def build_fixture(db: Path, beliefs: int, *, seed: int = 1561) -> None:
         store.close()
 
 
+def expire_one_lock(db: Path, *, when: str = "2020-01-01T00:00:00+00:00") -> int:
+    """Back-date one user lock's expiry, and return the rows it makes due.
+
+    Written with a plain `sqlite3` connection rather than through
+    `MemoryStore`, because opening the store is the thing under measurement
+    and an open here would run the sweep this is setting up.
+
+    The point of this fixture is that `build_fixture` cannot produce it.
+    `build_fixture` sets `locked_at` and never `lock_expires_at`, so every
+    store the census is taken on has nothing due and measures the #1314
+    sweep at zero *by construction*. AC1 names that sweep as the one
+    component that must run for correctness of what observational commands
+    print, so measuring only the empty case would publish the component
+    this issue most needs a number for as a structural zero.
+    """
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_expires_at = ? WHERE id = "
+            "(SELECT id FROM beliefs WHERE lock_level = 'user' "
+            " ORDER BY id LIMIT 1)",
+            (when,),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT count(*) FROM beliefs WHERE lock_expires_at IS NOT NULL "
+            "AND lock_expires_at <= ? AND lock_level = 'user'",
+            (when,),
+        ).fetchone()
+    finally:
+        conn.close()
+    due = int(row[0]) if row else 0
+    if due != 1:
+        raise AssertionError(
+            f"expected exactly one lock due to expire, found {due}; the "
+            "fixture has no user lock to back-date and the sweep arm would "
+            "measure the empty case a second time"
+        )
+    return due
+
+
 def measure_open(db: Path) -> dict[str, Any]:
     """Census both arms of one store's open. Assumes `AELFRICE_DB` is `db`.
 
@@ -371,7 +635,7 @@ def measure_open(db: Path) -> dict[str, Any]:
     before_digest = _digest(db)
     before_sidecars = _sidecar_bytes(db)
 
-    with _traced() as seen:
+    with _instrumented() as writable_seconds, _traced() as seen:
         store = open_store_for_read()
         try:
             writable = _census(_statements_for(seen, store._conn))
@@ -385,7 +649,7 @@ def measure_open(db: Path) -> dict[str, Any]:
     writable["sidecar_bytes_before"] = before_sidecars
     writable["sidecar_bytes_after"] = _sidecar_bytes(db)
 
-    with _traced() as seen:
+    with _instrumented(), _traced() as seen:
         handle = MemoryStore(str(db), read_only=True)
         try:
             readonly = _census(_statements_for(seen, handle._conn))
@@ -397,6 +661,13 @@ def measure_open(db: Path) -> dict[str, Any]:
         "db_bytes": db.stat().st_size,
         "writable": writable,
         "readonly": readonly,
+        # Wall clock, so never emitted — see this module's docstring. Kept
+        # on the result because AC1 asks for the components separated by
+        # wall clock as well as by write volume, and the report prints it.
+        "writable_component_ms": {
+            component: seconds * 1000.0
+            for component, seconds in writable_seconds.items()
+        },
     }
 
 
@@ -514,6 +785,50 @@ def figures(*, grid: tuple[int, ...] = SIZE_GRID) -> dict[str, Any]:
                 writable["statements"] - readonly["statements"]
             )
 
+            # AC1: the four components separately, plus the connection
+            # set-up, so a reader deciding AC2 can see which part of the
+            # total a short-cut would be short-cutting. Emitted for every
+            # component including the ones that read zero — a component
+            # that has become free is a fact about the open, and dropping
+            # its key would make that indistinguishable from the component
+            # having been removed from the measurement.
+            for component in COMPONENTS:
+                values[f"{component}_statements"] = writable[
+                    f"{component}_statements"
+                ]
+                values[f"{component}_dml_statements"] = writable[
+                    f"{component}_dml_statements"
+                ]
+
+            # The sweep, on a store that has something for it to do. Every
+            # arm above has nothing due, so every `sweep_statements` above
+            # is the empty probe. This arm is the one that says what the
+            # component actually costs, and it is also the counterexample
+            # to reading the zero-mutation figures as unconditional: an
+            # ordinary user store that has ever held a time-boxed lock
+            # reaches this on the next `aelf search`.
+            due = tmp / "due" / REPO_STORE_DIRNAME / "memory.db"
+            build_fixture(due, grid[0])
+            values["expired_locks_due"] = expire_one_lock(due)
+            os.environ["AELFRICE_DB"] = str(due)
+            due_measured = measure_open(due)["writable"]
+            if due_measured["read_only_handle"]:
+                raise AssertionError(
+                    "the expired-lock fixture fell back to the read-only "
+                    "handle, which runs no sweep at all"
+                )
+            values["expired_lock_statements"] = due_measured["statements"]
+            values["expired_lock_sweep_statements"] = due_measured[
+                "sweep_statements"
+            ]
+            values["expired_lock_dml_statements"] = due_measured[
+                "dml_statements"
+            ]
+            values["expired_lock_rows_mutated"] = due_measured["rows_mutated"]
+            values["expired_lock_db_bytes_changed"] = due_measured[
+                "db_bytes_changed"
+            ]
+
             # The same open against a database outside the repo-store layout.
             # `repo_identity_from_db_path` returns '' there, which skips the
             # project-context backfill's marker probe, so this arm is one
@@ -523,13 +838,17 @@ def figures(*, grid: tuple[int, ...] = SIZE_GRID) -> dict[str, Any]:
             bare = tmp / "bare" / "memory.db"
             build_fixture(bare, grid[0])
             os.environ["AELFRICE_DB"] = str(bare)
-            bare_measured = measure_open(bare)
-            values["no_repo_identity_statements"] = (
-                bare_measured["writable"]["statements"]
-            )
-            values["no_repo_identity_rows_mutated"] = (
-                bare_measured["writable"]["rows_mutated"]
-            )
+            bare_writable = measure_open(bare)["writable"]
+            if bare_writable["read_only_handle"]:
+                raise AssertionError(
+                    "the no-repo-identity fixture fell back to the read-only "
+                    "handle, so this arm measured `mode=ro` and the "
+                    "one-statement gap it publishes is not the one described"
+                )
+            values["no_repo_identity_statements"] = bare_writable["statements"]
+            values["no_repo_identity_rows_mutated"] = bare_writable[
+                "rows_mutated"
+            ]
     return values
 
 
@@ -556,6 +875,16 @@ def _report(db: Path, *, label: str) -> str:
         f"  rows mutated              {writable['rows_mutated']}",
         f"  database bytes changed    {bool(writable['db_bytes_changed'])}",
         f"  handle was read-only      {bool(writable['read_only_handle'])}",
+        "",
+        "by component (#1561 AC1) — statements, writes, exclusive ms:",
+    ]
+    for component in COMPONENTS:
+        lines.append(
+            f"  {component:<24}{writable[f'{component}_statements']:>4}"
+            f"{writable[f'{component}_dml_statements']:>6}"
+            f"{measured['writable_component_ms'][component]:>10.3f}"
+        )
+    lines += [
         "",
         "read-only open (the floor any fix could reach):",
         f"  statements                {readonly['statements']}",

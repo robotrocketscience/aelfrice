@@ -1,4 +1,4 @@
-"""#1561 — an observational open of a migrated store must write nothing.
+"""#1561 — an observational open of a settled store must write nothing.
 
 `aelf search`, `stats`, `locked`, `speculative` and `show` open through
 `db_paths.open_store_for_read()`, which attempts the ordinary **writable**
@@ -15,7 +15,7 @@ producer for those figures. **This module is the part that outlives them.**
 
 What it pins, and the difference between the two halves
 -------------------------------------------------------
-On an already-migrated store the open mutates no row, issues no
+On a **settled** store the open mutates no row, issues no
 `INSERT`/`UPDATE`/`DELETE` at all, and leaves the database file's bytes
 identical. That is the invariant a future migration would break silently:
 a one-shot pass that stamps its marker on *every* open rather than once
@@ -24,14 +24,32 @@ would notice — `tests/test_readonly_store_1416.py` checks the bytes only
 on stores frozen at 0444, where the engine forbids the write anyway, so
 it cannot see a write on an ordinary store.
 
-The invariant is **conditioned on the store being already migrated**, and
-the condition is load-bearing rather than a hedge. A store carrying an
-unrun one-shot backfill *is* migrated by an observational open, by design
-— that is what the writable-first order buys. The second half of this
-module builds exactly that store and asserts the write happens, so the
-first half cannot be misread as "an observational open never writes", and
-so that a future change making the open unconditionally read-only fails
-here with the semantics it removed named.
+"Settled" is two conditions, both load-bearing and neither a hedge:
+
+1. every one-shot migration has already run, and
+2. no time-boxed lock is due to expire.
+
+An unsettled store *is* written by an observational open, by design —
+that is what the writable-first order buys. The second half of this module
+builds one store of each kind and asserts the write happens, so the first
+half cannot be misread as "an observational open never writes", and so a
+future change making the open unconditionally read-only fails here with
+the semantics it removed named.
+
+Condition 2 is the one an ordinary user meets repeatedly rather than once:
+any store that has ever held a time-boxed lock reaches the #1314 sweep's
+write path on whichever observational command opens it next, so a
+zero-write claim conditioned only on migration would be false for them.
+
+The producer's decomposition is pinned here too
+-----------------------------------------------
+AC1 asks for the four components — DDL battery, migration check, scope-id
+mint, and the #1314 sweep — measured separately rather than as one census
+by SQL keyword. The producer attributes each statement to the component
+that issued it, by execution nesting; this module pins that the parts sum
+to the whole and that no component silently reads zero, because a
+component whose entry point was renamed publishes a zero that looks
+exactly like a component that became free.
 """
 from __future__ import annotations
 
@@ -49,9 +67,11 @@ from aelfrice.db_paths import open_store_for_read, repo_identity_from_db_path
 from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 from benchmarks.store_open_cost import (
+    COMPONENTS,
     ENV_PREFIX,
     REPO_STORE_DIRNAME,
     build_fixture,
+    expire_one_lock,
     figures,
     main,
     measure_open,
@@ -77,10 +97,16 @@ BELIEFS = 40
 
 
 @pytest.fixture()
-def migrated_store(
+def settled_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
-    """A store at the repo-store layout, with every one-shot already run.
+    """A store with every one-shot run and no lock due to expire.
+
+    Both halves of "settled". `build_fixture` opens with the repo identity
+    injected, so the project-context one-shot is complete; and it writes
+    `locked_at` without `lock_expires_at`, so the #1314 sweep finds nothing
+    due. Neither is incidental — the tests below assert a zero that either
+    condition alone would not deliver.
 
     Built through `benchmarks.store_open_cost.build_fixture` rather than a
     local copy of it, so the store this module guards and the store the
@@ -107,7 +133,7 @@ def _digest(path: Path) -> str:
 # --- the invariant ---------------------------------------------------------
 
 
-def test_an_observational_open_mutates_no_row(migrated_store: Path) -> None:
+def test_an_observational_open_mutates_no_row(settled_store: Path) -> None:
     """The headline guard. `total_changes` is the engine's own count.
 
     Read off the connection rather than by diffing tables: an open that
@@ -127,7 +153,7 @@ def test_an_observational_open_mutates_no_row(migrated_store: Path) -> None:
 
 
 def test_an_observational_open_issues_no_write_statement(
-    migrated_store: Path,
+    settled_store: Path,
 ) -> None:
     """Stronger than the row count, and a different claim.
 
@@ -137,7 +163,7 @@ def test_an_observational_open_issues_no_write_statement(
     statements the open issues, so the write has to be absent rather than
     merely ineffective.
     """
-    measured = measure_open(migrated_store)
+    measured = measure_open(settled_store)
     writable = measured["writable"]
     assert writable["dml_statements"] == 0
     assert writable["statements"] > 0, (
@@ -150,37 +176,185 @@ def test_an_observational_open_issues_no_write_statement(
 
 
 def test_an_observational_open_leaves_the_file_bytes_identical(
-    migrated_store: Path,
+    settled_store: Path,
 ) -> None:
     """What a user can check without instrumenting anything.
 
     Taken after `close()`, which is when a WAL checkpoint would land, so
     this covers a write that reaches the log and not yet the main file.
     """
-    before = _digest(migrated_store)
+    before = _digest(settled_store)
     store = open_store_for_read()
     store.close()
-    assert _digest(migrated_store) == before
+    assert _digest(settled_store) == before
     for suffix in ("-wal", "-shm"):
-        sidecar = migrated_store.with_name(migrated_store.name + suffix)
+        sidecar = settled_store.with_name(settled_store.name + suffix)
         assert not sidecar.exists() or sidecar.stat().st_size == 0
 
 
-def test_the_read_only_arm_is_strictly_cheaper(migrated_store: Path) -> None:
+def test_the_read_only_arm_is_strictly_cheaper(settled_store: Path) -> None:
     """The floor exists, so "avoidable" is a measured gap and not a guess.
 
     If this ever reads equal, the issue's whole premise has changed shape:
     there would be nothing for a fix to remove, and the published
     `avoidable_statements` would be zero rather than stale.
     """
-    measured = measure_open(migrated_store)
+    measured = measure_open(settled_store)
     assert (
         measured["readonly"]["statements"] < measured["writable"]["statements"]
     )
     assert measured["readonly"]["rows_mutated"] == 0
 
 
+# --- AC1: the four components, separately ----------------------------------
+
+
+def test_the_census_attributes_every_statement_to_one_component(
+    settled_store: Path,
+) -> None:
+    """AC1 asks for the components separately, not for one keyword census.
+
+    Two claims, and the second is the one that rots. The parts must sum to
+    the whole — a statement attributed to nothing would inflate whichever
+    bucket absorbed it. And every component must be *reached*: the spans
+    are installed by name against `aelfrice.store`, so a component whose
+    entry point is renamed or inlined stops being reached and publishes a
+    zero that reads exactly like a component that became free.
+    """
+    writable = measure_open(settled_store)["writable"]
+    parts = {
+        component: writable[f"{component}_statements"]
+        for component in COMPONENTS
+    }
+    assert sum(parts.values()) == writable["statements"], parts
+    unreached = sorted(name for name, count in parts.items() if count == 0)
+    assert not unreached, (
+        f"these components issued no statement: {unreached}. Either the open "
+        "stopped running them, or their entry point in _SPAN_TARGETS was "
+        "renamed and the published figure is now a zero about nothing."
+    )
+
+
+def test_the_producer_refuses_a_component_census_that_does_not_sum(
+    settled_store: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Half a rename drops a component's statements out of every figure.
+
+    `_SPAN_TARGETS` says `lock_sweep`, `COMPONENTS` still says `sweep`: the
+    sweep's statements are then attributed to a name nothing counts, the
+    total stays 87 and every other component stays plausible. The producer
+    has to refuse rather than publish four figures that no longer account
+    for the open, so the check is the sum and not a per-key inspection.
+
+    Simulated at the seam, like the grid-disagreement test below: the point
+    under test is the refusal.
+    """
+    import benchmarks.store_open_cost as producer
+
+    monkeypatch.setattr(
+        producer,
+        "_SPAN_TARGETS",
+        tuple(
+            ("lock_sweep" if component == "sweep" else component, dotted)
+            for component, dotted in producer._SPAN_TARGETS
+        ),
+    )
+    with pytest.raises(AssertionError, match="component census sums to"):
+        producer.measure_open(settled_store)
+
+
+def test_the_component_split_names_every_component_ac1_asks_for() -> None:
+    """The four from the issue body, plus the residue, and nothing implicit.
+
+    `connection` is not one of AC1's four. It is named so the split has no
+    unattributed remainder — a decomposition with a residue nobody names is
+    a total wearing four labels.
+    """
+    assert set(COMPONENTS) == {
+        "connection",
+        "ddl",
+        "migration_check",
+        "scope_id",
+        "sweep",
+    }
+
+
+def test_the_sweep_component_is_measured_where_it_has_work(
+    settled_store: Path,
+) -> None:
+    """The settled fixture measures the sweep's *empty* probe, not its cost.
+
+    AC1 calls the sweep the one component that must run for correctness of
+    what observational commands print, and `build_fixture` cannot produce a
+    store that exercises it: it writes `locked_at` and never
+    `lock_expires_at`. So the empty case and the working case are both
+    measured, and this pins that they differ — if they ever read the same,
+    the arm that is supposed to exercise the sweep has stopped doing so.
+    """
+    empty = measure_open(settled_store)["writable"]
+    assert empty["sweep_dml_statements"] == 0
+
+    expire_one_lock(settled_store)
+    working = measure_open(settled_store)["writable"]
+    assert working["sweep_statements"] > empty["sweep_statements"]
+    assert working["sweep_dml_statements"] > 0
+    assert working["sweep_dml_statements"] == working["dml_statements"], (
+        "a component other than the sweep wrote on this fixture, so the "
+        "expired-lock arm is no longer measuring only the sweep"
+    )
+
+
 # --- the precondition, which is load-bearing -------------------------------
+
+
+def test_an_expired_lock_makes_an_observational_open_write(
+    settled_store: Path,
+) -> None:
+    """The half of the precondition an ordinary user meets repeatedly.
+
+    A store whose one-shots have all run is still written by an
+    observational open the moment one time-boxed lock falls due: #1314
+    materializes expiry by sweeping rather than by a `now`-aware predicate,
+    and store open is the chokepoint it runs at. So `aelf search` on a
+    store that has ever held a time-boxed lock flips the lock, writes an
+    audit row, bumps the belief version, stamps two `schema_meta` markers,
+    and changes the database file's bytes.
+
+    Asserted rather than hedged, for the same reason as the unmigrated
+    case below: it is what the zero-write figures are conditioned *on*, and
+    a reader who takes those figures as unconditional is reading a false
+    statement about their own store.
+    """
+    assert expire_one_lock(settled_store) == 1
+    before = _digest(settled_store)
+
+    store = open_store_for_read()
+    try:
+        assert store.read_only is False
+        assert store._conn.total_changes > 0, (
+            "the open swept nothing, so the zero-write figures would hold "
+            "unconditionally and this test would be asserting the wrong thing"
+        )
+        swept = store._conn.execute(
+            "SELECT count(*) FROM beliefs "
+            "WHERE lock_expires_at IS NOT NULL AND lock_level = 'user'"
+        ).fetchone()[0]
+    finally:
+        store.close()
+
+    assert swept == 0, "the lock was still user-locked after the sweep"
+    assert _digest(settled_store) != before, (
+        "the open changed rows but left the file identical, which would mean "
+        "the write is still sitting in an uncheckpointed WAL"
+    )
+
+    # And it settles: the next observational open is back inside the
+    # invariant, because the swept rows no longer satisfy the predicate.
+    store = open_store_for_read()
+    try:
+        assert store._conn.total_changes == 0
+    finally:
+        store.close()
 
 
 def _unstamped_store(db: Path) -> int:
@@ -225,7 +399,7 @@ def _unstamped_store(db: Path) -> int:
     return due
 
 
-def test_an_unmigrated_store_is_written_by_an_observational_open(
+def test_an_unsettled_store_is_written_by_an_observational_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The condition on the invariant, asserted rather than assumed.
