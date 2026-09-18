@@ -259,6 +259,34 @@ UNMEASURABLE_LANES: Final[dict[str, str]] = {
     ),
 }
 
+# What the census does not exercise. Each entry narrows the population the EC
+# figures are measured over, so each is published beside them rather than left
+# for a reader to discover. An undisclosed narrowing is how a zero measured on
+# a thin configuration gets read as a zero on production.
+NOT_EXERCISED: Final[dict[str, str]] = {
+    "retrieval._route_structural_query": (
+        "is_hrr_structural_enabled() resolves True, but the lane fires only "
+        "on a `<KIND>:<target_id>` marker query and neither corpus contains "
+        "one. It also prices with retrieval._belief_tokens and "
+        "lock_injection_tokens and ignores belief_cost_fn, so a lane whose "
+        "cost_fn is cheaper than _belief_tokens would see this census "
+        "understate the packer's price. Unexercised here, not mis-reported"
+    ),
+    "hook.enforce_block_ceiling": (
+        "the decision rule calls a grid that holds HOOK_BLOCK_TOKEN_CEILING "
+        "fixed invalid. This census holds it fixed and never applies it: it "
+        "measures retrieve() output rather than a rendered hook block. The "
+        "ceiling is 6000 and no pool here prices near it, so it cannot bind "
+        "on these corpora — but the deviation is a deviation and is named"
+    ),
+    "graph edges": (
+        "_open_store inserts beliefs and no edges, so has_edge_type is False "
+        "for every type: the temporal spine, BFS expansion and cluster "
+        "structure are all inert. Those are the sources where a budget could "
+        "change candidacy rather than count, so EC here is measured on a "
+        "retrieval configuration narrower than production"
+    ),
+}
 
 
 # --- Corpora -----------------------------------------------------------
@@ -723,6 +751,7 @@ def report() -> dict[str, Any]:
             ),
         },
         "unmeasurable_lanes": UNMEASURABLE_LANES,
+        "not_exercised": NOT_EXERCISED,
         "lanes": lane_rows,
         "n": total_n,
         "grey_band_pp": round(grey_band(total_n), 4),
@@ -826,6 +855,10 @@ def render_text(rep: dict[str, Any]) -> str:
     for key, why in sorted(rep["unmeasurable_lanes"].items()):
         lines.append(f"  {key}: {why}")
     lines.append("")
+    lines.append("what this run does not exercise")
+    for key, why in sorted(rep["not_exercised"].items()):
+        lines.append(f"  {key}: {why}")
+    lines.append("")
     lines.append(f"N                  {rep['n']}")
     lines.append(
         f"grey band NF       {rep['grey_band_pp']}pp "
@@ -849,6 +882,10 @@ def render_dry_run() -> str:
     lines.append("")
     lines.append("lanes this instrument cannot see")
     for key, why in sorted(UNMEASURABLE_LANES.items()):
+        lines.append(f"  {key}: {why}")
+    lines.append("")
+    lines.append("what this run does not exercise")
+    for key, why in sorted(NOT_EXERCISED.items()):
         lines.append(f"  {key}: {why}")
     lines.append("")
     qs = corpora()
