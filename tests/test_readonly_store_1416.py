@@ -609,7 +609,6 @@ def test_search_under_a_hash_path_reports_the_real_failure(
     needed none. `StoreSchemaTooOld` subclasses `ReadOnlyStoreUnavailable`,
     so the type alone does not separate them; the message does.
     """
-    db = metachar_store / "memory.db"
     parent_of_parent = metachar_store.parent
     assert not (metachar_store / "memory.db-shm").exists()
     _freeze(metachar_store)
