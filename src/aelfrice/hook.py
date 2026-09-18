@@ -531,6 +531,17 @@ class BlockCeilingOutcome:
     whose `seen` pointer was removed with its element is in this list
     exactly once: it reached the model in neither form.
 
+    **Removed from the body, not removed from one render of it (#1564).**
+    The `<cadence-resume>` recap is the one lane that can render an id a
+    second time, because #1564 took its ids out of #1547's envelope
+    dedupe, so a belief it carries is also rendered in full by `<locked>`,
+    by `<core>` or by the per-turn hits. Shedding the recap span does not
+    take that copy with it, so `enforce_block_ceiling` names such an id
+    here only if nothing outside the recap renders it. Without that test
+    the whole-recap shed reported every id in the recap, and on the
+    `--resume-drop` fixture that put 40 user locks into a list the two
+    call sites below read as "never shown".
+
     `over_ceiling` is the #379 escape hatch made visible: True when the
     body is still over the limit after every droppable element is gone,
     which happens when what remains is user-locked content or manifest
@@ -744,9 +755,23 @@ def _recap_shed(
     first; what is left is the locks, which is a remainder a reader can
     explain rather than an arbitrary fragment.
 
-    Returns `([], [])` for a recap with no droppable element, which is what
-    a body carrying no recap at all reduces to: `recap_elements` is empty,
-    so the loop never reaches this function anyway.
+    **The ids are what this cut removes, not what the block loses.** An id
+    the recap carries is often rendered a second time elsewhere in the same
+    body -- #1564 took the recap out of #1547's envelope dedupe precisely so
+    that it is -- and this function cannot see that copy, because it is
+    handed the recap and not the body's other lanes. The caller filters
+    these ids against the elements outside the recap before any of them
+    reaches `BlockCeilingOutcome.dropped_ids`; see the note there.
+
+    **On an empty recap the caller never calls this.** `recap_elements` is
+    empty only when the body carries no recap or the recap carries no
+    element, and either way the loop reaches no element inside the span, so
+    the whole-shed branch is unreachable. Called anyway with an empty list
+    and the sentinel span `(-1, -1)` that `_section_span` returns for an
+    absent recap, the second branch would report `[(-1, 0)]` -- a span the
+    splice reads as "the whole body bar its last character". The guard is
+    the caller's membership test, not a check here, so do not call this
+    without one.
     """
     droppable_here = [
         m for m in recap_elements if _LOCKED_ATTR not in m.group("attrs")
@@ -880,6 +905,18 @@ def enforce_block_ceiling(
     recap_elements = [
         m for m in elements if recap[0] <= m.start() < recap[1]
     ]
+    # #1564: the recap is the one lane whose ids can render a second time
+    # in the same body. Since the recap left the envelope dedupe, a belief
+    # it carries is *also* rendered in full by `<locked>`, by `<core>` or
+    # by the per-turn hits, and cutting the recap does not take that copy
+    # with it. Such an id is not dropped in the sense `dropped_ids` means:
+    # it reached the model. If its second render is shed later, the loop's
+    # ordinary path names it then, exactly once.
+    ids_rendered_outside_recap = {
+        m.group("id")
+        for m in elements
+        if not (recap[0] <= m.start() < recap[1])
+    }
     recap_shed = False
     taken = 0
     while taken < len(order) and _tokens_from_chars(remaining) > limit:
@@ -894,6 +931,13 @@ def enforce_block_ceiling(
                 cut.append(span)
                 remaining -= span[1] - span[0]
             for bid in recap_ids:
+                if bid in ids_rendered_outside_recap:
+                    # Still in the body, so not dropped -- and its `seen`
+                    # pointer, if it has one, still points at a render that
+                    # is there. Leaving the pointer in `pointers` is what
+                    # lets the ordinary path take the pair together if that
+                    # other element is shed later.
+                    continue
                 dropped.append(bid)
                 pointer = pointers.pop(bid, None)
                 # A `seen` line inside a span already being cut would be
@@ -1000,6 +1044,16 @@ def _write_memory_block(
     Returns the outcome so the caller can keep its accounting honest: the
     audit record must carry the block that was actually emitted, and the
     exposure writes must skip the beliefs that were dropped.
+
+    **The note counts beliefs, and a `<cadence-resume>` shed cuts more
+    elements than it counts (#1564).** `n_dropped` is the length of
+    `dropped_ids`, which names a belief the block lost every render of —
+    so an element and its `seen` pointer count once, and a recap element
+    whose belief is rendered again below the recap counts not at all. On
+    the `--resume-drop` fixture that is a 65-element span cut against a
+    note reading 1. The number is the one the accounting downstream acts
+    on, which is why it is the one printed; `scripts/
+    measure_block_ceiling.py --resume-drop` reports the span.
     """
     limit = resolve_block_ceiling(stderr=stderr)
     outcome = enforce_block_ceiling(body, limit)
@@ -2602,13 +2656,27 @@ def user_prompt_submit(
                 # there is a row the reader cannot find in the block
                 # beside it.
                 n_beliefs=len(emitted_hits),
-                # `hits`, not `emitted_hits`, and the two are equal here by
-                # construction: `enforce_block_ceiling` filters a
-                # `lock="user"` element out of its droppable set, so no
-                # locked belief can reach `dropped_ids` and the difference
-                # between the lists contains no locked row. Restating the
-                # filter would read as a bound the drop policy already
-                # guarantees.
+                # `hits`, not `emitted_hits`, and the two carry the same
+                # locked rows. `enforce_block_ceiling` filters a
+                # `lock="user"` element out of its droppable set, which is
+                # the whole story for the four lanes this envelope renders
+                # itself. It is not the whole story for a `<cadence-resume>`
+                # recap, whose body `context_rebuilder` renders and which
+                # spells a lock `locked="true"` -- a droppable spelling. The
+                # second half is #1564's: the ceiling reports an id only
+                # when nothing outside the recap renders it, and `<locked>`
+                # renders every one of them uncapped in the same envelope,
+                # because the recap and the sub-block both appear on a
+                # session's first prompt and on no other.
+                #
+                # The one lock that spelling does not cover is a #1558
+                # reference lock, which `<locked>` diverts to a `ref`
+                # manifest line while the recap renders its bounded topic
+                # as an element. Shedding the recap does take that element,
+                # so such an id can reach `dropped_ids` -- as it could
+                # before #1564 -- and this sum would then count a row
+                # `beliefs[]` omits. Bounded by what a reference lock is:
+                # the manifest line survives and still names it.
                 n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
                 beliefs=emitted_hits,
@@ -2652,9 +2720,11 @@ def user_prompt_submit(
                 injected_ids = [
                     h.id for h in emitted_hits if getattr(h, "id", None)
                 ]
-                # `hits` for the same reason `n_locked` above uses it: a
-                # locked belief is never in `dropped_ids`, so the two
-                # lists carry the same locked rows.
+                # `hits` for the same reason `n_locked` above uses it, and
+                # with the same #1558 exception: outside a reference lock
+                # carried by a shed recap, a locked belief does not reach
+                # `dropped_ids`, so the two lists carry the same locked
+                # rows.
                 locked_now = {
                     h.id for h in hits if h.lock_level == LOCK_USER
                 }

@@ -36,7 +36,16 @@ tests are the old claims turned over:
    #379 always-injected contract outranks the whole-shed rule. No shipped
    render produces one -- `context_rebuilder` spells a lock
    `locked="true"` -- so this arm is built by hand against
-   `enforce_block_ceiling` rather than fired through the hook.
+   `enforce_block_ceiling` rather than fired through the hook;
+7. `dropped_ids` names only what the block lost. Claim 3 takes the recap
+   out of the envelope dedupe, so every belief the recap carries is
+   rendered a second time below it, and the whole-shed cut does not take
+   that copy. Reporting the span's ids wholesale told four accounting
+   surfaces that beliefs the model was shown were never shown -- 40 user
+   locks among them, on the `--resume-drop` fixture. Two arms: the
+   invariant on one hand-built body that carries all three kinds of
+   second render, and the consequence on a fired hook, where the audit
+   row `aelf tail` prints must name every prompt hit the envelope shows.
 
 **Nothing about the recap in the fired arms is hand-written.** The body is
 produced by the real `_rebuild_and_format`, persisted by the real
@@ -61,7 +70,9 @@ claim 1: the wrapper comes back holding a fragment. Putting
 so the recap's ids dedupe again, fails claims 3 and 4. Handing
 `_verbatim_ids` the renderer's augmented set, the change #1564 asked for,
 fails claim 5. Removing the `lock="user"` fallback from `_recap_shed`, so
-the span is always cut whole, fails claim 6.
+the span is always cut whole, fails claim 6. Dropping the
+`ids_rendered_outside_recap` test in `enforce_block_ceiling`, so the whole
+shed reports every id in the span, fails claim 7 on both arms.
 """
 from __future__ import annotations
 
@@ -77,10 +88,13 @@ from aelfrice.context_rebuilder import RecentTurn
 from aelfrice.hook import (
     _BELIEF_ELEMENT_RE,
     _LOCKED_ATTR,
+    AUDIT_HOOK_USER_PROMPT_SUBMIT,
     CORE_CLOSE_TAG,
     CORE_OPEN_TAG,
     SESSION_START_SUBBLOCK_OPEN,
+    _audit_path_for_db,
     _ceiling_drop_order,
+    read_hook_audit,
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -514,3 +528,109 @@ def test_a_user_locked_element_inside_a_recap_keeps_the_wrapper() -> None:
         "the wrapper went even though a belief it holds had to stay"
     )
     assert _element_ids(outcome.body) & {"R1", "R2", "R3"} == {"R2"}
+
+
+def test_a_recap_id_the_body_still_renders_is_not_reported_dropped() -> None:
+    """Claim 7: `dropped_ids` names what the block lost, not what one cut took.
+
+    The whole-recap shed removes a span, and since claim 3 took the recap
+    out of #1547's envelope dedupe every belief in that span is *also*
+    rendered somewhere else in the same body -- in `<locked>`, in `<core>`
+    or as the prompt's own hit. Reporting the span's ids wholesale
+    therefore names beliefs the model was shown, and
+    `BlockCeilingOutcome.dropped_ids` is read by four call sites as the
+    opposite claim: `user_prompt_submit` filters `emitted_hits` by it, and
+    that list is what reaches `record_retrieval`, the audit row's
+    `beliefs[]`, the #740 dedup ring and the #1382 ledger.
+
+    Built by hand so the three kinds of second render sit in one body and
+    the invariant is stated once. `R9` is the control: a belief the recap
+    alone carries is still reported, so this cannot pass by reporting
+    nothing.
+    """
+    pad = "y" * 900
+    recap = (
+        "<cadence-resume from='prev' policy='p1' ts='t'>\n"
+        f'<belief id="L1" locked="true">{pad}</belief>\n'
+        f'<belief id="C1" locked="true">{pad}</belief>\n'
+        f'<belief id="H1" locked="true">{pad}</belief>\n'
+        f'<belief id="R9" locked="true">{pad}</belief>\n'
+        "</cadence-resume>"
+    )
+    locked = f'<belief id="L1" {_LOCKED_ATTR}>{pad}</belief>'
+    core = (
+        f"{CORE_OPEN_TAG}\n"
+        f'<belief id="C1" lock="none">{pad}</belief>\n'
+        f"{CORE_CLOSE_TAG}"
+    )
+    hit = f'<belief id="H1" lock="none">{pad}</belief>'
+    body = (
+        f"{hook.OPEN_TAG}\n{SESSION_START_SUBBLOCK_OPEN}\n"
+        f"{recap}\n{locked}\n{core}\n</session-start>\n"
+        f"{hit}\n{hook.CLOSE_TAG}\n"
+    )
+    outcome = hook.enforce_block_ceiling(body, ceiling=900)
+
+    assert _RESUME_OPEN not in outcome.body, "the recap did not shed"
+    assert "R9" in outcome.dropped_ids, (
+        "a belief only the recap rendered was not reported dropped, so "
+        f"this fixture reports nothing: {outcome.dropped_ids}"
+    )
+    still_rendered = _element_ids(outcome.body) & set(outcome.dropped_ids)
+    assert not still_rendered, (
+        "`dropped_ids` names a belief the emitted body still renders in "
+        f"full: {sorted(still_rendered)}. Every consumer of this list "
+        "reads it as `the model never saw this`."
+    )
+    assert "L1" not in outcome.dropped_ids, (
+        "a user lock reached `dropped_ids`. The #379 pool is uncapped and "
+        "two call sites in `user_prompt_submit` state outright that a "
+        "locked belief is never in this list."
+    )
+
+
+def test_the_audit_row_records_every_prompt_hit_the_envelope_shows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claim 7, fired: `aelf tail` prints what the model was actually given.
+
+    `_write_hook_audit_record` is handed `emitted_hits`, which is `hits`
+    minus `dropped_ids`, and `n_beliefs` is its length. A prompt hit the
+    envelope renders in full but the audit row omits is the #1551 defect
+    inverted: instead of claiming exposure for deleted text, the hook
+    withholds it for text it shipped, and the same list drives the
+    exposure rows, the #740 dedup ring and the #1382 ledger.
+
+    The trim must be live and it must shed the recap, or the arm cannot
+    show the whole-recap shed reporting anything.
+    """
+    out, err = _arm(
+        tmp_path, monkeypatch, name="audit", recap=True, ceiling=None,
+    )
+    assert "dropped" in err, err
+    assert _RESUME_OPEN not in out, "the recap survived; nothing was shed"
+
+    db = tmp_path / "audit" / "memory.db"
+    rows = [
+        r for r in read_hook_audit(_audit_path_for_db(db))
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    assert len(rows) == 1, [r.get("hook") for r in rows]
+    beliefs = rows[0].get("beliefs")
+    assert isinstance(beliefs, list)
+    recorded = {
+        b["id"] for b in beliefs if isinstance(b, dict) and b.get("id")
+    }
+    assert rows[0].get("n_beliefs") == len(beliefs)
+
+    shown = {i for i in _element_ids(_envelope(out)) if i.startswith("H")}
+    assert shown, (
+        "the envelope rendered no prompt hit as an element, so there is "
+        "nothing here to have been miscounted"
+    )
+    assert shown <= recorded, (
+        "the hook rendered a prompt hit and recorded it as dropped: "
+        f"{sorted(shown - recorded)}. `aelf tail` will show "
+        f"{rows[0].get('n_beliefs')} injected beliefs beside a block "
+        "carrying more than that."
+    )
