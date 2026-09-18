@@ -28,6 +28,7 @@ import pytest
 from aelfrice.cli import (
     _CODEX_APPLICABLE_DESTS,
     _codex_option_rejection,
+    _explicitly_supplied_dests,
     _option_dests,
     _subcommand_parser,
     build_parser,
@@ -139,6 +140,51 @@ def test_inapplicable_sets_come_from_the_parser() -> None:
         assert rejected == every - _CODEX_APPLICABLE_DESTS[cmd]
         assert _CODEX_APPLICABLE_DESTS[cmd] <= every
         assert len(rejected) == expected, sorted(rejected)
+
+
+_REPO = Path(__file__).resolve().parents[1]
+_ENTRY = _REPO / "CHANGELOG" / "unreleased" / "1429-codex-option-rejection.md"
+_NUMBER_WORDS: dict[int, str] = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+}
+
+
+@pytest.mark.timeout(60)
+def test_changelog_count_matches_the_command_the_entry_quotes() -> None:
+    """The entry's one spelled-out figure is re-derived, not trusted.
+
+    The entry quotes a command line and then says how many of its options
+    the executor never saw. `--host codex` is on that line and is the
+    option that routes the call into `_cmd_setup_codex`, so it is
+    applicable and must not be counted. Deriving the figure from the same
+    parser the gate uses keeps the prose from drifting off the code.
+    """
+    text = _ENTRY.read_text(encoding="utf-8")
+    quoted = re.search(r"`(aelf setup --host codex [^`]+)`", text)
+    assert quoted is not None, "the entry no longer quotes a setup command"
+    argv = quoted.group(1).split()[1:]
+
+    parser = build_parser()
+    inapplicable = codex_inapplicable_options(parser, "setup")
+    supplied = _explicitly_supplied_dests(argv)
+    discarded = sorted(
+        opt for dest, opt in inapplicable.items() if dest in supplied
+    )
+    # The routing option is honoured, so it is never part of the figure.
+    assert "host" in supplied
+    assert "host" not in inapplicable
+
+    claimed = re.search(r"a success report for (\w+) instructions", text)
+    assert claimed is not None, "the entry no longer states the figure"
+    assert claimed.group(1) == _NUMBER_WORDS[len(discarded)], discarded
 
 
 @pytest.mark.timeout(60)
