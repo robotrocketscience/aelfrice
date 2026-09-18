@@ -26,7 +26,7 @@ this document.
 | `hook.DEFAULT_SESSION_START_CORE_TOKEN_BUDGET` | 1500 | the SessionStart `<core>` section |
 | `hook_search_tool.INJECTED_TOKEN_BUDGET` | 600 | the `Grep`/`Glob` PreToolUse lane |
 | `hook_search_tool.BASH_INJECTED_TOKEN_BUDGET` | 300 | the `Bash` PreToolUse lane |
-| `hook_agent_context.INJECTED_TOKEN_BUDGET` | 600 | the subagent-dispatch lane |
+| `hook_agent_context.INJECTED_TOKEN_BUDGET` | 600 | the Agent/Task tool-dispatch lane |
 | `retrieval.DEFAULT_TOKEN_BUDGET` | 2400 | every `retrieve()` caller that passes none |
 | `rebuild_log.DEFAULT_REBUILDER_TOKEN_BUDGET` | 4000 | the v1.4 rebuild block |
 
