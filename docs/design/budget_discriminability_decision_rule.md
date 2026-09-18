@@ -14,6 +14,71 @@ ruling. They are out of scope here.
 If you change anything below after a census number has been seen, the run is
 void and you start again from a fresh pre-registration.
 
+## Amendments
+
+### Amendment 1, 2026-09-17: the monotonicity claim was false
+
+This rule asserted that admission is monotone in budget. It is not. The
+sentences that said so are corrected in place below, and the originals are
+quoted here so the amendment is auditable rather than a quiet rewrite:
+
+> Admission is monotone in budget: raising a budget can only admit beliefs,
+> never evict them.
+
+> Admission is monotone across the grid: raising a budget never removes a
+> belief that a lower budget admitted.
+
+What the code does instead: `clustering.pack_with_clusters` is a
+skip-and-continue greedy fill. Stage 1 abandons on the first representative it
+cannot afford, and stage 2 then walks the rest of the pool, so the budget
+*selects* rather than truncates. Through `retrieval.retrieve()` with default
+resolvers, on a two-belief store priced at 63 and 19 tokens, raising
+`token_budget` from 62 to 63 evicts the belief the lower budget admitted:
+
+```
+  62 -> ['lean']
+  63 -> ['fat']
+```
+
+`tests/test_budget_census.py::test_raising_a_budget_can_evict_a_belief_a_lower_budget_admitted`
+pins that, and fails against a monotone prefix packer.
+
+What the correction changes, and what it leaves alone:
+
+* **The operative bound is untouched.** It is conditional — a pool priced at or
+  below the smaller of two budgets renders an identical block — and it
+  quantifies only over budgets at which no cap binds. Non-monotone selection
+  happens only where a cap binds, so the two never meet.
+* **No decision criterion moves.** EC, N, the grey band, the required N, the
+  three cut conditions, the forbidden fallbacks, and the finding wording are
+  all unchanged.
+* **The verdict on a raise stands and its reason is replaced.** A raise is
+  still not licensed here, now because a raise can evict as well as admit: even
+  "more beliefs are admitted" is not a correct description of the mechanism,
+  let alone evidence that the result is better.
+* **Whether a mechanism correction voids a pre-registration is the operator's
+  call, not the correcting author's.** If it does, the replacement is a fresh
+  pre-registration and a re-run. The census's N and EC do not depend on the
+  corrected sentence, so a re-run returns the same numbers.
+
+### Amendment 2, 2026-09-17: deviations this rule did not disclose
+
+* The grid holds `hook.HOOK_BLOCK_TOKEN_CEILING` fixed, which the table below
+  calls invalid, and the census never applies `hook.enforce_block_ceiling` at
+  all: it measures `retrieve()` output rather than a rendered hook block. The
+  ceiling is 6000 and the dearest pool the census prices is 132 tokens, so the
+  ceiling cannot bind on these corpora. The deviation is disclosed, not
+  repaired.
+* The census seeds beliefs and no edges, so the temporal spine, BFS expansion,
+  and cluster structure are inert. Those are the sources where a budget could
+  change candidacy rather than count, so EC is measured on a retrieval
+  configuration narrower than production.
+* `retrieval._route_structural_query` is default-on and unexercised: it fires
+  only on a `<KIND>:<target_id>` marker query, and neither corpus holds one. It
+  also prices with `retrieval._belief_tokens` and ignores `belief_cost_fn`.
+
+The census prints all three under "what this run does not exercise".
+
 ## The constants under adjudication
 
 Each value is read at its definition site by symbol, not copied from a prior
@@ -105,10 +170,12 @@ wider band applies retroactively to any verdict that used this rule.
 
 ### A raise is never licensed by this instrument
 
-Admission is monotone in budget: raising a budget can only admit beliefs, never
-evict them. A ceiling statistic therefore answers "should we raise it" before
-the run starts — the answer is always "more beliefs are admitted", which is a
-description of the mechanism and not evidence that the extra beliefs help.
+A ceiling statistic cannot answer "should we raise it". It says only that the
+two arms could return different text, never which text is better. Raising a
+budget moves the pack in both directions — the fill skips what it cannot afford
+and keeps going, so a raise admits some beliefs and evicts others (Amendment 1)
+— and neither the admissions nor the evictions are evidence that the result
+improves.
 
 If `EC > NF` and the effect points up, the published verdict is exactly this
 sentence and no other:
@@ -179,14 +246,18 @@ it is demonstrated rather than read off the source:
   not vary with the budget.
 * `retrieval._l25_hits` **does** receive a budget-derived cap
   (`effective_l25_subbudget`), so a prior claim that the budget reaches neither
-  lane is only half right. The L2.5 trim is still a tail truncation, which keeps
-  the monotonicity argument, but the census varies the sub-cap because of it.
-* `clustering.pack_with_clusters` fills its second stage with `continue`, not
-  `break`, so a budget at or above total pool cost returns the whole pool.
-* Admission is monotone across the grid: raising a budget never removes a
-  belief that a lower budget admitted.
+  lane is only half right. The L2.5 trim is a tail truncation, but the census
+  varies the sub-cap because of it.
+* `clustering.pack_with_clusters` skips an over-budget belief and keeps
+  filling, so a budget at or above total pool cost returns the whole pool.
+* Admission is **not** monotone across the grid: raising a budget can remove a
+  belief that a lower budget admitted (Amendment 1). The bound survives because
+  it is conditional and quantifies only over budgets at which no cap binds. No
+  argument in this rule may reason from monotonicity.
 
 `tests/test_budget_census.py` holds each of these, and holds the census itself
-against a deliberately budget-sensitive fake packer. Until that mutation guard
-fails on the fake and passes on the shipped code, the bound is **unverified**
-and every number the census prints inherits that caveat.
+against three deliberately budget-sensitive fake packers: one that truncates by
+item count, one that returns less at a higher budget, and one whose budget
+moves only a non-gold belief. Until each fake makes the census report a
+violation and the shipped code reports none, the bound is **unverified** and
+every number the census prints inherits that caveat.
