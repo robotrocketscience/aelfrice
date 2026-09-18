@@ -791,12 +791,22 @@ def test_observational_commands_read_a_store_they_cannot_write(
     succeeds and the fallback is never exercised. `exploration_events` is
     one the open-time DDL battery recreates and no observational command
     queries.
+
+    `created_at` is backdated for `stale`, which selects
+    `created_at < now - --older-than days`. The store writes a
+    `Z`-suffixed timestamp at second granularity and the cutoff is a
+    microsecond `+00:00` string, so inside the same second the two
+    compare as strings with `Z` above `.` and a just-created belief is
+    excluded. Without the backdate this arm prints "no stale beliefs"
+    and asserts nothing — on a writable store too, so it is the
+    parameters, not the read-only handle.
     """
     db = store_dir / "memory.db"
     holder = _hold_sidecars(db)
     try:
         sqlite3.connect(str(db)).executescript(
             "DROP TABLE IF EXISTS exploration_events;"
+            "UPDATE beliefs SET created_at = '2020-01-01T00:00:00Z';"
         )
         _freeze(store_dir)
         _deny_write_control(store_dir)
@@ -809,6 +819,10 @@ def test_observational_commands_read_a_store_they_cannot_write(
         captured = capsys.readouterr()
         assert rc == code, captured.err
         assert "Traceback" not in captured.err
+        # Exit 0 is not the claim: all four must reach the seeded belief
+        # through the read-only handle. Without this, a regression that
+        # returns no rows and prints nothing passes the whole matrix.
+        assert "codex scratch fact" in captured.out
         assert _digest(db) == before, "an observational command wrote"
         assert sorted(p.name for p in store_dir.iterdir()) == manifest
     finally:
