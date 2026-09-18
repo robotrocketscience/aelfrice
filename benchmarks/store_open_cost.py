@@ -860,6 +860,10 @@ def _report(db: Path, *, label: str) -> str:
     readonly = measured["readonly"]
     avoidable = writable["statements"] - readonly["statements"]
     share = 100.0 * timings["avoidable_ms"] / stats_ms if stats_ms else 0.0
+    wall_clock_heading = (
+        "wall clock on THIS machine — not published, not re-derivable "
+        + "elsewhere:"
+    )
     lines = [
         f"store: {label}",
         f"  file bytes                {measured['db_bytes']}",
@@ -892,8 +896,7 @@ def _report(db: Path, *, label: str) -> str:
         "",
         f"avoidable statements        {avoidable}",
         "",
-        "wall clock on THIS machine — not published, not re-derivable "
-        "elsewhere:",
+        wall_clock_heading,
         f"  writable open median      {timings['writable_open_ms']:.3f} ms",
         f"  read-only open median     {timings['readonly_open_ms']:.3f} ms",
         f"  avoidable median          {timings['avoidable_ms']:.3f} ms",
