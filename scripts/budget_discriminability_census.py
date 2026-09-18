@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """#1546 K0 — how many labelled queries could a budget change at all?
 
-A budget only ever *truncates* a pack. If the whole candidate pool for a
-labelled query prices below the smaller of two budgets under that lane's shipped
-`belief_cost_fn`, both arms render a byte-identical block, the model receives
-identical input, and every downstream metric is identical by construction. The
-count of labelled queries where the arms *could* differ is therefore an exact
-upper bound on any achievable effect.
+If the whole candidate pool for a labelled query prices below the smaller of two
+budgets under that lane's shipped `belief_cost_fn`, neither budget can bind:
+both arms render a byte-identical block, the model receives identical input, and
+every downstream metric is identical by construction. The count of labelled
+queries where the arms *could* differ is therefore an exact upper bound on any
+achievable effect.
+
+That is a **conditional** claim, and only that. A budget does not merely
+truncate: `clustering.pack_with_clusters` skips an over-budget belief with
+`continue`, so the budget selects rather than truncates and admission is not
+monotone — raising a budget can evict a belief the lower budget admitted. The
+bound above is untouched by that, because it applies only where no cap binds,
+but any argument that reasons from monotonicity is void. See the decision
+rule's section on the mechanism.
 
 This script prices every candidate pool in the public labelled corpora against
 every shipped budget, under each lane's real cost function, and reports
@@ -35,13 +43,23 @@ and a bound violation is a failure.
 
 ## The bound, and how it can fail
 
-The census asserts its own premise on every run. For each query and each pair of
-grid arms whose smaller effective budget is at or above the pool's price, the
-two rendered gold footprints must be identical. A packer that reads the budget
-as anything other than a truncation breaks that, and the run exits 2 with the
-offending rows named. `tests/test_budget_census.py` drives exactly that case
-against a deliberately budget-sensitive fake packer, because agreeing rows on
-unmodified code prove nothing.
+The census asserts its own premise on every run, in two ways.
+
+1. **Block identity.** For each query and each pair of grid arms whose smaller
+   effective budget is at or above the pool's price, the two *whole rendered
+   blocks* must be identical — not just the gold lines, because block identity
+   is what the ceiling claim asserts.
+2. **Probe containment.** Every arm's output must be a subset of the unbudgeted
+   probe pool. The probe runs through the same `retrieve()` path as the arms, so
+   a packer that returns *less* at a high budget would otherwise shrink the pool
+   that its own detector is computed against and escape unseen. Containment is
+   what makes the probe's shared code path safe to use.
+
+A run where either fails exits 2 with the offending rows named.
+`tests/test_budget_census.py` drives both cases against deliberately
+budget-sensitive fake packers — one that truncates by item count, one that
+returns less at a higher budget — because agreeing rows on unmodified code
+prove nothing.
 
 ## Stores
 
@@ -242,6 +260,7 @@ UNMEASURABLE_LANES: Final[dict[str, str]] = {
 }
 
 
+
 # --- Corpora -----------------------------------------------------------
 
 
@@ -347,6 +366,7 @@ class QueryResult:
     pool_ids: list[str]
     pool_cost: int
     degenerate: bool
+    empty_pool: bool
     shipped_budget: int
     binds_on: str
     discordant: bool
@@ -396,6 +416,19 @@ def _footprint(lane: Lane, hits: Sequence[Belief], gold: frozenset[str]) -> str:
     return "\n".join(lane.render(b) for b in hits if b.id in gold)
 
 
+def _block(lane: Lane, hits: Sequence[Belief]) -> str:
+    """The whole rendered block: every hit, in order, not just the gold ones.
+
+    `_footprint` is the pre-registered statistic and stays the gold subset.
+    This is what the *bound* is checked on, because the bound's claim is block
+    identity — "both arms render a byte-identical block" — and a check that
+    reads only the gold lines cannot see a budget that moves a non-gold
+    belief. Checking the weaker thing and publishing the stronger claim is how
+    a guard passes over the defect it exists to catch.
+    """
+    return "\n".join(lane.render(b) for b in hits)
+
+
 def _binds_on(pool_cost: int, budget: int, l25_subbudget: int) -> str:
     """Which cap ended the arm: `pool`, `token_budget`, `l25_subbudget`, `both`.
 
@@ -419,7 +452,12 @@ def measure_query(lane: Lane, q: LabelledQuery) -> QueryResult:
 
     The unbudgeted pool comes out of the same `retrieve()` call shape at
     `POOL_PROBE_BUDGET`, so it is the pool the shipped code actually builds
-    rather than a reconstruction of it.
+    rather than a reconstruction of it. That sharing is also the probe's
+    weakness, and the containment check below is what pays for it: a packer
+    that returns *less* at a higher budget poisons its own detector, because
+    every footprint is computed against a pool the same mutation shrank. Each
+    arm is therefore required to be a subset of the probe pool, and a run
+    where it is not is a failed run rather than a measured zero.
     """
     store = _open_store(q)
     try:
@@ -431,56 +469,66 @@ def measure_query(lane: Lane, q: LabelledQuery) -> QueryResult:
             l25_token_subbudget=POOL_PROBE_BUDGET,
         )
         pool_ids = [b.id for b in pool]
+        pool_set = frozenset(pool_ids)
         pool_cost = sum(_cost(lane, b) for b in pool)
-        gold_in_pool = frozenset(pool_ids) & q.gold_ids
-        degenerate = bool(pool_ids) and frozenset(pool_ids) <= q.gold_ids
+        gold_in_pool = pool_set & q.gold_ids
+        empty_pool = not pool_ids
+        degenerate = bool(pool_ids) and pool_set <= q.gold_ids
 
         shipped_budget = int(round(lane.budget * SHIPPED_MULTIPLIER))
-        shipped_fp = _footprint(
-            lane,
-            _retrieve(
+        violations: list[str] = []
+
+        def arm(budget: int, sub: int) -> tuple[str, str]:
+            """Run one arm; return its gold footprint and its whole block."""
+            hits = _retrieve(
                 store,
                 lane,
                 q.query,
-                token_budget=shipped_budget,
-                l25_token_subbudget=SHIPPED_L25_SUBBUDGET,
-            ),
-            gold_in_pool,
-        )
+                token_budget=budget,
+                l25_token_subbudget=sub,
+            )
+            outside = [b.id for b in hits if b.id not in pool_set]
+            if outside:
+                violations.append(
+                    f"{lane.name}/{q.corpus}/{q.qid}: the arm at "
+                    f"budget={budget},sub={sub} returned {outside}, which the "
+                    f"unbudgeted probe at budget={POOL_PROBE_BUDGET} did not "
+                    "return. The probe is then not an upper bound on the "
+                    "arms, so every footprint on this query is measured "
+                    "against the wrong pool and no EC computed from it means "
+                    "anything"
+                )
+            return _footprint(lane, hits, gold_in_pool), _block(lane, hits)
+
+        shipped_fp, shipped_block = arm(shipped_budget, SHIPPED_L25_SUBBUDGET)
 
         discordant = False
-        violations: list[str] = []
         for mult in BUDGET_MULTIPLIERS:
             arm_budget = max(1, int(round(lane.budget * mult)))
             for sub in L25_SUBBUDGETS:
                 if arm_budget == shipped_budget and sub == SHIPPED_L25_SUBBUDGET:
                     continue
-                arm_fp = _footprint(
-                    lane,
-                    _retrieve(
-                        store,
-                        lane,
-                        q.query,
-                        token_budget=arm_budget,
-                        l25_token_subbudget=sub,
-                    ),
-                    gold_in_pool,
-                )
-                if arm_fp == shipped_fp:
-                    continue
-                discordant = True
+                arm_fp, arm_block = arm(arm_budget, sub)
+                if arm_fp != shipped_fp:
+                    discordant = True
                 # The bound: when neither arm's caps can bind on this pool,
-                # the two blocks must be byte-identical. A difference here is
-                # not a finding about budgets, it is a refutation of the
-                # premise this whole instrument rests on.
+                # the two *blocks* must be byte-identical. A difference here
+                # is not a finding about budgets, it is a refutation of the
+                # premise this whole instrument rests on. It is checked on
+                # the whole block and not on the gold subset, because block
+                # identity is what the ceiling claim asserts.
                 floor = min(arm_budget, shipped_budget)
                 sub_floor = min(sub, SHIPPED_L25_SUBBUDGET)
-                if pool_cost <= floor and pool_cost <= sub_floor:
+                if (
+                    arm_block != shipped_block
+                    and pool_cost <= floor
+                    and pool_cost <= sub_floor
+                ):
                     violations.append(
                         f"{lane.name}/{q.corpus}/{q.qid}: pool_cost="
                         f"{pool_cost} <= min(budget)={floor} and "
-                        f"min(l25_subbudget)={sub_floor}, yet the gold "
-                        f"footprint differs between budget={shipped_budget},"
+                        f"min(l25_subbudget)={sub_floor}, yet the rendered "
+                        f"block differs between budget={shipped_budget},"
                         f"sub={SHIPPED_L25_SUBBUDGET} and budget="
                         f"{arm_budget},sub={sub}"
                     )
@@ -491,6 +539,7 @@ def measure_query(lane: Lane, q: LabelledQuery) -> QueryResult:
             pool_ids=pool_ids,
             pool_cost=pool_cost,
             degenerate=degenerate,
+            empty_pool=empty_pool,
             shipped_budget=shipped_budget,
             binds_on=_binds_on(pool_cost, shipped_budget, SHIPPED_L25_SUBBUDGET),
             discordant=discordant,
@@ -586,12 +635,13 @@ def report() -> dict[str, Any]:
         by_corpus: dict[str, Any] = {}
         for corpus in sorted({r.corpus for r in results}):
             rows = [r for r in results if r.corpus == corpus]
-            kept = [r for r in rows if not r.degenerate]
+            kept = [r for r in rows if not r.degenerate and not r.empty_pool]
             d = sum(1 for r in kept if r.discordant)
             n = len(kept)
             by_corpus[corpus] = {
                 "n": n,
-                "degenerate_excluded": len(rows) - n,
+                "degenerate_excluded": sum(1 for r in rows if r.degenerate),
+                "empty_pool_excluded": sum(1 for r in rows if r.empty_pool),
                 "d": d,
                 "ec_pp": round(100.0 * d / n, 4) if n else None,
                 "pool_cost_min": min((r.pool_cost for r in kept), default=0),
@@ -615,7 +665,9 @@ def report() -> dict[str, Any]:
             }
         for r in results:
             violations.extend(r.violations)
-        kept_all = [r for r in results if not r.degenerate]
+        kept_all = [
+            r for r in results if not r.degenerate and not r.empty_pool
+        ]
         n_all = len(kept_all)
         d_all = sum(1 for r in kept_all if r.discordant)
         lane_rows[lane.name] = {
@@ -693,8 +745,11 @@ def figures(rep: dict[str, Any] | None = None) -> dict[str, Any]:
     out["degenerate_excluded"] = sum(
         c["degenerate_excluded"] for c in first_lane["by_corpus"].values()
     )
+    out["empty_pool_excluded"] = sum(
+        c["empty_pool_excluded"] for c in first_lane["by_corpus"].values()
+    )
     out["labelled_queries_before_exclusion"] = (
-        out["degenerate_excluded"] + rep["n"]
+        out["degenerate_excluded"] + out["empty_pool_excluded"] + rep["n"]
     )
     for name, row in rep["lanes"].items():
         out[f"ec_pp.{name}"] = row["ec_pp"]
@@ -748,6 +803,7 @@ def render_text(rep: dict[str, Any]) -> str:
             lines.append(
                 f"  {corpus:<18} N={c['n']:<3} D={c['d']:<3} "
                 f"EC={c['ec_pp']}pp  degenerate_excluded={c['degenerate_excluded']}"
+                f"  empty_pool_excluded={c['empty_pool_excluded']}"
                 f"  pool_cost=[{c['pool_cost_min']},{c['pool_cost_max']}]"
                 f"  pool_size=[{c['pool_size_min']},{c['pool_size_max']}]"
                 f"  binds_on={c['binds_on']}"
