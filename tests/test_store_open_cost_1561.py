@@ -54,6 +54,8 @@ exactly like a component that became free.
 from __future__ import annotations
 
 import hashlib
+# Binds `importlib` as well as the submodule, so `importlib.import_module`
+# below needs no second import statement for the same package.
 import importlib.util
 import os
 import sqlite3
@@ -249,7 +251,7 @@ def test_the_producer_refuses_a_component_census_that_does_not_sum(
     Simulated at the seam, like the grid-disagreement test below: the point
     under test is the refusal.
     """
-    import benchmarks.store_open_cost as producer
+    producer = importlib.import_module("benchmarks.store_open_cost")
 
     monkeypatch.setattr(
         producer,
@@ -452,7 +454,7 @@ def test_the_producer_has_no_store_default(
     it fails loudly here instead of quietly opening whatever the operator's
     environment points at.
     """
-    import aelfrice.db_paths as db_paths
+    db_paths = importlib.import_module("aelfrice.db_paths")
 
     def _forbidden() -> Path:
         raise AssertionError("the benchmark resolved a live store path")
@@ -528,7 +530,7 @@ def test_the_producer_refuses_a_grid_whose_census_disagrees(
     divergence: the point under test is the producer's refusal, and a
     genuine size-dependent count is the thing that must never exist.
     """
-    import benchmarks.store_open_cost as producer
+    producer = importlib.import_module("benchmarks.store_open_cost")
 
     real = producer.measure_open
     calls: list[int] = []

@@ -116,6 +116,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -337,7 +338,7 @@ def _instrumented() -> Iterator[dict[str, float]]:
     charging those statements to both would make the parts sum to more than
     the open.
     """
-    import aelfrice.store as store_module
+    store_module = importlib.import_module("aelfrice.store")
 
     elapsed = dict.fromkeys(COMPONENTS, 0.0)
     undo: list[tuple[Any, str, Any]] = []
