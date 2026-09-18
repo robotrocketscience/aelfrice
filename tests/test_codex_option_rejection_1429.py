@@ -143,7 +143,41 @@ def test_inapplicable_sets_come_from_the_parser() -> None:
 
 
 _REPO = Path(__file__).resolve().parents[1]
-_ENTRY = _REPO / "CHANGELOG" / "unreleased" / "1429-codex-option-rejection.md"
+
+
+def changelog_entry_text(slug: str, issue: int) -> str:
+    """The text of one changelog entry, before or after a release cut.
+
+    An entry lives at `CHANGELOG/unreleased/<slug>.md` until a release,
+    and inside `CHANGELOG/v<major>.md` afterwards — `collate_changelog.py`
+    folds it in and deletes the file. A guard that reads only the first
+    location passes until the cut and then raises `FileNotFoundError`,
+    which turns every release into a red suite for a reason that has
+    nothing to do with the release. Found at the v5.0.0 cut, by exactly
+    that failure.
+
+    Returns the whole released section when the entry has been collated,
+    rather than the one bullet. Callers here search it with anchored
+    patterns, and narrowing it further would mean re-implementing the
+    collator's own bullet splitting in a test. The issue number is what
+    keeps the fallback honest: it is in the link every entry carries, so
+    a section that no longer mentions this issue is a miss rather than a
+    silent match on a neighbour.
+    """
+    unreleased = _REPO / "CHANGELOG" / "unreleased" / f"{slug}.md"
+    if unreleased.is_file():
+        return unreleased.read_text(encoding="utf-8")
+    needle = f"/issues/{issue})"
+    for collated in sorted((_REPO / "CHANGELOG").glob("v*.md")):
+        text = collated.read_text(encoding="utf-8")
+        if needle in text:
+            return text
+    raise AssertionError(
+        f"the {slug} entry is in neither CHANGELOG/unreleased/{slug}.md "
+        f"nor any CHANGELOG/v*.md carrying a link to issue #{issue}"
+    )
+
+
 _NUMBER_WORDS: dict[int, str] = {
     1: "one",
     2: "two",
@@ -167,7 +201,7 @@ def test_changelog_count_matches_the_command_the_entry_quotes() -> None:
     applicable and must not be counted. Deriving the figure from the same
     parser the gate uses keeps the prose from drifting off the code.
     """
-    text = _ENTRY.read_text(encoding="utf-8")
+    text = changelog_entry_text("1429-codex-option-rejection", 1429)
     quoted = re.search(r"`(aelf setup --host codex [^`]+)`", text)
     assert quoted is not None, "the entry no longer quotes a setup command"
     argv = quoted.group(1).split()[1:]
