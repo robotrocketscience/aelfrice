@@ -102,6 +102,38 @@ class TestWiringInstalled:
         assert "uv tool install aelfrice" in out, out
         assert "uv tool update-shell" in out, out
 
+    def test_the_failure_claims_no_surface_that_this_build_lacks(
+        self, installed: tuple[Path, Path], empty_path: Path,
+    ) -> None:
+        """The diagnosis may not outrun the tree it ships with.
+
+        A `[FAIL]` line is a diagnosis, and this one lands on a stable CI
+        exit contract (#1430), so it may only name mechanisms this build
+        actually has. It has neither of the two that the obvious wording
+        reaches for: every generated `$aelf-*` skill still issues
+        `uv run aelf`, and `aelf setup --host codex` pins each hook handler
+        to an absolute `aelf-*` path whenever it can resolve one. Neither
+        surface invokes `aelf` by name, so the line must not say they do.
+
+        Both preconditions are re-derived here rather than assumed. When
+        the rest of #1413 converts the skills, the first assertion stops
+        holding and this guard retires with it.
+        """
+        codex_dir, skills = installed
+        bodies = [
+            path.read_text(encoding="utf-8")
+            for path in sorted(skills.rglob("SKILL.md"))
+        ]
+        assert bodies, "fixture precondition: skills are installed"
+        assert all("uv run aelf" in body for body in bodies), (
+            "precondition gone: a generated skill no longer routes through "
+            "`uv run`, so re-read this guard before deleting it"
+        )
+        hooks_doc = (codex_dir / "hooks.json").read_text(encoding="utf-8")
+        assert '"aelf"' not in hooks_doc, hooks_doc
+        _rc, out = _doctor(*installed)
+        assert "invoke `aelf` by name" not in out, out
+
     def test_a_posix_shim_on_path_stays_green(
         self, installed: tuple[Path, Path], empty_path: Path,
     ) -> None:
@@ -167,6 +199,32 @@ class TestWiringAbsent:
         assert "not on PATH" not in out, out
 
 
+class TestHooksFeatureOffIsAFailure:
+    """The behaviour the doc caveat has to describe.
+
+    `[features].hooks = false` with our handlers installed is a
+    `CodexDoctorReport.tampering()` reason, so doctor prints a `[warn]`
+    *and* a `[FAIL]` and exits 1. Calling it a warning in the docs would
+    invite an operator to gate on this command and be surprised by a red
+    light. This test anchors the doc guard below to real behaviour rather
+    than to a string.
+    """
+
+    def test_the_feature_off_state_fails_and_exits_one(
+        self, installed: tuple[Path, Path], empty_path: Path,
+    ) -> None:
+        _shim(empty_path, "aelf")  # isolate from the #1413 PATH fault
+        codex_dir, skills = installed
+        (codex_dir / "config.toml").write_text(
+            "[features]\nhooks = false\n", encoding="utf-8",
+        )
+        rc, out = _doctor(codex_dir, skills)
+        assert rc == 1, out
+        assert "[warn]" in out, out
+        assert "[FAIL]" in out, out
+        assert "not on PATH" not in out, out
+
+
 _REPO = Path(__file__).resolve().parents[1]
 _SLASH_COMMANDS_DOC = _REPO / "docs" / "user" / "SLASH_COMMANDS.md"
 
@@ -195,3 +253,18 @@ class TestCodexFeatureKeyIsDocumented:
         """
         text = _SLASH_COMMANDS_DOC.read_text(encoding="utf-8")
         assert "`codex_hooks` feature flag on" not in text, text[:400]
+
+    def test_the_caveat_calls_the_feature_off_state_a_failure(self) -> None:
+        """It is a `[FAIL]` and exit 1, not a warning.
+
+        `TestHooksFeatureOffIsAFailure` proves the behaviour; this pins the
+        prose to it, because the caveat is what an operator reads before
+        deciding whether to gate on this command.
+        """
+        text = _SLASH_COMMANDS_DOC.read_text(encoding="utf-8")
+        caveat = text.split("Two caveats are specific to the Codex host:")[1]
+        caveat = caveat.split("\n2. ")[0]
+        assert "`[features].hooks = false`" in caveat, caveat
+        assert "`[FAIL]`" in caveat, caveat
+        assert "exits 1" in caveat, caveat
+        assert "reports as a warning" not in caveat, caveat

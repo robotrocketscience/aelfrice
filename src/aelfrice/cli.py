@@ -4908,9 +4908,9 @@ def _cmd_doctor_codex(
     Exit contract, stable for CI (#1430). **Exit 1** on a `hooks.json` that
     is present but unparseable, or on wiring that is installed and broken:
     a hook command not present on disk, a partially installed hook set, the
-    Codex ``hooks`` feature disabled while our handlers are installed, or an
+    Codex ``hooks`` feature disabled while our handlers are installed, an
     installed ``$aelf-*`` skill that does not match what this build
-    generates, or an unresolvable ``aelf`` on ``PATH`` (#1413).
+    generates, or an ``aelf`` that does not resolve on ``PATH`` (#1413).
     **Exit 0** when the wiring is simply absent — a machine that
     never ran ``aelf setup --host codex`` is a normal machine — and when
     zero ``[hooks.state]`` approvals are recorded, since approval keying is
@@ -5013,21 +5013,32 @@ def _cmd_doctor_codex(
             + ", ".join(orphaned)
             + " — re-run `aelf setup --host codex`",
         )
-    # #1413: the installed hooks and the generated `$aelf-*` skills both
-    # invoke the CLI by bare name, so wiring that is installed while `aelf`
-    # is unresolvable on PATH is a broken install — every dispatch fails at
-    # exec, and doctor is the only place that says so. Same wiring gate as
-    # every fault above, and for the same reason: a source checkout or a CI
-    # run with no `uv tool` install has no Codex wiring and stays exit 0.
+    # #1413: `uv tool install aelfrice` is the one supported channel, and it
+    # puts `aelf` in a bin directory. Wiring installed while that name does
+    # not resolve means the directory is off PATH, so nothing on the machine
+    # can run `aelf` by name — and doctor is the only place that says so.
+    #
+    # Careful about what this does *not* claim. As of this commit the
+    # generated `$aelf-*` skills still route every command through
+    # `uv run aelf`, and `aelf setup --host codex` pins each hook handler to
+    # an absolute `aelf-*` path whenever it can resolve one, so neither
+    # surface necessarily breaks the instant `aelf` leaves PATH. The fault
+    # reports the PATH state itself, which is what the operator ruling of
+    # 2026-08-12 specified and what the rest of #1413 depends on.
+    #
+    # Same wiring gate as every fault above, and for the same reason: a
+    # source checkout or a CI run with no `uv tool` install has no Codex
+    # wiring and stays exit 0.
     from aelfrice import launcher
 
     if report.owned_handler_count and launcher.which_on_path("aelf") is None:
         faults.append(
             "Codex wiring is installed but `aelf` is not on PATH — the "
-            "hooks and the $aelf-* skills invoke `aelf` by name and will "
-            "fail to launch; install the CLI with `uv tool install "
-            "aelfrice`, then put its bin directory on PATH with "
-            "`uv tool update-shell`",
+            "supported `uv tool install aelfrice` puts `aelf` in a bin "
+            "directory this PATH does not reach, so no documented "
+            "`aelf ...` command runs by name on this machine; install the "
+            "CLI with `uv tool install aelfrice`, then put its bin "
+            "directory on PATH with `uv tool update-shell`",
         )
     for fault in faults:
         print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
