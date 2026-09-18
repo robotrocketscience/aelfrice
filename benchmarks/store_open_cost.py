@@ -199,6 +199,15 @@ def _hermetic_environment(tmp: Path) -> Iterator[None]:
         os.chdir(cwd)
         for name in _GIT_LOCATION_VARS:
             os.environ.pop(name, None)
+        # Every `AELFRICE_` name the block *set*, not only the ones it
+        # saved. `figures()` and `main()` assign `AELFRICE_DB` inside this
+        # block, so restoring `saved` alone leaves the process pointed at a
+        # database inside a temporary directory that is about to be deleted
+        # — and `MemoryStore` would recreate an empty store there for
+        # whatever ran next.
+        for name in [k for k in os.environ if k.startswith(ENV_PREFIX)]:
+            if name not in saved:
+                del os.environ[name]
         os.environ.update(saved)
 
 

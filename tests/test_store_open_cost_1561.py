@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -48,6 +49,7 @@ from aelfrice.db_paths import open_store_for_read, repo_identity_from_db_path
 from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 from benchmarks.store_open_cost import (
+    ENV_PREFIX,
     REPO_STORE_DIRNAME,
     build_fixture,
     figures,
@@ -285,6 +287,27 @@ def test_the_producer_has_no_store_default(
     with pytest.raises(SystemExit) as excinfo:
         main([])
     assert excinfo.value.code == 2
+
+
+def test_the_producer_leaves_no_store_path_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that redirects the suite's default store is a time bomb.
+
+    `figures()` assigns `AELFRICE_DB` inside its hermetic block, pointing at
+    a database in a temporary directory that the block then deletes.
+    Restoring only the variables that existed on *entry* leaves that
+    assignment standing, so the next test in the session to resolve the
+    default store is silently pointed at a dead path — and `MemoryStore`
+    would create a fresh empty store there rather than fail.
+
+    Run on a one-element grid: the leak is a property of the block, not of
+    the grid, and the published values are the derived-figure gate's job.
+    """
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+    figures(grid=(20,))
+    leaked = sorted(k for k in os.environ if k.startswith(ENV_PREFIX))
+    assert not leaked, f"the producer left these set: {leaked}"
 
 
 def test_emit_figures_refuses_a_named_store() -> None:
