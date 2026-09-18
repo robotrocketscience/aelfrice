@@ -10854,6 +10854,33 @@ def _explicitly_supplied_dests(argv: Sequence[str]) -> frozenset[str]:
     return frozenset(vars(probe.parse_args(list(argv))))
 
 
+def _typed_spelling(
+    action: argparse.Action, argv: Sequence[str], fallback: str
+) -> str:
+    """The option string the caller actually typed for `action`.
+
+    `_option_dests` keys each dest to its first registered spelling, which
+    for an `argparse.BooleanOptionalAction` is the positive one. A caller
+    who typed `--no-statusline` would otherwise be told the command
+    refuses `--statusline`, an option they never wrote. argparse has
+    already accepted `argv` by the time this runs, so an abbreviation here
+    is one argparse itself resolved.
+    """
+    tokens = [tok.split("=", 1)[0] for tok in argv]
+    for token in tokens:
+        if token in action.option_strings:
+            return token
+    for token in tokens:
+        if not token.startswith("--"):
+            continue
+        matches = [
+            opt for opt in action.option_strings if opt.startswith(token)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return fallback
+
+
 def _codex_option_rejection(
     parser: argparse.ArgumentParser,
     cmd: str | None,
@@ -10869,12 +10896,19 @@ def _codex_option_rejection(
         return None
     inapplicable = codex_inapplicable_options(parser, cmd)
     supplied = _explicitly_supplied_dests(argv)
+    sub = _subcommand_parser(parser, cmd)
+    actions = (
+        {a.dest: a for a in sub._actions if a.option_strings}  # noqa: SLF001
+        if sub is not None
+        else {}
+    )
     offenders = sorted(
-        opt for dest, opt in inapplicable.items() if dest in supplied
+        _typed_spelling(actions[dest], argv, opt) if dest in actions else opt
+        for dest, opt in inapplicable.items()
+        if dest in supplied
     )
     if not offenders:
         return None
-    sub = _subcommand_parser(parser, cmd)
     every: list[str] = list(_option_dests(sub).values()) if sub is not None else []
     refused = set(inapplicable.values())
     accepted = sorted(opt for opt in every if opt not in refused)

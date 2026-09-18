@@ -225,7 +225,10 @@ def test_explicit_inapplicable_option_exits_2_before_any_mutation(
 
     assert rc == 2
     err = capsys.readouterr().err
-    assert option in err or option.replace("--no-", "--", 1) in err
+    # The spelling named back is the one typed, not the dest's first
+    # registered form: `--no-statusline` must not be reported as
+    # `--statusline`.
+    assert f"refusing {option}" in err or f", {option}" in err
     assert "#1429" in err
     assert codex_env.is_untouched()
     assert out.getvalue() == ""
@@ -240,6 +243,13 @@ def test_equals_form_and_prefix_abbreviation_are_refused(
     assert "--scope" in capsys.readouterr().err
     assert main(["setup", "--host", "codex", "--proj", "x"], io.StringIO()) == 2
     assert "--project-root" in capsys.readouterr().err
+    # An abbreviation resolves to the full option; a negative flag keeps
+    # the negative spelling the caller typed.
+    assert (
+        main(["setup", "--host", "codex", "--no-pre-issue-guard"], io.StringIO())
+        == 2
+    )
+    assert "refusing --no-pre-issue-guard" in capsys.readouterr().err
     assert codex_env.is_untouched()
 
 
