@@ -1007,7 +1007,8 @@ def check_text(files: list[Path], report: Report) -> list[Marker]:
                 "published claim and a marker there is a real marker. Close "
                 f"the block with a line of at least {len(delimiter)} "
                 f"{delimiter[0]!r}, or -- if the line was never meant as a "
-                "fence -- indent it by four spaces so it cannot open one.",
+                f"fence -- indent it by {MAX_FENCE_INDENT + 1} spaces so it "
+                "cannot open one.",
             )
         text = mask_document(raw)
         if "derived:" in text:

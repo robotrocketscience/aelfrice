@@ -1244,26 +1244,43 @@ def test_the_advisory_is_silent_on_a_document_that_closes_its_fences(
     assert _advisories(repo, _PAGE.format(value="1,500", marker="1,500")) == []
 
 
-@pytest.mark.parametrize(
-    ("remedy", "fixed"),
-    [
-        # "Close the block with a line of at least 3 '`'."
-        ("close", _UNTERMINATED.replace("value = 1\n", "value = 1\n```\n")),
-        # "Or indent it by four spaces so it cannot open one."
-        ("indent", _UNTERMINATED.replace("```python\n", "    ```python\n")),
-    ],
-)
+# The two numbers the advisory quotes, read back out of the message it
+# printed. Written beside the test instead, they would let the shipped advice
+# name a run length or an indent width that does not clear the warning with
+# this test still green -- and an author who follows the message would see the
+# same warning again with nothing left to try.
+_CLOSER_ADVICE_RE = re.compile(r"line of at least (?P<count>\d+) '(?P<char>.)'")
+_INDENT_ADVICE_RE = re.compile(r"indent it by (?P<width>\d+) spaces")
+
+
+def _document_the_advisory_prescribes(advice: str, remedy: str) -> str:
+    """`_UNTERMINATED` with the remedy `advice` words applied to it."""
+    if remedy == "close":
+        match = _CLOSER_ADVICE_RE.search(advice)
+        assert match is not None, advice
+        closer = match.group("char") * int(match.group("count"))
+        return _UNTERMINATED.replace("value = 1\n", f"value = 1\n{closer}\n")
+    match = _INDENT_ADVICE_RE.search(advice)
+    assert match is not None, advice
+    indent = " " * int(match.group("width"))
+    return _UNTERMINATED.replace("```python\n", f"{indent}```python\n")
+
+
+@pytest.mark.parametrize("remedy", ["close", "indent"])
 def test_each_remedy_the_advisory_names_clears_it_and_keeps_the_marker(
-    repo: Path, remedy: str, fixed: str
+    repo: Path, remedy: str
 ) -> None:
     """AC6. An advisory is only worth printing if following it works.
 
-    Both remedies are applied verbatim as the message words them, and both are
-    held to two things: the advisory goes away, and the marker below still
-    parses. A remedy that silenced the warning by hiding the figure would be
-    worse than the warning.
+    Both remedies are built from the numbers the message itself quotes, so the
+    advice and the scanner cannot drift apart, and both are held to two things:
+    the advisory goes away, and the marker below still parses. A remedy that
+    silenced the warning by hiding the figure would be worse than the warning.
     """
-    assert _advisories(repo, fixed) == [], remedy
+    advice = _advisories(repo, _UNTERMINATED)
+    assert len(advice) == 1, advice
+    fixed = _document_the_advisory_prescribes(advice[0], remedy)
+    assert _advisories(repo, fixed) == [], (remedy, advice[0])
     markers = cdf.check_text([repo / "docs" / "page.md"], cdf.Report(github=False))
     assert [m.key for m in markers] == ["budget"], remedy
 
