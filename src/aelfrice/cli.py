@@ -10827,11 +10827,18 @@ def codex_inapplicable_options(
     Derived from the live parser rather than a hand-kept list, so an option
     added to `setup` or `unsetup` later falls under the #1429 gate the
     moment it is registered instead of silently escaping it.
+
+    A subcommand the gate does not cover has no inapplicable options, not
+    every option: only `setup` and `unsetup` have a Codex path that
+    discards a read set, so returning the whole option list for, say,
+    `doctor` would be a claim this function cannot make.
     """
+    if cmd not in _CODEX_APPLICABLE_DESTS:
+        return {}
     sub = _subcommand_parser(parser, cmd)
     if sub is None:
         return {}
-    applicable = _CODEX_APPLICABLE_DESTS.get(cmd, frozenset())
+    applicable = _CODEX_APPLICABLE_DESTS[cmd]
     return {
         dest: opt
         for dest, opt in _option_dests(sub).items()

@@ -325,12 +325,22 @@ def test_claude_host_is_not_gated() -> None:
 
 
 @pytest.mark.timeout(60)
-def test_other_subcommands_are_not_gated() -> None:
+@pytest.mark.parametrize(
+    ("cmd", "extra"),
+    [
+        ("uninstall", ["--keep-db", "--keep-hook"]),
+        ("doctor", ["--json"]),
+    ],
+)
+def test_other_subcommands_are_not_gated(cmd: str, extra: list[str]) -> None:
     """`doctor` and `uninstall` accept `--host codex`; #1429 is setup-only."""
     parser = build_parser()
-    argv = ["uninstall", "--host", "codex", "--keep-db", "--keep-hook"]
+    argv = [cmd, "--host", "codex", *extra]
     args = parser.parse_args(argv)
-    assert _codex_option_rejection(parser, "uninstall", args, argv) is None
+    assert _codex_option_rejection(parser, cmd, args, argv) is None
+    # The boundary is the applicability map, not the caller's guard: an
+    # uncovered subcommand has no inapplicable options at all.
+    assert codex_inapplicable_options(parser, cmd) == {}
 
 
 # --- the first-party caller: the generated `$aelf-setup` skill -------------
