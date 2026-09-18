@@ -273,6 +273,19 @@ jobs:
           AELF="$RUNNER_TEMP/wheelenv/Scripts/aelf.exe"
           mkdir -p "$CODEX_HOME"
 
+          # #1413: once Codex wiring is installed, doctor emits [FAIL] and
+          # exits 1 while `aelf` does not resolve on PATH (operator ruling,
+          # 2026-08-12). `handlers` runs doctor inside a pipeline under
+          # `set -o pipefail`, so that exit ends this step — and it did,
+          # because this job invokes the wheel by absolute path out of a
+          # venv that is not on PATH. The venv's script directory goes on
+          # PATH instead of loosening the assertion: a machine that ran
+          # `aelf setup --host codex` has `aelf` on PATH, so this measures
+          # the configuration the step is about rather than one no user is
+          # in. Tolerating the exit code here would also hide a real doctor
+          # failure behind a handler count.
+          export PATH="$RUNNER_TEMP/wheelenv/Scripts:$PATH"
+
           handlers() {
             "$AELF" doctor --host codex 2>&1 \
               | grep -oE 'aelfrice_handlers=[0-9]+' \
