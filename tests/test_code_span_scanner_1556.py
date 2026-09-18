@@ -1291,6 +1291,13 @@ def test_no_file_in_the_scanned_corpus_exercises_the_divergence() -> None:
     While this holds, the unterminated-opener divergence from CommonMark costs
     nothing on this tree: no document is read one way by this scanner and
     another way by a Markdown renderer.
+
+    This gates where the gate itself only warns, and the asymmetry is
+    deliberate. The gate warns because prose that hard-fails a figure check is
+    a gate authors route around. This test is the docstring's own claim, and a
+    claim that stops being true is a documentation defect whoever broke it
+    should read about -- so the message names the file and the remedy rather
+    than leaving a reader to conclude the scanner regressed.
     """
     files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
     assert len(files) > 100, "an empty scan would pass this vacuously"
@@ -1298,7 +1305,14 @@ def test_no_file_in_the_scanned_corpus_exercises_the_divergence() -> None:
         (cdf.rel(p), cdf.unterminated_fence(p.read_text(encoding="utf-8", errors="replace")))
         for p in files
     ]
-    assert [d for d in dangling if d[1] is not None] == []
+    exercised = [(name, found) for name, found in dangling if found is not None]
+    assert exercised == [], (
+        "a file grew an unterminated code fence, so this scanner and a Markdown "
+        "renderer now disagree about where its code ends. Nothing is wrong with "
+        "the scanner: close the fence, or indent the line so it opens no fence, "
+        "and the module docstring's claim holds again. Lines: "
+        + ", ".join(f"{name}:{found[0]} ({found[1]!r})" for name, found in exercised)
+    )
 
 
 # --- the live corpus ------------------------------------------------------
@@ -1308,14 +1322,18 @@ def test_no_file_in_the_scanned_corpus_exercises_the_divergence() -> None:
 def test_the_privacy_page_publishes_the_two_budgets_it_names() -> None:
     """AC3, over the file the defect was found on.
 
-    `docs/user/PRIVACY.md` carries six delimiter lines above its budget bullet,
-    and every marker on the page parsed as nothing. Asserting the two keys
-    rather than a count: a count rises for any reason, including a marker added
+    `docs/user/PRIVACY.md` carries delimiter lines above its budget bullet, and
+    every marker on the page parsed as nothing. Asserting the two keys rather
+    than a count: a count rises for any reason, including a marker added
     somewhere else entirely.
+
+    What the page must still do is reproduce the defect, and `baseline_keys`
+    below asserts that directly. Counting its delimiter lines would assert it
+    only by proxy, and would turn any unrelated pull request that adds or drops
+    a fenced example on this page into a red scanner test.
     """
     page = _REPO / "docs" / "user" / "PRIVACY.md"
     text = page.read_text(encoding="utf-8")
-    assert text.count("```") == 6, "the delimiter lines the defect needed are gone"
     assert baseline_keys(text) == set(), (
         "the pre-fix scanner should still see nothing here; if it does, this "
         "page no longer reproduces the defect and the test below proves less"
