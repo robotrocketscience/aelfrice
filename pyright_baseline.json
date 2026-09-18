@@ -1,7 +1,7 @@
 {
   "_comment": "Per-file pyright error counts for `pyright src/` (#1503). A file may only go DOWN. Regenerate with `python3 scripts/check_pyright_baseline.py --update` and commit the drop alongside the fix. tests/ is not gated \u2014 see the script docstring.",
   "target": "src/",
-  "total": 973,
+  "total": 972,
   "files": {
     "src/aelfrice/auditor.py": 2,
     "src/aelfrice/auto_install.py": 36,
@@ -31,7 +31,7 @@
     "src/aelfrice/gate_list.py": 32,
     "src/aelfrice/graph_export.py": 13,
     "src/aelfrice/health.py": 1,
-    "src/aelfrice/hook.py": 145,
+    "src/aelfrice/hook.py": 144,
     "src/aelfrice/hook_agent_context.py": 10,
     "src/aelfrice/hook_audit.py": 2,
     "src/aelfrice/hook_search_tool.py": 10,
