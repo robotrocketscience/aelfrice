@@ -1227,7 +1227,7 @@ def unmarked_total(files: list[Path], mask_spans: Callable[[str], str]) -> int:
     """How many figures carry no marker under a given inline-code rule."""
     total = 0
     for path in files:
-        for start, block in scannable_entries(path):
+        for _start, block in scannable_entries(path):
             published = {normalise(m.value) for m in parse_markers(path, block)}
             total += sum(
                 1
