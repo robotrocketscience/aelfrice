@@ -77,6 +77,8 @@ aelf unsetup --host codex    # remove the aelfrice hooks and skills together
 
 `aelf setup --host codex` writes the hook set to the Codex configuration home (#1052). The same command installs the `/aelf:*` slash-command bundle as `$aelf-*` agent skills under `~/.agents/skills/` (v4.1.0+). aelfrice generates both surfaces from one source bundle, so the two never differ. To install the hooks only, pass `--no-codex-skills`. The default is `--codex-skills`.
 
+`aelf setup --host codex` accepts only `--force` and `--codex-skills` / `--no-codex-skills`, and `aelf unsetup --host codex` accepts no option but `--host`. The Codex path never reads the other options the two commands share with the `claude` host — `--scope`, `--settings-path`, `--no-statusline`, `--rebuilder`, and the per-lane opt-outs among them — so passing one exits 2 and changes nothing, rather than reporting success for an instruction that was discarded (#1429).
+
 The skill install is idempotent and removes orphan skills. It touches only the skills aelfrice generated, because an `AELFRICE-CODEX-SKILL` marker controls replacement and removal. For the full detail — the invocation, the generation transform, and the approval warnings specific to Codex — see [the Codex host section of the slash-command reference](SLASH_COMMANDS.md#codex-host-aelf--skills).
 
 #### `$CODEX_HOME` (unreleased)

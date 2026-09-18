@@ -10738,6 +10738,155 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
     {"upgrade-cmd", "upgrade", "uninstall", "statusline"}
 )
 
+# #1429: the options the Codex host path actually reads. `aelf setup
+# --host codex` consults only `--host`, `--force`, and `--codex-skills`;
+# `aelf unsetup --host codex` consults only `--host`. Every other option
+# the shared parser accepts is a Claude-host option that the Codex
+# executor drops on the floor, so an explicitly supplied one is refused
+# (exit 2) before anything on disk moves, rather than accepted and
+# discarded behind exit 0. Ratified 2026-08-12: refuse the whole
+# inapplicable set, with no per-option exemption — an accepted option that
+# does nothing is a false green even when the outcome happens to coincide
+# with what the caller wanted. Making these options take effect on the
+# Codex host is separate work, and stays gated on a Codex host.
+_CODEX_APPLICABLE_DESTS: Final[dict[str, frozenset[str]]] = {
+    "setup": frozenset({"host", "force", "codex_skills"}),
+    "unsetup": frozenset({"host"}),
+}
+
+
+def _subparser_map(
+    action: argparse.Action,
+) -> dict[str, argparse.ArgumentParser]:
+    """The name -> parser map of a subparsers action; empty for any other.
+
+    Duck-typed on `choices` rather than on `argparse._SubParsersAction`,
+    which is private: a value-constrained option (`--host`, `--scope`)
+    carries a sequence there, and only the subparsers action a mapping to
+    parsers.
+    """
+    raw: object = getattr(action, "choices", None)
+    if not isinstance(raw, dict):
+        return {}
+    entries = cast("dict[object, object]", raw)
+    return {
+        str(name): sub
+        for name, sub in entries.items()
+        if isinstance(sub, argparse.ArgumentParser)
+    }
+
+
+def _iter_parser_actions(
+    parser: argparse.ArgumentParser,
+) -> list[argparse.Action]:
+    """Every action of `parser`, including those of its subparsers.
+
+    argparse exposes no public accessor for the action list, hence
+    `_actions`.
+    """
+    found: list[argparse.Action] = []
+    for action in parser._actions:  # noqa: SLF001 — no public accessor
+        found.append(action)
+        for child in _subparser_map(action).values():
+            found.extend(_iter_parser_actions(child))
+    return found
+
+
+def _subcommand_parser(
+    parser: argparse.ArgumentParser, cmd: str
+) -> argparse.ArgumentParser | None:
+    """The subparser registered for `cmd`, or None if there is none."""
+    for action in parser._actions:  # noqa: SLF001 — no public accessor
+        sub = _subparser_map(action).get(cmd)
+        if sub is not None:
+            return sub
+    return None
+
+
+def _option_dests(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Map dest -> first option string for every real option of `parser`.
+
+    `--help` is excluded: it prints and exits before dispatch, so it is
+    neither applicable nor inapplicable to a host.
+    """
+    dests: dict[str, str] = {}
+    for action in parser._actions:  # noqa: SLF001 — no public accessor
+        if not action.option_strings:
+            continue
+        if action.dest in ("help", argparse.SUPPRESS):
+            continue
+        dests.setdefault(action.dest, action.option_strings[0])
+    return dests
+
+
+def codex_inapplicable_options(
+    parser: argparse.ArgumentParser, cmd: str
+) -> dict[str, str]:
+    """Map dest -> option string for the options `cmd`'s Codex path ignores.
+
+    Derived from the live parser rather than a hand-kept list, so an option
+    added to `setup` or `unsetup` later falls under the #1429 gate the
+    moment it is registered instead of silently escaping it.
+    """
+    sub = _subcommand_parser(parser, cmd)
+    if sub is None:
+        return {}
+    applicable = _CODEX_APPLICABLE_DESTS.get(cmd, frozenset())
+    return {
+        dest: opt
+        for dest, opt in _option_dests(sub).items()
+        if dest not in applicable
+    }
+
+
+def _explicitly_supplied_dests(argv: Sequence[str]) -> frozenset[str]:
+    """The dests `argv` actually sets, ignoring every default.
+
+    Re-parses `argv` with a throwaway parser whose action defaults are all
+    `argparse.SUPPRESS`, so the resulting namespace carries only what the
+    caller typed. argparse does the matching, which means an `--opt=value`
+    form or an unambiguous prefix abbreviation counts exactly as it counted
+    in the real parse — a literal scan of `argv` would miss both.
+    """
+    probe = build_parser()
+    for action in _iter_parser_actions(probe):
+        action.default = argparse.SUPPRESS
+    return frozenset(vars(probe.parse_args(list(argv))))
+
+
+def _codex_option_rejection(
+    parser: argparse.ArgumentParser,
+    cmd: str | None,
+    args: argparse.Namespace,
+    argv: Sequence[str],
+) -> str | None:
+    """The #1429 refusal text for `argv`, or None if there is nothing to
+    refuse. Pure: it reads the parser and the argv, and changes no state.
+    """
+    if cmd not in _CODEX_APPLICABLE_DESTS:
+        return None
+    if getattr(args, "host", "claude") != "codex":
+        return None
+    inapplicable = codex_inapplicable_options(parser, cmd)
+    supplied = _explicitly_supplied_dests(argv)
+    offenders = sorted(
+        opt for dest, opt in inapplicable.items() if dest in supplied
+    )
+    if not offenders:
+        return None
+    sub = _subcommand_parser(parser, cmd)
+    every: list[str] = list(_option_dests(sub).values()) if sub is not None else []
+    refused = set(inapplicable.values())
+    accepted = sorted(opt for opt in every if opt not in refused)
+    return (
+        f"{cmd} --host codex: refusing {', '.join(offenders)} — the codex "
+        f"host path never reads these options, so accepting them would "
+        f"discard them silently (#1429). Nothing was changed. "
+        f"`aelf {cmd} --host codex` accepts only {', '.join(accepted)}; "
+        f"re-run without the rest."
+    )
+
+
 # Commands that already mutate or tear down settings.json themselves.
 # Running auto-install before them would either be a wasted no-op
 # (setup re-writes the same entries) or actively wrong (uninstall is
@@ -10815,6 +10964,13 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     parser = build_parser()
     args = parser.parse_args(effective_argv)
     cmd = getattr(args, "cmd", None)
+    # #1429: an option the codex host path never reads must fail here —
+    # ahead of the auto-installer, the update check, and every executor —
+    # so the refusal is provably before any filesystem mutation.
+    codex_rejection = _codex_option_rejection(parser, cmd, args, effective_argv)
+    if codex_rejection is not None:
+        print(codex_rejection, file=sys.stderr)
+        return 2
     if cmd not in _AUTO_INSTALL_SKIP_CMDS:
         # Idempotent post-upgrade hook installer (#623). Gated on a
         # version stamp at ~/.aelfrice/installed-manifest-version, so
