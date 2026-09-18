@@ -140,19 +140,18 @@ the zero is measured over, which is why it is published beside the zero.
 ## Bound status
 
 The bound is **verified by mutation**, against three fake packers rather than
-one. Each makes the census report violations, and the shipped packer reports
-none:
+one. Each makes the census report a violation, and the shipped packer reports
+none. Run `uv run pytest tests/test_budget_census.py` to re-derive that; each
+arm asserts on the census's own violation list, then restores the shipped
+packer and asserts the list is empty again.
 
-| Fake packer | Violations |
+| Fake packer | K2 arm |
 | --- | --- |
-| reads the budget as an item count | 402 |
-| returns less at a higher budget | 1,035 |
-| moves only a non-gold belief | 48 |
-| shipped packer | 0 |
+| reads the budget as an item count | `test_the_bound_fails_against_a_budget_sensitive_packer` |
+| returns less at a higher budget | `test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget` |
+| moves only a non-gold belief | `test_the_bound_fails_when_a_budget_moves_a_non_gold_belief` |
 
-Those three counts are not published figures and the census does not emit them;
-re-derive them by running the K2 arms in `tests/test_budget_census.py`. The 0 is
-emitted.
+On shipped code the census reports 0 violations.
 <!-- derived: scripts/budget_discriminability_census.py#violations = 0 -->
 
 Two of the three arms are new, because the first version of this guard could
@@ -160,17 +159,23 @@ not see them, and both misses mattered:
 
 * The census reads its candidate pool by calling the same `retrieve()` path at
   a probe budget of 1e9, so a packer that returns *less* at a high budget shrank
-  the pool that every footprint was compared against. It reported 0 violations,
-  EC 0 on every lane, and exit 0 — and silently moved N from 7 to 23, because an
-  empty pool passed the degeneracy test. The same fake confined below the probe
-  budget reported 252. Every arm must now be a subset of the probe pool, and an
-  empty pool is excluded from N and counted.
-* The bound was checked on the gold footprint, while the sentence it licences
+  the pool that every footprint was compared against. That fake reported 0
+  violations, EC 0 on every lane, and exit 0 — and silently moved N from 7 to
+  23, because an empty pool passed the degeneracy test. The identical fake,
+  confined so that the probe budget never reached it, was caught, which is what
+  isolates the probe's shared code path as the sole cause. Every arm must now
+  be a subset of the probe pool, and an empty pool is excluded from N and
+  counted.
+* The bound was checked on the gold footprint, while the sentence it licenses
   is about the whole rendered block. A fake that moved only non-gold beliefs
   reported 0 violations on every lane. The bound is now checked on the block.
 
-The shipped stage-2 skip belongs to the first of those families — see the
-decision rule's Amendment 1 — so neither arm is hypothetical.
+The shipped skip-and-continue fill belongs to the first of those families — see
+the decision rule's Amendment 1 — so neither arm is hypothetical.
+
+Fixing the guard moved no published figure. Every key in `--emit-figures` is
+what it was before: N = 7, EC 0.0pp on all six lanes, `pool_binds` 7 of 7,
+violations 0.
 
 ## What this does and does not license
 
