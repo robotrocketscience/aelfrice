@@ -87,7 +87,18 @@ This document is the reference for power users. Reach for it when your project h
 
 This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, and `[hook_audit]`.
 
-`scan_repo` walks up from the scan root looking for `.aelfrice.toml`, and the first file it finds is the one that applies. The walk stops at the filesystem root. There is no global configuration and no per-user configuration.
+`scan_repo` walks up from the scan root looking for `.aelfrice.toml`, and the first file it finds is the one that applies. Every other reader — the hooks, retrieval, the noise filter, and `aelf onboard` — uses the same walk.
+
+**The walk stops at the project (#1582).** Going up from the starting directory, aelfrice stops at the first of these:
+
+1. Your home directory. Aelfrice stops before it looks there, so `~/.aelfrice.toml` is never read.
+2. A directory that holds `.aelfrice.toml`. That file is the one that applies.
+3. A directory that holds `.git`, which is the root of your git work tree. Configuration at the work-tree root counts, because rule 2 is checked first; configuration above the work-tree root doesn't.
+4. The filesystem root.
+
+Outside a git work tree there is no project marker, so rules 1 and 4 carry the bound: the walk crosses intermediate directories, but it never reaches your home directory or anything above it. `AELFRICE_DB` doesn't move the walk either — it names the store to open, not the project the configuration belongs to.
+
+There is no global configuration and no per-user configuration. If you keep a `~/.aelfrice.toml` today, aelfrice no longer reads it. Copy the keys you want into the `.aelfrice.toml` at the root of each project, or export the matching `AELFRICE_*` environment variable, which outranks the file in every resolver's precedence. Before this change, a project checked out under your home directory inherited your home-level settings and the same project checked out under `/tmp` didn't, so two copies of one repository resolved different configuration and neither file recorded why.
 
 If the file doesn't exist, the noise filter uses the defaults, which is the recommended state.
 

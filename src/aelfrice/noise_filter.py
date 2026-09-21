@@ -66,9 +66,10 @@ exclude_words = ["jso", "DRAFT", "WIP"]
 exclude_phrases = ["Last updated:", "TODO:", "FIXME"]
 ```
 
-`scan_repo` discovers `.aelfrice.toml` by walking up from `root` to
-the filesystem root. The first `.aelfrice.toml` found wins. If none
-is found, the default config ships (all four sub-predicates on,
+`scan_repo` discovers `.aelfrice.toml` by walking up from `root`. The
+first `.aelfrice.toml` found wins, and the walk is bounded by the
+project — see `config_discovery.discover_config` for the exact stop
+rules (#1582). If none is found, the default config ships (all four sub-predicates on,
 `min_words = 4`, no excludes). Malformed TOML, unknown keys, or
 wrong-typed values degrade silently to the default or skip the bad
 entry; the failure is traced to `stderr` so onboard remains
@@ -528,9 +529,10 @@ class NoiseConfig:
     ) -> "NoiseConfig":
         """Walk up from `start` looking for `.aelfrice.toml`.
 
-        First file found wins. If none is found before reaching the
-        filesystem root, the default config is returned. `start=None`
-        uses the current working directory.
+        First file found wins. If none is found before the walk hits
+        the project boundary (`config_discovery.discover_config`, whose
+        docstring states the stop rules), the default config is
+        returned. `start=None` uses the current working directory.
         """
         # Shared discovery (#1304): inside a `config_discovery_scope`
         # N readers cost one walk instead of N. Semantics unchanged —
