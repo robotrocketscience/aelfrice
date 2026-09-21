@@ -215,7 +215,7 @@ GATE_DECLARATIONS: dict[str, GateDeclaration] = {
     ),
     "test_edge_rerank_potentially_stale": GateDeclaration(
         family=Family.ABLATION,
-        corpus_module="rerank_relevance",
+        corpus_module="bfs_potentially_stale",
         null_model="the ablated arm (POTENTIALLY_STALE rerank off)",
     ),
     # -- exempt -----------------------------------------------------------

@@ -146,6 +146,46 @@ def test_every_scored_gate_actually_calls_its_guard() -> None:
     )
 
 
+def _loaded_corpus_modules(path: Path) -> set[str]:
+    """Every literal module name the file passes to `load_corpus_module`."""
+    loaded: set[str] = set()
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != "load_corpus_module" or len(node.args) < 2:
+            continue
+        arg = node.args[1]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            loaded.add(arg.value)
+    return loaded
+
+
+def test_every_declaration_names_the_corpus_its_gate_actually_loads() -> None:
+    """The registry is advertised as the single source of truth.
+
+    Nothing consumed `corpus_module` before this, so a declaration could
+    name one corpus while the gate graded another and the tier printed
+    both names without noticing. The drift is invisible by construction
+    unless the declaration is compared with the call.
+    """
+    drifted = {
+        path.name: (decl.corpus_module, sorted(loaded))
+        for path in _gate_files()
+        for decl in [GATE_DECLARATIONS[path.stem]]
+        if decl.family is not Family.EXEMPT
+        for loaded in [_loaded_corpus_modules(path)]
+        if loaded != {decl.corpus_module}
+    }
+    assert not drifted, (
+        f"gate modules whose declared corpus_module is not the one they "
+        f"load: {drifted}. Each entry reads "
+        f"file: (declared, actually loaded)."
+    )
+
+
 def test_no_bench_gate_writes_its_own_corpus_skip() -> None:
     """Corpus-state skips go through `skip_corpus_module` (AC5).
 
