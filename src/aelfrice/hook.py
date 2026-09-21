@@ -838,6 +838,13 @@ def _recap_shed(
     was the test and `context_rebuilder` spells a lock `locked="true"`, so
     the whole span always went, reference locks included.
 
+    **This is the only place the question is asked.** The caller puts every
+    recap element in its droppable set whatever the element's attributes
+    say, so the lane is scheduled and this function runs; asking the lock
+    question there as well would leave an all-locked recap unscheduled and
+    pin the span without ever reaching here. `enforce_block_ceiling` says
+    why at the set it builds.
+
     **The ids are what this cut removes, not what the block loses.** An id
     the recap carries is often rendered a second time elsewhere in the same
     body -- #1564 took the recap out of #1547's envelope dedupe precisely so
@@ -957,8 +964,27 @@ def enforce_block_ceiling(
     if limit <= 0 or _audit_tokens_from_block(body) <= limit:
         return BlockCeilingOutcome(body, (), False)
     elements = list(_BELIEF_ELEMENT_RE.finditer(body))
+    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
+    # A recap element is droppable here whatever its attributes say, and
+    # `_recap_shed` is the only thing that decides what the shed keeps
+    # (#1570). This set is not the set of elements the ceiling removes: it
+    # is the set `_ceiling_drop_order` may schedule, and a scheduled recap
+    # element only ever *triggers* the whole-recap branch below. Testing
+    # the lock here instead would put the decision in two places and get
+    # it wrong in one of them: a recap whose elements are all recognised
+    # locks — which is every recap on a store whose rebuild set is locks,
+    # and any mixed store once L0 fills the rebuilder's token budget —
+    # would contribute no element to the order at all, the branch would
+    # never be entered, and the whole span would pin. The ceiling would
+    # then shed the prompt's own hits to pay for a recap it cannot reach.
+    # Measured on 8 locks and 4 hits, ceiling 1200: scheduling the recap
+    # sheds it and keeps 2 of 4 hits; skipping it keeps the recap and
+    # drops all 4.
     droppable = [
-        m for m in elements if not _element_is_locked(m.group("attrs"))
+        m
+        for m in elements
+        if recap[0] <= m.start() < recap[1]
+        or not _element_is_locked(m.group("attrs"))
     ]
     # Only manifest lines that sit *outside* every element. Belief content
     # keeps its newlines through `_escape_for_hook_block` (only angle
@@ -989,7 +1015,6 @@ def enforce_block_ceiling(
     # at the head of the order, so the first of them the loop reaches sheds
     # the whole span; the rest are already inside a span in `cut` and are
     # skipped rather than cut twice.
-    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
     recap_elements = [
         m for m in elements if recap[0] <= m.start() < recap[1]
     ]
