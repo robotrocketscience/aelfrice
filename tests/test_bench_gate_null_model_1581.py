@@ -489,11 +489,12 @@ def test_a_shipped_arm_that_raises_still_records_a_verdict(guard: str) -> None:
     with no verdict was counted as executed.
     """
     rec = _Recorder()
+    failure = _ShippedArmFailure("the graded code does not exist")
 
     def boom() -> float:
-        raise _ShippedArmFailure("the graded code does not exist")
+        raise failure
 
-    with pytest.raises(_ShippedArmFailure):
+    with pytest.raises(_ShippedArmFailure) as excinfo:
         if guard == "ranking":
             guard_ranking_gate(
                 module="synthetic",
@@ -527,6 +528,51 @@ def test_a_shipped_arm_that_raises_still_records_a_verdict(guard: str) -> None:
     assert BENCH_VERDICT_UNVERIFIED in verdict
     assert "_ShippedArmFailure" in verdict
     assert "errored(_ShippedArmFailure)" in rec.value(BENCH_MEASUREMENT_PROPERTY)
+    # The arm's own exception object, not a wrapper: `_measure` carries it
+    # out and `_verdict` re-raises that instance. This is what the
+    # `# noqa: BLE001` on the catch claims, and what keeps the failure a
+    # gate author reads identical to the one their arm raised.
+    assert excinfo.value is failure
+
+
+@pytest.mark.parametrize(
+    "interrupt", [KeyboardInterrupt, SystemExit], ids=["ctrl-c", "sysexit"]
+)
+def test_an_interrupted_run_records_no_verdict(
+    interrupt: type[BaseException],
+) -> None:
+    """An interrupt is not a finding about the corpus.
+
+    The catch in `_measure` was `BaseException`, which also caught the
+    two ways a run is stopped rather than failed. Interrupting a tier
+    run — it rebuilds a store per row, so it is the slow one anybody
+    would interrupt — was therefore recorded on the way out as a
+    null-model verdict saying the shipped arm "errored(KeyboardInterrupt)"
+    against a corpus nobody had finished grading.
+
+    Narrowed to `Exception`, neither interrupt is caught and nothing is
+    recorded. Both are parametrised because both reach the arm the same
+    way and neither is an `Exception`.
+    """
+    rec = _Recorder()
+
+    def interrupted() -> float:
+        raise interrupt()
+
+    with pytest.raises(interrupt):
+        guard_classification_gate(
+            module="synthetic",
+            rows=_labelled({"positive": 11, "negative": 10, "neutral": 9}),
+            shipped=interrupted,
+            bar=bar_at_least(0.5),
+            score_constant=lambda label: 0.41,
+            record_property=rec,
+        )
+
+    assert rec.properties == [], (
+        "an interrupt is not a verdict: the guard records nothing when the "
+        "run was stopped rather than graded"
+    )
 
 
 def test_a_rejected_corpus_never_runs_the_shipped_arm() -> None:

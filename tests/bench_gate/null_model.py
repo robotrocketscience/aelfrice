@@ -623,18 +623,34 @@ SHIPPED_ARM_RAISED = (
 """Why an UNVERIFIED verdict was recorded instead of ACCEPT."""
 
 
-def _measure(arm: Callable[[], _T]) -> tuple[_T | None, BaseException | None]:
-    """Run a gate's shipped arm, capturing whatever it raises.
+def _measure(arm: Callable[[], _T]) -> tuple[_T | None, Exception | None]:
+    """Run a gate's shipped arm, capturing the failures it can have.
 
     The caller re-raises through `_verdict`, which is the only place a
     verdict is recorded. Letting the exception out of the guard directly
     is the defect #1581 closes: the record is written after the arm, so
     an arm that raised discarded the null-model verdict entirely and the
     tier counted the verdict-less test as executed.
+
+    `Exception`, not `BaseException`. Every way a shipped arm fails on
+    its own is an `Exception` — the `ModuleNotFoundError` and
+    `AttributeError` of #1579, an assertion inside a runner, a
+    `KeyError` on a malformed row. `BaseException` additionally caught
+    `KeyboardInterrupt` and `SystemExit`, so interrupting a slow tier
+    run wrote a null-model verdict about the corpus on the way out — a
+    statement about the operator's Ctrl-C, recorded as evidence. Those
+    two now leave the guard untouched and record nothing.
+
+    The third non-`Exception` case is pytest's own `OutcomeException`
+    (`pytest.skip`, `pytest.fail`), which also propagates uncaught now.
+    Neither loses the property this guard exists for: a skipped report
+    is not in the population `tally_bench_reports` reads, and a failed
+    report with no verdict is already counted as UNVERIFIED rather than
+    executed, under `NO_VERDICT_RECORDED`.
     """
     try:
         return arm(), None
-    except BaseException as exc:  # noqa: BLE001 - re-raised below, unchanged
+    except Exception as exc:  # noqa: BLE001 - re-raised below, unchanged
         return None, exc
 
 
@@ -648,7 +664,7 @@ def _verdict(
     rejection: str | None,
     extra: str,
     record_property: RecordProperty,
-    shipped_error: BaseException | None = None,
+    shipped_error: Exception | None = None,
 ) -> None:
     """Record both scores, then fail when the corpus does not count.
 
