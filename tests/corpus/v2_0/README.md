@@ -1,10 +1,19 @@
 # v2.0 evaluation corpus — schema (#307)
 
-Six bench-gated v2.0 modules ship/no-ship on positive impact against a labeled
+Bench-gated v2.0 modules ship/no-ship on positive impact against a labeled
 corpus. This directory holds that corpus. The bench-gate harness (#319) reads it
-via `AELFRICE_CORPUS_ROOT`; the modules in #193, #197, #199, #201, #228, #229
-are evaluated against it. (#288 is the **rebuilder**-precision harness — a
-different consumer.)
+via `AELFRICE_CORPUS_ROOT`; the modules in #193, #201, #228 are evaluated
+against it. (#288 is the **rebuilder**-precision harness — a different
+consumer.)
+
+Three of the original six scaffolds are retired (#1579): `dedup` (#197),
+`enforcement` (#199), and `promotion_trigger` (#229). Their gates graded code
+that does not exist, so they could not produce a verdict at any corpus size.
+See the `CHANGELOG/unreleased/` entry for #1579 for the reasoning, including
+the H2 drop recorded in `docs/design/v2_enforcement.md` and the store-shaped
+promotion path #229 shipped instead. Do not re-add a module here before the
+code it grades exists — `tests/test_bench_gate_graded_code_exists_1579.py`
+fails when a bench gate names a module or attribute the package does not have.
 
 ## Mounting on the lab side
 
@@ -21,15 +30,9 @@ export AELFRICE_CORPUS_ROOT="$HOME/projects/aelfrice-lab/tests/corpus/v2_0"
 ```
 tests/corpus/v2_0/
 ├── README.md                          (this file)
-├── dedup/                             #197
-│   └── *.jsonl
-├── enforcement/                       #199
-│   └── *.jsonl
 ├── contradiction/                     #201
 │   └── *.jsonl
 ├── wonder_consolidation/              #228
-│   └── *.jsonl
-├── promotion_trigger/                 #229
 │   └── *.jsonl
 ├── sentiment/                         #193
 │   └── *.jsonl
@@ -78,11 +81,8 @@ required for **all** modules:
 
 | Module | Extra required fields | Allowed `label` values |
 |---|---|---|
-| `dedup` | `belief_a` (string), `belief_b` (string) | `duplicate`, `near-duplicate`, `distinct` |
-| `enforcement` | `user_directive` (string), `agent_output` (string) | `compliant`, `violated`, `n/a` |
 | `contradiction` | `belief_a` (string), `belief_b` (string) | `contradicts`, `refines`, `unrelated` |
 | `wonder_consolidation` | `seed_belief` (string), `retrieved_neighbors` (list[string]) | `1`, `2`, `3`, `4`, `5` (phantom-quality rating) |
-| `promotion_trigger` | `belief_sequence` (list[string]) | `should_promote`, `should_not` |
 | `sentiment` | `user_message` (string) | `positive`, `negative`, `neutral` |
 | `directive_detection` | `prompt` (string) | `directive`, `not_directive` |
 | `bfs_relates_to` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
@@ -343,7 +343,7 @@ module dir is empty or unmounted.
 
 ## v0.1 acceptance (per #307)
 
-- ≥ 50 non-seed entries per module file (300 total).
+- ≥ 50 non-seed entries per module file.
 - Real examples only — no synthetic generation in v0.1. Synthetic scaffolding
   is permitted in v0.2 after #228 settles consolidation strategy.
 - **Carve-outs (synthetic-allowed at v0.1):** `directive_detection/` per #374

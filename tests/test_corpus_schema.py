@@ -10,8 +10,10 @@ Walks every `*.jsonl` under `tests/corpus/v2_0/<module>/` and enforces:
   5. Module-specific extra fields exist with the right shape.
 
 The ≥50/module v0.1 threshold is **not** asserted here — that flips on
-once labelling is complete across all six modules. See
-`tests/corpus/v2_0/README.md` for the schema contract.
+once labelling is complete across the listed modules. See
+`tests/corpus/v2_0/README.md` for the schema contract. `dedup`,
+`enforcement`, and `promotion_trigger` are absent on purpose: #1579 retired
+them because the code their bench gates graded does not exist.
 """
 from __future__ import annotations
 
@@ -34,14 +36,6 @@ SYNTHETIC_PROVENANCE_RE = re.compile(r"^synthetic-v\d+\.\d+$")
 # Module → (allowed labels, extra-required-fields-spec)
 # Spec values: "str" = non-empty string, "list[str]" = non-empty list of strings.
 MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
-    "dedup": (
-        {"duplicate", "near-duplicate", "distinct"},
-        {"belief_a": "str", "belief_b": "str"},
-    ),
-    "enforcement": (
-        {"compliant", "violated", "n/a"},
-        {"user_directive": "str", "agent_output": "str"},
-    ),
     "contradiction": (
         # Sourced from the detector to prevent drift between corpus schema
         # and the runtime vocabulary in src/aelfrice/relationship_detector.py.
@@ -51,10 +45,6 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
     "wonder_consolidation": (
         {"1", "2", "3", "4", "5"},
         {"seed_belief": "str", "retrieved_neighbors": "list[str]"},
-    ),
-    "promotion_trigger": (
-        {"should_promote", "should_not"},
-        {"belief_sequence": "list[str]"},
     ),
     "sentiment": (
         {"positive", "negative", "neutral"},
