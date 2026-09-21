@@ -183,6 +183,37 @@ def test_outside_a_worktree_the_walk_still_ascends(
     assert discover_config(deep) == project / CONFIG_FILENAME
 
 
+def test_the_home_rule_bounds_the_ancestors_of_start_not_the_machine(
+    tmp_path: Path, sandboxed_home: Path,
+) -> None:
+    """Rule 1 matches `$HOME` itself; it is not a ceiling on the walk.
+
+    `docs/user/CONFIG.md` and `discover_config` both say so, and both
+    said the opposite until #1582's review: "it never reaches your home
+    directory or anything above it" contradicted rule 4 in the same
+    section, and the code delivers rule 4. From a start that has
+    `$HOME` nowhere in its ancestry, the walk ascends past the level
+    `$HOME` sits at and reads a config it finds there.
+
+    The one thing that stays true in this shape is the contract the fix
+    exists for: the user's own `$HOME/.aelfrice.toml` is still never
+    read, which the sibling test above pins.
+    """
+    (tmp_path / CONFIG_FILENAME).write_text(_PLANTED_TOML)
+    outside = tmp_path / "elsewhere" / "proj" / "sub"
+    outside.mkdir(parents=True)
+
+    found = discover_config(outside)
+
+    assert found == tmp_path / CONFIG_FILENAME
+    home = sandboxed_home.resolve()
+    assert found.parent.resolve() in home.parents, (
+        "the fixture no longer places the planted config above the "
+        "sandboxed home directory, so this test would pass without the "
+        "walk having crossed that level at all"
+    )
+
+
 def test_resolve_posterior_weight_ignores_a_config_above_the_project(
     tmp_path: Path, sandboxed_home: Path, no_weight_env: None,
 ) -> None:

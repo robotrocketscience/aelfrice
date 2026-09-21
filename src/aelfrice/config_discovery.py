@@ -128,8 +128,10 @@ def discover_config(start: Path | None = None) -> Path | None:
     and the first rule that fires ends the walk:
 
     1. The directory *is* the user's home directory — stop, and do not
-       examine it. `$HOME/.aelfrice.toml` is therefore never read, and
-       neither is anything above it.
+       examine it. `$HOME/.aelfrice.toml` is therefore never read. The
+       rule bounds the ancestors of `start`, not the machine: it fires
+       only when `$HOME` is one of them, so it says nothing about a
+       start outside `$HOME`.
     2. The directory holds a `.aelfrice.toml` — that file is the answer.
     3. The directory holds `.git`, so it is a git work-tree root — stop.
        Configuration at the work-tree root is honoured, because rule 2
@@ -143,12 +145,17 @@ def discover_config(start: Path | None = None) -> Path | None:
     resolves the same configuration under `$HOME`, under `/tmp`, and on
     a CI runner.
 
-    Outside a git work tree there is no project marker, so rule 3 cannot
-    fire and rules 1 and 4 carry the bound: the walk may still cross
-    intermediate directories, but it can never reach the user's home
-    directory or above. That is the deliberate choice over "examine
-    `start` only", which would silently stop honouring a config at the
-    top of a non-git project directory that a caller reaches from a
+    Outside a git work tree there is no project marker, so rule 3
+    cannot fire and the walk runs to whichever of rules 1 and 4 it
+    meets first. For a `start` under `$HOME` that is rule 1. For a
+    `start` outside `$HOME` it is rule 4, and the walk crosses every
+    intermediate directory to the filesystem root — including
+    directories at or above the level `$HOME` sits at, which rule 1
+    does not cover because it matches `$HOME` itself and nothing else.
+    The user's own `$HOME/.aelfrice.toml` stays unreachable either way.
+    Ascending is the deliberate choice over "examine `start` only",
+    which would silently stop honouring a config at the top of a
+    non-git project directory that a caller reaches from a
     subdirectory.
 
     `AELFRICE_DB` is not a discovery input. It names the store to open,
