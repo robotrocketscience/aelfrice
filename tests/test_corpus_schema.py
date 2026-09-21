@@ -20,7 +20,11 @@ been validated. Two things follow from that history:
 * A skip names the root it inspected and says nothing was validated. A
   silent skip is what hid the problem for as long as it hid.
 * A module that runs reports how many rows it validated, and fails if
-  that count is zero, so "validated 0 rows" cannot read as a pass.
+  that count is zero, so "validated 0 rows" cannot read as a pass. The
+  count is reported whether the module passes or fails — a failure
+  with no count leaves the reader unable to tell whether validation
+  read 3 rows or 500 before it stopped, which is the run where the
+  number is most load-bearing.
 
 Violations the corpus carries today are recorded in `KNOWN_FAILURES`
 with a reason each rather than fixed here or waived: turning the
@@ -40,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -529,10 +534,28 @@ def _legal_rule_ids() -> set[str]:
     return ids
 
 
+@dataclass
+class _WalkStats:
+    """What the walk has established so far: rows, rules, per-rule rows.
+
+    A dataclass the caller owns, rather than a tuple the walk returns,
+    because the walk can die partway through — an unparseable line, a
+    row that is not an object, an undecodable byte — and the count is
+    most load-bearing on exactly those runs. A return value is lost
+    when the frame unwinds; an object the caller allocated survives,
+    so the caller can report `validated` from a `finally` whatever
+    happened inside.
+    """
+
+    validated: int = 0
+    found: dict[str, str] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
+
+
 def _walk_module(
-    module: str, files: list[Path]
-) -> tuple[int, dict[str, str], dict[str, int]]:
-    """Rows validated, rule id -> first message, and rule id -> row count.
+    module: str, files: list[Path], stats: _WalkStats | None = None
+) -> _WalkStats:
+    """Validate `files`, accumulating into `stats` as it goes.
 
     Separate from the test so `duplicate-id` is reachable from a unit
     test. That rule is the one violation no single row can carry — it
@@ -546,12 +569,18 @@ def _walk_module(
     stays quiet. The figure cannot be gated on, since it depends on
     which corpus is mounted, but printed next to the waiver it is the
     number that moves when the waiver's scope grows.
+
+    `stats` is updated in place before each failure can be raised, so a
+    caller that passes one in reads the partial figures back even when
+    this function does not return. Callers that only care about a
+    completed walk can let it allocate.
     """
+    if stats is None:
+        stats = _WalkStats()
     allowed_labels, extra_spec = MODULES[module]
     seen_ids: set[str] = set()
-    found: dict[str, str] = {}
-    counts: dict[str, int] = {}
-    validated = 0
+    found = stats.found
+    counts = stats.counts
     for path in files:
         with path.open() as f:
             for lineno, line in enumerate(f, 1):
@@ -565,7 +594,7 @@ def _walk_module(
                     pytest.fail(f"{where}: invalid JSON: {exc}")
 
                 assert isinstance(row, dict), f"{where}: row must be object"
-                validated += 1
+                stats.validated += 1
 
                 for rule, message in _row_violations(
                     module, row, allowed_labels, extra_spec, where
@@ -585,7 +614,7 @@ def _walk_module(
                             counts.get(RULE_DUPLICATE_ID, 0) + 1
                         )
                     seen_ids.add(rid)
-    return validated, found, counts
+    return stats
 
 
 @pytest.mark.parametrize("module", sorted(MODULES.keys()))
@@ -596,13 +625,30 @@ def test_corpus_module_files_valid(module: str, record_property) -> None:  # typ
     if not files:
         pytest.skip(_no_rows_skip(module, root, origin))
 
-    validated, found, counts = _walk_module(module, files)
+    # The count is reported from a `finally`, not after the walk, because
+    # the walk raises on an unparseable line or a non-object row — and a
+    # failure with no count is the one report where the reader most needs
+    # it: it leaves them unable to tell whether validation read 3 rows or
+    # 500 before it stopped. `finally` also covers the failures nobody
+    # enumerated, such as an undecodable byte, which surface as `error`.
+    stats = _WalkStats()
+    completed = False
+    try:
+        _walk_module(module, files, stats)
+        completed = True
+    finally:
+        source = f"{len(files)} file(s) under {root}"
+        record_property(
+            CORPUS_SCHEMA_PROPERTY,
+            f"module {module!r}: {stats.validated} row(s) validated from "
+            f"{source}"
+            if completed
+            else f"module {module!r}: {stats.validated} row(s) validated from "
+            f"{source} before validation stopped on an unreadable row — the "
+            f"walk did not finish, so this is a floor, not the module's size",
+        )
 
-    record_property(
-        CORPUS_SCHEMA_PROPERTY,
-        f"module {module!r}: {validated} row(s) validated from "
-        f"{len(files)} file(s) under {root}",
-    )
+    validated, found, counts = stats.validated, stats.found, stats.counts
     # A module reaching here has files, so zero rows means every file is
     # blank. Without this the run reads as a pass on an empty corpus,
     # which is the whole of #1580.
@@ -827,10 +873,10 @@ def test_walk_accepts_two_rows_with_distinct_ids(tmp_path: Path) -> None:
     second["id"] = "fixture-0002"
     files = _write_module(tmp_path, "contradiction", [first, second])
 
-    validated, found, counts = _walk_module("contradiction", files)
-    assert validated == 2
-    assert found == {}
-    assert counts == {}
+    stats = _walk_module("contradiction", files)
+    assert stats.validated == 2
+    assert stats.found == {}
+    assert stats.counts == {}
 
 
 def test_walk_rejects_two_rows_sharing_an_id(tmp_path: Path) -> None:
@@ -846,11 +892,11 @@ def test_walk_rejects_two_rows_sharing_an_id(tmp_path: Path) -> None:
     assert first["id"] == second["id"]
     files = _write_module(tmp_path, "contradiction", [first, second])
 
-    validated, found, counts = _walk_module("contradiction", files)
-    assert validated == 2
-    assert set(found) == {RULE_DUPLICATE_ID}
-    assert "fixture-0001" in found[RULE_DUPLICATE_ID]
-    assert counts == {RULE_DUPLICATE_ID: 1}
+    stats = _walk_module("contradiction", files)
+    assert stats.validated == 2
+    assert set(stats.found) == {RULE_DUPLICATE_ID}
+    assert "fixture-0001" in stats.found[RULE_DUPLICATE_ID]
+    assert stats.counts == {RULE_DUPLICATE_ID: 1}
 
 
 def test_walk_counts_rows_across_files_and_skips_blank_lines(
@@ -866,9 +912,9 @@ def test_walk_counts_rows_across_files_and_skips_blank_lines(
     second = module_dir / "b.jsonl"
     second.write_text(json.dumps(second_row) + "\n")
 
-    validated, found, _counts = _walk_module("contradiction", [first, second])
-    assert validated == 2
-    assert found == {}
+    stats = _walk_module("contradiction", [first, second])
+    assert stats.validated == 2
+    assert stats.found == {}
 
 
 def test_walk_counts_how_many_rows_break_each_rule(tmp_path: Path) -> None:
@@ -888,10 +934,120 @@ def test_walk_counts_how_many_rows_break_each_rule(tmp_path: Path) -> None:
         rows.append(row)
     files = _write_module(tmp_path, "contradiction", rows)
 
-    validated, found, counts = _walk_module("contradiction", files)
-    assert validated == 3
-    assert set(found) == {_envelope_rule("provenance")}
-    assert counts == {_envelope_rule("provenance"): 2}
+    stats = _walk_module("contradiction", files)
+    assert stats.validated == 3
+    assert set(stats.found) == {_envelope_rule("provenance")}
+    assert stats.counts == {_envelope_rule("provenance"): 2}
+
+
+def _record_into(sink: list[tuple[str, str]]):  # type: ignore[no-untyped-def]
+    """A stand-in for the `record_property` fixture that keeps the calls."""
+
+    def record_property(key: str, value: object) -> None:
+        sink.append((key, str(value)))
+
+    return record_property
+
+
+def test_a_module_that_validates_cleanly_records_its_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control for the failing arm below.
+
+    Without it, an arm asserting that a failure records a count passes
+    just as well against a version that records one unconditionally
+    and wrongly, and neither arm would show the two paths differ.
+    `sentiment` rather than `contradiction` because it carries no
+    `KNOWN_FAILURES` entry, so conforming rows leave the ratchet quiet.
+    """
+    module_dir = tmp_path / "sentiment"
+    module_dir.mkdir(parents=True)
+    rows = [
+        {
+            "id": f"fixture-{i:04d}",
+            "provenance": "synthetic-v0.1",
+            "labeller_note": "hand-written fixture",
+            "label": "neutral",
+            "user_message": "the deploy finished",
+        }
+        for i in (1, 2)
+    ]
+    (module_dir / "fixture.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    monkeypatch.setenv(CORPUS_ENV_VAR, str(tmp_path))
+
+    recorded: list[tuple[str, str]] = []
+    test_corpus_module_files_valid("sentiment", _record_into(recorded))
+
+    assert [key for key, _value in recorded] == [CORPUS_SCHEMA_PROPERTY]
+    assert "2 row(s) validated from 1 file(s)" in recorded[0][1]
+    assert "did not finish" not in recorded[0][1]
+
+
+def test_a_module_that_fails_to_parse_still_records_its_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure with no count is the report that needs one most.
+
+    `_walk_module` raises at the unparseable line, which is before the
+    point the count was recorded, so the terminal summary carried no
+    `corpus_schema` line at all for the module that failed — the
+    reader could not tell whether validation had read 2 rows or 500
+    before it stopped. Recording from a `finally` is what fixes it,
+    and 2 rather than 0 or 3 is what proves the figure is the walk's
+    real progress and not a placeholder.
+    """
+    module_dir = tmp_path / "contradiction"
+    module_dir.mkdir(parents=True)
+    second = _conforming_row()
+    second["id"] = "fixture-0002"
+    truncated = '{"id": "fixture-0003", "provenance":'
+    (module_dir / "fixture.jsonl").write_text(
+        json.dumps(_conforming_row())
+        + "\n"
+        + json.dumps(second)
+        + "\n"
+        + truncated
+        + "\n"
+    )
+    monkeypatch.setenv(CORPUS_ENV_VAR, str(tmp_path))
+
+    recorded: list[tuple[str, str]] = []
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        test_corpus_module_files_valid("contradiction", _record_into(recorded))
+
+    assert "fixture.jsonl:3" in str(excinfo.value)
+    assert "invalid JSON" in str(excinfo.value)
+    assert [key for key, _value in recorded] == [CORPUS_SCHEMA_PROPERTY]
+    assert "2 row(s) validated" in recorded[0][1]
+    # The count is a floor, and has to say so: the module's real size is
+    # unknown once the walk stops early.
+    assert "did not finish" in recorded[0][1]
+
+
+def test_a_non_object_row_still_records_its_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk's other early exit, which raises `AssertionError`.
+
+    Pinned separately because the two failures leave the walk by
+    different exception types, and a fix that caught only the
+    `pytest.fail` path would still drop the count here.
+    """
+    module_dir = tmp_path / "contradiction"
+    module_dir.mkdir(parents=True)
+    (module_dir / "fixture.jsonl").write_text(
+        json.dumps(_conforming_row()) + "\n" + json.dumps(["not", "an", "object"]) + "\n"
+    )
+    monkeypatch.setenv(CORPUS_ENV_VAR, str(tmp_path))
+
+    recorded: list[tuple[str, str]] = []
+    with pytest.raises(AssertionError, match="row must be object"):
+        test_corpus_module_files_valid("contradiction", _record_into(recorded))
+
+    assert [key for key, _value in recorded] == [CORPUS_SCHEMA_PROPERTY]
+    assert "1 row(s) validated" in recorded[0][1]
 
 
 def test_validator_rejects_a_missing_module_field() -> None:
