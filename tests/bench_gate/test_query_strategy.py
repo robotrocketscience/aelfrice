@@ -38,8 +38,9 @@ turns the bar into a null-model trap. See `_NULL_FLOOR` for the
 derivation and for the producer that re-derives it.
 
 Public CI skips when ``AELFRICE_CORPUS_ROOT`` is unset, per the
-directory-of-origin rule (labelled corpus lives only in
-``~/projects/aelfrice-lab/tests/corpus/v2_0/query_strategy/``).
+directory-of-origin rule: the labelled corpus lives outside this
+repository and is mounted through that variable. See
+``tests/corpus/v2_0/README.md`` for the export.
 """
 from __future__ import annotations
 
