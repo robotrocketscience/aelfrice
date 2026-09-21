@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import pkgutil
+import re
 from pathlib import Path
 
 import pytest
@@ -326,3 +327,122 @@ def test_the_scan_would_see_a_private_walk() -> None:
         "the predicate behind the population guard does not recognise a "
         "private walk, so the guard is vacuous"
     )
+
+
+# The tables `docs/user/CONFIG.md` tells a user have no per-key
+# `AELFRICE_*` override, mapped to the environment names their module
+# may name at all. An empty set means "reads no environment"; a
+# one-element set means "an on/off switch, and nothing that can carry a
+# byte cap, a budget or a threshold".
+_ENVLESS_TABLES: dict[str, set[str]] = {
+    "noise_filter": set(),
+    "dedup": set(),
+    "hook_audit": {"AELFRICE_HOOK_AUDIT"},
+    "relationship_detector": {"AELFRICE_AUTO_RELATIONSHIPS"},
+    # `load_rebuilder_config` lives here (#1527). The one name is the
+    # `[rebuild_log]` switch; no `[rebuilder]` budget has an override.
+    "rebuild_log": {"AELFRICE_REBUILD_LOG"},
+}
+
+# Key fragments that may not appear in any environment name anywhere in
+# the package, because CONFIG.md tells a user no such variable exists.
+# `TOKEN_BUDGET` is deliberately absent: `[retrieval] token_budget`
+# does have `AELFRICE_RETRIEVAL_TOKEN_BUDGET`.
+_ABSENT_KEY_FRAGMENTS: tuple[str, ...] = (
+    "NOISE",
+    "DEDUP",
+    "JACCARD",
+    "MIN_WORDS",
+    "MAX_BYTES",
+    "CONFIDENCE",
+    "CANDIDATE_PAIRS",
+    "THRESHOLD_FRACTION",
+    "TURN_WINDOW",
+)
+
+
+def _env_names_in(source_path: Path) -> set[str]:
+    """Every `AELFRICE_*` name a module uses as a string literal.
+
+    `fullmatch` rather than a substring search, so prose in a docstring
+    that merely *mentions* a variable is not counted as a module
+    reading one.
+    """
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.fullmatch(r"AELFRICE_[A-Z0-9_]+", node.value)
+    }
+
+
+def _package_sources() -> list[Path]:
+    """Every shipped module, including the subpackages."""
+    return sorted(Path(aelfrice.__file__).parent.rglob("*.py"))
+
+
+def test_the_tables_the_doc_calls_envless_really_are() -> None:
+    """The remedy in `docs/user/CONFIG.md` has to be reachable.
+
+    That paragraph tells a user who loses `~/.aelfrice.toml` which keys
+    they can rescue with an environment variable and which they can
+    only rescue by copying into the project file. It said "export the
+    matching `AELFRICE_*` environment variable" of every key until
+    #1582's review, and for these tables there is no matching variable
+    to export: the user follows the instruction, exports a plausible
+    name, gets the defaults, and sees no error. Adding a real override
+    here is welcome -- it just has to reach the paragraph too.
+    """
+    package_dir = Path(aelfrice.__file__).parent
+    found = {
+        module: _env_names_in(package_dir / f"{module}.py")
+        for module in _ENVLESS_TABLES
+    }
+    assert found == _ENVLESS_TABLES, (
+        "these modules no longer name exactly the environment variables "
+        "docs/user/CONFIG.md says they do, so the remedy paragraph is "
+        "now wrong in one direction or the other"
+    )
+
+
+def test_no_module_names_an_override_the_doc_denies() -> None:
+    """The same claim across the package, not just the owning module.
+
+    A reader of `[dedup] jaccard_min` does not care which module holds
+    the override; they care whether exporting something wins. This
+    scans every shipped module, subpackages included, for a name that
+    would make the paragraph's denial false.
+    """
+    offenders: dict[str, list[str]] = {}
+    for source_path in _package_sources():
+        hits = sorted(
+            name
+            for name in _env_names_in(source_path)
+            if any(frag in name for frag in _ABSENT_KEY_FRAGMENTS)
+        )
+        if hits:
+            offenders[source_path.name] = hits
+    assert offenders == {}, (
+        "an environment override now exists for a key docs/user/CONFIG.md "
+        f"tells users has none: {offenders}"
+    )
+
+
+def test_the_env_scan_sees_names_that_do_exist() -> None:
+    """Keeps both guards above from passing because they see nothing.
+
+    Both assert an absence over sources read off disk, so a rename or a
+    packaging change could make them scan an empty set of literals and
+    still pass. `[cadence]` is the counter-case: every one of its keys
+    has a per-key variable, which is why CONFIG.md names that table on
+    the other side of the sentence.
+    """
+    cadence = Path(aelfrice.__file__).parent / "cadence.py"
+    cadence_names = _env_names_in(cadence)
+    assert len(cadence_names) > 1, (
+        "the scan found at most one environment name in cadence.py, "
+        "which has nine; the absence assertions above prove nothing"
+    )
+    assert "AELFRICE_CADENCE_K" in cadence_names
