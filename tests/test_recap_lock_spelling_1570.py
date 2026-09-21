@@ -388,6 +388,84 @@ def test_a_rebuilder_rendered_lock_rendered_outside_sheds_with_the_recap(
     )
 
 
+def test_a_recap_of_nothing_but_locks_is_still_reached_by_the_ceiling(
+) -> None:
+    """AC2's reachability half: recognising a lock must not hide the lane.
+
+    `enforce_block_ceiling` builds its droppable set before it reaches the
+    recap branch, and `_ceiling_drop_order` schedules only what is in that
+    set. Filtering locks out of it there would leave an all-locked recap
+    contributing no element to the order, so the branch would never run,
+    `_recap_shed` would never be asked, and the whole span would pin --
+    and the ceiling would pay for it out of the prompt's own hits. A recap
+    is all locks whenever L0 fills the rebuilder's token budget, which the
+    #1564 store reaches at 120 locks, so this is not a corner.
+
+    The recap is real `_format_block` output and every element in it is a
+    lock; the first assertion pins that, because a fixture that let one
+    unlocked element in would keep the lane reachable for the wrong reason
+    and pass either way.
+
+    Mutation: restore the lock test to the droppable set in
+    `enforce_block_ceiling`, dropping the `recap[0] <= m.start()` clause.
+    FAIL -- `the recap pinned whole` at ceiling 1200, wrapper present and
+    0 of 4 hits left. Restored: PASS.
+    """
+    pad = "q" * 400
+    locks = [
+        _mk(f"L{i}", f"locked fact number {i} {pad}", locked=True)
+        for i in range(8)
+    ]
+    hits = [_mk(f"H{i}", f"hit fact number {i} " + "z" * 400) for i in range(4)]
+    recap = _recap_from_rebuilder(locks)
+    recap_body = recap[recap.index(">") + 1:]
+    assert all(
+        _element_is_locked(m.group("attrs"))
+        for m in _BELIEF_ELEMENT_RE.finditer(recap_body)
+    ), (
+        "the recap carries an element the dropper reads as droppable, so "
+        "this fixture is not the all-locked case it is named for"
+    )
+
+    locked_section = (
+        "<locked>\n"
+        + "\n".join(
+            f'<belief id="{b.id}" {_LOCKED_ATTR}>{b.content}</belief>'
+            for b in locks
+        )
+        + "\n</locked>"
+    )
+    hit_section = "\n".join(
+        f'<belief id="{b.id}" lock="none">{b.content}</belief>' for b in hits
+    )
+    body = (
+        f"{hook.OPEN_TAG}\n{hook.SESSION_START_SUBBLOCK_OPEN}\n"
+        f"{recap}\n{locked_section}\n</session-start>\n{hit_section}\n"
+        f"{hook.CLOSE_TAG}\n"
+    )
+    outcome = enforce_block_ceiling(body, ceiling=1200)
+
+    assert _RESUME_OPEN not in outcome.body, (
+        "the recap pinned whole. Every element in it is a lock <locked> "
+        "already renders uncapped in this same envelope, so what is "
+        "pinned is duplicate bytes -- and the ceiling sheds the prompt's "
+        "own hits to pay for them"
+    )
+    kept_hits = {i for i in _element_ids(outcome.body) if i.startswith("H")}
+    assert kept_hits, (
+        "no prompt-matched belief survived a trim that had a whole "
+        f"duplicate recap to shed first: dropped {outcome.dropped_ids}"
+    )
+    assert not [i for i in outcome.dropped_ids if i.startswith("L")], (
+        "a user lock reached `dropped_ids`, which four call sites read as "
+        f"`the model never saw this`: {outcome.dropped_ids}"
+    )
+    for lock in locks:
+        assert lock.content in outcome.body, (
+            f"{lock.id}'s content left the envelope entirely"
+        )
+
+
 # ---------------------------------------------------------------------------
 # AC3 -- the #1558 reference lock, fired end to end
 # ---------------------------------------------------------------------------
