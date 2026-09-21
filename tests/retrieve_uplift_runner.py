@@ -167,6 +167,13 @@ class FlagUplift:
     n_rows: int
     mean_ndcg_off: float
     mean_ndcg_on: float
+    off_row_scores: tuple[float, ...] = ()
+    """The ablated arm, per row, in corpus order (#1581).
+
+    The mean cannot answer the question the ablation null model asks —
+    on what share of rows the gold was reachable *without* the feature —
+    so the per-row arm is carried alongside it.
+    """
 
     @property
     def uplift(self) -> float:
@@ -230,18 +237,19 @@ def run_per_flag_uplift(
         tmp_root = Path(tmp)
         for flag, kwargs_fn in FLAG_KWARGS.items():
             kwargs_on = kwargs_fn()
-            off_total = 0.0
+            off_rows: list[float] = []
             on_total = 0.0
             for row in rows:
                 k = _default_k(row)
-                off_total += _row_ndcg(row, k, {}, tmp_root)
+                off_rows.append(_row_ndcg(row, k, {}, tmp_root))
                 on_total += _row_ndcg(row, k, kwargs_on, tmp_root)
             n = len(rows)
             out.append(FlagUplift(
                 flag=flag,
                 n_rows=n,
-                mean_ndcg_off=off_total / n if n else 0.0,
+                mean_ndcg_off=sum(off_rows) / n if n else 0.0,
                 mean_ndcg_on=on_total / n if n else 0.0,
+                off_row_scores=tuple(off_rows),
             ))
     return out
 
@@ -279,6 +287,13 @@ class ClusteringUplift:
     mean_recall_on: float
     cluster_coverage_off: float
     cluster_coverage_on: float
+    off_row_scores: tuple[float, ...] = ()
+    """The ablated arm, per row, in corpus order (#1581).
+
+    The mean cannot answer the question the ablation null model asks —
+    on what share of rows the gold was reachable *without* the feature —
+    so the per-row arm is carried alongside it.
+    """
 
     @property
     def cluster_coverage_uplift(self) -> float:
@@ -341,6 +356,7 @@ def run_clustering_uplift(
         return ClusteringUplift(0, 0.0, 0.0, 0.0, 0.0)
 
     rec_off = rec_on = cov_off = cov_on = 0.0
+    cov_off_rows: list[float] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
         for row in rows:
@@ -369,7 +385,11 @@ def run_clustering_uplift(
                     cov_on += _cluster_coverage_at_k(returned, clusters, required)
                 else:
                     rec_off += _recall_at_k(returned, expected)
-                    cov_off += _cluster_coverage_at_k(returned, clusters, required)
+                    coverage = _cluster_coverage_at_k(
+                        returned, clusters, required
+                    )
+                    cov_off += coverage
+                    cov_off_rows.append(coverage)
 
     return ClusteringUplift(
         n_rows=n,
@@ -377,6 +397,7 @@ def run_clustering_uplift(
         mean_recall_on=rec_on / n,
         cluster_coverage_off=cov_off / n,
         cluster_coverage_on=cov_on / n,
+        off_row_scores=tuple(cov_off_rows),
     )
 
 
@@ -418,6 +439,13 @@ class DocLinkerUpliftResults:
     n_rows: int
     mean_ndcg_off: float
     mean_ndcg_on: float
+    off_row_scores: tuple[float, ...] = ()
+    """The ablated arm, per row, in corpus order (#1581).
+
+    The mean cannot answer the question the ablation null model asks —
+    on what share of rows the gold was reachable *without* the feature —
+    so the per-row arm is carried alongside it.
+    """
 
     @property
     def uplift(self) -> float:
@@ -467,6 +495,7 @@ def run_doc_linker_uplift(
 
     off_total = 0.0
     on_total = 0.0
+    off_rows: list[float] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
         for row in rows:
@@ -498,11 +527,13 @@ def run_doc_linker_uplift(
                     on_total += ndcg
                 else:
                     off_total += ndcg
+                    off_rows.append(ndcg)
 
     return DocLinkerUpliftResults(
         n_rows=n,
         mean_ndcg_off=off_total / n,
         mean_ndcg_on=on_total / n,
+        off_row_scores=tuple(off_rows),
     )
 
 
@@ -756,6 +787,13 @@ class CompressionA2Uplift:
     n_rows: int
     mean_recall_off: float
     mean_recall_on: float
+    off_row_scores: tuple[float, ...] = ()
+    """The ablated arm, per row, in corpus order (#1581).
+
+    The mean cannot answer the question the ablation null model asks —
+    on what share of rows the gold was reachable *without* the feature —
+    so the per-row arm is carried alongside it.
+    """
 
     @property
     def uplift(self) -> float:
@@ -818,6 +856,7 @@ def run_compression_a2_uplift(
 
     off_total = 0.0
     on_total = 0.0
+    off_rows: list[float] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
         for row in rows:
@@ -851,11 +890,13 @@ def run_compression_a2_uplift(
                     on_total += recall
                 else:
                     off_total += recall
+                    off_rows.append(recall)
 
     return CompressionA2Uplift(
         n_rows=n,
         mean_recall_off=off_total / n,
         mean_recall_on=on_total / n,
+        off_row_scores=tuple(off_rows),
     )
 
 
@@ -925,6 +966,13 @@ class CompressionA4Fidelity:
     n_rows: int
     mean_fidelity_off: float
     mean_fidelity_on: float
+    off_row_scores: tuple[float, ...] = ()
+    """The ablated arm, per row, in corpus order (#1581).
+
+    The mean cannot answer the question the ablation null model asks —
+    on what share of rows the gold was reachable *without* the feature —
+    so the per-row arm is carried alongside it.
+    """
 
     @property
     def uplift(self) -> float:
@@ -1046,6 +1094,7 @@ def run_compression_a4_fidelity(
 
     off_total = 0.0
     on_total = 0.0
+    off_rows: list[float] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp)
         for row in rows:
@@ -1111,11 +1160,13 @@ def run_compression_a4_fidelity(
                     on_total += score
                 else:
                     off_total += score
+                    off_rows.append(score)
 
     return CompressionA4Fidelity(
         n_rows=n,
         mean_fidelity_off=off_total / n,
         mean_fidelity_on=on_total / n,
+        off_row_scores=tuple(off_rows),
     )
 
 
