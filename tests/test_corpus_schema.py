@@ -372,6 +372,37 @@ def _iter_module_files(root: Path, module: str) -> list[Path]:
     return sorted((root / module).glob("*.jsonl"))
 
 
+def _holds_rows(module_dir: Path) -> bool:
+    """True when some `*.jsonl` here carries at least one non-blank line.
+
+    The presence of a `*.jsonl` is not the same question. An empty or
+    blank-only file is a scaffold, and a half-built module is the
+    normal state of this corpus — the public tree ships `.gitkeep`
+    directories for modules nobody has labelled yet, and a labeller
+    touching the file before writing to it is the ordinary first step.
+
+    Counting a scaffold as a module that holds rows is wrong in the
+    direction that matters, because the caller's question is whether
+    rows exist that nothing validates. Zero rows cannot go unvalidated.
+    Under the other reading every empty module would have to be
+    enumerated in `KNOWN_UNDECLARED_MODULES` to keep the suite green,
+    which converts a ratchet over unvalidated *data* into a register of
+    empty directories and trains readers to add entries by reflex — the
+    quiet-exemption habit #1580 exists to break. Zero rows already has
+    defined behaviour one level down: the per-module test skips, naming
+    the root and saying nothing was validated.
+
+    Stops at the first non-blank line, so a mounted corpus is not read
+    twice over.
+    """
+    for path in sorted(module_dir.glob("*.jsonl")):
+        with path.open() as f:
+            for line in f:
+                if line.strip():
+                    return True
+    return False
+
+
 def _check_field(row: dict, field: str, spec: str, where: str) -> None:
     val = row.get(field)
     if spec == "str":
@@ -695,6 +726,10 @@ def test_corpus_root_declares_every_module_holding_rows() -> None:
     The per-module test parametrizes over `MODULES`, so a module the
     table does not name contributes no rows, no failure and no skip —
     it is simply invisible, which is indistinguishable from clean.
+
+    "Holding rows" means at least one non-blank line, not at least one
+    `*.jsonl`; see `_holds_rows` for why an empty scaffold is not the
+    thing this guards against.
     """
     root, origin = _resolve_corpus_root()
     if not root.is_dir():
@@ -703,9 +738,7 @@ def test_corpus_root_declares_every_module_holding_rows() -> None:
             f"{origin}). Nothing was validated."
         )
     with_rows = {
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and any(child.glob("*.jsonl"))
+        child.name for child in root.iterdir() if child.is_dir() and _holds_rows(child)
     }
     if not with_rows:
         pytest.skip(
@@ -1048,6 +1081,62 @@ def test_a_non_object_row_still_records_its_count(
 
     assert [key for key, _value in recorded] == [CORPUS_SCHEMA_PROPERTY]
     assert "1 row(s) validated" in recorded[0][1]
+
+
+def test_a_blank_only_jsonl_is_not_a_module_holding_rows(tmp_path: Path) -> None:
+    """Scaffolding is not data. See `_holds_rows` for why that reading wins."""
+    module_dir = tmp_path / "half_built"
+    module_dir.mkdir()
+    scaffold = module_dir / "rows.jsonl"
+
+    scaffold.write_text("")
+    assert not _holds_rows(module_dir)
+    scaffold.write_text("\n   \n\t\n")
+    assert not _holds_rows(module_dir)
+
+    scaffold.write_text(json.dumps(_conforming_row()) + "\n")
+    assert _holds_rows(module_dir)
+
+
+def test_a_blank_first_file_does_not_hide_a_later_one(tmp_path: Path) -> None:
+    """`_holds_rows` stops at the first non-blank line, not the first file.
+
+    Without this arm a short-circuit that returned on the first file's
+    verdict would pass every other check here.
+    """
+    module_dir = tmp_path / "half_built"
+    module_dir.mkdir()
+    (module_dir / "a_empty.jsonl").write_text("\n\n")
+    (module_dir / "b_rows.jsonl").write_text(json.dumps(_conforming_row()) + "\n")
+    assert _holds_rows(module_dir)
+
+
+def test_an_undeclared_module_of_only_scaffolding_is_not_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty undeclared module is the half-built state, not a gap.
+
+    Both directions, because an arm that only shows the empty module
+    passing is equally satisfied by a check that reports nothing at
+    all.
+    """
+    declared = tmp_path / "contradiction"
+    declared.mkdir()
+    (declared / "rows.jsonl").write_text(json.dumps(_conforming_row()) + "\n")
+    undeclared = tmp_path / "half_built"
+    undeclared.mkdir()
+    scaffold = undeclared / "rows.jsonl"
+    scaffold.write_text("\n   \n")
+    monkeypatch.setenv(CORPUS_ENV_VAR, str(tmp_path))
+
+    test_corpus_root_declares_every_module_holding_rows()
+
+    # One real row in the same file, and it is a gap again.
+    row = _conforming_row()
+    row["id"] = "fixture-0009"
+    scaffold.write_text(json.dumps(row) + "\n")
+    with pytest.raises(AssertionError, match="half_built"):
+        test_corpus_root_declares_every_module_holding_rows()
 
 
 def test_validator_rejects_a_missing_module_field() -> None:
