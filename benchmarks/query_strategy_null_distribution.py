@@ -55,9 +55,10 @@ shipped score is a flaky gate rather than a strict one.
 
 ## This is a store-backed producer
 
-The rows are labelled corpus and live only in the lab repository
-(`~/projects/aelfrice-lab/tests/corpus/v2_0/query_strategy/`, the
-directory-of-origin rule). A public runner has none, so the markers naming
+The rows are labelled corpus and live only in the private lab
+repository, outside this tree, mounted through `AELFRICE_CORPUS_ROOT`
+(the directory-of-origin rule; `tests/corpus/v2_0/README.md` has the
+export). A public runner has none, so the markers naming
 this script carry `corpus=` and `producer-sha=` and CI holds them to
 self-consistency and code staleness rather than re-running them (#1456).
 
