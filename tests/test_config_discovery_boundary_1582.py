@@ -136,6 +136,31 @@ def test_a_linked_worktree_marker_file_bounds_the_walk(
     assert discover_config(sub) is None
 
 
+def test_a_submodule_does_not_inherit_the_outer_repos_config(
+    tmp_path: Path, sandboxed_home: Path,
+) -> None:
+    """One `.git`, one project — including inside another project.
+
+    A submodule, and a linked work tree checked out inside the
+    repository it belongs to, both carry their own `.git`. Rule 3 stops
+    at that marker, so the outer repository's root config no longer
+    reaches them. That follows from "one `.git` is one project" rather
+    than being a case of its own, but it is the shape most likely to
+    surprise, so `docs/user/CONFIG.md` names it and this pins it.
+    """
+    mono = _worktree(tmp_path / "mono")
+    (mono / CONFIG_FILENAME).write_text(_PLANTED_TOML)
+    inner = _worktree(mono / "libs" / "foo", marker_is_file=True)
+    deep = inner / "src"
+    deep.mkdir()
+
+    assert discover_config(deep) is None
+    # Distinguishing: the outer config is readable from the outer repo,
+    # so the None above is the nested boundary and not an unreadable
+    # fixture.
+    assert discover_config(mono / "libs") == mono / CONFIG_FILENAME
+
+
 def test_the_home_config_is_unreachable_without_a_worktree(
     sandboxed_home: Path,
 ) -> None:

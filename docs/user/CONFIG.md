@@ -93,7 +93,7 @@ This file doesn't affect locks, and it doesn't configure the mathematics of the 
 
 1. Your home directory. Aelfrice stops before it looks there, so `~/.aelfrice.toml` is never read.
 2. A directory that holds `.aelfrice.toml`. That file is the one that applies.
-3. A directory that holds `.git`, which is the root of your git work tree. Configuration at the work-tree root counts, because rule 2 is checked first; configuration above the work-tree root doesn't.
+3. A directory that holds `.git`, which is the root of your git work tree. Configuration at the work-tree root counts, because rule 2 is checked first; configuration above the work-tree root doesn't. `.git` is a file rather than a directory in a linked work tree and in a submodule, and both count as roots. So a submodule or a linked work tree nested inside a larger repository stops at its own root and doesn't inherit the outer repository's `.aelfrice.toml`. Give it its own file.
 4. The filesystem root.
 
 Rule 1 bounds the directories above your starting point, not the machine. It fires when your home directory is one of them, which is the case for every project you keep under your home directory. If you start somewhere outside your home directory — `/opt/eng/proj/sub`, say — your home directory is never on the way up, rule 1 can't fire, and outside a git work tree rule 4 is the only remaining stop. The walk then crosses every intermediate directory to the filesystem root, so it can read a `.aelfrice.toml` that sits above the level your home directory is at. It still never reads your own `~/.aelfrice.toml`. `AELFRICE_DB` doesn't move the walk either — it names the store to open, not the project the configuration belongs to.
