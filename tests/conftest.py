@@ -15,7 +15,8 @@ import json
 import math
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import NoReturn
@@ -51,13 +52,44 @@ printed rather than left to be inferred.
 BENCH_NULL_VERDICT_PROPERTY = "bench_null_verdict"
 """`record_property` key carrying one gate's null-model verdict (#1581).
 
-Value shape: `"<corpus module>|ACCEPT|"` or `"<corpus module>|REJECT|<why>"`.
+Value shape: `"<corpus module>|<state>|<why>"`, where the state is one
+of the three constants below.
 
 Separate from `BENCH_MEASUREMENT_PROPERTY` because the summary has to
 *classify* on it, not just print it: a corpus the null model defeated is
 its own tier state, distinct from a gate that executed and from a module
 that produced no verdict at all. Folding it into the free-text
 measurement line would leave the summary parsing prose.
+"""
+
+BENCH_VERDICT_ACCEPT = "ACCEPT"
+"""The null model ran, did not clear the bar, and the shipped arm scored."""
+
+BENCH_VERDICT_REJECT = "REJECT"
+"""The corpus does not count: its own null model defeats the gate."""
+
+BENCH_VERDICT_UNVERIFIED = "UNVERIFIED"
+"""The null model ran, but the shipped arm produced no score.
+
+Distinct from `BENCH_VERDICT_REJECT`, which is a finding about the
+corpus, and from `BENCH_VERDICT_ACCEPT`, which asserts a graded run
+happened. A gate whose shipped arm raises has graded nothing, so it is
+not an executed test — but the null model it did run is still evidence
+and is still recorded.
+"""
+
+NO_VERDICT_RECORDED = (
+    "the gate ran but recorded no null-model verdict — its guard call "
+    "never executed"
+)
+"""Why a scored module's bench-gated test was not counted as executed.
+
+The AST wiring check in `tests/test_bench_gate_null_model_1581.py` sees
+a `guard_*_gate(...)` call that is present; it cannot see one that is
+unreachable, wrapped in a false branch, or short-circuited by an earlier
+return. Requiring the property at summary time is what closes that gap:
+a guard that does not run leaves no verdict, and a report with no
+verdict is not evidence.
 """
 
 TIMEOUT_SCALE_ENV_VAR = "AELF_TEST_TIMEOUT_SCALE"
@@ -342,6 +374,94 @@ def require_min_rows(
         )
 
 
+@dataclass(frozen=True)
+class BenchTierTally:
+    """How the bench-gate tier classifies one run's bench-gated reports."""
+
+    executed: int
+    """Reports that produced an ACCEPT verdict, plus exempt-module reports."""
+
+    rejected: dict[str, str]
+    """Corpus module -> why its own null model defeated the gate."""
+
+    unverified: dict[str, str]
+    """Where -> why no usable verdict came back. Not executed, not rejected."""
+
+    measurements: list[str]
+    """Every measurement line the reports attached, in report order."""
+
+
+def exempt_gate_modules() -> frozenset[str]:
+    """File stems of the bench-gate modules declared `Family.EXEMPT`.
+
+    Imported here rather than at module scope because
+    `tests.bench_gate.null_model` imports this module for the property
+    keys, so a top-level import would be circular.
+    """
+    from tests.bench_gate.null_model import Family, GATE_DECLARATIONS
+
+    return frozenset(
+        stem
+        for stem, decl in GATE_DECLARATIONS.items()
+        if decl.family is Family.EXEMPT
+    )
+
+
+def tally_bench_reports(
+    reports: Iterable[object], *, exempt_modules: frozenset[str]
+) -> BenchTierTally:
+    """Classify bench-gated reports into executed, rejected, and unverified.
+
+    A scored gate is counted as executed only when it carries a
+    `BENCH_NULL_VERDICT_PROPERTY` saying ACCEPT. That requirement, not
+    the marker, is what makes the headline number mean something: before
+    #1581 any bench-gated report incremented it, so a gate whose guard
+    raised — or whose guard call was present in the file but never
+    reached — was reported as evidence it never produced.
+
+    Exempt modules have no guard to run and are counted on the marker
+    alone; the registry names each exemption and the reason for it.
+    """
+    executed = 0
+    rejected: dict[str, str] = {}
+    unverified: dict[str, str] = {}
+    measurements: list[str] = []
+    for rep in reports:
+        nodeid = str(getattr(rep, "nodeid", ""))
+        stem = Path(nodeid.partition("::")[0]).stem
+        verdicts: list[tuple[str, str, str]] = []
+        for key, value in getattr(rep, "user_properties", ()):
+            if key == BENCH_MEASUREMENT_PROPERTY:
+                measurements.append(str(value))
+            elif key == BENCH_NULL_VERDICT_PROPERTY:
+                module, _, rest = str(value).partition("|")
+                state, _, why = rest.partition("|")
+                verdicts.append((module, state, why))
+        if not verdicts:
+            if stem in exempt_modules:
+                executed += 1
+            else:
+                unverified[nodeid or stem] = NO_VERDICT_RECORDED
+            continue
+        # Worst state wins: one REJECT among several verdicts on the
+        # same report still means the run graded nothing trustworthy.
+        for module, state, why in verdicts:
+            if state == BENCH_VERDICT_REJECT:
+                rejected.setdefault(module, why)
+            elif state != BENCH_VERDICT_ACCEPT:
+                unverified.setdefault(
+                    module, why or "the shipped arm recorded no score"
+                )
+        if all(state == BENCH_VERDICT_ACCEPT for _, state, _ in verdicts):
+            executed += 1
+    return BenchTierTally(
+        executed=executed,
+        rejected=rejected,
+        unverified=unverified,
+        measurements=measurements,
+    )
+
+
 def _skip_reason(rep: object) -> str:
     """The reason text of a skip report, or '' if it has none."""
     longrepr = getattr(rep, "longrepr", None)
@@ -448,32 +568,17 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
             key = (m.group("module"), m.group("why"))
             by_module[key] = by_module.get(key, 0) + 1
 
-    executed = 0
-    measurements: list[str] = []
-    rejected: dict[str, str] = {}
-    for outcome in ("passed", "failed"):
-        for rep in stats.get(outcome, []):
-            if "bench_gated" not in getattr(rep, "keywords", {}):
-                continue
-            properties = list(getattr(rep, "user_properties", ()))
-            was_rejected = False
-            for key, value in properties:
-                if key == BENCH_MEASUREMENT_PROPERTY:
-                    measurements.append(str(value))
-                elif key == BENCH_NULL_VERDICT_PROPERTY:
-                    module, _, rest = str(value).partition("|")
-                    state, _, why = rest.partition("|")
-                    if state == "REJECT":
-                        was_rejected = True
-                        rejected.setdefault(module, why)
-            # A rejected corpus is not an executed gate. Counting it as
-            # one is the whole defect #1581 closes: the tier's headline
-            # number is "N executed against the corpus", and a corpus
-            # its own null model defeats did not grade anything.
-            if not was_rejected:
-                executed += 1
+    bench_reports = [
+        rep
+        for outcome in ("passed", "failed")
+        for rep in stats.get(outcome, [])
+        if "bench_gated" in getattr(rep, "keywords", {})
+    ]
+    tally = tally_bench_reports(bench_reports, exempt_modules=exempt_gate_modules())
+    executed = tally.executed
+    rejected = tally.rejected
 
-    if not (tier_skips or by_module or executed or rejected):
+    if not (tier_skips or by_module or executed or rejected or tally.unverified):
         return
 
     terminalreporter.write_sep("-", "bench-gate tier")
@@ -498,12 +603,19 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
             terminalreporter.write_line(
                 f"  module {module!r}: REJECTED — {why}"
             )
+    if tally.unverified:
+        terminalreporter.write_line(
+            f"{len(tally.unverified)} bench-gate test(s) produced NO "
+            f"null-model verdict (#1581) and are NOT in the executed count."
+        )
+        for where, why in sorted(tally.unverified.items()):
+            terminalreporter.write_line(f"  {where}: UNVERIFIED — {why}")
     for (module, why), n in sorted(by_module.items()):
         sentence = CORPUS_SKIP_STATES.get(why, _UNKNOWN_SKIP_STATE)
         terminalreporter.write_line(
             f"  module {module!r}: {n} test(s) skipped — {sentence}"
         )
-    for line in sorted(measurements):
+    for line in sorted(tally.measurements):
         terminalreporter.write_line(f"  {line}")
 
 

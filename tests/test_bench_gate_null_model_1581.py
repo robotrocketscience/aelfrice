@@ -43,6 +43,12 @@ from tests.bench_gate.null_model import (
 from tests.conftest import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
+    BENCH_VERDICT_ACCEPT,
+    BENCH_VERDICT_REJECT,
+    BENCH_VERDICT_UNVERIFIED,
+    NO_VERDICT_RECORDED,
+    exempt_gate_modules,
+    tally_bench_reports,
 )
 
 _BENCH_GATE_DIR = Path(__file__).resolve().parent / "bench_gate"
@@ -419,3 +425,127 @@ def test_a_prefilter_rejection_does_not_run_the_shipped_arm() -> None:
         )
     assert ran == []
     assert "shipped=unmeasured" in rec.value(BENCH_MEASUREMENT_PROPERTY)
+
+
+# ---------------------------------------------------------------------------
+# What the tier counts
+# ---------------------------------------------------------------------------
+
+
+class _Report:
+    """The two attributes `tally_bench_reports` reads off a pytest report."""
+
+    def __init__(self, nodeid: str, properties: list[tuple[str, str]]) -> None:
+        self.nodeid = nodeid
+        self.user_properties = properties
+
+
+def _verdict_property(module: str, state: str, why: str = "") -> tuple[str, str]:
+    return (BENCH_NULL_VERDICT_PROPERTY, f"{module}|{state}|{why}")
+
+
+def test_a_bench_gated_report_with_no_verdict_is_not_executed() -> None:
+    """AC3. The hole the AST wiring check cannot see.
+
+    `_calls_a_guard` returns True for a call site that is present in the
+    file; it cannot tell a call that runs from one behind `if False:`.
+    A guard that does not run leaves no verdict, so requiring the
+    property at summary time is what stops the unrun gate being counted
+    as evidence.
+    """
+    node = "tests/bench_gate/test_sentiment.py::test_x"
+    tally = tally_bench_reports([_Report(node, [])], exempt_modules=frozenset())
+    assert tally.executed == 0
+    assert tally.unverified == {node: NO_VERDICT_RECORDED}
+    assert tally.rejected == {}
+
+
+def test_an_exempt_module_needs_no_verdict_to_count() -> None:
+    """An exemption is declared and reprinted; it is not an unrun guard."""
+    tally = tally_bench_reports(
+        [_Report("tests/bench_gate/test_hrr_cold_start.py::test_x", [])],
+        exempt_modules=frozenset({"test_hrr_cold_start"}),
+    )
+    assert tally.executed == 1
+    assert tally.unverified == {}
+
+
+def test_an_accept_verdict_is_the_only_state_counted_as_executed() -> None:
+    tally = tally_bench_reports(
+        [
+            _Report(
+                "tests/bench_gate/test_sentiment.py::test_x",
+                [_verdict_property("sentiment", BENCH_VERDICT_ACCEPT)],
+            )
+        ],
+        exempt_modules=frozenset(),
+    )
+    assert tally.executed == 1
+    assert tally.unverified == {}
+    assert tally.rejected == {}
+
+
+def test_a_reject_verdict_is_neither_executed_nor_unverified() -> None:
+    tally = tally_bench_reports(
+        [
+            _Report(
+                "tests/bench_gate/test_query_strategy.py::test_x",
+                [
+                    _verdict_property(
+                        "query_strategy", BENCH_VERDICT_REJECT, "skewed"
+                    )
+                ],
+            )
+        ],
+        exempt_modules=frozenset(),
+    )
+    assert tally.executed == 0
+    assert tally.rejected == {"query_strategy": "skewed"}
+    assert tally.unverified == {}
+
+
+def test_an_unverified_verdict_records_the_null_run_without_counting() -> None:
+    """A shipped arm that raised graded nothing, but its null model ran."""
+    tally = tally_bench_reports(
+        [
+            _Report(
+                "tests/bench_gate/test_sentiment.py::test_x",
+                [
+                    _verdict_property(
+                        "sentiment", BENCH_VERDICT_UNVERIFIED, "shipped arm raised"
+                    )
+                ],
+            )
+        ],
+        exempt_modules=frozenset(),
+    )
+    assert tally.executed == 0
+    assert tally.unverified == {"sentiment": "shipped arm raised"}
+    assert tally.rejected == {}
+
+
+def test_the_tally_keeps_every_measurement_line() -> None:
+    tally = tally_bench_reports(
+        [
+            _Report(
+                "tests/bench_gate/test_sentiment.py::test_x",
+                [
+                    (BENCH_MEASUREMENT_PROPERTY, "sentiment: one"),
+                    (BENCH_MEASUREMENT_PROPERTY, "sentiment: two"),
+                    _verdict_property("sentiment", BENCH_VERDICT_ACCEPT),
+                ],
+            )
+        ],
+        exempt_modules=frozenset(),
+    )
+    assert tally.measurements == ["sentiment: one", "sentiment: two"]
+
+
+def test_exempt_gate_modules_matches_the_registry() -> None:
+    """The summary's exemption list is the registry's, not a second copy."""
+    assert exempt_gate_modules() == frozenset(
+        stem
+        for stem, decl in GATE_DECLARATIONS.items()
+        if decl.family is Family.EXEMPT
+    )
+    assert exempt_gate_modules(), "the registry declares at least one exemption"

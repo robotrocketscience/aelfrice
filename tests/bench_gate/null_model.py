@@ -54,6 +54,9 @@ import pytest
 from tests.conftest import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
+    BENCH_VERDICT_ACCEPT,
+    BENCH_VERDICT_REJECT,
+    BENCH_VERDICT_UNVERIFIED,
 )
 
 Row = Mapping[str, object]
@@ -495,8 +498,12 @@ is a corpus-design decision rather than a statistical one.
 # Guards
 # ---------------------------------------------------------------------------
 
-ACCEPT = "ACCEPT"
-REJECT = "REJECT"
+# Re-exported under the short names the guards read with. The strings
+# live in `tests.conftest` because the tier summary classifies on them
+# and must not re-declare a second copy that can drift.
+ACCEPT = BENCH_VERDICT_ACCEPT
+REJECT = BENCH_VERDICT_REJECT
+UNVERIFIED = BENCH_VERDICT_UNVERIFIED
 
 _POOL_SHAPED_KEYS = ("beliefs", "expected_top_k", "gold_top_k", "expected_hit_ids")
 
