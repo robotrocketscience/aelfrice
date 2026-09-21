@@ -378,11 +378,11 @@ and falls back to this public tree otherwise. The public tree holds
 directories and this README and no rows, so the fallback validates nothing.
 Both the skip and the row count say so: a skip names the root it inspected and
 where that root came from, and a module that runs reports how many rows it
-validated and fails if the count is zero. To validate the lab corpus, run:
+validated and fails if the count is zero. To validate a mounted corpus,
+export the root as § Mounting on the lab side shows, then run:
 
 ```bash
-AELFRICE_CORPUS_ROOT="$HOME/projects/aelfrice-lab/tests/corpus/v2_0" \
-    uv run pytest tests/test_corpus_schema.py
+uv run pytest tests/test_corpus_schema.py
 ```
 
 ### Known failures
