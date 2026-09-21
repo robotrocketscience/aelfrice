@@ -17,7 +17,11 @@ things, because the `dedup` shape shows the first alone is not enough:
    `src/aelfrice/`.
 2. Every attribute a bench-gate file reads off one of those imported
    modules exists on it. A module that imports is not a module that can
-   be graded.
+   be graded. Shadowing is resolved per scope: a local `dedup = {...}`
+   inside one helper must not disarm the check for the whole file.
+3. The three modules #1579 retired stay retired — but only while the
+   function their gates called is still missing, so the documented
+   revival route does not red.
 
 Scope is deliberately `tests/bench_gate/` only. The rest of the suite runs
 on every CI pass, so a missing name there is a red test today; the bench
@@ -45,7 +49,7 @@ def _bench_gate_files() -> list[Path]:
     Helpers are included because a gate's imports can sit in the module
     that builds its store rather than in the test file itself.
     """
-    return sorted(BENCH_GATE_DIR.glob("*.py"))
+    return sorted(BENCH_GATE_DIR.rglob("*.py"))
 
 
 def _module_path_exists(dotted: str) -> bool:
@@ -75,21 +79,106 @@ def _has_member(module: ModuleType, name: str) -> bool:
     return True
 
 
+SCOPE_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _own_scope_nodes(scope: ast.AST) -> list[ast.AST]:
+    """Every node inside `scope`'s own namespace, nested scopes excluded.
+
+    A name assigned inside a nested function or comprehension binds there,
+    not here, so the walk stops at each nested scope's boundary.
+    """
+    if isinstance(scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        pending: list[ast.AST] = list(scope.body)
+    elif isinstance(scope, ast.Lambda):
+        pending = [scope.body]
+    elif isinstance(scope, ast.DictComp):
+        pending = [scope.key, scope.value]
+    else:  # ListComp / SetComp / GeneratorExp
+        pending = [scope.elt]
+    for generator in getattr(scope, "generators", []):
+        pending.append(generator.target)
+        pending.extend(generator.ifs)
+    seen: list[ast.AST] = []
+    while pending:
+        node = pending.pop()
+        seen.append(node)
+        if isinstance(node, SCOPE_NODES):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return seen
+
+
+def _shadowing_names(scope: ast.AST) -> tuple[set[str], set[str]]:
+    """Names `scope` binds locally, and the names it rebinds via `global`.
+
+    The first set is what shadows an imported module *inside* this scope;
+    the second is what a nested scope writes back to module scope, which
+    shadows the import everywhere.
+    """
+    local: set[str] = set()
+    declared_global: set[str] = set()
+    arguments = getattr(scope, "args", None)
+    if isinstance(arguments, ast.arguments):
+        for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs):
+            local.add(arg.arg)
+        for extra in (arguments.vararg, arguments.kwarg):
+            if extra is not None:
+                local.add(extra.arg)
+    for node in _own_scope_nodes(scope):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            local.add(node.id)
+        elif isinstance(node, ast.Global):
+            declared_global.update(node.names)
+    # `global x; x = ...` writes the module name, so it does not shadow here.
+    escaping = local & declared_global
+    return local - declared_global, escaping
+
+
 class _Collector(ast.NodeVisitor):
     """Gather `aelfrice.*` imports and the attributes read off them.
 
     `bindings` maps a local name to the dotted module it is bound to.
     `members` is the set of (dotted module, member) pairs an import
-    statement asserts exist. `rebound` holds local names the file later
-    assigns to, whose attribute reads are therefore not module reads.
+    statement asserts exist. `attributes` holds each attribute read, with
+    a flag saying whether the name it reads off was shadowed by a local
+    binding at that point — an unrelated `dedup = {...}` inside one
+    function must not disarm the checks for the rest of the file (#1579
+    review), so shadowing is resolved per scope rather than per file.
     """
 
     def __init__(self) -> None:
         self.modules: set[str] = set()
         self.members: set[tuple[str, str]] = set()
         self.bindings: dict[str, str] = {}
-        self.rebound: set[str] = set()
-        self.attributes: list[tuple[str, str]] = []
+        self.attributes: list[tuple[str, str, bool]] = []
+        self._scopes: list[set[str]] = []
+
+    def _shadowed(self, name: str) -> bool:
+        return any(name in scope for scope in self._scopes)
+
+    def visit(self, node: ast.AST) -> None:
+        if isinstance(node, (ast.Module, *SCOPE_NODES)):
+            local, escaping = _shadowing_names(node)
+            if escaping and self._scopes:
+                # A `global` write lands in the module scope, not this one.
+                self._scopes[0].update(escaping)
+            self._scopes.append(local)
+            try:
+                super().visit(node)
+            finally:
+                self._scopes.pop()
+            return
+        super().visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -124,12 +213,7 @@ class _Collector(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         value = node.value
         if isinstance(value, ast.Name) and isinstance(node.ctx, ast.Load):
-            self.attributes.append((value.id, node.attr))
-        self.generic_visit(node)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.rebound.add(node.id)
+            self.attributes.append((value.id, node.attr, self._shadowed(value.id)))
         self.generic_visit(node)
 
 
@@ -177,9 +261,9 @@ def test_bench_gate_grades_an_attribute_that_exists(path: Path) -> None:
         if not _has_member(importlib.import_module(dotted), name):
             missing.append(f"{dotted}.{name}")
 
-    for local, attr in collector.attributes:
+    for local, attr, shadowed in collector.attributes:
         dotted = collector.bindings.get(local)
-        if dotted is None or local in collector.rebound:
+        if dotted is None or shadowed:
             continue
         if not _module_path_exists(dotted):
             continue  # Reported by the module check above.
@@ -195,8 +279,28 @@ def test_bench_gate_grades_an_attribute_that_exists(path: Path) -> None:
     )
 
 
-def test_the_retired_modules_stay_retired() -> None:
-    """#1579's three modules are gone from the tier and the corpus scaffold.
+# Retired module -> the function its deleted gate called. The pin below
+# holds only while that function is missing, so a real revival (band
+# defined, function written, rows re-mounted) retires the pin instead of
+# tripping it.
+RETIRED_GRADED_SYMBOL = {
+    "dedup": "classify",
+    "enforcement": "classify",
+    "promotion_trigger": "decide",
+}
+
+
+def _graded_code_exists(module: str, symbol: str) -> bool:
+    """True once `src/aelfrice/<module>.py` defines the graded function."""
+    dotted = f"{PACKAGE}.{module}"
+    if not _module_path_exists(dotted):
+        return False
+    return _has_member(importlib.import_module(dotted), symbol)
+
+
+@pytest.mark.parametrize("module", sorted(RETIRED_GRADED_SYMBOL))
+def test_the_retired_modules_stay_retired(module: str) -> None:
+    """#1579's three modules stay gone until the code they grade exists.
 
     Re-adding a scaffold before its code is the failure this issue closed,
     and the two checks above only fire once such a gate names a missing
@@ -205,15 +309,28 @@ def test_the_retired_modules_stay_retired() -> None:
     graded the belief-sequence trigger #229 rejected (the ratified rule is
     explicit user acknowledgment, shipped via #550), and `dedup` has no
     `near-duplicate` band to grade against.
+
+    The pin is conditional on purpose. `docs/design/dedup.md` prescribes a
+    revival route — define the band, write `classify`, re-mount the rows —
+    and an unconditional name ban would red that route and force deleting
+    the guard to follow it. Once the graded function lands, the premise
+    has expired and the two checks above take over.
     """
-    retired = ("dedup", "enforcement", "promotion_trigger")
+    symbol = RETIRED_GRADED_SYMBOL[module]
+    if _graded_code_exists(module, symbol):
+        pytest.skip(
+            f"aelfrice.{module}.{symbol} now exists — #1579's premise for "
+            f"this module has expired and the pin no longer applies."
+        )
     corpus_root = Path(__file__).resolve().parent / "corpus" / "v2_0"
-    for module in retired:
-        assert not (BENCH_GATE_DIR / f"test_{module}.py").exists(), (
-            f"tests/bench_gate/test_{module}.py is back. #1579 retired it "
-            f"because the code it grades does not exist."
-        )
-        assert not (corpus_root / module).exists(), (
-            f"tests/corpus/v2_0/{module}/ is back. #1579 retired the "
-            f"scaffold; do not re-mount rows before the code exists."
-        )
+    assert not (BENCH_GATE_DIR / f"test_{module}.py").exists(), (
+        f"tests/bench_gate/test_{module}.py is back, but "
+        f"aelfrice.{module}.{symbol} still does not exist. #1579 retired "
+        f"the gate because the code it grades is missing; write "
+        f"{symbol}() first."
+    )
+    assert not (corpus_root / module).exists(), (
+        f"tests/corpus/v2_0/{module}/ is back, but "
+        f"aelfrice.{module}.{symbol} still does not exist. #1579 retired "
+        f"the scaffold; do not re-mount rows before the code exists."
+    )
