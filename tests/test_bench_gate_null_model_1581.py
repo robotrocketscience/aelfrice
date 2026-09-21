@@ -37,6 +37,7 @@ from tests.bench_gate.null_model import (
     guard_classification_gate,
     guard_ranking_gate,
     majority_constant_accuracy,
+    pool_shape,
     precision_at_k,
     structural_prefilter,
 )
@@ -569,6 +570,33 @@ def test_ablation_guard_refuses_an_unchecked_no_pool_claim() -> None:
             bar=bar_at_least(0.05),
             record_property=_Recorder(),
         )
+
+
+def test_a_belief_pool_alone_is_not_a_candidate_pool() -> None:
+    """The `compression_a4_fidelity` shape, which must still pass.
+
+    Its rows seed a store from `beliefs` and score free-text answers
+    against it, so the gold is not drawn from the pool and
+    `len(gold) < len(pool)` would compare two different populations.
+    Keying the check on key presence rejected this corpus; keying it on
+    "the gold entries are pool ids" does not.
+    """
+    rows = _ranking_rows(30, pool=6, gold=0, k=3)
+    for row in rows:
+        row.pop("expected_top_k")
+        row["expected_answers"] = ["a binary heap gives log-time extract-min"]
+    assert pool_shape(rows) is None
+    rec = _Recorder()
+    guard_ablation_gate(
+        module="synthetic",
+        rows=rows,
+        arms=lambda: AblationArms(
+            shipped=0.61, ablated=0.48, without_row_scores=[1.0] * 30
+        ),
+        bar=bar_at_least(0.05),
+        record_property=rec,
+    )
+    assert "ACCEPT" in rec.value(BENCH_NULL_VERDICT_PROPERTY)
 
 
 def test_ablation_guard_runs_the_prefilters_once_the_keys_are_wired() -> None:

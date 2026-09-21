@@ -507,7 +507,8 @@ ACCEPT = BENCH_VERDICT_ACCEPT
 REJECT = BENCH_VERDICT_REJECT
 UNVERIFIED = BENCH_VERDICT_UNVERIFIED
 
-_POOL_SHAPED_KEYS = ("beliefs", "expected_top_k", "gold_top_k", "expected_hit_ids")
+_POOL_KEYS = ("beliefs",)
+"""Row keys that hold a candidate pool: a list of objects carrying an id."""
 
 
 @dataclass(frozen=True)
@@ -538,6 +539,39 @@ class AblationArms:
         return self.shipped - self.ablated
 
 
+def pool_shape(rows: Sequence[Row]) -> tuple[str, str] | None:
+    """The `(pool_key, gold_key)` pair whose gold is drawn from the pool.
+
+    Detected rather than enumerated. Carrying a `beliefs` list does not
+    make a corpus ranking-shaped: `compression_a4_fidelity` rows seed a
+    store from `beliefs` and score free-text answers against it, so
+    `len(gold) < len(pool)` there compares two different populations.
+    What makes the structural pre-filters apply is that the gold *is* a
+    subset of the pool's ids, so that is the condition tested — over
+    every list-of-strings key, with no gold-key list to keep in sync.
+    """
+    for pool_key in _POOL_KEYS:
+        ids = {
+            str(item["id"])
+            for row in rows
+            if isinstance(row.get(pool_key), list)
+            for item in row[pool_key]  # type: ignore[index]
+            if isinstance(item, Mapping) and "id" in item
+        }
+        if not ids:
+            continue
+        for gold_key in sorted({key for row in rows for key in row}):
+            if gold_key == pool_key:
+                continue
+            for row in rows:
+                gold = row.get(gold_key)
+                if isinstance(gold, list) and any(
+                    isinstance(g, str) and g in ids for g in gold
+                ):
+                    return pool_key, gold_key
+    return None
+
+
 def _assert_no_pool_shape(rows: Sequence[Row], module: str) -> None:
     """Fail when a gate declares no pool while its rows carry one.
 
@@ -550,14 +584,15 @@ def _assert_no_pool_shape(rows: Sequence[Row], module: str) -> None:
     and from the ablation guard when it was given no keys — the two
     paths that can reach a graded corpus without a shape check.
     """
-    present = sorted(
-        {key for row in rows for key in _POOL_SHAPED_KEYS if key in row}
-    )
-    if present:
+    shape = pool_shape(rows)
+    if shape:
+        found_pool, found_gold = shape
         raise AssertionError(
-            f"gate {module!r} declared no candidate pool, but its rows carry "
-            f"{present} — declare gold_key/pool_key so the structural "
-            f"pre-filters run"
+            f"gate {module!r} declared no candidate pool, but its "
+            f"{found_gold!r} entries are ids drawn from its {found_pool!r} "
+            f"pool — pass gold_key={found_gold!r} and "
+            f"pool_key={found_pool!r} so the structural pre-filters run, "
+            f"with k_key naming the gate's own cutoff"
         )
 
 
