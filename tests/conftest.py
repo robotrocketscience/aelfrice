@@ -303,17 +303,24 @@ def _report_corpus_schema(terminalreporter) -> None:  # type: ignore[no-untyped-
     validation is not a bench gate, it runs whether or not a corpus is
     mounted, and folding it in would make the tier's counts read as
     covering it.
+
+    `error` is read alongside `passed` and `failed` because a test that
+    dies in setup or teardown is the run where the count is most
+    missing, and it is the one outcome that never also appears under
+    `passed`. Lines are deduplicated: a teardown error files a second
+    report for a test whose call phase already passed, and both carry
+    the same recorded properties.
     """
-    lines: list[str] = []
-    for outcome in ("passed", "failed"):
+    seen: set[str] = set()
+    for outcome in ("passed", "failed", "error"):
         for rep in terminalreporter.stats.get(outcome, []):
             for key, value in getattr(rep, "user_properties", ()):
                 if key == CORPUS_SCHEMA_PROPERTY:
-                    lines.append(str(value))
-    if not lines:
+                    seen.add(str(value))
+    if not seen:
         return
     terminalreporter.write_sep("-", "corpus schema")
-    for line in sorted(lines):
+    for line in sorted(seen):
         terminalreporter.write_line(f"  {line}")
 
 

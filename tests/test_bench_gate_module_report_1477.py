@@ -216,3 +216,29 @@ def test_a_failing_corpus_schema_test_still_reports_its_count() -> None:
     })
 
     assert any("module 'y': 0 rows" in line for line in lines), lines
+
+
+def test_an_errored_corpus_schema_test_still_reports_its_count() -> None:
+    """A setup or teardown error files under `error`, not `failed`.
+
+    Reading only `passed` and `failed` dropped the count on the one
+    outcome where nothing else says how many rows were read.
+    """
+    lines = _summary({
+        "error": [
+            _Report(user_properties=((CORPUS_SCHEMA_PROPERTY, "module 'z': 3 rows"),))
+        ]
+    })
+
+    assert any("module 'z': 3 rows" in line for line in lines), lines
+
+
+def test_the_same_corpus_schema_line_is_printed_once() -> None:
+    """A teardown error files a second report for a test that passed."""
+    prop = ((CORPUS_SCHEMA_PROPERTY, "module 'w': 5 rows"),)
+    lines = _summary({
+        "passed": [_Report(user_properties=prop)],
+        "error": [_Report(user_properties=prop)],
+    })
+
+    assert sum("module 'w': 5 rows" in line for line in lines) == 1, lines
