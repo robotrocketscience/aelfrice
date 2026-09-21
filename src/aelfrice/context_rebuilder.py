@@ -60,6 +60,13 @@ Output schema:
 The <continue/> marker is the stable signal the model interprets as
 "resume the prior task using the above context, do not greet, do not
 summarize."
+
+`locked` has a machine consumer outside this module. The #871
+`<cadence-resume>` recap is this block spliced into the hook's own
+injection envelope, and `hook._element_is_locked` reads the attribute
+back off the rendered element to decide what the block ceiling may shed.
+Read that function before changing the spelling; the hook spells the same
+thing `lock="user"` and accepts both (#1570).
 """
 from __future__ import annotations
 

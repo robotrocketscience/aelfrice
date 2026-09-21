@@ -405,6 +405,14 @@ The `<continue/>` element is a marker prompt — a stable signal the
 agent learns to interpret as "resume the prior task using the
 above context, do not greet, do not summarize."
 
+Before you change the `locked` attribute, read
+`hook._element_is_locked`. The hook's injection-block ceiling reads this
+attribute back off the rendered element to decide what it may shed, so
+`locked` is a machine-readable contract with a consumer outside this
+module — not only a hint for the model. The two renderers disagree on
+purpose: the hook spells the same thing `lock="user"`, the ceiling
+accepts both, and `tests/test_recap_lock_spelling_1570.py` pins the pair.
+
 ### Coordination with the harness
 
 PreCompact hook fires *before* the harness compacts. Two modes:

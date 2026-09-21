@@ -133,10 +133,10 @@ two pairs below are its before and after.
 
 * the recap's own `<belief>` elements, 65 untrimmed against 0 after the
   trim. Since #1564 the recap is a lane of its own ahead of `<core>` and
-  sheds whole, wrapper included, rather than being trimmed to a fragment:
-  the rebuilder spells a lock `locked="true"` where `_LOCKED_ATTR` reads
-  `lock="user"`, so not even a locked row inside it is exempt from the
-  shed;
+  sheds whole, wrapper included, rather than being trimmed to a fragment.
+  Every lock this fixture seeds is frozen tier and `<locked>` renders it
+  uncapped in the same envelope, so #1570's exemption — which keeps a lock
+  only when the cut would be its last render — keeps nothing here;
   <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
   <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_trimmed = 0 -->
 * prompt-matched beliefs reaching the model, 6 without the recap and 6
@@ -1135,9 +1135,14 @@ def resume_drop() -> dict[str, object]:
     elements in the per-turn hits bucket, at its head, so the hits shed
     first; the recap is a lane of its own ahead of `<core>` now and sheds
     whole. It is also rendered by the context rebuilder, which spells a
-    lock `locked="true"` where `_LOCKED_ATTR` reads `lock="user"` — so no
-    element of the recap is exempt, a user lock inside it included, and the
-    wrapper goes with them.
+    lock `locked="true"`; #1570 taught the dropper to read that, but the
+    exemption it feeds keeps only a lock the cut would be the last render
+    of. Every lock in this fixture is frozen tier, so `<locked>` renders
+    each of them uncapped in the same envelope and no element of the recap
+    is exempt — the wrapper goes with them, and these figures are
+    unchanged across #1570. A store holding a #1558 reference lock is the
+    case that differs, and `tests/test_recap_lock_spelling_1570.py` covers
+    it rather than this arm.
     """
     producer = Path(tempfile.mkdtemp(prefix="aelf-resume-cache-"))
     cached = _write_resume_cache(producer, _resume_store(producer))
