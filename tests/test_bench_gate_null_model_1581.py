@@ -33,6 +33,7 @@ from tests.bench_gate.null_model import (
     Family,
     GateDeclaration,
     bar_at_least,
+    exempt_gate_modules,
     guard_ablation_gate,
     guard_classification_gate,
     guard_ranking_gate,
@@ -49,7 +50,7 @@ from tests.bench_protocol import (
     BENCH_VERDICT_UNVERIFIED,
     NO_VERDICT_RECORDED,
 )
-from tests.conftest import exempt_gate_modules, tally_bench_reports
+from tests.conftest import tally_bench_reports
 
 _BENCH_GATE_DIR = Path(__file__).resolve().parent / "bench_gate"
 

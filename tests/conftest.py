@@ -23,6 +23,7 @@ from typing import NoReturn
 
 import pytest
 
+from tests.bench_gate.null_model import exempt_gate_modules
 from tests.bench_protocol import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
@@ -341,22 +342,6 @@ class BenchTierTally:
 
     measurements: list[str]
     """Every measurement line the reports attached, in report order."""
-
-
-def exempt_gate_modules() -> frozenset[str]:
-    """File stems of the bench-gate modules declared `Family.EXEMPT`.
-
-    Imported here rather than at module scope because
-    `tests.bench_gate.null_model` imports this module for the property
-    keys, so a top-level import would be circular.
-    """
-    from tests.bench_gate.null_model import Family, GATE_DECLARATIONS
-
-    return frozenset(
-        stem
-        for stem, decl in GATE_DECLARATIONS.items()
-        if decl.family is Family.EXEMPT
-    )
 
 
 def tally_bench_reports(

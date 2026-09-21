@@ -281,6 +281,26 @@ GATE_DECLARATIONS: dict[str, GateDeclaration] = {
 }
 
 
+def exempt_gate_modules() -> frozenset[str]:
+    """File stems of the bench-gate modules declared `Family.EXEMPT`.
+
+    Here rather than in `tests/conftest.py`, which is the caller: the
+    tier summary asks which gates have no guard to run, and the answer
+    is a query over this registry. Reading it from the summary meant
+    `conftest` importing this module while this module imported
+    `conftest` for the verdict strings — a cycle, held together by the
+    import being deferred into the function body. The strings moved to
+    `tests/bench_protocol.py` and the query moved to the registry, so
+    the dependency now runs one way: conftest -> null_model ->
+    bench_protocol.
+    """
+    return frozenset(
+        stem
+        for stem, decl in GATE_DECLARATIONS.items()
+        if decl.family is Family.EXEMPT
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bars
 # ---------------------------------------------------------------------------
