@@ -213,15 +213,25 @@ checklist step that blocks the cut is the one schedule that cannot stop
 without notice.
 
 Read the summary block of the tier, not the pass count. The block separates
-three states:
+four states:
 
 - Tests that **executed** against the corpus.
-- Tests that skipped because a named corpus **module** is missing or empty.
+- Corpus modules **rejected by their own null model** (#1581). The gate ran
+  and produced no verdict, because the corpus cannot separate the shipped
+  implementation from a model that cannot represent what the gate measures.
+- Tests that skipped because a named corpus **module** is missing, empty,
+  underfilled, or ungradeable. The last two report as `UNVERIFIED`: a
+  half-built module is not an absent one.
 - The whole tier skipped for want of a corpus root.
 
 Only the first state is a verdict. A run that reports "N passed" while most
 modules skipped is the normal case today, and the block states which tests are
 in which state.
+
+Every gate declares its family and its null model in `GATE_DECLARATIONS` in
+`tests/bench_gate/null_model.py`, and runs that null model on the same rows in
+the same test. See `tests/corpus/v2_0/README.md` for the families, the two
+structural pre-filters, and what to do when you add a module.
 
 If you change retrieval ranking, compression, or clustering behavior, say so
 in the PR body. Expect the quality evidence to come from a corpus-bearing run

@@ -341,6 +341,58 @@ module. The bench-gate smoke harness at
 `tests/bench_gate/test_rerank_relevance.py` skips cleanly when the
 module dir is empty or unmounted.
 
+## A corpus counts only when it defeats its own null model (#1581)
+
+A gate that passes is evidence only if the corpus can separate the shipped
+implementation from a model that cannot represent the distinction the gate
+measures. Operator ruling 2026-09-20 makes that a precondition to counting,
+not an advisory:
+
+> A corpus counts only when the gate's own metric, recomputed with the shipped
+> implementation replaced by the module's declared null model, **fails** the
+> gate's bar — while the shipped implementation passes it. The null-model run
+> executes in the same test, on the same rows, every time the gate runs.
+
+A corpus that fails this check is reported as **rejected**, which is a
+distinct tier state from "executed" and from "no verdict". A rejected gate
+graded nothing, so it is not counted as executed.
+
+### Declare a family and a null model
+
+Every module under `tests/bench_gate/` has an entry in `GATE_DECLARATIONS` in
+`tests/bench_gate/null_model.py`. `tests/test_bench_gate_null_model_1581.py`
+fails when a module has no entry, and fails again when a module declares a
+family but never calls its guard, so a new gate cannot ship without one.
+
+| Family | Null model | What it rejects |
+|---|---|---|
+| Ranking | the row's candidate pool in deterministic shuffled order | `gold == pool`; `k >= pool`; a saturated metric |
+| Classification | a constant predictor returning the corpus's majority label | a class-imbalanced corpus whose bar the label distribution clears |
+| Ablation / uplift | the ablated arm, plus `without_rate > 0` on at least 10% of rows | "the feature is the only path to the gold", which reports +1.000 uplift and proves the weight table rather than the feature |
+
+Use `Family.EXEMPT` only when no null model is constructible from the rows,
+and state the reason in the declaration. The reason is printed, so an
+exemption is visible rather than silently counted as validated.
+
+### Two structural pre-filters run first
+
+They cost milliseconds against a null model that rebuilds a store per row, so
+they run before it and the rejection names which one fired:
+
+1. `len(gold) < len(pool)` **and** `k < len(pool)` on at least 90% of rows.
+   A gold set equal to the candidate pool loses no distractor, so any
+   ordering scores near the ceiling.
+2. `max(len(gold)) <= 3 * median(len(gold))`. A micro-averaged metric lets one
+   60-target row supply most of the denominator of a 30-row corpus, and a
+   `MIN_ROWS` floor does not defend against that.
+
+### Both scores reach the release record
+
+Every guard records the shipped score and the null score through
+`record_property`, before the assertion, so a green run leaves the evidence
+behind. Without it a degenerate +1.000 uplift and a real +0.06 look the same
+to a reviewer reading a passing run.
+
 ## v0.1 acceptance (per #307)
 
 - ≥ 50 non-seed entries per module file.
