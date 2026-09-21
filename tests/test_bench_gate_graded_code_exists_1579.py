@@ -19,6 +19,10 @@ things, because the `dedup` shape shows the first alone is not enough:
    modules exists on it. A module that imports is not a module that can
    be graded. Shadowing is resolved per scope: a local `dedup = {...}`
    inside one helper must not disarm the check for the whole file.
+   Whole dotted chains count, so `import aelfrice.dedup` followed by
+   `aelfrice.dedup.classify(...)` is checked as `classify` on
+   `aelfrice.dedup`; and decorators, annotations and parameter defaults
+   are read in the scope that evaluates them, which is the enclosing one.
 3. The three modules #1579 retired stay retired — but only while the
    function their gates called is still missing, so the documented
    revival route does not red.
@@ -144,23 +148,90 @@ def _shadowing_names(scope: ast.AST) -> tuple[set[str], set[str]]:
     return local - declared_global, escaping
 
 
+def _dotted_parts(node: ast.Attribute) -> tuple[str | None, list[str]]:
+    """Split an attribute chain into its root `Name` and the attrs after it.
+
+    `aelfrice.dedup.classify` reads back as `("aelfrice", ["dedup",
+    "classify"])`. Recording only the innermost `Name.Attribute` pair was
+    the first hole the #1579 review found: the chain's own value is an
+    `Attribute`, not a `Name`, so the outer `.classify` was never seen and
+    only the `aelfrice.dedup` prefix — which does exist — got checked.
+
+    Returns `(None, [])` for a chain that does not bottom out in a name,
+    such as `f().attr`, where nothing static can be resolved.
+    """
+    parts: list[str] = []
+    current: ast.expr = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None, []
+    parts.reverse()
+    return current.id, parts
+
+
+def _outer_scope_expressions(scope: ast.AST) -> list[ast.AST]:
+    """Sub-expressions of `scope` that evaluate in the ENCLOSING scope.
+
+    A function's decorators, its return annotation, and its parameter
+    annotations and defaults are evaluated where the `def` is written, not
+    inside the body — so the function's own parameter names do not shadow
+    anything in them. Applying the local scope to them was the second hole
+    the #1579 review found, and it is only reachable when a parameter name
+    collides with the module binding, as in `import aelfrice.dedup as
+    dedup` plus `def gate(dedup=dedup.classify)`.
+
+    A comprehension's first `iter` is the same shape: it is evaluated
+    before the comprehension scope exists.
+    """
+    outer: list[ast.AST] = []
+    outer.extend(getattr(scope, "decorator_list", None) or [])
+    returns = getattr(scope, "returns", None)
+    if returns is not None:
+        outer.append(returns)
+    arguments = getattr(scope, "args", None)
+    if isinstance(arguments, ast.arguments):
+        every_arg = (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            arguments.vararg,
+            arguments.kwarg,
+        )
+        for arg in every_arg:
+            if arg is not None and arg.annotation is not None:
+                outer.append(arg.annotation)
+        for default in (*arguments.defaults, *arguments.kw_defaults):
+            if default is not None:
+                outer.append(default)
+    generators = getattr(scope, "generators", None)
+    if generators:
+        outer.append(generators[0].iter)
+    return outer
+
+
 class _Collector(ast.NodeVisitor):
     """Gather `aelfrice.*` imports and the attributes read off them.
 
     `bindings` maps a local name to the dotted module it is bound to.
     `members` is the set of (dotted module, member) pairs an import
-    statement asserts exist. `attributes` holds each attribute read, with
-    a flag saying whether the name it reads off was shadowed by a local
-    binding at that point — an unrelated `dedup = {...}` inside one
-    function must not disarm the checks for the rest of the file (#1579
-    review), so shadowing is resolved per scope rather than per file.
+    statement asserts exist. `attributes` holds each attribute chain read,
+    as (root name, attrs after it, shadowed) — the whole dotted chain, so
+    `aelfrice.dedup.classify` is resolved against `aelfrice.dedup` rather
+    than stopping at the `aelfrice.dedup` prefix.
+
+    The flag says whether the root name was shadowed by a local binding at
+    that point — an unrelated `dedup = {...}` inside one function must not
+    disarm the checks for the rest of the file (#1579 review), so
+    shadowing is resolved per scope rather than per file.
     """
 
     def __init__(self) -> None:
         self.modules: set[str] = set()
         self.members: set[tuple[str, str]] = set()
         self.bindings: dict[str, str] = {}
-        self.attributes: list[tuple[str, str, bool]] = []
+        self.attributes: list[tuple[str, list[str], bool]] = []
         self._scopes: list[set[str]] = []
 
     def _shadowed(self, name: str) -> bool:
@@ -172,6 +243,13 @@ class _Collector(ast.NodeVisitor):
             if escaping and self._scopes:
                 # A `global` write lands in the module scope, not this one.
                 self._scopes[0].update(escaping)
+            # Decorators, annotations and defaults evaluate outside this
+            # scope, so read them before its local names are in force. The
+            # body walk below reaches them a second time, which is
+            # harmless: the second reading can only mark them shadowed,
+            # and a shadowed reading is discarded rather than reported.
+            for expression in _outer_scope_expressions(node):
+                self.visit(expression)
             self._scopes.append(local)
             try:
                 super().visit(node)
@@ -211,16 +289,56 @@ class _Collector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        value = node.value
-        if isinstance(value, ast.Name) and isinstance(node.ctx, ast.Load):
-            self.attributes.append((value.id, node.attr, self._shadowed(value.id)))
+        if isinstance(node.ctx, ast.Load):
+            root, parts = _dotted_parts(node)
+            if root is not None:
+                self.attributes.append((root, parts, self._shadowed(root)))
         self.generic_visit(node)
 
 
-def _collect(path: Path) -> _Collector:
+def _collect_source(source: str, filename: str = "<source>") -> _Collector:
     collector = _Collector()
-    collector.visit(ast.parse(path.read_text(), filename=str(path)))
+    collector.visit(ast.parse(source, filename=filename))
     return collector
+
+
+def _collect(path: Path) -> _Collector:
+    return _collect_source(path.read_text(), filename=str(path))
+
+
+def _missing_graded_names(collector: _Collector) -> list[str]:
+    """Every `aelfrice` name `collector` saw that the package does not define.
+
+    Modules that do not exist at all are left out: the module check owns
+    those, and reporting them twice would blame the wrong test.
+    """
+    missing: list[str] = []
+
+    for dotted, name in sorted(collector.members):
+        if not _module_path_exists(dotted):
+            continue  # Reported by the module check above.
+        if not _has_member(importlib.import_module(dotted), name):
+            missing.append(f"{dotted}.{name}")
+
+    for root, parts, shadowed in collector.attributes:
+        dotted = collector.bindings.get(root)
+        if dotted is None or shadowed:
+            continue
+        if not _module_path_exists(dotted):
+            continue  # Reported by the module check above.
+        # Absorb as much of the chain as still names a module, so
+        # `aelfrice.dedup.classify` is checked as `classify` on
+        # `aelfrice.dedup` and not as `dedup` on `aelfrice`.
+        index = 0
+        while index < len(parts) and _module_path_exists(f"{dotted}.{parts[index]}"):
+            dotted = f"{dotted}.{parts[index]}"
+            index += 1
+        if index == len(parts):
+            continue  # The whole chain is a module; the module check owns it.
+        if not _has_member(importlib.import_module(dotted), parts[index]):
+            missing.append(f"{dotted}.{parts[index]}")
+
+    return sorted(set(missing))
 
 
 @pytest.mark.parametrize(
@@ -259,26 +377,9 @@ def test_bench_gate_grades_an_attribute_that_exists(path: Path) -> None:
     existence check on the module passes, while `dedup.classify` — the
     function the gate actually graded — was never written.
     """
-    collector = _collect(path)
-    missing: list[str] = []
-
-    for dotted, name in sorted(collector.members):
-        if not _module_path_exists(dotted):
-            continue  # Reported by the module check above.
-        if not _has_member(importlib.import_module(dotted), name):
-            missing.append(f"{dotted}.{name}")
-
-    for local, attr, shadowed in collector.attributes:
-        dotted = collector.bindings.get(local)
-        if dotted is None or shadowed:
-            continue
-        if not _module_path_exists(dotted):
-            continue  # Reported by the module check above.
-        if not _has_member(importlib.import_module(dotted), attr):
-            missing.append(f"{dotted}.{attr}")
-
+    missing = _missing_graded_names(_collect(path))
     assert not missing, (
-        f"{path.name} bench-gates {sorted(set(missing))}, which the "
+        f"{path.name} bench-gates {missing}, which the "
         f"module does not define. An importable module is not a gradable "
         f"one — this is the shape that made the retired `dedup` gate raise "
         f"AttributeError at the release cut instead of skipping (#1579). "
