@@ -39,7 +39,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BENCH_GATE_DIR = Path(__file__).resolve().parent / "bench_gate"
-PACKAGE_DIR = REPO_ROOT / "src" / "aelfrice"
+PACKAGE_ROOT = REPO_ROOT / "src" / "aelfrice"
 PACKAGE = "aelfrice"
 
 
@@ -63,8 +63,8 @@ def _module_path_exists(dotted: str) -> bool:
     assert parts[0] == PACKAGE
     rest = parts[1:]
     if not rest:
-        return (PACKAGE_DIR / "__init__.py").is_file()
-    base = PACKAGE_DIR.joinpath(*rest)
+        return (PACKAGE_ROOT / "__init__.py").is_file()
+    base = PACKAGE_ROOT.joinpath(*rest)
     return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
 
 
