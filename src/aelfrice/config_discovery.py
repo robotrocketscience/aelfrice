@@ -30,8 +30,8 @@ Because every reader funnels through :func:`discover_config`, the bound
 on how far that walk may climb (#1582) lives here too, and every reader
 inherits it without knowing about it. Adding a config reader that walks
 for itself would opt out of the bound silently, which is why
-``tests/test_config_discovery_shared.py`` pins the set of modules that
-may name a config filename at all.
+``tests/test_config_discovery_boundary_1582.py`` fails on any function
+in the package that names a config filename and climbs parents.
 """
 from __future__ import annotations
 
