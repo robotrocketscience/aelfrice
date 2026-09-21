@@ -166,11 +166,15 @@ backticks, so it was never covered by the bar above.
     uv run python scripts/check_derived_figures.py --mode all
     python3 scripts/check_derived_figures.py --list-unmarked CHANGELOG/v4.md
     python3 scripts/check_derived_figures.py --mask-delta
+    uv run python scripts/check_derived_figures.py --time-producers
 
 `--mode text` is stdlib-only and needs no installed package, so it runs in the
 `release-docs-check` job beside the other every-PR document gates. `--mode
 producers` executes the store-free producers and therefore needs the package;
-it runs in its own `ci.yml` job. `--mode all` is the local form.
+it runs in its own `ci.yml` job, and it runs them concurrently — see
+`check_producers` for why that cannot reorder the output, and for the
+per-producer prices `--time-producers` re-derives. `--mode all` is the local
+form.
 """
 from __future__ import annotations
 
@@ -182,11 +186,22 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# How long one producer may run before it is treated as hung. Generous: the
+# slowest producer on this tree takes 15.0s on a laptop (see `check_producers`).
+PRODUCER_TIMEOUT_S: int = 300
+
+# Ceiling on concurrent producer children. One worker per producer up to this,
+# so five producers all start at once on a laptop while a tree that grows to
+# dozens does not oversubscribe a two-vCPU runner.
+PRODUCER_MAX_WORKERS: int = 8
 
 # Directories scanned for markers and for overclaim sentences.
 DEFAULT_ROOTS: tuple[str, ...] = (
@@ -1111,77 +1126,192 @@ def producer_env(cache_root: str) -> dict[str, str]:
     return {**os.environ, "PYTHONPYCACHEPREFIX": cache_root}
 
 
-def check_producers(markers: list[Marker], report: Report) -> None:
-    """Run every store-free producer and diff its output against the prose."""
+def group_store_free(markers: list[Marker]) -> dict[str, list[Marker]]:
+    """Markers that name a re-runnable producer, grouped by that producer."""
     by_producer: dict[str, list[Marker]] = {}
     for marker in markers:
         if marker.store_backed or marker.errors:
             continue
         by_producer.setdefault(marker.producer, []).append(marker)
+    return by_producer
 
-    with tempfile.TemporaryDirectory(prefix="derived-figures-pyc-") as pyc:
-        for producer, group in sorted(by_producer.items()):
-            path = producer_path(producer)
-            if path is None or not path.is_file():
-                continue  # already reported by check_text
-            proc = subprocess.run(
-                [sys.executable, str(path), "--emit-figures"],
-                capture_output=True,
-                text=True,
-                cwd=str(REPO_ROOT),
-                env=producer_env(pyc),
-                timeout=300,
-                check=False,
+
+def runnable_producers(by_producer: dict[str, list[Marker]]) -> list[tuple[str, Path]]:
+    """The producers that exist on disk, in producer order.
+
+    Producer order, fixed here, is what the rest of the check inherits: the
+    pool is submitted in it and the failure list is built in it, so completion
+    order never reaches the output. A named producer that is missing is left
+    out silently — `check_text` has already hard-failed on it.
+    """
+    runnable: list[tuple[str, Path]] = []
+    for producer in sorted(by_producer):
+        path = producer_path(producer)
+        if path is None or not path.is_file():
+            continue
+        runnable.append((producer, path))
+    return runnable
+
+
+def run_producer(path: Path, cache_root: str) -> subprocess.CompletedProcess[str]:
+    """Run one producer under `--emit-figures` and hand back the raw result.
+
+    This is the only part of the producer check that runs off the main thread,
+    and it is deliberately the whole of it: it decides nothing and records
+    nothing. Everything that reaches `Report` is derived from the returned
+    `CompletedProcess` afterwards, in producer order, on one thread.
+    """
+    return subprocess.run(
+        [sys.executable, str(path), "--emit-figures"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=producer_env(cache_root),
+        timeout=PRODUCER_TIMEOUT_S,
+        check=False,
+    )
+
+
+def run_producers(
+    runnable: list[tuple[str, Path]], max_workers: int | None = None
+) -> list[subprocess.CompletedProcess[str]]:
+    """Run the given producers concurrently, results in the order given.
+
+    `max_workers` defaults to one worker per producer, capped at
+    `PRODUCER_MAX_WORKERS` so a tree that grows to dozens of producers does
+    not oversubscribe a two-vCPU runner. Pass `max_workers=1` to run them
+    serially; that is how `tests/test_derived_figures_1469.py`
+    mutation-proves the concurrency.
+    """
+    workers = max_workers if max_workers is not None else min(len(runnable), PRODUCER_MAX_WORKERS)
+    with (
+        tempfile.TemporaryDirectory(prefix="derived-figures-pyc-") as pyc,
+        ThreadPoolExecutor(max_workers=workers) as pool,
+    ):
+        # `map` yields in submission order, never completion order, and the
+        # list is materialised inside the pool so the cache directory outlives
+        # every child.
+        return list(pool.map(lambda item: run_producer(item[1], pyc), runnable))
+
+
+def report_producer(
+    producer: str,
+    group: list[Marker],
+    proc: subprocess.CompletedProcess[str],
+    report: Report,
+) -> None:
+    """Diff one finished producer's output against the figures that cite it."""
+    if proc.returncode != 0:
+        for marker in group:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"producer {producer} exited {proc.returncode} under "
+                f"--emit-figures: {proc.stderr.strip()[:400]}",
             )
-            if proc.returncode != 0:
-                for marker in group:
-                    report.fail(
-                        marker.path,
-                        marker.line,
-                        f"producer {producer} exited {proc.returncode} under "
-                        f"--emit-figures: {proc.stderr.strip()[:400]}",
-                    )
-                continue
-            decoded: object
-            try:
-                decoded = json.loads(proc.stdout)
-            except json.JSONDecodeError as exc:
-                for marker in group:
-                    report.fail(
-                        marker.path,
-                        marker.line,
-                        f"producer {producer} did not emit JSON on stdout ({exc})",
-                    )
-                continue
-            if not isinstance(decoded, dict):
-                for marker in group:
-                    report.fail(
-                        marker.path,
-                        marker.line,
-                        f"producer {producer} emitted {type(decoded).__name__}, "
-                        "expected a JSON object of key -> value",
-                    )
-                continue
-            emitted = cast("dict[str, object]", decoded)
-            for marker in group:
-                if marker.key not in emitted:
-                    report.fail(
-                        marker.path,
-                        marker.line,
-                        f"producer {producer} emits no key {marker.key!r}; it emits "
-                        f"{sorted(emitted)}",
-                    )
-                    continue
-                got = normalise(emitted[marker.key])
-                want = normalise(marker.value)
-                if got != want:
-                    report.fail(
-                        marker.path,
-                        marker.line,
-                        f"published {marker.ident} = {marker.value}, but "
-                        f"{producer} now emits {emitted[marker.key]}. The figure is "
-                        "stale: re-derive it, or fix the producer.",
-                    )
+        return
+    decoded: object
+    try:
+        decoded = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        for marker in group:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"producer {producer} did not emit JSON on stdout ({exc})",
+            )
+        return
+    if not isinstance(decoded, dict):
+        for marker in group:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"producer {producer} emitted {type(decoded).__name__}, "
+                "expected a JSON object of key -> value",
+            )
+        return
+    emitted = cast("dict[str, object]", decoded)
+    for marker in group:
+        if marker.key not in emitted:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"producer {producer} emits no key {marker.key!r}; it emits "
+                f"{sorted(emitted)}",
+            )
+            continue
+        got = normalise(emitted[marker.key])
+        want = normalise(marker.value)
+        if got != want:
+            report.fail(
+                marker.path,
+                marker.line,
+                f"published {marker.ident} = {marker.value}, but "
+                f"{producer} now emits {emitted[marker.key]}. The figure is "
+                "stale: re-derive it, or fix the producer.",
+            )
+
+
+def check_producers(
+    markers: list[Marker], report: Report, *, max_workers: int | None = None
+) -> None:
+    """Run every store-free producer and diff its output against the prose.
+
+    ## Concurrent to run, serial to report
+
+    The children are independent by construction — one process per producer
+    (#1307), each emitting its own figures on its own stdout, each building
+    whatever scratch it needs under its own `mkdtemp`. Nothing they share is
+    written twice: the one path this function hands all of them is the
+    `PYTHONPYCACHEPREFIX` directory, and CPython writes a cache entry to a
+    pid-suffixed temporary and renames it, so two children cannot land on the
+    same name. So they run on a `ThreadPoolExecutor` over `subprocess.run`,
+    which adds no synchronisation of its own.
+
+    What concurrency *would* break, left alone, is the gate's output. A check
+    whose failure list is ordered by whichever child finished first prints a
+    different diff on every run, and a reviewer cannot tell a new failure from
+    a reshuffled one. So completion order is not allowed to reach `Report`:
+    the pool returns results in submission order, submission is sorted by
+    producer, and every `report.fail` is made afterwards on one thread walking
+    that same order. Two runs over one tree are byte-identical, as they were
+    when this ran serially.
+
+    ## Pricing the next producer
+
+    Wall time is now the slowest producer, not the sum, but the sum is still
+    what a small runner pays. Both are measurable in one command:
+
+        uv run python scripts/check_derived_figures.py --time-producers
+
+    On an M-series laptop with an SSD, 2026-09-21, five store-free producers
+    behind 219 markers:
+
+        15.0s  benchmarks/injection_budget_bytes.py
+        10.9s  benchmarks/store_open_cost.py
+        10.6s  scripts/measure_block_ceiling.py
+         2.4s  scripts/budget_discriminability_census.py
+         0.4s  benchmarks/published_constants.py
+        -------
+        39.2s  serial sum
+        18.1s  concurrent wall
+
+    `store_open_cost.py` walks a three-size grid up to a 20,000-belief store,
+    so it is disk-bound, and that is the axis on which a hosted runner is
+    furthest from a laptop. Re-derive the table when you add a producer. The
+    number to watch is the new producer's own time, because the wall clock of
+    this check is now the maximum rather than the sum: a producer slower than
+    the current 15.0s worst case moves it, and one faster than that is nearly
+    free until the worker cap binds.
+    """
+    by_producer = group_store_free(markers)
+    runnable = runnable_producers(by_producer)
+    if not runnable:
+        return
+
+    finished = run_producers(runnable, max_workers)
+    for (producer, _path), proc in zip(runnable, finished, strict=True):
+        report_producer(producer, by_producer[producer], proc, report)
 
 
 def restamp(files: list[Path]) -> int:
@@ -1257,6 +1387,38 @@ def mask_delta(files: list[Path]) -> int:
     return 0
 
 
+def time_producers(markers: list[Marker]) -> int:
+    """Price the producer check: each producer alone, then all of them at once.
+
+    The table in `check_producers` is the output of this command. Re-run it
+    when you add a producer, so the cost of the new one is known at authoring
+    time instead of at a release cut — which is how #1578 was found, on the
+    v5.0.0 release PR. Reporting only; always exit 0, and it runs every
+    producer twice, so it is a local command and not a gate.
+    """
+    runnable = runnable_producers(group_store_free(markers))
+    if not runnable:
+        print("no store-free producers to time.")
+        return 0
+
+    alone: list[tuple[float, str]] = []
+    for producer, path in runnable:
+        started = time.perf_counter()
+        run_producers([(producer, path)], 1)
+        alone.append((time.perf_counter() - started, producer))
+
+    started = time.perf_counter()
+    run_producers(runnable)
+    wall = time.perf_counter() - started
+
+    for seconds, producer in sorted(alone, key=lambda row: (-row[0], row[1])):
+        print(f"{seconds:6.1f}s  {producer}")
+    print("-" * 7)
+    print(f"{sum(s for s, _ in alone):6.1f}s  serial sum")
+    print(f"{wall:6.1f}s  concurrent wall over {len(runnable)} producers")
+    return 0
+
+
 def list_unmarked(files: list[Path]) -> int:
     """Enumerate figures that carry no marker. Reporting only; always exit 0."""
     total = 0
@@ -1283,6 +1445,12 @@ def main(argv: list[str] | None = None) -> int:
         "all: both.",
     )
     ap.add_argument("--list-unmarked", action="store_true")
+    ap.add_argument(
+        "--time-producers",
+        action="store_true",
+        help="print each store-free producer's wall time, their serial sum "
+        "and the concurrent wall. Reporting only; runs every producer twice.",
+    )
     ap.add_argument(
         "--mask-delta",
         action="store_true",
@@ -1318,6 +1486,8 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report(github=args.github)
     markers = check_text(files, report)
+    if args.time_producers:
+        return time_producers(markers)
     if args.mode in ("producers", "all"):
         check_producers(markers, report)
 
