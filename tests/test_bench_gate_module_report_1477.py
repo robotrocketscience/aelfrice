@@ -31,16 +31,23 @@ _spec.loader.exec_module(conftest)
 
 CORPUS_ENV_VAR = conftest.CORPUS_ENV_VAR
 BENCH_GATE_SKIP_REASON = conftest.BENCH_GATE_SKIP_REASON
+CORPUS_SCHEMA_PROPERTY = conftest.CORPUS_SCHEMA_PROPERTY
 
 
 class _Report:
     """A pytest report as `pytest_terminal_summary` reads one."""
 
-    def __init__(self, reason: str = "", keywords: dict[str, int] | None = None):
+    def __init__(
+        self,
+        reason: str = "",
+        keywords: dict[str, int] | None = None,
+        user_properties: tuple[tuple[str, str], ...] = (),
+    ):
         # pytest stores a skip's reason as the third element of a
         # (path, lineno, reason) tuple. Anything else has no reason.
         self.longrepr = ("f.py", 1, reason) if reason else None
         self.keywords = keywords or {}
+        self.user_properties = user_properties
 
 
 class _Terminal:
@@ -163,3 +170,49 @@ def test_an_unrelated_skip_inside_the_tier_is_not_folded_in() -> None:
 def test_a_reasonless_or_unparseable_skip_is_ignored(reason: str) -> None:
     """No crash, and no phantom module named from a partial match."""
     assert _summary({"skipped": [_Report(reason)]}) == []
+
+
+def test_a_corpus_schema_skip_is_not_counted_as_a_tier_skip() -> None:
+    """Naming the env var is not the same as being a bench gate (#1580).
+
+    The corpus-schema walk names `AELFRICE_CORPUS_ROOT` in its own skip
+    reasons, one per scaffolded module, and it is not part of the
+    retrieval / compression / clustering tier. Classifying on the
+    substring folded all of them into the tier's figure, which is the
+    direction that overstates how blocked the tier is.
+    """
+    schema_skip = _Report(
+        f"corpus-schema: module 'dedup' holds no JSONL rows under /corpus "
+        f"(root resolved from ${CORPUS_ENV_VAR}). Nothing was validated."
+    )
+    assert _summary({"skipped": [schema_skip] * 19}) == []
+
+    lines = _summary({"skipped": [schema_skip, _Report(BENCH_GATE_SKIP_REASON)]})
+    assert "1 bench-gate tests skipped" in "\n".join(lines)
+
+
+def test_the_corpus_schema_row_count_is_printed() -> None:
+    """"0 rows validated" and "all rows valid" are the same green tail.
+
+    They were indistinguishable for the life of `test_corpus_schema.py`
+    (#1580), so the count is printed rather than inferred.
+    """
+    lines = _summary({
+        "passed": [
+            _Report(user_properties=((CORPUS_SCHEMA_PROPERTY, "module 'x': 7 rows"),))
+        ]
+    })
+
+    assert lines[0].endswith("corpus schema")
+    assert "module 'x': 7 rows" in lines[1]
+
+
+def test_a_failing_corpus_schema_test_still_reports_its_count() -> None:
+    """The run that most needs the number is the one that went red."""
+    lines = _summary({
+        "failed": [
+            _Report(user_properties=((CORPUS_SCHEMA_PROPERTY, "module 'y': 0 rows"),))
+        ]
+    })
+
+    assert any("module 'y': 0 rows" in line for line in lines), lines

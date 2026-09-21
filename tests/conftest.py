@@ -37,6 +37,16 @@ The summary prints whatever tests attach under this key, so the numbers
 land in the same block that already says which modules ran.
 """
 
+CORPUS_SCHEMA_PROPERTY = "corpus_schema"
+"""`record_property` key `tests/test_corpus_schema.py` reports rows under.
+
+The schema validator read the public corpus tree, which holds no rows,
+so every one of its assertions skipped on every run for the life of the
+file (#1580). The shape of that failure is that "0 rows validated" and
+"every row is valid" produce the same green tail, so the count is
+printed rather than left to be inferred.
+"""
+
 TIMEOUT_SCALE_ENV_VAR = "AELF_TEST_TIMEOUT_SCALE"
 """Multiplier applied to every resolved pytest-timeout budget (#1472)."""
 
@@ -286,6 +296,27 @@ def _report_archive_extra_skips(terminalreporter) -> None:  # type: ignore[no-un
     )
 
 
+def _report_corpus_schema(terminalreporter) -> None:  # type: ignore[no-untyped-def]
+    """Print how many corpus rows the schema validator actually read (#1580).
+
+    Its own section rather than a line in the bench-gate block: schema
+    validation is not a bench gate, it runs whether or not a corpus is
+    mounted, and folding it in would make the tier's counts read as
+    covering it.
+    """
+    lines: list[str] = []
+    for outcome in ("passed", "failed"):
+        for rep in terminalreporter.stats.get(outcome, []):
+            for key, value in getattr(rep, "user_properties", ()):
+                if key == CORPUS_SCHEMA_PROPERTY:
+                    lines.append(str(value))
+    if not lines:
+        return
+    terminalreporter.write_sep("-", "corpus schema")
+    for line in sorted(lines):
+        terminalreporter.write_line(f"  {line}")
+
+
 def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untyped-def]
     """Report the bench-gate tier per module, executed against skipped.
 
@@ -311,13 +342,19 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
     is the only place that signal survives to summary time.
     """
     _report_archive_extra_skips(terminalreporter)
+    _report_corpus_schema(terminalreporter)
 
     stats = terminalreporter.stats
     tier_skips = 0
     by_module: dict[tuple[str, str], int] = {}
     for rep in stats.get("skipped", []):
         reason = _skip_reason(rep)
-        if CORPUS_ENV_VAR in reason:
+        # Matched on the shared reason, not on the env var name inside
+        # it: the corpus-schema walk names the same variable in its own
+        # skips (#1580), and counting those here would attribute them to
+        # the retrieval / compression / clustering gates, which is the
+        # direction that overstates how blocked the tier is.
+        if BENCH_GATE_SKIP_REASON in reason:
             tier_skips += 1
             continue
         m = _MODULE_SKIP_RE.search(reason)
