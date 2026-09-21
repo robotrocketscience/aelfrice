@@ -12,7 +12,11 @@ that flip shipped in v3.0 (#718). #1501 reverted it: #1177 replaced the
 conjunctive FTS5 MATCH with a disjunction over the rarest tokens, which
 is the recall cliff R3 existed to work around, and across that one commit
 the same 30 rows moved from +0.2851 to −0.1324 — because `legacy-bm25`
-gained 0.65 while `stack-r1-r3` gained 0.24.
+gained 0.65 while `stack-r1-r3` gained 0.24. Those 30 rows are the
+corpus #1581 replaced, so the uplift figures in this paragraph are
+history and do not describe what this gate measures today. The direction
+is unchanged on the rebuilt rows, and by more: `legacy-bm25` 0.8716
+against `stack-r1-r3` 0.6508.
 
 So a fixed direction is the wrong shape for this gate. Asserted against
 `DEFAULT_STRATEGY`, it goes red on a re-flip without a re-measure, and on
@@ -24,6 +28,14 @@ a breakage that zeroes both arms is a tie, and a tie satisfies `>=`.
 
 The +0.05 absolute P@10 floor in #291's body was the flip-default trigger,
 evaluated lab-side. It is moot: the default is `legacy-bm25` again.
+
+**The floor is `_NULL_FLOOR`, and it is the same number the #1581 null
+model is held to.** It was `0.0`, which is a tripwire for "retrieval
+returned nothing" and nothing else — every null model clears it, so the
+#1581 bar could never reject a corpus on its own strength. Raising it into
+the window between the null sweep's maximum and the shipped arm is what
+turns the bar into a null-model trap. See `_NULL_FLOOR` for the
+derivation and for the producer that re-derives it.
 
 Public CI skips when ``AELFRICE_CORPUS_ROOT`` is unset, per the
 directory-of-origin rule (labelled corpus lives only in
@@ -49,6 +61,38 @@ from tests.bench_gate.null_model import (
     shuffled_ranker_score,
 )
 from tests.conftest import load_corpus_module
+
+# The floor this gate reads twice: as the bar the declared null model must
+# **fail** (#1581's precondition to counting) and as the assertion the
+# shipped default must **clear**. One number, because the two readings are
+# the same claim — a score a shuffled pool can reach is not evidence that
+# retrieval happened.
+#
+# Derived rather than picked. `benchmarks/query_strategy_null_distribution.py`
+# re-shuffles every row's candidate pool under 200 independent seeds and
+# takes the worst case: a null NDCG@k of 0.2307, against a canonical-salt
+# null of 0.1499 and a sweep mean of 0.1346. The floor is that maximum
+# times 1.5, rounded up to two decimals, which is 0.35 — half again above
+# the worst draw, because a sweep maximum is an empirical maximum and not a
+# bound.
+#
+# The margin on the other side is what keeps the gate from being flaky
+# rather than strict: the shipped `legacy-bm25` arm measures 0.8716 on
+# these rows, so it clears the floor by +0.5216 (2.49x), and the losing
+# `stack-r1-r3` arm measures 0.6508 and clears it too — deliberately, since
+# a floor that only the current default can pass would pre-judge the
+# re-flip this gate's comparison exists to detect.
+#
+# Re-derive the lower edge with the corpus mounted:
+#
+#     uv run python -m benchmarks.query_strategy_null_distribution \
+#         --corpus "$AELFRICE_CORPUS_ROOT/query_strategy" --shipped 0.8716
+#
+# <!-- derived: benchmarks/query_strategy_null_distribution.py#null_ndcg_max = 0.2307 corpus=lab-corpus/query_strategy-v1_0@2026-09-21 producer-sha=6ed2633f4bac -->
+# <!-- derived: benchmarks/query_strategy_null_distribution.py#null_ndcg_canonical = 0.1499 corpus=lab-corpus/query_strategy-v1_0@2026-09-21 producer-sha=6ed2633f4bac -->
+# <!-- derived: benchmarks/query_strategy_null_distribution.py#null_ndcg_mean = 0.1346 corpus=lab-corpus/query_strategy-v1_0@2026-09-21 producer-sha=6ed2633f4bac -->
+# <!-- derived: benchmarks/query_strategy_null_distribution.py#floor = 0.35 corpus=lab-corpus/query_strategy-v1_0@2026-09-21 producer-sha=6ed2633f4bac -->
+_NULL_FLOOR = 0.35
 
 
 def _corpus_digest(root: Path) -> str:
@@ -110,18 +154,20 @@ def test_query_strategy_uplift(
 
     # The null-model precondition (#1581). The declared null is the
     # row's candidate pool in deterministic shuffled order, scored with
-    # this gate's own NDCG@k against this gate's own `> 0.0` floor.
-    # Measured 2026-09-20 on the mounted corpus: the two structural
-    # pre-filters reject it before the arms run — the gold set is the
-    # whole candidate pool on 30 of 30 rows — and a shuffle scores
-    # NDCG@10 0.8261 / P@10 0.9933 against a floor of 0.0. Rebuilding
-    # those rows is #1581's out-of-scope follow-on, not a reason to
-    # weaken this.
+    # this gate's own NDCG@k against this gate's own `_NULL_FLOOR`.
+    #
+    # The 30-row corpus this replaced failed here twice over, and both
+    # failures are why the floor moved. Structurally, the gold set was the
+    # whole candidate pool on 30 of 30 rows, so no distractor could be lost
+    # and a shuffle scored P@10 0.9933; the `separability` pre-filter
+    # rejects that before the arms run. But the rebuilt rows clear both
+    # pre-filters and a `> 0.0` bar would still have passed their null
+    # model at 0.1499, which is the half a rebuild alone does not fix.
     guard_ranking_gate(
         module="query_strategy",
         rows=rows,
         shipped=shipped,
-        bar=bar_above(0.0),
+        bar=bar_above(_NULL_FLOOR),
         metric=runner_mod.ndcg_at_k,
         record_property=record_property,
         gold_key="expected_top_k",
@@ -151,14 +197,22 @@ def test_query_strategy_uplift(
     # FTS5 MATCH expression does exactly that: every row retrieves nothing,
     # both arms score 0.0, and a gate written only as a comparison reports
     # green at the release cut, which is the only place this tier runs.
-    # These rows carry labelled `expected_top_k`, so a non-zero score is a
-    # statement that retrieval happened at all.
-    assert scores[DEFAULT_STRATEGY] > 0.0, (
-        f"the shipped default ({DEFAULT_STRATEGY}) retrieved nothing "
-        f"scoreable on any of {len(rows)} labelled rows:\n{detail}\n"
-        f"  This is retrieval being broken, not a strategy comparison. "
-        f"Look at the FTS5 MATCH builder before anything else — an empty "
-        f"match expression produces exactly this."
+    #
+    # At `_NULL_FLOOR` rather than at 0.0 the assertion says more than
+    # "retrieval happened at all": it says the shipped arm out-ranks a model
+    # that cannot rank. Substituting the declared null model for `shipped`
+    # lands at 0.1499 and fails here, which is the property that makes this
+    # floor load-bearing — at 0.0 that substitution passed both assertions.
+    assert scores[DEFAULT_STRATEGY] > _NULL_FLOOR, (
+        f"the shipped default ({DEFAULT_STRATEGY}) scored at or below the "
+        f"null-model floor of {_NULL_FLOOR:g} on {len(rows)} labelled "
+        f"rows:\n{detail}\n"
+        f"  A shuffle of each row's candidate pool reaches this floor's "
+        f"worst case over 200 seeds, so this is retrieval being broken or "
+        f"degenerate, not a strategy comparison. Look at the FTS5 MATCH "
+        f"builder before anything else — an empty match expression scores "
+        f"0.0 and produces exactly this. Re-derive the floor with "
+        f"benchmarks/query_strategy_null_distribution.py before changing it."
     )
     assert scores[DEFAULT_STRATEGY] >= scores[other], (
         f"the shipped default ({DEFAULT_STRATEGY}) is not the winning arm "
