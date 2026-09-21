@@ -17,6 +17,7 @@ never in doubt.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -28,11 +29,18 @@ _spec = importlib.util.spec_from_file_location(
 )
 assert _spec and _spec.loader
 conftest = importlib.util.module_from_spec(_spec)
+# Registered before execution, as the importlib recipe requires:
+# `@dataclass` resolves a field annotation through
+# `sys.modules[cls.__module__]`, so a module executing under a name that
+# is not in `sys.modules` raises AttributeError on the first dataclass
+# the file declares.
+sys.modules[_spec.name] = conftest
 _spec.loader.exec_module(conftest)
 
 CORPUS_ENV_VAR = conftest.CORPUS_ENV_VAR
 BENCH_GATE_SKIP_REASON = conftest.BENCH_GATE_SKIP_REASON
 CORPUS_SCHEMA_PROPERTY = conftest.CORPUS_SCHEMA_PROPERTY
+BENCH_NULL_VERDICT_PROPERTY = conftest.BENCH_NULL_VERDICT_PROPERTY
 
 
 class _Report:
@@ -43,6 +51,7 @@ class _Report:
         reason: str = "",
         keywords: dict[str, int] | None = None,
         user_properties: Sequence[tuple[str, object]] | None = None,
+        nodeid: str = "tests/bench_gate/test_some_gate.py::test_it",
     ):
         # pytest stores a skip's reason as the third element of a
         # (path, lineno, reason) tuple. Anything else has no reason.
@@ -52,6 +61,7 @@ class _Report:
         # schema tests pass a tuple of pairs, the #1581 verdict helpers
         # a list of them, and the hook only ever iterates it.
         self.user_properties = tuple(user_properties or ())
+        self.nodeid = nodeid
 
 
 class _Terminal:
@@ -72,6 +82,19 @@ def _summary(stats: dict[str, list[_Report]]) -> list[str]:
     term = _Terminal(stats)
     conftest.pytest_terminal_summary(term)
     return term.lines
+
+
+def _accepted(module: str = "sentiment") -> _Report:
+    """A bench-gated report that recorded an ACCEPT verdict.
+
+    Since #1581 the marker alone does not make a test executed: the tier
+    counts a scored module's report only when it carries a verdict, so a
+    fixture standing in for an executed gate has to carry one too.
+    """
+    return _Report(
+        keywords={"bench_gated": 1},
+        user_properties=[(BENCH_NULL_VERDICT_PROPERTY, f"{module}|ACCEPT|")],
+    )
 
 
 def _module_skip(module: str, why: str) -> _Report:
@@ -109,7 +132,7 @@ def test_a_skipped_module_is_named_and_counted() -> None:
     two of its three modules produced no verdict at all.
     """
     lines = _summary({
-        "passed": [_Report(keywords={"bench_gated": 1})] * 2,
+        "passed": [_accepted(), _accepted()],
         "skipped": [
             _module_skip("dedup", "missing"),
             _module_skip("dedup", "missing"),
@@ -137,15 +160,18 @@ def test_missing_and_empty_are_not_merged() -> None:
     assert "is missing" in body and "is empty" in body
 
 
-def test_an_executed_gate_is_counted_off_the_marker() -> None:
+def test_an_executed_gate_is_counted_off_the_marker_and_its_verdict() -> None:
     """The marker is the only place that signal survives to summary time.
 
     A bench-gated test that ran leaves a `passed` report indistinguishable
-    from any other unless its keywords are read.
+    from any other unless its keywords are read. Since #1581 the marker is
+    necessary but no longer sufficient: the report must also carry the
+    verdict, which is why the unmarked report below is not the only one
+    excluded.
     """
     lines = _summary({
-        "passed": [_Report(keywords={"bench_gated": 1}), _Report()],
-        "failed": [_Report(keywords={"bench_gated": 1})],
+        "passed": [_accepted(), _Report()],
+        "failed": [_accepted("contradiction")],
     })
 
     assert any("2 bench-gate tests executed" in line for line in lines), lines
@@ -252,9 +278,6 @@ def test_the_same_corpus_schema_line_is_printed_once() -> None:
 # #1581 — rejected-by-null-model, and the states that used to vanish
 # ---------------------------------------------------------------------------
 
-BENCH_NULL_VERDICT_PROPERTY = conftest.BENCH_NULL_VERDICT_PROPERTY
-
-
 def _rejected(module: str, why: str) -> _Report:
     return _Report(
         keywords={"bench_gated": 1},
@@ -271,7 +294,7 @@ def test_a_rejected_corpus_is_its_own_state() -> None:
     """
     lines = _summary({
         "failed": [_rejected("query_strategy", "gold == pool on 30 of 30 rows")],
-        "passed": [_Report(keywords={"bench_gated": 1})],
+        "passed": [_accepted()],
     })
     body = "\n".join(lines)
 
@@ -297,6 +320,24 @@ def test_an_accepted_gate_still_counts_as_executed() -> None:
     )]})
 
     assert any("1 bench-gate tests executed" in line for line in lines), lines
+
+
+def test_a_marked_report_with_no_verdict_is_named_not_counted() -> None:
+    """The green run the AST wiring check cannot tell from a real one.
+
+    A guard call that never executes leaves a passing, bench-gated,
+    verdict-less report. Counting it restates the defect #1581 closes,
+    so it is listed by test ID under its own heading instead.
+    """
+    lines = _summary({"passed": [_Report(
+        keywords={"bench_gated": 1},
+        nodeid="tests/bench_gate/test_sentiment.py::test_sentiment_gate",
+    )]})
+    body = "\n".join(lines)
+
+    assert "tests executed" not in body, body
+    assert "produced NO null-model verdict" in body
+    assert "test_sentiment.py::test_sentiment_gate" in body
 
 
 def test_an_underfilled_module_reports_as_unverified() -> None:

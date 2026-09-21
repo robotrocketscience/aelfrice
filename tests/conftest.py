@@ -441,7 +441,7 @@ def tally_bench_reports(
             if stem in exempt_modules:
                 executed += 1
             else:
-                unverified[nodeid or stem] = NO_VERDICT_RECORDED
+                unverified[nodeid or "<unidentified test>"] = NO_VERDICT_RECORDED
             continue
         # Worst state wins: one REJECT among several verdicts on the
         # same report still means the run graded nothing trustworthy.
