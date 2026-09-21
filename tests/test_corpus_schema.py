@@ -1,13 +1,33 @@
-"""Schema validation for the v2.0 evaluation corpus (#307).
+"""Schema validation for the v2.0 evaluation corpus (#307, #1580).
 
-Walks every `*.jsonl` under `tests/corpus/v2_0/<module>/` and enforces:
+Walks every `*.jsonl` under `<corpus root>/<module>/` and enforces:
 
   1. Each line parses as JSON.
   2. Every row has the common envelope (`id`, `provenance`, `labeller_note`,
      `label`) with non-empty strings.
   3. `id` values are unique within a module.
-  4. `label` is one of the module-specific allowed set.
+  4. `label` is one of the module-specific allowed set, and — where the
+     consuming detector exposes its own label constant — one the scorer
+     can actually return.
   5. Module-specific extra fields exist with the right shape.
+
+The corpus root comes from `AELFRICE_CORPUS_ROOT` when it is set, and
+falls back to the public tree under `tests/corpus/v2_0/`. That fallback
+holds `.gitkeep` files and a README and no rows at all, so before #1580
+every assertion above skipped on every run and no corpus row had ever
+been validated. Two things follow from that history:
+
+* A skip names the root it inspected and says nothing was validated. A
+  silent skip is what hid the problem for as long as it hid.
+* A module that runs reports how many rows it validated, and fails if
+  that count is zero, so "validated 0 rows" cannot read as a pass.
+
+Violations the corpus carries today are recorded in `KNOWN_FAILURES`
+with a reason each rather than fixed here or waived: turning the
+validator on and relabelling the corpus are different decisions, and
+#1580 is only the first. The list is a ratchet in both directions — a
+violation that is not recorded fails the module, and a recorded one
+that stops reproducing fails it too, so the list cannot rot.
 
 The ≥50/module v0.1 threshold is **not** asserted here — that flips on
 once labelling is complete across the listed modules. See
@@ -18,14 +38,19 @@ them because the code their bench gates graded does not exist.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
 import pytest
 
 from aelfrice.relationship_detector import VERDICT_LABELS
+from conftest import CORPUS_SCHEMA_PROPERTY
 
-CORPUS_ROOT = Path(__file__).parent / "corpus" / "v2_0"
+CORPUS_ENV_VAR = "AELFRICE_CORPUS_ROOT"
+
+PUBLIC_CORPUS_ROOT = Path(__file__).parent / "corpus" / "v2_0"
+"""The in-repo scaffold. Holds directories and a README, never rows."""
 
 # Synthetic provenance must follow `synthetic-vN.M` per the README carve-out
 # (`tests/corpus/v2_0/README.md` § v0.1 acceptance). The format guarantees
@@ -209,8 +234,132 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")
 
 
-def _iter_module_files(module: str) -> list[Path]:
-    return sorted((CORPUS_ROOT / module).glob("*.jsonl"))
+DETECTOR_LABEL_CONSTANTS: dict[str, frozenset[str]] = {
+    "contradiction": frozenset(VERDICT_LABELS),
+}
+"""Module -> the label constant its consuming detector exposes.
+
+A corpus label the scorer can never return is not a near miss, it is a
+row graded wrong whatever the detector does. Validating the module's
+vocabulary against the runtime constant catches that at the corpus,
+where it is one relabelling, instead of at the gate, where it surfaces
+as unexplained accuracy loss.
+"""
+
+# Every violation the row validator can report. Rule ids are stable
+# strings because `KNOWN_FAILURES` keys off them; a typo there would
+# waive nothing while looking like it waived something, so
+# `test_known_failures_name_rules_the_validator_can_emit` pins them.
+RULE_PROVENANCE_FORMAT = "provenance-format"
+RULE_LABEL_VOCABULARY = "label-vocabulary"
+RULE_LABEL_UNSCOREABLE = "label-unscoreable"
+RULE_DUPLICATE_ID = "duplicate-id"
+
+
+def _envelope_rule(field: str) -> str:
+    return f"envelope:{field}"
+
+
+def _field_rule(field: str) -> str:
+    return f"field:{field}"
+
+
+KNOWN_FAILURES: dict[str, tuple[tuple[str, str], ...]] = {
+    "directive_detection": (
+        (
+            _envelope_rule("provenance"),
+            "The v0_1 batch (285 rows) predates the envelope and carries no "
+            "`provenance` at all; the v0_2 batch (225 rows) carries a "
+            "conforming `synthetic-v0.2`. Backfilling the older batch is a "
+            "corpus decision, not a validator one (#1580, out of scope).",
+        ),
+        (
+            RULE_LABEL_VOCABULARY,
+            "Both batches spell the negative class `not-directive` (304 of "
+            "510 rows) where this table declares `not_directive`. Either the "
+            "corpus or the table is wrong and the consumer decides which; "
+            "until then every one of those rows is unscoreable (#1580).",
+        ),
+    ),
+    "contradiction": (
+        (
+            RULE_LABEL_VOCABULARY,
+            "The labelled contradiction batch uses `compatible`, which this "
+            "table does not declare because it sources its vocabulary from "
+            "`relationship_detector.VERDICT_LABELS` (#1580).",
+        ),
+        (
+            RULE_LABEL_UNSCOREABLE,
+            "`compatible` is not in `relationship_detector.VERDICT_LABELS` "
+            "(`contradicts`, `refines`, `unrelated`), so `classify` can never "
+            "return it and those rows score wrong however the detector "
+            "behaves - a direct contributor to that gate's measured accuracy. "
+            "Verified against a lab corpus copy of 79 rows, 27 of them "
+            "labelled `compatible`; no `contradiction/` module is mounted "
+            "under the canonical lab root today (#1580).",
+        ),
+    ),
+}
+"""Module -> the violations its rows carry today, with a reason each.
+
+Recorded rather than fixed: #1580 turns the validator on, and
+relabelling a corpus is the corpus owner's decision. Recorded rather
+than waived, because the list is checked in both directions - an
+unrecorded violation fails the module, and a recorded violation that
+stops reproducing fails it too, so a fix forces the entry out instead
+of leaving a permanent exemption behind.
+"""
+
+KNOWN_UNDECLARED_MODULES: dict[str, str] = {
+    "compression_uplift": (
+        "Rows are an unlabelled belief pool (`id`, `content`, "
+        "`retention_class`, `lock_level`) read by "
+        "`tests/bench_gate/test_compression_uplift.py`. They carry no "
+        "envelope - no `label`, `provenance` or `labeller_note` - and the "
+        "module has no public scaffold directory and no `MODULES` entry, so "
+        "nothing has ever schema-validated it (#1580)."
+    ),
+    "query_strategy": (
+        "Rows are retrieve-uplift shaped (`id`, `query`, `k`, `beliefs`, "
+        "`edges`, `expected_top_k`) read by "
+        "`tests/bench_gate/test_query_strategy.py`, with the same missing "
+        "envelope and the same absent `MODULES` entry as "
+        "`compression_uplift` (#1580)."
+    ),
+}
+"""Corpus directories that hold rows but declare no schema here.
+
+A module absent from `MODULES` is never parametrized, so turning the
+validator on does not reach it - the row count stays zero and the
+absence reads as a pass. These are listed so the gap is stated, and
+`test_corpus_root_declares_every_module_holding_rows` fails on any
+directory that is neither declared nor listed.
+"""
+
+
+def _resolve_corpus_root() -> tuple[Path, str]:
+    """The root to validate, and where it came from.
+
+    Env first, public tree second. The origin travels with the path
+    because a skip naming only a directory leaves the reader unable to
+    tell a corpus that is not mounted from one that is mounted and
+    empty.
+    """
+    raw = os.environ.get(CORPUS_ENV_VAR, "").strip()
+    if raw:
+        return Path(raw).expanduser(), f"${CORPUS_ENV_VAR}"
+    return PUBLIC_CORPUS_ROOT, f"the public tree, because ${CORPUS_ENV_VAR} is unset"
+
+
+def _no_rows_skip(module: str, root: Path, origin: str) -> str:
+    return (
+        f"corpus-schema: module {module!r} holds no JSONL rows under {root} "
+        f"(root resolved from {origin}). Nothing was validated."
+    )
+
+
+def _iter_module_files(root: Path, module: str) -> list[Path]:
+    return sorted((root / module).glob("*.jsonl"))
 
 
 def _check_field(row: dict, field: str, spec: str, where: str) -> None:
@@ -283,15 +432,110 @@ def _check_field(row: dict, field: str, spec: str, where: str) -> None:
         raise AssertionError(f"unknown field spec {spec!r}")
 
 
+def _violation(row: dict, field: str, spec: str, where: str) -> str | None:
+    """`_check_field`'s message, or None when the field is well formed.
+
+    The shape checks stay assertions because they are also the failure
+    text a reader gets; this adapter only stops the first bad row
+    ending the walk, so one run reports every rule a module breaks
+    instead of the alphabetically first.
+    """
+    try:
+        _check_field(row, field, spec, where)
+    except AssertionError as exc:
+        return str(exc)
+    return None
+
+
+def _row_violations(
+    module: str,
+    row: dict,
+    allowed_labels: set[str],
+    extra_spec: dict[str, str],
+    where: str,
+) -> dict[str, str]:
+    """Rule id -> failure message for every rule this row breaks."""
+    found: dict[str, str] = {}
+
+    # Common envelope: `id`, `provenance`, `labeller_note`, `label`, each
+    # a non-empty string.
+    for field in COMMON_REQUIRED:
+        message = _violation(row, field, "str", where)
+        if message:
+            found.setdefault(_envelope_rule(field), message)
+
+    # Synthetic provenance must follow `synthetic-vN.M`. README carve-out
+    # at tests/corpus/v2_0/README.md, § v0.1 acceptance.
+    prov = row.get("provenance")
+    if (
+        isinstance(prov, str)
+        and prov.startswith("synthetic")
+        and not SYNTHETIC_PROVENANCE_RE.match(prov)
+    ):
+        found.setdefault(
+            RULE_PROVENANCE_FORMAT,
+            f"{where}: synthetic provenance {prov!r} must match "
+            f"`synthetic-vN.M` (e.g. 'synthetic-v0.1')",
+        )
+
+    # Module-specific fields.
+    for field, spec in extra_spec.items():
+        message = _violation(row, field, spec, where)
+        if message:
+            found.setdefault(_field_rule(field), message)
+
+    label = row.get("label")
+    if isinstance(label, str) and label:
+        if label not in allowed_labels:
+            found.setdefault(
+                RULE_LABEL_VOCABULARY,
+                f"{where}: label {label!r} not in {sorted(allowed_labels)}",
+            )
+        constant = DETECTOR_LABEL_CONSTANTS.get(module)
+        if constant is not None and label not in constant:
+            found.setdefault(
+                RULE_LABEL_UNSCOREABLE,
+                f"{where}: label {label!r} is not in the consuming detector's "
+                f"own constant {sorted(constant)}, so the scorer can never "
+                f"return it and the row is graded wrong whatever it does",
+            )
+
+    # Optional `seed` boolean flag.
+    if "seed" in row and not isinstance(row["seed"], bool):
+        found.setdefault(
+            _field_rule("seed"), f"{where}: optional field 'seed' must be bool"
+        )
+
+    return found
+
+
+def _legal_rule_ids() -> set[str]:
+    """Every rule id `_row_violations` can produce."""
+    ids = {
+        RULE_PROVENANCE_FORMAT,
+        RULE_LABEL_VOCABULARY,
+        RULE_LABEL_UNSCOREABLE,
+        RULE_DUPLICATE_ID,
+        _field_rule("seed"),
+    }
+    ids |= {_envelope_rule(field) for field in COMMON_REQUIRED}
+    for _labels, extra_spec in MODULES.values():
+        ids |= {_field_rule(field) for field in extra_spec}
+    return ids
+
+
 @pytest.mark.parametrize("module", sorted(MODULES.keys()))
-def test_corpus_module_files_valid(module: str) -> None:
+def test_corpus_module_files_valid(module: str, record_property) -> None:  # type: ignore[no-untyped-def]
     """Every JSONL row in this module conforms to the schema."""
+    root, origin = _resolve_corpus_root()
     allowed_labels, extra_spec = MODULES[module]
-    files = _iter_module_files(module)
+    files = _iter_module_files(root, module)
     if not files:
-        pytest.skip(f"module {module!r} has no JSONL files yet")
+        pytest.skip(_no_rows_skip(module, root, origin))
 
     seen_ids: set[str] = set()
+    found: dict[str, str] = {}
+    validated = 0
     for path in files:
         with path.open() as f:
             for lineno, line in enumerate(f, 1):
@@ -305,46 +549,273 @@ def test_corpus_module_files_valid(module: str) -> None:
                     pytest.fail(f"{where}: invalid JSON: {exc}")
 
                 assert isinstance(row, dict), f"{where}: row must be object"
+                validated += 1
 
-                # Common envelope.
-                for field in COMMON_REQUIRED:
-                    _check_field(row, field, "str", where)
-
-                # Synthetic provenance must follow `synthetic-vN.M`. README
-                # carve-out at tests/corpus/v2_0/README.md § v0.1 acceptance.
-                prov = row["provenance"]
-                if prov.startswith("synthetic"):
-                    assert SYNTHETIC_PROVENANCE_RE.match(prov), (
-                        f"{where}: synthetic provenance {prov!r} must match "
-                        f"`synthetic-vN.M` (e.g. 'synthetic-v0.1')"
-                    )
-
-                # Module-specific.
-                for field, spec in extra_spec.items():
-                    _check_field(row, field, spec, where)
-
-                # Label value must be in the allowed set.
-                assert row["label"] in allowed_labels, (
-                    f"{where}: label {row['label']!r} not in {sorted(allowed_labels)}"
-                )
-
-                # Optional `seed` boolean flag.
-                if "seed" in row:
-                    assert isinstance(row["seed"], bool), (
-                        f"{where}: optional field 'seed' must be bool"
-                    )
+                for rule, message in _row_violations(
+                    module, row, allowed_labels, extra_spec, where
+                ).items():
+                    found.setdefault(rule, message)
 
                 # ID must be unique within the module.
-                rid = row["id"]
-                assert rid not in seen_ids, (
-                    f"{where}: duplicate id {rid!r} within module {module!r}"
-                )
-                seen_ids.add(rid)
+                rid = row.get("id")
+                if isinstance(rid, str) and rid:
+                    if rid in seen_ids:
+                        found.setdefault(
+                            RULE_DUPLICATE_ID,
+                            f"{where}: duplicate id {rid!r} within module {module!r}",
+                        )
+                    seen_ids.add(rid)
+
+    record_property(
+        CORPUS_SCHEMA_PROPERTY,
+        f"module {module!r}: {validated} row(s) validated from "
+        f"{len(files)} file(s) under {root}",
+    )
+    # A module reaching here has files, so zero rows means every file is
+    # blank. Without this the run reads as a pass on an empty corpus,
+    # which is the whole of #1580.
+    assert validated > 0, (
+        f"module {module!r}: {len(files)} JSONL file(s) under {root} hold no "
+        f"rows at all; 0 rows validated is not a pass"
+    )
+
+    known = dict(KNOWN_FAILURES.get(module, ()))
+    unexpected = sorted(set(found) - set(known))
+    assert not unexpected, (
+        f"module {module!r} ({validated} row(s) validated under {root}) "
+        f"breaks {len(unexpected)} rule(s) that KNOWN_FAILURES does not "
+        f"record:\n"
+        + "\n".join(f"  [{rule}] {found[rule]}" for rule in unexpected)
+    )
+    repaired = sorted(set(known) - set(found))
+    assert not repaired, (
+        f"module {module!r} ({validated} row(s) validated under {root}) no "
+        f"longer breaks {repaired}; drop the KNOWN_FAILURES entr"
+        f"{'y' if len(repaired) == 1 else 'ies'} so the rule starts being "
+        f"enforced instead of staying permanently waived"
+    )
+    # A recorded violation still has to be legible. Green plus a
+    # KNOWN_FAILURES entry nobody reads is the quiet exemption #1580
+    # asks not to create, so the reproducing rules print alongside the
+    # row count on every run.
+    if found:
+        record_property(
+            CORPUS_SCHEMA_PROPERTY,
+            f"module {module!r}: {len(found)} recorded violation(s) still "
+            f"reproducing and NOT enforced — {', '.join(sorted(found))}; see "
+            f"KNOWN_FAILURES in tests/test_corpus_schema.py",
+        )
+
+
+def test_corpus_root_declares_every_module_holding_rows() -> None:
+    """A corpus directory with rows and no `MODULES` entry is never validated.
+
+    The per-module test parametrizes over `MODULES`, so a module the
+    table does not name contributes no rows, no failure and no skip —
+    it is simply invisible, which is indistinguishable from clean.
+    """
+    root, origin = _resolve_corpus_root()
+    if not root.is_dir():
+        pytest.skip(
+            f"corpus-schema: {root} is not a directory (root resolved from "
+            f"{origin}). Nothing was validated."
+        )
+    with_rows = {
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and any(child.glob("*.jsonl"))
+    }
+    if not with_rows:
+        pytest.skip(
+            f"corpus-schema: no module under {root} holds JSONL rows (root "
+            f"resolved from {origin}). Nothing was validated."
+        )
+
+    undeclared = with_rows - set(MODULES)
+    unrecorded = sorted(undeclared - set(KNOWN_UNDECLARED_MODULES))
+    assert not unrecorded, (
+        f"corpus modules {unrecorded} under {root} hold rows but have no "
+        f"MODULES entry, so nothing validates them. Add a schema, or record "
+        f"the gap in KNOWN_UNDECLARED_MODULES with a reason"
+    )
+    declared_again = sorted(set(KNOWN_UNDECLARED_MODULES) & set(MODULES))
+    assert not declared_again, (
+        f"{declared_again} now have MODULES entries; drop them from "
+        f"KNOWN_UNDECLARED_MODULES so the schema is what governs them"
+    )
+
+
+def test_known_failures_name_rules_the_validator_can_emit() -> None:
+    """A waiver keyed off a rule id nothing emits waives nothing.
+
+    It would also never fall out of the list, because the
+    stopped-reproducing check compares the same misspelt id.
+    """
+    legal = _legal_rule_ids()
+    for module, entries in KNOWN_FAILURES.items():
+        assert module in MODULES, f"KNOWN_FAILURES names unknown module {module!r}"
+        rules = [rule for rule, _reason in entries]
+        assert len(rules) == len(set(rules)), (
+            f"KNOWN_FAILURES[{module!r}] records a rule twice: {rules}"
+        )
+        for rule, reason in entries:
+            assert rule in legal, (
+                f"KNOWN_FAILURES[{module!r}] names rule {rule!r}, which "
+                f"_row_violations never emits; legal ids are {sorted(legal)}"
+            )
+            assert reason.strip(), (
+                f"KNOWN_FAILURES[{module!r}][{rule!r}] has no reason — a "
+                f"waiver without one is a silent waiver"
+            )
+    for module, reason in KNOWN_UNDECLARED_MODULES.items():
+        assert reason.strip(), (
+            f"KNOWN_UNDECLARED_MODULES[{module!r}] has no reason"
+        )
+
+
+def _conforming_row() -> dict[str, object]:
+    """A hand-written row that every rule accepts.
+
+    Written here rather than lifted from the corpus: the lab rows do
+    not enter this repository (#1456), and a fixture that has to stay
+    valid is clearer as a literal anyway.
+    """
+    return {
+        "id": "fixture-0001",
+        "provenance": "synthetic-v0.1",
+        "labeller_note": "hand-written fixture for the validator's own tests",
+        "label": "contradicts",
+        "belief_a": "the release tag is cut from main",
+        "belief_b": "the release tag is cut from the release branch",
+    }
+
+
+def _violations_for(row: dict, module: str = "contradiction", **kwargs) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    allowed_labels, extra_spec = MODULES[module]
+    return _row_violations(
+        module,
+        row,
+        kwargs.get("allowed_labels", allowed_labels),
+        extra_spec,
+        kwargs.get("where", "fixture.jsonl:1"),
+    )
+
+
+def test_validator_accepts_a_conforming_row() -> None:
+    """The negative control. Without it every rule below passes vacuously."""
+    assert _violations_for(_conforming_row()) == {}
+
+
+def test_validator_rejects_a_row_with_no_provenance() -> None:
+    """`directive_detection`'s v0_1 batch in miniature."""
+    row = _conforming_row()
+    del row["provenance"]
+    assert set(_violations_for(row)) == {_envelope_rule("provenance")}
+
+
+def test_validator_rejects_an_empty_provenance() -> None:
+    """Present but blank is the same defect as absent."""
+    row = _conforming_row()
+    row["provenance"] = ""
+    assert set(_violations_for(row)) == {_envelope_rule("provenance")}
+
+
+def test_validator_rejects_an_unversioned_synthetic_provenance() -> None:
+    row = _conforming_row()
+    row["provenance"] = "synthetic"
+    assert set(_violations_for(row)) == {RULE_PROVENANCE_FORMAT}
+
+
+def test_validator_rejects_an_empty_labeller_note() -> None:
+    row = _conforming_row()
+    row["labeller_note"] = ""
+    assert set(_violations_for(row)) == {_envelope_rule("labeller_note")}
+
+
+def test_validator_rejects_a_label_outside_the_modules_set() -> None:
+    """Checked on a module with no detector constant, so one rule fires.
+
+    `sentiment` isolates the vocabulary rule from the scoreability rule
+    below; on `contradiction` the two coincide and neither arm would
+    prove the other exists.
+    """
+    row = {
+        "id": "fixture-0002",
+        "provenance": "synthetic-v0.1",
+        "labeller_note": "hand-written fixture",
+        "label": "furious",
+        "user_message": "this is the third time the deploy has rolled back",
+    }
+    assert set(_violations_for(row, module="sentiment")) == {RULE_LABEL_VOCABULARY}
+
+
+def test_validator_rejects_a_label_the_detector_cannot_return() -> None:
+    """The `contradiction`/`compatible` case, isolated.
+
+    The module's declared set is widened to admit the label, so the
+    vocabulary rule passes and only the scoreability rule can fire.
+    That is the arm that proves rule 3 is a rule of its own rather than
+    a restatement of rule 2 — `MODULES['contradiction']` sources its
+    vocabulary from `VERDICT_LABELS`, so on the shipped table the two
+    always agree.
+    """
+    row = _conforming_row()
+    row["label"] = "compatible"
+    widened = set(VERDICT_LABELS) | {"compatible"}
+    assert set(_violations_for(row, allowed_labels=widened)) == {
+        RULE_LABEL_UNSCOREABLE
+    }
+
+
+def test_validator_rejects_a_missing_module_field() -> None:
+    row = _conforming_row()
+    del row["belief_b"]
+    assert set(_violations_for(row)) == {_field_rule("belief_b")}
+
+
+def test_validator_reports_every_broken_rule_not_just_the_first() -> None:
+    """One run has to name the whole repair, not one step of it."""
+    row = _conforming_row()
+    del row["provenance"]
+    row["labeller_note"] = ""
+    assert set(_violations_for(row)) == {
+        _envelope_rule("provenance"),
+        _envelope_rule("labeller_note"),
+    }
+
+
+def test_corpus_root_is_env_first_and_public_tree_second(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """AC1/AC2: the env var wins, and the fallback is named, not silent."""
+    monkeypatch.delenv(CORPUS_ENV_VAR, raising=False)
+    root, origin = _resolve_corpus_root()
+    assert root == PUBLIC_CORPUS_ROOT
+    assert CORPUS_ENV_VAR in origin and "public tree" in origin
+
+    monkeypatch.setenv(CORPUS_ENV_VAR, str(tmp_path))
+    root, origin = _resolve_corpus_root()
+    assert root == tmp_path
+    assert CORPUS_ENV_VAR in origin
+
+    # A blank value is not a mount.
+    monkeypatch.setenv(CORPUS_ENV_VAR, "   ")
+    root, _origin = _resolve_corpus_root()
+    assert root == PUBLIC_CORPUS_ROOT
+
+
+def test_skip_message_names_the_root_it_inspected() -> None:
+    """The silent skip is the defect #1580 is about, so pin its text."""
+    message = _no_rows_skip("dedup", Path("/corpus/v2_0"), f"${CORPUS_ENV_VAR}")
+    assert "dedup" in message
+    assert "/corpus/v2_0" in message
+    assert CORPUS_ENV_VAR in message
+    assert "Nothing was validated" in message
 
 
 def test_corpus_root_readme_present() -> None:
     """The schema contract README must exist alongside the corpus."""
-    assert (CORPUS_ROOT / "README.md").is_file(), (
+    assert (PUBLIC_CORPUS_ROOT / "README.md").is_file(), (
         "tests/corpus/v2_0/README.md is required — it documents the schema"
     )
 
@@ -359,10 +830,27 @@ def test_synthetic_provenance_regex() -> None:
     assert not SYNTHETIC_PROVENANCE_RE.match("synthetic-v0.1-extra")
 
 
-def test_contradiction_labels_match_detector() -> None:
-    """Schema's contradiction allowed-labels must equal detector's runtime set."""
-    schema_labels, _ = MODULES["contradiction"]
-    assert schema_labels == set(VERDICT_LABELS), (
-        "MODULES['contradiction'] label set drifted from "
-        "aelfrice.relationship_detector.VERDICT_LABELS — re-import or update."
+@pytest.mark.parametrize("module", sorted(DETECTOR_LABEL_CONSTANTS))
+def test_module_label_vocabulary_matches_detector_constant(module: str) -> None:
+    """The declared set and the scorer's own constant must agree.
+
+    A label the module declares but the detector cannot return produces
+    rows that are graded wrong by construction; a label the detector can
+    return but the module rejects means a correct row fails validation.
+    Both directions are drift, so both are checked.
+    """
+    declared, _extra = MODULES[module]
+    constant = DETECTOR_LABEL_CONSTANTS[module]
+
+    unscoreable = sorted(set(declared) - set(constant))
+    assert not unscoreable, (
+        f"MODULES[{module!r}] declares {unscoreable}, which the consuming "
+        f"detector's own constant cannot return — rows labelled that way can "
+        f"never be scored correct"
+    )
+    unrepresented = sorted(set(constant) - set(declared))
+    assert not unrepresented, (
+        f"the consuming detector can return {unrepresented}, which "
+        f"MODULES[{module!r}] does not declare — a correct row would fail "
+        f"validation"
     )
