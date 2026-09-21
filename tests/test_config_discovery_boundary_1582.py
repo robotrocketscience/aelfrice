@@ -269,9 +269,10 @@ def _private_walkers() -> dict[str, str]:
     Enumerated from the AST rather than listed, because the value of the
     #1304 funnel is that bounding one walk bounds every reader, and a
     module that grows its own walk loop silently leaves the bound
-    behind. A function that names the config filename (under either
-    spelling, or as a bare literal) and also touches `.parent` /
-    `.parents` is doing its own discovery.
+    behind. A function that names the config filename -- under either
+    spelling, through a name assigned from one, or as a literal it
+    assembles -- and also touches `.parent` / `.parents` is doing its
+    own discovery.
 
     The enumeration recurses into the subpackages. No config reader
     lives in one today, so scanning only the top level would give the
@@ -287,23 +288,141 @@ def _private_walkers() -> dict[str, str]:
             source_path.relative_to(package_dir).with_suffix("").parts,
         )
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        prose = _docstring_nodes(tree)
+        module_aliases = _config_aliases(tree, _CANONICAL_NAMES, prose)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if _names_config(node) and _climbs_parents(node):
+            if _names_config(node, module_aliases, prose) and _climbs_parents(
+                node,
+            ):
                 offenders[f"{dotted}.{node.name}"] = source_path.name
     return offenders
 
 
-def _names_config(node: ast.AST) -> bool:
-    """True when `node` mentions the config filename under any spelling."""
+# The two spellings the constant is bound under. Everything else the
+# predicate recognises is derived from these or from CONFIG_FILENAME, so
+# renaming the file or the constant does not quietly blind the guard.
+_CANONICAL_NAMES: frozenset[str] = frozenset(
+    {"CONFIG_FILENAME", "_CONFIG_FILENAME"},
+)
+
+# A string constant *containing* one of these names the config file even
+# when it was assembled rather than written out: `"." + "aelfrice.toml"`,
+# `f"{d}/{'.aelfrice.toml'}"`, `"/".join((str(d), ".aelfrice.toml"))`.
+_FILENAME_SUBSTRINGS: tuple[str, ...] = (CONFIG_FILENAME.lstrip("."),)
+
+# A string constant *equal* to one of these is a construction fragment:
+# the operand a split filename leaves behind (`".aelfrice" + ".toml"`,
+# `".aelfrice." + "toml"`). Equality, not containment, because
+# containment on `.toml` also matches `uv-receipt.toml` in
+# `mcp_cleanup`, which is a different file entirely.
+_FILENAME_FRAGMENTS: frozenset[str] = frozenset(
+    {Path(CONFIG_FILENAME).suffix, Path(CONFIG_FILENAME).suffix.lstrip(".")},
+)
+
+
+def _docstring_nodes(tree: ast.Module) -> frozenset[int]:
+    """`id()` of every docstring constant in `tree`.
+
+    Docstrings are `ast.Constant` like any other string, and most of the
+    package names `.aelfrice.toml` in prose while delegating the actual
+    walk to `config_discovery` — `cli._load_aelfrice_config_dict` says
+    "Walk up from `root` for `.aelfrice.toml`" directly above a comment
+    explaining that the walk lives in `config_discovery`. Counting that
+    as naming config flags three such functions and nothing real. This
+    is the same distinction `_env_names_in` already draws below: prose
+    that mentions a name is not a module using it.
+    """
+    prose: set[int] = set()
+    holders = (
+        ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+    )
+    for node in ast.walk(tree):
+        if not isinstance(node, holders):
+            continue
+        body = node.body
+        if not body or not isinstance(body[0], ast.Expr):
+            continue
+        first = body[0].value
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            prose.add(id(first))
+    return frozenset(prose)
+
+
+def _is_config_constant(node: ast.AST, prose: frozenset[int]) -> bool:
+    """True when `node` is a string literal that names the config file."""
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return False
+    if id(node) in prose:
+        return False
+    if node.value in _FILENAME_FRAGMENTS:
+        return True
+    return any(part in node.value for part in _FILENAME_SUBSTRINGS)
+
+
+def _config_aliases(
+    node: ast.AST, seeds: frozenset[str], prose: frozenset[int],
+) -> frozenset[str]:
+    """Names bound directly to the config filename inside `node`.
+
+    Depth: **one level**. A name qualifies when the right-hand side is
+    itself `CONFIG_FILENAME`, `_CONFIG_FILENAME`, one of `seeds`, or a
+    literal that names the file — not when it merely *mentions* one
+    somewhere. A transitive fixpoint was tried first and is wrong here:
+    "the value mentions an alias" propagates through `text = ...` then
+    `lines = text.splitlines()`, and it grew the alias set in
+    `project_warm` to 24 unrelated locals and three false positives.
+    One level is also the realistic escape (`NAME = CONFIG_FILENAME`,
+    then `NAME`); a walker that launders the constant through two
+    intermediate variables is not a mistake anyone makes by accident.
+
+    Call it once on the module for module-level aliases, then again per
+    function with those as `seeds`, so a local alias of a module alias
+    is still reached.
+    """
+    aliases = set(seeds)
+    binders = (ast.Assign, ast.AnnAssign, ast.NamedExpr)
     for child in ast.walk(node):
-        if isinstance(child, ast.Name) and child.id in (
-            "CONFIG_FILENAME",
-            "_CONFIG_FILENAME",
-        ):
+        if not isinstance(child, binders) or child.value is None:
+            continue
+        value = child.value
+        direct = (
+            isinstance(value, ast.Name) and value.id in aliases
+        ) or _is_config_constant(value, prose)
+        if not direct:
+            continue
+        targets = (
+            child.targets
+            if isinstance(child, ast.Assign)
+            else [child.target]
+        )
+        for target in targets:
+            for bound in ast.walk(target):
+                if isinstance(bound, ast.Name):
+                    aliases.add(bound.id)
+    return frozenset(aliases)
+
+
+def _names_config(
+    node: ast.AST,
+    aliases: frozenset[str] = _CANONICAL_NAMES,
+    prose: frozenset[int] = frozenset(),
+) -> bool:
+    """True when `node` mentions the config filename under any spelling.
+
+    "Any spelling" is deliberately generous, because the two error modes
+    are not symmetric: a false positive here is a conversation about one
+    function, and a false negative is an unbounded config reader
+    shipping under a guard that stayed green. So this accepts the
+    constant, either alias spelling, a name assigned from one of those,
+    and a literal that contains or is a fragment of the filename.
+    """
+    local = _config_aliases(node, aliases, prose)
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in local:
             return True
-        if isinstance(child, ast.Constant) and child.value == CONFIG_FILENAME:
+        if _is_config_constant(child, prose):
             return True
     return False
 
@@ -355,6 +474,118 @@ def test_the_scan_would_see_a_private_walk() -> None:
     assert _names_config(func) and _climbs_parents(func), (
         "the predicate behind the population guard does not recognise a "
         "private walk, so the guard is vacuous"
+    )
+
+
+def _flags_private_walk(source: str) -> bool:
+    """Run the population guard's predicate over one module's source.
+
+    Mirrors `_private_walkers` exactly — module-level aliases and the
+    docstring set are resolved first, then each function is tested —
+    so these fixtures exercise the path the real scan takes rather than
+    a simplified one that could pass while the scan fails.
+    """
+    tree = ast.parse(source)
+    prose = _docstring_nodes(tree)
+    module_aliases = _config_aliases(tree, _CANONICAL_NAMES, prose)
+    return any(
+        _names_config(node, module_aliases, prose) and _climbs_parents(node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+
+
+# Walkers that name the config file without ever writing
+# `CONFIG_FILENAME` next to a `/`. Each one climbs parents, so each one
+# would escape the #1582 bound; the predicate that flagged only the two
+# exact spellings and one exact literal missed every one of them.
+_EVASIVE_WALKERS: dict[str, str] = {
+    "module-level alias": (
+        "from pathlib import Path\n"
+        "from aelfrice.config_discovery import CONFIG_FILENAME\n"
+        "_NAME = CONFIG_FILENAME\n"
+        "def find(start):\n"
+        "    for d in [start, *start.parents]:\n"
+        "        if (d / _NAME).is_file():\n"
+        "            return d / _NAME\n"
+        "    return None\n"
+    ),
+    "local alias": (
+        "from pathlib import Path\n"
+        "from aelfrice.config_discovery import CONFIG_FILENAME\n"
+        "def find(start):\n"
+        "    name = CONFIG_FILENAME\n"
+        "    for d in [start, *start.parents]:\n"
+        "        if (d / name).is_file():\n"
+        "            return d / name\n"
+        "    return None\n"
+    ),
+    "concatenated literal": (
+        "from pathlib import Path\n"
+        "def find(start):\n"
+        "    name = '.' + 'aelfrice' + '.toml'\n"
+        "    for d in [start, *start.parents]:\n"
+        "        if (d / name).is_file():\n"
+        "            return d / name\n"
+        "    return None\n"
+    ),
+    "f-string": (
+        "from pathlib import Path\n"
+        "def find(start):\n"
+        "    for d in [start, *start.parents]:\n"
+        "        p = Path(f'{d}/.aelfrice.toml')\n"
+        "        if p.is_file():\n"
+        "            return p\n"
+        "    return None\n"
+    ),
+    "joined parts": (
+        "from pathlib import Path\n"
+        "def find(start):\n"
+        "    for d in [start, *start.parents]:\n"
+        "        p = Path('/'.join((str(d), 'aelfrice.toml')))\n"
+        "        if p.is_file():\n"
+        "            return p\n"
+        "    return None\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_EVASIVE_WALKERS))
+def test_the_scan_sees_a_private_walk_that_hides_the_filename(
+    shape: str,
+) -> None:
+    """#1582 review: the guard's whole job is catching the *next* reader.
+
+    A walker only has to avoid writing the constant beside a slash to
+    slip past a predicate keyed on two names and one exact literal. It
+    can alias the constant, or build the filename out of pieces. Each
+    fixture here does one of those and climbs parents, so each is
+    exactly the defect the guard exists to report.
+    """
+    assert _flags_private_walk(_EVASIVE_WALKERS[shape]), (
+        f"the predicate does not flag the {shape} walker, so a reader "
+        "written that way would leave the #1582 bound behind silently"
+    )
+
+
+def test_the_widened_scan_does_not_flag_an_unrelated_toml() -> None:
+    """Where the generosity deliberately stops.
+
+    The widening biases toward false positives, but not to the point of
+    matching any TOML file at all: `mcp_cleanup` builds
+    `~/.aelfrice/uv-receipt.toml` from `.parent`, and `claude_memory`
+    builds `~/.aelfrice/<sentinel>`. Neither is the config file, so
+    substring-matching `.toml` or `.aelfrice` would red the guard on
+    `main` and teach the next reader to widen the allowlist instead of
+    reading the finding.
+    """
+    assert not _flags_private_walk(
+        "from pathlib import Path\n"
+        "def receipt(db_path):\n"
+        "    return Path(db_path).parent / '.aelfrice' / 'uv-receipt.toml'\n",
+    ), (
+        "the predicate now flags a module that touches an unrelated TOML "
+        "file, so the population guard reports noise rather than readers"
     )
 
 
