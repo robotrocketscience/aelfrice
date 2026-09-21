@@ -353,17 +353,48 @@ module dir is empty or unmounted.
   axis. Real examples are still preferred and may be mixed in; synthetic
   rows must declare `provenance: "synthetic-vN.M"` so future re-labellers
   can distinguish.
-- Schema validation runs in CI (see `tests/test_corpus_schema.py`).
+- Schema validation runs in CI (see `tests/test_corpus_schema.py`). In CI it
+  finds no rows and skips, because the public tree holds none; it validates
+  rows only where a corpus is mounted.
 
 ## Validation
 
 `tests/test_corpus_schema.py` enforces:
 
-1. Every `*.jsonl` file under `tests/corpus/v2_0/<module>/` parses line-by-line.
+1. Every `*.jsonl` file under `<corpus root>/<module>/` parses line-by-line.
 2. Every row has the common envelope fields, non-empty `provenance` and
    `labeller_note`, and a module-allowed `label` value.
 3. Every row has the module-specific extra fields with the right shape.
 4. `id` values are unique per module.
+5. Where the consuming detector exposes its own label constant, the module's
+   label vocabulary matches it. `relationship_detector.VERDICT_LABELS` governs
+   `contradiction/`. A label the scorer cannot return is rejected here, because
+   a row carrying one is graded wrong whatever the detector does.
+
+### Which root the validator reads
+
+The validator resolves its root from `AELFRICE_CORPUS_ROOT` when you set it,
+and falls back to this public tree otherwise. The public tree holds
+directories and this README and no rows, so the fallback validates nothing.
+Both the skip and the row count say so: a skip names the root it inspected and
+where that root came from, and a module that runs reports how many rows it
+validated and fails if the count is zero. To validate the lab corpus, run:
+
+```bash
+AELFRICE_CORPUS_ROOT="$HOME/projects/aelfrice-lab/tests/corpus/v2_0" \
+    uv run pytest tests/test_corpus_schema.py
+```
+
+### Known failures
+
+Violations the mounted corpus carries today are recorded in `KNOWN_FAILURES`
+and `KNOWN_UNDECLARED_MODULES` in `tests/test_corpus_schema.py`, with a reason
+each. They are recorded rather than repaired: turning the validator on and
+relabelling a corpus are separate decisions. The list is checked in both
+directions, so an unrecorded violation fails its module and a recorded one that
+stops reproducing fails it too. Every reproducing entry prints in the terminal
+summary under `corpus schema`, so a recorded violation stays visible rather
+than becoming a quiet exemption.
 
 The test does **not** enforce the ≥50 threshold yet — that flips on once v0.1
 labelling lands.
