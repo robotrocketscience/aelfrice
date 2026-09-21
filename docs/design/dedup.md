@@ -75,10 +75,10 @@ Top duplicate pairs (jaccard, levenshtein):
 
 ## What's not in this command
 
-The audit is **read-only by design**. The write-path SUPERSEDES hook — collapsing duplicates by inserting `SUPERSEDES` edges from older to newer at every `ingest_turn` / `onboard` / `apply_feedback` write — is the bench-gated R2 deferred behind the v2.0 corpus benchmark per #197 ratification. Until that lands, use this command to inspect candidate clusters and review them by hand.
+The audit is **read-only by design**. The write-path SUPERSEDES hook — collapsing duplicates by inserting `SUPERSEDES` edges from older to newer at every `ingest_turn` / `onboard` / `apply_feedback` write — is the R2 deferred under the #197 ratification. It is no longer bench-gated: [#1579](https://github.com/robotrocketscience/aelfrice/issues/1579) retired the `dedup` bench gate and its corpus scaffold, because the gate graded a `dedup.classify` the module never had and labelled rows against a `near-duplicate` band nobody has defined. Re-entry therefore runs through decision #1 of [`V2_REENTRY_QUEUE.md`](V2_REENTRY_QUEUE.md) — define the band, write `classify`, ship the benchmark, then ratify — not through the retired corpus. Until that happens, use this command to inspect candidate clusters and review them by hand.
 
 ## Related
 
 - Spec memo: [`v2_dedup.md`](v2_dedup.md).
 - Issue: [#197](https://github.com/robotrocketscience/aelfrice/issues/197).
-- Scope cut: dedup is one of six bench-gated v2.0 modules; corpus contract at [#307](https://github.com/robotrocketscience/aelfrice/issues/307), bench-gate harness at [#319](https://github.com/robotrocketscience/aelfrice/issues/319).
+- Scope cut: dedup was one of the original six bench-gated v2.0 modules, and is no longer one of them — [#1579](https://github.com/robotrocketscience/aelfrice/issues/1579) retired its gate and scaffold. Corpus contract at [#307](https://github.com/robotrocketscience/aelfrice/issues/307), bench-gate harness at [#319](https://github.com/robotrocketscience/aelfrice/issues/319).

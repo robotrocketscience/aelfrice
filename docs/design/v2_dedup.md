@@ -2,7 +2,7 @@
 
 Spec for issue [#197](https://github.com/robotrocketscience/aelfrice/issues/197). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
-Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor --dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) is bench-gated behind the corpus benchmark and remains deferred per V2_REENTRY_QUEUE.
+Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor --dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) remains deferred. It is no longer bench-gated: [#1579](https://github.com/robotrocketscience/aelfrice/issues/1579) retired the `dedup` bench gate and corpus scaffold, so re-entry runs through decision #1 of [`V2_REENTRY_QUEUE.md`](V2_REENTRY_QUEUE.md) — define the `near-duplicate` band, write `classify`, ship the benchmark, then ratify.
 
 ## What's being decided
 
