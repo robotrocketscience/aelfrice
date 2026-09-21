@@ -386,12 +386,31 @@ they run before it and the rejection names which one fired:
    60-target row supply most of the denominator of a 30-row corpus, and a
    `MIN_ROWS` floor does not defend against that.
 
+Pass `k_key` whenever the gate's own cutoff is not the row's `k` field. The
+guard's `default_k` of 10 exceeds the pool of every `multi_fact` row, which
+would read as zero separable rows and reject a corpus that is separable on all
+14 rows at the cutoff the gate scores with.
+
+Omitting `gold_key` and `pool_key` turns both filters off. That is a claim
+about the corpus, and the guards check it: a gate whose rows carry gold
+entries drawn from a candidate pool must wire the keys. Carrying a `beliefs`
+list is not itself enough — `compression_a4_fidelity` seeds a store from
+`beliefs` and scores free-text answers against it, so its gold and its pool
+are different populations and the filters do not apply.
+
 ### Both scores reach the release record
 
 Every guard records the shipped score and the null score through
 `record_property`, before the assertion, so a green run leaves the evidence
 behind. Without it a degenerate +1.000 uplift and a real +0.06 look the same
 to a reviewer reading a passing run.
+
+The verdict is settled before the shipped arm runs, because it is a finding
+about the corpus rather than about the implementation. A rejected corpus never
+drives the shipped arm at all, and a shipped arm that raises records
+`UNVERIFIED` with the null score it did produce, then re-raises. The tier
+counts only `ACCEPT`, so a gate that graded nothing is never reported as
+evidence.
 
 ## v0.1 acceptance (per #307)
 

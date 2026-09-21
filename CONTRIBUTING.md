@@ -213,12 +213,16 @@ checklist step that blocks the cut is the one schedule that cannot stop
 without notice.
 
 Read the summary block of the tier, not the pass count. The block separates
-four states:
+five states:
 
-- Tests that **executed** against the corpus.
+- Tests that **executed** against the corpus. A test counts here only when it
+  recorded a null-model verdict of `ACCEPT` (#1581).
 - Corpus modules **rejected by their own null model** (#1581). The gate ran
   and produced no verdict, because the corpus cannot separate the shipped
   implementation from a model that cannot represent what the gate measures.
+- Tests that ran against the corpus but recorded **no null-model verdict**,
+  listed by test ID. A test lands here when it calls no guard, when its guard
+  call never executed, or when its shipped arm raised before it scored.
 - Tests that skipped because a named corpus **module** is missing, empty,
   underfilled, or ungradeable. The last two report as `UNVERIFIED`: a
   half-built module is not an absent one.
