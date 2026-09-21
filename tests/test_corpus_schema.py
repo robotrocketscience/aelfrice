@@ -529,15 +529,16 @@ def _legal_rule_ids() -> set[str]:
     return ids
 
 
-@pytest.mark.parametrize("module", sorted(MODULES.keys()))
-def test_corpus_module_files_valid(module: str, record_property) -> None:  # type: ignore[no-untyped-def]
-    """Every JSONL row in this module conforms to the schema."""
-    root, origin = _resolve_corpus_root()
-    allowed_labels, extra_spec = MODULES[module]
-    files = _iter_module_files(root, module)
-    if not files:
-        pytest.skip(_no_rows_skip(module, root, origin))
+def _walk_module(module: str, files: list[Path]) -> tuple[int, dict[str, str]]:
+    """Rows validated, and rule id -> message for every rule they break.
 
+    Separate from the test so `duplicate-id` is reachable from a unit
+    test. That rule is the one violation no single row can carry — it
+    needs two rows that agree on `id` — so it cannot live in
+    `_row_violations`, and leaving it inline made it the one rule with
+    no arm of its own.
+    """
+    allowed_labels, extra_spec = MODULES[module]
     seen_ids: set[str] = set()
     found: dict[str, str] = {}
     validated = 0
@@ -570,6 +571,18 @@ def test_corpus_module_files_valid(module: str, record_property) -> None:  # typ
                             f"{where}: duplicate id {rid!r} within module {module!r}",
                         )
                     seen_ids.add(rid)
+    return validated, found
+
+
+@pytest.mark.parametrize("module", sorted(MODULES.keys()))
+def test_corpus_module_files_valid(module: str, record_property) -> None:  # type: ignore[no-untyped-def]
+    """Every JSONL row in this module conforms to the schema."""
+    root, origin = _resolve_corpus_root()
+    files = _iter_module_files(root, module)
+    if not files:
+        pytest.skip(_no_rows_skip(module, root, origin))
+
+    validated, found = _walk_module(module, files)
 
     record_property(
         CORPUS_SCHEMA_PROPERTY,
@@ -779,6 +792,63 @@ def test_validator_rejects_a_label_the_detector_cannot_return() -> None:
     assert set(_violations_for(row, allowed_labels=widened)) == {
         RULE_LABEL_UNSCOREABLE
     }
+
+
+def _write_module(tmp_path: Path, module: str, rows: list[dict]) -> list[Path]:
+    """One JSONL file of hand-written rows, for the walk-level arms."""
+    path = tmp_path / module / "fixture.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return [path]
+
+
+def test_walk_accepts_two_rows_with_distinct_ids(tmp_path: Path) -> None:
+    """The negative control for the duplicate-id arm below."""
+    first = _conforming_row()
+    second = _conforming_row()
+    second["id"] = "fixture-0002"
+    files = _write_module(tmp_path, "contradiction", [first, second])
+
+    validated, found = _walk_module("contradiction", files)
+    assert validated == 2
+    assert found == {}
+
+
+def test_walk_rejects_two_rows_sharing_an_id(tmp_path: Path) -> None:
+    """`duplicate-id` is the one rule no single row can break.
+
+    It compares a row against the rows before it, so it lives in the
+    walk rather than in `_row_violations`, and it is the only rule the
+    per-row arms above cannot reach.
+    """
+    first = _conforming_row()
+    second = _conforming_row()
+    second["belief_b"] = "the release tag is cut from a tag branch"
+    assert first["id"] == second["id"]
+    files = _write_module(tmp_path, "contradiction", [first, second])
+
+    validated, found = _walk_module("contradiction", files)
+    assert validated == 2
+    assert set(found) == {RULE_DUPLICATE_ID}
+    assert "fixture-0001" in found[RULE_DUPLICATE_ID]
+
+
+def test_walk_counts_rows_across_files_and_skips_blank_lines(
+    tmp_path: Path,
+) -> None:
+    """The row count is what the summary prints, so pin what it counts."""
+    module_dir = tmp_path / "contradiction"
+    module_dir.mkdir(parents=True)
+    first = module_dir / "a.jsonl"
+    first.write_text(json.dumps(_conforming_row()) + "\n\n\n")
+    second_row = _conforming_row()
+    second_row["id"] = "fixture-0002"
+    second = module_dir / "b.jsonl"
+    second.write_text(json.dumps(second_row) + "\n")
+
+    validated, found = _walk_module("contradiction", [first, second])
+    assert validated == 2
+    assert found == {}
 
 
 def test_validator_rejects_a_missing_module_field() -> None:
