@@ -32,11 +32,12 @@ tests are the old claims turned over:
    #1564 read the call site as a fourth defect and asked for the
    renderer's augmented set instead; the alternative was implemented, the
    suite disproved it, and this states the property the other way;
-6. a `lock="user"` element inside a recap keeps the wrapper, because the
-   #379 always-injected contract outranks the whole-shed rule. No shipped
-   render produces one -- `context_rebuilder` spells a lock
-   `locked="true"` -- so this arm is built by hand against
-   `enforce_block_ceiling` rather than fired through the hook;
+6. a user-locked element inside a recap keeps the wrapper when the cut
+   would otherwise be the last render of it, because the #379
+   always-injected contract outranks the whole-shed rule. This arm is
+   built by hand against `enforce_block_ceiling` rather than fired: the
+   fired case reaches it through the rebuilder's own spelling and belongs
+   to #1570, which `test_recap_lock_spelling_1570.py` covers;
 7. `dropped_ids` names only what the block lost. Claim 3 takes the recap
    out of the envelope dedupe, so every belief the recap carries is
    rendered a second time below it, and the whole-shed cut does not take
@@ -69,7 +70,7 @@ claim 1: the wrapper comes back holding a fragment. Putting
 `_ids_rendered_verbatim_in` back in place of `_session_start_dedupe_ids`,
 so the recap's ids dedupe again, fails claims 3 and 4. Handing
 `_verbatim_ids` the renderer's augmented set, the change #1564 asked for,
-fails claim 5. Removing the `lock="user"` fallback from `_recap_shed`, so
+fails claim 5. Removing the lock fallback from `_recap_shed`, so
 the span is always cut whole, fails claim 6. Dropping the
 `ids_rendered_outside_recap` test in `enforce_block_ceiling`, so the whole
 shed reports every id in the span, fails claim 7 on both arms.
@@ -494,10 +495,16 @@ def test_the_ledger_keeps_a_belief_the_sub_block_rendered(
 def test_a_user_locked_element_inside_a_recap_keeps_the_wrapper() -> None:
     """Claim 6: #379 outranks the whole-shed rule.
 
-    Built by hand rather than fired, and deliberately so: no shipped render
-    puts `lock="user"` inside a recap, because `context_rebuilder` spells a
-    lock `locked="true"`. The branch exists for the day that changes, and
-    an untested branch is the one that breaks then.
+    Built by hand rather than fired, and deliberately so: this arm pins
+    the branch against *this module's* spelling, which no recap renderer
+    emits. The rebuilder's `locked="true"` reaches the same branch since
+    #1570 and is fired end to end in
+    `test_recap_lock_spelling_1570.py`; keeping both means the branch
+    survives either renderer being changed.
+
+    `R2` is rendered nowhere else in this body, so the cut would be the
+    last render of it. A lock the envelope also renders outside the recap
+    is not exempt -- see the #1570 module for that half.
 
     The recap's droppable elements still go, and they still go before
     `<core>`; what survives is the lock and the wrapper around it, which is
@@ -547,14 +554,21 @@ def test_a_recap_id_the_body_still_renders_is_not_reported_dropped() -> None:
     the invariant is stated once. `R9` is the control: a belief the recap
     alone carries is still reported, so this cannot pass by reporting
     nothing.
+
+    The recap's elements are spelled the way `context_rebuilder` spells
+    them, `locked="true"` for `L1` and `locked="false"` for the rest.
+    Since #1570 the hook reads that spelling, so the choice decides the
+    fixture rather than decorating it: a `locked="false"` element is
+    droppable and a recap-only `locked="true"` one would be kept, which is
+    `test_recap_lock_spelling_1570.py`'s subject and not this one.
     """
     pad = "y" * 900
     recap = (
         "<cadence-resume from='prev' policy='p1' ts='t'>\n"
         f'<belief id="L1" locked="true">{pad}</belief>\n'
-        f'<belief id="C1" locked="true">{pad}</belief>\n'
-        f'<belief id="H1" locked="true">{pad}</belief>\n'
-        f'<belief id="R9" locked="true">{pad}</belief>\n'
+        f'<belief id="C1" locked="false">{pad}</belief>\n'
+        f'<belief id="H1" locked="false">{pad}</belief>\n'
+        f'<belief id="R9" locked="false">{pad}</belief>\n'
         "</cadence-resume>"
     )
     locked = f'<belief id="L1" {_LOCKED_ATTR}>{pad}</belief>'

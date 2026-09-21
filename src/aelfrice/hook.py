@@ -388,13 +388,17 @@ prepended to the session-start sub-block and emitted *inside* this
 envelope, so it is charged here.
 
 **And the dropper sheds it first.** An earlier revision of this paragraph
-said the recap was exempt "like a user lock", and that was false twice
-over. `_maybe_read_cadence_resume` wraps a body the context rebuilder
-rendered, whose `<belief>` elements are ordinary droppable elements; nor
-does a lock inside the recap save it, because the rebuilder writes
-`locked="true"` where `_LOCKED_ATTR` reads `lock="user"`, so the #379
-exemption does not recognise the recap's own locks. Measured on a real P1
-resume cache against a 40-lock / 20-core / 20-hit store, 65 of the recap's
+said the recap was exempt "like a user lock", and that was false.
+`_maybe_read_cadence_resume` wraps a body the context rebuilder rendered,
+whose `<belief>` elements are ordinary droppable elements. A lock inside
+the recap saves it only when the cut would be the last render of that
+lock, which is #1570's rule and not a blanket exemption: until #1570 the
+rebuilder's `locked="true"` was not even recognised, and the #379 contract
+did not hold on this path at all; exempting every recognised lock instead
+was measured to cost the prompt every one of its own hits, because
+`<locked>` renders those same locks uncapped a few lines below. Measured
+on a real P1 resume cache against a 40-lock / 20-core / 20-hit store — a
+store with no reference lock in it, so nothing is kept — 65 of the recap's
 `<belief>` elements survive untrimmed and 0 survive the ceiling: the recap
 sheds whole, wrapper included.
 <!-- derived: scripts/measure_block_ceiling.py#resume_recap_elements_untrimmed = 65 -->
@@ -470,14 +474,68 @@ _BELIEF_ELEMENT_RE: Final[re.Pattern[str]] = re.compile(
 )
 """One rendered `<belief>` element, with its id and its attribute tail.
 
-`attrs` is matched so the dropper can read `lock="user"` off the element
-it is about to delete. That attribute is written by every render site
+`attrs` is matched so the dropper can read a lock marker off the element
+it is about to delete. This module's own render sites
 (`_split_belief_lines`, the `<locked>` section of the session-start
-sub-block) and survives `_group_by_provenance`, which rewrites only the
-`speculative` marker and appends evidence attributes.
+sub-block) write `lock="user"`, and it survives `_group_by_provenance`,
+which rewrites only the `speculative` marker and appends evidence
+attributes. A `<cadence-resume>` recap is the other renderer whose
+elements land in this envelope, and it writes `locked="true"`; see
+`_element_is_locked`.
 """
 
 _LOCKED_ATTR: Final[str] = 'lock="user"'
+"""How this module renders a user lock, and one of two spellings read back.
+
+Every `<belief>` element `hook` itself emits carries this attribute.
+`_element_is_locked` is what the dropper asks, not this constant, because
+one of the elements in the envelope is rendered somewhere else.
+"""
+
+_REBUILDER_LOCKED_ATTR: Final[str] = 'locked="true"'
+"""How `context_rebuilder._format_block` renders a user lock (#1570).
+
+The rebuilder is not a second copy of this module's renderer that drifted:
+it emits a schema of its own, documented in
+`docs/design/context_rebuilder.md`, in which `locked` is a boolean and
+`locked="false"` is a rendered value rather than an absent attribute. The
+two spellings never met until #871 spliced rebuilder output into a
+hook-rendered envelope as the `<cadence-resume>` recap.
+"""
+
+
+def _element_is_locked(attrs: str) -> bool:
+    """True when a rendered `<belief>` element's attribute tail says L0.
+
+    **Two spellings, read deliberately (#1570).** `attrs` reaches here from
+    two renderers, and they do not agree: this module writes `lock="user"`
+    and `context_rebuilder._format_block` writes `locked="true"`. Both are
+    accepted, and the hook is the side that was widened rather than the
+    rebuilder the side that was changed, for two reasons.
+
+    The first is blast radius. The rebuilder's attribute is part of a
+    published output schema with consumers this module does not own — the
+    `<aelfrice-rebuild>` block the PreCompact lane writes straight to
+    stdout, `docs/design/context_rebuilder.md`, and the `locked="false"`
+    half of the pair, which has no counterpart in `lock="user"` at all.
+    The hook's reader is one predicate's input, and widening it moves no
+    emitted byte on any lane.
+
+    The second is that widening the reader is required whichever spelling
+    the rebuilder settles on. The recap is not rendered in this process: it
+    is read out of `cadence_resume_cache.json`, which a *prior* session's
+    Stop hook wrote and which stays injectable for
+    `_CADENCE_RESUME_TTL_SECONDS`. An upgrade inside that window hands this
+    hook a recap the previous version rendered, so a hook that knew only
+    the new spelling would drop a user lock out of an old cache — the #379
+    breach this fixes, one release later.
+
+    Substring tests, as the dropper has always done: `attrs` is the tail of
+    a matched element, and neither spelling is a substring of the other or
+    of `locked="false"`. `tests/test_recap_lock_spelling_1570.py` pins that
+    against live renderer output rather than against these literals.
+    """
+    return _LOCKED_ATTR in attrs or _REBUILDER_LOCKED_ATTR in attrs
 
 _SEEN_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
     r'^  seen (?P<id>.+?): ".*"$\n?', re.MULTILINE
@@ -508,10 +566,12 @@ lock still costs there; the same lock at reference tier now costs 273
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_frozen = 7796 -->
 <!-- derived: scripts/measure_block_ceiling.py#ref_lock_30026_retrieval_first_reference = 273 -->
 The older argument still holds underneath it and is why the form was safe
-to skip before the render gap closed: a reference lock carries
-`lock="user"`, and the dropper never removes a `lock="user"` element.
-`_REF_MANIFEST_RE` matches the same line for the unrelated envelope-level
-dedupe (#1558) and is not consulted here.
+to skip before the render gap closed: a reference lock is L0, and the
+dropper never removes a locked element. The `<cadence-resume>` recap was
+the one place that was false, because until #1570 the dropper did not
+recognise the spelling the recap's renderer writes; `_element_is_locked`
+does now. `_REF_MANIFEST_RE` matches the same line for the unrelated
+envelope-level dedupe (#1558) and is not consulted here.
 
 Two spaces of indent and the `: "` separator are both required, so the id
 group cannot run past the line's own punctuation. The pattern is only ever
@@ -570,9 +630,9 @@ def _is_user_locked(b: Belief) -> bool:
     predicate applied to a list it cannot discriminate reads like a bound
     and is none.
 
-    The rendered counterpart is `_LOCKED_ATTR`, which is what the dropper
-    reads back off the emitted element; these two must keep agreeing, and
-    a single spelling on this side is half of that.
+    The rendered counterpart is `_LOCKED_ATTR`, and `_element_is_locked`
+    is what the dropper reads back off the emitted element; these must
+    keep agreeing, and a single spelling on this side is half of that.
     """
     return b.lock_level == LOCK_USER
 
@@ -737,7 +797,10 @@ def _ceiling_drop_order(
 
 
 def _recap_shed(
-    body: str, recap: tuple[int, int], recap_elements: list[re.Match[str]]
+    body: str,
+    recap: tuple[int, int],
+    recap_elements: list[re.Match[str]],
+    rendered_outside: set[str],
 ) -> tuple[list[tuple[int, int]], list[str]]:
     """The spans and the ids one whole-recap shed removes (#1564).
 
@@ -750,13 +813,30 @@ def _recap_shed(
     the envelope joined it with go too, so the `<session-start>` sub-block
     is not left behind a blank gap.
 
-    The wrapper survives exactly one way: when an element inside it carries
-    `lock="user"`, which no shipped render produces -- `context_rebuilder`
-    spells a lock `locked="true"` -- but which the #379 always-injected
-    contract would require this function to honour if one ever did. In that
-    case the recap's droppable elements still shed together and still shed
-    first; what is left is the locks, which is a remainder a reader can
+    **The wrapper survives exactly one way: a user lock this cut would
+    otherwise be the last render of (#1570).** The #379 contract is that a
+    lock's *content* always reaches the model, not that one particular
+    element does, so `rendered_outside` decides it: an id the body renders
+    as an element outside the recap keeps its content either way, and the
+    recap's copy sheds with the rest. That is the ordinary lock, because
+    `<locked>` renders every one of them uncapped in the same envelope and
+    `enforce_block_ceiling` cannot drop those. What is left is the lock
+    whose recap element is the only element there is — a #1558 reference
+    lock, which `<locked>` diverts to a `ref` manifest line. Its
+    bounded-topic element stays, the recap's droppable elements still shed
+    together and still shed first, and the remainder is one a reader can
     explain rather than an arbitrary fragment.
+
+    Exempting *every* recap lock instead was tried and reverted: on the
+    `--resume-drop` fixture's 40 locks it pinned ~2,000 tokens of text the
+    same envelope already carried in `<locked>`, and the prompt's own
+    matched beliefs went from 6 of 6 to 0 — the #1564 AC3 loss, restaged by
+    the fix for #1570. The invariant that survives both is stated once and
+    tested once: **no user-locked id ever reaches `dropped_ids`.**
+
+    Before #1570 no recap lock was recognised at all: `_LOCKED_ATTR` alone
+    was the test and `context_rebuilder` spells a lock `locked="true"`, so
+    the whole span always went, reference locks included.
 
     **The ids are what this cut removes, not what the block loses.** An id
     the recap carries is often rendered a second time elsewhere in the same
@@ -777,7 +857,10 @@ def _recap_shed(
     without one.
     """
     droppable_here = [
-        m for m in recap_elements if _LOCKED_ATTR not in m.group("attrs")
+        m
+        for m in recap_elements
+        if not _element_is_locked(m.group("attrs"))
+        or m.group("id") in rendered_outside
     ]
     ids = [m.group("id") for m in droppable_here]
     if len(droppable_here) != len(recap_elements):
@@ -818,10 +901,12 @@ def enforce_block_ceiling(
     `scripts/measure_block_ceiling.py --resume-drop` is the producer and
     `test_hook_recap_shed_order_1564.py` pins the directions.
 
-    **`lock="user"` elements are never dropped.** That is the #379 /
+    **User-locked elements are never dropped.** That is the #379 /
     #1016-B contract — locks are the always-injected pool, uncapped and
     untrimmed — and a ceiling that deleted them would have made this
-    module's bound the thing that broke it. Measured before the exemption
+    module's bound the thing that broke it. `_element_is_locked` is the
+    test, and since #1570 it answers for the `<cadence-resume>` recap's
+    own render as well as this module's. Measured before the exemption
     existed: a 300-lock store had all 300 locked elements removed, leaving
     an empty `<locked>` section under 300 `seen <id>` manifest pointers.
     When the locks alone do not fit, the body is emitted over the limit
@@ -873,7 +958,7 @@ def enforce_block_ceiling(
         return BlockCeilingOutcome(body, (), False)
     elements = list(_BELIEF_ELEMENT_RE.finditer(body))
     droppable = [
-        m for m in elements if _LOCKED_ATTR not in m.group("attrs")
+        m for m in elements if not _element_is_locked(m.group("attrs"))
     ]
     # Only manifest lines that sit *outside* every element. Belief content
     # keeps its newlines through `_escape_for_hook_block` (only angle
@@ -929,7 +1014,9 @@ def enforce_block_ceiling(
             if recap_shed:
                 continue
             recap_shed = True
-            spans, recap_ids = _recap_shed(body, recap, recap_elements)
+            spans, recap_ids = _recap_shed(
+                body, recap, recap_elements, ids_rendered_outside_recap
+            )
             for span in spans:
                 cut.append(span)
                 remaining -= span[1] - span[0]
@@ -2660,26 +2747,22 @@ def user_prompt_submit(
                 # beside it.
                 n_beliefs=len(emitted_hits),
                 # `hits`, not `emitted_hits`, and the two carry the same
-                # locked rows. `enforce_block_ceiling` filters a
-                # `lock="user"` element out of its droppable set, which is
-                # the whole story for the four lanes this envelope renders
-                # itself. It is not the whole story for a `<cadence-resume>`
-                # recap, whose body `context_rebuilder` renders and which
-                # spells a lock `locked="true"` -- a droppable spelling. The
-                # second half is #1564's: the ceiling reports an id only
-                # when nothing outside the recap renders it, and `<locked>`
-                # renders every one of them uncapped in the same envelope,
-                # because the recap and the sub-block both appear on a
-                # session's first prompt and on no other.
+                # locked rows. `enforce_block_ceiling` filters a locked
+                # element out of its droppable set, and since #1570
+                # `_element_is_locked` recognises both renders that put an
+                # element in this envelope: this module's `lock="user"` and
+                # the `<cadence-resume>` recap's `locked="true"`. So the
+                # exemption covers the recap's own locks too, and the
+                # reference lock below is no longer the exception it was --
+                # the recap keeps its bounded-topic element rather than
+                # shedding it, which is what #1570 fixed.
                 #
-                # The one lock that spelling does not cover is a #1558
-                # reference lock, which `<locked>` diverts to a `ref`
-                # manifest line while the recap renders its bounded topic
-                # as an element. Shedding the recap does take that element,
-                # so such an id can reach `dropped_ids` -- as it could
-                # before #1564 -- and this sum would then count a row
-                # `beliefs[]` omits. Bounded by what a reference lock is:
-                # the manifest line survives and still names it.
+                # The second half of the guarantee is #1564's: the ceiling
+                # reports an id only when nothing outside the recap renders
+                # it, and `<locked>` renders every non-reference lock
+                # uncapped in the same envelope, because the recap and the
+                # sub-block both appear on a session's first prompt and on
+                # no other.
                 n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
                 beliefs=emitted_hits,
