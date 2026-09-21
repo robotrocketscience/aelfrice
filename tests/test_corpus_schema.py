@@ -62,9 +62,14 @@ SYNTHETIC_PROVENANCE_RE = re.compile(r"^synthetic-v\d+\.\d+$")
 # Spec values: "str" = non-empty string, "list[str]" = non-empty list of strings.
 MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
     "contradiction": (
-        # Sourced from the detector to prevent drift between corpus schema
-        # and the runtime vocabulary in src/aelfrice/relationship_detector.py.
-        set(VERDICT_LABELS),
+        # Spelt out rather than derived from
+        # `relationship_detector.VERDICT_LABELS`, even though the two must
+        # agree. Deriving it would make them agree by construction, and
+        # `test_module_label_vocabulary_matches_detector_constant` — the
+        # test whose whole job is to catch them drifting apart — could
+        # then never fail. One side has to be a literal for the
+        # comparison to mean anything.
+        {"contradicts", "refines", "unrelated"},
         {"belief_a": "str", "belief_b": "str"},
     ),
     "wonder_consolidation": (
@@ -285,8 +290,8 @@ KNOWN_FAILURES: dict[str, tuple[tuple[str, str], ...]] = {
         (
             RULE_LABEL_VOCABULARY,
             "The labelled contradiction batch uses `compatible`, which this "
-            "table does not declare because it sources its vocabulary from "
-            "`relationship_detector.VERDICT_LABELS` (#1580).",
+            "table does not declare: its vocabulary is the three verdicts "
+            "`relationship_detector.VERDICT_LABELS` holds (#1580).",
         ),
         (
             RULE_LABEL_UNSCOREABLE,
@@ -755,13 +760,22 @@ def test_validator_rejects_a_label_the_detector_cannot_return() -> None:
     The module's declared set is widened to admit the label, so the
     vocabulary rule passes and only the scoreability rule can fire.
     That is the arm that proves rule 3 is a rule of its own rather than
-    a restatement of rule 2 — `MODULES['contradiction']` sources its
-    vocabulary from `VERDICT_LABELS`, so on the shipped table the two
-    always agree.
+    a restatement of rule 2.
+
+    Widening is necessary, not a convenience. On the shipped table the
+    two rules cannot disagree: rule 3 fires alone only where the module
+    declares a label the detector cannot return, and
+    `test_module_label_vocabulary_matches_detector_constant` exists to
+    forbid exactly that. So rule 3 is unreachable on its own for as
+    long as the table and the constant agree, which is the state the
+    other test enforces — it is the guard that catches the interval
+    between a detector losing a label and the table following, and this
+    arm is where its behaviour in that interval is pinned.
     """
     row = _conforming_row()
     row["label"] = "compatible"
-    widened = set(VERDICT_LABELS) | {"compatible"}
+    declared, _extra = MODULES["contradiction"]
+    widened = declared | {"compatible"}
     assert set(_violations_for(row, allowed_labels=widened)) == {
         RULE_LABEL_UNSCOREABLE
     }
@@ -838,6 +852,12 @@ def test_module_label_vocabulary_matches_detector_constant(module: str) -> None:
     rows that are graded wrong by construction; a label the detector can
     return but the module rejects means a correct row fails validation.
     Both directions are drift, so both are checked.
+
+    This only has teeth because `MODULES[module]` spells its vocabulary
+    out instead of deriving it from the constant. Derive it and the two
+    sides become one object, the comparison holds for every possible
+    value of the constant, and the test passes on a detector that has
+    changed underneath the corpus.
     """
     declared, _extra = MODULES[module]
     constant = DETECTOR_LABEL_CONSTANTS[module]
