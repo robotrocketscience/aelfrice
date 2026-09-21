@@ -28,6 +28,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -805,6 +806,125 @@ def test_a_producer_missing_the_key_is_a_hard_failure(repo: Path) -> None:
     assert any("emits no key" in h for h in report.hard)
 
 
+# --- the producers run concurrently, and still report in one order -------
+
+# Four fakes at 0.75s each: a serial run cannot finish under 3.0s and a
+# concurrent one cannot take much over 0.75s, so the two are far enough apart
+# that load on the machine does not decide the result. Keep the sleep well
+# above interpreter start-up (~0.05s), or start-up dominates and the ratio the
+# assertion rests on collapses.
+_SLOW_PRODUCERS = 4
+_SLOW_SECONDS = 0.75
+
+
+def _slow_producer(
+    repo: Path, name: str, seconds: float, *, emits: int, published: int
+) -> None:
+    """A fake producer that sleeps, then emits a value and its finish time."""
+    (repo / "benchmarks" / f"{name}.py").write_text(
+        "import json, time\n"
+        f"time.sleep({seconds})\n"
+        f"print(json.dumps({{'k': {emits}, 'finished': time.time()}}))\n"
+    )
+    (repo / f"{name}.md").write_text(_published(f"benchmarks/{name}.py#k", published))
+
+
+@pytest.mark.timeout(120)
+def test_the_producers_run_concurrently(repo: Path) -> None:
+    """#1578: the check's wall clock is the slowest producer, not the sum.
+
+    Measured rather than asserted about: the same set of fake producers is run
+    once with `max_workers=1` and once with the shipped default, and the
+    concurrent run has to come in under half the serial one. Forcing
+    `max_workers = 1` inside `run_producers` collapses the two measurements
+    onto each other and reds this.
+    """
+    names = [f"p{i}" for i in range(_SLOW_PRODUCERS)]
+    for name in names:
+        _slow_producer(repo, name, _SLOW_SECONDS, emits=20, published=20)
+    files = [repo / f"{n}.md" for n in names]
+
+    scan = cdf.Report(github=False)
+    markers = cdf.check_text(files, scan)
+    assert scan.hard == [], "\n".join(scan.hard)
+    assert len({m.producer for m in markers}) == _SLOW_PRODUCERS, (
+        "one producer per marker, or there is nothing to run in parallel"
+    )
+
+    serial_report = cdf.Report(github=False)
+    started = time.perf_counter()
+    cdf.check_producers(markers, serial_report, max_workers=1)
+    serial = time.perf_counter() - started
+
+    concurrent_report = cdf.Report(github=False)
+    started = time.perf_counter()
+    cdf.check_producers(markers, concurrent_report)
+    concurrent = time.perf_counter() - started
+
+    assert serial_report.hard == [], "\n".join(serial_report.hard)
+    assert concurrent_report.hard == [], "\n".join(concurrent_report.hard)
+    assert serial >= _SLOW_PRODUCERS * _SLOW_SECONDS, (
+        f"the serial arm took {serial:.2f}s, under the {_SLOW_PRODUCERS} x "
+        f"{_SLOW_SECONDS}s the fixture sleeps for. The fakes did not run, and "
+        "the comparison below would pass over nothing."
+    )
+    assert concurrent < serial / 2, (
+        f"{_SLOW_PRODUCERS} producers took {concurrent:.2f}s concurrently "
+        f"against {serial:.2f}s serially. The check is paying the sum of its "
+        "producers again, which is what #1578 was filed for."
+    )
+
+
+@pytest.mark.timeout(120)
+def test_the_failure_list_is_ordered_by_producer_and_not_by_completion(
+    repo: Path,
+) -> None:
+    """Concurrency must not reach the output.
+
+    A gate whose failure list is ordered by whichever child finished first
+    prints a different diff on every run, and a reviewer cannot tell a new
+    failure from a reshuffled one -- worse than the timeout #1578 fixes. The
+    fixture finishes in the exact reverse of producer order, which the middle
+    assertion checks rather than assumes, so an implementation that appended
+    as children completed would print this list backwards.
+    """
+    names = [f"p{i}" for i in range(_SLOW_PRODUCERS)]
+    for i, name in enumerate(names):
+        # p0 sleeps longest, the last one not at all.
+        _slow_producer(
+            repo, name, (len(names) - 1 - i) * 0.4, emits=21, published=20
+        )
+    files = [repo / f"{n}.md" for n in names]
+
+    scan = cdf.Report(github=False)
+    markers = cdf.check_text(files, scan)
+    assert scan.hard == [], "\n".join(scan.hard)
+
+    runnable = cdf.runnable_producers(cdf.group_store_free(markers))
+    assert [p for p, _ in runnable] == [f"benchmarks/{n}.py" for n in names]
+    finished = [
+        cast("dict[str, float]", json.loads(proc.stdout))["finished"]
+        for proc in cdf.run_producers(runnable)
+    ]
+    assert finished == sorted(finished, reverse=True), (
+        "the fixture must finish in the reverse of producer order, or this "
+        f"test cannot tell the two orderings apart: {finished}"
+    )
+
+    runs: list[list[str]] = []
+    for _ in range(2):
+        report = cdf.Report(github=False)
+        cdf.check_producers(markers, report)
+        runs.append(report.hard)
+    assert [h.split(":", 1)[0] for h in runs[0]] == [f"{n}.md" for n in names], (
+        f"the failure list is not in producer order: {runs[0]}"
+    )
+    assert runs[0] == runs[1], (
+        "two runs over one tree printed different failure lists:\n"
+        f"{runs[0]}\n{runs[1]}"
+    )
+
+
 # --- the boundary of the rule, stated so it stays falsifiable ------------
 
 
@@ -999,7 +1119,28 @@ def test_the_repo_passes_the_text_checks() -> None:
 
 @pytest.mark.timeout(120)
 def test_the_repo_passes_the_producer_checks() -> None:
-    """Spawns one child per store-free producer (#1307)."""
+    """Spawns one child per store-free producer (#1307), concurrently (#1578).
+
+    The 120s marker is kept, and kept at 120s, as a hang detector rather than
+    a budget. It is no longer close: on an M-series laptop, 2026-09-21, the
+    five store-free producers cost 39.3s run one after another against 18.3s
+    run at once, and this test -- its text scan included -- takes 20.5s, about
+    5.8x under the cap where it was about 2.9x.
+    Lowering the marker to track the new wall clock would hand back exactly
+    the margin #1578 was filed to buy -- it timed out on the v5.0.0 release PR
+    (#1576) and passed on re-run -- and a hosted runner is furthest from a
+    laptop on the disk-bound axis this check leans on. What the marker is for
+    is a producer that hangs; 120s catches that and nothing else.
+
+    Price a new producer before you add one, not at the release cut:
+
+        uv run python scripts/check_derived_figures.py --time-producers
+
+    The per-producer table that command emits is recorded in
+    `check_producers`. The number to watch is the new producer's own time: the
+    wall clock here is now the maximum, so anything slower than the current
+    15.0s worst case moves it.
+    """
     files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
     report = cdf.Report(github=False)
     markers = cdf.check_text(files, report)
