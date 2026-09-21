@@ -529,18 +529,28 @@ def _legal_rule_ids() -> set[str]:
     return ids
 
 
-def _walk_module(module: str, files: list[Path]) -> tuple[int, dict[str, str]]:
-    """Rows validated, and rule id -> message for every rule they break.
+def _walk_module(
+    module: str, files: list[Path]
+) -> tuple[int, dict[str, str], dict[str, int]]:
+    """Rows validated, rule id -> first message, and rule id -> row count.
 
     Separate from the test so `duplicate-id` is reachable from a unit
     test. That rule is the one violation no single row can carry — it
     needs two rows that agree on `id` — so it cannot live in
     `_row_violations`, and leaving it inline made it the one rule with
     no arm of its own.
+
+    The per-rule row count exists because a `KNOWN_FAILURES` waiver is
+    per module and per rule, not per row: a later batch carrying the
+    same violation lands inside the existing entry and the ratchet
+    stays quiet. The figure cannot be gated on, since it depends on
+    which corpus is mounted, but printed next to the waiver it is the
+    number that moves when the waiver's scope grows.
     """
     allowed_labels, extra_spec = MODULES[module]
     seen_ids: set[str] = set()
     found: dict[str, str] = {}
+    counts: dict[str, int] = {}
     validated = 0
     for path in files:
         with path.open() as f:
@@ -561,6 +571,7 @@ def _walk_module(module: str, files: list[Path]) -> tuple[int, dict[str, str]]:
                     module, row, allowed_labels, extra_spec, where
                 ).items():
                     found.setdefault(rule, message)
+                    counts[rule] = counts.get(rule, 0) + 1
 
                 # ID must be unique within the module.
                 rid = row.get("id")
@@ -570,8 +581,11 @@ def _walk_module(module: str, files: list[Path]) -> tuple[int, dict[str, str]]:
                             RULE_DUPLICATE_ID,
                             f"{where}: duplicate id {rid!r} within module {module!r}",
                         )
+                        counts[RULE_DUPLICATE_ID] = (
+                            counts.get(RULE_DUPLICATE_ID, 0) + 1
+                        )
                     seen_ids.add(rid)
-    return validated, found
+    return validated, found, counts
 
 
 @pytest.mark.parametrize("module", sorted(MODULES.keys()))
@@ -582,7 +596,7 @@ def test_corpus_module_files_valid(module: str, record_property) -> None:  # typ
     if not files:
         pytest.skip(_no_rows_skip(module, root, origin))
 
-    validated, found = _walk_module(module, files)
+    validated, found, counts = _walk_module(module, files)
 
     record_property(
         CORPUS_SCHEMA_PROPERTY,
@@ -617,11 +631,15 @@ def test_corpus_module_files_valid(module: str, record_property) -> None:  # typ
     # asks not to create, so the reproducing rules print alongside the
     # row count on every run.
     if found:
+        breakdown = ", ".join(
+            f"{rule} ({counts[rule]} of {validated} row(s))"
+            for rule in sorted(found)
+        )
         record_property(
             CORPUS_SCHEMA_PROPERTY,
             f"module {module!r}: {len(found)} recorded violation(s) still "
-            f"reproducing and NOT enforced — {', '.join(sorted(found))}; see "
-            f"KNOWN_FAILURES in tests/test_corpus_schema.py",
+            f"reproducing and NOT enforced — {breakdown}; see KNOWN_FAILURES "
+            f"in tests/test_corpus_schema.py",
         )
 
 
@@ -809,9 +827,10 @@ def test_walk_accepts_two_rows_with_distinct_ids(tmp_path: Path) -> None:
     second["id"] = "fixture-0002"
     files = _write_module(tmp_path, "contradiction", [first, second])
 
-    validated, found = _walk_module("contradiction", files)
+    validated, found, counts = _walk_module("contradiction", files)
     assert validated == 2
     assert found == {}
+    assert counts == {}
 
 
 def test_walk_rejects_two_rows_sharing_an_id(tmp_path: Path) -> None:
@@ -827,10 +846,11 @@ def test_walk_rejects_two_rows_sharing_an_id(tmp_path: Path) -> None:
     assert first["id"] == second["id"]
     files = _write_module(tmp_path, "contradiction", [first, second])
 
-    validated, found = _walk_module("contradiction", files)
+    validated, found, counts = _walk_module("contradiction", files)
     assert validated == 2
     assert set(found) == {RULE_DUPLICATE_ID}
     assert "fixture-0001" in found[RULE_DUPLICATE_ID]
+    assert counts == {RULE_DUPLICATE_ID: 1}
 
 
 def test_walk_counts_rows_across_files_and_skips_blank_lines(
@@ -846,9 +866,32 @@ def test_walk_counts_rows_across_files_and_skips_blank_lines(
     second = module_dir / "b.jsonl"
     second.write_text(json.dumps(second_row) + "\n")
 
-    validated, found = _walk_module("contradiction", [first, second])
+    validated, found, _counts = _walk_module("contradiction", [first, second])
     assert validated == 2
     assert found == {}
+
+
+def test_walk_counts_how_many_rows_break_each_rule(tmp_path: Path) -> None:
+    """A waiver is per module and per rule, so the row count is the scope.
+
+    `KNOWN_FAILURES` cannot say "these 285 rows and no more", and a
+    later batch carrying the same violation lands inside the existing
+    entry with nothing in the tail changing. The count is what changes,
+    so it prints next to the waiver.
+    """
+    rows = []
+    for i, has_provenance in enumerate((True, False, False), start=1):
+        row = _conforming_row()
+        row["id"] = f"fixture-{i:04d}"
+        if not has_provenance:
+            del row["provenance"]
+        rows.append(row)
+    files = _write_module(tmp_path, "contradiction", rows)
+
+    validated, found, counts = _walk_module("contradiction", files)
+    assert validated == 3
+    assert set(found) == {_envelope_rule("provenance")}
+    assert counts == {_envelope_rule("provenance"): 2}
 
 
 def test_validator_rejects_a_missing_module_field() -> None:
