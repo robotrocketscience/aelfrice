@@ -545,6 +545,10 @@ def _assert_no_pool_shape(rows: Sequence[Row], module: str) -> None:
     be a claim about the corpus rather than a switch. A ranking-shaped
     corpus that declared itself pool-free would skip both filters
     silently, which is the same invisibility #1581 closes elsewhere.
+
+    Called from the classification guard, which never runs the filters,
+    and from the ablation guard when it was given no keys — the two
+    paths that can reach a graded corpus without a shape check.
     """
     present = sorted(
         {key for row in rows for key in _POOL_SHAPED_KEYS if key in row}
@@ -789,6 +793,13 @@ def guard_ablation_gate(
     whose bar a zero uplift clears — any `>= 0` no-regression bar —
     carries no positive evidence about the feature, and a reader of the
     release record should see that rather than have to infer it.
+
+    Omitting `gold_key`/`pool_key` turns the structural pre-filters off.
+    That is a claim about the corpus, so `_assert_no_pool_shape` checks
+    it against the rows: an ablation corpus that carries a candidate
+    pool must wire the keys and let the filters run. This is the family
+    where "gold == pool" matters most, because it is what produces the
+    +1.000 uplift tautology the `without_rate` floor exists to reject.
     """
     if gold_key and pool_key:
         pre = structural_prefilter(
@@ -814,6 +825,8 @@ def guard_ablation_gate(
             )
     elif gold_key or pool_key:
         raise ValueError("declare both gold_key and pool_key, or neither")
+    else:
+        _assert_no_pool_shape(rows, module)
 
     measured, error = _measure(arms)
     if error is not None:

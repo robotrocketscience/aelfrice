@@ -72,17 +72,21 @@ def test_clustering_ship_gate_runner_present(
             without_row_scores=results.off_row_scores,
         )
 
-    # #1581: the clustering-off arm is this gate's declared null model.
-    # The structural pre-filters do not apply: a multi_fact row carries
-    # no candidate pool (`_seed_store` reads an optional `beliefs` key
-    # that the schema does not require), so there is no `len(pool)` to
-    # compare the gold against.
+    # #1581: the clustering-off arm is this gate's declared null model,
+    # and the structural pre-filters run over the row's candidate pool.
+    # `k_key` is the gate's own cutoff: the guard's `default_k` of 10
+    # exceeds every multi_fact pool, which would read as zero separable
+    # rows and reject a corpus that is in fact 14/14 separable at the
+    # cutoff the gate scores with.
     guard_ablation_gate(
         module="multi_fact",
         rows=rows,
         arms=arms,
         bar=bar_above(0.0),
         record_property=record_property,
+        gold_key="expected_belief_ids",
+        pool_key="beliefs",
+        k_key="n_clusters_required",
     )
 
     results = measured["results"]

@@ -511,6 +511,44 @@ def test_a_rejected_corpus_never_runs_the_shipped_arm() -> None:
     assert "shipped=unmeasured" in rec.value(BENCH_MEASUREMENT_PROPERTY)
 
 
+def test_ablation_guard_refuses_an_unchecked_no_pool_claim() -> None:
+    """`gold_key=None` on an ablation gate is a claim, not a switch.
+
+    The family where it matters most: "gold == pool" is what produces
+    the +1.000 tautology the `without_rate` floor exists to reject, so a
+    pool-shaped corpus must wire the keys and run the pre-filters.
+    """
+    rows = _ranking_rows(30, pool=10, gold=10, k=10)
+    with pytest.raises(AssertionError, match="declared no candidate pool"):
+        guard_ablation_gate(
+            module="synthetic",
+            rows=rows,
+            arms=lambda: AblationArms(
+                shipped=1.0, ablated=0.0, without_row_scores=[1.0] * 30
+            ),
+            bar=bar_at_least(0.05),
+            record_property=_Recorder(),
+        )
+
+
+def test_ablation_guard_runs_the_prefilters_once_the_keys_are_wired() -> None:
+    """And the wired path still rejects the degenerate shape."""
+    rec = _Recorder()
+    with pytest.raises(pytest.fail.Exception, match="separability"):
+        guard_ablation_gate(
+            module="synthetic",
+            rows=_ranking_rows(30, pool=10, gold=10, k=10),
+            arms=lambda: AblationArms(
+                shipped=1.0, ablated=0.0, without_row_scores=[1.0] * 30
+            ),
+            bar=bar_at_least(0.05),
+            record_property=rec,
+            gold_key="expected_top_k",
+            pool_key="beliefs",
+        )
+    assert "REJECT" in rec.value(BENCH_NULL_VERDICT_PROPERTY)
+
+
 # ---------------------------------------------------------------------------
 # What the tier counts
 # ---------------------------------------------------------------------------
