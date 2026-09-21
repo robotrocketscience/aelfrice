@@ -227,7 +227,14 @@ def _collect(path: Path) -> _Collector:
     "path", _bench_gate_files(), ids=lambda p: p.name
 )
 def test_bench_gate_imports_a_module_that_exists(path: Path) -> None:
-    """Every `aelfrice.*` module this bench-gate file imports is shipped."""
+    """Every `aelfrice.*` module this bench-gate file imports is shipped.
+
+    This fires on `from aelfrice.<missing> import X` and `import
+    aelfrice.<missing>`. The `from aelfrice import <missing>` spelling —
+    which is how all three retired gates were written — reads as a
+    missing *member* of the package, and the attribute check below is
+    what catches it.
+    """
     missing = sorted(
         dotted
         for dotted in _collect(path).modules

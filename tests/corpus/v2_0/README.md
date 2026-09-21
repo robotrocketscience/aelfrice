@@ -2,9 +2,9 @@
 
 Bench-gated v2.0 modules ship/no-ship on positive impact against a labeled
 corpus. This directory holds that corpus. The bench-gate harness (#319) reads it
-via `AELFRICE_CORPUS_ROOT`; the modules in #193, #201, #228 are evaluated
-against it. (#288 is the **rebuilder**-precision harness — a different
-consumer.)
+via `AELFRICE_CORPUS_ROOT`; every module in the layout below is evaluated
+against it, each annotated with the issue that owns it. (#288 is the
+**rebuilder**-precision harness — a different consumer.)
 
 Three of the original six scaffolds are retired (#1579): `dedup` (#197),
 `enforcement` (#199), and `promotion_trigger` (#229). Their gates graded code
