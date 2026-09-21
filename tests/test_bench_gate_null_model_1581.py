@@ -428,6 +428,90 @@ def test_a_prefilter_rejection_does_not_run_the_shipped_arm() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The verdict survives the shipped arm
+# ---------------------------------------------------------------------------
+
+
+class _ShippedArmFailure(RuntimeError):
+    """Stands in for the import and attribute errors gates hit for real."""
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["ranking", "classification", "ablation"],
+)
+def test_a_shipped_arm_that_raises_still_records_a_verdict(guard: str) -> None:
+    """AC2. The null model ran, so its verdict is evidence either way.
+
+    Before this the record was written after the shipped arm, so any
+    exception in it discarded the verdict — and a bench-gated report
+    with no verdict was counted as executed.
+    """
+    rec = _Recorder()
+
+    def boom() -> float:
+        raise _ShippedArmFailure("the graded code does not exist")
+
+    with pytest.raises(_ShippedArmFailure):
+        if guard == "ranking":
+            guard_ranking_gate(
+                module="synthetic",
+                rows=_ranking_rows(30, pool=20, gold=3, k=5),
+                shipped=boom,
+                bar=bar_at_least(0.5),
+                metric=precision_at_k,
+                record_property=rec,
+                gold_key="expected_top_k",
+                pool_key="beliefs",
+            )
+        elif guard == "classification":
+            guard_classification_gate(
+                module="synthetic",
+                rows=_labelled({"positive": 11, "negative": 10, "neutral": 9}),
+                shipped=boom,
+                bar=bar_at_least(0.5),
+                score_constant=lambda label: 0.41,
+                record_property=rec,
+            )
+        else:
+            guard_ablation_gate(
+                module="synthetic",
+                rows=[{"id": f"r{i}"} for i in range(30)],
+                arms=boom,
+                bar=bar_at_least(0.05),
+                record_property=rec,
+            )
+
+    verdict = rec.value(BENCH_NULL_VERDICT_PROPERTY)
+    assert BENCH_VERDICT_UNVERIFIED in verdict
+    assert "_ShippedArmFailure" in verdict
+    assert "errored(_ShippedArmFailure)" in rec.value(BENCH_MEASUREMENT_PROPERTY)
+
+
+def test_a_rejected_corpus_never_runs_the_shipped_arm() -> None:
+    """The verdict is about the corpus, so it is settled first."""
+    ran: list[int] = []
+    rec = _Recorder()
+
+    def shipped() -> float:
+        ran.append(1)
+        return 0.93
+
+    rows = _labelled({"negative": 27, "positive": 3})
+    with pytest.raises(pytest.fail.Exception, match="constant predictor"):
+        guard_classification_gate(
+            module="synthetic",
+            rows=rows,
+            shipped=shipped,
+            bar=bar_at_least(0.5),
+            score_constant=lambda label: majority_constant_accuracy(rows)[0],
+            record_property=rec,
+        )
+    assert ran == []
+    assert "shipped=unmeasured" in rec.value(BENCH_MEASUREMENT_PROPERTY)
+
+
+# ---------------------------------------------------------------------------
 # What the tier counts
 # ---------------------------------------------------------------------------
 

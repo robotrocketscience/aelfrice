@@ -79,8 +79,8 @@ and is still recorded.
 """
 
 NO_VERDICT_RECORDED = (
-    "the gate ran but recorded no null-model verdict — its guard call "
-    "never executed"
+    "the test ran against the corpus but recorded no null-model verdict "
+    "— it calls no guard, or its guard call never executed"
 )
 """Why a scored module's bench-gated test was not counted as executed.
 

@@ -48,6 +48,7 @@ import statistics
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import TypeVar
 
 import pytest
 
@@ -61,6 +62,7 @@ from tests.conftest import (
 
 Row = Mapping[str, object]
 RecordProperty = Callable[[str, object], None]
+_T = TypeVar("_T")
 
 
 class Family(str, Enum):
@@ -555,6 +557,27 @@ def _assert_no_pool_shape(rows: Sequence[Row], module: str) -> None:
         )
 
 
+SHIPPED_ARM_RAISED = (
+    "the null model ran, but the shipped arm raised before it scored: "
+)
+"""Why an UNVERIFIED verdict was recorded instead of ACCEPT."""
+
+
+def _measure(arm: Callable[[], _T]) -> tuple[_T | None, BaseException | None]:
+    """Run a gate's shipped arm, capturing whatever it raises.
+
+    The caller re-raises through `_verdict`, which is the only place a
+    verdict is recorded. Letting the exception out of the guard directly
+    is the defect #1581 closes: the record is written after the arm, so
+    an arm that raised discarded the null-model verdict entirely and the
+    tier counted the verdict-less test as executed.
+    """
+    try:
+        return arm(), None
+    except BaseException as exc:  # noqa: BLE001 - re-raised below, unchanged
+        return None, exc
+
+
 def _verdict(
     *,
     module: str,
@@ -565,6 +588,7 @@ def _verdict(
     rejection: str | None,
     extra: str,
     record_property: RecordProperty,
+    shipped_error: BaseException | None = None,
 ) -> None:
     """Record both scores, then fail when the corpus does not count.
 
@@ -573,13 +597,27 @@ def _verdict(
     a release reviewer unable to tell a degenerate +1.000 uplift from a
     real +0.06.
 
-    `shipped_score` is None only when a structural pre-filter rejected
-    the corpus before the arms ran — the filters cost milliseconds and
-    the arms rebuild a store per row, so the order is deliberate and the
-    record says "unmeasured" rather than inventing a number.
+    `shipped_score` is None when the shipped arm did not run or did not
+    return. It did not run when a structural pre-filter or the null
+    model already rejected the corpus — the filters cost milliseconds
+    and the arms rebuild a store per row, so the order is deliberate and
+    the record says "unmeasured" rather than inventing a number. It did
+    not return when `shipped_error` is set, which is UNVERIFIED: the
+    null model is still evidence, and the gate still fails, but nothing
+    was graded so nothing is counted.
     """
-    state = REJECT if rejection else ACCEPT
-    shipped_text = "unmeasured" if shipped_score is None else f"{shipped_score:.4f}"
+    if rejection:
+        state = REJECT
+    elif shipped_error is not None:
+        state = UNVERIFIED
+    else:
+        state = ACCEPT
+    if shipped_score is not None:
+        shipped_text = f"{shipped_score:.4f}"
+    elif shipped_error is not None:
+        shipped_text = f"errored({type(shipped_error).__name__})"
+    else:
+        shipped_text = "unmeasured"
     line = (
         f"{module}: family={family.value} shipped={shipped_text} "
         f"null={null_score:.4f} bar={bar.text} "
@@ -587,8 +625,11 @@ def _verdict(
     )
     if extra:
         line = f"{line} {extra}"
+    why = rejection or ""
+    if shipped_error is not None:
+        why = f"{SHIPPED_ARM_RAISED}{type(shipped_error).__name__}: {shipped_error}"
     record_property(BENCH_MEASUREMENT_PROPERTY, line)
-    record_property(BENCH_NULL_VERDICT_PROPERTY, f"{module}|{state}|{rejection or ''}")
+    record_property(BENCH_NULL_VERDICT_PROPERTY, f"{module}|{state}|{why}")
     if rejection:
         pytest.fail(
             f"corpus {module!r} does not count: {rejection}\n"
@@ -598,6 +639,8 @@ def _verdict(
             f"the corpus is rebuilt; do not read its other assertions as "
             f"evidence, and do not weaken this one."
         )
+    if shipped_error is not None:
+        raise shipped_error
 
 
 def guard_ranking_gate(
@@ -648,7 +691,6 @@ def guard_ranking_gate(
             extra=f"n_rows={len(rows)} prefilter={pre.name} {extra}".strip(),
             record_property=record_property,
         )
-    shipped_score = shipped()
     rejection = None
     if bar.clears(null_score):
         rejection = (
@@ -658,6 +700,10 @@ def guard_ranking_gate(
             f"separate the shipped ranker from a model that cannot represent "
             f"the distinction being measured"
         )
+    # The verdict does not depend on the shipped score, so it is settled
+    # before the shipped arm runs: a rejected corpus never drives
+    # `retrieve()`, and an arm that raises still leaves a verdict behind.
+    shipped_score, error = (None, None) if rejection else _measure(shipped)
     _verdict(
         module=module,
         family=Family.RANKING,
@@ -667,7 +713,9 @@ def guard_ranking_gate(
         rejection=rejection,
         extra=f"n_rows={len(rows)} {extra}".strip(),
         record_property=record_property,
+        shipped_error=error,
     )
+    assert shipped_score is not None
     return RankingResult(shipped=shipped_score, null=null_score)
 
 
@@ -691,7 +739,6 @@ def guard_classification_gate(
     _assert_no_pool_shape(rows, module)
     null_label = majority_label(rows, label_key=label_key)
     null_score = score_constant(null_label)
-    shipped_score = shipped()
     rejection = None
     if bar.clears(null_score):
         rejection = (
@@ -700,6 +747,9 @@ def guard_classification_gate(
             f"({bar.text}). The corpus is imbalanced enough that the bar "
             f"measures the label distribution rather than the detector"
         )
+    # Settled before the shipped arm runs, for the same reason as the
+    # ranking guard: the verdict is about the corpus, not the detector.
+    shipped_score, error = (None, None) if rejection else _measure(shipped)
     _verdict(
         module=module,
         family=Family.CLASSIFICATION,
@@ -709,7 +759,9 @@ def guard_classification_gate(
         rejection=rejection,
         extra=f"n_rows={len(rows)} majority_label={null_label!r} {extra}".strip(),
         record_property=record_property,
+        shipped_error=error,
     )
+    assert shipped_score is not None
     return RankingResult(shipped=shipped_score, null=null_score)
 
 
@@ -763,7 +815,20 @@ def guard_ablation_gate(
     elif gold_key or pool_key:
         raise ValueError("declare both gold_key and pool_key, or neither")
 
-    measured = arms()
+    measured, error = _measure(arms)
+    if error is not None:
+        _verdict(
+            module=module,
+            family=Family.ABLATION,
+            shipped_score=None,
+            null_score=0.0,
+            bar=bar,
+            rejection=None,
+            extra=f"n_rows={len(rows)} {extra}".strip(),
+            record_property=record_property,
+            shipped_error=error,
+        )
+    assert measured is not None
     if not measured.without_row_scores:
         raise ValueError("the ablated arm's per-row scores are required")
     share = sum(1 for s in measured.without_row_scores if s > 0) / len(
