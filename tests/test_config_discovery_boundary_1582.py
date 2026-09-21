@@ -19,12 +19,12 @@ depends on the real per-user config file.
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from pathlib import Path
 
 import pytest
 
-import aelfrice
 from aelfrice import retrieval
 from aelfrice.config_discovery import (
     CONFIG_FILENAME,
@@ -279,7 +279,7 @@ def _private_walkers() -> dict[str, str]:
     `wonder/` or `query_understanding/` later would not be seen.
     """
     offenders: dict[str, str] = {}
-    package_dir = Path(aelfrice.__file__).parent
+    package_dir = _package_dir()
     for source_path in _package_sources():
         if source_path.name == "config_discovery.py":
             continue
@@ -365,7 +365,7 @@ def test_the_scan_reaches_the_subpackages() -> None:
     `wonder/`, `query_understanding/`, `slash_commands/` and `data/`
     entirely. It found no offender there because it never looked.
     """
-    package_dir = Path(aelfrice.__file__).parent
+    package_dir = _package_dir()
     nested = {
         source.relative_to(package_dir).parts[0]
         for source in _package_sources()
@@ -427,9 +427,23 @@ def _env_names_in(source_path: Path) -> set[str]:
     }
 
 
+def _package_dir() -> Path:
+    """The directory the shipped `aelfrice` modules live in.
+
+    The module handle comes from `importlib.import_module` rather than a
+    plain `import aelfrice` sitting next to the `from aelfrice import ...`
+    lines at the top: CodeQL flags a package imported under both forms,
+    and `benchmarks/store_open_cost.py` already resolves that same class
+    this way. Dropping the plain import without a replacement is not an
+    option, because every scan below needs `__file__` to find the sources
+    on disk.
+    """
+    return Path(importlib.import_module("aelfrice").__file__).parent
+
+
 def _package_sources() -> list[Path]:
     """Every shipped module, including the subpackages."""
-    return sorted(Path(aelfrice.__file__).parent.rglob("*.py"))
+    return sorted(_package_dir().rglob("*.py"))
 
 
 def test_the_tables_the_doc_calls_envless_really_are() -> None:
@@ -444,7 +458,7 @@ def test_the_tables_the_doc_calls_envless_really_are() -> None:
     name, gets the defaults, and sees no error. Adding a real override
     here is welcome -- it just has to reach the paragraph too.
     """
-    package_dir = Path(aelfrice.__file__).parent
+    package_dir = _package_dir()
     found = {
         module: _env_names_in(package_dir / f"{module}.py")
         for module in _ENVLESS_TABLES
@@ -488,7 +502,7 @@ def test_the_env_scan_sees_names_that_do_exist() -> None:
     has a per-key variable, which is why CONFIG.md names that table on
     the other side of the sentence.
     """
-    cadence = Path(aelfrice.__file__).parent / "cadence.py"
+    cadence = _package_dir() / "cadence.py"
     cadence_names = _env_names_in(cadence)
     assert len(cadence_names) > 1, (
         "the scan found at most one environment name in cadence.py, "
