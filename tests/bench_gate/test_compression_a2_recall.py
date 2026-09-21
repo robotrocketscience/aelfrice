@@ -43,10 +43,16 @@ policy.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_above,
+    guard_ablation_gate,
+)
 from tests.conftest import load_corpus_module
 
 
@@ -83,6 +89,7 @@ def test_compression_a2_corpus_round_trip(
 @pytest.mark.timeout(60)
 def test_compression_a2_strict_recall_uplift(
     aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """Spec § A2 ship-gate.
 
@@ -101,7 +108,32 @@ def test_compression_a2_strict_recall_uplift(
         ),
     )
 
-    results = runner_mod.run_compression_a2_uplift(rows)
+    measured: dict[str, object] = {}
+
+    def arms() -> AblationArms:
+        results = runner_mod.run_compression_a2_uplift(rows)
+        measured["results"] = results
+        return AblationArms(
+            shipped=results.mean_recall_on,
+            ablated=results.mean_recall_off,
+            without_row_scores=results.off_row_scores,
+        )
+
+    # #1581: the compression-off arm is this gate's declared null model.
+    # A corpus where the gold is unreachable with compression off makes
+    # the strict-positive uplift a tautology rather than evidence for
+    # the flip-default.
+    guard_ablation_gate(
+        module="compression_a2_recall",
+        rows=rows,
+        arms=arms,
+        bar=bar_above(0.0),
+        record_property=record_property,
+        gold_key="expected_top_k",
+        pool_key="beliefs",
+    )
+
+    results = measured["results"]
     assert results.uplift > 0, (
         "type-aware compression must show strictly positive mean recall@k "
         "uplift across the compression_a2_recall corpus\n"

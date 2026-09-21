@@ -17,11 +17,17 @@ Skips cleanly when `AELFRICE_CORPUS_ROOT` is unset, when the
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import load_corpus_module
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_at_least,
+    guard_ablation_gate,
+)
+from tests.conftest import load_corpus_module, require_min_rows
 
 UPLIFT_FLOOR = 0.03  # +3pp per #389 decision-ask 4
 MIN_ROWS = 20
@@ -77,34 +83,56 @@ def _baseline_hits(row: dict, k: int) -> int:
 def test_reason_chain_uplift(
     aelfrice_corpus_root: Path,
     tmp_path: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     rows = [
         r for r in load_corpus_module(aelfrice_corpus_root, "reasoning")
         if not r.get("seed", False)
     ]
-    if len(rows) < MIN_ROWS:
-        pytest.skip(
-            f"reasoning corpus has {len(rows)} non-seed rows; gate requires "
-            f"≥{MIN_ROWS} for stable uplift measurement"
-        )
+    require_min_rows(
+        rows,
+        module="reasoning",
+        minimum=MIN_ROWS,
+        root=aelfrice_corpus_root,
+        detail="non-seed rows, for stable uplift measurement",
+    )
 
     total_targets = sum(len(r["expected_hit_ids"]) for r in rows)
     assert total_targets > 0, "corpus has zero expected_hit_ids; cannot grade"
 
-    chain_total = 0
-    baseline_total = 0
-    for idx, row in enumerate(rows):
-        k = int(row["k"])
-        store = _build_store(tmp_path, row, idx)
-        try:
-            chain_total += _chain_hits(row, store, k)
-        finally:
-            store.close()
-        baseline_total += _baseline_hits(row, k)
+    def arms() -> AblationArms:
+        chain_total = 0
+        baseline_row_hits: list[float] = []
+        for idx, row in enumerate(rows):
+            k = int(row["k"])
+            store = _build_store(tmp_path, row, idx)
+            try:
+                chain_total += _chain_hits(row, store, k)
+            finally:
+                store.close()
+            baseline_row_hits.append(float(_baseline_hits(row, k)))
+        return AblationArms(
+            shipped=chain_total / total_targets,
+            ablated=sum(baseline_row_hits) / total_targets,
+            without_row_scores=baseline_row_hits,
+        )
 
-    chain_rate = chain_total / total_targets
-    baseline_rate = baseline_total / total_targets
-    uplift = chain_rate - baseline_rate
+    # #1581: the labeller's search-only top-k is this gate's declared
+    # null model — the ablated arm. A corpus where search alone reaches
+    # nothing makes the chain uplift a restatement of the graph the
+    # labeller built, not evidence about `aelf reason`.
+    measured = guard_ablation_gate(
+        module="reasoning",
+        rows=rows,
+        arms=arms,
+        bar=bar_at_least(UPLIFT_FLOOR),
+        record_property=record_property,
+        gold_key="expected_hit_ids",
+        pool_key="beliefs",
+    )
+    chain_rate = measured.shipped
+    baseline_rate = measured.ablated
+    uplift = measured.uplift
 
     assert uplift >= UPLIFT_FLOOR, (
         f"`aelf reason` chain uplift {uplift:+.3f} below +{UPLIFT_FLOOR:.2f} "

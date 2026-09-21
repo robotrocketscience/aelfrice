@@ -18,11 +18,17 @@ statistically meaningful).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import load_corpus_module
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_at_least,
+    guard_ablation_gate,
+)
+from tests.conftest import load_corpus_module, require_min_rows
 
 STALE_DROP_FLOOR = 0.01  # +1pp per #421 / #387 acceptance #3
 MIN_ROWS = 30  # public-tree floor; lab corpus is expected to exceed this
@@ -88,6 +94,7 @@ def _row_top_k_ids(row: dict, store, *, rerank: bool) -> list[str]:
 def test_potentially_stale_rerank_drops_stale_in_top_k(
     aelfrice_corpus_root: Path,
     tmp_path: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     rows = [
         r
@@ -97,11 +104,13 @@ def test_potentially_stale_rerank_drops_stale_in_top_k(
         if not r.get("seed", False)
     ]
 
-    if len(rows) < MIN_ROWS:
-        pytest.skip(
-            f"bfs_potentially_stale corpus has {len(rows)} non-seed rows; gate "
-            f"requires ≥{MIN_ROWS} for stable rate-difference measurement"
-        )
+    require_min_rows(
+        rows,
+        module="bfs_potentially_stale",
+        minimum=MIN_ROWS,
+        root=aelfrice_corpus_root,
+        detail="non-seed rows, for stable rate-difference measurement",
+    )
 
     total_stale = sum(len(set(r["stale_ids"])) for r in rows)
     assert total_stale > 0, (
@@ -109,22 +118,51 @@ def test_potentially_stale_rerank_drops_stale_in_top_k(
         "rerank-demotion impact"
     )
 
-    pre_stale_in_top_k = 0
-    post_stale_in_top_k = 0
-    for row in rows:
-        stale = set(row["stale_ids"])
-        store = _build_store(tmp_path, row, arm="run")
-        try:
-            pre_top = set(_row_top_k_ids(row, store, rerank=False))
-            post_top = set(_row_top_k_ids(row, store, rerank=True))
+    rates: dict[str, float] = {}
+
+    def arms() -> AblationArms:
+        pre_stale_in_top_k = 0
+        post_stale_in_top_k = 0
+        # The ablated arm's per-row score, in the same direction as the
+        # metric: the share of a row's stale targets that stay out of
+        # the top-k *without* the rerank. All-zero means the rerank is
+        # the only thing that can exclude a stale belief on this
+        # corpus, which makes the drop a restatement of the penalty.
+        without_row_scores: list[float] = []
+        for row in rows:
+            stale = set(row["stale_ids"])
+            store = _build_store(tmp_path, row, arm="run")
+            try:
+                pre_top = set(_row_top_k_ids(row, store, rerank=False))
+                post_top = set(_row_top_k_ids(row, store, rerank=True))
+            finally:
+                store.close()
             pre_stale_in_top_k += len(pre_top & stale)
             post_stale_in_top_k += len(post_top & stale)
-        finally:
-            store.close()
+            if stale:
+                without_row_scores.append(len(stale - pre_top) / len(stale))
 
-    pre_rate = pre_stale_in_top_k / total_stale
-    post_rate = post_stale_in_top_k / total_stale
-    drop = pre_rate - post_rate
+        # Scored as "stale targets kept out of the top-k", so the arms
+        # read in the metric's own direction and the uplift the guard
+        # records is the drop the floor below is stated in.
+        return AblationArms(
+            shipped=1.0 - post_stale_in_top_k / total_stale,
+            ablated=1.0 - pre_stale_in_top_k / total_stale,
+            without_row_scores=without_row_scores,
+        )
+
+    measured = guard_ablation_gate(
+        module="bfs_potentially_stale",
+        rows=rows,
+        arms=arms,
+        bar=bar_at_least(STALE_DROP_FLOOR),
+        record_property=record_property,
+        gold_key="expected_hit_ids",
+        pool_key="beliefs",
+    )
+    pre_rate = 1.0 - measured.ablated
+    post_rate = 1.0 - measured.shipped
+    drop = measured.uplift
 
     assert drop >= STALE_DROP_FLOOR, (
         f"POTENTIALLY_STALE rerank drop {drop:+.3f} below "

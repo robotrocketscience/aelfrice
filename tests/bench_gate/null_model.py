@@ -152,21 +152,6 @@ GATE_DECLARATIONS: dict[str, GateDeclaration] = {
             "as the min headroom against the precision and recall floors"
         ),
     ),
-    "test_dedup": GateDeclaration(
-        family=Family.CLASSIFICATION,
-        corpus_module="dedup",
-        null_model="a constant predictor returning the corpus's majority label",
-    ),
-    "test_enforcement": GateDeclaration(
-        family=Family.CLASSIFICATION,
-        corpus_module="enforcement",
-        null_model="a constant predictor returning the corpus's majority label",
-    ),
-    "test_promotion_trigger": GateDeclaration(
-        family=Family.CLASSIFICATION,
-        corpus_module="promotion_trigger",
-        null_model="a constant predictor returning the corpus's majority label",
-    ),
     # -- ablation / uplift ------------------------------------------------
     "test_bfs_multihop_derived_from": GateDeclaration(
         family=Family.ABLATION,

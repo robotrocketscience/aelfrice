@@ -17,11 +17,13 @@ is empty.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import load_corpus_module
+from tests.bench_gate.null_model import bar_at_least, guard_ranking_gate
+from tests.conftest import load_corpus_module, require_min_rows
 
 ROW_HIT_FRACTION_FLOOR = 0.60
 TOP_K = 10
@@ -71,33 +73,61 @@ def _row_top_k_candidates(row: dict, store, k: int) -> set[str]:
     return {bid for _, bid in scored[:k]}
 
 
+def _row_hit(ranked: list[str], gold: list[str], k: int) -> float:
+    """The gate's own metric: 1.0 when ≥1 expected candidate is in top-k."""
+    return 1.0 if set(ranked[:k]) & set(gold) else 0.0
+
+
 @pytest.mark.bench_gated
 def test_wonder_online_recall(
     aelfrice_corpus_root: Path,
     tmp_path: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     rows = [
         r for r in load_corpus_module(aelfrice_corpus_root, "wonder_online")
         if not r.get("seed", False)
     ]
-    if len(rows) < MIN_ROWS:
-        pytest.skip(
-            f"wonder_online corpus has {len(rows)} non-seed rows; gate "
-            f"requires ≥{MIN_ROWS} for stable recall measurement"
-        )
+    require_min_rows(
+        rows,
+        module="wonder_online",
+        minimum=MIN_ROWS,
+        root=aelfrice_corpus_root,
+        detail="non-seed rows, for stable recall measurement",
+    )
 
-    rows_with_hit = 0
-    for idx, row in enumerate(rows):
-        store = _build_store(tmp_path, row, idx)
-        try:
-            top_k = _row_top_k_candidates(row, store, TOP_K)
-        finally:
-            store.close()
-        expected = set(row["expected_candidate_ids"])
-        if top_k & expected:
-            rows_with_hit += 1
+    counted: dict[str, int] = {}
 
-    hit_fraction = rows_with_hit / len(rows)
+    def shipped() -> float:
+        rows_with_hit = 0
+        for idx, row in enumerate(rows):
+            store = _build_store(tmp_path, row, idx)
+            try:
+                top_k = _row_top_k_candidates(row, store, TOP_K)
+            finally:
+                store.close()
+            expected = set(row["expected_candidate_ids"])
+            if top_k & expected:
+                rows_with_hit += 1
+        counted["rows_with_hit"] = rows_with_hit
+        return rows_with_hit / len(rows)
+
+    # #1581: a surfacing floor is evidence only while shuffling the
+    # row's own belief pool into the top-k cannot clear it.
+    measured = guard_ranking_gate(
+        module="wonder_online",
+        rows=rows,
+        shipped=shipped,
+        bar=bar_at_least(ROW_HIT_FRACTION_FLOOR),
+        metric=_row_hit,
+        record_property=record_property,
+        gold_key="expected_candidate_ids",
+        pool_key="beliefs",
+        default_k=TOP_K,
+    )
+    hit_fraction = measured.shipped
+    rows_with_hit = counted["rows_with_hit"]
+
     assert hit_fraction >= ROW_HIT_FRACTION_FLOOR, (
         f"`aelf wonder` row-recall {hit_fraction:.2%} below "
         f"{ROW_HIT_FRACTION_FLOOR:.0%} floor (rows_with_hit={rows_with_hit}, "

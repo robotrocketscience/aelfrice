@@ -18,15 +18,24 @@ directory-of-origin rule (labelled corpus lives only in
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_above,
+    guard_ablation_gate,
+)
 from tests.conftest import load_corpus_module
 
 
 @pytest.mark.bench_gated
-def test_doc_linker_uplift(aelfrice_corpus_root: Path) -> None:
+def test_doc_linker_uplift(
+    aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
+) -> None:
     rows = load_corpus_module(aelfrice_corpus_root, "doc_linker")
     assert rows, "doc_linker corpus produced zero rows"
 
@@ -43,7 +52,31 @@ def test_doc_linker_uplift(aelfrice_corpus_root: Path) -> None:
         ),
     )
 
-    results = runner_mod.run_doc_linker_uplift(rows)
+    measured: dict[str, object] = {}
+
+    def arms() -> AblationArms:
+        results = runner_mod.run_doc_linker_uplift(rows)
+        measured["results"] = results
+        return AblationArms(
+            shipped=results.mean_ndcg_on,
+            ablated=results.mean_ndcg_off,
+            without_row_scores=results.off_row_scores,
+        )
+
+    # #1581: the anchors-off arm is this gate's declared null model. A
+    # corpus where nothing is retrievable without a doc anchor reports
+    # +1.000 uplift whatever the linker does.
+    guard_ablation_gate(
+        module="doc_linker",
+        rows=rows,
+        arms=arms,
+        bar=bar_above(0.0),
+        record_property=record_property,
+        gold_key="expected_belief_ids",
+        pool_key="beliefs",
+    )
+
+    results = measured["results"]
     detail = (
         f"  NDCG_anchors_off={results.mean_ndcg_off:.4f} "
         f"NDCG_anchors_on={results.mean_ndcg_on:.4f} "

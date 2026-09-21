@@ -60,10 +60,16 @@ policy and #769 for the umbrella tracker.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_at_least,
+    guard_ablation_gate,
+)
 from tests.conftest import load_corpus_module
 
 
@@ -121,6 +127,7 @@ def test_compression_a4_corpus_round_trip(
 @pytest.mark.timeout(120)
 def test_compression_a4_fidelity_band(
     aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """Spec § A4 ship-gate.
 
@@ -140,8 +147,33 @@ def test_compression_a4_fidelity_band(
         ),
     )
 
-    results = runner_mod.run_compression_a4_fidelity(rows)
     tolerance = 0.005
+    measured: dict[str, object] = {}
+
+    def arms() -> AblationArms:
+        results = runner_mod.run_compression_a4_fidelity(rows)
+        measured["results"] = results
+        return AblationArms(
+            shipped=results.mean_fidelity_on,
+            ablated=results.mean_fidelity_off,
+            without_row_scores=results.off_row_scores,
+        )
+
+    # #1581: the compression-off arm is this gate's declared null model,
+    # and a corpus whose answers are unreachable without it would make
+    # the band meaningless. The structural pre-filters do not apply
+    # here: `expected_post_clear_answers` is free text scored by
+    # coverage, not a gold subset drawn from the row's belief pool, so
+    # `len(gold) < len(pool)` compares two different populations.
+    guard_ablation_gate(
+        module="compression_a4_fidelity",
+        rows=rows,
+        arms=arms,
+        bar=bar_at_least(-tolerance),
+        record_property=record_property,
+    )
+
+    results = measured["results"]
     assert results.uplift >= -tolerance, (
         "type-aware compression must not regress continuation fidelity "
         f"by more than {tolerance:+.4f}\n"

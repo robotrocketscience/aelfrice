@@ -13,10 +13,16 @@ substrate can land before the wiring.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from tests.bench_gate.null_model import (
+    AblationArms,
+    bar_above,
+    guard_ablation_gate,
+)
 from tests.conftest import load_corpus_module
 
 
@@ -38,6 +44,7 @@ def test_multi_fact_corpus_round_trip(aelfrice_corpus_root: Path) -> None:
 @pytest.mark.bench_gated
 def test_clustering_ship_gate_runner_present(
     aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """The full A2 + A3 ship gate runs from
     ``tests.retrieve_uplift_runner.run_clustering_uplift``. This test
@@ -54,7 +61,31 @@ def test_clustering_ship_gate_runner_present(
         ),
     )
 
-    results = runner_mod.run_clustering_uplift(rows)
+    measured: dict[str, object] = {}
+
+    def arms() -> AblationArms:
+        results = runner_mod.run_clustering_uplift(rows)
+        measured["results"] = results
+        return AblationArms(
+            shipped=results.cluster_coverage_on,
+            ablated=results.cluster_coverage_off,
+            without_row_scores=results.off_row_scores,
+        )
+
+    # #1581: the clustering-off arm is this gate's declared null model.
+    # The structural pre-filters do not apply: a multi_fact row carries
+    # no candidate pool (`_seed_store` reads an optional `beliefs` key
+    # that the schema does not require), so there is no `len(pool)` to
+    # compare the gold against.
+    guard_ablation_gate(
+        module="multi_fact",
+        rows=rows,
+        arms=arms,
+        bar=bar_above(0.0),
+        record_property=record_property,
+    )
+
+    results = measured["results"]
     assert results.cluster_coverage_uplift > 0, (
         "intentional clustering must show strictly positive cluster_coverage@k uplift\n"
         f"  ON={results.cluster_coverage_on:.4f} "

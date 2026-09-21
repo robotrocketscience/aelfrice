@@ -32,6 +32,7 @@ directory-of-origin rule (labelled corpus lives only in
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,12 @@ from aelfrice.query_understanding import (
     DEFAULT_STRATEGY,
     LEGACY_STRATEGY,
     STACK_R1_R3_STRATEGY,
+)
+from tests.bench_gate.null_model import (
+    bar_above,
+    guard_ranking_gate,
+    precision_at_k,
+    shuffled_ranker_score,
 )
 from tests.conftest import load_corpus_module
 
@@ -59,8 +66,27 @@ def _corpus_digest(root: Path) -> str:
     return h.hexdigest()[:12]
 
 
+def _null_precision(rows: list[dict]) -> float:
+    """P@k of the same shuffle, recorded beside the gate's own NDCG@k.
+
+    The gate scores NDCG, so NDCG is what the bar is read against. P@k
+    is carried alongside because it is the number #1581 quotes and the
+    plainer statement of the same degeneracy: with the gold set equal
+    to the pool, nearly every position in the top-k is a hit.
+    """
+    return shuffled_ranker_score(
+        rows,
+        metric=precision_at_k,
+        gold_key="expected_top_k",
+        pool_key="beliefs",
+    )
+
+
 @pytest.mark.bench_gated
-def test_query_strategy_uplift(aelfrice_corpus_root: Path) -> None:
+def test_query_strategy_uplift(
+    aelfrice_corpus_root: Path,
+    record_property: Callable[[str, object], None],
+) -> None:
     rows = load_corpus_module(aelfrice_corpus_root, "query_strategy")
     assert rows, "query_strategy corpus produced zero rows"
 
@@ -72,7 +98,41 @@ def test_query_strategy_uplift(aelfrice_corpus_root: Path) -> None:
         ),
     )
 
-    results = runner_mod.run_query_strategy_uplift(rows)
+    measured: dict[str, object] = {}
+
+    def shipped() -> float:
+        results = runner_mod.run_query_strategy_uplift(rows)
+        measured["results"] = results
+        return {
+            LEGACY_STRATEGY: results.mean_ndcg_off,
+            STACK_R1_R3_STRATEGY: results.mean_ndcg_on,
+        }[DEFAULT_STRATEGY]
+
+    # The null-model precondition (#1581). The declared null is the
+    # row's candidate pool in deterministic shuffled order, scored with
+    # this gate's own NDCG@k against this gate's own `> 0.0` floor.
+    # Measured 2026-09-20 on the mounted corpus: the two structural
+    # pre-filters reject it before the arms run — the gold set is the
+    # whole candidate pool on 30 of 30 rows — and a shuffle scores
+    # NDCG@10 0.8261 / P@10 0.9933 against a floor of 0.0. Rebuilding
+    # those rows is #1581's out-of-scope follow-on, not a reason to
+    # weaken this.
+    guard_ranking_gate(
+        module="query_strategy",
+        rows=rows,
+        shipped=shipped,
+        bar=bar_above(0.0),
+        metric=runner_mod.ndcg_at_k,
+        record_property=record_property,
+        gold_key="expected_top_k",
+        pool_key="beliefs",
+        extra=(
+            f"null_p_at_k={_null_precision(rows):.4f} "
+            f"corpus_sha256={_corpus_digest(aelfrice_corpus_root)}"
+        ),
+    )
+
+    results = measured["results"]
     scores = {
         LEGACY_STRATEGY: results.mean_ndcg_off,
         STACK_R1_R3_STRATEGY: results.mean_ndcg_on,

@@ -1,12 +1,15 @@
 """A bench-gate corpus counts only when it defeats its own null model (#1581).
 
-Two separate things are pinned here, because two separate ways of
+Three separate things are pinned here, because three separate ways of
 losing the guard were observed:
 
 * **Declaration.** Every module under `tests/bench_gate/` names a family
   and a null model in `GATE_DECLARATIONS`. A new gate that declares
   neither fails here rather than shipping as an unguarded "executed"
   count.
+* **Wiring.** A declaration is not the guard. Every non-exempt gate
+  module must actually call one, in the gate, on the same rows — which
+  is checked by parsing the file rather than by trusting the registry.
 * **Behaviour.** One degenerate corpus per family, constructed to be
   degenerate in exactly that family's way, must be rejected; the
   healthy counterpart must be accepted. This is the mutation proof for
@@ -19,6 +22,7 @@ machine can produce.
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -90,6 +94,76 @@ def test_an_exempt_declaration_must_say_why() -> None:
 def test_a_scored_declaration_must_name_its_corpus_module() -> None:
     with pytest.raises(ValueError, match="must name its corpus module"):
         GateDeclaration(family=Family.RANKING, null_model="shuffle")
+
+
+# ---------------------------------------------------------------------------
+# Wiring
+# ---------------------------------------------------------------------------
+
+
+def _calls_a_guard(path: Path) -> bool:
+    """True when the module calls one of the family guards.
+
+    Parsed rather than grepped: `guard_ranking_gate` appears in this
+    file's own prose and in the registry's, and a substring match would
+    read a docstring as a wired gate.
+    """
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name.startswith("guard_") and name.endswith("_gate"):
+            return True
+    return False
+
+
+def test_every_scored_gate_actually_calls_its_guard() -> None:
+    """AC2. The declaration is not the guard; the call is.
+
+    A registry entry with no call site is the failure mode this closes:
+    the tier would report a declared family for a gate that never ran a
+    null model, which is worse than an undeclared gate because it reads
+    as covered.
+    """
+    missing = [
+        path.name
+        for path in _gate_files()
+        if GATE_DECLARATIONS[path.stem].family is not Family.EXEMPT
+        and not _calls_a_guard(path)
+    ]
+    assert not missing, (
+        f"bench-gate modules that declare a null model but never run one: "
+        f"{missing}. The null-model run happens in the gate, on the same "
+        f"rows, every time the gate runs."
+    )
+
+
+def test_no_bench_gate_writes_its_own_corpus_skip() -> None:
+    """Corpus-state skips go through `skip_corpus_module` (AC5).
+
+    A bespoke `pytest.skip` is how an under-`MIN_ROWS` module went
+    unreported: the summary parses one reason shape, and a message that
+    does not match it prints neither "executed" nor "no verdict".
+    """
+    offenders: list[str] = []
+    for path in _gate_files():
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "skip"):
+                continue
+            text = ast.unparse(node)
+            if "corpus" in text:
+                offenders.append(f"{path.name}: {text.splitlines()[0][:90]}")
+    assert not offenders, (
+        "corpus-state skips must use tests.conftest.skip_corpus_module or "
+        "require_min_rows so the tier summary can classify them:\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 # ---------------------------------------------------------------------------

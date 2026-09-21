@@ -31,7 +31,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import BENCH_MEASUREMENT_PROPERTY, load_corpus_module
+from tests.bench_gate.null_model import (
+    bar_headroom,
+    guard_classification_gate,
+)
+from tests.conftest import (
+    BENCH_MEASUREMENT_PROPERTY,
+    load_corpus_module,
+    require_min_rows,
+)
 
 PRECISION_GATE = 0.80
 RECALL_GATE = 0.60
@@ -87,6 +95,25 @@ def _head_word(prompt: str) -> str:
     return match.group(1).lower() if match else ""
 
 
+def _headroom(precision: float, recall: float) -> float:
+    """H1's conjunction as one scalar: non-negative iff both floors clear."""
+    return min(precision - PRECISION_GATE, recall - RECALL_GATE)
+
+
+def _constant_headroom(rows: list[dict], label: str) -> float:
+    """Score a constant predictor with the gate's own metric.
+
+    Answering "not-directive" on every row predicts nothing positive,
+    so precision and recall are both 0.0. Answering "directive" on
+    every row takes recall to 1.0 and precision to the positive class's
+    share — which is how an imbalanced corpus hands the bar away.
+    """
+    positives = sum(1 for r in rows if r["label"] == "directive")
+    if not label.replace("_", "-").startswith("directive"):
+        return _headroom(0.0, 0.0)
+    return _headroom(positives / len(rows), 1.0 if positives else 0.0)
+
+
 @pytest.mark.bench_gated
 def test_h1_reentry_bar_is_still_unmet(
     aelfrice_corpus_root: Path,
@@ -112,11 +139,13 @@ def test_h1_reentry_bar_is_still_unmet(
     """
     rows = load_corpus_module(aelfrice_corpus_root, "directive_detection")
 
-    if len(rows) < MIN_ROWS:
-        pytest.skip(
-            f"directive_detection corpus has {len(rows)} rows; the bar requires "
-            f"≥{MIN_ROWS} per docs/design/v2_enforcement.md § H1"
-        )
+    require_min_rows(
+        rows,
+        module="directive_detection",
+        minimum=MIN_ROWS,
+        root=aelfrice_corpus_root,
+        detail="the bar requires it per docs/design/v2_enforcement.md § H1",
+    )
 
     from aelfrice.directive_detector import detect_directive
 
@@ -135,6 +164,25 @@ def test_h1_reentry_bar_is_still_unmet(
 
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
+
+    # The weakest null model, run on the same rows in the same test
+    # (#1581). The stronger first-token baseline below is what actually
+    # defends this corpus; this one is the tier-wide floor every module
+    # now carries, and it is the check that would catch a re-label that
+    # collapsed the corpus onto one class.
+    guard_classification_gate(
+        module="directive_detection",
+        rows=rows,
+        shipped=lambda: _headroom(precision, recall),
+        bar=bar_headroom(
+            f"precision >= {PRECISION_GATE:.2f} and recall >= "
+            f"{RECALL_GATE:.2f} (min headroom >= 0)"
+        ),
+        score_constant=lambda label: _constant_headroom(rows, label),
+        record_property=record_property,
+        extra=f"corpus_sha256[:12]={_corpus_digest(aelfrice_corpus_root)}",
+    )
+
     measured = (
         f"directive_detection: precision={precision:.3f} "
         f"(bar {PRECISION_GATE}) recall={recall:.3f} (bar {RECALL_GATE}) "
@@ -190,11 +238,13 @@ def test_directive_corpus_defeats_a_first_token_baseline(
     """
     rows = load_corpus_module(aelfrice_corpus_root, "directive_detection")
 
-    if len(rows) < MIN_ROWS:
-        pytest.skip(
-            f"directive_detection corpus has {len(rows)} rows; the validity "
-            f"guard needs the same ≥{MIN_ROWS} floor as the gate it guards"
-        )
+    require_min_rows(
+        rows,
+        module="directive_detection",
+        minimum=MIN_ROWS,
+        root=aelfrice_corpus_root,
+        detail="the validity guard needs the same floor as the gate it guards",
+    )
 
     def score(salt: str) -> tuple[float, float, int, int, int]:
         train, held_out = [], []
