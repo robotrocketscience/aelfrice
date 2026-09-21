@@ -442,3 +442,94 @@ def test_the_retired_modules_stay_retired(module: str) -> None:
         f"aelfrice.{module}.{symbol} still does not exist. #1579 retired "
         f"the scaffold; do not re-mount rows before the code exists."
     )
+
+
+# Import spellings that reach `aelfrice.dedup.classify` — a name the
+# package does not define — which the collector once read as clean. Each
+# was a live false negative before the #1579 review; they are pinned here
+# because all three live in the collector's scope handling, where one
+# refactor can reopen any of them without touching a bench-gate file.
+#
+# The alias cases need the parameter name to EQUAL the module alias.
+# `def gate(classify=dedup.classify)` does not reproduce them: `dedup` is
+# not a parameter there, nothing shadows it, and the check fires
+# correctly. Writing that fixture and concluding the guard is sound is
+# the mistake this comment exists to prevent.
+COLLECTOR_HOLES = {
+    "nested module access": (
+        "import aelfrice.dedup\n"
+        "\n"
+        "def test_band(rows):\n"
+        "    assert aelfrice.dedup.classify(rows[0]) == 'dup'\n"
+    ),
+    "alias in a default, parameter named for the alias": (
+        "import aelfrice.dedup as dedup\n"
+        "\n"
+        "def gate(rows, dedup=dedup.classify):\n"
+        "    return [dedup(r) for r in rows]\n"
+    ),
+    "alias in a decorator, parameter named for the alias": (
+        "import aelfrice.dedup as dedup\n"
+        "\n"
+        "@dedup.classify\n"
+        "def gate(dedup):\n"
+        "    return dedup\n"
+    ),
+}
+
+# The same three spellings reaching a name `aelfrice.dedup` does define.
+# Widening the collector is only worth anything if it stays quiet here.
+COLLECTOR_HOLES_ON_REAL_CODE = {
+    shape: source.replace("classify", "jaccard")
+    for shape, source in COLLECTOR_HOLES.items()
+}
+
+
+def _dedup_classify_still_missing() -> bool:
+    """True while `aelfrice.dedup.classify` — the arms' premise — is absent."""
+    return not _graded_code_exists("dedup", "classify")
+
+
+@pytest.mark.parametrize("shape", sorted(COLLECTOR_HOLES))
+def test_the_collector_catches_each_reviewed_hole(shape: str) -> None:
+    """Every import spelling that reaches a missing name is reported.
+
+    A bench-gate file can reach `aelfrice.dedup.classify` by more than
+    the one spelling the retired gate used, and the collector must not
+    care which. Pinning the source text rather than a planted file keeps
+    the arm honest under a collector refactor: it fails on the rule, not
+    on a fixture somebody forgot to delete.
+    """
+    if not _dedup_classify_still_missing():
+        pytest.skip(
+            "aelfrice.dedup.classify now exists — these arms need a name "
+            "the package does not define. Repoint them at one."
+        )
+    missing = _missing_graded_names(_collect_source(COLLECTOR_HOLES[shape]))
+    assert missing == ["aelfrice.dedup.classify"], (
+        f"the collector read {shape!r} as clean, but it grades "
+        f"aelfrice.dedup.classify, which the module does not define. "
+        f"This spelling was a false negative before the #1579 review; a "
+        f"refactor has reopened it."
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(COLLECTOR_HOLES_ON_REAL_CODE))
+def test_the_widened_collector_stays_quiet_on_real_code(shape: str) -> None:
+    """The same three spellings reaching a real name report nothing.
+
+    This is the other half of the widening. Resolving whole dotted chains
+    and hoisting decorators and defaults into the enclosing scope both
+    make the collector see more, and seeing more is only safe if it does
+    not start blaming code that is fine. Measured on the tier as well:
+    the widened collector flags zero of this branch's bench-gate files,
+    which is what the per-file checks above assert on every CI pass.
+    """
+    missing = _missing_graded_names(
+        _collect_source(COLLECTOR_HOLES_ON_REAL_CODE[shape])
+    )
+    assert missing == [], (
+        f"the collector flagged {missing} for {shape!r}, which reads "
+        f"aelfrice.dedup.jaccard — a function the module does define. "
+        f"The widening is over-firing on sound code."
+    )
