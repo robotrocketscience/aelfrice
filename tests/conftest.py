@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
+from typing import NoReturn
 
 import pytest
 
@@ -45,6 +46,18 @@ so every one of its assertions skipped on every run for the life of the
 file (#1580). The shape of that failure is that "0 rows validated" and
 "every row is valid" produce the same green tail, so the count is
 printed rather than left to be inferred.
+"""
+
+BENCH_NULL_VERDICT_PROPERTY = "bench_null_verdict"
+"""`record_property` key carrying one gate's null-model verdict (#1581).
+
+Value shape: `"<corpus module>|ACCEPT|"` or `"<corpus module>|REJECT|<why>"`.
+
+Separate from `BENCH_MEASUREMENT_PROPERTY` because the summary has to
+*classify* on it, not just print it: a corpus the null model defeated is
+its own tier state, distinct from a gate that executed and from a module
+that produced no verdict at all. Folding it into the free-text
+measurement line would leave the summary parsing prose.
 """
 
 TIMEOUT_SCALE_ENV_VAR = "AELF_TEST_TIMEOUT_SCALE"
@@ -256,11 +269,77 @@ def _corpus_root() -> Path | None:
     return p if p.is_dir() else None
 
 
-# A corpus module that exists but holds nothing skips with its own reason,
-# distinct from the whole-tier one above. `load_corpus_module` writes both.
+# A corpus module that exists but cannot be graded skips with its own
+# reason, distinct from the whole-tier one above. Every such skip is
+# written by `skip_corpus_module` so this stays the only shape to parse.
+#
+# The `why` group is open rather than an alternation of the states known
+# today. It used to read `missing|empty`, which meant a module skipped
+# for any third reason — an under-`MIN_ROWS` floor, the state a
+# half-built module is actually in — matched nothing, printed neither
+# "executed" nor "no verdict", and vanished from the tier summary
+# altogether (#1581). Matching the token and looking its sentence up
+# below makes an unrecognised state report as unverified instead of
+# disappearing.
 _MODULE_SKIP_RE = re.compile(
-    r"corpus module '(?P<module>[^']+)' (?P<why>missing|empty) under "
+    r"corpus module '(?P<module>[^']+)' (?P<why>[a-z][a-z-]*) under "
 )
+
+# Skip state -> (summary sentence, does the tier still owe a verdict).
+# "no verdict" and "unverified" are deliberately different words: a
+# missing or empty module was never delivered, while an underfilled one
+# was delivered half-built and reads as absent unless it is named.
+CORPUS_SKIP_STATES: dict[str, str] = {
+    "missing": "the corpus module is missing. This module's gate has no verdict.",
+    "empty": "the corpus module is empty. This module's gate has no verdict.",
+    "underfilled": (
+        "the corpus module is underfilled — below the gate's row floor. "
+        "This module is UNVERIFIED, not absent."
+    ),
+    "ungradeable": (
+        "the corpus module holds rows the gate cannot grade. This module "
+        "is UNVERIFIED, not absent."
+    ),
+}
+
+_UNKNOWN_SKIP_STATE = (
+    "the corpus module skipped in an unrecognised state. This module is "
+    "UNVERIFIED."
+)
+
+
+def skip_corpus_module(
+    module: str, why: str, root: Path, detail: str = ""
+) -> NoReturn:
+    """Skip the test with the one reason shape the tier summary parses.
+
+    Every corpus-state skip in `tests/bench_gate/` goes through here.
+    `tests/test_bench_gate_null_model_1581.py` fails on a bare
+    `pytest.skip` that mentions a corpus, because a bespoke message is
+    exactly how an under-floor module went unreported for the life of
+    the summary.
+    """
+    if why not in CORPUS_SKIP_STATES:
+        raise ValueError(
+            f"unknown corpus skip state {why!r}; add it to CORPUS_SKIP_STATES "
+            f"so the tier summary has a sentence for it"
+        )
+    suffix = f": {detail}" if detail else ""
+    pytest.skip(f"corpus module {module!r} {why} under {root}{suffix}")
+
+
+def require_min_rows(
+    rows: list[dict], *, module: str, minimum: int, root: Path, detail: str = ""
+) -> None:
+    """Skip as `underfilled` when a module has too few rows to grade."""
+    if len(rows) < minimum:
+        skip_corpus_module(
+            module,
+            "underfilled",
+            root,
+            detail=f"{len(rows)} rows < {minimum} floor"
+            + (f"; {detail}" if detail else ""),
+        )
 
 
 def _skip_reason(rep: object) -> str:
@@ -371,16 +450,30 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
 
     executed = 0
     measurements: list[str] = []
+    rejected: dict[str, str] = {}
     for outcome in ("passed", "failed"):
         for rep in stats.get(outcome, []):
             if "bench_gated" not in getattr(rep, "keywords", {}):
                 continue
-            executed += 1
-            for key, value in getattr(rep, "user_properties", ()):
+            properties = list(getattr(rep, "user_properties", ()))
+            was_rejected = False
+            for key, value in properties:
                 if key == BENCH_MEASUREMENT_PROPERTY:
                     measurements.append(str(value))
+                elif key == BENCH_NULL_VERDICT_PROPERTY:
+                    module, _, rest = str(value).partition("|")
+                    state, _, why = rest.partition("|")
+                    if state == "REJECT":
+                        was_rejected = True
+                        rejected.setdefault(module, why)
+            # A rejected corpus is not an executed gate. Counting it as
+            # one is the whole defect #1581 closes: the tier's headline
+            # number is "N executed against the corpus", and a corpus
+            # its own null model defeats did not grade anything.
+            if not was_rejected:
+                executed += 1
 
-    if not (tier_skips or by_module or executed):
+    if not (tier_skips or by_module or executed or rejected):
         return
 
     terminalreporter.write_sep("-", "bench-gate tier")
@@ -395,10 +488,20 @@ def pytest_terminal_summary(terminalreporter) -> None:  # type: ignore[no-untype
         terminalreporter.write_line(
             f"{executed} bench-gate tests executed against the corpus."
         )
-    for (module, why), n in sorted(by_module.items()):
+    if rejected:
         terminalreporter.write_line(
-            f"  module {module!r}: {n} test(s) skipped — the corpus module "
-            f"is {why}. This module's gate has no verdict."
+            f"{len(rejected)} corpus module(s) REJECTED by their own null "
+            f"model (#1581). A rejected corpus counts as neither executed "
+            f"nor skipped: the gate ran and produced no verdict."
+        )
+        for module, why in sorted(rejected.items()):
+            terminalreporter.write_line(
+                f"  module {module!r}: REJECTED — {why}"
+            )
+    for (module, why), n in sorted(by_module.items()):
+        sentence = CORPUS_SKIP_STATES.get(why, _UNKNOWN_SKIP_STATE)
+        terminalreporter.write_line(
+            f"  module {module!r}: {n} test(s) skipped — {sentence}"
         )
     for line in sorted(measurements):
         terminalreporter.write_line(f"  {line}")
@@ -434,7 +537,7 @@ def load_corpus_module(root: Path, module: str) -> list[dict]:
     """Load every `*.jsonl` row under `root/<module>/`. Skip if empty."""
     mod_dir = root / module
     if not mod_dir.is_dir():
-        pytest.skip(f"corpus module {module!r} missing under {root}")
+        skip_corpus_module(module, "missing", root)
     rows: list[dict] = []
     for p in sorted(mod_dir.glob("*.jsonl")):
         with p.open() as f:
@@ -444,7 +547,7 @@ def load_corpus_module(root: Path, module: str) -> list[dict]:
                     continue
                 rows.append(json.loads(line))
     if not rows:
-        pytest.skip(f"corpus module {module!r} empty under {root}")
+        skip_corpus_module(module, "empty", root)
     return rows
 
 

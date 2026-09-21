@@ -17,6 +17,7 @@ never in doubt.
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -41,13 +42,16 @@ class _Report:
         self,
         reason: str = "",
         keywords: dict[str, int] | None = None,
-        user_properties: tuple[tuple[str, str], ...] = (),
+        user_properties: Sequence[tuple[str, object]] | None = None,
     ):
         # pytest stores a skip's reason as the third element of a
         # (path, lineno, reason) tuple. Anything else has no reason.
         self.longrepr = ("f.py", 1, reason) if reason else None
         self.keywords = keywords or {}
-        self.user_properties = user_properties
+        # Normalised to a tuple so either call shape works: the #1580
+        # schema tests pass a tuple of pairs, the #1581 verdict helpers
+        # a list of them, and the hook only ever iterates it.
+        self.user_properties = tuple(user_properties or ())
 
 
 class _Terminal:
@@ -242,3 +246,81 @@ def test_the_same_corpus_schema_line_is_printed_once() -> None:
     })
 
     assert sum("module 'w': 5 rows" in line for line in lines) == 1, lines
+
+
+# ---------------------------------------------------------------------------
+# #1581 — rejected-by-null-model, and the states that used to vanish
+# ---------------------------------------------------------------------------
+
+BENCH_NULL_VERDICT_PROPERTY = conftest.BENCH_NULL_VERDICT_PROPERTY
+
+
+def _rejected(module: str, why: str) -> _Report:
+    return _Report(
+        keywords={"bench_gated": 1},
+        user_properties=[(BENCH_NULL_VERDICT_PROPERTY, f"{module}|REJECT|{why}")],
+    )
+
+
+def test_a_rejected_corpus_is_its_own_state() -> None:
+    """AC3. Rejected is neither executed nor skipped.
+
+    A corpus its own null model defeats graded nothing, so reporting it
+    under either of the other two states restates the defect #1581
+    closes.
+    """
+    lines = _summary({
+        "failed": [_rejected("query_strategy", "gold == pool on 30 of 30 rows")],
+        "passed": [_Report(keywords={"bench_gated": 1})],
+    })
+    body = "\n".join(lines)
+
+    assert "1 bench-gate tests executed" in body
+    assert "1 corpus module(s) REJECTED" in body
+    assert "'query_strategy': REJECTED" in body
+    assert "gold == pool on 30 of 30 rows" in body
+
+
+def test_a_rejected_gate_is_not_counted_as_executed() -> None:
+    """The headline number is the one a release reviewer reads."""
+    lines = _summary({"failed": [_rejected("query_strategy", "why")]})
+
+    assert not any("tests executed" in line for line in lines), lines
+    assert any("REJECTED" in line for line in lines), lines
+
+
+def test_an_accepted_gate_still_counts_as_executed() -> None:
+    """An ACCEPT verdict must not be misread as a rejection."""
+    lines = _summary({"passed": [_Report(
+        keywords={"bench_gated": 1},
+        user_properties=[(BENCH_NULL_VERDICT_PROPERTY, "sentiment|ACCEPT|")],
+    )]})
+
+    assert any("1 bench-gate tests executed" in line for line in lines), lines
+
+
+def test_an_underfilled_module_reports_as_unverified() -> None:
+    """AC5. The state that printed nothing at all before #1581.
+
+    `_MODULE_SKIP_RE` matched only `missing|empty`, so a module skipped
+    for being under its row floor produced neither an "executed" line
+    nor a "no verdict" line, and a reader counting modules never saw it.
+    """
+    lines = _summary({"skipped": [
+        _Report("corpus module 'directive_detection' underfilled under /c: 29 rows < 200 floor"),
+    ]})
+    body = "\n".join(lines)
+
+    assert "'directive_detection': 1 test(s) skipped" in body
+    assert "UNVERIFIED" in body
+
+
+def test_an_unknown_skip_state_still_reports() -> None:
+    """A state nobody added a sentence for must not vanish silently."""
+    lines = _summary({"skipped": [
+        _Report("corpus module 'sentiment' quarantined under /c"),
+    ]})
+    body = "\n".join(lines)
+
+    assert "'sentiment': 1 test(s) skipped" in body
+    assert "UNVERIFIED" in body

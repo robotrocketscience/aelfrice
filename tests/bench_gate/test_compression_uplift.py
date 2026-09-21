@@ -44,7 +44,7 @@ from aelfrice.models import (
     RETENTION_UNKNOWN,
     Belief,
 )
-from tests.conftest import load_corpus_module
+from tests.conftest import load_corpus_module, skip_corpus_module
 
 
 def _belief_from_row(row: dict) -> tuple[Belief, bool]:
@@ -105,10 +105,15 @@ def test_compression_reduces_total_tokens_on_corpus(
     # composition problem, not a compressor bug, so it skips rather
     # than fails.
     if compressed_total == uncompressed_total:
-        pytest.skip(
-            f"compression_uplift corpus has no compressible rows "
-            f"(all {len(rows)} rows render verbatim); add snapshot/transient "
-            f"rows to exercise the headline/stub strategies"
+        skip_corpus_module(
+            "compression_uplift",
+            "ungradeable",
+            aelfrice_corpus_root,
+            detail=(
+                f"all {len(rows)} rows render verbatim, so there is no "
+                f"reduction to measure; add snapshot/transient rows to "
+                f"exercise the headline/stub strategies"
+            ),
         )
     reduction = (uncompressed_total - compressed_total) / uncompressed_total
     # A2 precondition: on a mixed-class corpus, compression should
