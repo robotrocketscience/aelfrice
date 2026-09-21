@@ -396,5 +396,11 @@ stops reproducing fails it too. Every reproducing entry prints in the terminal
 summary under `corpus schema`, so a recorded violation stays visible rather
 than becoming a quiet exemption.
 
+An entry is keyed by module and rule, never by row, so a later batch that
+breaks a rule an entry already records is absorbed by that entry. The summary
+therefore prints how many rows each reproducing rule covers: the list cannot
+gate on the figure, because it depends on which corpus you mount, but the
+figure is what moves when a waiver's scope grows.
+
 The test does **not** enforce the ≥50 threshold yet — that flips on once v0.1
 labelling lands.
