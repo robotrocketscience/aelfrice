@@ -35,11 +35,8 @@ from tests.bench_gate.null_model import (
     bar_headroom,
     guard_classification_gate,
 )
-from tests.conftest import (
-    BENCH_MEASUREMENT_PROPERTY,
-    load_corpus_module,
-    require_min_rows,
-)
+from tests.bench_protocol import BENCH_MEASUREMENT_PROPERTY
+from tests.conftest import load_corpus_module, require_min_rows
 
 PRECISION_GATE = 0.80
 RECALL_GATE = 0.60

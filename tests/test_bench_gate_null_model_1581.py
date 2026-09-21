@@ -41,16 +41,15 @@ from tests.bench_gate.null_model import (
     precision_at_k,
     structural_prefilter,
 )
-from tests.conftest import (
+from tests.bench_protocol import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
     BENCH_VERDICT_ACCEPT,
     BENCH_VERDICT_REJECT,
     BENCH_VERDICT_UNVERIFIED,
     NO_VERDICT_RECORDED,
-    exempt_gate_modules,
-    tally_bench_reports,
 )
+from tests.conftest import exempt_gate_modules, tally_bench_reports
 
 _BENCH_GATE_DIR = Path(__file__).resolve().parent / "bench_gate"
 

@@ -52,7 +52,7 @@ from typing import TypeVar
 
 import pytest
 
-from tests.conftest import (
+from tests.bench_protocol import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
     BENCH_VERDICT_ACCEPT,
@@ -501,8 +501,9 @@ is a corpus-design decision rather than a statistical one.
 # ---------------------------------------------------------------------------
 
 # Re-exported under the short names the guards read with. The strings
-# live in `tests.conftest` because the tier summary classifies on them
-# and must not re-declare a second copy that can drift.
+# live in `tests.bench_protocol` — a leaf both this module and the tier
+# summary import — because the summary classifies on them and must not
+# read a second copy that can drift from the one the guards write.
 ACCEPT = BENCH_VERDICT_ACCEPT
 REJECT = BENCH_VERDICT_REJECT
 UNVERIFIED = BENCH_VERDICT_UNVERIFIED
