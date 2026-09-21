@@ -19,7 +19,6 @@ depends on the real per-user config file.
 from __future__ import annotations
 
 import ast
-import pkgutil
 import re
 from pathlib import Path
 
@@ -248,21 +247,26 @@ def _private_walkers() -> dict[str, str]:
     behind. A function that names the config filename (under either
     spelling, or as a bare literal) and also touches `.parent` /
     `.parents` is doing its own discovery.
+
+    The enumeration recurses into the subpackages. No config reader
+    lives in one today, so scanning only the top level would give the
+    same empty answer for the wrong reason, and a reader added under
+    `wonder/` or `query_understanding/` later would not be seen.
     """
     offenders: dict[str, str] = {}
     package_dir = Path(aelfrice.__file__).parent
-    for info in pkgutil.iter_modules([str(package_dir)]):
-        if info.name == "config_discovery":
+    for source_path in _package_sources():
+        if source_path.name == "config_discovery.py":
             continue
-        source_path = package_dir / f"{info.name}.py"
-        if not source_path.is_file():
-            continue
+        dotted = ".".join(
+            source_path.relative_to(package_dir).with_suffix("").parts,
+        )
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if _names_config(node) and _climbs_parents(node):
-                offenders[f"{info.name}.{node.name}"] = source_path.name
+                offenders[f"{dotted}.{node.name}"] = source_path.name
     return offenders
 
 
@@ -326,6 +330,26 @@ def test_the_scan_would_see_a_private_walk() -> None:
     assert _names_config(func) and _climbs_parents(func), (
         "the predicate behind the population guard does not recognise a "
         "private walk, so the guard is vacuous"
+    )
+
+
+def test_the_scan_reaches_the_subpackages() -> None:
+    """The other way the population guard could pass by seeing nothing.
+
+    `pkgutil.iter_modules` does not recurse, so the scan used to skip
+    `wonder/`, `query_understanding/`, `slash_commands/` and `data/`
+    entirely. It found no offender there because it never looked.
+    """
+    package_dir = Path(aelfrice.__file__).parent
+    nested = {
+        source.relative_to(package_dir).parts[0]
+        for source in _package_sources()
+        if len(source.relative_to(package_dir).parts) > 1
+    }
+    assert len(nested) >= 2, (
+        "the scan enumerates fewer than two subpackages, so the "
+        "population guard is not covering them: "
+        f"{sorted(nested)}"
     )
 
 
