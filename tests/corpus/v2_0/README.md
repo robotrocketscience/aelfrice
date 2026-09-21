@@ -10,8 +10,8 @@ Three of the original six scaffolds are retired (#1579): `dedup` (#197),
 `enforcement` (#199), and `promotion_trigger` (#229). Their gates graded code
 that does not exist, so they could not produce a verdict at any corpus size.
 See the `CHANGELOG/unreleased/` entry for #1579 for the reasoning, including
-the H2 drop recorded in `docs/design/v2_enforcement.md` and the store-shaped
-promotion path #229 shipped instead. Do not re-add a module here before the
+the H2 drop recorded in `docs/design/v2_enforcement.md` and the
+explicit-acknowledgment promotion path #229 ratified and #550 shipped. Do not re-add a module here before the
 code it grades exists — `tests/test_bench_gate_graded_code_exists_1579.py`
 fails when a bench gate names a module or attribute the package does not have.
 

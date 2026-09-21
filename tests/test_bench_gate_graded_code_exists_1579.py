@@ -202,8 +202,9 @@ def test_the_retired_modules_stay_retired() -> None:
     and the two checks above only fire once such a gate names a missing
     name. This pins the specific three, whose dispositions are settled:
     `enforcement` H2 was dropped on security grounds, `promotion_trigger`
-    shipped store-shaped under #229, and `dedup` has no `near-duplicate`
-    band to grade against.
+    graded the belief-sequence trigger #229 rejected (the ratified rule is
+    explicit user acknowledgment, shipped via #550), and `dedup` has no
+    `near-duplicate` band to grade against.
     """
     retired = ("dedup", "enforcement", "promotion_trigger")
     corpus_root = Path(__file__).resolve().parent / "corpus" / "v2_0"
