@@ -25,6 +25,13 @@ file created after the first call invisible until restart.
 
 Outside a scope every call walks, so a direct caller that never opts in
 keeps its original behaviour.
+
+Because every reader funnels through :func:`discover_config`, the bound
+on how far that walk may climb (#1582) lives here too, and every reader
+inherits it without knowing about it. Adding a config reader that walks
+for itself would opt out of the bound silently, which is why
+``tests/test_config_discovery_shared.py`` pins the set of modules that
+may name a config filename at all.
 """
 from __future__ import annotations
 
@@ -36,12 +43,20 @@ from typing import Final
 
 __all__ = [
     "CONFIG_FILENAME",
+    "WORKTREE_MARKER",
     "config_discovery_scope",
     "discover_config",
 ]
 
 # The project-config filename every reader walks up looking for.
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+
+# The directory entry that marks the root of a git work tree, and so the
+# top of a project. A directory in an ordinary clone; a *file* in a
+# linked work tree or a submodule, which is why the probe below is
+# `exists()` rather than `is_dir()` — bounding ordinary clones only
+# would let every `git worktree` checkout keep walking.
+WORKTREE_MARKER: Final[str] = ".git"
 
 # A ContextVar rather than a plain dict so concurrent operations cannot
 # see each other's memo. The two concurrency primitives differ and the
@@ -65,6 +80,21 @@ _CONFIG_DISCOVERY_MEMO: ContextVar[dict[Path, Path | None] | None] = ContextVar(
 _CWD_KEY: Final[Path] = Path("\x00cwd")
 
 
+def _home_dir() -> Path | None:
+    """The current user's home directory, resolved, or None.
+
+    Never raises. `Path.home()` reads `$HOME` on POSIX and falls back to
+    the password database, which can raise `RuntimeError` when the user
+    has no entry; `resolve()` can raise `OSError` on a hostile path. In
+    either case the home bound simply does not apply, and the work-tree
+    bound still does.
+    """
+    try:
+        return Path.home().resolve()
+    except (RuntimeError, OSError):
+        return None
+
+
 @contextmanager
 def config_discovery_scope() -> Iterator[None]:
     """Memoize `.aelfrice.toml` discovery for the duration of the block.
@@ -86,11 +116,48 @@ def config_discovery_scope() -> Iterator[None]:
 
 
 def discover_config(start: Path | None = None) -> Path | None:
-    """Return the nearest `.aelfrice.toml` at or above `start`, else None.
+    """Return the nearest in-project `.aelfrice.toml` at or above `start`.
 
-    `start=None` means "from the current working directory". Inside a
-    `config_discovery_scope` the result is memoized per resolved start
-    directory, so N readers cost one walk instead of N.
+    Returns None when there is none. `start=None` means "from the
+    current working directory". Inside a `config_discovery_scope` the
+    result is memoized per resolved start directory, so N readers cost
+    one walk instead of N.
+
+    **The walk is bounded and cannot leave the project (#1582).**
+    Ascending from `start`, each directory is examined in this order,
+    and the first rule that fires ends the walk:
+
+    1. The directory *is* the user's home directory — stop, and do not
+       examine it. `$HOME/.aelfrice.toml` is therefore never read, and
+       neither is anything above it.
+    2. The directory holds a `.aelfrice.toml` — that file is the answer.
+    3. The directory holds `.git`, so it is a git work-tree root — stop.
+       Configuration at the work-tree root is honoured, because rule 2
+       is checked first; configuration above it is not.
+    4. The directory is the filesystem root — stop.
+
+    Rule 1 is what makes `docs/user/CONFIG.md`'s "there is no global
+    configuration and no per-user configuration" true. Rule 3 is what
+    makes discovery a property of the project rather than of where on
+    the machine the project happens to be checked out: the same repo
+    resolves the same configuration under `$HOME`, under `/tmp`, and on
+    a CI runner.
+
+    Outside a git work tree there is no project marker, so rule 3 cannot
+    fire and rules 1 and 4 carry the bound: the walk may still cross
+    intermediate directories, but it can never reach the user's home
+    directory or above. That is the deliberate choice over "examine
+    `start` only", which would silently stop honouring a config at the
+    top of a non-git project directory that a caller reaches from a
+    subdirectory.
+
+    `AELFRICE_DB` is not a discovery input. It names the store to open,
+    not the project the configuration belongs to, and letting it move
+    the walk would reintroduce exactly the bug this bound removes — a
+    resolver whose answer depends on ambient environment rather than on
+    the tree being worked in. To use configuration that lives outside
+    the project, set the per-key `AELFRICE_*` environment variable,
+    which wins over TOML in every resolver's precedence.
 
     Distinct `start` directories are distinct memo keys and each costs
     its own walk. That is not a defect: a caller that deliberately
@@ -119,14 +186,24 @@ def discover_config(start: Path | None = None) -> Path | None:
     base = (start if start is not None else Path.cwd()).resolve()
     if memo is not None and base in memo:
         return memo[base]
+    home = _home_dir()
     located: Path | None = None
     current = base
     seen: set[Path] = set()
     while current not in seen:
         seen.add(current)
+        if current == home:
+            # Rule 1: stop *before* probing, so the per-user config is
+            # unreachable rather than merely last.
+            break
         candidate = current / CONFIG_FILENAME
         if candidate.is_file():
             located = candidate
+            break
+        if (current / WORKTREE_MARKER).exists():
+            # Rule 3. Probed only on a miss, so the common hit path
+            # pays nothing for the bound; and the bound shortens far
+            # more walks than it lengthens.
             break
         if current.parent == current:
             break
