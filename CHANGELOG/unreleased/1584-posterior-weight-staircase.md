@@ -1,0 +1,3 @@
+### Documentation
+
+- **`posterior_weight` is documented as a staircase, not a dial ([#1584](https://github.com/robotrocketscience/aelfrice/issues/1584)).** Two candidates' scores differ by an expression affine in the weight, so any pair swaps at most once and every value between two adjacent crossings retrieves an identical ranking — a small step either does nothing or moves a rank outright. `docs/user/CONFIG.md` now says so, along with the two consequences that follow from the same algebra: a finite freeze weight always exists, and saturation discards BM25 rather than the posterior, which is the opposite of what "the rerank went inert" suggests.
