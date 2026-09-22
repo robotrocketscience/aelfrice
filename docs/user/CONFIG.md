@@ -578,6 +578,17 @@ Behavior at the boundaries:
 - **`0.5`** (default) — the optimum on the synthetic graph from the v1.3 calibration. The posterior moves the rank without overwhelming BM25.
 - **`> 1.0`** — the posterior dominates, so a high-confidence belief surfaces even on a weak keyword match. Use this range when the feedback density is high and BM25 noise is the limiting factor.
 
+**This key responds as a staircase, not as a dial.** Do not tune it as a continuous knob ([#1584](https://github.com/robotrocketscience/aelfrice/issues/1584)). Two candidates' scores differ by an expression that is affine in `posterior_weight`, so any given pair swaps at most once, at one crossing weight. Between two adjacent crossings nothing reorders at all, and every value in that interval retrieves the identical ranking. Moving the weight by a small amount therefore either changes nothing or changes a rank outright, and which one you get depends on where the nearest crossing falls rather than on the size of the step.
+
+Two consequences follow from the same algebra, and both are properties of the log-additive blend rather than of any particular corpus:
+
+- **A finite freeze weight always exists.** Candidate sets are finite, so above the largest crossing weight no finite value reorders anything again. Past that point the ranking is the posterior order.
+- **Saturation discards BM25, not the posterior.** The failure mode at a high weight is that keyword relevance stops contributing, which is the opposite of what "the rerank went inert" suggests. Equal metrics between two weights are not evidence that the rerank did nothing — the aggregates are pooled statistics and two runs whose rank moves cancel across the corpus report identical numbers.
+
+Where the freeze weight actually falls depends on how many candidates a query returns and how finely their posteriors are spread, so it is a property of your store rather than a fixed number. Small candidate sets freeze at low weights; wider retrieval pushes the freeze point far higher. The band edges measured on the bundled 7-fixture calibration corpus are recorded in [#1584](https://github.com/robotrocketscience/aelfrice/issues/1584); they are specific to that corpus and **should not be read as production values**.
+
+`use_zeta_posterior_rerank` bounds its posterior term and cannot saturate this way. `use_gamma_posterior_temperature` reparameterises the weight as `1/T` and saturates identically as `T` approaches zero.
+
 Locked beliefs (L0) bypass scoring completely. The weight reranks only the L1 BM25 candidate set; it leaves the L2.5 entity-index hits and the L3 breadth-first search (BFS) expansions alone.
 
 A negative value clamps to `0.0`. A non-numeric value in an environment variable traces to stderr and falls through.
