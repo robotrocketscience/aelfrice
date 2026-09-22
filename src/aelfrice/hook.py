@@ -908,12 +908,20 @@ def enforce_block_ceiling(
     `scripts/measure_block_ceiling.py --resume-drop` is the producer and
     `test_hook_recap_shed_order_1564.py` pins the directions.
 
-    **User-locked elements are never dropped.** That is the #379 /
-    #1016-B contract — locks are the always-injected pool, uncapped and
-    untrimmed — and a ceiling that deleted them would have made this
-    module's bound the thing that broke it. `_element_is_locked` is the
-    test, and since #1570 it answers for the `<cadence-resume>` recap's
-    own render as well as this module's. Measured before the exemption
+    **User-locked content is never lost.** That is the #379 / #1016-B
+    contract — locks are the always-injected pool, uncapped and untrimmed
+    — and a ceiling that deleted them would have made this module's bound
+    the thing that broke it. `_element_is_locked` is the test, and since
+    #1570 it answers for the `<cadence-resume>` recap's own render as well
+    as this module's.
+
+    Stated as *content* rather than as *elements*, because since #1570 the
+    two differ: a locked recap element whose id the body also renders
+    outside the recap is shed with the rest of the recap, and its content
+    still reaches the model through that other render. The invariant that
+    holds over both is the one below — **no user-locked id ever reaches
+    `dropped_ids`** — and the `rendered_outside` paragraph is where the
+    distinction is worked through. Measured before the exemption
     existed: a 300-lock store had all 300 locked elements removed, leaving
     an empty `<locked>` section under 300 `seen <id>` manifest pointers.
     When the locks alone do not fit, the body is emitted over the limit
