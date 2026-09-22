@@ -47,6 +47,28 @@ class CalibrationReport:
     (score, label) observations across all queries; both are ``None``
     when the metric is undefined (single-class labels for AUC; zero
     variance after ranking for ρ).
+
+    ``rankings`` carries the ranked candidate ids of each query, in
+    corpus order — the ordering the three aggregates above were computed
+    from. It exists because **the aggregates cannot see every reordering
+    that produced them** (#1584). They are statistics of the pooled
+    (score, label) observations as a *multiset*, so two runs whose
+    per-query rank moves cancel across the pool are indistinguishable by
+    ``roc_auc`` and ``spearman_rho`` even though neither ranking is the
+    other. On the shipped 7-query corpus, ``posterior_weight`` 0.0 and
+    1.5 agree to every digit of both metrics while disagreeing on three
+    of seven rankings: the relevant belief falls 1→2 on one query and
+    rises 2→1 on another, and a third reorders two non-relevant
+    candidates, which the labels cannot register at all.
+
+    A caller asking "did the ranker do anything?" must therefore compare
+    ``rankings``. Comparing the metrics answers the weaker question "did
+    the ranker move this corpus's aggregates", and reporting that as
+    inertness names the wrong cause.
+
+    It defaults to ``()`` so a report built by hand — for formatting
+    tests, or by a producer that never retrieved — stays constructible.
+    An empty value means "not recorded", not "no candidates ranked".
     """
 
     p_at_k: float
@@ -56,6 +78,7 @@ class CalibrationReport:
     roc_auc: float | None
     spearman_rho: float | None
     n_observations: int
+    rankings: tuple[tuple[str, ...], ...] = ()
 
 
 def precision_at_k(relevance_top_k: Sequence[bool], k: int) -> float:

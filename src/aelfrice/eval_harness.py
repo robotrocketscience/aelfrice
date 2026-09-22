@@ -227,6 +227,13 @@ def run_calibration_on_fixtures(
     candidates pooled at score 0, BM25-with-default-posterior-blend
     posture (no L2.5/L3/heat-kernel/entity-index/BFS).
 
+    Also records each query's ranked candidate ids on the report's
+    ``rankings`` field, in corpus order. The three aggregates are
+    multiset statistics of the pooled observations and cannot see a
+    reordering whose per-query rank moves cancel across the pool
+    (#1584), so a caller asking whether the ranker changed anything must
+    compare ``rankings`` rather than the metrics.
+
     Raises ``ValueError`` for non-positive ``k`` or empty fixtures.
     """
     if k <= 0:
@@ -240,6 +247,7 @@ def run_calibration_on_fixtures(
     n_truncated = 0
     pooled_scores: list[float] = []
     pooled_labels: list[bool] = []
+    rankings: list[tuple[str, ...]] = []
 
     for fx in fixtures:
         store = build_calibration_store(fx, seed)
@@ -258,6 +266,7 @@ def run_calibration_on_fixtures(
                 posterior_weight=None,
             )
 
+            rankings.append(tuple(b.id for b in results))
             relevance_top_k = [b.content == known_content for b in results]
             if len(relevance_top_k) < k:
                 n_truncated += 1
@@ -290,6 +299,7 @@ def run_calibration_on_fixtures(
         roc_auc=auc,
         spearman_rho=rho,
         n_observations=len(pooled_scores),
+        rankings=tuple(rankings),
     )
 
 
