@@ -100,21 +100,78 @@ def test_posteriors_reach_the_store(fixtures: list[dict]) -> None:
         )
 
 
-def test_disabling_the_blend_changes_the_metrics(
+def _run_at_weight(fixtures: list[dict], weight: str | None):
+    """Run the harness with `AELFRICE_POSTERIOR_WEIGHT` set, or unset.
+
+    The weight goes through the environment rather than a kwarg so the
+    shipped resolver runs, which is the path the gate is claiming to
+    measure.
+    """
+    env = pytest.MonkeyPatch()
+    if weight is not None:
+        env.setenv("AELFRICE_POSTERIOR_WEIGHT", weight)
+    try:
+        return run_calibration_on_fixtures(fixtures)
+    finally:
+        env.undo()
+
+
+def test_disabling_the_blend_changes_the_ranking(
     fixtures: list[dict],
 ) -> None:
-    """The gate's whole premise, asserted directly rather than in CI."""
-    on = run_calibration_on_fixtures(fixtures)
-    off_env = pytest.MonkeyPatch()
-    off_env.setenv("AELFRICE_POSTERIOR_WEIGHT", "0.0")
-    try:
-        off = run_calibration_on_fixtures(fixtures)
-    finally:
-        off_env.undo()
+    """The gate's whole premise, asserted directly rather than in CI.
 
-    assert (on.roc_auc, on.spearman_rho) != (off.roc_auc, off.spearman_rho), (
-        "posterior_weight=0.0 produced identical metrics — the rerank is "
-        "inert on this corpus and the calibration gate measures nothing"
+    Compares **rankings**, not aggregate metrics (#1584). The metrics are
+    multiset statistics of the pooled observations, so they agree across
+    two runs whose per-query rank moves cancel — on this corpus that is
+    exactly what `posterior_weight` 0.0 and 1.5 do. Asserting on them
+    tests the weaker claim "the blend moves this corpus's aggregates",
+    and reports any failure as inertness, which is a different thing.
+    """
+    on = _run_at_weight(fixtures, None)
+    off = _run_at_weight(fixtures, "0.0")
+
+    assert on.rankings and off.rankings, "the harness recorded no rankings"
+    assert on.rankings != off.rankings, (
+        "the shipped posterior_weight retrieves the same ranking as "
+        "posterior_weight=0.0 on every query, so the blend is inert on "
+        "this corpus and the calibration gate measures nothing. "
+        f"rankings={on.rankings!r}"
+    )
+
+
+def test_equal_metrics_do_not_imply_an_unchanged_ranking(
+    fixtures: list[dict],
+) -> None:
+    """Why the guard above cannot be written against the metrics (#1584).
+
+    `posterior_weight` 1.5 lands in a band whose aggregates are
+    byte-identical to the 0.0 arm's, because the relevant belief falls
+    1→2 on one query and rises 2→1 on another and the two cancel in the
+    pool. A third query reorders two non-relevant candidates, which the
+    labels cannot register at all.
+
+    This is an aggregation collision, not inertness. If the shipped
+    default were ever moved into that band, a metric-based guard would
+    fail with a message naming the wrong cause — so this test pins the
+    collision itself, and fails if the corpus stops exhibiting it and
+    the weaker guard silently becomes sufficient again.
+    """
+    off = _run_at_weight(fixtures, "0.0")
+    collided = _run_at_weight(fixtures, "1.5")
+
+    assert (collided.roc_auc, collided.spearman_rho) == (
+        off.roc_auc,
+        off.spearman_rho,
+    ), (
+        "posterior_weight=1.5 no longer collides with the 0.0 arm's "
+        "aggregates. The corpus changed; re-derive the band edges before "
+        "trusting any figure in #1584."
+    )
+    assert collided.rankings != off.rankings, (
+        "posterior_weight=1.5 now retrieves the 0.0 ranking as well as "
+        "its metrics, so the collision this test documents is gone and "
+        "the blend really is inert at 1.5"
     )
 
 
