@@ -18,9 +18,11 @@ than assume. `retrieve()` under shipped defaults packs with a greedy
 clustering fill rather than sorting, which is not obliged to be monotone
 in the weight, so run `--check-monotone` before trusting a bracket.
 
-**Never point this at a live store.** Opening a `MemoryStore` performs
-schema DDL and migrations, so it is a write. Byte-copy the database
-first and pass the copy:
+**Point this at a copy, not a live store.** The store is opened with
+`read_only=True`, so a mistyped path cannot mutate anything — a
+read-write open would run schema DDL and migrations, which is a write.
+Byte-copy the database anyway, so a live writer cannot move under the
+probe mid-run:
 
     cp .git/aelfrice/memory.db /tmp/probe/memory.db
     cp .git/aelfrice/memory.db-wal /tmp/probe/ 2>/dev/null || true
@@ -166,7 +168,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from aelfrice.store import MemoryStore  # noqa: PLC0415
 
-    store = MemoryStore(str(args.store))
+    # read_only=True is load-bearing, not hygiene: opening a store
+    # read-write runs schema DDL and migrations, so a mistyped path
+    # pointed at a live store would mutate it. This probe only reads.
+    store = MemoryStore(str(args.store), read_only=True)
     try:
         total = len(store.list_belief_ids())
         grid = _posterior_grid(store)
