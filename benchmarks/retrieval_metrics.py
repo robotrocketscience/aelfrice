@@ -15,12 +15,17 @@ it; `recall_at_k` asks whether such a belief reached the top k, and
 over the ordered list the retriever returned, before it is joined.
 
 That inverts the budget artifact. Token-F1 rises as the budget shrinks;
-every metric here is monotone non-decreasing in the **number of items
-kept**, so dropping items can only cost you. Improving the number
-requires ranking a relevant belief higher, which is the thing the
+every metric here is monotone non-decreasing under **tail truncation**,
+so cutting the end of the ranking can only cost you. Improving the
+number requires ranking a relevant belief higher, which is the thing the
 benchmark is supposed to measure.
-`tests/test_retrieval_metrics.py::test_keeping_fewer_items_never_raises_a_metric`
+`tests/test_retrieval_metrics.py::test_truncating_the_tail_never_raises_a_metric`
 pins that property directly.
+
+"Tail truncation" is the exact scope, not shorthand for "fewer items".
+Dropping an item from the *head* promotes everything below it and can
+*raise* `reciprocal_rank` and `recall_at_1` —
+`test_dropping_the_head_can_raise_a_metric`.
 
 **These metrics are not monotone in the token budget, and this docstring
 claimed they were** (#1574). The claim rested on "retrieval fills the
@@ -39,12 +44,19 @@ belief, evicts the relevant one, and takes `recall_at_k` and
 `tests/test_retrieval_metrics.py::test_raising_the_budget_can_lower_a_metric`
 drives exactly that through production `retrieve()`.
 
-Monotone in items kept does not give monotone in budget, because a
-smaller budget does not keep a prefix of the same items. Read a
-budget-to-budget comparison as a comparison of two different selections,
-not of a list and its truncation. The skip-and-continue fill is
-deliberate (#1574): the budget maximises how many beliefs are delivered,
-and non-monotonicity is the accepted cost of that.
+Monotone under tail truncation does not give monotone in budget,
+because a smaller budget does not keep a prefix of the same items. Read
+a budget-to-budget comparison as a comparison of two different
+selections, not of a list and its truncation.
+
+The skip-and-continue fill is deliberate (#1574), so this is an accepted
+property rather than a defect to re-file. It delivers at least as many
+beliefs as stopping at the first unaffordable one, and usually more. It
+is **not** count-maximal, though: it is greedy in rank order, so at
+costs `{big: 10, m1: 6, m2: 6}` and a budget of 12 it returns `[big]`
+where `[m1, m2]` would fit. A knapsack fill would be count-maximal; it
+was considered and rejected as the most expensive option that still
+leaves membership non-monotone.
 
 Multi-answer gold is treated as *alternative surfaces of one answer*, not
 as several facts to be found, matching `qa_scoring.score_multi_answer`:

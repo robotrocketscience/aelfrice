@@ -9,7 +9,10 @@ Two metric families are reported separately (#1160).
 in `aelf bench all`, so the retrieved context stands in for a model's
 answer and token-F1 tracks the token budget as much as the ranking.
 `retrieval_quality` is **reader-independent**: MRR and recall@k over the
-ordered retrieved list, which a smaller budget can only lower.
+ordered retrieved list. Note that a smaller budget does NOT simply
+lower them (#1574): the packer skips an over-budget belief and keeps
+filling, so the budget selects rather than truncating and either
+direction can move these metrics.
 `exact_match` is reported as `n/a` — see `UNCOMPUTABLE_METRICS`.
 
 Reference: arXiv:2507.05257, ICLR 2026

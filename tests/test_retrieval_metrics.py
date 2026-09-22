@@ -96,29 +96,57 @@ def test_gold_that_normalises_to_empty_does_not_score():
     assert rm.recall_at_k(RANKING, ["the", "SFO"], 5) == 1.0
 
 
-def test_keeping_fewer_items_never_raises_a_metric():
+def test_truncating_the_tail_never_raises_a_metric():
     """The property that makes these metrics readable where token-F1 is not.
 
     Token-F1 over the joined blob *rises* when the list is truncated,
     because precision improves as the denominator shrinks. Every metric
-    here is monotone non-decreasing in the number of items kept.
+    here is monotone non-decreasing under **tail truncation** — keeping a
+    prefix of the ranking.
 
-    Renamed from `test_shrinking_the_budget_never_raises_a_metric`
-    (#1574). It truncates a list; it never sets a budget, prices a
-    belief, or calls the packer. The old name imported a claim about the
-    *budget* into a test of a claim about *items kept*, and the two come
-    apart — see
-    `test_raising_the_budget_can_lower_a_metric` below.
+    The qualifier is load-bearing twice over (#1574).
+
+    It is not "monotone in the number of items kept": dropping an item
+    from the *head* promotes everything below it, which can raise
+    `reciprocal_rank` and `recall_at_1`. See
+    `test_dropping_the_head_can_raise_a_metric`.
+
+    It is not "monotone in the budget" either, because a smaller budget
+    does not keep a prefix of the same items. See
+    `test_raising_the_budget_can_lower_a_metric`.
+
+    Renamed from `test_shrinking_the_budget_never_raises_a_metric`, which
+    named the budget while testing list truncation.
     """
     ranking = ["noise"] * 9 + ["the answer is SFO"] + ["more noise"] * 5
     full = rm.retrieval_metrics(ranking, GOLD)
     for cut in range(len(ranking), 0, -1):
         truncated = rm.retrieval_metrics(ranking[:cut], GOLD)
         for key, value in truncated.items():
-            assert value <= full[key], f"{key} rose when items were dropped"
+            assert value <= full[key], f"{key} rose when the tail was cut"
 
 
-def test_raising_the_budget_can_lower_a_metric():
+def test_dropping_the_head_can_raise_a_metric():
+    """Why the guard above is scoped to the tail (#1574).
+
+    Removing an item promotes every item below it, so a rank-sensitive
+    metric can improve. Only truncation from the tail is safe, and a
+    guard phrased over "items kept" would be asserting something false.
+    """
+    ranking = ["noise", "the answer is SFO"]
+    both = rm.retrieval_metrics(ranking, GOLD)
+    without_head = rm.retrieval_metrics(ranking[1:], GOLD)
+
+    risen = [k for k, v in without_head.items() if v > both[k]]
+    assert "reciprocal_rank" in risen, (
+        "dropping the item above the gold-bearing one did not raise "
+        f"reciprocal_rank: {both} -> {without_head}"
+    )
+
+
+def test_raising_the_budget_can_lower_a_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Monotone in items kept does NOT give monotone in budget (#1574).
 
     `benchmarks/retrieval_metrics.py` claimed it did, reasoning that
@@ -135,6 +163,7 @@ def test_raising_the_budget_can_lower_a_metric():
     not through the packer directly, because the claim being corrected is
     about the shipped path.
     """
+    monkeypatch.setenv("AELFRICE_INTENTIONAL_CLUSTERING", "1")
     query = "tomato staked"
     store = MemoryStore(":memory:")
     try:
@@ -167,9 +196,13 @@ def test_raising_the_budget_can_lower_a_metric():
             previous = (budget, current)
 
         assert inversions, (
-            "no budget increase lowered any metric, so either the packer "
-            "became monotone in the budget or this fixture stopped pricing "
-            f"its beliefs unequally: {costs}"
+            "no budget increase lowered any metric. Three things could "
+            "cause that, and this assertion cannot tell them apart: the "
+            "packer became monotone in the budget; this fixture stopped "
+            "pricing its beliefs unequally (costs are asserted above, so "
+            "check them first); or AELFRICE_INTENTIONAL_CLUSTERING is off "
+            "in this environment, which routes retrieve() around "
+            f"pack_with_clusters entirely. costs={costs}"
         )
     finally:
         store.close()

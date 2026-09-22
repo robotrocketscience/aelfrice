@@ -8,7 +8,8 @@ and `f1` are **reader-dependent**: no reader runs in `aelf bench all`, so
 the retrieved context stands in for a model's answer and token-F1 tracks
 the token budget as much as the ranking. `retrieval_quality` is
 **reader-independent**: MRR and recall@k over the ordered retrieved list,
-which a smaller budget can only lower. `exact_match` is reported as `n/a`
+which a smaller budget does NOT simply lower (#1574): the packer
+selects rather than truncating, so either direction can move them. `exact_match` is reported as `n/a`
 — see `UNCOMPUTABLE_METRICS`.
 
 Paper: LongMemEval (ICLR 2025)

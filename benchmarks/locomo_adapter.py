@@ -10,7 +10,8 @@ The two are reported separately on purpose (#1160). `overall_f1` and
 for a model's answer, and the resulting token-F1 moves with the token
 budget as much as with the ranking. `retrieval_quality` is
 **reader-independent**: MRR and recall@k over the ordered retrieved list,
-which a smaller budget can only lower. Category 5 is reported as `n/a`
+which a smaller budget does NOT simply lower (#1574): the packer
+selects rather than truncating, so either direction can move them. Category 5 is reported as `n/a`
 rather than 0.0 — see `UNSCORABLE_CATEGORIES`.
 
 Usage:
