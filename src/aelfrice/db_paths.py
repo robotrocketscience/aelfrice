@@ -360,6 +360,28 @@ def open_store_for_read() -> MemoryStore:
 
     Raises `ReadOnlyStoreUnavailable` when the fallback cannot be opened
     either; callers turn that into a message rather than a traceback.
+
+    #1571 amends what #1416's matrix may assert about this, because the
+    two halves it asked for turned out to be in tension. That matrix
+    asked that a routed read command perform no preliminary writable
+    open *and* emit no failed-write warning. On a store whose directory
+    is frozen but whose WAL sidecars are live, the writable open
+    **succeeds** — so the `mode=ro` handle is never taken, `aelf search`
+    goes on to attempt its `.bm25f` sidecar write, and that write fails
+    with a non-fatal warning. Both halves are therefore unsatisfiable
+    while the writable-first order stands, and the order is not moving:
+    see the paragraph above.
+
+    So the criterion is narrowed to what it can truthfully assert: no
+    preliminary writable open and no failed-write warning **on the
+    `mode=ro` fallback handle**. Where the writable open succeeds, a
+    sidecar write attempt is the designed behaviour and the warning is
+    accurate — a write genuinely was tried and genuinely failed.
+
+    Making that write conditional on directory writability was
+    considered and not done: it would silence an accurate message at the
+    cost of a writability probe on a hot path, and nobody has measured
+    what that costs.
     """
     import sqlite3
 
