@@ -1,0 +1,3 @@
+### Fixed
+
+- **The calibration gate's default arm no longer inherits an ambient `AELFRICE_POSTERIOR_WEIGHT` ([#1584](https://github.com/robotrocketscience/aelfrice/issues/1584)).** The helper declined to set the variable rather than deleting it, so with one already in the environment the "shipped default" arm silently measured the operator's configured value and the gate compared that against `0.0`. The old metric assertion happened to red under such poisoning; the ranking assertion does not, so the hole became silent at the moment the guard stopped watching metrics. It now deletes the variable, and a new test fails if the default arm ever reads the environment again.
