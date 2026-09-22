@@ -208,12 +208,28 @@ def test_equal_metrics_do_not_imply_an_unchanged_ranking(
 
 
 def test_the_two_pinned_baselines_differ() -> None:
-    """Equal baselines would mean the committed gate is inert.
+    """Equal baselines mean the committed gate measures nothing.
 
     Catches the case where someone flattens the corpus and regenerates
     both files together, which would otherwise look self-consistent.
+
+    Deliberately does **not** name inertness as the cause (#1584). These
+    files hold aggregates, and two weights can share aggregates while
+    retrieving different rankings — moving the shipped default into such
+    a band regenerates an `on` file byte-identical to the `off` one and
+    trips this assertion at a weight where the blend is working fine.
+    Equal baselines are always a real problem for the byte-exact gate,
+    because it can no longer tell the two arms apart; they are not always
+    evidence that the blend did nothing.
     """
     on = json.loads(_ON.read_text(encoding="utf-8"))
     off = json.loads(_OFF.read_text(encoding="utf-8"))
-    assert on != off
-    assert on["roc_auc"] != off["roc_auc"]
+    hint = (
+        "the two pinned baselines are identical, so the byte-exact "
+        "calibration gate cannot distinguish its two arms. Either the "
+        "blend is inert, or the shipped weight sits in a band whose "
+        "aggregates collide with the 0.0 arm's. "
+        "test_disabling_the_blend_changes_the_ranking tells you which."
+    )
+    assert on != off, hint
+    assert on["roc_auc"] != off["roc_auc"], hint

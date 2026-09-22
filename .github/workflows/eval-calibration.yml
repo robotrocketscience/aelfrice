@@ -158,9 +158,12 @@ jobs:
             echo "\`AELFRICE_POSTERIOR_WEIGHT=0.0 aelf eval --json\`."
             exit 1
           fi
-          # The load-bearing assertion: disabling the blend must CHANGE
-          # the metrics. Equal baselines mean the rerank is inert and the
-          # byte-exact check above is measuring nothing.
+          # The load-bearing assertion: the two arms must not be
+          # byte-identical, or the check above is comparing a file with
+          # itself. Equal baselines do NOT by themselves mean the rerank
+          # is inert (#1584) — two weights can share aggregates while
+          # retrieving different rankings — but they always mean this
+          # gate can no longer tell its arms apart.
           on=$(python3 -c "
           import json
           d = json.load(open('benchmarks/posterior_ranking/baseline.json'))
@@ -168,10 +171,17 @@ jobs:
           ")
           if [ "${on}" = "${off}" ]; then
             echo "::error::posterior weight 0.0 produces the SAME metrics as the default weight."
-            echo "The Bayesian rerank is inert on this corpus, so the calibration"
-            echo "gate cannot see it. Either the blend was disabled, or the corpus"
-            echo "lost its varied per-belief posteriors (known_posterior /"
-            echo "noise_posteriors in fixtures/default.jsonl)."
+            echo "The calibration gate cannot distinguish its two arms. Three causes"
+            echo "are possible, and this check cannot tell them apart (#1584):"
+            echo "  1. the blend was disabled;"
+            echo "  2. the corpus lost its varied per-belief posteriors"
+            echo "     (known_posterior / noise_posteriors in fixtures/default.jsonl);"
+            echo "  3. the shipped weight sits in a band whose AGGREGATES collide"
+            echo "     with the 0.0 arm's while the RANKINGS still differ."
+            echo "To tell cause 3 from causes 1 and 2, run the ranking guard:"
+            echo "  pytest tests/test_calibration_corpus_posteriors.py -k changes_the_ranking"
+            echo "It compares rankings rather than aggregates, so it passes in"
+            echo "cause 3 and fails in causes 1 and 2."
             exit 1
           fi
           echo "::notice::posterior blend is load-bearing (weight 0.0 shifts the metrics)"
