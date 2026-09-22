@@ -361,7 +361,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{effect:>8}  {key}:{found[key]}")
             if why:
                 print(f"          {why}")
-        print(f"\n{len(found)} writers detected, {len(MANIFEST)} declared")
+        # Print the undetectable writers alongside the detected ones. A
+        # reader who sees only the scan's output would take it as the
+        # whole set, which is the misreading this list exists to prevent.
+        for name, effect, why in UNDETECTABLE:
+            print(f"{effect:>8}  {name}  (not detectable by this check)")
+            print(f"          {why}")
+        print(
+            f"\n{len(found)} writers detected, {len(MANIFEST)} declared, "
+            f"{len(UNDETECTABLE)} known to be undetectable"
+        )
         if args.dry_run:
             return 0
 
@@ -391,7 +400,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if undeclared or vanished:
         return 1
-    print(f"{len(found)} posterior writers, all declared.")
+    print(
+        f"{len(found)} posterior writers, all declared "
+        f"(plus {len(UNDETECTABLE)} this check cannot see — run --list)."
+    )
     return 0
 
 

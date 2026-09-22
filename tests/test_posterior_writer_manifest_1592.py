@@ -255,3 +255,24 @@ def test_the_undetectable_list_is_not_silently_empty() -> None:
         assert "::" in name
         assert effect
         assert len(why) > 20
+
+
+def test_the_undetectable_writers_are_reported_not_just_stored(
+    capsys: Any,
+) -> None:
+    """They must reach the reader, not sit in a constant nobody prints.
+
+    CodeQL flagged `UNDETECTABLE` as an unused global, and it was right:
+    only the tests read it. A reader running the checker saw a count of
+    detected writers and no hint that more exist, which is the exact
+    misreading the list was added to prevent. Both output modes now name
+    them.
+    """
+    assert check.main([]) == 0
+    summary = capsys.readouterr().out
+    assert "cannot see" in summary, summary
+
+    assert check.main(["--list"]) == 0
+    listing = capsys.readouterr().out
+    for name, _effect, _why in check.UNDETECTABLE:
+        assert name in listing, f"{name} is stored but never printed"
