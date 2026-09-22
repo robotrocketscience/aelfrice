@@ -14,13 +14,37 @@ it; `recall_at_k` asks whether such a belief reached the top k, and
 `reciprocal_rank` asks how high the first one landed. Both are computed
 over the ordered list the retriever returned, before it is joined.
 
-That inverts the budget artifact. Retrieval fills the budget in rank
-order, so cutting the budget truncates the *tail*: it can drop a relevant
-belief out of the top k, and it can never promote one. Every metric here
-is therefore monotone non-decreasing in the budget — improving the number
+That inverts the budget artifact. Token-F1 rises as the budget shrinks;
+every metric here is monotone non-decreasing in the **number of items
+kept**, so dropping items can only cost you. Improving the number
 requires ranking a relevant belief higher, which is the thing the
-benchmark is supposed to measure. `tests/test_retrieval_metrics.py` pins
-that property directly.
+benchmark is supposed to measure.
+`tests/test_retrieval_metrics.py::test_keeping_fewer_items_never_raises_a_metric`
+pins that property directly.
+
+**These metrics are not monotone in the token budget, and this docstring
+claimed they were** (#1574). The claim rested on "retrieval fills the
+budget in rank order, so cutting the budget truncates the tail".
+`clustering.pack_with_clusters` does not truncate: stage 1 abandons on
+the first representative it cannot afford, and stage 2 skips an
+over-budget belief and keeps filling. So the budget **selects** rather
+than truncating, and a budget too small for a dear high-ranked belief
+spends itself on cheaper lower-ranked ones. Raising it by one token
+evicts them.
+
+That reaches these metrics. With the gold-bearing belief cheap and
+ranked second, one extra token of budget admits the dear irrelevant
+belief, evicts the relevant one, and takes `recall_at_k` and
+`reciprocal_rank` from 1.0 to 0.0 —
+`tests/test_retrieval_metrics.py::test_raising_the_budget_can_lower_a_metric`
+drives exactly that through production `retrieve()`.
+
+Monotone in items kept does not give monotone in budget, because a
+smaller budget does not keep a prefix of the same items. Read a
+budget-to-budget comparison as a comparison of two different selections,
+not of a list and its truncation. The skip-and-continue fill is
+deliberate (#1574): the budget maximises how many beliefs are delivered,
+and non-monotonicity is the accepted cost of that.
 
 Multi-answer gold is treated as *alternative surfaces of one answer*, not
 as several facts to be found, matching `qa_scoring.score_multi_answer`:
