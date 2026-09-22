@@ -61,11 +61,16 @@ probe mid-run.
 
 Usage:
     posterior_prior_grid_sweep.py [--root DIR]... [STORE]...
-                                  [--limit N] [--dry-run]
+                                  [--limit N] [--dry-run] [--sources]
 
     --dry-run  list the stores that would be probed, and the prior grid
                that would be classified against, without copying or
                opening anything.
+    --sources  also report the feedback-event source histogram (#1592
+               AC2): which writers actually fire, and how many of their
+               events carry a valence that can move a posterior at all.
+               `scripts/check_posterior_writers.py` enumerates the
+               writers statically; this measures which of them run.
 
 Exits non-zero if any store fails to open, or if no store was found.
 """
@@ -263,6 +268,34 @@ def _feedback_split(
     return (stranded, legacy)
 
 
+def _source_histogram(store: Any) -> dict[str, tuple[int, int]]:
+    """Per-source `(events, posterior-moving events)` from feedback_history.
+
+    #1592 AC2 asks not which writers *can* fire but which *do*. Every
+    feedback event writes an audit row naming its source, whether or not
+    the posterior moved. The second element counts events whose valence
+    is non-zero, which is necessary for a move and not sufficient — the
+    bump is still skipped when `update_posterior=False`. Pair it with
+    the stranded count to tell a lane that moved posteriors from one
+    that fired and was discarded.
+    """
+    conn = store._conn  # noqa: SLF001 - no public accessor for this rollup
+    present = conn.execute(
+        "SELECT count(*) FROM sqlite_master "
+        "WHERE type='table' AND name='feedback_history'"
+    ).fetchone()
+    if not present or not present[0]:
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for row in conn.execute(
+        "SELECT source, count(*) AS n, "
+        "       sum(CASE WHEN valence != 0 THEN 1 ELSE 0 END) AS moving "
+        "FROM feedback_history GROUP BY source"
+    ):
+        out[str(row["source"])] = (int(row["n"]), int(row["moving"] or 0))
+    return out
+
+
 def probe(
     path: Path, priors: dict[tuple[float, float], str],
 ) -> dict[str, Any]:
@@ -289,6 +322,7 @@ def probe(
         try:
             pairs = store.alpha_beta_pairs()
             stranded, legacy = _feedback_split(store, priors)
+            sources = _source_histogram(store)
         finally:
             store.close()
 
@@ -317,6 +351,7 @@ def probe(
         "mean_moved": off_total - mean_preserving,
         "stranded": stranded,
         "legacy_moved": legacy,
+        "sources": sources,
         "off_pairs": off,
     }
 
@@ -330,6 +365,12 @@ def main(argv: list[str] | None = None) -> int:
              f"defaults to {', '.join(DEFAULT_ROOTS)}",
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--sources", action="store_true",
+        help="also report the feedback-event source histogram (#1592 AC2): "
+             "which writers actually fire, and how often they move a "
+             "posterior rather than only auditing",
+    )
     parser.add_argument(
         "--dry-run", action="store_true",
         help="list the stores and the prior grid without opening anything",
@@ -367,6 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     total_moved = 0
     total_stranded = 0
     total_legacy = 0
+    all_sources: dict[str, tuple[int, int]] = {}
     rows: list[dict[str, Any]] = []
     for path in stores:
         try:
@@ -383,6 +425,9 @@ def main(argv: list[str] | None = None) -> int:
         total_moved += row["mean_moved"]
         total_stranded += row["stranded"]
         total_legacy += row["legacy_moved"]
+        for src, (n, moving) in row["sources"].items():
+            have = all_sources.get(src, (0, 0))
+            all_sources[src] = (have[0] + n, have[1] + moving)
 
     print()
     print(
@@ -421,6 +466,20 @@ def main(argv: list[str] | None = None) -> int:
         f"stores with at least one moved posterior: "
         f"{stores_with_moves} of {len(live)} non-empty"
     )
+
+    if args.sources and all_sources:
+        print()
+        print("feedback events by source. `movable` counts non-zero")
+        print("valence — necessary for the posterior to move, not")
+        print("sufficient: apply_feedback still drops the bump when")
+        print("update_posterior=False, which since #1086 is the default")
+        print("for retrieval exposure. So a large movable count is not")
+        print("evidence that anything moved.")
+        print(f"  {'events':>9} {'movable':>9}  source")
+        for src, (n, moving) in sorted(
+            all_sources.items(), key=lambda kv: -kv[1][0]
+        ):
+            print(f"  {n:>9} {moving:>9}  {src}")
 
     off_all: dict[tuple[float, float], int] = {}
     for row in rows:
