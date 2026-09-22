@@ -10,6 +10,14 @@ from __future__ import annotations
 
 import pytest
 
+from aelfrice import retrieval
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    ORIGIN_UNKNOWN,
+    Belief,
+)
+from aelfrice.store import MemoryStore
 from benchmarks import metric_status, retrieval_metrics as rm
 
 # A three-item ranking whose only gold-bearing item sits at rank 2.
@@ -19,6 +27,23 @@ RANKING: list[str] = [
     "Weather was clear all week.",
 ]
 GOLD: list[str] = ["SFO"]
+
+
+def _budget_belief(bid: str, content: str) -> Belief:
+    """A belief whose retrieval cost follows from its content length."""
+    return Belief(
+        id=bid,
+        content=content,
+        content_hash=f"t_{bid}",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-01-01T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_UNKNOWN,
+    )
 
 
 def test_gold_ranks_are_one_indexed():
@@ -71,20 +96,83 @@ def test_gold_that_normalises_to_empty_does_not_score():
     assert rm.recall_at_k(RANKING, ["the", "SFO"], 5) == 1.0
 
 
-def test_shrinking_the_budget_never_raises_a_metric():
+def test_keeping_fewer_items_never_raises_a_metric():
     """The property that makes these metrics readable where token-F1 is not.
 
-    Retrieval fills the budget in rank order, so a smaller budget
-    truncates the tail. Token-F1 over the joined blob *rises* under that
-    truncation (precision improves as the denominator shrinks); every
-    metric here is monotone non-decreasing in the number of items kept.
+    Token-F1 over the joined blob *rises* when the list is truncated,
+    because precision improves as the denominator shrinks. Every metric
+    here is monotone non-decreasing in the number of items kept.
+
+    Renamed from `test_shrinking_the_budget_never_raises_a_metric`
+    (#1574). It truncates a list; it never sets a budget, prices a
+    belief, or calls the packer. The old name imported a claim about the
+    *budget* into a test of a claim about *items kept*, and the two come
+    apart — see
+    `test_raising_the_budget_can_lower_a_metric` below.
     """
     ranking = ["noise"] * 9 + ["the answer is SFO"] + ["more noise"] * 5
     full = rm.retrieval_metrics(ranking, GOLD)
     for cut in range(len(ranking), 0, -1):
         truncated = rm.retrieval_metrics(ranking[:cut], GOLD)
         for key, value in truncated.items():
-            assert value <= full[key], f"{key} rose when the budget shrank"
+            assert value <= full[key], f"{key} rose when items were dropped"
+
+
+def test_raising_the_budget_can_lower_a_metric():
+    """Monotone in items kept does NOT give monotone in budget (#1574).
+
+    `benchmarks/retrieval_metrics.py` claimed it did, reasoning that
+    "retrieval fills the budget in rank order, so cutting the budget
+    truncates the tail". `clustering.pack_with_clusters` does not
+    truncate: stage 1 abandons on the first unaffordable representative
+    and stage 2 skips an over-budget belief and keeps filling. The budget
+    therefore **selects**, and a budget too small for a dear irrelevant
+    belief spends itself on a cheap relevant one.
+
+    Here the gold-bearing belief is the cheap one and ranks second. One
+    extra token lets the dear irrelevant belief in, which evicts it and
+    takes every metric to zero. Driven through production `retrieve()`,
+    not through the packer directly, because the claim being corrected is
+    about the shipped path.
+    """
+    query = "tomato staked"
+    store = MemoryStore(":memory:")
+    try:
+        dear = _budget_belief(
+            "dear", "tomato staked " * 12 + "gardening notes for the season"
+        )
+        lean = _budget_belief("lean", "tomato staked SFO")
+        for b in (dear, lean):
+            store.insert_belief(b)
+
+        costs = {b.id: retrieval._belief_tokens(b) for b in (dear, lean)}
+        assert len(set(costs.values())) > 1, (
+            f"the fixture must price its beliefs unequally: {costs}"
+        )
+        pool = [b.id for b in retrieval.retrieve(store, query, token_budget=10**9)]
+        assert pool == ["dear", "lean"], pool
+
+        def metrics_at(budget: int) -> dict[str, float]:
+            hits = retrieval.retrieve(store, query, token_budget=budget)
+            return rm.retrieval_metrics([b.content for b in hits], GOLD)
+
+        inversions = []
+        previous = None
+        for budget in range(1, sum(costs.values()) + 3):
+            current = metrics_at(budget)
+            if previous is not None:
+                for key, value in current.items():
+                    if value < previous[1][key]:
+                        inversions.append((previous[0], budget, key))
+            previous = (budget, current)
+
+        assert inversions, (
+            "no budget increase lowered any metric, so either the packer "
+            "became monotone in the budget or this fixture stopped pricing "
+            f"its beliefs unequally: {costs}"
+        )
+    finally:
+        store.close()
 
 
 def test_retrieval_metrics_reports_every_default_cutoff():
