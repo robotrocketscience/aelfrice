@@ -167,6 +167,105 @@ def test_dedupe_mass_is_separated_from_a_real_move(tmp_path: Path) -> None:
     assert row["mean_moved"] == 1
 
 
+def test_an_alpha_only_move_sharing_a_prior_mean_is_not_dedupe(
+    tmp_path: Path,
+) -> None:
+    """The collision an adversarial review found, pinned.
+
+    `(3.6000000000000005, 1.0)` is the factual non-user prior plus 3.0 of
+    alpha with beta untouched — a real move. Its mean is 0.7826, which is
+    exactly `(1.8, 0.5)`'s, and `2 * 1.8` rounds to the same four decimal
+    places. Classifying by mean, or by a tolerant ratio, calls it dedupe
+    mass and hides it. Only the exact float product separates the two:
+    `2 * 1.8 == 3.6`, but this belief carries `6 * 0.6000000000000001 ==
+    3.6000000000000005`.
+    """
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_belief("C", 3.6000000000000005, 1.0))
+    finally:
+        store.close()
+
+    row = sweep.probe(db, sweep.insertion_priors())
+
+    assert row["off_prior"] == 1
+    assert row["mean_preserving"] == 0, "an alpha-only move read as dedupe"
+    assert row["mean_moved"] == 1
+
+
+def test_the_write_ahead_log_is_copied_with_the_database(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """Dropping the `-wal` copy must red, not pass quietly.
+
+    In WAL mode a committed belief lives in `memory.db-wal` until a
+    checkpoint. Copying only `memory.db` loses exactly the most recent
+    writes — the ones most likely to carry a moved posterior — and the
+    sweep under-reports while looking healthy. An adversarial review
+    emptied the sidecar loop and every other arm still passed.
+
+    This pins the mechanism rather than the effect, deliberately. Closing
+    a `MemoryStore` checkpoints the log, so an in-process fixture cannot
+    reliably leave a belief WAL-resident at probe time; a test that tried
+    would pass for the wrong reason. Recording what gets copied fails the
+    moment the sidecar loop stops running.
+    """
+    db = tmp_path / "memory.db"
+    _store_on_the_grid(db)
+    wal = db.with_name(db.name + "-wal")
+    wal.write_bytes(b"")  # present, so the probe has something to copy
+
+    copied: list[str] = []
+    real_copyfile = sweep.shutil.copyfile
+
+    def spy(src: Any, dst: Any, **kwargs: Any) -> Any:
+        copied.append(Path(src).name)
+        return real_copyfile(src, dst, **kwargs)
+
+    monkeypatch.setattr(sweep.shutil, "copyfile", spy)
+    sweep.probe(db, sweep.insertion_priors())
+
+    assert "memory.db" in copied, "the database itself was never copied"
+    assert "memory.db-wal" in copied, (
+        "the write-ahead log was not copied; beliefs committed since the "
+        f"last checkpoint would be missed. copied: {copied}"
+    )
+
+
+def test_the_probe_never_opens_the_path_it_was_given(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """The store handed in must never be opened, read-only or otherwise.
+
+    Opening a `MemoryStore` read-write runs schema DDL and migrations,
+    which is a write, so the probe copies first and opens the copy. Both
+    halves matter and neither was pinned: a review mutated
+    `read_only=True` away and every arm still passed. This asserts the
+    path actually opened is not the one passed in, which fails if the
+    copy is skipped, and that it is opened read-only.
+    """
+    db = tmp_path / "memory.db"
+    _store_on_the_grid(db)
+
+    opened: list[tuple[str, bool]] = []
+    real = MemoryStore
+
+    def spy(path: str, *args: Any, **kwargs: Any) -> Any:
+        opened.append((path, bool(kwargs.get("read_only", False))))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr("aelfrice.store.MemoryStore", spy)
+    sweep.probe(db, sweep.insertion_priors())
+
+    assert opened, "probe opened no store at all"
+    for path, read_only in opened:
+        assert Path(path) != db, (
+            f"probe opened the caller's store at {path} instead of a copy"
+        )
+        assert read_only, f"probe opened {path} read-write"
+
+
 def test_the_prior_grid_is_derived_from_the_shipped_function() -> None:
     """Every prior the shipped resolver can return must be in the grid.
 

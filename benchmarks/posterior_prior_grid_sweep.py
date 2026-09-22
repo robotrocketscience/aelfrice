@@ -12,24 +12,36 @@ Why classification rather than a distinct-pair count: the pair count that
 updated posteriors". The classification can, because of an invariant the
 tree already pins.
 
-**The invariant.** Every belief-posterior write goes through
-`store.bump_posterior`, and `feedback._bayesian_delta` only ever hands it
-non-negative deltas: positive valence adds `|valence|` to alpha and nothing
-to beta, negative valence the reverse. Zero valence is rejected at the
-`apply_feedback` boundary, so every accepted event moves one coordinate
-strictly up. A belief that has received any evidence therefore cannot sit on
-an insertion prior. The store documents this at `query_wonder_gc_candidates`,
-which relies on it to make its epsilon band exact, and it is pinned by
-`test_bayesian_update_is_monotone_so_the_prior_band_is_exact`.
+**What sitting on a prior does and does not mean.** `feedback._bayesian_delta`
+hands `store.bump_posterior` only non-negative deltas — positive valence adds
+`|valence|` to alpha, negative to beta — so an *applied* feedback event always
+moves a belief off its prior. Reading that as "on the prior means no evidence
+ever arrived" is wrong, and the error is load-bearing enough to name here:
+
+- `apply_feedback(update_posterior=False)` writes the audit row and skips the
+  bump entirely (`feedback.py`: "the posterior deliberately not moved — either
+  `update_posterior=False` (#1086 exposure lane) or the #1168 lock floor").
+  Since #1086 that is the default for retrieval exposure, so the commonest
+  feedback event in the system leaves the posterior exactly where it was.
+- `clamp_ghosts` writes `UPDATE beliefs SET alpha = ?` with a *lower* alpha,
+  so a moved belief can be pushed back onto a prior value.
+
+Measured: **6,220 beliefs across this host sit on an insertion prior while
+carrying a non-zero-valence `feedback_history` row**, 283 of them on the
+aelfrice store. So the honest reading is narrow:
+
+    on the grid  =>  the posterior was never moved
+    on the grid  =/=>  no evidence ever reached the belief
+
+and `off_prior` is a **lower bound** on beliefs that were ever written to.
+This producer therefore reports the feedback-event count alongside the grid
+classification; the gap between them is the signal that arrived and was
+discarded, which is the quantity #1592 is really about.
 
 Note it is `_bayesian_delta`, not `meta_beliefs.apply_evidence`, that governs
 here. The latter splits one observation as `alpha += e, beta += 1 - e`, so it
 adds exactly 1.0 of mass per event — but it serves meta-beliefs, which live in
-their own tables. Reading the belief grid through it would predict integer
-mass steps that the belief path does not produce.
-
-Therefore: **a belief is on its insertion prior iff `(alpha, beta)` equals
-some reachable prior pair.** Anything else has been written to.
+their own tables (`meta_belief_signal_posteriors`), and cannot reach `beliefs`.
 
 **Excess mass is not the same as moved confidence,** and the split matters
 more than the headline count. `MemoryStore` dedupe collapses a group of
@@ -37,9 +49,9 @@ duplicate beliefs by *summing* their alphas and betas onto the canonical row
 (`total_alpha = sum(...)`). For a group of `n` rows sharing one prior that
 yields `n * (alpha, beta)` — off the grid, carrying `n` times the mass, and
 with the posterior *mean exactly unchanged*. Retrieval scores the mean, so
-those beliefs moved without learning anything. This producer reports
-mean-preserving and mean-moving off-grid beliefs separately; only the second
-group is evidence that the feedback loop ran.
+those beliefs moved without learning anything. This producer separates them
+by testing whether the pair is a scalar *multiple* of a prior, not whether it
+shares a prior's mean; only the remainder is evidence that the loop ran.
 
 Point this at real stores; it copies each one before opening it and opens
 the copy `read_only=True`. Opening a store read-write runs schema DDL and
@@ -80,6 +92,15 @@ STORE_NAME = "memory.db"
 #: evidence step, so it cannot absorb a real update.
 TOL = 1e-9
 
+#: Merge date of 46301160, "fix(feedback): make retrieval-exposure
+#: audit-only by default (#1086)". Before it, every retrieval exposure
+#: added +0.1 to alpha; #1086 removed that as a defect, having measured
+#: that it scored junk above clean content. A posterior whose earliest
+#: real feedback event predates this therefore moved under a rule the
+#: tree has since deleted, and reading it as evidence that the feedback
+#: loop works today is the confound this figure exists to expose.
+EXPOSURE_AUDIT_ONLY_SINCE = "2026-07-04"
+
 
 def insertion_priors() -> dict[tuple[float, float], str]:
     """Every `(alpha, beta)` a belief can be *created* at, with provenance.
@@ -104,11 +125,18 @@ def insertion_priors() -> dict[tuple[float, float], str]:
     # Sites that write a literal prior instead of going through
     # get_source_adjusted_prior. Each is a real insert path; keep this
     # list in step with them or a legitimate prior reads as an update.
+    #
+    # This list cannot be complete by construction, and that is a known
+    # limit rather than an oversight: `derivation.py` writes `alpha`/`beta`
+    # verbatim from `raw_meta` route-overrides, and `migrate.py` copies
+    # alpha verbatim from a legacy store. Neither is bounded, so a store
+    # carrying either will over-report moved posteriors. `off_pairs` exists
+    # so such a pair is visible rather than silently counted as evidence.
     for pair, why in (
         ((9.0, 0.5), "derivation.py lock/remember path"),
         ((1.0, 1.0), "derivation.py git triple-extraction path"),
-        ((0.6, 1.0), "llm_classifier.py structural-failure fallback route"),
-        ((0.3, 1.0), "wonder ingest speculative default"),
+        ((0.6, 1.0), "llm_classifier.py regex-route alpha (regex.alpha)"),
+        ((0.3, 1.0), "wonder/lifecycle.py _INGEST_ALPHA/_INGEST_BETA"),
     ):
         grid.setdefault(pair, why)
     return grid
@@ -125,23 +153,41 @@ def _matches_prior(
     return None
 
 
-def _matches_prior_mean(
+def _matches_prior_multiple(
     pair: tuple[float, float], priors: dict[tuple[float, float], str],
 ) -> str | None:
-    """Return the provenance of the prior whose *mean* `pair` shares.
+    """Return the provenance of the prior `pair` is a scalar multiple of.
 
-    An off-grid pair on a prior's mean has gained mass without gaining
-    information — the signature of dedupe summing `n` copies of one prior
-    onto a canonical row. Retrieval blends `log(posterior_mean)`, so such
-    a belief scores exactly as it did before it moved.
+    Dedupe collapses a group by summing, so `n` copies of one prior land
+    at `n * (alpha, beta)` — off the grid, `n` times the mass, mean
+    unchanged. Retrieval blends `log(posterior_mean)`, so such a belief
+    scores exactly as it did before it moved.
+
+    The test is **structural**, not a mean comparison, and that matters.
+    Means collide across priors: `(3.6000000000000005, 1.0)` is a belief
+    that started at the factual non-user prior `(0.6000000000000001, 1.0)`
+    and gained 3.0 of alpha with beta untouched — a real move — yet its
+    mean 0.7826 is exactly `(1.8, 0.5)`'s. Classifying by mean calls that
+    dedupe mass and hides the move. Requiring `alpha/pa == beta/pb`
+    rejects it, because beta did not scale with alpha. Fifty-six beliefs
+    on this host are in that class.
     """
     alpha, beta = pair
-    total = alpha + beta
-    if total <= 0.0:
-        return None
-    mean = alpha / total
     for (pa, pb), why in priors.items():
-        if abs(mean - pa / (pa + pb)) <= TOL:
+        if pa <= 0.0 or pb <= 0.0:
+            continue
+        n = round(alpha / pa)
+        if n < 2:
+            continue  # n == 1 is the prior itself, already on-grid
+        # Exact float reproduction, not a tolerance. A dedupe group has an
+        # integer size, so the canonical row holds precisely `n * pa`
+        # as IEEE 754 computed it — and that residue is the only thing
+        # separating two readings of the same number. `(3.6000000000000005,
+        # 1.0)` is `6 * 0.6000000000000001` exactly, but `2 * 1.8` is
+        # `3.6` exactly, a different float. A tolerance wide enough to
+        # call the second a match silently relabels a real alpha-only
+        # move as dedupe mass; requiring the exact product does not.
+        if n * pa == alpha and n * pb == beta:
             return why
     return None
 
@@ -170,6 +216,53 @@ def discover(roots: list[Path], limit: int | None) -> list[Path]:
     return found[:limit] if limit else found
 
 
+def _feedback_split(
+    store: Any, priors: dict[tuple[float, float], str],
+) -> tuple[int, int]:
+    """Return (stranded, legacy_moved) from the feedback history.
+
+    `stranded` counts beliefs on a prior that nonetheless carry a real
+    feedback event — see `_stranded_on_prior` for why that matters.
+
+    `legacy_moved` counts **off-grid** beliefs whose earliest non-zero
+    feedback event predates `EXPOSURE_AUDIT_ONLY_SINCE`. Those moved
+    under the pre-#1086 rule that added +0.1 per retrieval exposure,
+    which the tree removed as a defect. They are residue, not evidence
+    that today's feedback path works, and counting them as the latter is
+    the confound that makes a store look healthy when it is not.
+
+    Returns `(0, 0)` on a store with no `feedback_history` table rather
+    than failing, so an old schema costs the extra columns and not the
+    row.
+    """
+    conn = store._conn  # noqa: SLF001 - no public accessor for this join
+    has_table = conn.execute(
+        "SELECT count(*) FROM sqlite_master "
+        "WHERE type='table' AND name='feedback_history'"
+    ).fetchone()
+    if not has_table or not has_table[0]:
+        return (0, 0)
+    stranded = 0
+    legacy = 0
+    # One row per belief, not per event: a belief with forty exposure
+    # events is one belief, not forty.
+    for row in conn.execute(
+        "SELECT b.id, b.alpha, b.beta, "
+        "       (SELECT min(f.created_at) FROM feedback_history f "
+        "        WHERE f.belief_id = b.id AND f.valence != 0) AS first_ev "
+        "FROM beliefs b"
+    ):
+        first = row["first_ev"]
+        if first is None:
+            continue
+        pair = (float(row["alpha"]), float(row["beta"]))
+        if _matches_prior(pair, priors) is not None:
+            stranded += 1
+        elif str(first) < EXPOSURE_AUDIT_ONLY_SINCE:
+            legacy += 1
+    return (stranded, legacy)
+
+
 def probe(
     path: Path, priors: dict[tuple[float, float], str],
 ) -> dict[str, Any]:
@@ -195,6 +288,7 @@ def probe(
         store = MemoryStore(str(copy), read_only=True)
         try:
             pairs = store.alpha_beta_pairs()
+            stranded, legacy = _feedback_split(store, priors)
         finally:
             store.close()
 
@@ -210,7 +304,7 @@ def probe(
             on_prior += n
             continue
         off[pair] = n
-        if _matches_prior_mean(pair, priors) is not None:
+        if _matches_prior_multiple(pair, priors) is not None:
             mean_preserving += n
     off_total = sum(off.values())
     return {
@@ -221,6 +315,8 @@ def probe(
         "off_prior": off_total,
         "mean_preserving": mean_preserving,
         "mean_moved": off_total - mean_preserving,
+        "stranded": stranded,
+        "legacy_moved": legacy,
         "off_pairs": off,
     }
 
@@ -269,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     total_beliefs = 0
     total_off = 0
     total_moved = 0
+    total_stranded = 0
+    total_legacy = 0
     rows: list[dict[str, Any]] = []
     for path in stores:
         try:
@@ -283,26 +381,37 @@ def main(argv: list[str] | None = None) -> int:
         total_beliefs += row["beliefs"]
         total_off += row["off_prior"]
         total_moved += row["mean_moved"]
+        total_stranded += row["stranded"]
+        total_legacy += row["legacy_moved"]
 
     print()
     print(
-        f"{'beliefs':>9} {'pairs':>6} {'off-grid':>9} {'mean-kept':>10} "
-        f"{'mean-moved':>11}  store"
+        f"{'beliefs':>9} {'pairs':>6} {'off-grid':>9} {'dedupe':>8} "
+        f"{'moved':>7} {'stranded':>9}  store"
     )
     for row in sorted(rows, key=lambda r: -r["beliefs"]):
         print(
             f"{row['beliefs']:>9} {row['distinct']:>6} {row['off_prior']:>9} "
-            f"{row['mean_preserving']:>10} {row['mean_moved']:>11}  "
-            f"{row['store']}"
+            f"{row['mean_preserving']:>8} {row['mean_moved']:>7} "
+            f"{row['stranded']:>9}  {row['store']}"
         )
 
     print()
     print(f"stores probed: {len(rows)}   failed: {failures}")
     print(f"beliefs: {total_beliefs}")
     print(f"beliefs off the insertion-prior grid: {total_off}")
-    print(f"  of those, posterior mean unchanged (dedupe mass): "
+    print(f"  of those, a scalar multiple of a prior (dedupe mass): "
           f"{total_off - total_moved}")
-    print(f"  of those, posterior mean actually moved: {total_moved}")
+    print(f"  of those, genuinely moved: {total_moved}")
+    print(f"beliefs ON a prior that carry a real feedback event: "
+          f"{total_stranded}")
+    print("  (signal arrived and was discarded — the audit-only lane)")
+    print(f"off-grid beliefs whose earliest event predates "
+          f"{EXPOSURE_AUDIT_ONLY_SINCE}: {total_legacy}")
+    print("  (moved under the pre-#1086 exposure rule the tree deleted)")
+    if total_moved:
+        print(f"  share of genuinely-moved: "
+              f"{100.0 * total_legacy / total_moved:.1f}%")
     if total_beliefs:
         print(f"off-grid share:    {100.0 * total_off / total_beliefs:.4f}%")
         print(f"mean-moved share:  {100.0 * total_moved / total_beliefs:.4f}%")
@@ -319,13 +428,13 @@ def main(argv: list[str] | None = None) -> int:
             off_all[pair] = off_all.get(pair, 0) + n
     if off_all:
         print()
-        print("off-grid pairs. `=prior-mean` marks a pair that gained mass")
-        print("without moving its mean, so it scores exactly as before —")
-        print("the dedupe signature, not evidence. An unmarked pair is a")
-        print("real move, or a prior this script does not know about:")
+        print("off-grid pairs. `=n x prior` marks an exact scalar multiple")
+        print("of a prior: mass gained with the mean unchanged, so it scores")
+        print("exactly as before — the dedupe signature, not evidence. An")
+        print("unmarked pair is a real move, or a prior not in the grid:")
         for (a, b), n in sorted(off_all.items(), key=lambda kv: -kv[1]):
-            kept = _matches_prior_mean((a, b), priors)
-            tag = "  =prior-mean" if kept else ""
+            kept = _matches_prior_multiple((a, b), priors)
+            tag = "  =n x prior" if kept else ""
             print(
                 f"  ({a}, {b}) -> {a / (a + b):.4f}  {n:>7}  "
                 f"mass {a + b}{tag}"
