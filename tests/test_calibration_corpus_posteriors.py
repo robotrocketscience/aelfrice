@@ -101,19 +101,51 @@ def test_posteriors_reach_the_store(fixtures: list[dict]) -> None:
 
 
 def _run_at_weight(fixtures: list[dict], weight: str | None):
-    """Run the harness with `AELFRICE_POSTERIOR_WEIGHT` set, or unset.
+    """Run the harness at `weight`, or at the shipped default for None.
 
     The weight goes through the environment rather than a kwarg so the
     shipped resolver runs, which is the path the gate is claiming to
     measure.
+
+    `None` **deletes** the variable rather than merely declining to set
+    it. Declining is not the same thing: an ambient
+    `AELFRICE_POSTERIOR_WEIGHT` would then make the "shipped default"
+    arm measure the operator's configured value, and the whole
+    comparison would silently be weight-vs-weight. #1584 was found while
+    diagnosing #1582 — a suite reading a home-level config — so this
+    guard has no business trusting the ambient environment.
     """
     env = pytest.MonkeyPatch()
-    if weight is not None:
+    if weight is None:
+        env.delenv("AELFRICE_POSTERIOR_WEIGHT", raising=False)
+    else:
         env.setenv("AELFRICE_POSTERIOR_WEIGHT", weight)
     try:
         return run_calibration_on_fixtures(fixtures)
     finally:
         env.undo()
+
+
+def test_the_default_arm_ignores_an_ambient_weight(
+    fixtures: list[dict], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The "shipped default" arm must not read the environment (#1584).
+
+    A guard that compares the default against 0.0 is only measuring the
+    shipped configuration if the default arm is actually the default. If
+    it inherits `AELFRICE_POSTERIOR_WEIGHT` the comparison degenerates to
+    that value against 0.0, which is the failure #1582 was about.
+    """
+    monkeypatch.setenv("AELFRICE_POSTERIOR_WEIGHT", "1.5")
+    poisoned = _run_at_weight(fixtures, None)
+    monkeypatch.delenv("AELFRICE_POSTERIOR_WEIGHT", raising=False)
+    clean = _run_at_weight(fixtures, None)
+
+    assert poisoned.rankings == clean.rankings, (
+        "the default arm changed when AELFRICE_POSTERIOR_WEIGHT was set, "
+        "so it is reading the ambient environment instead of the shipped "
+        "default and the gate is comparing the wrong two things"
+    )
 
 
 def test_disabling_the_blend_changes_the_ranking(
