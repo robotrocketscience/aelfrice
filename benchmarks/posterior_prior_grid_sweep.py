@@ -67,10 +67,16 @@ Usage:
                that would be classified against, without copying or
                opening anything.
     --sources  also report the feedback-event source histogram (#1592
-               AC2): which writers actually fire, and how many of their
-               events carry a valence that can move a posterior at all.
+               AC2): which lanes actually fire, how many of their events
+               carry a posterior-moving valence, and how many of those
+               land on a user-locked belief where the #1168 lock floor
+               refuses the bump regardless.
                `scripts/check_posterior_writers.py` enumerates the
                writers statically; this measures which of them run.
+
+Stores that fail to open are counted and reported on stderr, not hidden:
+a legacy schema a read-only handle cannot migrate is excluded from every
+figure here, so read `stores probed` rather than assuming the whole host.
 
 Exits non-zero if any store fails to open, or if no store was found.
 """
@@ -268,16 +274,22 @@ def _feedback_split(
     return (stranded, legacy)
 
 
-def _source_histogram(store: Any) -> dict[str, tuple[int, int]]:
-    """Per-source `(events, posterior-moving events)` from feedback_history.
+def _source_histogram(store: Any) -> dict[str, tuple[int, int, int]]:
+    """Per-source `(events, movable, blocked-by-lock)` from feedback_history.
 
     #1592 AC2 asks not which writers *can* fire but which *do*. Every
     feedback event writes an audit row naming its source, whether or not
-    the posterior moved. The second element counts events whose valence
-    is non-zero, which is necessary for a move and not sufficient — the
-    bump is still skipped when `update_posterior=False`. Pair it with
-    the stranded count to tell a lane that moved posteriors from one
-    that fired and was discarded.
+    the posterior moved. `movable` counts events whose valence is
+    non-zero, which is necessary for a move and not sufficient, and
+    `blocked` counts the subset landing on a user-locked belief, which
+    the #1168 lock floor refuses at any setting of the exposure flag
+    (`posterior_applied = update_posterior and not locked`). So even
+    `movable - blocked` is an upper bound, since the flag can still be
+    off. Pair it with the stranded count to tell a lane that moved
+    posteriors from one that fired and was discarded.
+
+    Lock state is read as it is now, not as it was at event time, so
+    `blocked` is an estimate for events on beliefs locked since.
     """
     conn = store._conn  # noqa: SLF001 - no public accessor for this rollup
     present = conn.execute(
@@ -286,13 +298,22 @@ def _source_histogram(store: Any) -> dict[str, tuple[int, int]]:
     ).fetchone()
     if not present or not present[0]:
         return {}
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, tuple[int, int, int]] = {}
     for row in conn.execute(
-        "SELECT source, count(*) AS n, "
-        "       sum(CASE WHEN valence != 0 THEN 1 ELSE 0 END) AS moving "
-        "FROM feedback_history GROUP BY source"
+        "SELECT f.source AS source, count(*) AS n, "
+        "       sum(CASE WHEN f.valence != 0 THEN 1 ELSE 0 END) AS movable, "
+        "       sum(CASE WHEN f.valence != 0 "
+        "                 AND b.lock_level = 'user' THEN 1 ELSE 0 END) "
+        "           AS locked "
+        "FROM feedback_history f "
+        "LEFT JOIN beliefs b ON b.id = f.belief_id "
+        "GROUP BY f.source"
     ):
-        out[str(row["source"])] = (int(row["n"]), int(row["moving"] or 0))
+        out[str(row["source"])] = (
+            int(row["n"]),
+            int(row["movable"] or 0),
+            int(row["locked"] or 0),
+        )
     return out
 
 
@@ -408,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     total_moved = 0
     total_stranded = 0
     total_legacy = 0
-    all_sources: dict[str, tuple[int, int]] = {}
+    all_sources: dict[str, tuple[int, int, int]] = {}
     rows: list[dict[str, Any]] = []
     for path in stores:
         try:
@@ -425,9 +446,11 @@ def main(argv: list[str] | None = None) -> int:
         total_moved += row["mean_moved"]
         total_stranded += row["stranded"]
         total_legacy += row["legacy_moved"]
-        for src, (n, moving) in row["sources"].items():
-            have = all_sources.get(src, (0, 0))
-            all_sources[src] = (have[0] + n, have[1] + moving)
+        for src, (n, movable, blocked) in row["sources"].items():
+            have = all_sources.get(src, (0, 0, 0))
+            all_sources[src] = (
+                have[0] + n, have[1] + movable, have[2] + blocked,
+            )
 
     print()
     print(
@@ -475,11 +498,14 @@ def main(argv: list[str] | None = None) -> int:
         print("update_posterior=False, which since #1086 is the default")
         print("for retrieval exposure. So a large movable count is not")
         print("evidence that anything moved.")
-        print(f"  {'events':>9} {'movable':>9}  source")
-        for src, (n, moving) in sorted(
+        print("`blocked` is the subset of movable landing on a")
+        print("user-locked belief, which the #1168 lock floor refuses")
+        print("regardless of the flag.")
+        print(f"  {'events':>9} {'movable':>9} {'blocked':>9}  source")
+        for src, (n, movable, blocked) in sorted(
             all_sources.items(), key=lambda kv: -kv[1][0]
         ):
-            print(f"  {n:>9} {moving:>9}  {src}")
+            print(f"  {n:>9} {movable:>9} {blocked:>9}  {src}")
 
     off_all: dict[tuple[float, float], int] = {}
     for row in rows:

@@ -135,3 +135,29 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
       - run: uv run python scripts/check_derived_figures.py --mode all --github
+
+  # Every code path that can write `beliefs.alpha` / `beliefs.beta` must be
+  # declared (#1592 AC2). #1359 is why this is a job and not a document: that
+  # enumeration surfaced a new unguarded writer every review round, because
+  # nothing in the tree stopped one being added between rounds.
+  #
+  # Pure AST over `src/`, so it needs no store and no corpus — unlike the
+  # store-backed producers above, it really can run on a public runner.
+  # No `paths-filter` and no conditional step, for the #1160 reason: a gate
+  # must never report a pass it did not run.
+  posterior-writers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev
+      - run: uv run python scripts/check_posterior_writers.py

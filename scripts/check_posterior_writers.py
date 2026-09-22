@@ -14,10 +14,24 @@ Two classes are detected:
 2. **API** — a call to a store method that carries a posterior:
    `insert_belief`, `update_belief`, `bump_posterior`.
 
-Only strings in **argument position** count, which is the point of using the
-AST rather than grep. `clamp_ghosts.py` documents the SQL that reverses a clamp
-inside its module docstring; a regex sweep reports it as a sixth writer, and
-adding it to the manifest would be recording a writer that does not exist.
+Only **literal** strings in argument or keyword position count, which is the
+point of using the AST rather than grep. `clamp_ghosts.py` documents the SQL
+that reverses a clamp inside its module docstring; a regex sweep reports it as
+a sixth writer, and adding it to the manifest would be recording a writer that
+does not exist.
+
+**What this check cannot see.** It is a backstop against accidental additions,
+not a proof. An adversarial review enumerated ten evasion shapes and nine are
+invisible to it: SQL built by concatenation, `%`, or `.format()`; SQL held in a
+module-level constant and passed by name; a call through an alias,
+`functools.partial`, `getattr`, or a local holding a bound method; and a
+schema-qualified or quoted table name reached by a path the regex below misses.
+Three of those shapes already exist in this tree for *other* tables —
+`store.py`'s `_BACKFILL_STATEMENTS` constant, `doctor.py`'s concatenated
+SELECT, `store.py`'s `" ".join(sql_parts)` — so they are realistic, not
+hypothetical. None writes a posterior today; the gate's value is that adding
+one the ordinary way now fails CI, and the failure mode to watch for is a
+writer added the extraordinary way.
 
 `update_belief` is in class 2 because it is a whole-row write of an in-memory
 snapshot: any caller that loads a belief, changes an unrelated field, and writes
@@ -37,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -90,8 +105,10 @@ MANIFEST: dict[str, tuple[str, str]] = {
     ),
     "store.py::insert_or_corroborate::insert_belief": (
         CREATES,
-        "delegates to insert_belief on the miss path; a hit records a "
-        "corroboration and does NOT move the posterior",
+        "delegates to store.py::insert_belief on the miss path, so it is "
+        "the same write counted twice — declared because the gate keys on "
+        "call sites. A hit records a corroboration and does NOT move the "
+        "posterior",
     ),
 
     # --- outside the store ---------------------------------------------
@@ -104,8 +121,9 @@ MANIFEST: dict[str, tuple[str, str]] = {
     ),
     "feedback.py::apply_feedback::bump_posterior": (
         MOVES,
-        "the evidence path, and the only one that is supposed to move a "
-        "posterior. Skipped entirely when update_posterior=False, which "
+        "the evidence path. Not the only INTENTIONAL mover — clamp_ghosts "
+        "is the other — but the only one that moves a posterior on "
+        "evidence. Skipped entirely when update_posterior=False, which "
         "since #1086 is the default for retrieval exposure — the reason "
         "6,220 beliefs carry feedback events and sit on their prior",
     ),
@@ -113,8 +131,10 @@ MANIFEST: dict[str, tuple[str, str]] = {
     # --- callers of update_belief: each carries alpha/beta along --------
     "hook.py::_autolock_candidates::update_belief": (
         MOVES,
-        "production hot path. Rewrites origin to user_stated and re-locks; "
-        "the posterior rides along on the whole-row write",
+        "rewrites origin to user_stated and re-locks; the posterior rides "
+        "along on the whole-row write. NOT a default path: gated on "
+        "AELF_AUTOLOCK_CORRECTIONS, which ships off — the prompt-instead-"
+        "of-lock branch is what runs unless the user opts in",
     ),
     "promotion.py::promote::update_belief": (
         MOVES,
@@ -180,8 +200,10 @@ MANIFEST: dict[str, tuple[str, str]] = {
     ),
     "benchmark.py::seed_corpus::insert_belief": (
         INERT,
-        "seeds a synthetic benchmark corpus at the Jeffreys prior "
-        "(1.0, 1.0); never runs against a user store",
+        "seeds a synthetic corpus at the Jeffreys prior (1.0, 1.0). "
+        "`aelf bench synthetic --db PATH` opens PATH read-write and seeds "
+        "it: the help says 'an empty SQLite file' but nothing enforces "
+        "that, so this is inert only by convention, not by construction",
     ),
     "benchmark.py::seed_multihop_corpus::insert_belief": (
         INERT,
@@ -199,22 +221,50 @@ MANIFEST: dict[str, tuple[str, str]] = {
 #: carries the posterior through unchanged.
 UNDETECTABLE: tuple[tuple[str, str, str], ...] = (
     (
-        "store.py::_rebuild_beliefs_table",
+        "store.py::_rebuild_beliefs_table::copy",
         IDENTITY,
-        "dynamic column list in an f-string; copies alpha/beta unchanged",
+        "f-string with a runtime column list, so the literal text never "
+        "names alpha or beta; a column-for-column copy that carries the "
+        "posterior through unchanged",
+    ),
+    (
+        "store.py::_rebuild_beliefs_table::create",
+        IDENTITY,
+        "the same function builds `CREATE TABLE beliefs_new (... alpha REAL "
+        "NOT NULL ...)` by concatenation and executes it as a variable, so "
+        "the column declaration is invisible here too. Schema DDL, not a "
+        "value write",
     ),
 )
 
 
+#: `beliefs` written as SQLite will accept it: bare, quoted three ways, and
+#: schema-qualified. A bare `in` test on `"update beliefs"` misses every form
+#: but the first, and `store.py` records that real stores exist carrying a
+#: quoted `CREATE TABLE IF NOT EXISTS "beliefs"`.
+_TABLE = r'(?:(?:main|temp)\s*\.\s*)?["\'`\[]?beliefs["\'`\]]?'
+_WRITES_RE = re.compile(
+    rf'\b(?:update\s+{_TABLE}|insert\s+(?:or\s+\w+\s+)?into\s+{_TABLE})\b',
+    re.IGNORECASE,
+)
+#: Sibling tables whose names start with `beliefs`. Matching them would fill
+#: the manifest with FTS and rebuild writes that carry no posterior.
+_NOT_THE_TABLE = re.compile(r'\bbeliefs_(?:fts|new)\b', re.IGNORECASE)
+
+
 def _writes_beliefs_posterior(sql: str) -> bool:
-    """True when `sql` writes the `beliefs` table and names alpha or beta."""
-    lowered = " ".join(sql.lower().split())
-    if "alpha" not in lowered and "beta" not in lowered:
+    """True when `sql` writes the `beliefs` table and names alpha or beta.
+
+    Both halves are required. `UPDATE beliefs SET lock_level = ?` is a write
+    to the table and not to a posterior; `INSERT INTO beliefs_fts` names
+    neither. Without the column test the manifest would fill with every
+    column write in the store and stop being read.
+    """
+    lowered = " ".join(sql.split())
+    if not re.search(r"\b(alpha|beta)\b", lowered, re.IGNORECASE):
         return False
-    if "update beliefs" in lowered:
-        return True
-    # `INSERT INTO beliefs (...)` and the rebuild's `beliefs_new`.
-    return "insert into beliefs" in lowered
+    stripped = _NOT_THE_TABLE.sub(" ", lowered)
+    return _WRITES_RE.search(stripped) is not None
 
 
 def _literal_sql(node: ast.expr) -> str | None:
@@ -270,7 +320,11 @@ class _Walker(ast.NodeVisitor):
         # Class 1: SQL in argument position only. A module or function
         # docstring is an ast.Expr, never a Call argument, so it cannot
         # reach here — which is the whole reason this is an AST walk.
-        for arg in node.args:
+        # Keywords as well as positional args: `execute(sql=...)` is a
+        # structurally invisible writer if only `node.args` is read.
+        candidates: list[ast.expr] = list(node.args)
+        candidates += [kw.value for kw in node.keywords]
+        for arg in candidates:
             sql = _literal_sql(arg)
             if sql is not None and _writes_beliefs_posterior(sql):
                 self._record("sql", arg.lineno)

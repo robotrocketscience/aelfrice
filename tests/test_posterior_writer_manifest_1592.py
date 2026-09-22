@@ -29,6 +29,13 @@ check: Any = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
 
+def _write(tmp_path: Path, name: str, body: str) -> Path:
+    src = tmp_path / "aelfrice"
+    src.mkdir(exist_ok=True)
+    (src / name).write_text(body, encoding="utf-8")
+    return src
+
+
 def test_every_writer_in_the_tree_is_declared() -> None:
     """The live arm. Fires when a writer is added without a manifest entry."""
     found = check.scan(check.SRC)
@@ -52,11 +59,41 @@ def test_the_checker_passes_on_the_tree_as_it_stands() -> None:
     assert check.main([]) == 0
 
 
-def _write(tmp_path: Path, name: str, body: str) -> Path:
-    src = tmp_path / "aelfrice"
-    src.mkdir(exist_ok=True)
-    (src / name).write_text(body, encoding="utf-8")
-    return src
+def test_main_returns_nonzero_when_a_writer_is_undeclared(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """`main` must actually fail, not merely print.
+
+    This is what CI runs, and nothing else asserted its failing exit. An
+    adversarial review mutated `main` to `return 0` unconditionally and the
+    whole file stayed green — the gate would have been wired into a job
+    that could never go red.
+    """
+    src = _write(
+        tmp_path, "sneaky.py",
+        'def repair(conn):\n'
+        '    conn.execute("UPDATE beliefs SET alpha = 1.0 WHERE id = ?")\n',
+    )
+    monkeypatch.setattr(check, "SRC", src)
+
+    assert check.main([]) == 1
+
+
+def test_main_returns_nonzero_when_a_declared_writer_vanishes(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """The other exit path: a stale entry hides that a writer was removed."""
+    src = _write(tmp_path, "empty.py", "def nothing():\n    return 1\n")
+    monkeypatch.setattr(check, "SRC", src)
+
+    assert check.main([]) == 1
+
+
+def test_main_reports_a_missing_source_tree(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(check, "SRC", tmp_path / "does-not-exist")
+    assert check.main([]) == 2
 
 
 def test_a_new_update_beliefs_statement_is_detected(tmp_path: Path) -> None:
@@ -129,6 +166,70 @@ def test_a_statement_not_touching_the_posterior_is_ignored(
         '    conn.execute("UPDATE beliefs SET lock_level = ? WHERE id = ?")\n',
     )
     assert check.scan(src) == {}
+
+
+def test_sql_passed_as_a_keyword_is_detected(tmp_path: Path) -> None:
+    """`execute(sql=...)` is a writer too.
+
+    Reading only `node.args` makes the keyword form structurally invisible,
+    which is a one-word evasion of the whole gate.
+    """
+    src = _write(
+        tmp_path, "kw.py",
+        'def repair(conn):\n'
+        '    conn.execute(sql="UPDATE beliefs SET alpha = 1.0")\n',
+    )
+    assert "kw.py::repair::sql" in check.scan(src)
+
+
+def test_a_quoted_or_qualified_table_name_is_detected(tmp_path: Path) -> None:
+    """SQLite accepts `"beliefs"` and `main.beliefs`; so must the gate.
+
+    `store.py` records that real stores exist carrying a quoted
+    `CREATE TABLE IF NOT EXISTS "beliefs"`, so these spellings are not
+    hypothetical.
+    """
+    src = _write(
+        tmp_path, "quoted.py",
+        'def a(conn):\n'
+        '    conn.execute(\'UPDATE "beliefs" SET alpha = 1.0\')\n'
+        'def b(conn):\n'
+        '    conn.execute("UPDATE main.beliefs SET beta = 1.0")\n',
+    )
+    found = check.scan(src)
+    assert "quoted.py::a::sql" in found, found
+    assert "quoted.py::b::sql" in found, found
+
+
+def test_the_fts_and_rebuild_sibling_tables_are_not_posterior_writers(
+    tmp_path: Path,
+) -> None:
+    """`beliefs_fts` starts with `beliefs` and carries no posterior.
+
+    A substring test on "insert into beliefs" matches it and fills the
+    manifest with writes that cannot move a mean.
+    """
+    src = _write(
+        tmp_path, "fts.py",
+        'def index(conn, alpha):\n'
+        '    conn.execute("INSERT INTO beliefs_fts (id, content) '
+        'VALUES (?, ?)", (1, alpha))\n',
+    )
+    assert check.scan(src) == {}
+
+
+def test_the_documented_evasions_stay_documented() -> None:
+    """The gate is a backstop, not a proof, and must keep saying so.
+
+    An adversarial review enumerated ten ways to write a posterior that
+    this check cannot see; nine work. They are named in the module
+    docstring so nobody reads a green run as "no writer was added". If
+    the caveat is deleted, this fails.
+    """
+    doc = check.__doc__ or ""
+    assert "cannot see" in doc, "the evasion caveat was removed"
+    for shape in ("concatenation", "partial", "getattr", "constant"):
+        assert shape in doc, f"the {shape} evasion is no longer named"
 
 
 def test_every_manifest_entry_has_an_effect_and_a_reason() -> None:
