@@ -1183,6 +1183,13 @@ def run_producers(
     serially; that is how `tests/test_derived_figures_1469.py`
     mutation-proves the concurrency.
     """
+    if not runnable:
+        # `ThreadPoolExecutor(max_workers=0)` raises, and an empty list is a
+        # legitimate input for a helper whose contract is "run these" — a
+        # tree with no store-free markers reaches here. Answered before the
+        # executor exists rather than by clamping the count, so the empty
+        # case never depends on what the pool does with one idle worker.
+        return []
     workers = max_workers if max_workers is not None else min(len(runnable), PRODUCER_MAX_WORKERS)
     with (
         tempfile.TemporaryDirectory(prefix="derived-figures-pyc-") as pyc,

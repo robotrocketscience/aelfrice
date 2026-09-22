@@ -829,6 +829,19 @@ def _slow_producer(
     (repo / f"{name}.md").write_text(_published(f"benchmarks/{name}.py#k", published))
 
 
+def test_running_no_producers_returns_no_results() -> None:
+    """#1578: an empty producer list is a legitimate input, not an error.
+
+    `min(len(runnable), PRODUCER_MAX_WORKERS)` is 0 on an empty list, and
+    `ThreadPoolExecutor(max_workers=0)` raises `ValueError`. A tree with
+    no store-free markers reaches this, and so does any new call path that
+    filters `runnable` down to nothing before calling — the helper's
+    contract is "run these", and running none of them is a valid request
+    with an obvious answer.
+    """
+    assert cdf.run_producers([]) == []
+
+
 @pytest.mark.timeout(120)
 def test_the_producers_run_concurrently(repo: Path) -> None:
     """#1578: the check's wall clock is the slowest producer, not the sum.
