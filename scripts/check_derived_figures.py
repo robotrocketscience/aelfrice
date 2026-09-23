@@ -1291,25 +1291,35 @@ def check_producers(
 
         uv run python scripts/check_derived_figures.py --time-producers
 
-    On an M-series laptop with an SSD, 2026-09-21, five store-free producers
-    behind 219 markers:
+    On an M-series laptop with an SSD, 2026-09-23, six store-free producers
+    behind 236 markers:
 
-        15.0s  benchmarks/injection_budget_bytes.py
-        10.9s  benchmarks/store_open_cost.py
-        10.6s  scripts/measure_block_ceiling.py
-         2.4s  scripts/budget_discriminability_census.py
-         0.4s  benchmarks/published_constants.py
+        57.3s  scripts/budget_discriminability_aa_replicate.py
+        10.8s  benchmarks/injection_budget_bytes.py
+         8.5s  scripts/measure_block_ceiling.py
+         7.6s  benchmarks/store_open_cost.py
+         1.7s  scripts/budget_discriminability_census.py
+         0.3s  benchmarks/published_constants.py
         -------
-        39.2s  serial sum
-        18.1s  concurrent wall
+        86.1s  serial sum
+        59.0s  concurrent wall
 
     `store_open_cost.py` walks a three-size grid up to a 20,000-belief store,
     so it is disk-bound, and that is the axis on which a hosted runner is
     furthest from a laptop. Re-derive the table when you add a producer. The
     number to watch is the new producer's own time, because the wall clock of
     this check is now the maximum rather than the sum: a producer slower than
-    the current 15.0s worst case moves it, and one faster than that is nearly
-    free until the worker cap binds.
+    the current worst case moves it, and one faster than that is nearly free
+    until the worker cap binds.
+
+    The #1546 A/A replicate is that worst case, and it tripled the wall from
+    18.1s to 59.0s in one commit. Most of its time is a diagnostic sweep that
+    re-runs every lane, query, and grid cell once per replicate to answer
+    whether anything the census statistic reads moves under the perturbation;
+    that sweep is what separates a real zero band from a cancelling one, so it
+    is a cost this check pays deliberately. It still sits well inside the
+    300-second `PRODUCER_TIMEOUT_S`, but it is now the number that decides how
+    long this gate takes.
     """
     by_producer = group_store_free(markers)
     runnable = runnable_producers(by_producer)
