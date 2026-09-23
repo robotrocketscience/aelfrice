@@ -930,15 +930,45 @@ _HOST_MANAGEMENT_NOTE: Final[str] = (
     "<host-adapter>\n"
     "IMPORTANT — on this host, every `aelf setup`, `aelf doctor`,\n"
     "`aelf unsetup`, or `aelf uninstall` invocation in the steps below\n"
-    "MUST use the `--host codex` form (e.g. `uv run aelf setup --host "
-    "codex`,\n"
-    "`uv run aelf doctor --host codex`, `uv run aelf unsetup --host "
-    "codex`,\n"
-    "`uv run aelf uninstall <flags> --host codex`). The bare form\n"
+    "MUST use the `--host codex` form (e.g. `aelf setup --host codex`,\n"
+    "`aelf doctor --host codex`, `aelf unsetup --host codex`,\n"
+    "`aelf uninstall <flags> --host codex`). The bare form\n"
     "targets another host's configuration — it would not touch this\n"
     "host's install and must not be run here.\n"
     "</host-adapter>"
 )
+
+# #1413. The bundled slash bodies invoke the CLI as ``uv run aelf``,
+# which is right for a source checkout and wrong for an installed Codex
+# skill. ``uv run`` initializes and locks a cache before aelfrice starts,
+# so in a sandbox whose cache is read-only the skill fails at the wrapper
+# — measured, `uv run aelf --version` exits 2 where `aelf --version`
+# exits 0. It also resolves a project environment, so an unactivated
+# checkout holding a different aelfrice version silently shadows the
+# ``uv tool`` install that generated the skill.
+#
+# The rewrite happens HERE, at transform time, rather than in the slash
+# sources: those are shared with hosts where ``uv run`` is correct
+# (ratified design fork, 2026-08-06 — Codex-only, and no absolute path
+# baked in, so the generated skill stays machine-independent and resolves
+# ``aelf`` through the invoking shell's PATH/PATHEXT like any other
+# command). This is why the generated body is no longer byte-identical to
+# its source.
+_UV_RUN_PREFIX: Final[str] = "uv run aelf "
+_DIRECT_PREFIX: Final[str] = "aelf "
+
+
+def _direct_cli_invocations(text: str) -> str:
+    """Rewrite ``uv run aelf <cmd>`` to ``aelf <cmd>`` (#1413).
+
+    Every bundled occurrence is the literal prefix followed by a
+    subcommand, so a literal replace is exact — there is no ``uv run
+    aelfrice``, no line-broken form, and no occurrence where ``aelf`` is
+    the final token. A test pins that property against the bundle so a
+    future slash edit introducing another shape fails rather than
+    shipping a half-rewritten skill.
+    """
+    return text.replace(_UV_RUN_PREFIX, _DIRECT_PREFIX)
 
 
 def _parse_slash_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -1037,8 +1067,11 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
     if skill_name in _HOST_MANAGEMENT_SKILLS:
         adapter.append(_HOST_MANAGEMENT_NOTE)
     adapter.append(
-        "Run each `uv run aelf ...` command in your shell and show its "
-        "output to the user."
+        "Run each `aelf ...` command in your shell and show its "
+        "output to the user. Invoke `aelf` directly, exactly as written: "
+        "wrapping it in a package-runner prefix needs a writable cache "
+        "this host may not have, and can select a different aelfrice "
+        "than the one installed."
     )
 
     lines = [
@@ -1048,7 +1081,7 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
         "---",
         *adapter,
         "",
-        body.rstrip("\n"),
+        _direct_cli_invocations(body.rstrip("\n")),
         "",
     ]
     return skill_name, "\n".join(lines)

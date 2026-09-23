@@ -56,12 +56,195 @@ def test_transform_carries_marker_and_invocation() -> None:
     assert "$aelf-status" in text
 
 
-def test_transform_body_is_verbatim() -> None:
+def test_transform_body_is_verbatim_apart_from_the_cli_prefix() -> None:
+    """The body is carried through unchanged except for `uv run` (#1413).
+
+    Before #1413 the body was byte-identical to its source. It no longer
+    is, and that is the change rather than a workaround: the generated
+    skill must invoke `aelf` directly, while the slash source keeps the
+    `uv run` form that is correct for a source checkout on other hosts.
+    Undoing the rewrite is the only difference, so this still pins that
+    nothing else in the body is edited, reordered, or dropped.
+    """
     src = _bundled_slash_files()["status.md"]
     _, text = codex_skill_from_slash("status.md", src)
-    # The <objective>/<process> body is copied through unchanged.
     body = src.split("---", 2)[2].strip()
-    assert body in text
+    assert "uv run aelf " in body, (
+        "fixture no longer exercises the rewrite; pick a slash command "
+        "whose body still invokes `uv run aelf`"
+    )
+    assert body not in text
+    assert body.replace("uv run aelf ", "aelf ") in text
+
+
+def test_no_generated_skill_invokes_uv_run() -> None:
+    """AC1 (#1413): `uv run aelf` must not survive into any skill.
+
+    Measured on the bundle before the fix: 96 occurrences across 31 of
+    31 skills. `uv run` initializes and locks a cache before aelfrice
+    starts, so a Codex sandbox with a read-only cache fails at the
+    wrapper — `uv run aelf --version` exits 2 where `aelf --version`
+    exits 0.
+    """
+    skills = _bundled_codex_skills()
+    assert skills, "bundle is empty; the assertion below would be vacuous"
+    offenders = {n: t.count("uv run") for n, t in skills.items() if "uv run" in t}
+    assert offenders == {}, f"generated skills still wrap the CLI: {offenders}"
+
+
+def test_every_bundled_uv_run_is_a_rewritable_prefix() -> None:
+    """The literal replace is exact only while the bundle has one shape.
+
+    A slash body that line-breaks the invocation, writes `uv run
+    aelfrice`, or ends a line on `uv run aelf` would be rewritten
+    wrongly or not at all, and the skill would ship half-converted. Pin
+    the property against the source bundle so such an edit reds here
+    rather than in a user's sandbox.
+    """
+    import re
+
+    bad: dict[str, list[str]] = {}
+    for filename, text in _bundled_slash_files().items():
+        hits = [
+            m.group(0)
+            for m in re.finditer(r"uv\s+run\s+\S*", text)
+            if m.group(0) != "uv run aelf"
+        ]
+        # `uv run aelf` with nothing after it is also unrewritable.
+        hits += [m.group(0) for m in re.finditer(r"uv run aelf(?![ \t])", text)]
+        if hits:
+            bad[filename] = hits
+    assert bad == {}, f"unrewritable `uv run` forms in the slash bundle: {bad}"
+
+
+def test_a_generated_command_runs_against_a_read_only_uv_cache(
+    tmp_path: Path,
+) -> None:
+    """AC2 (#1413): the failure reproduces, and the fix clears it.
+
+    Both arms run the command as the generated skill spells it, against
+    a PATH holding only a fake `aelf` shim and a uv cache directory
+    stripped of write permission. The wrapped form is the control: if it
+    ever stops failing, this test proves nothing and the assertion below
+    says so rather than passing quietly.
+    """
+    import os
+    import re
+    import shutil
+    import stat
+    import subprocess
+
+    if os.name != "posix":
+        pytest.skip("shim is a POSIX script; Windows resolution is covered below")
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed; nothing to wrap")
+
+    text = _bundled_codex_skills()["aelf-status"]
+    commands = [
+        c for c in re.findall(r"`(aelf [^`]+)`", text) if not c.endswith("...")
+    ]
+    assert commands, "no runnable command found in the generated skill"
+    command = commands[0]
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shim = bindir / "aelf"
+    shim.write_text("#!/bin/sh\necho SHIM-OK \"$@\"\n")
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    cache = tmp_path / "ro-cache"
+    cache.mkdir()
+    cache.chmod(stat.S_IRUSR | stat.S_IXUSR)
+
+    env = dict(os.environ)
+    env["PATH"] = str(bindir)
+    env["UV_CACHE_DIR"] = str(cache)
+
+    try:
+        direct = subprocess.run(
+            command.split(), env=env, capture_output=True, text=True, timeout=60,
+        )
+        wrapped = subprocess.run(
+            [uv, "run", *command.split()],
+            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+        )
+    finally:
+        cache.chmod(stat.S_IRWXU)
+
+    assert wrapped.returncode != 0, (
+        "the control passed: a read-only uv cache no longer breaks the "
+        "wrapped form, so this test cannot distinguish the fix"
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert "SHIM-OK" in direct.stdout
+
+
+def test_the_generated_command_cannot_discover_a_project_environment() -> None:
+    """AC3 (#1413): no shadowing by an unactivated checkout.
+
+    `uv run` walks up for a `pyproject.toml` and selects that project's
+    environment, so a checkout holding a different aelfrice version wins
+    over the `uv tool` install that generated the skill. A bare command
+    resolves through PATH only, which satisfies this by construction —
+    so what there is to test is that no invocation shape capable of
+    project discovery survives into the bundle.
+    """
+    import re
+
+    discovering = re.compile(r"\b(uv run|uvx|python -m aelfrice|poetry run|pipenv run)\b")
+    offenders = {
+        name: sorted(set(discovering.findall(text)))
+        for name, text in _bundled_codex_skills().items()
+        if discovering.search(text)
+    }
+    assert offenders == {}, f"project-discovering invocations survive: {offenders}"
+
+
+def test_generated_commands_resolve_on_both_posix_and_windows_shims() -> None:
+    """AC4 (#1413): one spelling has to serve both shim families.
+
+    A `uv tool` install puts `aelf` on PATH as an executable on POSIX and
+    as `aelf.exe`/`aelf.cmd` on Windows. A bare `aelf` resolves to either
+    — the extension is supplied by PATHEXT — while any spelling carrying
+    an extension, a directory part, or a `./` prefix binds the skill to
+    one platform. Assert the bundle only ever uses the bare form.
+    """
+    import re
+
+    bad: dict[str, list[str]] = {}
+    for name, text in _bundled_codex_skills().items():
+        hits = re.findall(r"`([^`\n]*\baelf(?:\.exe|\.cmd|\.bat)?\b[^`\n]*)`", text)
+        offending = [
+            h for h in hits
+            if re.search(r"\baelf\.(exe|cmd|bat)\b", h)
+            # A directory part on the COMMAND: `./aelf`, `~/bin/aelf`,
+            # `/usr/local/bin/aelf`. The trailing class keeps out
+            # `/aelf:search` (a slash-command name) and
+            # `/tmp/aelf-wonder-dispatch.jsonl` (an argument path that
+            # merely starts with the same four letters), and a directory
+            # such as `~/.../commands/aelf/`, which ends in a separator.
+            or re.search(r"(?:\.|~|[\w.-])/(?:[\w.~-]+/)*aelf(?![\w:./-])", h)
+        ]
+        if offending:
+            bad[name] = offending
+    assert bad == {}, f"platform-bound spellings in the bundle: {bad}"
+
+
+def test_generated_skills_bake_in_no_absolute_path() -> None:
+    """AC (#1413, 2026-08-06 fork): no machine-specific path.
+
+    The skill must resolve `aelf` through the invoking shell's PATH, so
+    a bundle generated on one machine stays valid on another. Guard the
+    two shapes an absolute launcher path would take.
+    """
+    import re
+
+    for name, text in _bundled_codex_skills().items():
+        assert not re.search(r"/\S*/bin/aelf\b", text), f"{name} bakes a POSIX path"
+        assert not re.search(r"[A-Za-z]:\\\\\S*aelf\.(exe|cmd)", text), (
+            f"{name} bakes a Windows path"
+        )
 
 
 def test_argument_hint_folds_into_adapter() -> None:
