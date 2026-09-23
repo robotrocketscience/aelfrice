@@ -110,12 +110,13 @@ L2.5 sub-budget is 200. Which belief it drops is decided by the ingest order
 and by nothing else, so whether that belief is gold varies from replicate to
 replicate and EC moves with it.
 
-Under that fake, at 4 permuted replicates:
+Under that fake, over the 3 replicates the test runs (`TEST_SEEDS = 2`, the
+committed order plus two permutations):
 
 | Arm | `aa_band_pp` | Per-lane band | Order-sensitive grid arms |
 | --- | --- | --- | --- |
 | shipped code | 0.0pp | 0.0pp on all six | 0 of 2070 |
-| rowid-reading fake | 66.6667pp | 57.1429pp on all six | 180 of 2070 |
+| rowid-reading fake | 66.6667pp | 57.1429pp on all six | 150 of 2070 |
 
 The test asserts on the producer's own `aa_band_pp`, per lane, not on a spread
 the test computes itself: what is under test is the replicate's ability to
