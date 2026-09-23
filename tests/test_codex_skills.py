@@ -119,8 +119,6 @@ def test_every_bundled_uv_run_is_a_rewritable_prefix() -> None:
     the property against the source bundle so such an edit reds here
     rather than in a user's sandbox.
     """
-    import re
-
     bad: dict[str, list[str]] = {}
     for filename, text in _bundled_slash_files().items():
         hits = [
@@ -148,7 +146,6 @@ def test_a_generated_command_runs_against_a_read_only_uv_cache(
     says so rather than passing quietly.
     """
     import os
-    import re
     import shutil
     import stat
     import subprocess
