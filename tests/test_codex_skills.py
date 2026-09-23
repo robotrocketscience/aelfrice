@@ -117,6 +117,7 @@ def test_every_bundled_uv_run_is_a_rewritable_prefix() -> None:
     assert bad == {}, f"unrewritable `uv run` forms in the slash bundle: {bad}"
 
 
+@pytest.mark.timeout(240)
 def test_a_generated_command_runs_against_a_read_only_uv_cache(
     tmp_path: Path,
 ) -> None:
