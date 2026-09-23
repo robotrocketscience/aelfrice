@@ -281,10 +281,20 @@ NOT_EXERCISED: Final[dict[str, str]] = {
     ),
     "graph edges": (
         "_open_store inserts beliefs and no edges, so has_edge_type is False "
-        "for every type: the temporal spine, BFS expansion and cluster "
-        "structure are all inert. Those are the sources where a budget could "
-        "change candidacy rather than count, so EC here is measured on a "
-        "retrieval configuration narrower than production"
+        "for every type: the temporal spine and BFS expansion never run. "
+        "Those are the sources where a budget could change candidacy rather "
+        "than count, so EC here is measured on a retrieval configuration "
+        "narrower than production. The cluster packer is NOT in that set and "
+        "was wrongly listed here: pack_with_clusters runs on every query of "
+        "every cell with singleton clusters -- 2208 calls in a full run, all "
+        "of them packing -- so the non-monotone stage-2 `continue` this "
+        "module's docstring flags is live on every measured cell, not inert. "
+        "What the absent edges hide is the consequence: the spine lane seeds "
+        "from l1_packed[:DEFAULT_SPINE_SEED_COUNT], so on an edge-bearing "
+        "store a lower budget can promote a different belief into the seed "
+        "window and reach a neighbour the unbudgeted probe never saw. "
+        "Containment is therefore a property of THIS corpus, not a theorem -- "
+        "see the bound-status note below"
     ),
 }
 
