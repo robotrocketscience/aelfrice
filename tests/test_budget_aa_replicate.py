@@ -433,7 +433,7 @@ def test_figures_omits_the_sweep_keys_when_the_sweep_was_skipped(
 ) -> None:
     """A skipped diagnostic must never reach a published figure.
 
-    The sweep costs 50s of a 57s run while the band costs 8s, and the
+    The sweep costs 4s of an 11s run while the band costs about 7s, and the
     derived-figures gate's markers cover only the band — so the sweep is
     off by default and `--sweep` turns it on. The guarantee is unchanged
     and is now carried by omission rather than by refusing: there is no

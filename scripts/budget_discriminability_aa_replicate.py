@@ -293,16 +293,30 @@ def arm_outputs(
         {f"{q.corpus}/{q.qid}": q for q in qs} for qs in queries_by_replicate
     ]
     keys = sorted(per_replicate_queries[0])
-    for lane in lanes:
-        for key in keys:
-            for mult in census.BUDGET_MULTIPLIERS:
-                budget = census.arm_budget_for(lane.budget, mult)
-                for sub in census.L25_SUBBUDGETS:
-                    seen: set[tuple[str, ...]] = set()
-                    for mapping in per_replicate_queries:
-                        q = mapping[key]
-                        store = census._open_store(q)
-                        try:
+    # The store depends only on `(key, replicate)`, but the arm it is probed
+    # under depends on `(lane, budget, sub)`. Opening inside the arm loops
+    # therefore rebuilt the same store once per arm: lanes x budgets x
+    # sub-budgets = 90 identical opens per `(key, replicate)` pair, and
+    # `MemoryStore(":memory:")` runs the full open-time DDL, migration and
+    # origin backfill every time. Hoisting the open above the arm loops takes
+    # the census from 4,140 opens to 46 and the sweep from ~12s to ~1s per
+    # replicate, with byte-identical output -- `examined` counts cells, and
+    # reordering the loops changes only the order `varied` is appended in,
+    # which the return already normalises with `sorted(...)`.
+    #
+    # Reuse is sound because `census._retrieve` is read-only with respect to
+    # the store; `budget_discriminability_census.measure_query` already relies
+    # on that, reusing one store across its probe and all 15 grid arms.
+    for key in keys:
+        stores = [census._open_store(m[key]) for m in per_replicate_queries]
+        try:
+            for lane in lanes:
+                for mult in census.BUDGET_MULTIPLIERS:
+                    budget = census.arm_budget_for(lane.budget, mult)
+                    for sub in census.L25_SUBBUDGETS:
+                        seen: set[tuple[str, ...]] = set()
+                        for store, mapping in zip(stores, per_replicate_queries):
+                            q = mapping[key]
                             hits = census._retrieve(
                                 store,
                                 lane,
@@ -310,15 +324,16 @@ def arm_outputs(
                                 token_budget=budget,
                                 l25_token_subbudget=sub,
                             )
-                        finally:
-                            store.close()
-                        seen.add(tuple(b.id for b in hits))
-                    examined += 1
-                    if len(seen) > 1:
-                        varied.append(
-                            f"{lane.name}/{key} budget={budget} sub={sub}: "
-                            f"{len(seen)} distinct outputs"
-                        )
+                            seen.add(tuple(b.id for b in hits))
+                        examined += 1
+                        if len(seen) > 1:
+                            varied.append(
+                                f"{lane.name}/{key} budget={budget} sub={sub}: "
+                                f"{len(seen)} distinct outputs"
+                            )
+        finally:
+            for store in stores:
+                store.close()
     return len(varied), examined, sorted(varied)[:10]
 
 
@@ -331,8 +346,8 @@ def replicate(
     """Run the census once per replicate and return the whole A/A report.
 
     `order_sensitivity_sweep` runs the per-arm diagnostic above, which costs
-    one `retrieve()` per lane x query x grid cell per replicate and dominates
-    the run — 50s of 57s here, against about 8s for the band. Turning it off
+    one `retrieve()` per lane x query x grid cell per replicate — 4s of an
+    11s run here, against about 7s for the band. Turning it off
     changes nothing about how the band is computed; a report produced with it
     off carries `arm_sweep: False`, and `figures()` then OMITS the sweep keys
     rather than zero-filling them, so a skipped diagnostic can never reach a
@@ -341,8 +356,8 @@ def replicate(
     Note the asymmetry, which is deliberate rather than an oversight: this
     parameter defaults to True, so a library caller gets the complete
     measurement, while the CLI's `--sweep` defaults to OFF, so the
-    derived-figures gate is not charged 50s for a diagnostic none of its
-    markers cover. Pass `--sweep` to reproduce the published sweep figures.
+    derived-figures gate is not charged for a diagnostic none of its markers
+    cover. Pass `--sweep` to reproduce the published sweep figures.
     """
     if seeds < 1:
         raise ValueError(f"seeds must be at least 1, got {seeds}")
@@ -471,7 +486,7 @@ def figures(rep: dict[str, Any] | None = None) -> dict[str, Any]:
     # not run. An earlier revision raised instead, which had the same intent
     # — a skipped diagnostic must never reach a published figure — and made
     # the cheap path unusable for `--emit-figures`, so the derived-figures
-    # gate had to pay 50s for a diagnostic none of its markers cover.
+    # gate had to pay for a diagnostic none of its markers cover.
     # Omitting keeps the guarantee: there is no key to read, rather than a
     # key holding a number nothing measured. `aa_arm_sweep` above says which
     # run this was, so a consumer cannot mistake absence for zero.
@@ -599,10 +614,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "also run the per-arm order-sensitivity diagnostic. It costs one "
-            "retrieve() per lane x query x grid cell per replicate and "
-            "dominates the run — 50s of 57s here — while the band itself "
-            "takes about 8s. Off by default so the derived-figures gate, "
-            "whose markers cover only the band, does not pay for it"
+            "retrieve() per lane x query x grid cell per replicate — 4s of an "
+            "11s run here — while the band itself takes about 7s. Off by "
+            "default so the derived-figures gate, whose markers cover only "
+            "the band, does not pay for it"
         ),
     )
     ap.add_argument(
