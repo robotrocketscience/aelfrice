@@ -643,16 +643,45 @@ def required_n(
     return math.ceil(num / (p1 - p2) ** 2)
 
 
+#: The K3 A/A replicate's measured band, in percentage points (#1546).
+#:
+#: Supplied by `scripts/budget_discriminability_aa_replicate.py`, which
+#: re-runs this census under seeded permutations of insertion order and
+#: reports the widest per-cell spread. Pinned here rather than computed on
+#: every census run because the replicate runs this census nine times and
+#: would make the third term cost nine-fold what the figure it feeds costs.
+#:
+#: It is a literal because it is a measurement, and it is 0.0 because the
+#: statistic did not move — NOT because no term exists. Those two were
+#: indistinguishable before K3 and `AA_BAND_MEASURED` is what tells them
+#: apart. Re-derive it, do not adjust it:
+#:
+#:     uv run python scripts/budget_discriminability_aa_replicate.py --emit-figures
+#:
+#: `tests/test_budget_aa_replicate.py` fails if this constant and the
+#: replicate's own figure disagree, so the two cannot drift.
+AA_BAND_PP: Final[float] = 0.0
+AA_BAND_MEASURED: Final[bool] = True
+
+
 def grey_band(n: int) -> float:
     """`NF = max(1.96 * sqrt(0.25 / N), 9.5pp, A/A_band)`, in percentage points.
 
-    K3 is not built, so there is no A/A term and the report says so rather than
-    substituting a zero that reads like a measured one.
+    All three terms are present since K3 (#1546). The A/A term is
+    `AA_BAND_PP`, measured rather than assumed — a zero that reads like a
+    measured one is exactly what it is, and `AA_BAND_MEASURED` distinguishes
+    that from the earlier state in which no term existed at all.
+
+    On the committed corpora the binomial term dominates at every N this
+    census reaches, so adding the A/A term moves no published number. That
+    is a fact about this corpus, not a reason the term is decorative: the
+    band is a sample range and is monotone non-decreasing in the replicate
+    count, so it can only ever rise.
     """
     if n <= 0:
-        return INTER_GRADER_SPREAD_PP
+        return max(INTER_GRADER_SPREAD_PP, AA_BAND_PP)
     binomial_pp = 100.0 * POWER_Z_ALPHA * math.sqrt(0.25 / n)
-    return max(binomial_pp, INTER_GRADER_SPREAD_PP)
+    return max(binomial_pp, INTER_GRADER_SPREAD_PP, AA_BAND_PP)
 
 
 def resolvers() -> dict[str, object]:
@@ -792,7 +821,7 @@ def report(queries: Sequence[LabelledQuery] | None = None) -> dict[str, Any]:
         "lanes": lane_rows,
         "n": total_n,
         "grey_band_pp": round(grey_band(total_n), 4),
-        "grey_band_has_aa_term": False,
+        "grey_band_has_aa_term": AA_BAND_MEASURED,
         "required_n_per_arm": required_n(),
         "violations": violations,
     }

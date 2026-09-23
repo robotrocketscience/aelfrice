@@ -20,7 +20,7 @@ hashing two reports. A replicate that re-runs the same inputs therefore
 measures exactly zero by construction, and such a zero says nothing about the
 instrument.
 
-The pre-registered perturbation is **insertion order**. Each labelled query's
+The perturbation is **insertion order**. Each labelled query's
 beliefs are re-ingested under a seeded permutation, so every belief keeps its
 id, content, type, origin, posterior and timestamp, and only the `beliefs`
 rowids change. Rowid is a real tie-break key in this codebase — the temporal
@@ -28,9 +28,13 @@ spine orders by rowid rather than by time — so an instrument that reads it
 would move under this perturbation while nothing a measurement may depend on
 has moved.
 
-That choice is fixed in advance. Do not substitute a different perturbation
-after seeing a band: picking the perturbation that yields the narrowest band is
-the failure this pre-registration exists to prevent.
+That choice was fixed before any band was computed, and the artifact that
+records it is `docs/design/budget_discriminability_aa_result.md` — the K0
+pre-registration names the missing term but not how to measure it, so read
+"fixed in advance" as a claim about the order of work rather than as a
+citation. The reason to write it down at all: picking a perturbation after
+seeing a band is picking the one that yields the narrowest band. Do not
+substitute a different one without saying why this one was wrong.
 
 ## What is reused, and why
 
@@ -134,7 +138,7 @@ if _STRAY_ENV:  # pragma: no cover - the census clears these at import
         f"would measure a different lane set: {_STRAY_ENV}"
     )
 
-# --- The pre-registered knobs ------------------------------------------
+# --- The knobs, fixed before any band was computed ---------------------
 
 # Pinned, printed in every report, and never derived from a clock, a path or
 # an environment variable (#605).
@@ -222,6 +226,47 @@ def ec_cells(rep: dict[str, Any]) -> dict[str, float | None]:
 def spread(values: list[float]) -> float:
     """`max - min`, rounded the way the census rounds a percentage point."""
     return round(max(values) - min(values), 4)
+
+
+def cell_band(values: list[float | None]) -> float | None:
+    """One cell's band, or `None` when any replicate had no statistic.
+
+    Kill criterion K-1 is "no statistic", not "a zero band", and the
+    difference is the whole point: a cell where `ec_pp` is `None` on some
+    replicate has `N = 0` there, and folding that in as 0.0 would let an
+    unmeasurable cell narrow the noise floor. Extracted so the `None`
+    branch can be tested — it cannot arise on the committed corpora, so
+    inline it was mutation-transparent.
+    """
+    if any(v is None for v in values):
+        return None
+    return spread([float(v) for v in values])  # type: ignore[arg-type]
+
+
+def n_drift(ns: list[int]) -> int:
+    """How far `N` moved across replicates; non-zero is a violation.
+
+    The replicates must share a population or their EC values are not
+    comparable. Extracted for the same reason as `cell_band`: `N` holds
+    at 7 on the committed corpora, so an inline check that could never
+    fire was indistinguishable from one that was disabled.
+    """
+    return max(ns) - min(ns)
+
+
+def band_over_cells(bands: dict[str, float]) -> float | None:
+    """The band `NF` would take: the WIDEST cell, not the narrowest.
+
+    Extracted so it can be tested against cells with different spreads.
+    Inline, on a corpus where every cell bands at 0.0, `max` and `min`
+    return the same number and no test could tell them apart — which is
+    the shape a noise floor must never be allowed to take, since `min`
+    understates the floor and understating it is what lets a later
+    verdict clear a band it should not have.
+
+    `None` when no cell is bandable: no statistic, rather than a zero.
+    """
+    return max(bands.values()) if bands else None
 
 
 # --- The order-sensitivity diagnostic ----------------------------------
@@ -336,7 +381,8 @@ def replicate(
     unbandable: list[str] = []
     for name in cell_names:
         values = [row["cells"].get(name) for row in rows]
-        if any(v is None for v in values):
+        band = cell_band(values)
+        if band is None:
             # Kill criterion K-1: no statistic, rather than a zero band.
             unbandable.append(name)
             violations.append(
@@ -345,10 +391,10 @@ def replicate(
                 "with; it is excluded from aa_band_pp"
             )
             continue
-        bands[name] = spread([float(v) for v in values])  # type: ignore[arg-type]
+        bands[name] = band
 
     ns = [int(r["n"]) for r in rows]
-    n_band = max(ns) - min(ns)
+    n_band = n_drift(ns)
     if n_band:
         violations.append(
             "the permutation moved N from "
@@ -367,7 +413,7 @@ def replicate(
     else:
         varied_cells, examined_cells, examples = None, None, []
 
-    aa_band = max(bands.values()) if bands else None
+    aa_band = band_over_cells(bands)
     return {
         "instrument": "scripts/budget_discriminability_aa_replicate.py",
         "replicates_of": "scripts/budget_discriminability_census.py",

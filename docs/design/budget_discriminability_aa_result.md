@@ -46,14 +46,29 @@ The census is deterministic, and
 hashing two reports. An A/A replicate that re-runs the same inputs therefore
 measures exactly zero by construction and says nothing about the instrument.
 
-The pre-registered perturbation is **belief insertion order**. For each
-replicate the producer re-ingests every labelled query's beliefs under a seeded
-permutation, holding the corpus, the gold sets, the grid, the lane set, and
-every belief's content, id, type, origin, posterior, and timestamp fixed. Only
-the rowid that SQLite assigns moves. Rowid is a live tie-break key in this
-repo — the temporal spine orders by rowid rather than by time — so an
-instrument that reads it moves under this perturbation while nothing a
-measurement may depend on has moved.
+The perturbation is **belief insertion order**. For each replicate the producer
+re-ingests every labelled query's beliefs under a seeded permutation, holding
+the corpus, the gold sets, the grid, the lane set, and every belief's content,
+id, type, origin, posterior, and timestamp fixed. Only the rowid that SQLite
+assigns moves. Rowid is a live tie-break key in this repo — the temporal spine
+orders by rowid rather than by time — so an instrument that reads it moves
+under this perturbation while nothing a measurement may depend on has moved.
+
+**Where this choice is recorded, stated precisely.** The perturbation was
+fixed before any band was computed, and **this document is the artifact that
+records it** — `budget_discriminability_k0_preregistration.md` builds the
+noise floor and names the missing term, but says nothing about how to measure
+it. So read "fixed in advance" as a claim about the order of work, not as a
+citation: the choice and the first band arrive in the same change. What the
+choice is defended by is its argument rather than its provenance — a
+deterministic instrument makes a naive replicate measure zero by construction,
+and insertion order is the nuisance factor production genuinely varies that
+this measurement must not depend on.
+
+The reason to fix it in writing at all is that picking the perturbation after
+seeing a band is picking the one that gives the narrowest band. Anyone
+proposing a different perturbation should say why this one was wrong, not
+report a band under theirs.
 
 The producer does not reimplement EC. It hands each permuted population to
 `budget_discriminability_census.report(queries=...)`, so the lanes, the grid,
@@ -110,13 +125,28 @@ L2.5 sub-budget is 200. Which belief it drops is decided by the ingest order
 and by nothing else, so whether that belief is gold varies from replicate to
 replicate and EC moves with it.
 
-Under that fake, over the 3 replicates the test runs (`TEST_SEEDS = 2`, the
-committed order plus two permutations):
+Compared at the **same replicate count as the shipped row** — the default
+`--seeds 8`, the committed order plus eight permutations:
 
 | Arm | `aa_band_pp` | Per-lane band | Order-sensitive grid arms |
 | --- | --- | --- | --- |
 | shipped code | 0.0pp | 0.0pp on all six | 0 of 2070 |
-| rowid-reading fake | 66.6667pp | 57.1429pp on all six | 150 of 2070 |
+| rowid-reading fake | 100.0pp | 100.0pp on all six | 210 of 2070 |
+
+The seed count is stated because both columns move with it, and an earlier
+revision of this table quoted the fake at one count and the test at another.
+The band is a sample range, so more replicates can only widen it:
+
+| `--seeds` | replicates | fake's band | fake's order-sensitive arms |
+| --- | --- | --- | --- |
+| 1 | 2 | 25.0pp | 60 of 2070 |
+| 2 | 3 | 66.6667pp | 150 of 2070 |
+| 8 | 9 | 100.0pp | 210 of 2070 |
+
+`test_the_order_sensitivity_sweep_can_see_an_order_sensitive_arm` runs at
+`--seeds 1`, the cheapest count at which the control is non-zero, and asserts
+only that the count exceeds zero — so it does not depend on any figure in these
+tables.
 
 The test asserts on the producer's own `aa_band_pp`, per lane, not on a spread
 the test computes itself: what is under test is the replicate's ability to
@@ -178,18 +208,38 @@ because order-sensitive movements happened to average out, it is zero because
 the inputs to EC are invariant under the perturbation. The mechanism is
 readable in the source:
 
-* The FTS search orders by `bm25(beliefs_fts), b.id` — see `_ORDER_BY_BM25` in
-  `src/aelfrice/store.py`. The tie-break is the belief id, a content-derived
-  key, not the rowid.
+* **The L1 lane never touches SQL FTS at all on this census.** Wrapping the
+  two consumers of `_ORDER_BY_BM25` — `MemoryStore.search_beliefs` and
+  `search_beliefs_scored` — over the full grid records 2,208 `retrieve()`
+  calls and **zero** calls to either. The only store method the lane reaches
+  is `list_beliefs_for_indexing()`, whose SQL is `ORDER BY id ASC`
+  (`src/aelfrice/store.py:7162`), and its rows feed the in-Python
+  `aelfrice.bm25.BM25Index`. An SQL trace of one full `retrieve()` shows nine
+  statements, none containing `bm25(`.
+
+  An earlier revision of this document credited the invariance to
+  `_ORDER_BY_BM25 = "ORDER BY bm25(beliefs_fts), b.id"`. That constant is
+  content-derived and the conclusion was right, but it is not the code that
+  establishes it here, because it never executes. The ordering that does the
+  work is `ORDER BY id ASC` — still a content-derived key, still not the
+  rowid.
 * The entity-index and reference-manifest queries order by `b.id ASC` and by
   `overlap DESC, be.belief_id ASC`, on the same content-derived key.
+* One executed read carries no `ORDER BY` at all: `SELECT belief_id,
+  entity_lower, kind FROM belief_entities WHERE belief_id IN (?)`
+  (`store.py:7055`). SQLite returns unordered rows in rowid order, so a bare
+  `SELECT *` on that table **is** permutation-dependent. It is benign here on
+  two counts, both checked rather than assumed: the `IN` form comes back
+  index-ordered, and the consumer only accumulates counts. It is named because
+  an enumeration of orderings that omits the unordered reads is not an
+  enumeration.
 * The one lane known to order by rowid is the temporal spine, and it never runs
   here: `census._open_store` writes beliefs and no edges, so
   `store.has_edge_type(EDGE_TEMPORAL_NEXT)` is `False` on every store this
   census builds.
 
 So the zero is a property of the census's edgeless `:memory:` stores together
-with the id tie-break, and the third bullet is the one a future corpus can
+with the id ordering, and the last bullet is the one a future corpus can
 close. Re-run this producer against any corpus whose stores carry edges before
 you carry this band forward.
 
@@ -243,16 +293,32 @@ at 0 of 2070.
 
 ## What the evidence does not determine
 
+* **Whether the band holds in the regime a verdict would occupy.** This is the
+  sharpest limit, and it is structural rather than a matter of sample size.
+  EC is 0.0 on every cell of every replicate because **no cap binds anywhere**:
+  `binds_on` is `pool` on 100% of cells, `pool_cost_max` is 132 tokens, and the
+  smallest grid budget is 150. The registration's own impossibility clause
+  names exactly this state — where every pool prices below the smallest arm
+  budget, `D` is 0 by construction. So the A/A term is estimated at a boundary
+  where the statistic is clamped and the budget grid is inert, and carried
+  forward into a noise floor for runs that would not be. A band of 0.0
+  measured where nothing can move is weaker evidence than the same number
+  measured where things can, and this one is the former.
+
+  It is still worth having: it is the difference between a floor with an
+  unmeasured term and a floor with a measured one, and the sample-range
+  property means the term can only rise as evidence accumulates. But a corpus
+  on which a budget binds should re-run this before the term is relied on.
 * **Whether insertion order matters on an edge-bearing store.** The temporal
   spine orders by rowid and never runs here, so this band cannot speak to it.
   `tests/test_budget_census.py::test_containment_is_a_property_of_this_corpus_and_not_a_theorem`
   already shows that one `TEMPORAL_NEXT` edge changes what the census's own
   arms return; nobody has run K3 against such a corpus.
 * **Whether a different perturbation would show a wider band.** Insertion order
-  is the perturbation this registration names, and the choice is fixed in
-  advance precisely so a later author cannot pick the one that yields the
-  narrowest band. Other perturbations — a different noise order in the fixture
-  file, a different store backend — are unmeasured, not ruled out.
+  is the perturbation this document fixes, and it is fixed in writing precisely
+  so a later author cannot pick the one that yields the narrowest band. Other
+  perturbations — a different noise order in the fixture file, a different
+  store backend — are unmeasured, not ruled out.
 * **The true spread.** A sample range over 9 replicates is a lower bound on it.
   The band's zero says no replicate in this sample disagreed with another, not
   that no permutation could.

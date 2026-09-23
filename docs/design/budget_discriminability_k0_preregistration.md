@@ -145,12 +145,25 @@ uplift, or a regression.
   is not a result this repo acts on.
 * `A/A_band` is the K3 replicate's observed spread.
 
-**What the band does not contain.** K3 is not built, so there is no A/A term.
-The census sets `grey_band_has_aa_term` to `False` rather than substituting a
-zero that would read like a measured one. The band therefore covers grader
-disagreement and binomial sampling noise, and covers no instrument noise at
-all: it cannot tell you how much of a non-zero EC is the census disagreeing
-with itself.
+**What the band contains, as of [#1546](https://github.com/robotrocketscience/aelfrice/issues/1546).**
+All three terms. K3 is built — `scripts/budget_discriminability_aa_replicate.py`
+— and its measured band is **0.0pp**, so the census sets
+`grey_band_has_aa_term` to `True`. Read that zero as measured, not as absent:
+before K3 the same number would have meant "no term exists", and
+`AA_BAND_MEASURED` is what separates the two.
+
+The A/A term does not move `NF` here, because the binomial term dominates at
+every N this census reaches. It is still not decorative: the band is a sample
+range and is monotone non-decreasing in the replicate count, so it can only
+rise.
+
+One limit travels with it, and is repeated here because a reader of this
+registration should not have to find it elsewhere. The term is estimated on a
+corpus where **no cap binds on any cell**, so EC is 0 by construction there and
+the statistic cannot move — the same impossibility clause this document states
+below. A band of 0.0 measured where nothing can move is weaker than the same
+number measured where things can. `docs/design/budget_discriminability_aa_result.md`
+carries the detail.
 
 You may not narrow the band after you see a number. If K3 later widens it, the
 wider band applies **retroactively** to any verdict read against this

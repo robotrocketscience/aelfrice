@@ -330,6 +330,47 @@ def test_the_order_sensitivity_sweep_can_see_an_order_sensitive_arm(
     assert mutated["arm_cells_order_sensitive_examples"]
 
 
+def test_the_sweep_sees_a_reorder_and_not_only_a_membership_change(
+    aa: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """"A different belief list" has to cover order, not just membership.
+
+    The fake above drops a belief, so it changes which beliefs come back.
+    That leaves the other half of the claim untested: comparing
+    `tuple(sorted(ids))` instead of `tuple(ids)` — which cannot see a
+    reorder at all — passed every arm, while the result document says the
+    sweep finds "0 return a different belief list". This fake permutes
+    the returned list by rowid and changes membership not at all, so it
+    fails against a sweep that normalises order away.
+    """
+    census = aa.census
+    shipped = census.retrieval.retrieve
+
+    def rowid_reordering_retrieve(
+        store: MemoryStore, query: str, **kwargs: Any
+    ) -> list[Any]:
+        hits = shipped(store, query, **kwargs)
+        if kwargs.get("l25_token_subbudget") != 200 or len(hits) < 2:
+            return hits
+        rowid_by_id = {
+            str(row[0]): int(row[1])
+            for row in store._conn.execute("SELECT id, rowid FROM beliefs")
+        }
+        reordered = sorted(hits, key=lambda b: rowid_by_id[b.id])
+        assert {b.id for b in reordered} == {b.id for b in hits}, (
+            "this fake must change order only"
+        )
+        return reordered
+
+    monkeypatch.setattr(census.retrieval, "retrieve", rowid_reordering_retrieve)
+    mutated = aa.replicate(1)
+    assert mutated["arm_cells_order_sensitive"] > 0, (
+        "the sweep normalises the belief order away, so it cannot see a "
+        "reordering and the document's 'different belief list' claim "
+        "covers membership only"
+    )
+
+
 # --- Determinism, and the published surface ---------------------------
 
 
@@ -429,6 +470,133 @@ def test_figures_publishes_the_sweep_keys_when_the_sweep_ran(aa: Any) -> None:
     assert figs["aa_arm_sweep"] is True
     assert figs["aa_arm_cells_order_sensitive"] == rep["arm_cells_order_sensitive"]
     assert figs["aa_arm_cells_examined"] == rep["arm_cells_examined"]
+
+
+def test_the_band_is_the_widest_cell_not_the_narrowest(aa: Any) -> None:
+    """`NF` takes the widest cell. `min` understates the noise floor.
+
+    On this corpus every cell bands at 0.0, so `max` and `min` return the
+    same number and no test over a real run can tell them apart —
+    replacing `max` with `min` in the aggregation passed the entire
+    suite. Understating a noise floor is what lets a later verdict clear
+    a band it should not have, so the aggregation is asserted here on
+    cells that actually differ.
+    """
+    assert aa.band_over_cells({"a": 1.5, "b": 0.25, "c": 0.0}) == 1.5
+    assert aa.band_over_cells({"only": 0.75}) == 0.75
+    assert aa.band_over_cells({}) is None, (
+        "no bandable cell is no statistic, not a zero band"
+    )
+
+
+def test_spread_is_the_range_and_not_a_fixed_value(aa: Any) -> None:
+    """The same argument one level down, on the per-cell spread."""
+    assert aa.spread([0.0, 2.0, 0.5]) == 2.0
+    assert aa.spread([3.0, 3.0]) == 0.0
+    assert aa.spread([1.25]) == 0.0
+
+
+def test_a_cell_with_no_statistic_bands_to_none_not_to_zero(aa: Any) -> None:
+    """Kill criterion K-1: no statistic is not a zero band.
+
+    A cell whose `ec_pp` is `None` on some replicate has `N = 0` there.
+    Folding that in as 0.0 would let an unmeasurable cell narrow the
+    noise floor. The condition cannot arise on the committed corpora, so
+    the branch is asserted directly — inline it was mutation-transparent,
+    and filling `bands[name] = 0.0` alongside `unbandable` passed every
+    other arm.
+    """
+    assert aa.cell_band([0.0, 2.5, 1.0]) == 2.5
+    assert aa.cell_band([0.0, None, 1.0]) is None
+    assert aa.cell_band([None, None]) is None
+
+
+@pytest.mark.timeout(180)
+def test_the_censuss_pinned_aa_band_matches_what_this_replicate_measures(
+    aa: Any,
+) -> None:
+    """The census pins the band as a constant; this is what stops it drifting.
+
+    `census.AA_BAND_PP` is a literal so the noise floor does not cost nine
+    census runs to compute. A literal that nothing checks is a figure
+    nobody measured, which is the whole failure mode K3 exists to close —
+    so the constant and the producer are compared here, and a change to
+    either without the other reds.
+    """
+    measured = aa.replicate(order_sensitivity_sweep=False)["aa_band_pp"]
+    assert aa.census.AA_BAND_PP == measured, (
+        "the census's pinned A/A band and the replicate's measurement "
+        f"disagree: pinned {aa.census.AA_BAND_PP}, measured {measured}. "
+        "Re-derive the constant with --emit-figures; never adjust it."
+    )
+    assert aa.census.AA_BAND_MEASURED is True, (
+        "the band is measured, and the flag is what distinguishes a "
+        "measured zero from an absent term"
+    )
+
+
+def test_the_grey_band_carries_the_aa_term(aa: Any) -> None:
+    """The third term is present, and its presence is not decorative.
+
+    On this corpus the binomial term dominates at every N the census
+    reaches, so the A/A term moves no published number. A test that only
+    checked `grey_band(7)` would therefore pass with the term removed —
+    so the term's contribution is asserted where it can bind.
+    """
+    census = aa.census
+    assert census.report()["grey_band_has_aa_term"] is True
+
+    band = census.grey_band(7)
+    assert band == max(
+        100.0 * census.POWER_Z_ALPHA * (0.25 / 7) ** 0.5,
+        census.INTER_GRADER_SPREAD_PP,
+        census.AA_BAND_PP,
+    )
+    # Where the A/A term is the largest of the three, it must win.
+    original = census.AA_BAND_PP
+    try:
+        census.AA_BAND_PP = 99.0  # type: ignore[misc]
+        assert census.grey_band(7) == 99.0, (
+            "grey_band ignores the A/A term, so the floor it reports is "
+            "not the floor it documents"
+        )
+    finally:
+        census.AA_BAND_PP = original  # type: ignore[misc]
+
+
+def test_n_drift_is_the_range_of_n_across_replicates(aa: Any) -> None:
+    """The replicates must share a population or EC is not comparable.
+
+    `N` holds at 7 on the committed corpora, so a check that could never
+    fire read the same as one that was disabled — replacing the branch
+    condition with `False` passed every other arm.
+    """
+    assert aa.n_drift([7, 7, 7]) == 0
+    assert aa.n_drift([7, 9, 7]) == 2
+    assert aa.n_drift([4]) == 0
+
+
+def test_figures_reports_the_band_it_was_given(aa: Any) -> None:
+    """The published figure must be the computed one.
+
+    Hardcoding `"aa_band_pp": 0.0` in `figures()` passed every other arm,
+    because each compared it against a report whose band is also 0.0 and
+    `0.0 == 0.0`. `check_derived_figures` then compared the hardcode
+    against a marker reading 0.0 and agreed. That is exactly the failure
+    this producer exists to prevent — a later verdict claiming a noise
+    floor nobody measured — so the pass-through is asserted on a value
+    that cannot be confused with the real one.
+    """
+    rep = aa.replicate(1, order_sensitivity_sweep=False)
+    rep = dict(rep)
+    rep["aa_band_pp"] = 4.25
+    rep["bands"] = dict(rep["bands"], ups=4.25)
+
+    figs = aa.figures(rep)
+    assert figs["aa_band_pp"] == 4.25, (
+        "figures() does not report the band it was handed"
+    )
+    assert figs["aa_band_pp.ups"] == 4.25
 
 
 def test_the_replicate_exits_non_zero_when_a_replicate_violates(

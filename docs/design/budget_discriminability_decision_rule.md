@@ -176,9 +176,12 @@ this says "it is not there to see".
   historical prior carried forward, not an estimate produced here. An effect
   smaller than the disagreement between two human graders on the same answers is
   not a result this repo acts on.
-* `A/A_band` is the K3 replicate's observed spread. K3 is not built yet, so the
-  band for K0 is the max of the first two terms, and the run is labelled as
-  carrying no A/A term.
+* `A/A_band` is the K3 replicate's observed spread. K3 is built as of
+  [#1546](https://github.com/robotrocketscience/aelfrice/issues/1546) and
+  measures 0.0pp, so the band is the max of all three terms and the run is
+  labelled as carrying an A/A term. This document is superseded — see the
+  banner above and `budget_discriminability_k0_preregistration.md`, which
+  carries the current statement.
 
 The band may not be narrowed after a number is seen. If K3 later widens it, the
 wider band applies retroactively to any verdict that used this rule.
