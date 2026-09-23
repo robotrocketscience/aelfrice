@@ -12,7 +12,7 @@ This document is the reference for power users. Reach for it when your project h
 - `[retrieval]` (v1.3+) — the tier toggles and ranking controls that apply at retrieval time:
   - `entity_index_enabled` — the L2.5 tier.
   - `bfs_enabled` — the L3 tier.
-  - `posterior_weight` — partial Bayesian-weighted L1 ranking.
+  - `posterior_weight` — partial Bayesian-weighted L1 ranking. On a real store this ranks by belief type and source rather than by observed confidence; see [`posterior_weight`](#posterior_weight).
   - `l1_limit` and `token_budget` — the #1045 keys for wide retrieval. `l1_limit` caps the Best Matching 25 (BM25) candidate set, and `token_budget` caps the tokens. The defaults are 50 and 2400. Raise both together for multi-hop recall. **`token_budget` reaches only a caller that passes no budget of its own.** The resolver's precedence is environment variable, then explicit argument, then TOML, then the default, so any caller that passes a budget explicitly shadows this key. Two shipped callers that do: the `UserPromptSubmit` hook, and `aelf search`, whose `--budget` has a default and is therefore always passed. To move the hook's budget, set `AELFRICE_RETRIEVAL_TOKEN_BUDGET`, which outranks the explicit argument. The `SessionStart` hook passes no budget since [#1546](https://github.com/robotrocketscience/aelfrice/issues/1546), so this key does reach it — and changes nothing there, because that block is all locks and locks are never trimmed. Note that [#1526](https://github.com/robotrocketscience/aelfrice/issues/1526) did not change this number but did change what it buys: a belief now costs the whole rendered line rather than its content, so a value you wrote before that change admits fewer beliefs than it used to.
   - `use_bm25f_anchors` — the BM25F path with anchor text, since v1.7.
   - `bm25f_per_field` and `bm25_b_anchor` — the #1180 two-field BM25F scorer. It normalizes the content and the anchor text separately instead of concatenating them. The default is off, pending its bench.
@@ -141,6 +141,10 @@ bfs_enabled = false
 # AELFRICE_POSTERIOR_WEIGHT env var overrides; explicit kwargs on
 # retrieve() / retrieve_v2() override TOML in turn. Locked beliefs
 # (L0) bypass scoring entirely.
+# Note: on a real store the posterior is the prior the ingest
+# classifier assigned, so raising this makes ranking more TYPE-aware,
+# not more confidence-aware. It also responds as a staircase, not a
+# dial. Read the posterior_weight section before tuning.
 posterior_weight = 0.5
 
 # #1045. Wide-retrieval knobs — the multi-hop RECALL lever. `l1_limit`
@@ -576,7 +580,24 @@ Behavior at the boundaries:
 
 - **`0.0`** — the score becomes `log(-bm25_raw)`, an ordering byte-identical to the v1.0.x `ORDER BY bm25(beliefs_fts)` ordering. Use this value for diff tooling and bisection.
 - **`0.5`** (default) — the optimum on the synthetic graph from the v1.3 calibration. The posterior moves the rank without overwhelming BM25.
-- **`> 1.0`** — the posterior counts for more, so a high-confidence belief can surface on a weaker keyword match. Read the staircase section below before choosing a value here: past a point that depends on your store, raising the weight stops changing the ranking at all, and measurement on a real store put that point lower than you might expect.
+- **`> 1.0`** — the posterior counts for more, so a belief with a higher posterior can surface on a weaker keyword match. Read both the staircase section and "What the posterior actually holds" below before choosing a value here: past a point that depends on your store, raising the weight stops changing the ranking at all, and measurement on a real store put that point lower than you might expect.
+
+#### What the posterior actually holds
+
+**On a real store this term ranks by belief type and source, not by observed confidence.** Read that before you tune the weight, because the name suggests otherwise.
+
+A belief's `(α, β)` is set at ingest from its type and source. Afterwards it moves only when you act on the belief: `aelf feedback`, `aelf confirm`, the propagation of one of those to related beliefs, and a manual `aelf clamp-ghosts` sweep. Sentiment read from prose can also move it, but that lane is off unless you set `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE`. Nothing moves a posterior on its own.
+
+Retrieval exposure used to add `+0.1` per surfacing. [#1086](https://github.com/robotrocketscience/aelfrice/issues/1086) made that audit-only in July 2026, after measuring that it promoted junk above real knowledge — so a belief that is retrieved constantly gains nothing, by design. A locked belief is refused twice over: the lock floor rejects passive feedback outright, so correcting one takes `aelf unlock` first.
+
+Measured across 26 stores and 172,089 beliefs with `benchmarks/posterior_prior_grid_sweep.py` ([#1592](https://github.com/robotrocketscience/aelfrice/issues/1592)): **4.08% of beliefs carry a posterior that has moved from its insertion value, and 96.3% of those moved before the July 2026 change.** Fewer than 300 beliefs across every store on that host were moved by the feedback path as it ships today.
+
+Two consequences for tuning:
+
+- Raising the weight makes retrieval **more type-aware**, not more confidence-aware. It promotes whatever your classifier typed as a requirement or a correction over whatever it typed as a factual, and promotes user-sourced content over agent-inferred content, because those are the distinctions the priors encode.
+- The clustering onto a few posterior values described below is this, not a coincidence of your corpus. It is why the freeze point sits low.
+
+To give the term real evidence, feed it: `aelf confirm <id>` and `aelf feedback <id> used|harmful` are the signals that move a posterior. Beliefs you never act on keep their birth prior indefinitely.
 
 **This key responds as a staircase, not as a dial.** Do not tune it as a continuous knob ([#1584](https://github.com/robotrocketscience/aelfrice/issues/1584)). Two candidates' scores differ by an expression affine in `posterior_weight`, so a pair with **different** posteriors swaps at most once, at one crossing weight. Between two adjacent crossings nothing reorders, and every value in that interval retrieves an identical ranking. Moving the weight a little therefore either changes nothing or moves a rank outright, depending on where the nearest crossing falls rather than on the size of the step.
 
