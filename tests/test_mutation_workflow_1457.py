@@ -332,11 +332,25 @@ def test_the_pr_job_is_scoped_to_the_diff() -> None:
 
     Scoping is written into `only_mutate`, a `[tool.mutmut]` key, because
     mutmut 3 has no flag for it.
+
+    Since #1605 the file list comes from `scripts/mutation_scope.py`
+    rather than from an inline `git diff`, so the assertions follow it
+    there. The property is unchanged — the mutant set is derived from the
+    PR's own diff, restricted to `src/aelfrice` — and checking it across
+    both halves is what stops the step from keeping the `only_mutate`
+    write while the derivation quietly stops being a diff at all.
     """
     scope = _step_body("Scope mutmut to the PR's changed files")
     assert "only_mutate" in scope
-    assert "git diff --name-only" in scope
-    assert "src/aelfrice/*.py" in scope
+    assert "mutation_scope.py" in scope, (
+        "the scope step no longer calls the script that computes the list"
+    )
+    assert '--base "${BASE_SHA}"' in scope
+    assert '--head "${HEAD_SHA}"' in scope
+
+    script = (_REPO / "scripts" / "mutation_scope.py").read_text(encoding="utf-8")
+    assert '"diff", "--name-only"' in script
+    assert 'PATHSPEC: Final[str] = "src/aelfrice/*.py"' in script
 
 
 def test_the_pr_scope_is_the_merge_base_diff_not_a_two_tree_diff() -> None:
@@ -347,19 +361,31 @@ def test_the_pr_scope_is_the_merge_base_diff_not_a_two_tree_diff() -> None:
     it never touched, and the scoping claim would be false in the direction
     that costs the most time. `BASE...HEAD` is the merge-base diff, which is
     the PR's own changes.
+
+    Since #1605 the diff runs inside `scripts/mutation_scope.py`, so that
+    is where the three-dot form is asserted. Both places are checked: an
+    inline `git diff` reintroduced into the step would also have to use it.
     """
     scope = _joined(_step_body("Scope mutmut to the PR's changed files"))
     # Comments explain the two-dot form by name; only invocations are checked.
-    diff_lines = [
-        line
-        for line in scope.splitlines()
-        if "git diff" in line and not line.lstrip().startswith("#")
-    ]
-    assert diff_lines, "the scope step must derive the file list from git"
-    for line in diff_lines:
+    for line in scope.splitlines():
+        if "git diff" not in line or line.lstrip().startswith("#"):
+            continue
         assert '"${BASE_SHA}...${HEAD_SHA}"' in line, (
             f"two-dot diff includes commits this PR did not make: {line.strip()}"
         )
+
+    script = (_REPO / "scripts" / "mutation_scope.py").read_text(encoding="utf-8")
+    call_lines = [
+        line for line in script.splitlines()
+        if '"diff"' in line and not line.lstrip().startswith("#")
+    ]
+    assert call_lines, "the script must derive the file list from git"
+    joined = " ".join(script.splitlines())
+    assert 'f"{base}...{head}"' in joined, (
+        "the script's diff is not the merge-base form"
+    )
+    assert 'f"{base}..{head}"' not in joined
 
 
 def test_the_pr_job_cannot_block_the_merge_train() -> None:
