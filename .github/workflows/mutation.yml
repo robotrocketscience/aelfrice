@@ -186,10 +186,18 @@ jobs:
           # branch point and would mutate files this PR never touched. The
           # merge-base form `A...B` is the PR's own diff, which is what AC1
           # asks for.
-          changed=$(git diff --name-only --diff-filter=d \
-              "${BASE_SHA}...${HEAD_SHA}" -- 'src/aelfrice/*.py' || true)
+          # #1605: `only_mutate` takes FILE paths, so a file enters the
+          # mutant set whole. A comment-only edit to a large module
+          # therefore costs as much as rewriting it — on `cli.py`, 11k
+          # lines, that exceeded this job's budget and was cancelled with
+          # no report. `mutation_scope.py` drops files whose diff cannot
+          # carry a mutant, by comparing ASTs with docstrings stripped.
+          # It lives in a script because the workflow cannot be tested in
+          # CI (#1436) and `tests/test_mutation_scope.py` tests it.
+          changed=$(uv run python scripts/mutation_scope.py \
+              --base "${BASE_SHA}" --head "${HEAD_SHA}" --dry-run)
           if [ -z "${changed}" ]; then
-            echo "no changed source files under src/aelfrice — nothing to mutate"
+            echo "no changed source file carries a mutable change — nothing to mutate"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
