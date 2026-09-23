@@ -1,0 +1,4 @@
+description = "Restore a retired (soft-deleted) belief to active \u2014 the inverse of aelf retire. Clears valid_to and re-indexes the belief for search. No-op on an already-active or unknown id."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf restore {{args}}}
+"""

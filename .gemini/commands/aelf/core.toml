@@ -1,0 +1,4 @@
+description = "Surface load-bearing beliefs \u2014 locked \u222a corroborated (re-asserted \u22652 times after first ingest) \u222a high-posterior (\u03bc \u2265 2/3, \u03b1+\u03b2 \u2265 4). Read-only."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf core {{args}}}
+"""

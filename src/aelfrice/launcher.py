@@ -96,15 +96,23 @@ def command_tokens(command: str, *, windows: bool | None = None) -> list[str]:
         # need this: `shlex.split` passes `comments=False`.
         lexer.commenters = ""
         try:
-            return [tok.strip('"') for tok in lexer]
+            tokens = [tok.strip('"') for tok in lexer]
         except ValueError:
             # Unbalanced quoting — fall back to whitespace splitting rather
             # than reporting no program at all.
-            return [tok.strip('"') for tok in stripped.split()]
-    try:
-        return shlex.split(stripped)
-    except ValueError:
-        return []
+            tokens = [tok.strip('"') for tok in stripped.split()]
+    else:
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            tokens = []
+
+    # Filter leading environment variables (e.g. NAME=VALUE) on both platforms
+    import re
+    env_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+    while tokens and env_pattern.match(tokens[0]):
+        tokens.pop(0)
+    return tokens
 
 
 def launcher_basename(token: str, *, windows: bool | None = None) -> str:

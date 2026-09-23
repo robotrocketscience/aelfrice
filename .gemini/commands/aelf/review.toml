@@ -1,0 +1,4 @@
+description = "Generate a weekly checkpoint file of beliefs to keep, remove, or lock, then apply your verdicts."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf review {{args}}}
+"""

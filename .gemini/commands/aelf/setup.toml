@@ -1,0 +1,4 @@
+description = "Install the aelfrice hooks (UserPromptSubmit, Stop, PreToolUse, PostToolUse, PreCompact, PostCompact, SessionStart) in the host's settings.json and the statusline snippet."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf setup {{args}}}
+"""

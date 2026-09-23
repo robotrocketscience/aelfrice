@@ -1,0 +1,4 @@
+description = "List beliefs by age + retrieval recency (--older-than DAYS, --cold-for DAYS)."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf stale {{args}}}
+"""

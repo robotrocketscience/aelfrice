@@ -1,0 +1,4 @@
+description = "Affirm an existing belief \u2014 bumps the Beta-Bernoulli posterior toward truth without freezing it (use aelf:lock for ground-truth freeze)."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf confirm {{args}}}
+"""

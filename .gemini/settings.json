@@ -1,0 +1,132 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-hook",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-transcript-logger",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-transcript-logger",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-stop-hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreCompress": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-transcript-logger",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-session-start-hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-commit-ingest",
+            "timeout": 30
+          }
+        ],
+        "matcher": "run_shell_command"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-claude-memory-mirror",
+            "timeout": 30
+          }
+        ],
+        "matcher": "write_file|replace"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-search-tool-hook",
+            "timeout": 15
+          }
+        ],
+        "matcher": "Grep|Glob"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-search-tool-hook",
+            "timeout": 15
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jsobol/projects/aelfrice/.venv/bin/aelf-agent-context-hook",
+            "timeout": 15
+          }
+        ],
+        "matcher": "^(Agent|Task)$"
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AELFRICE_HOST=gemini /home/jsobol/projects/aelfrice/.venv/bin/aelf-pre-issue-hook",
+            "timeout": 15
+          }
+        ],
+        "matcher": "run_shell_command"
+      }
+    ]
+  }
+}

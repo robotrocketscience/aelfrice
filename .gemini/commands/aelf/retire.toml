@@ -1,0 +1,4 @@
+description = "Soft-delete (retire) a belief \u2014 the reversible sibling of delete. Drops it out of retrieval and search while preserving its evidence trail; undo with aelf restore. Locked beliefs require --force."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf retire {{args}}}
+"""

@@ -1,0 +1,4 @@
+description = "Read-only honest-signal view over stored beliefs. Groups active beliefs by session or project and surfaces posterior \u03bc, recurrence, grounding, floated-vs-decided status, and stranded-capture noise together \u2014 the native answer to \"analyse the beliefs it extracted.\""
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf introspect {{args}}}
+"""

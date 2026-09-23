@@ -1,0 +1,4 @@
+description = "List non-user-locked (L1) beliefs sorted by alpha descending \u2014 the agent-inferred and ingested layer."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf speculative {{args}}}
+"""

@@ -72,6 +72,39 @@ SettingsScope = Literal["user", "project"]
 
 USER_SETTINGS_PATH: Final[Path] = Path.home() / ".claude" / "settings.json"
 PROJECT_SETTINGS_RELPATH: Final[Path] = Path(".claude") / "settings.json"
+
+USER_SETTINGS_PATH_GEMINI: Final[Path] = Path.home() / ".gemini" / "settings.json"
+PROJECT_SETTINGS_RELPATH_GEMINI: Final[Path] = Path(".gemini") / "settings.json"
+
+def _get_host_event_and_matcher(host: str, event_key: str, matcher: str | None = None) -> tuple[str, str | None]:
+    if host != "gemini":
+        return event_key, matcher
+    if event_key == "UserPromptSubmit":
+        return "BeforeAgent", None
+    elif event_key == "PreCompact":
+        return "PreCompress", None
+    elif event_key == "SessionStart":
+        return "SessionStart", None
+    elif event_key == "Stop":
+        return "SessionEnd", None
+    elif event_key == "PreToolUse":
+        if matcher == "Grep|Glob":
+            return "BeforeTool", "grep_search|glob"
+        elif matcher == "Bash":
+            return "BeforeTool", "run_shell_command"
+        elif matcher == "^(Agent|Task)$":
+            return "BeforeTool", "invoke_agent"
+    elif event_key == "PostToolUse":
+        if matcher == "Bash":
+            return "AfterTool", "run_shell_command"
+        elif matcher == "Write|Edit|MultiEdit":
+            return "AfterTool", "write_file|replace"
+    return event_key, matcher
+
+def _transcript_ingest_events(host: str) -> tuple[str, ...]:
+    if host == "gemini":
+        return ("BeforeAgent", "SessionEnd", "PreCompress")
+    return TRANSCRIPT_INGEST_EVENTS
 SLASH_COMMANDS_DIR_DEFAULT: Final[Path] = (
     Path.home() / ".claude" / "commands" / "aelf"
 )
@@ -133,14 +166,24 @@ class UninstallResult:
 
 
 def default_settings_path(
-    scope: SettingsScope, project_root: Path | None = None
+    scope: SettingsScope, project_root: Path | None = None, host: str = "claude"
 ) -> Path:
-    """Resolve the conventional Claude Code settings.json path.
+    """Resolve settings.json path based on host and scope.
+
+    If host == "gemini":
+        returns ~/.gemini/settings.json or <project_root>/.gemini/settings.json.
+    Else:
+        returns conventional Claude Code settings.json path.
 
     `scope="user"` returns `~/.claude/settings.json`.
     `scope="project"` returns `<project_root>/.claude/settings.json`.
     `project_root` defaults to the current working directory.
     """
+    if host == "gemini":
+        if scope == "user":
+            return USER_SETTINGS_PATH_GEMINI
+        root = project_root if project_root is not None else Path.cwd()
+        return root / PROJECT_SETTINGS_RELPATH_GEMINI
     if scope == "user":
         return USER_SETTINGS_PATH
     root = project_root if project_root is not None else Path.cwd()
@@ -322,6 +365,7 @@ def install_user_prompt_submit_hook(
     command: str,
     timeout: int | None = None,
     status_message: str | None = None,
+    host: str = "claude",
 ) -> InstallResult:
     """Add a UserPromptSubmit hook entry running `command`."""
     return _install_event_hook(
@@ -330,6 +374,7 @@ def install_user_prompt_submit_hook(
         command=command,
         timeout=timeout,
         status_message=status_message,
+        host=host,
     )
 
 
@@ -339,6 +384,7 @@ def install_pre_compact_hook(
     command: str,
     timeout: int | None = None,
     status_message: str | None = None,
+    host: str = "claude",
 ) -> InstallResult:
     """Add a PreCompact hook entry running `command`.
 
@@ -358,6 +404,7 @@ def install_pre_compact_hook(
         command=command,
         timeout=timeout,
         status_message=status_message,
+        host=host,
     )
 
 
@@ -368,6 +415,8 @@ def _install_event_hook(
     command: str,
     timeout: int | None,
     status_message: str | None,
+    matcher: str | None = None,
+    host: str = "claude",
 ) -> InstallResult:
     """Shared install logic for any hook event.
 
@@ -380,6 +429,12 @@ def _install_event_hook(
     """
     if not command:
         raise ValueError("command must be a non-empty string")
+    if host == "gemini":
+        if not command.startswith("AELFRICE_HOST=gemini"):
+            command = f"AELFRICE_HOST=gemini {command}"
+            
+    event_key, matcher = _get_host_event_and_matcher(host, event_key, matcher)
+    
     data = _load_settings(settings_path)
     entries = _get_event_list(data, event_key, create=True)
     if _install_or_replace_entry(
@@ -387,6 +442,7 @@ def _install_event_hook(
         command=command,
         timeout=timeout,
         status_message=status_message,
+        matcher=matcher,
     ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True
@@ -402,6 +458,7 @@ def uninstall_user_prompt_submit_hook(
     *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Remove UserPromptSubmit entries matching `command` or `command_basename`."""
     return _uninstall_event_hook(
@@ -409,6 +466,7 @@ def uninstall_user_prompt_submit_hook(
         event_key=_EVENT_KEY,
         command=command,
         command_basename=command_basename,
+        host=host,
     )
 
 
@@ -417,6 +475,7 @@ def uninstall_pre_compact_hook(
     *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Remove PreCompact entries matching `command` or `command_basename`."""
     return _uninstall_event_hook(
@@ -424,6 +483,7 @@ def uninstall_pre_compact_hook(
         event_key=_PRE_COMPACT_EVENT_KEY,
         command=command,
         command_basename=command_basename,
+        host=host,
     )
 
 
@@ -433,6 +493,8 @@ def _uninstall_event_hook(
     event_key: str,
     command: str | None,
     command_basename: str | None,
+    matcher: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Shared uninstall logic for any hook event.
 
@@ -453,6 +515,9 @@ def _uninstall_event_hook(
         raise ValueError("command must be a non-empty string")
     if command_basename is not None and not command_basename:
         raise ValueError("command_basename must be a non-empty string")
+    
+    event_key, matcher = _get_host_event_and_matcher(host, event_key, matcher)
+    
     if not settings_path.exists():
         return UninstallResult(path=settings_path, removed=0)
     data = _load_settings(settings_path)
@@ -463,13 +528,19 @@ def _uninstall_event_hook(
     if command is not None:
         kept = [
             entry for entry in entries
-            if not _entry_matches(entry, command)
+            if not (
+                (matcher is None or entry.get("matcher") == matcher)
+                and _entry_matches(entry, command)
+            )
         ]
     else:
         assert command_basename is not None
         kept = [
             entry for entry in entries
-            if not _entry_matches_basename(entry, command_basename)
+            if not (
+                (matcher is None or entry.get("matcher") == matcher)
+                and _entry_matches_basename(entry, command_basename)
+            )
         ]
     removed = before - len(kept)
     if removed == 0:
@@ -533,7 +604,7 @@ class TranscriptIngestUninstallResult:
 
 
 def install_transcript_ingest_hooks(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> TranscriptIngestInstallResult:
     """Wire the four transcript-logger events to `command`. Idempotent.
 
@@ -546,10 +617,10 @@ def install_transcript_ingest_hooks(
     data = _load_settings(settings_path)
     installed: list[str] = []
     already: list[str] = []
-    for event in TRANSCRIPT_INGEST_EVENTS:
+    for event in _transcript_ingest_events(host):
         entries = _get_event_list(data, event, create=True)
         if _install_or_replace_entry(
-            entries, command=command, timeout=timeout, status_message=None,
+            entries, command=command, timeout=timeout, status_message=None, host=host,
         ):
             already.append(event)
         else:
@@ -567,6 +638,7 @@ def uninstall_transcript_ingest_hooks(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> TranscriptIngestUninstallResult:
     """Strip transcript-logger entries from all four events. Idempotent.
 
@@ -583,7 +655,7 @@ def uninstall_transcript_ingest_hooks(
         return TranscriptIngestUninstallResult(path=settings_path, removed=removed)
     data = _load_settings(settings_path)
     any_removed = False
-    for event in TRANSCRIPT_INGEST_EVENTS:
+    for event in _transcript_ingest_events(host):
         entries = _get_event_list(data, event, create=False)
         if entries is None:
             continue
@@ -624,7 +696,7 @@ def resolve_commit_ingest_command(scope: SettingsScope) -> str:
 
 
 def install_commit_ingest_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PostToolUse:matcher=Bash hook entry running `command`.
 
@@ -632,23 +704,14 @@ def install_commit_ingest_hook(
     matcher PostToolUse entries — appending only after confirming no
     matching entry already exists for the same command.
     """
-    if not command:
-        raise ValueError("command must be a non-empty string")
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, COMMIT_INGEST_EVENT, create=True)
-    if _install_or_replace_entry(
-        entries,
+    return _install_event_hook(
+        settings_path,
+        event_key=COMMIT_INGEST_EVENT,
         command=command,
         timeout=timeout,
         status_message=None,
         matcher=COMMIT_INGEST_MATCHER,
-    ):
-        return InstallResult(
-            path=settings_path, installed=False, already_present=True,
-        )
-    _atomic_write(settings_path, data)
-    return InstallResult(
-        path=settings_path, installed=True, already_present=False,
+        host=host,
     )
 
 
@@ -656,34 +719,21 @@ def uninstall_commit_ingest_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip PostToolUse entries matching `command` or `command_basename`.
 
     Pass exactly one of the two. Other PostToolUse entries (other
     matchers, other tools) are left alone.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, COMMIT_INGEST_EVENT, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [e for e in entries if not _entry_matches(e, command)]
-    else:
-        assert command_basename is not None
-        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=COMMIT_INGEST_EVENT,
+        command=command,
+        command_basename=command_basename,
+        matcher=COMMIT_INGEST_MATCHER,
+        host=host,
+    )
 
 
 # --- Claude-memory mirror wiring (#985) -------------------------------
@@ -703,7 +753,7 @@ def resolve_claude_memory_mirror_command(scope: SettingsScope) -> str:
 
 
 def install_claude_memory_mirror_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PostToolUse:matcher=Write|Edit|MultiEdit hook entry (#985).
 
@@ -716,23 +766,14 @@ def install_claude_memory_mirror_hook(
     (`AELFRICE_MIRROR_CLAUDE_MEMORY` env or `[memory] mirror_claude_memory`
     in `.aelfrice.toml`); see `claude_memory.is_mirror_enabled`.
     """
-    if not command:
-        raise ValueError("command must be a non-empty string")
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, CLAUDE_MEMORY_MIRROR_EVENT, create=True)
-    if _install_or_replace_entry(
-        entries,
+    return _install_event_hook(
+        settings_path,
+        event_key=CLAUDE_MEMORY_MIRROR_EVENT,
         command=command,
         timeout=timeout,
         status_message=None,
         matcher=CLAUDE_MEMORY_MIRROR_MATCHER,
-    ):
-        return InstallResult(
-            path=settings_path, installed=False, already_present=True,
-        )
-    _atomic_write(settings_path, data)
-    return InstallResult(
-        path=settings_path, installed=True, already_present=False,
+        host=host,
     )
 
 
@@ -740,33 +781,20 @@ def uninstall_claude_memory_mirror_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip the PostToolUse mirror entry matching `command` or
     `command_basename`. Pass exactly one. Other PostToolUse entries
     (commit-ingest Bash, other tools) are left alone.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, CLAUDE_MEMORY_MIRROR_EVENT, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [e for e in entries if not _entry_matches(e, command)]
-    else:
-        assert command_basename is not None
-        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=CLAUDE_MEMORY_MIRROR_EVENT,
+        command=command,
+        command_basename=command_basename,
+        matcher=CLAUDE_MEMORY_MIRROR_MATCHER,
+        host=host,
+    )
 
 
 # --- Search-tool wiring -----------------------------------------------
@@ -794,7 +822,7 @@ def resolve_search_tool_command(scope: SettingsScope) -> str:
 
 
 def install_search_tool_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PreToolUse:matcher=Grep|Glob hook entry running `command`.
 
@@ -826,34 +854,21 @@ def uninstall_search_tool_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip PreToolUse entries matching `command` or `command_basename`.
 
     Pass exactly one of the two. Other PreToolUse entries (other matchers,
     other tools) are left alone.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [e for e in entries if not _entry_matches(e, command)]
-    else:
-        assert command_basename is not None
-        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=SEARCH_TOOL_EVENT,
+        command=command,
+        command_basename=command_basename,
+        matcher=SEARCH_TOOL_MATCHER,
+        host=host,
+    )
 
 
 def resolve_search_tool_bash_command(scope: SettingsScope) -> str:
@@ -867,7 +882,7 @@ def resolve_search_tool_bash_command(scope: SettingsScope) -> str:
 
 
 def install_search_tool_bash_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PreToolUse:matcher=Bash hook entry running `command`.
 
@@ -908,6 +923,7 @@ def uninstall_search_tool_bash_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip PreToolUse Bash-matcher entries matching `command` or `command_basename`.
 
@@ -976,7 +992,7 @@ def resolve_agent_context_command(scope: SettingsScope) -> str:
 
 
 def install_agent_context_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PreToolUse:matcher=^(Agent|Task)$ hook entry running `command`.
 
@@ -1008,6 +1024,7 @@ def uninstall_agent_context_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip PreToolUse entries matching `command` or `command_basename`.
 
@@ -1058,6 +1075,7 @@ def install_session_start_hook(
     command: str,
     timeout: int | None = None,
     status_message: str | None = None,
+    host: str = "claude",
 ) -> InstallResult:
     """Add a SessionStart hook entry running `command`. Idempotent.
 
@@ -1069,22 +1087,13 @@ def install_session_start_hook(
     independently; the three events live under separate keys in
     settings.json's hooks block and never disturb each other.
     """
-    if not command:
-        raise ValueError("command must be a non-empty string")
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=True)
-    if _install_or_replace_entry(
-        entries,
+    return _install_event_hook(
+        settings_path,
+        event_key=SESSION_START_EVENT_KEY,
         command=command,
         timeout=timeout,
         status_message=status_message,
-    ):
-        return InstallResult(
-            path=settings_path, installed=False, already_present=True
-        )
-    _atomic_write(settings_path, data)
-    return InstallResult(
-        path=settings_path, installed=True, already_present=False
+        host=host,
     )
 
 
@@ -1093,6 +1102,7 @@ def uninstall_session_start_hook(
     *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Remove SessionStart entries matching `command` or `command_basename`.
 
@@ -1100,35 +1110,13 @@ def uninstall_session_start_hook(
     uninstall_user_prompt_submit_hook. Returns removed=0 if the file
     does not exist or has no matching entry.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if command is not None and not command:
-        raise ValueError("command must be a non-empty string")
-    if command_basename is not None and not command_basename:
-        raise ValueError("command_basename must be a non-empty string")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [e for e in entries if not _entry_matches(e, command)]
-    else:
-        assert command_basename is not None
-        kept = [
-            e for e in entries
-            if not _entry_matches_basename(e, command_basename)
-        ]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=SESSION_START_EVENT_KEY,
+        command=command,
+        command_basename=command_basename,
+        host=host,
+    )
 
 
 # --- Stop hook wiring (#582) ------------------------------------------
@@ -1150,6 +1138,7 @@ def install_stop_hook(
     command: str,
     timeout: int | None = None,
     status_message: str | None = None,
+    host: str = "claude",
 ) -> InstallResult:
     """Add a Stop hook entry running `command`. Idempotent.
 
@@ -1162,22 +1151,13 @@ def install_stop_hook(
     assistant-turn rows to turns.jsonl); the two are separate entries
     under the same Stop event key and never disturb each other.
     """
-    if not command:
-        raise ValueError("command must be a non-empty string")
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, STOP_EVENT_KEY, create=True)
-    if _install_or_replace_entry(
-        entries,
+    return _install_event_hook(
+        settings_path,
+        event_key=STOP_EVENT_KEY,
         command=command,
         timeout=timeout,
         status_message=status_message,
-    ):
-        return InstallResult(
-            path=settings_path, installed=False, already_present=True
-        )
-    _atomic_write(settings_path, data)
-    return InstallResult(
-        path=settings_path, installed=True, already_present=False
+        host=host,
     )
 
 
@@ -1186,6 +1166,7 @@ def uninstall_stop_hook(
     *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Remove Stop entries matching `command` or `command_basename`.
 
@@ -1193,35 +1174,13 @@ def uninstall_stop_hook(
     uninstall_session_start_hook. Returns removed=0 if the file does
     not exist or has no matching entry.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if command is not None and not command:
-        raise ValueError("command must be a non-empty string")
-    if command_basename is not None and not command_basename:
-        raise ValueError("command_basename must be a non-empty string")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, STOP_EVENT_KEY, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [e for e in entries if not _entry_matches(e, command)]
-    else:
-        assert command_basename is not None
-        kept = [
-            e for e in entries
-            if not _entry_matches_basename(e, command_basename)
-        ]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=STOP_EVENT_KEY,
+        command=command,
+        command_basename=command_basename,
+        host=host,
+    )
 
 
 # --- Pre-issue-create guard wiring (#941) --------------------------------
@@ -1243,7 +1202,7 @@ def resolve_pre_issue_guard_command(scope: SettingsScope) -> str:
 
 
 def install_pre_issue_guard_hook(
-    settings_path: Path, *, command: str, timeout: int | None = None,
+    settings_path: Path, *, command: str, timeout: int | None = None, host: str = "claude",
 ) -> InstallResult:
     """Add a PreToolUse:Bash hook entry running *command* for issue-dup detection.
 
@@ -1252,23 +1211,14 @@ def install_pre_issue_guard_hook(
     ``matcher`` value but different ``command`` values, so the dedup key
     (basename) distinguishes them.
     """
-    if not command:
-        raise ValueError("command must be a non-empty string")
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, PRE_ISSUE_GUARD_EVENT, create=True)
-    if _install_or_replace_entry(
-        entries,
+    return _install_event_hook(
+        settings_path,
+        event_key=PRE_ISSUE_GUARD_EVENT,
         command=command,
         timeout=timeout,
         status_message=None,
         matcher=PRE_ISSUE_GUARD_MATCHER,
-    ):
-        return InstallResult(
-            path=settings_path, installed=False, already_present=True,
-        )
-    _atomic_write(settings_path, data)
-    return InstallResult(
-        path=settings_path, installed=True, already_present=False,
+        host=host,
     )
 
 
@@ -1276,6 +1226,7 @@ def uninstall_pre_issue_guard_hook(
     settings_path: Path, *,
     command: str | None = None,
     command_basename: str | None = None,
+    host: str = "claude",
 ) -> UninstallResult:
     """Strip PreToolUse Bash-matcher entries for the pre-issue guard.
 
@@ -1283,40 +1234,14 @@ def uninstall_pre_issue_guard_hook(
     match).  Only entries whose ``matcher`` field is ``"Bash"`` and whose
     command matches are removed; other PreToolUse entries are left alone.
     """
-    if command is None and command_basename is None:
-        raise ValueError("provide command or command_basename")
-    if command is not None and command_basename is not None:
-        raise ValueError("command and command_basename are mutually exclusive")
-    if not settings_path.exists():
-        return UninstallResult(path=settings_path, removed=0)
-    data = _load_settings(settings_path)
-    entries = _get_event_list(data, PRE_ISSUE_GUARD_EVENT, create=False)
-    if entries is None:
-        return UninstallResult(path=settings_path, removed=0)
-    before = len(entries)
-    if command is not None:
-        kept = [
-            e for e in entries
-            if not (
-                e.get("matcher") == PRE_ISSUE_GUARD_MATCHER
-                and _entry_matches(e, command)
-            )
-        ]
-    else:
-        assert command_basename is not None
-        kept = [
-            e for e in entries
-            if not (
-                e.get("matcher") == PRE_ISSUE_GUARD_MATCHER
-                and _entry_matches_basename(e, command_basename)
-            )
-        ]
-    removed = before - len(kept)
-    if removed == 0:
-        return UninstallResult(path=settings_path, removed=0)
-    entries[:] = kept
-    _atomic_write(settings_path, data)
-    return UninstallResult(path=settings_path, removed=removed)
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=PRE_ISSUE_GUARD_EVENT,
+        command=command,
+        command_basename=command_basename,
+        matcher=PRE_ISSUE_GUARD_MATCHER,
+        host=host,
+    )
 
 
 # --- Statusline auto-wiring ---------------------------------------------
@@ -1559,6 +1484,121 @@ def install_slash_commands(
         dest_dir=target,
         written=tuple(written),
         already=tuple(already),
+        pruned=tuple(pruned),
+    )
+
+
+def install_gemini_slash_commands(
+    dest_dir: Path,
+) -> SlashCommandsResult:
+    """Transform all bundled /aelf:* slash-command files into Gemini .toml commands
+    and write them into `dest_dir`.
+
+    Idempotency and orphan pruning behave the same as install_slash_commands.
+    """
+    from aelfrice.host_codex import _parse_slash_frontmatter  # noqa: PLC0415
+    import json
+
+    bundle = bundled_slash_files()
+    written: list[str] = []
+    already: list[str] = []
+    pruned: list[str] = []
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Transform and write (or skip) bundled files.
+    for md_name, text in sorted(bundle.items()):
+        front, body = _parse_slash_frontmatter(text)
+        
+        subcmd = md_name.removesuffix(".md")
+        if subcmd == "audit-claude-memory":
+            subcmd = "audit-gemini-memory"
+        elif subcmd == "reconcile-claude-memory":
+            subcmd = "reconcile-gemini-memory"
+
+        description = front.get("description", "").replace("claude-memory", "gemini-memory").replace("Claude", "Gemini")
+        
+        toml_name = f"{subcmd}.toml"
+        dest_file = dest_dir / toml_name
+        
+        # We construct the TOML prompt to run the aelf command using dynamic shell execution
+        prompt_cmd = f"AELFRICE_HOST=gemini uv run aelf {subcmd}"
+        prompt = f"!{{{prompt_cmd} {{{{args}}}}}}"
+        toml_content = f'description = {json.dumps(description)}\nprompt = """\n{prompt}\n"""\n'
+
+        if dest_file.exists():
+            existing = dest_file.read_text(encoding="utf-8")
+            if existing == toml_content:
+                already.append(toml_name)
+                continue
+                
+        # Atomic write: temp + replace.
+        encoded = toml_content.encode("utf-8")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=toml_name + ".", suffix=".tmp", dir=str(dest_dir)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encoded)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, dest_file)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+        written.append(toml_name)
+
+    # Prune orphans: .toml files present in dest_dir but not in the mapped bundle.
+    canonical_toml_names = {
+        f"{n.removesuffix('.md').replace('audit-claude-memory', 'audit-gemini-memory').replace('reconcile-claude-memory', 'reconcile-gemini-memory')}.toml"
+        for n in bundle
+    }
+    for toml in sorted(dest_dir.glob("*.toml")):
+        if toml.name not in canonical_toml_names:
+            try:
+                toml.unlink()
+            except OSError:
+                pass
+            else:
+                pruned.append(toml.name)
+
+    return SlashCommandsResult(
+        dest_dir=dest_dir,
+        written=tuple(written),
+        already=tuple(already),
+        pruned=tuple(pruned),
+    )
+
+
+def uninstall_gemini_slash_commands(
+    dest_dir: Path,
+) -> SlashCommandsResult:
+    """Remove all Gemini /aelf:* .toml slash-command files from `dest_dir`."""
+    bundle = bundled_slash_files()
+    pruned: list[str] = []
+
+    canonical_toml_names = {
+        f"{n.removesuffix('.md').replace('audit-claude-memory', 'audit-gemini-memory').replace('reconcile-claude-memory', 'reconcile-gemini-memory')}.toml"
+        for n in bundle
+    }
+
+    if dest_dir.is_dir():
+        for toml_name in sorted(canonical_toml_names):
+            f = dest_dir / toml_name
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                else:
+                    pruned.append(toml_name)
+
+    return SlashCommandsResult(
+        dest_dir=dest_dir,
+        written=(),
+        already=(),
         pruned=tuple(pruned),
     )
 
@@ -1937,6 +1977,7 @@ def _install_or_replace_entry(
     timeout: int | None,
     status_message: str | None,
     matcher: str | None = None,
+    host: str = "claude",
 ) -> bool:
     """Install or replace a hook entry, deduping by `(matcher, basename)`.
 

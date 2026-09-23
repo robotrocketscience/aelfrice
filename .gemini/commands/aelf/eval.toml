@@ -1,0 +1,4 @@
+description = "Run the relevance-calibration harness (P@K / ROC-AUC / Spearman \u03c1) on a synthetic corpus."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf eval {{args}}}
+"""

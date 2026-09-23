@@ -1,0 +1,4 @@
+description = "Manually fire the context rebuilder. Prints the rebuild block (locked + session-scoped + L2.5/L1 hits) for the most recent transcript turns."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf rebuild {{args}}}
+"""

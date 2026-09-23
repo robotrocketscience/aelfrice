@@ -1,0 +1,4 @@
+description = "Scan a project directory and ingest beliefs into aelfrice memory."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf onboard {{args}}}
+"""

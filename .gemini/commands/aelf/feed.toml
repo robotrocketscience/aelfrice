@@ -1,0 +1,4 @@
+description = "Read the belief-write event log \u2014 see what aelfrice has been recording."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf feed {{args}}}
+"""

@@ -1,0 +1,4 @@
+description = "List user-locked beliefs."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf locked {{args}}}
+"""

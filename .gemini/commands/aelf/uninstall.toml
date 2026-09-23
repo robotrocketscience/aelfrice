@@ -1,0 +1,4 @@
+description = "Tear down aelfrice locally with explicit handling for the brain-graph DB."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf uninstall {{args}}}
+"""

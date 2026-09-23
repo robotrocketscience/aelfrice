@@ -2217,6 +2217,11 @@ def user_prompt_submit(
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
         return _report_incomplete_install(_IMPORT_ERR, serr)
+    
+    import io
+    original_sout = sout
+    is_gemini = False
+    captured_out = None
     # #1135: one store handle for the whole prompt. The helpers below
     # each used to open their own (4-6 opens per prompt, each replaying
     # the schema battery). Opened lazily after the payload parses; None
@@ -2233,8 +2238,14 @@ def user_prompt_submit(
         except Exception:
             pass
         raw = read_payload_text(sin, serr) or ""
+        is_gemini = _is_gemini_host(sin, raw)
+        if is_gemini:
+            captured_out = io.StringIO()
+            sout = captured_out
         prompt = _extract_prompt(raw)
         if prompt is None:
+            if is_gemini:
+                original_sout.write("{}")
             return 0
         session_id = _extract_session_id(raw)
         # #1522: stamp the turn boundary the PreToolUse search hook's
@@ -3098,6 +3109,14 @@ def user_prompt_submit(
                 ups_store.close()
             except Exception:
                 pass
+        if is_gemini:
+            response = {
+                "hookSpecificOutput": {
+                    "hookEventName": "BeforeAgent",
+                    "additionalContext": captured_out.getvalue() if captured_out else ""
+                }
+            }
+            original_sout.write(json.dumps(response))
     return 0
 
 
@@ -3765,6 +3784,20 @@ def _extract_session_id(raw: str) -> str | None:
         return sid
     return None
 
+
+def _is_gemini_host(sin: IO[str] | None = None, raw_payload: str | None = None) -> bool:
+    if os.environ.get("AELFRICE_HOST") == "gemini":
+        return True
+    if raw_payload:
+        try:
+            payload_obj = json.loads(raw_payload)
+            if isinstance(payload_obj, dict):
+                ev = payload_obj.get("hook_event_name")
+                if ev in ("BeforeAgent", "PreCompress", "SessionEnd", "BeforeTool", "AfterTool"):
+                    return True
+        except Exception:
+            pass
+    return False
 
 def _extract_prompt(raw: str) -> str | None:
     if not raw.strip():
@@ -5871,6 +5904,11 @@ def session_start(
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
         return _report_incomplete_install(_IMPORT_ERR, serr)
+    
+    import io
+    original_sout = sout
+    is_gemini = False
+    captured_out = None
     # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
     # the whole of this hook's own work plus the user's first typing pause
     # to build in. Never blocks and never raises; see `sidecar_warm`.
@@ -5883,6 +5921,10 @@ def session_start(
         raw = ""
         try:
             raw = read_payload_text(sin, serr) or ""
+            is_gemini = _is_gemini_host(sin, raw)
+            if is_gemini:
+                captured_out = io.StringIO()
+                sout = captured_out
         except Exception:  # non-blocking: log but continue
             # A read failure drops both `session_id` (audit) and the
             # `source`/`cwd` fields the compact-rebuild path needs, so
@@ -6003,6 +6045,14 @@ def session_start(
             # never break SessionStart on recap-side errors
             pass
     _maybe_run_wonder_autogc(serr)
+    if is_gemini:
+        response = {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": captured_out.getvalue() if captured_out else ""
+            }
+        }
+        original_sout.write(json.dumps(response))
     return 0
 
 

@@ -1,0 +1,4 @@
+description = "Promote an agent_inferred belief to user_validated origin. Optionally flip the belief's visibility scope with --to-scope. CLI-level alias of the hidden `aelf validate` subcommand (same handler and origin-promotion semantics); --to-scope is accepted by aelf promote only."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf promote {{args}}}
+"""

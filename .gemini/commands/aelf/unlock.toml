@@ -1,0 +1,4 @@
+description = "Drop the user-lock on a belief without changing its origin. Writes a lock:unlock audit row. Idempotent."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf unlock {{args}}}
+"""

@@ -16,20 +16,20 @@ You correct your agent. *"Got it,"* the agent says. In the next session, the age
 
 aelfrice runs in the background and stops that memory loss. Write a rule once, and every relevant prompt after that carries it. The hook injects the rule *before* the model reads your message. There is no rules file to maintain, and nothing for the agent to skip, because the matched beliefs are in the prompt itself.
 
-aelfrice is for developers who use AI coding agents. Any host that supplies a `UserPromptSubmit` hook gets full support. A tool cannot put the right beliefs in front of the model before the model reads your message, because the tool runs only if the model calls it, so the hook is what makes the guarantee possible. aelfrice is local-only by design, which puts embeddings, vector retrieval-augmented generation (RAG), and cloud synchronization out of scope. [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
+aelfrice is for developers who use AI coding agents. It fully supports **Claude Code**, **Gemini CLI**, and any other host that provides hook triggers. A tool cannot put the right beliefs in front of the model before the model reads your message, because the tool runs only if the model calls it, so the hook is what makes the guarantee possible. aelfrice is local-only by design, which puts embeddings, vector retrieval-augmented generation (RAG), and cloud synchronization out of scope. [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
 
 ## Install
 
 ```bash
 uv tool install aelfrice    # requires uv — https://docs.astral.sh/uv/
-aelf setup                  # wire the UserPromptSubmit hook into your agent
+aelf setup                  # automatically configures hooks for all detected platforms (Claude, Gemini, etc.)
 aelf onboard .              # deterministic project scan (regex classifier). For LLM-quality with no API key, run /aelf:onboard in your agent.
 aelf lock "never push directly to main; use scripts/publish.sh"
 ```
 
-That is the whole setup. The next prompt that mentions "push" already carries the rule, and aelfrice asks nothing of you after that: no command to remember, no file to keep current.
+That is the whole setup. Running `aelf setup` with no arguments automatically discovers which LLM platforms (Claude Code, Gemini CLI, etc.) are installed on your machine and wires the background hooks and the `/aelf:*` slash command shortcut bundle for both instantly.
 
-If you use the Codex CLI, run `aelf setup --host codex`. That command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`, and it installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For the details, read [the Codex host section of the installation guide](docs/user/INSTALL.md).
+If you use the Codex CLI, run `aelf setup --host codex`. That command installs the same set of hooks into the `hooks.json` file of `$CODEX_HOME` or `~/.codex`, and it installs the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+). For the details, read [the installation guide](docs/user/INSTALL.md).
 
 ## What you'll see
 

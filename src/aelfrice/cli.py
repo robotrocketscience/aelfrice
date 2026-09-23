@@ -156,6 +156,7 @@ from aelfrice.setup import (
     install_search_tool_hook,
     install_session_start_hook,
     install_slash_commands,
+    install_gemini_slash_commands,
     install_statusline,
     install_stop_hook,
     install_transcript_ingest_hooks,
@@ -189,6 +190,7 @@ from aelfrice.setup import (
     uninstall_search_tool_hook,
     uninstall_session_start_hook,
     uninstall_slash_commands,
+    uninstall_gemini_slash_commands,
     uninstall_statusline,
     uninstall_stop_hook,
     uninstall_transcript_ingest_hooks,
@@ -2956,6 +2958,15 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
     Default output is human-readable text.  Pass ``--json`` for a single
     JSON object containing the four lists.  Never writes to either store.
     """
+    host = getattr(args, "host_default", None)
+    if host is None:
+        host = "gemini" if (getattr(args, "host", "claude") == "gemini" or os.environ.get("AELFRICE_HOST") == "gemini") else "claude"
+    if host == "gemini":
+        os.environ["AELFRICE_HOST"] = "gemini"
+
+    mem_prefix = "gemini-memory" if host == "gemini" else "claude-memory"
+    mem_key = "gemini" if host == "gemini" else "claude"
+
     from aelfrice.claude_memory import (
         compare_slots,
         derive_memory_dir,
@@ -3014,15 +3025,15 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
             "memory_md": str(memory_md),
             "memory_md_found": memory_md.exists(),
             "duplicates": [
-                {"aelfrice": _row_dict(a), "claude": _row_dict(c)}
+                {"aelfrice": _row_dict(a), mem_key: _row_dict(c)}
                 for a, c in result.duplicates
             ],
             "contradictions": [
-                {"aelfrice": _row_dict(a), "claude": _row_dict(c)}
+                {"aelfrice": _row_dict(a), mem_key: _row_dict(c)}
                 for a, c in result.contradictions
             ],
             "aelfrice_only": [_row_dict(r) for r in result.aelfrice_only],
-            "claude_only": [_row_dict(r) for r in result.claude_only],
+            f"{mem_key}_only": [_row_dict(r) for r in result.claude_only],
         }
         print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
         return 0
@@ -3033,7 +3044,7 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
         print("-" * 40, file=out)  # type: ignore[arg-type]
 
     print(
-        f"audit-claude-memory: project={project_path}",
+        f"audit-{mem_prefix}: project={project_path}",
         file=out,  # type: ignore[arg-type]
     )
     if not memory_md.exists():
@@ -3046,7 +3057,7 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
     for arow, crow in result.duplicates:
         print(
             f"  [{arow.slot_subject} {arow.slot_predicate}] "
-            f"aelf={arow.source!r} claude={crow.source!r} "
+            f"aelf={arow.source!r} {mem_key}={crow.source!r} "
             f"value={arow.slot_value!r}",
             file=out,  # type: ignore[arg-type]
         )
@@ -3055,11 +3066,11 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
     for arow, crow in result.contradictions:
         print(
             f"  [{arow.slot_subject} {arow.slot_predicate}] "
-            f"aelf={arow.slot_value!r} vs claude={crow.slot_value!r}",
+            f"aelf={arow.slot_value!r} vs {mem_key}={crow.slot_value!r}",
             file=out,  # type: ignore[arg-type]
         )
 
-    _hdr("aelfrice-only (not in claude-memory)", len(result.aelfrice_only))
+    _hdr(f"aelfrice-only (not in {mem_prefix})", len(result.aelfrice_only))
     for r in result.aelfrice_only:
         print(
             f"  [{r.slot_subject} {r.slot_predicate}] {r.slot_value!r} "
@@ -3067,7 +3078,7 @@ def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
 
-    _hdr("claude-memory-only (not in aelfrice)", len(result.claude_only))
+    _hdr(f"{mem_prefix}-only (not in aelfrice)", len(result.claude_only))
     for r in result.claude_only:
         print(
             f"  [{r.slot_subject} {r.slot_predicate}] {r.slot_value!r} "
@@ -3150,6 +3161,14 @@ def _cmd_reconcile_claude_memory(args: argparse.Namespace, out: object) -> int:
     sentinel and opt-out) and refreshes the sentinel — the manual escape
     hatch for re-ingesting after bulk out-of-session memory edits.
     """
+    host = getattr(args, "host_default", None)
+    if host is None:
+        host = "gemini" if (getattr(args, "host", "claude") == "gemini" or os.environ.get("AELFRICE_HOST") == "gemini") else "claude"
+    if host == "gemini":
+        os.environ["AELFRICE_HOST"] = "gemini"
+
+    mem_prefix = "gemini-memory" if host == "gemini" else "claude-memory"
+
     from aelfrice.claude_memory import derive_memory_dir, reconcile_sentinel_path
     from aelfrice.claude_memory_reconcile import (
         maybe_reconcile_claude_memory,
@@ -3179,8 +3198,13 @@ def _cmd_reconcile_claude_memory(args: argparse.Namespace, out: object) -> int:
     finally:
         store.close()
 
+    # Re-map "claude-memory" output message to "gemini-memory" if host is gemini
+    reason = result.reason
+    if host == "gemini" and reason:
+        reason = reason.replace("claude-memory", "gemini-memory")
+
     print(
-        f"reconcile-claude-memory: {result.reason}",
+        f"reconcile-{mem_prefix}: {reason}",
         file=out,  # type: ignore[arg-type]
     )
     return 0
@@ -4134,7 +4158,8 @@ def _resolve_settings_path(args: argparse.Namespace) -> Path:
     project_root = (
         Path(args.project_root) if args.project_root is not None else None
     )
-    return default_settings_path(_effective_scope(args), project_root=project_root)
+    host = getattr(args, "host", "claude")
+    return default_settings_path(_effective_scope(args), project_root=project_root, host=host)
 
 
 def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
@@ -4228,7 +4253,33 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
-    if getattr(args, "host", "claude") == "codex":
+    host = getattr(args, "host", "auto")
+    if host == "auto":
+        home = Path.home()
+        project_root = getattr(args, "project_root", None)
+        cwd = Path(project_root) if project_root else Path.cwd()
+        hosts_to_setup = []
+        if (home / ".claude").is_dir() or (cwd / ".claude").is_dir():
+            hosts_to_setup.append("claude")
+        if (home / ".gemini").is_dir() or (cwd / ".gemini").is_dir():
+            hosts_to_setup.append("gemini")
+        if (home / ".codex").is_dir() or (cwd / ".codex").is_dir():
+            hosts_to_setup.append("codex")
+        if not hosts_to_setup:
+            hosts_to_setup = ["claude"]
+
+        import copy
+        last_code = 0
+        for h in hosts_to_setup:
+            cloned_args = copy.copy(args)
+            cloned_args.host = h
+            print(f"aelfrice: setting up host {h!r}...", file=out)
+            code = _cmd_setup_locked(cloned_args, out)
+            if code != 0:
+                last_code = code
+        return last_code
+
+    if host == "codex":
         return _cmd_setup_codex(args, out)
     # #1053: an explicit claude-host setup is explicit re-consent —
     # clear any persistent claude auto-install opt-out.
@@ -4360,6 +4411,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             command=command,
             timeout=_timeout_for("user_prompt_submit"),
             status_message=args.status_message,
+            host=host,
         )
         if result.already_present:
             print(
@@ -4376,7 +4428,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "transcript_ingest", True):
             ti_command = resolve_transcript_logger_command(scope)
             ti_result = install_transcript_ingest_hooks(
-                path, command=ti_command, timeout=_timeout_for("transcript_ingest"),
+                path, command=ti_command, timeout=_timeout_for("transcript_ingest"), host=host,
             )
             if ti_result.installed:
                 print(
@@ -4395,7 +4447,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             ss_command = resolve_session_start_hook_command(scope)
             ss_result = install_session_start_hook(
                 path, command=ss_command, timeout=_timeout_for("session_start"),
-                status_message=args.status_message,
+                status_message=args.status_message, host=host,
             )
             if ss_result.already_present:
                 print(
@@ -4413,7 +4465,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             st_command = resolve_stop_hook_command(scope)
             st_result = install_stop_hook(
                 path, command=st_command, timeout=_timeout_for("stop"),
-                status_message=args.status_message,
+                status_message=args.status_message, host=host,
             )
             if st_result.already_present:
                 print(
@@ -4427,7 +4479,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                     f"(command={st_command!r})",
                     file=out,  # type: ignore[arg-type]
                 )
-        if not args.no_statusline:
+        if host != "gemini" and not args.no_statusline:
             sl = install_statusline(path)
             if sl.mode == "installed":
                 print(
@@ -4464,6 +4516,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                 command=pc_command,
                 timeout=args.timeout,
                 status_message=args.status_message,
+                host=host,
             )
             if pc_result.already_present:
                 print(
@@ -4480,7 +4533,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "commit_ingest", True):
             ci_command = resolve_commit_ingest_command(scope)
             ci_result = install_commit_ingest_hook(
-                path, command=ci_command, timeout=_timeout_for("commit_ingest"),
+                path, command=ci_command, timeout=_timeout_for("commit_ingest"), host=host,
             )
             if ci_result.already_present:
                 print(
@@ -4497,7 +4550,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "search_tool", True):
             st_command = resolve_search_tool_command(scope)
             st_result = install_search_tool_hook(
-                path, command=st_command, timeout=_timeout_for("search_tool"),
+                path, command=st_command, timeout=_timeout_for("search_tool"), host=host,
             )
             if st_result.already_present:
                 print(
@@ -4514,7 +4567,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "search_tool_bash", True):
             stb_command = resolve_search_tool_bash_command(scope)
             stb_result = install_search_tool_bash_hook(
-                path, command=stb_command, timeout=_timeout_for("search_tool_bash"),
+                path, command=stb_command, timeout=_timeout_for("search_tool_bash"), host=host,
             )
             if stb_result.already_present:
                 print(
@@ -4531,7 +4584,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "pre_issue_guard", True):
             pig_command = resolve_pre_issue_guard_command(scope)
             pig_result = install_pre_issue_guard_hook(
-                path, command=pig_command, timeout=_timeout_for("pre_issue_guard"),
+                path, command=pig_command, timeout=_timeout_for("pre_issue_guard"), host=host,
             )
             if pig_result.already_present:
                 print(
@@ -4548,7 +4601,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "claude_memory_mirror", True):
             cmm_command = resolve_claude_memory_mirror_command(scope)
             cmm_result = install_claude_memory_mirror_hook(
-                path, command=cmm_command, timeout=_timeout_for("claude_memory_mirror"),
+                path, command=cmm_command, timeout=_timeout_for("claude_memory_mirror"), host=host,
             )
             if cmm_result.already_present:
                 print(
@@ -4567,7 +4620,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
         if getattr(args, "agent_context", True):
             ac_command = resolve_agent_context_command(scope)
             ac_result = install_agent_context_hook(
-                path, command=ac_command, timeout=_timeout_for("agent_context"),
+                path, command=ac_command, timeout=_timeout_for("agent_context"), host=host,
             )
             if ac_result.already_present:
                 print(
@@ -4581,6 +4634,47 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                     f"{ac_result.path} (command={ac_command!r})",
                     file=out,  # type: ignore[arg-type]
                 )
+    if host == "gemini":
+        slash_dest = getattr(args, "slash_commands_dir", None)
+        if slash_dest:
+            slash_dest_path = Path(slash_dest)
+        else:
+            if scope == "user":
+                slash_dest_path = Path.home() / ".gemini" / "commands" / "aelf"
+            else:
+                project_root = getattr(args, "project_root", None)
+                root = Path(project_root) if project_root else Path.cwd()
+                slash_dest_path = root / ".gemini" / "commands" / "aelf"
+
+        sc_result = install_gemini_slash_commands(slash_dest_path)
+        if sc_result.written:
+            print(
+                f"installed {len(sc_result.written)} slash command(s) in "
+                f"{sc_result.dest_dir}: {', '.join(sc_result.written)}",
+                file=out,  # type: ignore[arg-type]
+            )
+        if sc_result.pruned:
+            print(
+                f"removed {len(sc_result.pruned)} stale slash command(s) from "
+                f"{sc_result.dest_dir}: {', '.join(sc_result.pruned)}",
+                file=out,  # type: ignore[arg-type]
+            )
+        if not sc_result.written and not sc_result.pruned:
+            print(
+                f"slash commands already up to date in {sc_result.dest_dir}",
+                file=out,  # type: ignore[arg-type]
+            )
+        if not getattr(args, "sessionstart_recap", True):
+            from aelfrice.hook import ENV_SESSIONSTART_RECAP
+            print(
+                f"SessionStart recap disabled. To persist across shells, add "
+                f"{ENV_SESSIONSTART_RECAP}=0 to your shell profile.",
+                file=out,  # type: ignore[arg-type]
+            )
+        _sync_setup_opt_outs_and_stamp(args)
+        _print_setup_next_step(out)
+        _print_setup_jsonl_history_hint(out)
+        return 0
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
@@ -5067,8 +5161,35 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
-    if getattr(args, "host", "claude") == "codex":
+    host = getattr(args, "host", "auto")
+    if host == "auto":
+        home = Path.home()
+        project_root = getattr(args, "project_root", None)
+        cwd = Path(project_root) if project_root else Path.cwd()
+        hosts_to_unsetup = []
+        if (home / ".claude").is_dir() or (cwd / ".claude").is_dir():
+            hosts_to_unsetup.append("claude")
+        if (home / ".gemini").is_dir() or (cwd / ".gemini").is_dir():
+            hosts_to_unsetup.append("gemini")
+        if (home / ".codex").is_dir() or (cwd / ".codex").is_dir():
+            hosts_to_unsetup.append("codex")
+        if not hosts_to_unsetup:
+            hosts_to_unsetup = ["claude"]
+
+        import copy
+        last_code = 0
+        for h in hosts_to_unsetup:
+            cloned_args = copy.copy(args)
+            cloned_args.host = h
+            print(f"aelfrice: tearing down host {h!r}...", file=out)
+            code = _cmd_unsetup_locked(cloned_args, out)
+            if code != 0:
+                last_code = code
+        return last_code
+
+    if host == "codex":
         return _cmd_unsetup_codex(args, out)
+    scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     # #1161: same single-lock, single-write transaction as setup.
     # Removal is a read-modify-write too, so an unsetup interleaved
@@ -5077,11 +5198,11 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
     with settings_transaction(path):
         if args.command is None:
             result = uninstall_user_prompt_submit_hook(
-                path, command_basename=DEFAULT_HOOK_COMMAND
+                path, command_basename=DEFAULT_HOOK_COMMAND, host=host
             )
             match_label = f"basename={DEFAULT_HOOK_COMMAND!r}"
         else:
-            result = uninstall_user_prompt_submit_hook(path, command=args.command)
+            result = uninstall_user_prompt_submit_hook(path, command=args.command, host=host)
             match_label = f"command={args.command!r}"
         if result.removed == 0:
             print(
@@ -5097,7 +5218,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
             )
         if getattr(args, "session_start", True):
             ss_result = uninstall_session_start_hook(
-                path, command_basename=SESSION_START_HOOK_SCRIPT_NAME,
+                path, command_basename=SESSION_START_HOOK_SCRIPT_NAME, host=host
             )
             if ss_result.removed == 0:
                 print(
@@ -5112,7 +5233,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "stop_hook", True):
             st_result = uninstall_stop_hook(
-                path, command_basename=STOP_HOOK_SCRIPT_NAME,
+                path, command_basename=STOP_HOOK_SCRIPT_NAME, host=host
             )
             if st_result.removed == 0:
                 print(
@@ -5127,7 +5248,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "transcript_ingest", True):
             ti_result = uninstall_transcript_ingest_hooks(
-                path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME,
+                path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME, host=host
             )
             if not ti_result.removed:
                 print(
@@ -5143,7 +5264,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                     )
         if getattr(args, "rebuilder", False):
             pc_result = uninstall_pre_compact_hook(
-                path, command_basename="aelf-pre-compact-hook",
+                path, command_basename="aelf-pre-compact-hook", host=host
             )
             if pc_result.removed == 0:
                 print(
@@ -5156,7 +5277,11 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                     f"{'y' if pc_result.removed == 1 else 'ies'} from {pc_result.path}",
                     file=out,  # type: ignore[arg-type]
                 )
-        sl = uninstall_statusline(path)
+        if host != "gemini":
+            sl = uninstall_statusline(path)
+        else:
+            from aelfrice.setup import StatuslineUninstallResult as _StatuslineUninstallResult
+            sl = _StatuslineUninstallResult(path=path, mode="absent")
         if sl.mode == "removed":
             print(
                 f"removed statusline from {sl.path}",
@@ -5169,7 +5294,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
             )
         if getattr(args, "commit_ingest", True):
             ci_result = uninstall_commit_ingest_hook(
-                path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
+                path, command_basename=COMMIT_INGEST_SCRIPT_NAME, host=host
             )
             if ci_result.removed == 0:
                 print(
@@ -5184,7 +5309,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "claude_memory_mirror", True):
             cmm_result = uninstall_claude_memory_mirror_hook(
-                path, command_basename=CLAUDE_MEMORY_MIRROR_SCRIPT_NAME,
+                path, command_basename=CLAUDE_MEMORY_MIRROR_SCRIPT_NAME, host=host
             )
             if cmm_result.removed == 0:
                 print(
@@ -5199,7 +5324,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "search_tool", True):
             st_result = uninstall_search_tool_hook(
-                path, command_basename=SEARCH_TOOL_SCRIPT_NAME,
+                path, command_basename=SEARCH_TOOL_SCRIPT_NAME, host=host
             )
             if st_result.removed == 0:
                 print(
@@ -5214,7 +5339,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "search_tool_bash", True):
             stb_result = uninstall_search_tool_bash_hook(
-                path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME,
+                path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME, host=host
             )
             if stb_result.removed == 0:
                 print(
@@ -5229,7 +5354,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "pre_issue_guard", True):
             pig_result = uninstall_pre_issue_guard_hook(
-                path, command_basename=PRE_ISSUE_GUARD_SCRIPT_NAME,
+                path, command_basename=PRE_ISSUE_GUARD_SCRIPT_NAME, host=host
             )
             if pig_result.removed == 0:
                 print(
@@ -5244,7 +5369,7 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "agent_context", True):
             ac_result = uninstall_agent_context_hook(
-                path, command_basename=AGENT_CONTEXT_SCRIPT_NAME,
+                path, command_basename=AGENT_CONTEXT_SCRIPT_NAME, host=host
             )
             if ac_result.removed == 0:
                 print(
@@ -5258,8 +5383,21 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
                     file=out,  # type: ignore[arg-type]
                 )
     slash_dest = getattr(args, "slash_commands_dir", None)
-    slash_dest_path = Path(slash_dest) if slash_dest else None
-    usc_result = uninstall_slash_commands(slash_dest_path)
+    if host == "gemini":
+        if slash_dest:
+            slash_dest_path = Path(slash_dest)
+        else:
+            if scope == "user":
+                slash_dest_path = Path.home() / ".gemini" / "commands" / "aelf"
+            else:
+                project_root = getattr(args, "project_root", None)
+                root = Path(project_root) if project_root else Path.cwd()
+                slash_dest_path = root / ".gemini" / "commands" / "aelf"
+        usc_result = uninstall_gemini_slash_commands(slash_dest_path)
+    else:
+        slash_dest_path = Path(slash_dest) if slash_dest else None
+        usc_result = uninstall_slash_commands(slash_dest_path)
+
     if usc_result.pruned:
         print(
             f"removed {len(usc_result.pruned)} slash command(s) from "
@@ -6164,13 +6302,15 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     )
 
     _cm_reconciled = reconcile_sentinel_path(db_path()).exists()
+    host = getattr(args, "host", None) or os.environ.get("AELFRICE_HOST", "claude")
+    mem_prefix = "gemini-memory" if host == "gemini" else "claude-memory"
     print(
-        "claude-memory mirror: "
+        f"{mem_prefix} mirror: "
         + ("ON" if is_mirror_enabled() else "off")
         + (
             " (reconciled)"
             if _cm_reconciled
-            else " (not yet reconciled — run `aelf reconcile-claude-memory`)"
+            else f" (not yet reconciled — run `aelf reconcile-{mem_prefix}`)"
         ),
         file=out,  # type: ignore[arg-type]
     )
@@ -6770,7 +6910,33 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     `aelf health` routes here with scope='graph' implicitly via
     `_cmd_health`.
     """
-    if getattr(args, "host", "claude") == "codex":
+    host = getattr(args, "host", "auto")
+    if host == "auto":
+        home = Path.home()
+        project_root = getattr(args, "project_root", None)
+        cwd = Path(project_root) if project_root else Path.cwd()
+        hosts_to_diagnose = []
+        if (home / ".claude").is_dir() or (cwd / ".claude").is_dir():
+            hosts_to_diagnose.append("claude")
+        if (home / ".gemini").is_dir() or (cwd / ".gemini").is_dir():
+            hosts_to_diagnose.append("gemini")
+        if (home / ".codex").is_dir() or (cwd / ".codex").is_dir():
+            hosts_to_diagnose.append("codex")
+        if not hosts_to_diagnose:
+            hosts_to_diagnose = ["claude"]
+
+        import copy
+        last_code = 0
+        for h in hosts_to_diagnose:
+            cloned_args = copy.copy(args)
+            cloned_args.host = h
+            print(f"aelfrice: diagnosing host {h!r}...", file=out)
+            code = _cmd_doctor(cloned_args, out)
+            if code != 0:
+                last_code = code
+        return last_code
+
+    if host == "codex":
         return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
@@ -6811,6 +6977,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             Path(args.hook_failures_log) if args.hook_failures_log else None
         )
         known_subs = _known_cli_subcommands()
+        host = getattr(args, "host", "claude")
         report = diagnose(
             user_settings=user_settings,
             project_root=project_root,
@@ -6818,6 +6985,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             known_cli_subcommands=known_subs,
             hrr_store_path=str(db_path()),
             store_path=str(db_path()),
+            host=host,
         )
         print(format_report(report), file=out)  # type: ignore[arg-type]
         _print_doctor_store_check(out)
@@ -9012,7 +9180,36 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         dest="json",
         help="emit a single JSON object instead of human-readable text",
     )
-    p_audit_cm.set_defaults(func=_cmd_audit_claude_memory)
+    p_audit_cm.set_defaults(func=_cmd_audit_claude_memory, host_default="claude")
+
+    # (#935) — cross-store dedup audit between aelfrice locked beliefs and
+    # the gemini-memory MEMORY.md index.
+    p_audit_gm = sub.add_parser(
+        "audit-gemini-memory",
+        help=(
+            "compare locked aelfrice beliefs against the gemini-memory "
+            "MEMORY.md index and report duplicates, contradictions, and "
+            "store-exclusive entries"
+        ),
+    )
+    p_audit_gm.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute path to the project directory whose gemini-memory "
+            "store to audit (default: current working directory). The "
+            "MEMORY.md path is derived from this using the same encoding "
+            "the upstream tool applies."
+        ),
+    )
+    p_audit_gm.add_argument(
+        "--json",
+        action="store_true",
+        dest="json",
+        help="emit a single JSON object instead of human-readable text",
+    )
+    p_audit_gm.set_defaults(func=_cmd_audit_claude_memory, host_default="gemini")
 
     # #1089: manual re-run of the one-shot claude-memory reconcile sweep.
     p_reconcile_cm = sub.add_parser(
@@ -9044,7 +9241,39 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "when --force is absent"
         ),
     )
-    p_reconcile_cm.set_defaults(func=_cmd_reconcile_claude_memory)
+    p_reconcile_cm.set_defaults(func=_cmd_reconcile_claude_memory, host_default="claude")
+
+    # manual re-run of the one-shot gemini-memory reconcile sweep.
+    p_reconcile_gm = sub.add_parser(
+        "reconcile-gemini-memory",
+        help=(
+            "ingest the project's gemini-memory fact files into the belief "
+            "graph (the full-set sweep; normally runs once per project "
+            "at `aelf setup`). Idempotent — a re-run corroborates, not "
+            "duplicates"
+        ),
+    )
+    p_reconcile_gm.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute path to the project directory whose gemini-memory "
+            "store to reconcile (default: current working directory). The "
+            "memory dir is derived from this using the same encoding the "
+            "upstream tool applies."
+        ),
+    )
+    p_reconcile_gm.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "re-run past the per-project sentinel (which normally makes the "
+            "sweep fire only once). Also honours an explicit opt-out only "
+            "when --force is absent"
+        ),
+    )
+    p_reconcile_gm.set_defaults(func=_cmd_reconcile_claude_memory, host_default="gemini")
 
     # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).
     p_core = sub.add_parser(
@@ -9437,9 +9666,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=("auto", "claude", "codex", "gemini"), default="auto",
         help=(
-            "host to diagnose. 'codex' scans the Codex home's hooks.json "
+            "host to diagnose. 'auto' (default) scans all detected hosts. 'codex' scans the Codex home's hooks.json "
             "shape ($CODEX_HOME, else ~/.codex), "
             "aelfrice hook coverage, the `hooks` feature state, and "
             "[hooks.state] trust coverage (#1052); brain-graph checks "
@@ -9979,14 +10208,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     _add_hook_scope_args(p_setup)
     p_setup.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=("auto", "claude", "codex", "gemini"), default="auto",
         help=(
-            "host to install hooks for. 'claude' (default) targets "
-            "settings.json; 'codex' writes the portable aelfrice hook "
-            "subset into $CODEX_HOME/hooks.json (else ~/.codex) and prints "
-            "trust-approval "
-            "guidance (#1052). Tool-matcher hooks are Claude-only "
-            "pending #1055."
+            "host to install hooks for. 'auto' (default) automatically "
+            "configures hooks for all detected LLM CLI platforms on your machine. "
+            "'claude' targets settings.json; 'codex' writes the portable "
+            "aelfrice hook subset into $CODEX_HOME/hooks.json (else ~/.codex) "
+            "and prints trust-approval guidance (#1052). Tool-matcher "
+            "hooks are Claude-only pending #1055."
         ),
     )
     p_setup.add_argument(
@@ -10205,11 +10434,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_uninstall.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=("auto", "claude", "codex", "gemini"), default="auto",
         help=(
-            "host whose hook wiring the unsetup half removes. 'codex' "
-            "removes the aelfrice entries from $CODEX_HOME/hooks.json "
-            "(else ~/.codex) and "
+            "host whose hook wiring the unsetup half removes. 'auto' (default) "
+            "cleans all detected platforms. 'codex' removes the aelfrice entries "
+            "from $CODEX_HOME/hooks.json (else ~/.codex) and "
             "the $aelf-* agent skills (#1136); data disposition "
             "(--keep-db / --purge / --archive) is host-independent."
         ),
@@ -10253,10 +10482,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_unsetup = sub.add_parser("unsetup", help=argparse.SUPPRESS)
     _add_hook_scope_args(p_unsetup)
     p_unsetup.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=("auto", "claude", "codex", "gemini"), default="auto",
         help=(
-            "host to remove hooks from. 'codex' removes only "
-            "aelfrice-owned entries from $CODEX_HOME/hooks.json (#1052)."
+            "host to remove hooks from. 'auto' (default) removes from all "
+            "detected platforms. 'codex' removes only aelfrice-owned entries "
+            "from $CODEX_HOME/hooks.json (#1052)."
         ),
     )
     p_unsetup.add_argument(

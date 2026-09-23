@@ -1,0 +1,4 @@
+description = "Diagnose hooks + brain-graph health. Exits 1 on any structural failure."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf doctor {{args}}}
+"""

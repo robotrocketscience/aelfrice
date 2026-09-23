@@ -1,0 +1,4 @@
+description = "Hard-delete a belief from the store. Writes an audit row before the cascade. Confirmation prompt required unless --yes is passed; locked beliefs require --force."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf delete {{args}}}
+"""

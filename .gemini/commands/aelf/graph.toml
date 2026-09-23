@@ -1,0 +1,4 @@
+description = "Emit a query-anchored subgraph (DOT or JSON) around a belief, expanded N hops via BFS. Deterministic; pipe DOT to `dot -Tsvg` to render."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf graph {{args}}}
+"""

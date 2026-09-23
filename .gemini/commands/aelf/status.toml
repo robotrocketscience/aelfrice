@@ -1,0 +1,4 @@
+description = "Show summary counts \u2014 beliefs, threads, locks, and feedback events."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf status {{args}}}
+"""

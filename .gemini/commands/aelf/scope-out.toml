@@ -1,0 +1,4 @@
+description = "Suppress beliefs matching a substring from this session's memory retrieval."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf scope-out {{args}}}
+"""

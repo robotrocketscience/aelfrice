@@ -332,6 +332,8 @@ _STDOUT_WRITERS = {
     "write:cadence_checkpoint_block": "<cadence-checkpoint>",
     "write:phantom_block": "<aelfrice-phantom-opportunity>",
     "write:promotion_block": "<aelfrice-phantom-promotion-opportunity>",
+    "write:json+response": "gemini_response",
+    "write:<literal>": "gemini_empty",
 }
 
 # The stream expressions `user_prompt_submit` starts with: its own

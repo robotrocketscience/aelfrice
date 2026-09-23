@@ -1,0 +1,4 @@
+description = "Lock a statement as user-asserted ground truth (L0). Re-locking the same text refreshes the lock."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf lock {{args}}}
+"""

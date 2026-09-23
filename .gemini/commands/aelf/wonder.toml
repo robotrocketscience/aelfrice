@@ -1,0 +1,4 @@
+description = "Research a topic and persist findings as new speculative beliefs the next /aelf:reason can use, or (no topic) run a graph-walk consolidation pass."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf wonder {{args}}}
+"""

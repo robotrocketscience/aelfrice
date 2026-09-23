@@ -4,7 +4,7 @@
 
 - Python 3.12 or 3.13. `uv` manages the Python version for you, so you don't have to install Python separately.
 - [`uv`](https://docs.astral.sh/uv/), the supported install channel (#730). If you don't have `uv`, run `curl -LsSf https://astral.sh/uv/install.sh | sh`.
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any agent that can spawn a hook on `UserPromptSubmit`.
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google/gemini-cli), or any agent that can spawn a hook on `UserPromptSubmit` or `BeforeAgent`.
 - Linux, macOS, or Windows. Linux runs the full test suite on every pull request, a smoke job covers Windows, and no workflow tests macOS automatically. For what the smoke job asserts and what it doesn't, see [the compatibility notes in the limitations list](LIMITATIONS.md#compatibility).
 
 ## 1. Install the package
@@ -43,24 +43,30 @@ aelf --version       # aelf X.Y.Z
 which aelf           # which env owns the binary
 ```
 
-## 2. Wire it into Claude Code
+## 2. Wire it into Claude Code and Gemini CLI
 
 ```bash
 aelf setup
 ```
 
-`aelf setup` is idempotent. Run it again whenever you change Python environments, and again whenever you move projects. The command writes:
+`aelf setup` is idempotent. By default, running it with no arguments will automatically detect if Claude Code and/or Gemini CLI are installed on your machine and wire them both simultaneously.
 
-1. **A `UserPromptSubmit` hook** in `settings.json`. Every prompt then goes through `aelf-hook` for retrieval before the agent receives it.
-2. **A `statusLine` notifier**. The notifier shows a one-line update banner only when a new release is available, and the banner is empty the rest of the time.
-3. **The full default-on auto-capture hook set and the bundled `/aelf:*` slash commands**. See [Hooks installed by `aelf setup`](#hooks-installed-by-aelf-setup) later on this page.
+To install specifically for one or the other, use the `--host` flag:
+- `aelf setup --host claude` (wires only Claude Code)
+- `aelf setup --host gemini` (wires only Gemini CLI)
+
+The command writes:
+
+1. **A platform-native hook** (e.g. `UserPromptSubmit` in `.claude/settings.json`, or `BeforeAgent` in `.gemini/settings.json`). Every prompt goes through `aelf-hook` for retrieval before the agent receives it.
+2. **A `statusLine` notifier** (for Claude). The notifier shows a one-line update banner only when a new release is available, and the banner is empty the rest of the time.
+3. **The full default-on auto-capture hook set and the bundled namespaced `/aelf:*` slash commands** (configured as `.toml` custom commands under `.gemini/commands/aelf/` for Gemini!). See [Hooks installed by `aelf setup`](#hooks-installed-by-aelf-setup) later on this page.
 
 Automatic detection selects the scope and the command path:
 
 | Run from… | `--scope` | `--command` |
 |---|---|---|
-| inside a project venv | `project` (writes `<project>/.claude/settings.json`) | `<project>/.venv/bin/aelf-hook`, or `<project>\.venv\Scripts\aelf-hook.exe` on Windows |
-| a `uv tool`-installed `aelf` outside any venv | `user` (writes `~/.claude/settings.json`) | first `aelf-hook` on `$PATH` |
+| inside a project venv | `project` (writes `<project>/.claude/settings.json` or `<project>/.gemini/settings.json`) | `<project>/.venv/bin/aelf-hook`, or `<project>\.venv\Scripts\aelf-hook.exe` on Windows |
+| a `uv tool`-installed `aelf` outside any venv | `user` (writes `~/.claude/settings.json` or `~/.gemini/settings.json`) | first `aelf-hook` on `$PATH` |
 | a venv unrelated to `cwd` | `user` | first `aelf-hook` on `$PATH`, falls back to the active venv |
 
 To set these values yourself, override the detection with `--scope user|project` and `--command /abs/path/aelf-hook`.

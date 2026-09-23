@@ -188,17 +188,19 @@ def encode_project_path(abs_path: str) -> str:
 
 
 def derive_memory_dir(project_path: str | Path) -> Path:
-    """Return the claude-memory directory for ``project_path``.
+    """Return the memory directory for ``project_path``.
 
     Resolves ``project_path`` to an absolute native path, encodes it with
     :func:`encode_project_path`, and joins it under
-    ``~/.claude/projects/<encoded>/memory/``. Touches no filesystem beyond
-    the resolution itself.
+    ``~/.claude/projects/<encoded>/memory/`` or ``~/.gemini/projects/<encoded>/memory/``.
+    Touches no filesystem beyond the resolution itself.
     """
     abs_path = str(Path(project_path).resolve())
+    host = os.environ.get("AELFRICE_HOST", "claude")
+    parent_dir = f".{host}"
     return (
         Path.home()
-        / ".claude"
+        / parent_dir
         / "projects"
         / encode_project_path(abs_path)
         / "memory"
@@ -216,7 +218,8 @@ def is_memory_index(path: str | Path) -> bool:
 
 def is_memory_fact_path(path: str | Path) -> bool:
     """True when ``path`` is a per-memory fact ``.md`` file in a claude-memory
-    store: ``.../.claude/projects/<encoded>/memory/<name>.md``.
+    or gemini store: ``.../.claude/projects/<encoded>/memory/<name>.md`` or
+    ``.../.gemini/projects/<encoded>/memory/<name>.md``.
 
     Structural match on the path shape rather than the cwd-derived directory
     so the #985 mirror works under git worktrees (where ``cwd`` encodes a
@@ -230,7 +233,7 @@ def is_memory_fact_path(path: str | Path) -> bool:
     if parent.name != "memory":
         return False
     projects = parent.parent.parent
-    return projects.name == "projects" and projects.parent.name == ".claude"
+    return projects.name == "projects" and projects.parent.name in (".claude", ".gemini")
 
 
 # ---------------------------------------------------------------------------

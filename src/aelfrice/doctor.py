@@ -646,6 +646,7 @@ def diagnose(
     hrr_store_path: str | None = None,
     hrr_dim: int = 512,
     store_path: str | None = None,
+    host: str = "claude",
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -675,13 +676,22 @@ def diagnose(
     # USER_SETTINGS_PATH and its OWN second constant named
     # SLASH_COMMANDS_DIR_DEFAULT, so a test patching setup's globals
     # reached neither (#1320).
-    user_path = (
-        user_settings if user_settings is not None
-        else _setup.USER_SETTINGS_PATH
-    )
-    project_path = (
-        project_root if project_root is not None else Path.cwd()
-    ) / PROJECT_SETTINGS_RELPATH
+    if host == "gemini":
+        user_path = (
+            user_settings if user_settings is not None
+            else _setup.USER_SETTINGS_PATH_GEMINI
+        )
+        project_path = (
+            project_root if project_root is not None else Path.cwd()
+        ) / _setup.PROJECT_SETTINGS_RELPATH_GEMINI
+    else:
+        user_path = (
+            user_settings if user_settings is not None
+            else _setup.USER_SETTINGS_PATH
+        )
+        project_path = (
+            project_root if project_root is not None else Path.cwd()
+        ) / PROJECT_SETTINGS_RELPATH
     report = DoctorReport()
     if user_path.exists():
         report.scopes_scanned.append(("user", user_path))

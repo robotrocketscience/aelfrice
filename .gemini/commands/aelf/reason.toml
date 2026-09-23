@@ -1,0 +1,4 @@
+description = "Walk the belief graph for a query, then dispatch role-assigned subagents per impasse and emit SUGGESTED UPDATES."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf reason {{args}}}
+"""

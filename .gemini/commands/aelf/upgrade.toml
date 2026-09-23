@@ -1,0 +1,4 @@
+description = "Upgrade aelfrice to the latest published version using uv."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf upgrade {{args}}}
+"""

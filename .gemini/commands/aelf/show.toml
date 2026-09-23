@@ -1,0 +1,4 @@
+description = "Print one belief by id, or by an unambiguous id prefix \u2014 content in full, origin, lock level, retention class, posterior, timestamps, and scope. It changes no belief, and it reaches retired ones."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf show {{args}}}
+"""

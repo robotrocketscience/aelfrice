@@ -1,0 +1,4 @@
+description = "Cross-store dedup audit between locked aelfrice beliefs and the gemini-memory MEMORY.md index \u2014 reports duplicates, contradictions, and store-exclusive entries."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf audit-gemini-memory {{args}}}
+"""

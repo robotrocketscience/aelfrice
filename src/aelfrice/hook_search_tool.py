@@ -335,7 +335,7 @@ def _extract_bash_query(
     Bash matcher's downstream `retrieve()` call sees the same
     shape of query the v1.2.x matcher emits.
     """
-    if payload.get("tool_name") != "Bash":
+    if payload.get("tool_name") not in ("Bash", "run_shell_command"):
         return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -560,7 +560,7 @@ def _read_payload(
 
 def _is_search_tool_call(payload: dict[str, object]) -> bool:
     tool_name = payload.get("tool_name")
-    return tool_name in ("Grep", "Glob")
+    return tool_name in ("Grep", "Glob", "grep_search", "glob")
 
 
 def _extract_query(payload: dict[str, object]) -> str | None:
@@ -738,10 +738,10 @@ def _format_results(
     )
 
 
-def _emit(stdout: IO[str], context: str) -> None:
+def _emit(stdout: IO[str], context: str, is_gemini: bool = False) -> None:
     payload = {
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
+            "hookEventName": "BeforeTool" if is_gemini else "PreToolUse",
             "additionalContext": context,
         }
     }
@@ -760,6 +760,7 @@ def _do_search(
     calls that aren't `Grep` / `Glob`, or on patterns that have no
     extractable tokens.
     """
+    is_gemini = os.environ.get("AELFRICE_HOST") == "gemini" or payload.get("hook_event_name") == "BeforeTool"
     bash_source: tuple[str, str] | None = None
     session_id: str | None = None
     t0: float | None = None
@@ -771,7 +772,7 @@ def _do_search(
         query = _extract_query(payload)
         if query is None:
             return
-    elif payload.get("tool_name") == "Bash":
+    elif payload.get("tool_name") in ("Bash", "run_shell_command"):
         # v1.5.0 #155 Bash matcher path. Per-turn fire cap applies
         # only to this lane; Grep|Glob fires once per direct tool
         # call and is not capped.

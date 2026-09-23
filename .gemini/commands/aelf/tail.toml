@@ -1,0 +1,4 @@
+description = "Live-tail the per-turn hook injection audit log; pretty-print what the UserPromptSubmit and SessionStart hooks injected on each fire."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf tail {{args}}}
+"""

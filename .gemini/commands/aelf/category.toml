@@ -1,0 +1,4 @@
+description = "Manage keyword-triggered belief categories \u2014 group rules and bind them to triggers."
+prompt = """
+!{AELFRICE_HOST=gemini uv run aelf category {{args}}}
+"""
