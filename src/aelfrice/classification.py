@@ -104,11 +104,18 @@ class OnboardSentence:
 
     `index` is the position used by HostClassification to refer back; it
     is stable across the JSON round-trip in `onboard_sessions.candidates_json`.
+
+    `commit_date` mirrors `scanner.SentenceCandidate.commit_date` (#1609):
+    the ISO-8601 author date of the candidate's most recent touching
+    commit, or `None` when the scanner found none. `accept_classifications`
+    uses it as `belief.created_at` in place of the handshake completion
+    time, matching what `scan_repo` already does for direct ingestion.
     """
 
     index: int
     text: str
     source: str
+    commit_date: str | None = None
 
 
 @dataclass
@@ -228,16 +235,21 @@ def start_onboard_session(
     # would form a circular import. Doing it inside the function defers
     # resolution until the cycle is already broken.
     from aelfrice.scanner import (
+        _build_file_recency_map,  # pyright: ignore[reportPrivateUsage]
         extract_ast,
         extract_filesystem,
         extract_git_log,
     )
 
     timestamp = now if now is not None else _utc_now_iso()
+    # #1609: mirror scan_repo's git-recency wiring so doc/ast candidates
+    # carry commit_date too, not only git:commit:* ones (which the
+    # extractor dates itself, recency map or not).
+    recency = _build_file_recency_map(repo_path)
     candidates = (
-        extract_filesystem(repo_path)
+        extract_filesystem(repo_path, recency=recency)
         + extract_git_log(repo_path)
-        + extract_ast(repo_path)
+        + extract_ast(repo_path, recency=recency)
     )
 
     rejected_ids: set[str] = (
@@ -260,13 +272,19 @@ def start_onboard_session(
                 index=len(pending_sentences),
                 text=c.text,
                 source=c.source,
+                commit_date=c.commit_date,
             )
         )
 
     session_id = _new_session_id()
     candidates_json = json.dumps(
         [
-            {"index": s.index, "text": s.text, "source": s.source}
+            {
+                "index": s.index,
+                "text": s.text,
+                "source": s.source,
+                "commit_date": s.commit_date,
+            }
             for s in pending_sentences
         ]
     )
@@ -404,6 +422,11 @@ def accept_classifications(
         idx = int(sd["index"])
         text = str(sd["text"])
         source = str(sd["source"])
+        # #1609: older sessions persisted before commit_date was carried
+        # in candidates_json have no such key at all — .get() rather than
+        # sd["commit_date"] keeps those sessions loadable.
+        commit_date = sd.get("commit_date")
+        created_at = commit_date if commit_date else timestamp
         c = by_index.get(idx)
         if c is None:
             skipped_unclassified += 1
@@ -425,7 +448,7 @@ def accept_classifications(
             source_path=source,
             raw_text=text,
             session_id=session_id,
-            ts=timestamp,
+            ts=created_at,
             raw_meta={
                 "call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST,
                 "override_belief_type": c.belief_type,
