@@ -5018,13 +5018,14 @@ def _cmd_doctor_codex(
     # not resolve means the directory is off PATH, so nothing on the machine
     # can run `aelf` by name — and doctor is the only place that says so.
     #
-    # Careful about what this does *not* claim. As of this commit the
-    # generated `$aelf-*` skills still route every command through
-    # `uv run aelf`, and `aelf setup --host codex` pins each hook handler to
-    # an absolute `aelf-*` path whenever it can resolve one, so neither
-    # surface necessarily breaks the instant `aelf` leaves PATH. The fault
-    # reports the PATH state itself, which is what the operator ruling of
-    # 2026-08-12 specified and what the rest of #1413 depends on.
+    # Careful about what this does *not* claim, because the two surfaces
+    # now differ. Since the rest of #1413 landed, the generated `$aelf-*`
+    # skills DO invoke `aelf` by name, so they break the instant the name
+    # stops resolving. Hook handlers do not: `aelf setup --host codex`
+    # pins each one to an absolute `aelf-*` path whenever it can resolve
+    # one. So the fault may name the skills and must not claim the
+    # handlers resolve by name. It reports the PATH state itself, which
+    # is what the operator ruling of 2026-08-12 specified.
     #
     # Same wiring gate as every fault above, and for the same reason: a
     # source checkout or a CI run with no `uv tool` install has no Codex

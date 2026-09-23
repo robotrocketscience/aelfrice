@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -138,8 +139,24 @@ class TestWiringInstalled:
         )
         hooks_doc = (codex_dir / "hooks.json").read_text(encoding="utf-8")
         assert '"aelf"' not in hooks_doc, hooks_doc
+
+        # The assertion has to survive rewording, so it reads every
+        # sentence rather than one literal phrase. An intermediate
+        # revision of this guard checked `"hook handler" not in out`,
+        # which a claim phrased "your installed Codex hooks invoke `aelf`
+        # by name too" walks straight past — strictly weaker than the
+        # assertion it replaced, on the one surface still at risk.
         _rc, out = _doctor(*installed)
-        assert "hook handler" not in out or "by name" not in out, out
+        hook_words = ("hook", "handler")
+        for sentence in re.split(r"(?<=[.;])\s+|\n", out):
+            if "by name" not in sentence:
+                continue
+            assert not any(w in sentence.lower() for w in hook_words), (
+                "the diagnosis claims the hook handlers resolve `aelf` by "
+                "name; setup pins them to an absolute path whenever it can "
+                f"resolve one, so that is false. Offending sentence: "
+                f"{sentence!r}"
+            )
 
     def test_a_posix_shim_on_path_stays_green(
         self, installed: tuple[Path, Path], empty_path: Path,
@@ -179,7 +196,7 @@ class TestWiringInstalled:
 class TestWiringAbsent:
     """The population the ruling excludes: no Codex wiring installed.
 
-    This is the arm that keeps `uv run aelf doctor --host codex` green in
+    This is the arm that keeps `aelf doctor --host codex` green in
     this repo's own CI, where no `uv tool` install exists.
     """
 

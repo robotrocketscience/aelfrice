@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -65,16 +66,33 @@ def test_transform_body_is_verbatim_apart_from_the_cli_prefix() -> None:
     `uv run` form that is correct for a source checkout on other hosts.
     Undoing the rewrite is the only difference, so this still pins that
     nothing else in the body is edited, reordered, or dropped.
+
+    Asserted as a SUFFIX over every bundled command, not as a substring
+    over one of them. An earlier revision did both of those things
+    wrongly: `rewritten in text` is satisfied while arbitrary extra
+    instructions are appended to every skill, and checking only
+    `status.md` leaves the other thirty bodies unguarded.
     """
-    src = _bundled_slash_files()["status.md"]
-    _, text = codex_skill_from_slash("status.md", src)
-    body = src.split("---", 2)[2].strip()
-    assert "uv run aelf " in body, (
-        "fixture no longer exercises the rewrite; pick a slash command "
-        "whose body still invokes `uv run aelf`"
+    files = _bundled_slash_files()
+    assert files, "bundle is empty; every assertion below would be vacuous"
+    exercised = 0
+    for filename, src in sorted(files.items()):
+        _, text = codex_skill_from_slash(filename, src)
+        body = src.split("---", 2)[2].strip()
+        rewritten = body.replace("uv run aelf ", "aelf ")
+        if body != rewritten:
+            exercised += 1
+            assert body not in text, filename
+        # The body is the last thing in the file, so nothing may follow
+        # it but the trailing newline the renderer adds.
+        assert text.endswith(rewritten + "\n"), (
+            f"{filename}: the generated body is not the source body with "
+            "the CLI prefix rewritten, or something was appended after it"
+        )
+    assert exercised >= 25, (
+        "the rewrite fires on too few bundled commands for this to be a "
+        f"meaningful guard: {exercised}"
     )
-    assert body not in text
-    assert body.replace("uv run aelf ", "aelf ") in text
 
 
 def test_no_generated_skill_invokes_uv_run() -> None:
@@ -181,71 +199,145 @@ def test_a_generated_command_runs_against_a_read_only_uv_cache(
     assert "SHIM-OK" in direct.stdout
 
 
-def test_the_generated_command_cannot_discover_a_project_environment() -> None:
-    """AC3 (#1413): no shadowing by an unactivated checkout.
+# --- #1413: how the generated skill is allowed to name the CLI ----------
+#
+# One property, three ways to violate it: the generated skill must invoke
+# the CLI as the bare token `aelf`, with no package-runner prefix, no
+# directory part, and no file extension. Each detector below scans the
+# WHOLE skill text rather than the spans between inline backticks — an
+# earlier revision scanned only inline spans, and a command inside a
+# fenced block (wonder.md has one) escaped every check.
 
-    `uv run` walks up for a `pyproject.toml` and selects that project's
-    environment, so a checkout holding a different aelfrice version wins
-    over the `uv tool` install that generated the skill. A bare command
-    resolves through PATH only, which satisfies this by construction —
-    so what there is to test is that no invocation shape capable of
-    project discovery survives into the bundle.
+#: Package runners that would reintroduce the #1413 failure mode. This is
+#: a vocabulary rather than a shape, because "a word before aelf" also
+#: matches ordinary prose ("then run aelf status"), which is fine. Adding
+#: a runner here is cheap; the cost of omitting one is a skill that fails
+#: in a sandbox, so prefer over-listing.
+_PACKAGE_RUNNERS: tuple[str, ...] = (
+    "uv", "uvx", "pipx", "poetry", "pipenv", "hatch", "pdm", "rye",
+    "conda", "nix", "npx", "bunx", "tox",
+)
+_RUNNER_RE = re.compile(
+    r"\b(?:" + "|".join(_PACKAGE_RUNNERS) + r")\b[^`\n]{0,30}?\baelf\b(?!rice)"
+)
+#: `python -m aelfrice`, which resolves through the active interpreter's
+#: environment rather than through PATH.
+_MODULE_RE = re.compile(r"\bpython[0-9.]*\s+-m\s+aelfrice\b")
+#: A directory part on the command. The trailing class keeps out
+#: `/aelf:search` (a slash-command name), `/tmp/aelf-wonder-x.jsonl` (an
+#: argument path sharing the first four letters) and `~/.../aelf/` (a
+#: directory, which ends in a separator).
+_PATH_RE = re.compile(r"(?:\.|~|[\w.-])/(?:[\w.~-]+/)*aelf(?![\w:./-])")
+#: A Windows extension. Written with ONE escaped backslash on purpose:
+#: an earlier revision used four, which requires two literal backslashes
+#: in the subject and so matched no real Windows path at all.
+_EXT_RE = re.compile(r"\baelf\.(?:exe|cmd|bat)\b")
+
+_CLI_NAMING_DETECTORS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("package runner", _RUNNER_RE),
+    ("module invocation", _MODULE_RE),
+    ("directory part", _PATH_RE),
+    ("file extension", _EXT_RE),
+)
+
+
+def _naming_offenders() -> dict[str, list[str]]:
+    """Every generated skill line that names the CLI a forbidden way."""
+    skills = _bundled_codex_skills()
+    assert skills, "bundle is empty; every assertion over it would be vacuous"
+    bad: dict[str, list[str]] = {}
+    for name, text in sorted(skills.items()):
+        hits = [
+            f"{label}: {m.group(0)!r}"
+            for label, rx in _CLI_NAMING_DETECTORS
+            for m in rx.finditer(text)
+        ]
+        if hits:
+            bad[name] = hits
+    return bad
+
+
+def test_no_generated_skill_wraps_the_cli_in_a_package_runner() -> None:
+    """AC1 + AC3 (#1413): no runner prefix survives into a skill.
+
+    `uv run` was the shipped offender — 96 occurrences across 31 of 31
+    skills — but it is not the only shape with its failure mode. Every
+    runner here initializes a cache and resolves an environment, so
+    swapping one for another would reintroduce the defect while passing
+    a check that named only `uv run`. Verified against hostile inputs:
+    `uv tool run aelf`, `uvx aelf`, `pipx run aelf`, `poetry run aelf`,
+    `hatch run aelf` and `python3 -m aelfrice` are all caught.
     """
-    import re
-
-    discovering = re.compile(r"\b(uv run|uvx|python -m aelfrice|poetry run|pipenv run)\b")
     offenders = {
-        name: sorted(set(discovering.findall(text)))
-        for name, text in _bundled_codex_skills().items()
-        if discovering.search(text)
+        name: [h for h in hits if h.startswith(("package runner", "module"))]
+        for name, hits in _naming_offenders().items()
     }
-    assert offenders == {}, f"project-discovering invocations survive: {offenders}"
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert offenders == {}, f"the CLI is wrapped in a runner: {offenders}"
 
 
-def test_generated_commands_resolve_on_both_posix_and_windows_shims() -> None:
-    """AC4 (#1413): one spelling has to serve both shim families.
+def test_no_generated_skill_binds_the_cli_to_one_platform_or_machine() -> None:
+    """AC4 + the 2026-08-06 fork (#1413): bare command, both shim families.
 
     A `uv tool` install puts `aelf` on PATH as an executable on POSIX and
-    as `aelf.exe`/`aelf.cmd` on Windows. A bare `aelf` resolves to either
-    — the extension is supplied by PATHEXT — while any spelling carrying
-    an extension, a directory part, or a `./` prefix binds the skill to
-    one platform. Assert the bundle only ever uses the bare form.
+    as `aelf.exe`/`aelf.cmd` on Windows, so the bare token resolves on
+    both — the extension comes from PATHEXT. An extension, a directory
+    part, or a `./` prefix binds the skill to one platform, and an
+    absolute path binds it to one machine. Verified against hostile
+    inputs: `C:\\Users\\ci\\aelf.exe`, `C:\\Python\\Scripts\\aelf.cmd`,
+    `/opt/homebrew/aelf`, `/Users/me/.local/aelf`, `./aelf` and
+    `~/bin/aelf` are all caught.
     """
-    import re
-
-    bad: dict[str, list[str]] = {}
-    for name, text in _bundled_codex_skills().items():
-        hits = re.findall(r"`([^`\n]*\baelf(?:\.exe|\.cmd|\.bat)?\b[^`\n]*)`", text)
-        offending = [
-            h for h in hits
-            if re.search(r"\baelf\.(exe|cmd|bat)\b", h)
-            # A directory part on the COMMAND: `./aelf`, `~/bin/aelf`,
-            # `/usr/local/bin/aelf`. The trailing class keeps out
-            # `/aelf:search` (a slash-command name) and
-            # `/tmp/aelf-wonder-dispatch.jsonl` (an argument path that
-            # merely starts with the same four letters), and a directory
-            # such as `~/.../commands/aelf/`, which ends in a separator.
-            or re.search(r"(?:\.|~|[\w.-])/(?:[\w.~-]+/)*aelf(?![\w:./-])", h)
-        ]
-        if offending:
-            bad[name] = offending
-    assert bad == {}, f"platform-bound spellings in the bundle: {bad}"
+    offenders = {
+        name: [h for h in hits if h.startswith(("directory", "file ext"))]
+        for name, hits in _naming_offenders().items()
+    }
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert offenders == {}, f"platform- or machine-bound spelling: {offenders}"
 
 
-def test_generated_skills_bake_in_no_absolute_path() -> None:
-    """AC (#1413, 2026-08-06 fork): no machine-specific path.
+def test_the_naming_detectors_catch_the_shapes_they_claim_to() -> None:
+    """The detectors above are regexes, so pin them against real inputs.
 
-    The skill must resolve `aelf` through the invoking shell's PATH, so
-    a bundle generated on one machine stays valid on another. Guard the
-    two shapes an absolute launcher path would take.
+    Two of them shipped broken in an earlier revision and passed anyway,
+    because the bundle contains no instance of what they scan for: a
+    clean bundle makes a broken detector and a working one look
+    identical. These cases are what tell them apart.
     """
-    import re
-
-    for name, text in _bundled_codex_skills().items():
-        assert not re.search(r"/\S*/bin/aelf\b", text), f"{name} bakes a POSIX path"
-        assert not re.search(r"[A-Za-z]:\\\\\S*aelf\.(exe|cmd)", text), (
-            f"{name} bakes a Windows path"
+    hostile = (
+        "uv run aelf status",
+        "uv tool run aelf status",
+        "uvx aelf status",
+        "pipx run aelf status",
+        "poetry run aelf status",
+        "hatch run aelf wonder",
+        "python -m aelfrice status",
+        "python3 -m aelfrice status",
+        "  C:\\Users\\ci\\aelf.exe wonder",
+        "C:\\Python\\Scripts\\aelf.cmd status",
+        "/opt/homebrew/aelf status",
+        "/Users/me/.local/aelf status",
+        "./aelf status",
+        "~/bin/aelf status",
+    )
+    for case in hostile:
+        assert any(rx.search(case) for _, rx in _CLI_NAMING_DETECTORS), (
+            f"no detector catches {case!r}"
         )
+
+    benign = (
+        "aelf status",
+        "Run `aelf search foo`",
+        "uv tool install aelfrice",
+        "uv tool upgrade aelfrice",
+        "/aelf:search",
+        "~/.claude/commands/aelf/",
+        "/tmp/aelf-wonder-dispatch.jsonl",
+        "$aelf-status",
+    )
+    for case in benign:
+        hit = [label for label, rx in _CLI_NAMING_DETECTORS if rx.search(case)]
+        assert not hit, f"{hit} false-positives on {case!r}"
 
 
 def test_argument_hint_folds_into_adapter() -> None:
