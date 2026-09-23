@@ -39,7 +39,7 @@ contamination reported in the issue.
 
 | Item | Detail |
 |---|---|
-| Settings key | `UserPromptSubmit` → `command: /Users/thelorax/.local/bin/aelf-hook` |
+| Settings key | `UserPromptSubmit` → `command: ~/.local/bin/aelf-hook` |
 | Config file | `~/.claude/settings.json` |
 | Python entry | `aelfrice.hook:main` → `user_prompt_submit()` |
 | Source | `site-packages/aelfrice/hook.py` line 75 |
@@ -145,7 +145,7 @@ whether the compaction has fired for this session.
 
 | Item | Detail |
 |---|---|
-| Settings key | `PreToolUse` → matcher `Grep\|Glob` → `command: /Users/thelorax/.claude/hooks/aelfrice-search-tool-inject.sh` |
+| Settings key | `PreToolUse` → matcher `Grep\|Glob` → `command: ~/.claude/hooks/aelfrice-search-tool-inject.sh` |
 | Config file | `~/.claude/settings.json` |
 | Shell script | `~/.claude/hooks/aelfrice-search-tool-inject.sh` |
 | Python entry | `aelfrice.hook_search_tool:main` |
