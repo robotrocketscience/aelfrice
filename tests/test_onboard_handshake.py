@@ -578,3 +578,51 @@ def test_accept_loads_legacy_candidates_json_without_commit_date_key(
     belief = store.get_belief(bid)
     assert belief is not None
     assert belief.created_at == "2026-01-02T00:00:00Z"
+
+
+@pytest.mark.timeout(30)
+def test_accept_uses_ast_commit_date_as_created_at(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """An `ast:` candidate lands on its file's commit date too.
+
+    The doc-candidate test above covers `extract_filesystem`'s `recency=`
+    kwarg and nothing else. `extract_ast` takes the same kwarg on its own
+    call, and neither git-backed fixture here contains a `.py` file, so
+    dropping `recency=recency` from the `extract_ast` call left the whole
+    onboard suite green while silently un-dating every docstring-derived
+    belief — 58.7% of the candidates this repo produces. This test is the
+    arm that fails under that mutation.
+    """
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git_init(repo)
+    (repo / "mod.py").write_text(
+        '"""Retry the upload twice before surfacing a transport error."""\n',
+        encoding="utf-8",
+    )
+    _git_commit(repo, "mod.py", message="add mod",
+                author_date="2022-05-09T00:00:00+00:00")
+
+    result = start_onboard_session(store, repo, now="2099-01-01T00:00:00Z")
+    target = [
+        s
+        for s in result.sentences
+        if s.source.startswith("ast:") and "Retry the upload" in s.text
+    ]
+    assert target, (
+        "expected the module docstring among the candidates as an `ast:` "
+        f"source; got {sorted({s.source.split(':')[0] for s in result.sentences})}"
+    )
+    s = target[0]
+    cls = [HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)]
+    accept_classifications(store, result.session_id, cls, now="2099-01-01T00:00:00Z")
+
+    bid = _derive_id_for_sentence(s.text, s.source)
+    belief = store.get_belief(bid)
+    assert belief is not None
+    # The commit date, not the 2099 handshake-completion time.
+    assert belief.created_at.startswith("2022-05-09"), (
+        "an ast: candidate must carry its file's git commit date; "
+        f"got {belief.created_at!r}"
+    )
