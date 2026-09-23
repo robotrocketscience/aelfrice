@@ -141,10 +141,10 @@ bfs_enabled = false
 # AELFRICE_POSTERIOR_WEIGHT env var overrides; explicit kwargs on
 # retrieve() / retrieve_v2() override TOML in turn. Locked beliefs
 # (L0) bypass scoring entirely.
-# Note: on a real store the posterior is the prior the ingest
-# classifier assigned, so raising this makes ranking more TYPE-aware,
-# not more confidence-aware. It also responds as a staircase, not a
-# dial. Read the posterior_weight section before tuning.
+# Note: on a real store the posterior is usually still the prior the
+# ingest classifier assigned, so raising this makes ranking more
+# type-aware rather than more confidence-aware. It also responds as a
+# staircase, not a dial. Read the posterior_weight section first.
 posterior_weight = 0.5
 
 # #1045. Wide-retrieval knobs — the multi-hop RECALL lever. `l1_limit`
@@ -584,20 +584,29 @@ Behavior at the boundaries:
 
 #### What the posterior actually holds
 
-**On a real store this term ranks by belief type and source, not by observed confidence.** Read that before you tune the weight, because the name suggests otherwise.
+**On a real store, this term ranks beliefs by type and source rather than by observed confidence.** Read this before you tune the weight, because the key's name suggests otherwise.
 
-A belief's `(α, β)` is set at ingest from its type and source. Afterwards it moves only when you act on the belief: `aelf feedback`, `aelf confirm`, the propagation of one of those to related beliefs, and a manual `aelf clamp-ghosts` sweep. Sentiment read from prose can also move it, but that lane is off unless you set `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE`. Nothing moves a posterior on its own.
+aelfrice sets a belief's `(α, β)` at ingest from its type and its source. About 95% of beliefs on a measured 26-store population still sit on exactly that value, so for most of your store the blend term is a fixed function of `(type, source)`. To reproduce the figure on your own stores, run `benchmarks/posterior_prior_grid_sweep.py`; the [#1592](https://github.com/robotrocketscience/aelfrice/issues/1592) analysis records the method.
 
-Retrieval exposure used to add `+0.1` per surfacing. [#1086](https://github.com/robotrocketscience/aelfrice/issues/1086) made that audit-only in July 2026, after measuring that it promoted junk above real knowledge — so a belief that is retrieved constantly gains nothing, by design. A locked belief is refused twice over: the lock floor rejects passive feedback outright, so correcting one takes `aelf unlock` first.
+These paths move a posterior:
 
-Measured across 26 stores and 172,089 beliefs with `benchmarks/posterior_prior_grid_sweep.py` ([#1592](https://github.com/robotrocketscience/aelfrice/issues/1592)): **4.08% of beliefs carry a posterior that has moved from its insertion value, and 96.3% of those moved before the July 2026 change.** Fewer than 300 beliefs across every store on that host were moved by the feedback path as it ships today.
+| path | direction | default |
+|---|---|---|
+| `aelf confirm <id>` | up | on. Exempt from the lock floor, so it moves a locked belief too |
+| `aelf feedback <id> used\|harmful` | up or down | on. Takes the lock floor, so `aelf unlock` first to correct a locked belief |
+| propagation of either to related beliefs | up or down | on; set `AELFRICE_VALENCE_PROPAGATION=0` to disable |
+| sentiment read from your prose | up or down | **off**. Enable with `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE` or `[feedback] sentiment_from_prose` |
+| `aelf clamp-ghosts --apply` | down | manual sweep; lowers α on beliefs that have no feedback and no corroborations |
+| opening a store with duplicate content | either | automatic. Deduplication merges beliefs that share a content hash and **sums** their `(α, β)`, so a merged belief's mean shifts toward whichever duplicate carried more mass |
+
+Retrieval exposure used to add `+0.1` per surfacing. The [#1086 exposure change](https://github.com/robotrocketscience/aelfrice/issues/1086) made it audit-only in July 2026, after measuring that it promoted junk above real knowledge, so a belief that you retrieve constantly gains nothing by design.
 
 Two consequences for tuning:
 
-- Raising the weight makes retrieval **more type-aware**, not more confidence-aware. It promotes whatever your classifier typed as a requirement or a correction over whatever it typed as a factual, and promotes user-sourced content over agent-inferred content, because those are the distinctions the priors encode.
-- The clustering onto a few posterior values described below is this, not a coincidence of your corpus. It is why the freeze point sits low.
+- Raising the weight makes retrieval more *type-aware*, not more confidence-aware. Within a source tier it promotes requirements and corrections over preferences and facts, and within a type it promotes user-stated content over agent-inferred content. It does not order the two axes together: an agent-inferred requirement (0.783) outranks a user-stated fact (0.750).
+- The clustering onto a few posterior values described below follows from this. It is not a quirk of your corpus, and it is why the freeze point sits low.
 
-To give the term real evidence, feed it: `aelf confirm <id>` and `aelf feedback <id> used|harmful` are the signals that move a posterior. Beliefs you never act on keep their birth prior indefinitely.
+To give the term real evidence, act on beliefs: `aelf confirm <id>` and `aelf feedback <id> used|harmful` are the signals that move a posterior. `aelf feedback` and `aelf clamp-ghosts` do not appear in `aelf --help`; the [command reference](COMMANDS.md) documents both.
 
 **This key responds as a staircase, not as a dial.** Do not tune it as a continuous knob ([#1584](https://github.com/robotrocketscience/aelfrice/issues/1584)). Two candidates' scores differ by an expression affine in `posterior_weight`, so a pair with **different** posteriors swaps at most once, at one crossing weight. Between two adjacent crossings nothing reorders, and every value in that interval retrieves an identical ranking. Moving the weight a little therefore either changes nothing or moves a rank outright, depending on where the nearest crossing falls rather than on the size of the step.
 
