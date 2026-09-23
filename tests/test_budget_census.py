@@ -301,19 +301,21 @@ def test_containment_is_a_property_of_this_corpus_and_not_a_theorem(
 
     1. The spine lane seeds from `l1_packed[:DEFAULT_SPINE_SEED_COUNT]`.
     2. `l1_packed` at a low budget is **not a prefix** of `l1_packed` at
-       a high one. At the probe budget the dear beliefs are packed and
-       hold every seed seat; at a smaller budget the later ones do not
-       fit, later stages still add the cheap tail, and a cheap belief
-       lands at an earlier position than it held at the probe — inside
-       the seed window rather than outside it.
+       a high one, because `pack_with_clusters` stage 2 skips an
+       over-budget belief with `continue` and keeps filling (pinned by
+       `test_raising_a_budget_can_evict_a_belief_a_lower_budget_admitted`).
+       At the probe budget the dear beliefs are packed and hold every
+       seed seat; at a smaller budget the later ones do not fit, the
+       cheap tail is packed in their place, and a cheap belief lands
+       inside the seed window rather than outside it.
 
-       Note this is broader than the stage-2 `continue` that
-       `test_raising_a_budget_can_evict_a_belief_a_lower_budget_admitted`
-       pins. Mutating that `continue` to a `break` does **not** stop the
-       escape, because the cheap tail is re-added downstream either way.
-       So the escape does not rest on the non-monotone skip alone; the
-       position shift is enough, and the seed window is what converts a
-       position shift into a candidacy change.
+       Replacing that skip with a genuine monotone truncation
+       (`continue` -> `return out`) makes this test red, so the escape
+       rests on the skip and not merely on the seed window. Mutating it
+       to `break` instead proves nothing here and must not be used as
+       the control: every cluster in this fixture is a singleton, so
+       `break` on the inner `for mid in cluster.member_ids` loop is
+       definitionally identical to `continue`.
     3. That promoted belief's spine neighbour shares no term with the
        query, so it is neither an L1 nor an L2.5 hit and is reachable
        only through the spine — from a seed the probe never had.
@@ -330,9 +332,16 @@ def test_containment_is_a_property_of_this_corpus_and_not_a_theorem(
     treats a violation as impossible would read a real escape as a bug
     in the guard.
 
-    Load-bearing, checked by mutation: setting `DEFAULT_SPINE_SEED_COUNT`
-    to 0 makes this red. Environment controls cannot reach it, because
-    the census clears every `AELFRICE_*` variable from its own process.
+    Load-bearing, checked by mutation on the code rather than on the
+    fixture: narrowing `l1_packed[:DEFAULT_SPINE_SEED_COUNT]` to the
+    whole `l1_packed` in `retrieval.py` makes this red, as does the
+    monotone-truncation mutation above. Setting the constant itself to 0
+    also reds it, but that control is degenerate — the fixture sizes its
+    dear beliefs from the same constant, so it mutates both sides.
+
+    Environment controls cannot reach this test, because the census
+    clears every `AELFRICE_*` variable from its own process. That is why
+    the controls above are source mutations.
     """
     from aelfrice.models import EDGE_TEMPORAL_NEXT, EDGE_VALENCE, Edge
     from aelfrice.temporal_spine import DEFAULT_SPINE_SEED_COUNT
@@ -364,23 +373,42 @@ def test_containment_is_a_property_of_this_corpus_and_not_a_theorem(
     )
 
     lane = census.lanes()[0]
-    probe = {
-        b.id for b in census._retrieve(
-            store, lane, "alpha",
-            token_budget=census.POOL_PROBE_BUDGET,
-            l25_token_subbudget=census.POOL_PROBE_BUDGET,
-        )
-    }
-    escaped: set[str] = set()
-    for multiplier in census.BUDGET_MULTIPLIERS:
-        arm = {
+    # The escape needs the dear beliefs to fill the seed window at the
+    # probe budget and to be priced out at the smallest arm. Assert that
+    # spread rather than leave it to the content: a change to
+    # `_ups_belief_line_cost` or to `l1_limit` would otherwise red the
+    # escape assertion below with a message that blames the mechanism.
+    smallest_arm = min(
+        census.arm_budget_for(lane.budget, m)
+        for m in census.BUDGET_MULTIPLIERS
+    )
+    dear_cost = census._cost(lane, dear[0])
+    assert dear_cost * len(dear) > smallest_arm, (
+        f"the fixture no longer prices the dear beliefs out: {len(dear)} x "
+        f"{dear_cost} fits inside the smallest arm ({smallest_arm}), so the "
+        "seed window cannot shift and this test proves nothing"
+    )
+
+    try:
+        probe = {
             b.id for b in census._retrieve(
                 store, lane, "alpha",
-                token_budget=int(lane.budget * multiplier),
-                l25_token_subbudget=retrieval.DEFAULT_L25_TOKEN_SUBBUDGET,
+                token_budget=census.POOL_PROBE_BUDGET,
+                l25_token_subbudget=census.POOL_PROBE_BUDGET,
             )
         }
-        escaped |= arm - probe
+        escaped: set[str] = set()
+        for multiplier in census.BUDGET_MULTIPLIERS:
+            arm = {
+                b.id for b in census._retrieve(
+                    store, lane, "alpha",
+                    token_budget=census.arm_budget_for(lane.budget, multiplier),
+                    l25_token_subbudget=retrieval.DEFAULT_L25_TOKEN_SUBBUDGET,
+                )
+            }
+            escaped |= arm - probe
+    finally:
+        store.close()
 
     assert escaped, (
         "no arm escaped the unbudgeted probe on an edge-bearing store. "
@@ -480,8 +508,11 @@ def test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget(
     # only call the fake touches, on every lane.
     above_every_arm = 100_000
     assert above_every_arm < census.POOL_PROBE_BUDGET
+    # Via the census's own helper, not a reimplementation of it: a test
+    # that rounds differently from the grid it guards would pass while
+    # the grid it describes is not the grid that runs.
     arm_budgets = [
-        int(lane.budget * m)
+        census.arm_budget_for(lane.budget, m)
         for lane in census.lanes()
         for m in census.BUDGET_MULTIPLIERS
     ]
@@ -510,16 +541,24 @@ def test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget(
     )
     assert any("unbudgeted probe" in v for v in rep["violations"])
     # Per-lane, not just globally: a lane the fake cannot reach reads as
-    # covered when the assertion is on the pooled list.
+    # covered when the assertion is on the pooled list. And per-lane on
+    # the CONTAINMENT violation specifically — a lane that reported only
+    # a block-identity violation would otherwise read as covered for the
+    # guard this arm exists to exercise, which is the same defect one
+    # level down.
     lanes_hit = {
         lane.name
         for lane in census.lanes()
-        if any(f"{lane.name}/" in v for v in rep["violations"])
+        if any(
+            v.startswith(f"{lane.name}/") and "unbudgeted probe" in v
+            for v in rep["violations"]
+        )
     }
     assert lanes_hit == {lane.name for lane in census.lanes()}, (
         "the containment guard is unmutation-tested on "
-        f"{sorted({l.name for l in census.lanes()} - lanes_hit)}: the fake "
-        "shrinks the probe there but no violation is reported"
+        f"{sorted({lane.name for lane in census.lanes()} - lanes_hit)}: "
+        "the fake shrinks the probe there but no containment violation "
+        "is reported"
     )
     assert rep["n"] == baseline_n, (
         "N moved under the mutation, so queries whose pool the mutation "

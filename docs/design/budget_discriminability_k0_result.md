@@ -120,9 +120,23 @@ reports no EC for it rather than a zero that would read as a measurement.
 EC = 0 is measured on a narrower retrieval configuration than production. Three
 narrowings, all printed by the census under "what this run does not exercise":
 
-* **No edges.** The census seeds beliefs only, so the temporal spine, BFS
-  expansion, and cluster structure are inert. Those are the sources where a
-  budget could change candidacy rather than count.
+* **No edges.** The census seeds beliefs only, so the temporal spine never
+  runs. BFS expansion doesn't run either, for a separate reason worth keeping
+  distinct: it's gated on the default-off `bfs_on` flag, so it would be absent
+  even on an edge-bearing store. Those are the sources where a budget could
+  change candidacy rather than count.
+
+  **Cluster structure was wrongly listed here ([#1546](https://github.com/robotrocketscience/aelfrice/issues/1546)).**
+  `pack_with_clusters` runs on every query of every cell with singleton
+  clusters — 2,208 calls in a full run, all of them packing — so the
+  non-monotone stage-2 fill is live on every measured cell, this run's
+  included. What the absent edges hide is the consequence rather than the
+  mechanism: the temporal spine seeds from
+  `l1_packed[:DEFAULT_SPINE_SEED_COUNT]`, and `l1_packed` at a low budget is
+  not a prefix of itself at a high one, so on an edge-bearing store a lower
+  budget can promote a different belief into the seed window and reach a
+  neighbour the unbudgeted probe never saw. Containment is a property of this
+  corpus, not a theorem — see **Bound status** below.
 * **The structural lane never fires.** `retrieval._route_structural_query` is
   default-on, but it answers only a `<KIND>:<target_id>` marker query and
   neither corpus holds one. It also prices with `retrieval._belief_tokens` and
@@ -153,6 +167,27 @@ packer and asserts the list is empty again.
 
 On shipped code the census reports 0 violations.
 <!-- derived: scripts/budget_discriminability_census.py#violations = 0 -->
+
+**That zero is a fact about these corpora, not a theorem about the instrument
+([#1546](https://github.com/robotrocketscience/aelfrice/issues/1546)).** Read
+it as "no arm can escape the probe" and the containment guard looks redundant;
+it isn't. Add one `TEMPORAL_NEXT` edge and an arm at a *lower* budget returns a
+belief the unbudgeted probe does not, because the temporal spine seeds from
+`l1_packed[:DEFAULT_SPINE_SEED_COUNT]` and `l1_packed` at a low budget is not a
+prefix of itself at a high one. `test_containment_is_a_property_of_this_corpus_and_not_a_theorem`
+exhibits it on shipped code, and reds under a monotone-truncation mutation of
+`pack_with_clusters`, so the escape rests on that stage-2 skip. The corpora
+here carry no edges, which is why the zero is honest — and why any later corpus
+whose stores carry edges runs this guard for real.
+
+The containment arm also had **no power on three of the six lanes** until
+#1546. Its fake fired at `token_budget >= 700`, and the whole arm grid of
+`ups` (750–3000), `retrieval_default` (1200–4800) and `rebuilder` (2000–8000)
+sits above that, so probe and arms were shrunk identically and no violation
+could arise there. The assertion was on the pooled violation list, so those
+three were carried by the three the fake could reach. The threshold now sits
+above every arm and below the probe, and the assertion is per lane and per
+violation type.
 
 Two of the three arms are new, because the first version of this guard could
 not see them, and both misses mattered:

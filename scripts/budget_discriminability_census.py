@@ -281,10 +281,14 @@ NOT_EXERCISED: Final[dict[str, str]] = {
     ),
     "graph edges": (
         "_open_store inserts beliefs and no edges, so has_edge_type is False "
-        "for every type: the temporal spine and BFS expansion never run. "
-        "Those are the sources where a budget could change candidacy rather "
-        "than count, so EC here is measured on a retrieval configuration "
-        "narrower than production. The cluster packer is NOT in that set and "
+        "for every type and the temporal spine never runs. BFS expansion "
+        "does not run either, but for a different reason that is worth "
+        "keeping separate: it is gated on the bfs_on flag, which is "
+        "default-off, so it would be absent here even on an edge-bearing "
+        "store. Those are the sources where a budget could change candidacy "
+        "rather than count, so EC here is measured on a retrieval "
+        "configuration narrower than production. The cluster packer is NOT "
+        "in that set and "
         "was wrongly listed here: pack_with_clusters runs on every query of "
         "every cell with singleton clusters -- 2208 calls in a full run, all "
         "of them packing -- so the non-monotone stage-2 `continue` this "
@@ -293,8 +297,10 @@ NOT_EXERCISED: Final[dict[str, str]] = {
         "from l1_packed[:DEFAULT_SPINE_SEED_COUNT], so on an edge-bearing "
         "store a lower budget can promote a different belief into the seed "
         "window and reach a neighbour the unbudgeted probe never saw. "
-        "Containment is therefore a property of THIS corpus, not a theorem -- "
-        "see the bound-status note below"
+        "Containment is therefore a property of THIS corpus, not a theorem; "
+        "tests/test_budget_census.py::"
+        "test_containment_is_a_property_of_this_corpus_and_not_a_theorem "
+        "exhibits an arm that escapes on shipped code"
     ),
 }
 
@@ -416,6 +422,18 @@ def _open_store(q: LabelledQuery) -> MemoryStore:
     for b in q.beliefs:
         store.insert_belief(b)
     return store
+
+
+def arm_budget_for(lane_budget: int, multiplier: float) -> int:
+    """One grid arm's token budget, rounded the way the grid rounds it.
+
+    Public so a test can assert against the grid the census actually
+    walks. A test that reimplements `int(lane.budget * m)` agrees with
+    this for the shipped multipliers and diverges on the next one that
+    lands on a half, which is exactly the drift a guard on the grid
+    exists to prevent.
+    """
+    return max(1, int(round(lane_budget * multiplier)))
 
 
 def _retrieve(
@@ -542,7 +560,7 @@ def measure_query(lane: Lane, q: LabelledQuery) -> QueryResult:
 
         discordant = False
         for mult in BUDGET_MULTIPLIERS:
-            arm_budget = max(1, int(round(lane.budget * mult)))
+            arm_budget = arm_budget_for(lane.budget, mult)
             for sub in L25_SUBBUDGETS:
                 if arm_budget == shipped_budget and sub == SHIPPED_L25_SUBBUDGET:
                     continue
