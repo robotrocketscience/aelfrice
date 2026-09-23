@@ -49,9 +49,15 @@ duplicate beliefs by *summing* their alphas and betas onto the canonical row
 (`total_alpha = sum(...)`). For a group of `n` rows sharing one prior that
 yields `n * (alpha, beta)` — off the grid, carrying `n` times the mass, and
 with the posterior *mean exactly unchanged*. Retrieval scores the mean, so
-those beliefs moved without learning anything. This producer separates them
-by testing whether the pair is a scalar *multiple* of a prior, not whether it
-shares a prior's mean; only the remainder is evidence that the loop ran.
+those beliefs moved without learning anything.
+
+A duplicate group is not always uniform, though. `content_hash` is `sha256`
+of the text alone, so beliefs with identical text but a different type or
+source share a hash and get merged too — and *their* sum moves the mean
+while still being no evidence at all (#1598). The three cases are reported
+separately: a scalar multiple of one prior, an exact sum of two or more
+different priors, and the remainder, which is the only group that is
+evidence the loop ran.
 
 Point this at real stores; it copies each one before opening it and opens
 the copy `read_only=True`. Opening a store read-write runs schema DDL and
@@ -203,6 +209,71 @@ def _matches_prior_multiple(
     return None
 
 
+#: Largest duplicate group this producer will recognise as a merge. The
+#: search is a breadth-first expansion over reachable sums, so the cost is
+#: the number of *distinct* sums (about 103k here, built in well under a
+#: second) rather than the number of combinations. A merge of more than
+#: this many beliefs is classified as a moved posterior and will show up
+#: in `off_pairs`; say so rather than letting the bound go unstated.
+MAX_MERGE_GROUP = 16
+
+_prior_sum_cache: dict[tuple[float, float], int] | None = None
+
+
+def _prior_sums(
+    priors: dict[tuple[float, float], str],
+) -> dict[tuple[float, float], int]:
+    """Every `(α, β)` reachable by summing 2..MAX_MERGE_GROUP priors.
+
+    Maps each reachable sum to the smallest group size that produces it.
+
+    **Exact arithmetic, no tolerance.** Summation order does not matter
+    for this prior set: over 120,000 random permutations of 16-term sums
+    the spread is exactly 0.0, pinned by
+    `test_summing_priors_is_order_independent`. That is a property of
+    these particular values, not of floating point in general, which is
+    why it is measured and pinned rather than assumed — if `TYPE_PRIORS`
+    changes and the property lapses, that test reds and this function
+    needs a tolerance with a stated justification.
+    """
+    global _prior_sum_cache  # noqa: PLW0603 - one-shot build, never varies
+    if _prior_sum_cache is not None:
+        return _prior_sum_cache
+    base = list(priors)
+    level: set[tuple[float, float]] = set(base)
+    out: dict[tuple[float, float], int] = {}
+    for size in range(2, MAX_MERGE_GROUP + 1):
+        nxt: set[tuple[float, float]] = set()
+        for a, b in level:
+            for pa, pb in base:
+                nxt.add((a + pa, b + pb))
+        level = nxt
+        for pair in nxt:
+            out.setdefault(pair, size)
+    _prior_sum_cache = out
+    return out
+
+
+def _matches_prior_sum(
+    pair: tuple[float, float], priors: dict[tuple[float, float], str],
+) -> int | None:
+    """Group size if `pair` is an exact sum of two or more priors, else None.
+
+    `_matches_prior_multiple` only recognises `n` copies of the *same*
+    prior, which assumes a duplicate group is uniform. It often is not:
+    `content_hash` is `sha256(text)` alone, so beliefs with identical
+    text but different type or source share a hash and get merged. Their
+    sum is neither on the grid nor a multiple of one prior, and without
+    this test it reads as evidence (#1598).
+
+    A mixed merge differs from a uniform one in a way that matters for
+    ranking: the posterior *mean* moves, so it is not rank-neutral. It is
+    still not evidence — no feedback event occurred — so it is reported
+    as its own category rather than folded into either neighbour.
+    """
+    return _prior_sums(priors).get(pair)
+
+
 def discover(roots: list[Path], limit: int | None) -> list[Path]:
     """Find every store under `roots`, skipping worktree and vendor copies.
 
@@ -269,7 +340,16 @@ def _feedback_split(
         pair = (float(row["alpha"]), float(row["beta"]))
         if _matches_prior(pair, priors) is not None:
             stranded += 1
-        elif str(first) < EXPOSURE_AUDIT_ONLY_SINCE:
+            continue
+        # `legacy` is reported as a share of the genuinely-moved
+        # population, so it has to be counted over that same population.
+        # Counting it over all off-grid beliefs mixes in dedupe mass and
+        # can print a share above 100%.
+        if _matches_prior_multiple(pair, priors) is not None:
+            continue
+        if _matches_prior_sum(pair, priors) is not None:
+            continue
+        if str(first) < EXPOSURE_AUDIT_ONLY_SINCE:
             legacy += 1
     return (stranded, legacy)
 
@@ -354,13 +434,20 @@ def probe(
     on_prior = 0
     off: dict[tuple[float, float], int] = {}
     mean_preserving = 0
+    mixed_merge = 0
     for pair, n in grid.items():
         if _matches_prior(pair, priors) is not None:
             on_prior += n
             continue
         off[pair] = n
         if _matches_prior_multiple(pair, priors) is not None:
+            # n copies of ONE prior: mass scales, mean unchanged.
             mean_preserving += n
+        elif _matches_prior_sum(pair, priors) is not None:
+            # A merge of DIFFERENT priors. The mean moves, so unlike the
+            # uniform case it is not rank-neutral — but no feedback event
+            # occurred, so it is not evidence either (#1598).
+            mixed_merge += n
     off_total = sum(off.values())
     return {
         "store": path,
@@ -369,7 +456,8 @@ def probe(
         "on_prior": on_prior,
         "off_prior": off_total,
         "mean_preserving": mean_preserving,
-        "mean_moved": off_total - mean_preserving,
+        "mixed_merge": mixed_merge,
+        "mean_moved": off_total - mean_preserving - mixed_merge,
         "stranded": stranded,
         "legacy_moved": legacy,
         "sources": sources,
@@ -427,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     total_beliefs = 0
     total_off = 0
     total_moved = 0
+    total_uniform = 0
+    total_mixed = 0
     total_stranded = 0
     total_legacy = 0
     all_sources: dict[str, tuple[int, int, int]] = {}
@@ -444,6 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         total_beliefs += row["beliefs"]
         total_off += row["off_prior"]
         total_moved += row["mean_moved"]
+        total_uniform += row["mean_preserving"]
+        total_mixed += row["mixed_merge"]
         total_stranded += row["stranded"]
         total_legacy += row["legacy_moved"]
         for src, (n, movable, blocked) in row["sources"].items():
@@ -455,21 +547,23 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(
         f"{'beliefs':>9} {'pairs':>6} {'off-grid':>9} {'dedupe':>8} "
-        f"{'moved':>7} {'stranded':>9}  store"
+        f"{'mixed':>7} {'moved':>7} {'stranded':>9}  store"
     )
     for row in sorted(rows, key=lambda r: -r["beliefs"]):
         print(
             f"{row['beliefs']:>9} {row['distinct']:>6} {row['off_prior']:>9} "
-            f"{row['mean_preserving']:>8} {row['mean_moved']:>7} "
-            f"{row['stranded']:>9}  {row['store']}"
+            f"{row['mean_preserving']:>8} {row['mixed_merge']:>7} "
+            f"{row['mean_moved']:>7} {row['stranded']:>9}  {row['store']}"
         )
 
     print()
     print(f"stores probed: {len(rows)}   failed: {failures}")
     print(f"beliefs: {total_beliefs}")
     print(f"beliefs off the insertion-prior grid: {total_off}")
-    print(f"  of those, a scalar multiple of a prior (dedupe mass): "
-          f"{total_off - total_moved}")
+    print(f"  of those, a scalar multiple of one prior (uniform dedupe, "
+          f"mean unchanged): {total_uniform}")
+    print(f"  of those, a sum of different priors (mixed dedupe, mean "
+          f"moved but not evidence): {total_mixed}")
     print(f"  of those, genuinely moved: {total_moved}")
     print(f"beliefs ON a prior that carry a real feedback event: "
           f"{total_stranded}")

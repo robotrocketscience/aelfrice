@@ -16,6 +16,7 @@ belief in the store as updated and invert the finding.
 from __future__ import annotations
 
 import importlib.util
+import random
 from pathlib import Path
 from typing import Any
 
@@ -264,6 +265,143 @@ def test_the_probe_never_opens_the_path_it_was_given(
             f"probe opened the caller's store at {path} instead of a copy"
         )
         assert read_only, f"probe opened {path} read-write"
+
+
+def test_a_mixed_prior_merge_is_not_counted_as_evidence(
+    tmp_path: Path,
+) -> None:
+    """The #1598 defect: a duplicate group need not be uniform.
+
+    `content_hash` is `sha256` of the text alone, so two beliefs with
+    identical text but a different source share a hash and get merged.
+    Their sum is neither on the grid nor a multiple of one prior, so the
+    uniform test alone calls it a moved posterior. No feedback event
+    occurred, so it is not evidence — and unlike a uniform merge its
+    mean really does move, which is why it gets its own category rather
+    than being folded into either neighbour.
+    """
+    user_a, user_b = get_source_adjusted_prior(BELIEF_FACTUAL, USER_SOURCE)
+    agent_a, agent_b = get_source_adjusted_prior(BELIEF_FACTUAL, "agent")
+
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_belief("M", user_a + agent_a, user_b + agent_b))
+    finally:
+        store.close()
+
+    row = sweep.probe(db, sweep.insertion_priors())
+
+    assert row["off_prior"] == 1
+    assert row["mean_preserving"] == 0, "a mixed merge is not a multiple"
+    assert row["mixed_merge"] == 1, row["off_pairs"]
+    assert row["mean_moved"] == 0, "a merge is not evidence"
+
+    # The mean really moved, which is what separates this from a uniform
+    # merge: it is rank-relevant, and still not evidence.
+    merged = (user_a + agent_a) / (user_a + agent_a + user_b + agent_b)
+    assert merged != user_a / (user_a + user_b)
+    assert merged != agent_a / (agent_a + agent_b)
+
+
+def test_the_legacy_share_is_counted_over_the_population_it_reports_on(
+    tmp_path: Path,
+) -> None:
+    """`legacy` is printed as a share of moved, so it must count moved.
+
+    Counting it over every off-grid belief mixes in dedupe mass, and the
+    printed share can then exceed 100%. A dedupe merge with an old
+    feedback event is the shape that does it.
+    """
+    user_a, user_b = get_source_adjusted_prior(BELIEF_FACTUAL, USER_SOURCE)
+    agent_a, agent_b = get_source_adjusted_prior(BELIEF_FACTUAL, "agent")
+
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_belief("MIX", user_a + agent_a, user_b + agent_b))
+        store.insert_belief(_belief("UNI", 3 * agent_a, 3 * agent_b))
+        store.insert_feedback_event(
+            belief_id="MIX", valence=0.1, source="hook",
+            created_at="2026-01-01T00:00:00Z",
+        )
+        store.insert_feedback_event(
+            belief_id="UNI", valence=0.1, source="hook",
+            created_at="2026-01-01T00:00:00Z",
+        )
+    finally:
+        store.close()
+
+    row = sweep.probe(db, sweep.insertion_priors())
+
+    assert row["mean_moved"] == 0, "both beliefs are merges, not evidence"
+    assert row["legacy_moved"] == 0, (
+        "a dedupe merge with a pre-#1086 event was counted as legacy "
+        f"moved, which can print a share above 100%: {row}"
+    )
+
+
+def test_summing_priors_is_order_independent() -> None:
+    """Why `_matches_prior_sum` can use exact equality and no tolerance.
+
+    Summation order does not change the result for this prior set, so a
+    merge lands on exactly one float however the group was ordered. That
+    is a property of these particular values rather than of floating
+    point, so it is measured here: if `TYPE_PRIORS` changes and the
+    property lapses, this reds and the exact match needs replacing with
+    a tolerance that has a stated justification.
+
+    A tolerance is not free — the smallest real evidence step is a
+    fractional valence, and one wide enough to absorb association error
+    starts absorbing those too.
+    """
+    rng = random.Random(0)
+    priors = [a for a, _ in sweep.insertion_priors()]
+    for size in (2, 5, 9, sweep.MAX_MERGE_GROUP):
+        for _ in range(200):
+            group = [rng.choice(priors) for _ in range(size)]
+            base = sum(group)
+            shuffled = list(group)
+            rng.shuffle(shuffled)
+            assert sum(shuffled) == base, (
+                f"summation order changed the result at size {size}: "
+                f"{sum(shuffled)!r} != {base!r}"
+            )
+
+
+def test_the_merge_group_bound_is_stated_and_enforced() -> None:
+    """A merge larger than the bound must fall out as moved, not vanish.
+
+    The search is bounded, so the bound has to be visible rather than
+    silently shaping the numbers.
+    """
+    priors = sweep.insertion_priors()
+    one = min(priors)
+
+    def _summed(n: int) -> tuple[float, float]:
+        """Accumulate rather than multiply.
+
+        `n * 0.3` and `0.3 + 0.3 + …` are different floats, so a test
+        that multiplies compares against a value the producer never
+        computes — it then passes whatever the bound is, which is how
+        the first version of this arm survived widening the bound.
+        """
+        a = b = 0.0
+        for _ in range(n):
+            a += one[0]
+            b += one[1]
+        return (a, b)
+
+    assert sweep._matches_prior_sum(_summed(2), priors) == 2
+    assert sweep._matches_prior_sum(
+        _summed(sweep.MAX_MERGE_GROUP), priors
+    ) is not None, "the stated bound must be reachable"
+    assert sweep._matches_prior_sum(
+        _summed(sweep.MAX_MERGE_GROUP + 1), priors
+    ) is None, (
+        "a group beyond MAX_MERGE_GROUP must not be recognised, so the "
+        "bound is what the docstring says it is"
+    )
 
 
 def test_the_prior_grid_is_derived_from_the_shipped_function() -> None:
