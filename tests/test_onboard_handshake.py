@@ -8,6 +8,8 @@ extractors run on real on-disk content but stay deterministic.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,7 @@ from aelfrice.models import (
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
     Belief,
+    OnboardSession,
 )
 from aelfrice.store import MemoryStore
 
@@ -426,3 +429,152 @@ def test_check_is_idempotent_under_repeat_calls(
     a = check_onboard_candidates(store, tmp_path)
     b = check_onboard_candidates(store, tmp_path)
     assert (a.n_already_present, a.n_new) == (b.n_already_present, b.n_new)
+
+
+# --- commit_date propagation (#1609) ------------------------------------
+#
+# `scan_repo` (scanner.py) already writes `created_at = commit_date or
+# timestamp` for direct ingestion. The onboard handshake serializes
+# candidates into `onboard_sessions.candidates_json` between the two
+# calls below and, before this fix, carried only `index`/`text`/`source`
+# — dropping `SentenceCandidate.commit_date` on the floor, so every
+# accepted belief got the handshake-completion time instead.
+
+
+def _git_init(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
+
+
+def _git_commit(
+    repo: Path,
+    *files: str,
+    message: str,
+    author_date: str = "2024-01-01T00:00:00+00:00",
+) -> None:
+    subprocess.run(["git", "add", *files], cwd=repo, check=True, timeout=30)
+    subprocess.run(
+        [
+            "git",
+            "-c", "user.email=t@t",
+            "-c", "user.name=t",
+            "-c", "commit.gpgsign=false",
+            "commit", "-q", "-m", message,
+            "--date", author_date,
+        ],
+        cwd=repo,
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_DATE": author_date,
+            "GIT_COMMITTER_DATE": author_date,
+        },
+        timeout=30,
+    )
+
+
+@pytest.mark.timeout(30)
+def test_accept_uses_doc_commit_date_as_created_at(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """A doc candidate whose file has a git commit lands with
+    `belief.created_at == commit author date`, not the handshake
+    completion time (`now`) — mirroring `scan_repo`'s behaviour."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git_init(repo)
+    (repo / "RULES.md").write_text(
+        "lock fast and ship small commits with conventional prefixes",
+        encoding="utf-8",
+    )
+    _git_commit(repo, "RULES.md", message="add rules",
+                author_date="2024-08-01T00:00:00+00:00")
+
+    result = start_onboard_session(store, repo, now="2099-01-01T00:00:00Z")
+    target = [s for s in result.sentences if "lock fast" in s.text]
+    assert target, "expected the RULES.md paragraph among the candidates"
+    s = target[0]
+    cls = [HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)]
+    accept_classifications(store, result.session_id, cls, now="2099-01-01T00:00:00Z")
+
+    bid = _derive_id_for_sentence(s.text, s.source)
+    belief = store.get_belief(bid)
+    assert belief is not None
+    # Must be the commit date, not the 2099 handshake-completion time.
+    assert belief.created_at.startswith("2024-08-01")
+
+
+@pytest.mark.timeout(30)
+def test_accept_uses_git_commit_candidate_date_as_created_at(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """A `git:commit:*` candidate lands with `belief.created_at` equal to
+    that commit's own author date."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git_init(repo)
+    (repo / "README.md").write_text("hello", encoding="utf-8")
+    _git_commit(repo, "README.md",
+                message="a distinctly worded commit subject for lookup",
+                author_date="2023-03-14T00:00:00+00:00")
+
+    result = start_onboard_session(store, repo, now="2099-01-01T00:00:00Z")
+    target = [s for s in result.sentences if s.source.startswith("git:commit:")]
+    assert target, "expected at least one git:commit: candidate"
+    s = target[0]
+    cls = [HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)]
+    accept_classifications(store, result.session_id, cls, now="2099-01-01T00:00:00Z")
+
+    bid = _derive_id_for_sentence(s.text, s.source)
+    belief = store.get_belief(bid)
+    assert belief is not None
+    assert belief.created_at.startswith("2023-03-14")
+
+
+def test_accept_falls_back_to_handshake_timestamp_without_commit_date(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Outside any git work-tree, a candidate has no `commit_date`, and
+    the accepted belief falls back to the handshake completion time —
+    the pre-#1609 behaviour, preserved for the no-date case."""
+    _populate_repo(tmp_path)
+    result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
+    assert result.sentences, "fixture must produce at least one candidate"
+    s = result.sentences[0]
+    cls = [HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)]
+    accept_classifications(store, result.session_id, cls, now="2026-04-26T01:00:00Z")
+
+    bid = _derive_id_for_sentence(s.text, s.source)
+    belief = store.get_belief(bid)
+    assert belief is not None
+    assert belief.created_at == "2026-04-26T01:00:00Z"
+
+
+def test_accept_loads_legacy_candidates_json_without_commit_date_key(
+    store: MemoryStore,
+) -> None:
+    """A session persisted before #1609 — whose `candidates_json` entries
+    carry no `commit_date` key at all, not even `null` — must still load
+    and accept cleanly, falling back to the handshake timestamp."""
+    legacy_json = json.dumps([
+        {"index": 0, "text": "a legacy candidate with no commit_date key", "source": "doc:LEGACY.md:p0"},
+    ])
+    store.insert_onboard_session(OnboardSession(
+        session_id="legacy-session",
+        repo_path=str(Path("/tmp/legacy")),
+        state=ONBOARD_STATE_PENDING,
+        candidates_json=legacy_json,
+        created_at="2026-01-01T00:00:00Z",
+        completed_at=None,
+    ))
+    cls = [HostClassification(index=0, belief_type=BELIEF_FACTUAL, persist=True)]
+    outcome = accept_classifications(
+        store, "legacy-session", cls, now="2026-01-02T00:00:00Z"
+    )
+    assert outcome.inserted == 1
+
+    bid = _derive_id_for_sentence(
+        "a legacy candidate with no commit_date key", "doc:LEGACY.md:p0"
+    )
+    belief = store.get_belief(bid)
+    assert belief is not None
+    assert belief.created_at == "2026-01-02T00:00:00Z"
