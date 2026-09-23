@@ -681,9 +681,18 @@ def resolvers() -> dict[str, object]:
     }
 
 
-def report() -> dict[str, Any]:
-    """Run the census and return the whole report as a plain dict."""
-    queries = corpora()
+def report(queries: Sequence[LabelledQuery] | None = None) -> dict[str, Any]:
+    """Run the census and return the whole report as a plain dict.
+
+    `queries` defaults to `corpora()`, which is the only population this
+    registration measures. It is a parameter so that the K3 A/A replicate,
+    `scripts/budget_discriminability_aa_replicate.py`, can hand the same
+    labelled queries back under a permuted insertion order and reuse this
+    statistic rather than reimplementing it — a replicate that reimplements
+    EC measures its own reimplementation. The default path is unchanged, and
+    `--check` hashes the same report it hashed before the parameter existed.
+    """
+    queries = list(corpora() if queries is None else queries)
     lane_rows: dict[str, Any] = {}
     violations: list[str] = []
     for lane in lanes():
