@@ -1294,15 +1294,15 @@ def check_producers(
     On an M-series laptop with an SSD, 2026-09-23, six store-free producers
     behind 236 markers:
 
-        57.3s  scripts/budget_discriminability_aa_replicate.py
-        10.8s  benchmarks/injection_budget_bytes.py
-         8.5s  scripts/measure_block_ceiling.py
-         7.6s  benchmarks/store_open_cost.py
+        10.6s  benchmarks/injection_budget_bytes.py
+         9.1s  benchmarks/store_open_cost.py
+         9.0s  scripts/measure_block_ceiling.py
+         8.2s  scripts/budget_discriminability_aa_replicate.py
          1.7s  scripts/budget_discriminability_census.py
          0.3s  benchmarks/published_constants.py
         -------
-        86.1s  serial sum
-        59.0s  concurrent wall
+        38.8s  serial sum
+        14.9s  concurrent wall
 
     `store_open_cost.py` walks a three-size grid up to a 20,000-belief store,
     so it is disk-bound, and that is the axis on which a hosted runner is
@@ -1312,14 +1312,19 @@ def check_producers(
     the current worst case moves it, and one faster than that is nearly free
     until the worker cap binds.
 
-    The #1546 A/A replicate is that worst case, and it tripled the wall from
-    18.1s to 59.0s in one commit. Most of its time is a diagnostic sweep that
+    The #1546 A/A replicate briefly WAS that worst case, at 57.3s against a
+    previous wall of 18.1s. Almost all of it was a diagnostic sweep that
     re-runs every lane, query, and grid cell once per replicate to answer
-    whether anything the census statistic reads moves under the perturbation;
-    that sweep is what separates a real zero band from a cancelling one, so it
-    is a cost this check pays deliberately. It still sits well inside the
-    300-second `PRODUCER_TIMEOUT_S`, but it is now the number that decides how
-    long this gate takes.
+    whether anything the census statistic reads moves under the perturbation —
+    50s of the 57s, against about 8s for the band itself. That sweep is what
+    separates a real zero band from a cancelling one, so it is worth its cost,
+    but not on this path: none of this check's markers read it, and
+    `tests/test_derived_figures_1469.py` runs the whole check under a
+    120-second budget, which the sweep exceeded in CI. It is now behind
+    `--sweep`, its two figures are quoted in the result document with the
+    command that reproduces them, and the emitted object OMITS them rather
+    than zero-filling when the sweep did not run. Re-derive this table when
+    you add a producer; the number to watch is the new producer's own time.
     """
     by_producer = group_store_free(markers)
     runnable = runnable_producers(by_producer)

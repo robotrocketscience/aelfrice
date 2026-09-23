@@ -287,10 +287,17 @@ def replicate(
 
     `order_sensitivity_sweep` runs the per-arm diagnostic above, which costs
     one `retrieve()` per lane x query x grid cell per replicate and dominates
-    the run. Turning it off changes nothing about how the band is computed and
-    exists so a test can exercise the band cheaply; a report produced with it
-    off carries `arm_sweep: False` and `figures()` refuses to publish one, so
-    a skipped diagnostic can never reach a published figure.
+    the run — 50s of 57s here, against about 8s for the band. Turning it off
+    changes nothing about how the band is computed; a report produced with it
+    off carries `arm_sweep: False`, and `figures()` then OMITS the sweep keys
+    rather than zero-filling them, so a skipped diagnostic can never reach a
+    published figure.
+
+    Note the asymmetry, which is deliberate rather than an oversight: this
+    parameter defaults to True, so a library caller gets the complete
+    measurement, while the CLI's `--sweep` defaults to OFF, so the
+    derived-figures gate is not charged 50s for a diagnostic none of its
+    markers cover. Pass `--sweep` to reproduce the published sweep figures.
     """
     if seeds < 1:
         raise ValueError(f"seeds must be at least 1, got {seeds}")
@@ -400,12 +407,6 @@ def replicate(
 def figures(rep: dict[str, Any] | None = None) -> dict[str, Any]:
     """The flat key -> value object `--emit-figures` publishes."""
     rep = rep if rep is not None else replicate()
-    if not rep["arm_sweep"]:
-        raise ValueError(
-            "this report was produced with the order-sensitivity sweep off, "
-            "so aa_arm_cells_order_sensitive has no value; a skipped "
-            "diagnostic must not reach a published figure"
-        )
     out: dict[str, Any] = {
         "aa_band_pp": rep["aa_band_pp"],
         "aa_base_seed": rep["base_seed"],
@@ -415,12 +416,22 @@ def figures(rep: dict[str, Any] | None = None) -> dict[str, Any]:
         "aa_n": rep["n"],
         "aa_n_band": rep["n_band"],
         "aa_violations": len(rep["violations"]),
-        "aa_arm_cells_examined": rep["arm_cells_examined"],
-        "aa_arm_cells_order_sensitive": rep["arm_cells_order_sensitive"],
+        "aa_arm_sweep": rep["arm_sweep"],
         "aa_queries_with_one_insertion_order": len(
             rep["queries_with_one_insertion_order"]
         ),
     }
+    # The sweep keys are OMITTED rather than zero-filled when the sweep did
+    # not run. An earlier revision raised instead, which had the same intent
+    # — a skipped diagnostic must never reach a published figure — and made
+    # the cheap path unusable for `--emit-figures`, so the derived-figures
+    # gate had to pay 50s for a diagnostic none of its markers cover.
+    # Omitting keeps the guarantee: there is no key to read, rather than a
+    # key holding a number nothing measured. `aa_arm_sweep` above says which
+    # run this was, so a consumer cannot mistake absence for zero.
+    if rep["arm_sweep"]:
+        out["aa_arm_cells_examined"] = rep["arm_cells_examined"]
+        out["aa_arm_cells_order_sensitive"] = rep["arm_cells_order_sensitive"]
     for lane in census.lanes():
         out[f"aa_band_pp.{lane.name}"] = rep["bands"].get(lane.name)
     return out
@@ -538,6 +549,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--sweep",
+        action="store_true",
+        help=(
+            "also run the per-arm order-sensitivity diagnostic. It costs one "
+            "retrieve() per lane x query x grid cell per replicate and "
+            "dominates the run — 50s of 57s here — while the band itself "
+            "takes about 8s. Off by default so the derived-figures gate, "
+            "whose markers cover only the band, does not pay for it"
+        ),
+    )
+    ap.add_argument(
         "--dry-run",
         action="store_true",
         help="print the plan and exit without opening a store",
@@ -568,8 +590,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.check:
-        first = replicate(args.seeds)
-        second = replicate(args.seeds)
+        first = replicate(args.seeds, order_sensitivity_sweep=args.sweep)
+        second = replicate(args.seeds, order_sensitivity_sweep=args.sweep)
         h1, h2 = _stable_hash(first), _stable_hash(second)
         if h1 != h2:
             print(
@@ -584,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OK: byte-identical across two runs, sha256 {h1}")
         return 0
 
-    rep = replicate(args.seeds)
+    rep = replicate(args.seeds, order_sensitivity_sweep=args.sweep)
     if args.emit_figures:
         json.dump(figures(rep), sys.stdout, sort_keys=True)
         sys.stdout.write("\n")

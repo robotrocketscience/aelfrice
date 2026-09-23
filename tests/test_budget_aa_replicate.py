@@ -387,19 +387,48 @@ def test_emit_figures_is_flat_json_and_names_every_lane(aa: Any) -> None:
     assert figs["aa_arm_cells_order_sensitive"] == 0
 
 
-def test_figures_refuses_a_report_with_the_sweep_skipped(aa: Any) -> None:
+def test_figures_omits_the_sweep_keys_when_the_sweep_was_skipped(
+    aa: Any,
+) -> None:
     """A skipped diagnostic must never reach a published figure.
 
-    `--emit-figures` always runs the sweep, so this guards the helper rather
-    than the CLI: a caller that skipped the sweep for speed and then published
-    would emit `aa_arm_cells_order_sensitive` as null, which reads as "no
-    order-sensitive arm" rather than "not measured".
+    The sweep costs 50s of a 57s run while the band costs 8s, and the
+    derived-figures gate's markers cover only the band — so the sweep is
+    off by default and `--sweep` turns it on. The guarantee is unchanged
+    and is now carried by omission rather than by refusing: there is no
+    key to read, rather than a key holding a number nothing measured.
+    Emitting `aa_arm_cells_order_sensitive` as null would read as "no
+    order-sensitive arm" instead of "not measured", which is the failure
+    this pins.
     """
     rep = aa.replicate(1, order_sensitivity_sweep=False)
     assert rep["arm_sweep"] is False
     assert rep["arm_cells_order_sensitive"] is None
-    with pytest.raises(ValueError, match="sweep off"):
-        aa.figures(rep)
+
+    figs = aa.figures(rep)
+    assert figs["aa_arm_sweep"] is False, (
+        "a consumer must be able to tell a skipped sweep from a clean one"
+    )
+    assert "aa_arm_cells_order_sensitive" not in figs
+    assert "aa_arm_cells_examined" not in figs
+    # The band is still published: skipping the diagnostic changes nothing
+    # about how it is computed.
+    assert figs["aa_band_pp"] == rep["aa_band_pp"]
+
+
+def test_figures_publishes_the_sweep_keys_when_the_sweep_ran(aa: Any) -> None:
+    """The other half: omission must be caused by the skip, not by a bug.
+
+    Without this, a `figures()` that dropped the sweep keys unconditionally
+    would pass the arm above while silently never publishing the diagnostic.
+    """
+    rep = aa.replicate(1, order_sensitivity_sweep=True)
+    assert rep["arm_sweep"] is True
+
+    figs = aa.figures(rep)
+    assert figs["aa_arm_sweep"] is True
+    assert figs["aa_arm_cells_order_sensitive"] == rep["arm_cells_order_sensitive"]
+    assert figs["aa_arm_cells_examined"] == rep["arm_cells_examined"]
 
 
 def test_the_replicate_exits_non_zero_when_a_replicate_violates(

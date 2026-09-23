@@ -150,8 +150,28 @@ list across replicates.
 
 Nothing moves: of the 2070 grid arms the sweep examines, 0 return a different
 belief list under a different insertion order.
-<!-- derived: scripts/budget_discriminability_aa_replicate.py#aa_arm_cells_examined = 2070 -->
-<!-- derived: scripts/budget_discriminability_aa_replicate.py#aa_arm_cells_order_sensitive = 0 -->
+
+Reproduce it with:
+
+```
+uv run python scripts/budget_discriminability_aa_replicate.py --sweep --emit-figures
+```
+
+The sweep is behind a flag, and these two figures therefore carry no
+`derived:` marker. The reason is cost: the sweep runs one `retrieve()` per
+lane, query, grid cell, and replicate, which is 50 seconds of a 57-second run
+against about 8 seconds for the band itself. `scripts/check_derived_figures.py`
+re-runs every producer under `--emit-figures` on every change to any document
+it covers, and the test that drives it carries a 120-second budget — so leaving
+the sweep on charged that budget 50 seconds for a diagnostic none of its other
+markers read, and the gate timed out in CI.
+
+Running with the sweep off omits `aa_arm_cells_examined` and
+`aa_arm_cells_order_sensitive` from the emitted figures rather than reporting
+them as zero, and sets `aa_arm_sweep: false`. Absence is therefore
+distinguishable from a measured zero, which is the property that matters here:
+a zero nobody measured would be the strongest possible claim in this document
+and the least earned.
 
 That distinguishes a real zero from a cancelling one: the band is not zero
 because order-sensitive movements happened to average out, it is zero because
