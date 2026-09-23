@@ -194,6 +194,49 @@ def test_an_alpha_only_move_sharing_a_prior_mean_is_not_dedupe(
     assert row["mean_moved"] == 1
 
 
+def test_dedupe_mass_with_a_legacy_event_does_not_inflate_the_count(
+    tmp_path: Path,
+) -> None:
+    """The numerator must be scoped to the denominator's population (#1600).
+
+    `main` prints `legacy_moved` as a share of `mean_moved`, which is
+    `off_prior - mean_preserving`. Counting a dedupe-mass belief as a
+    legacy move therefore puts it in the numerator and not the
+    denominator: the share is inflated and can exceed 100%. This store
+    holds one of each, both carrying a pre-#1086 feedback event, so
+    before the fix the split reads `(0, 2)` against one moved belief —
+    a printed 200.0%.
+    """
+    prior_alpha, prior_beta = get_source_adjusted_prior(
+        BELIEF_FACTUAL, "agent")
+    before = "2026-06-01T00:00:00Z"
+    assert before < sweep.EXPOSURE_AUDIT_ONLY_SINCE
+
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        # Three duplicates collapsed: off the grid, mean unchanged.
+        store.insert_belief(_belief("D", 3 * prior_alpha, 3 * prior_beta))
+        # A real positive-valence move: alpha only, so the mean rises.
+        store.insert_belief(_belief("M", prior_alpha + 0.1, prior_beta))
+        store.insert_feedback_event("D", 1.0, "exposure", before)
+        store.insert_feedback_event("M", 1.0, "exposure", before)
+    finally:
+        store.close()
+
+    row = sweep.probe(db, sweep.insertion_priors())
+
+    assert row["off_prior"] == 2
+    assert row["mean_preserving"] == 1
+    assert row["mean_moved"] == 1
+    assert row["legacy_moved"] == 1, (
+        "the dedupe-mass belief was counted as a legacy move; it is "
+        "excluded from mean_moved, so the printed share would be "
+        f"{100.0 * row['legacy_moved'] / row['mean_moved']:.1f}%"
+    )
+    assert row["legacy_moved"] <= row["mean_moved"]
+
+
 def test_the_write_ahead_log_is_copied_with_the_database(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:

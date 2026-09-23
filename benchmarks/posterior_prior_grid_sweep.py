@@ -235,12 +235,22 @@ def _feedback_split(
     `stranded` counts beliefs on a prior that nonetheless carry a real
     feedback event — see `_stranded_on_prior` for why that matters.
 
-    `legacy_moved` counts **off-grid** beliefs whose earliest non-zero
-    feedback event predates `EXPOSURE_AUDIT_ONLY_SINCE`. Those moved
-    under the pre-#1086 rule that added +0.1 per retrieval exposure,
-    which the tree removed as a defect. They are residue, not evidence
-    that today's feedback path works, and counting them as the latter is
-    the confound that makes a store look healthy when it is not.
+    `legacy_moved` counts **genuinely-moved** beliefs — off the grid and
+    not a scalar multiple of a prior — whose earliest non-zero feedback
+    event predates `EXPOSURE_AUDIT_ONLY_SINCE`. Those moved under the
+    pre-#1086 rule that added +0.1 per retrieval exposure, which the
+    tree removed as a defect. They are residue, not evidence that
+    today's feedback path works, and counting them as the latter is the
+    confound that makes a store look healthy when it is not.
+
+    Dedupe mass is excluded deliberately (#1600). `main` prints this as
+    a share of `mean_moved`, which is `off_prior - mean_preserving`, so
+    counting a scalar-multiple belief here would put it in the numerator
+    and not the denominator — one population reported against another, a
+    share that can in principle exceed 100%. The test applied is the
+    same `_matches_prior_multiple` that `probe` already runs; the
+    classifier itself is unchanged (#1598 established the uniform/moved
+    split is right on real data).
 
     Returns `(0, 0)` on a store with no `feedback_history` table rather
     than failing, so an old schema costs the extra columns and not the
@@ -269,7 +279,12 @@ def _feedback_split(
         pair = (float(row["alpha"]), float(row["beta"]))
         if _matches_prior(pair, priors) is not None:
             stranded += 1
-        elif str(first) < EXPOSURE_AUDIT_ONLY_SINCE:
+            continue
+        # Dedupe mass: off the grid but excluded from `mean_moved`, so
+        # excluded from the numerator reported against it.
+        if _matches_prior_multiple(pair, priors) is not None:
+            continue
+        if str(first) < EXPOSURE_AUDIT_ONLY_SINCE:
             legacy += 1
     return (stranded, legacy)
 
@@ -474,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"beliefs ON a prior that carry a real feedback event: "
           f"{total_stranded}")
     print("  (signal arrived and was discarded — the audit-only lane)")
-    print(f"off-grid beliefs whose earliest event predates "
+    print(f"genuinely-moved beliefs whose earliest event predates "
           f"{EXPOSURE_AUDIT_ONLY_SINCE}: {total_legacy}")
     print("  (moved under the pre-#1086 exposure rule the tree deleted)")
     if total_moved:
