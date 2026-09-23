@@ -253,8 +253,12 @@ State these as limits, not as guards.
   types. `retrieval.retrieve` gates the temporal spine on
   `store.has_edge_type(EDGE_TEMPORAL_NEXT)`, and BFS is gated on `bfs_on`,
   which `is_bfs_enabled` resolves from the default-off `[retrieval]
-  bfs_enabled` flag, so neither lane runs. The candidate sources that
-  remain do not gain members as a budget falls. On an edge-bearing corpus this
+  bfs_enabled` flag, so neither lane runs. Of the sources that remain, `_l1_hits`
+  takes no budget parameter at all and the L2.5 cap truncates a tail, so
+  neither gains members as a budget falls. Take that enumeration as the reason
+  the criterion is dead rather than as a proof that it is: what the run
+  establishes directly is that no arm left the probe pool on any cell. On an
+  edge-bearing corpus this
   criterion becomes live, and
   `test_containment_is_a_property_of_this_corpus_and_not_a_theorem` exhibits an
   arm that escapes on shipped code once one `TEMPORAL_NEXT` edge exists.
