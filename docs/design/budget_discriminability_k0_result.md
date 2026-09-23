@@ -1,15 +1,7 @@
 # K0 result: the injection budgets are unmeasurable at public corpus (#1546)
 
-This is the K0 read-out. The rule it is read against is
-`docs/design/budget_discriminability_decision_rule.md`, committed before any
-number here existed.
-
-No decision criterion in that rule was changed after these numbers were seen.
-Two amendments were added after: Amendment 1 corrects a mechanism claim that
-was false (admission is not monotone in budget), and Amendment 2 discloses
-deviations the rule had not named. Both quote what they correct, and neither
-touches EC, N, the grey band, the required N, the cut conditions, or the
-finding wording. Read them before you read these numbers.
+This is the K0 read-out. The registration it is read against is
+`docs/design/budget_discriminability_k0_preregistration.md`.
 
 Re-derive every figure on this page with:
 
@@ -17,6 +9,49 @@ Re-derive every figure on this page with:
 uv run python scripts/budget_discriminability_census.py
 uv run python scripts/budget_discriminability_census.py --check
 ```
+
+## Re-derived under a fresh pre-registration, 2026-09-23
+
+The operator voided K0's original pre-registration,
+`docs/design/budget_discriminability_decision_rule.md`. It described the
+instrument wrongly in four places, so the verdict it licensed could be read as
+stronger than the instrument supports: it called the cluster packer inert when
+`pack_with_clusters` runs on every measured cell, treated probe containment as
+a theorem when it is a property of these edgeless corpora, inherited a
+containment mutation guard with no power on three of six lanes, and attributed
+BFS's absence to the missing edges rather than to a default-off flag. All four
+are corrected on `main` and declared in the replacement registration.
+
+The verdict below is re-derived under that replacement. **No figure moved.**
+The replacement carries every decision criterion forward unchanged — the
+statistic, the population rule, the grey band, the required N, the cut
+conditions, the forbidden fallbacks, and the finding wording — and adds only
+disclosures and kill criteria, none of which enters the arithmetic. Read the
+figures below as the same measurement, now registered against a document that
+describes the instrument correctly, and not as a second measurement that
+agreed.
+
+All 22 keys of `--emit-figures` were compared against the values published
+here. Every one is unchanged:
+
+| Key | Before | After 2026-09-23 |
+| --- | --- | --- |
+| `n` | 7 | 7 |
+| `labelled_queries_before_exclusion` | 23 | 23 |
+| `degenerate_excluded` | 16 | 16 |
+| `empty_pool_excluded` | 0 | 0 |
+| `ec_pp.*`, all six lanes | 0.0 | 0.0 |
+| `pool_binds.*`, all six lanes | 7 | 7 |
+| `grey_band_pp` | 37.0398 | 37.0398 |
+| `required_n_per_arm` | 3713 | 3713 |
+| `bash_lane_benchmark_whole_store_cost` | 378 | 378 |
+| `bash_lane_benchmark_pool_cost_max` | 50 | 50 |
+| `bash_lane_benchmark_budget_binds` | 0 | 0 |
+| `violations` | 0 | 0 |
+
+`--check` reports byte-identical reports across two runs, and
+`uv run pytest tests/test_budget_census.py -q` passes 13 tests, the three K2
+mutation arms among them.
 
 ## The finding
 
@@ -28,7 +63,7 @@ public corpora.
 <!-- derived: scripts/budget_discriminability_census.py#n = 7 -->
 
 This is **not** "the budgets are correct". The census cannot say that, and the
-rule forbids the phrasing.
+registration forbids the phrasing.
 
 ## EC, on every measurable lane
 
@@ -49,8 +84,8 @@ EC = D / N is 0 on all six measurable lanes, on both public corpora.
 <!-- derived: scripts/budget_discriminability_census.py#ec_pp.retrieval_default = 0.0 -->
 <!-- derived: scripts/budget_discriminability_census.py#ec_pp.rebuilder = 0.0 -->
 
-Read that under the rule's exact clause: **EC = 0 means zero discordant pairs
-are possible, not merely unobserved.** Every candidate pool in these corpora
+Read that under the registration's exact clause: **EC = 0 means zero discordant
+pairs are possible, not merely unobserved.** Every candidate pool in these corpora
 prices below every budget in the grid, so both arms render byte-identical
 blocks and every downstream metric is identical by construction. No sample size
 over these corpora detects an effect, because there is no effect to detect at
@@ -142,11 +177,11 @@ narrowings, all printed by the census under "what this run does not exercise":
   neither corpus holds one. It also prices with `retrieval._belief_tokens` and
   ignores `belief_cost_fn`, so a census over marker queries would need its own
   pricing.
-* **The block ceiling is held fixed and never applied.** The decision rule
+* **The block ceiling is held fixed and never applied.** The registration
   calls a grid that holds `hook.HOOK_BLOCK_TOKEN_CEILING` fixed invalid. This
   census does hold it fixed and measures `retrieve()` output rather than a
   rendered hook block. At 6000 against a dearest pool of 132 tokens it cannot
-  bind here, but the deviation is a deviation (decision rule, Amendment 2).
+  bind here, but the deviation is a deviation, and the registration names it.
 
 None of the three moves a number on these corpora. Each narrows the population
 the zero is measured over, which is why it is published beside the zero.
@@ -206,7 +241,7 @@ not see them, and both misses mattered:
   reported 0 violations on every lane. The bound is now checked on the block.
 
 The shipped skip-and-continue fill belongs to the first of those families — see
-the decision rule's Amendment 1 — so neither arm is hypothetical.
+the registration's disclosed limits, item 1 — so neither arm is hypothetical.
 
 Fixing the guard moved no published figure. Every key in `--emit-figures` is
 what it was before: N = 7, EC 0.0pp on all six lanes, `pool_binds` 7 of 7,
@@ -218,10 +253,11 @@ violations 0.
 * **A raise is not licensed.** A ceiling statistic says the arms could return
   different text, never which text is better, and a raise moves the pack in
   both directions: admission is not monotone, so raising a budget evicts
-  beliefs as well as admitting them (decision rule, Amendment 1). EC is within
+  beliefs as well as admitting them (registration, disclosed limits, item 1). EC
+  is within
   the band and points nowhere, so even the "not excluded" sentence is not
   reached.
-* **A cut is not licensed either.** The rule requires the cut arm's `binds_on`
+* **A cut is not licensed either.** The registration requires the cut arm's `binds_on`
   not to be `pool`, and it is `pool` on every cell; and it requires the latency
   arm, which is out of scope.
 * **K1, K3 and the latency arm stay gated** on a further ruling.
