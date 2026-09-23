@@ -1,5 +1,22 @@
 # Budget discriminability decision rule (#1546)
 
+> **Voided on 2026-09-23. The live pre-registration is
+> `docs/design/budget_discriminability_k0_preregistration.md`.**
+>
+> The operator voided this document because it described the instrument
+> wrongly in four places — it called the cluster packer inert, treated probe
+> containment as a theorem rather than a property of these corpora, inherited a
+> containment mutation guard that had no power on three of six lanes, and
+> attributed BFS's absence to the missing edges rather than to a default-off
+> flag. Read the replacement instead. It carries every criterion below forward
+> unchanged and adds the disclosures this document lacked.
+>
+> This document is retained because the replacement quotes it and because
+> `scripts/budget_discriminability_census.py` still names it as
+> `report()['decision_rule']`. Nothing below is amended after the void: an
+> amendment here would be a criterion change on a voided rule, which decides
+> nothing.
+
 This document is the pre-registration for the injection-budget re-tune
 ([#1546](https://github.com/robotrocketscience/aelfrice/issues/1546)). You are
 reading the rule that decides the outcome. It is written and committed **before
