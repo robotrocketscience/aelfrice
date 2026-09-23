@@ -237,6 +237,47 @@ def test_dedupe_mass_with_a_legacy_event_does_not_inflate_the_count(
     assert row["legacy_moved"] <= row["mean_moved"]
 
 
+def test_a_legacy_event_on_dedupe_mass_alone_counts_nothing(
+    tmp_path: Path,
+) -> None:
+    """Pin which belief is counted, not how many (#1600).
+
+    The arm above puts a pre-#1086 event on both beliefs, so its count
+    is satisfied whether the guard skips dedupe mass or skips everything
+    else — inverting the guard leaves it green while the code counts
+    exactly the population the issue was filed about. Here only the
+    dedupe-mass belief carries a pre-cutoff event and the genuinely
+    moved one carries a later event, so the correct answer is zero and
+    every way of counting the wrong belief, or of dropping the date
+    predicate, reads as one.
+    """
+    prior_alpha, prior_beta = get_source_adjusted_prior(
+        BELIEF_FACTUAL, "agent")
+    before = "2026-06-01T00:00:00Z"
+    after = "2026-08-01T00:00:00Z"
+    assert before < sweep.EXPOSURE_AUDIT_ONLY_SINCE < after
+
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_belief("D", 3 * prior_alpha, 3 * prior_beta))
+        store.insert_belief(_belief("M", prior_alpha + 0.1, prior_beta))
+        store.insert_feedback_event("D", 1.0, "exposure", before)
+        store.insert_feedback_event("M", 1.0, "exposure", after)
+    finally:
+        store.close()
+
+    row = sweep.probe(db, sweep.insertion_priors())
+
+    assert row["mean_preserving"] == 1
+    assert row["mean_moved"] == 1
+    assert row["legacy_moved"] == 0, (
+        "no genuinely-moved belief here predates the cutoff, so a "
+        "non-zero count means the dedupe-mass belief was counted or "
+        "the date predicate was dropped"
+    )
+
+
 def test_the_write_ahead_log_is_copied_with_the_database(
     tmp_path: Path, monkeypatch: Any,
 ) -> None:
