@@ -109,15 +109,18 @@ class TestWiringInstalled:
 
         A `[FAIL]` line is a diagnosis, and this one lands on a stable CI
         exit contract (#1430), so it may only name mechanisms this build
-        actually has. It has neither of the two that the obvious wording
-        reaches for: every generated `$aelf-*` skill still issues
-        `uv run aelf`, and `aelf setup --host codex` pins each hook handler
-        to an absolute `aelf-*` path whenever it can resolve one. Neither
-        surface invokes `aelf` by name, so the line must not say they do.
+        actually has. It originally had neither of the two the obvious
+        wording reaches for, and this guard said so and promised to
+        retire when the skills converted.
 
-        Both preconditions are re-derived here rather than assumed. When
-        the rest of #1413 converts the skills, the first assertion stops
-        holding and this guard retires with it.
+        Half of it has now retired. Since the rest of #1413 landed, every
+        generated `$aelf-*` skill DOES invoke `aelf` by name, so a line
+        naming that surface is accurate. The other half stands unchanged:
+        `aelf setup --host codex` still pins each hook handler to an
+        absolute `aelf-*` path whenever it can resolve one, so the
+        handlers do not invoke `aelf` by name and the diagnosis still may
+        not say they do. Both preconditions are re-derived here rather
+        than assumed, so this reds if either surface changes again.
         """
         codex_dir, skills = installed
         bodies = [
@@ -125,14 +128,18 @@ class TestWiringInstalled:
             for path in sorted(skills.rglob("SKILL.md"))
         ]
         assert bodies, "fixture precondition: skills are installed"
-        assert all("uv run aelf" in body for body in bodies), (
-            "precondition gone: a generated skill no longer routes through "
-            "`uv run`, so re-read this guard before deleting it"
+        assert not any("uv run aelf" in body for body in bodies), (
+            "a generated skill routes through `uv run` again; #1413 "
+            "converted them to invoke `aelf` by name"
+        )
+        assert all("`aelf " in body for body in bodies), (
+            "precondition gone: a generated skill no longer invokes "
+            "`aelf` by name, so re-read this guard before trusting it"
         )
         hooks_doc = (codex_dir / "hooks.json").read_text(encoding="utf-8")
         assert '"aelf"' not in hooks_doc, hooks_doc
         _rc, out = _doctor(*installed)
-        assert "invoke `aelf` by name" not in out, out
+        assert "hook handler" not in out or "by name" not in out, out
 
     def test_a_posix_shim_on_path_stays_green(
         self, installed: tuple[Path, Path], empty_path: Path,
