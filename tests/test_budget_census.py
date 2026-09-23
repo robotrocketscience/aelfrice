@@ -285,6 +285,113 @@ def test_the_census_reports_no_violation_on_shipped_code(census: Any) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_containment_is_a_property_of_this_corpus_and_not_a_theorem(
+    census: Any,
+) -> None:
+    """A lower budget CAN reach a belief the unbudgeted probe did not.
+
+    The clean control above invites the inference that the probe at
+    `POOL_PROBE_BUDGET` is a structural upper bound on every arm, so the
+    containment guard can never fire and needs no fix. It is not, and
+    the difference decides whether the guard is doing work: the census
+    reports zero because `_open_store` writes **no edges**, not because
+    escape is impossible.
+
+    Add one `TEMPORAL_NEXT` edge and the shipped code escapes:
+
+    1. The spine lane seeds from `l1_packed[:DEFAULT_SPINE_SEED_COUNT]`.
+    2. `l1_packed` at a low budget is **not a prefix** of `l1_packed` at
+       a high one. At the probe budget the dear beliefs are packed and
+       hold every seed seat; at a smaller budget the later ones do not
+       fit, later stages still add the cheap tail, and a cheap belief
+       lands at an earlier position than it held at the probe — inside
+       the seed window rather than outside it.
+
+       Note this is broader than the stage-2 `continue` that
+       `test_raising_a_budget_can_evict_a_belief_a_lower_budget_admitted`
+       pins. Mutating that `continue` to a `break` does **not** stop the
+       escape, because the cheap tail is re-added downstream either way.
+       So the escape does not rest on the non-monotone skip alone; the
+       position shift is enough, and the seed window is what converts a
+       position shift into a candidacy change.
+    3. That promoted belief's spine neighbour shares no term with the
+       query, so it is neither an L1 nor an L2.5 hit and is reachable
+       only through the spine — from a seed the probe never had.
+
+    Observed on this fixture, with `ups` at its shipped 1500:
+
+        probe (1e9): d0 d1 d2 d3 d4 c0..c7          — no offlex
+        arm    750 : d0 d1       c0..c7 offlex      — escaped
+        arm   1125 : d0 d1 d2    c0..c7 offlex      — escaped
+        arm   1500 : d0 d1 d2 d3 c0..c7 offlex      — escaped
+
+    This matters beyond bookkeeping: any future corpus whose stores
+    carry edges runs the containment check for real, and a run that
+    treats a violation as impossible would read a real escape as a bug
+    in the guard.
+
+    Load-bearing, checked by mutation: setting `DEFAULT_SPINE_SEED_COUNT`
+    to 0 makes this red. Environment controls cannot reach it, because
+    the census clears every `AELFRICE_*` variable from its own process.
+    """
+    from aelfrice.models import EDGE_TEMPORAL_NEXT, EDGE_VALENCE, Edge
+    from aelfrice.temporal_spine import DEFAULT_SPINE_SEED_COUNT
+
+    # Exactly enough dear beliefs to fill the seed window at the probe
+    # budget, each ranking above the cheap tail on term frequency and
+    # each priced so that a small arm can afford only the first two.
+    dear = [
+        census._belief(f"d{i}", "alpha " * 300)
+        for i in range(DEFAULT_SPINE_SEED_COUNT)
+    ]
+    cheap = [census._belief(f"c{i}", f"alpha cheap {i}") for i in range(8)]
+    # Shares no query term, so neither L1 nor L2.5 can reach it.
+    off_lexicon = census._belief("offlex", "zzz unrelated neighbour zzz")
+
+    store = MemoryStore(":memory:")
+    for b in (*dear, *cheap, off_lexicon):
+        store.insert_belief(b)
+    # Hang it off the first cheap belief, which sits just outside the
+    # seed window at the probe budget and just inside it once the dear
+    # beliefs are priced out.
+    store.insert_edge(
+        Edge(
+            src=cheap[0].id,
+            dst=off_lexicon.id,
+            type=EDGE_TEMPORAL_NEXT,
+            weight=EDGE_VALENCE[EDGE_TEMPORAL_NEXT],
+        )
+    )
+
+    lane = census.lanes()[0]
+    probe = {
+        b.id for b in census._retrieve(
+            store, lane, "alpha",
+            token_budget=census.POOL_PROBE_BUDGET,
+            l25_token_subbudget=census.POOL_PROBE_BUDGET,
+        )
+    }
+    escaped: set[str] = set()
+    for multiplier in census.BUDGET_MULTIPLIERS:
+        arm = {
+            b.id for b in census._retrieve(
+                store, lane, "alpha",
+                token_budget=int(lane.budget * multiplier),
+                l25_token_subbudget=retrieval.DEFAULT_L25_TOKEN_SUBBUDGET,
+            )
+        }
+        escaped |= arm - probe
+
+    assert escaped, (
+        "no arm escaped the unbudgeted probe on an edge-bearing store. "
+        "Either the spine seed, the non-monotone packer, or the fixture's "
+        "price spread stopped doing its job — re-read this test before "
+        "concluding containment is structural"
+    )
+    assert off_lexicon.id in escaped, escaped
+
+
+@pytest.mark.timeout(120)
 def test_the_bound_fails_against_a_budget_sensitive_packer(
     census: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -355,8 +462,33 @@ def test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget(
 
     The shipped stage-2 `continue` belongs to this same non-monotone family,
     which is why the arm is not hypothetical.
+
+    The threshold sits above every arm and below the probe deliberately.
+    An earlier revision fired at 700, which is below the whole grid of
+    three lanes — `ups` runs 750-3000, `retrieval_default` 1200-4800 and
+    `rebuilder` 2000-8000 — so on those the fake shrank the probe and
+    every arm by the same item, the comparison stayed consistent, and no
+    containment violation could arise. The test asserted only that the
+    GLOBAL list was non-empty, so the three lanes it could not mutate
+    were carried by the three it could, and their containment guard was
+    unmutation-tested while reading as covered. The per-lane assertion
+    below is what makes that visible.
     """
     shipped = census.retrieval.pack_with_clusters
+    # Above `2.0 * budget`, the largest multiplier in BUDGET_MULTIPLIERS,
+    # for every lane; far below POOL_PROBE_BUDGET. So the probe is the
+    # only call the fake touches, on every lane.
+    above_every_arm = 100_000
+    assert above_every_arm < census.POOL_PROBE_BUDGET
+    arm_budgets = [
+        int(lane.budget * m)
+        for lane in census.lanes()
+        for m in census.BUDGET_MULTIPLIERS
+    ]
+    assert max(arm_budgets) < above_every_arm, (
+        "a lane's grid now reaches the mutation threshold, so the fake "
+        f"would shrink that lane's arms too: max arm {max(arm_budgets)}"
+    )
 
     def fake_pack(
         clusters: list[RetrievalCluster],
@@ -365,7 +497,7 @@ def test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget(
     ) -> list[Belief]:
         out = shipped(clusters, belief_by_id, **kwargs)
         # Returns less the higher the budget goes, the pool probe included.
-        if kwargs["token_budget"] >= 700 and out:
+        if kwargs["token_budget"] >= above_every_arm and out:
             return out[1:]
         return out
 
@@ -377,6 +509,18 @@ def test_the_bound_fails_against_a_packer_that_returns_less_at_a_high_budget(
         "budget; its pool probe is measuring itself"
     )
     assert any("unbudgeted probe" in v for v in rep["violations"])
+    # Per-lane, not just globally: a lane the fake cannot reach reads as
+    # covered when the assertion is on the pooled list.
+    lanes_hit = {
+        lane.name
+        for lane in census.lanes()
+        if any(f"{lane.name}/" in v for v in rep["violations"])
+    }
+    assert lanes_hit == {lane.name for lane in census.lanes()}, (
+        "the containment guard is unmutation-tested on "
+        f"{sorted({l.name for l in census.lanes()} - lanes_hit)}: the fake "
+        "shrinks the probe there but no violation is reported"
+    )
     assert rep["n"] == baseline_n, (
         "N moved under the mutation, so queries whose pool the mutation "
         "emptied were counted as measured: N went "
