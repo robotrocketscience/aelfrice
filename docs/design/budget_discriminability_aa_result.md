@@ -267,8 +267,10 @@ platforms, and `PYTHONHASHSEED` values (#605).
 
 The count is chosen against the 300-second producer timeout that
 `scripts/check_derived_figures.py` enforces. A replicate costs one
-`census.report()`, measured at 0.85 seconds, plus its share of the
-order-sensitivity sweep; 9 replicates run in 56 seconds and 17 in about 105.
+`census.report()` plus its share of the order-sensitivity sweep. With the
+sweep on, 9 replicates run in 12.3 seconds and 17 in 23.4; band-only, 8.1
+and 15.4. Re-derive with
+`python scripts/budget_discriminability_aa_replicate.py --sweep [--seeds 16]`.
 
 The band is a sample range, so it is monotone non-decreasing in the replicate
 count: raising the count can only widen it. A low count can understate the

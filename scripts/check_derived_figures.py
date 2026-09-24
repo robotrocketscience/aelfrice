@@ -1317,8 +1317,9 @@ def check_producers(
     re-runs every lane, query, and grid cell once per replicate to answer
     whether anything the census statistic reads moves under the perturbation.
     The sweep re-opened a fresh in-memory store for every arm rather than once
-    per query, which is now fixed: the whole run is 11s, of which the sweep is
-    4s and the band about 7s. That sweep is what
+    per query, which is now fixed: the whole run is 12.3s, of which the sweep
+    adds about 4s to the band's 8.1s. The row below is the band arm, since
+    `--sweep` is off by default. That sweep is what
     separates a real zero band from a cancelling one, so it is worth its cost,
     but not on this path: none of this check's markers read it, and
     `tests/test_derived_figures_1469.py` runs the whole check under a

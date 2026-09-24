@@ -148,10 +148,11 @@ BASE_SEED: Final[int] = 1546
 # range and is monotone non-decreasing in the replicate count, so this default
 # can only understate it, never flatter it. It is chosen against the
 # 300-second producer timeout `scripts/check_derived_figures.py` enforces: a
-# replicate costs one `census.report()` (measured at 0.85s) plus its share of
-# the order-sensitivity sweep, and 9 replicates measured 56 seconds on this
-# machine against 105 seconds at 16. Raise it with --seeds when you want a
-# tighter lower bound; never lower it after seeing a band.
+# replicate costs one `census.report()` plus its share of the
+# order-sensitivity sweep. With the sweep on, 9 replicates measured 12.3s
+# on this machine against 23.4s at 17; band-only, 8.1s against 15.4s.
+# Raise it with --seeds when you want a tighter lower bound; never lower
+# it after seeing a band.
 DEFAULT_SEEDS: Final[int] = 8
 
 # The reference replicate: the corpora in their committed order. Its EC row
@@ -298,18 +299,40 @@ def arm_outputs(
     # therefore rebuilt the same store once per arm: lanes x budgets x
     # sub-budgets = 90 identical opens per `(key, replicate)` pair, and
     # `MemoryStore(":memory:")` runs the full open-time DDL, migration and
-    # origin backfill every time. Hoisting the open above the arm loops takes
-    # the census from 4,140 opens to 46 and the sweep from ~12s to ~1s per
-    # replicate, with byte-identical output -- `examined` counts cells, and
-    # reordering the loops changes only the order `varied` is appended in,
-    # which the return already normalises with `sorted(...)`.
+    # origin backfill every time.
     #
-    # Reuse is sound because `census._retrieve` is read-only with respect to
-    # the store; `budget_discriminability_census.measure_query` already relies
-    # on that, reusing one store across its probe and all 15 grid arms.
+    # Hoisting the open above the arm loops divides the sweep's opens by 90.
+    # The absolute count scales with the replicate count, so state the seed
+    # arm with it: at `replicate(1)` (2 populations, what the tests drive)
+    # 4,140 -> 46; at the shipped `DEFAULT_SEEDS = 8` (9 populations)
+    # 18,630 -> 207.
+    #
+    # Output is byte-identical: `examined` counts cells, and reordering the
+    # loops changes only the order `varied` is appended in, which the return
+    # already normalises with `sorted(...)`.
+    #
+    # Reuse is sound because `retrieve()` performs no write that this
+    # measurement reads back. Stated precisely, because "retrieve is
+    # read-only" is not true unconditionally: with
+    # `[implicit_feedback] enqueue_on_retrieve` set, it inserts into
+    # `deferred_feedback_queue`, and that resolver has a TOML tier this
+    # module's env-clear does not cover. Nothing in the retrieve path reads
+    # that queue back, and the BM25 sidecar write is a no-op for `:memory:`,
+    # so the sweep's answer cannot move either way -- verified by dumping the
+    # sqlite image before and after all 90 arms, with and without the flag.
+    # `budget_discriminability_census.measure_query` already depends on the
+    # same property, reusing one store across its probe and all 15 grid arms.
     for key in keys:
-        stores = [census._open_store(m[key]) for m in per_replicate_queries]
+        # Appended one at a time inside the `try`, not built as a
+        # comprehension: a comprehension assembles a temporary list and
+        # binds it only on success, so a raise on the third open would
+        # discard the first two still-open stores with nothing left to
+        # close them. Appending means `finally` always sees exactly what
+        # was opened.
+        stores: list[Any] = []
         try:
+            for mapping in per_replicate_queries:
+                stores.append(census._open_store(mapping[key]))
             for lane in lanes:
                 for mult in census.BUDGET_MULTIPLIERS:
                     budget = census.arm_budget_for(lane.budget, mult)
@@ -346,8 +369,10 @@ def replicate(
     """Run the census once per replicate and return the whole A/A report.
 
     `order_sensitivity_sweep` runs the per-arm diagnostic above, which costs
-    one `retrieve()` per lane x query x grid cell per replicate — 4s of an
-    11s run here, against about 7s for the band. Turning it off
+    one `retrieve()` per lane x query x grid cell per replicate. At the
+    shipped seed count it adds about 4s to the band's 8.1s, for a 12.3s
+    run (medians of three; the producer-timing table clocks the band arm
+    at 8.2s through its own harness). Turning it off
     changes nothing about how the band is computed; a report produced with it
     off carries `arm_sweep: False`, and `figures()` then OMITS the sweep keys
     rather than zero-filling them, so a skipped diagnostic can never reach a
@@ -614,10 +639,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "also run the per-arm order-sensitivity diagnostic. It costs one "
-            "retrieve() per lane x query x grid cell per replicate — 4s of an "
-            "11s run here — while the band itself takes about 7s. Off by "
-            "default so the derived-figures gate, whose markers cover only "
-            "the band, does not pay for it"
+            "retrieve() per lane x query x grid cell per replicate, adding "
+            "about 4s to the band's 8.1s for a 12.3s run. Off by default so "
+            "the derived-figures gate, whose markers cover only the band, "
+            "does not pay for it"
         ),
     )
     ap.add_argument(
