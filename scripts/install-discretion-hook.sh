@@ -69,8 +69,13 @@ url="${2:-}"
 
 z40=0000000000000000000000000000000000000000
 
-# Banned paths — extended regex
-BANNED_PATHS='^(tests/corpus/v2_0/.+\.jsonl|\.claude/|\.planning/|.*/handoffs/.*\.md)$'
+# Banned paths — extended regex.
+# `.gemini/` and `.codex/` joined `.claude/` under #1617: PR #1610 added
+# `.gemini/settings.json` carrying a developer's absolute venv path
+# eleven times, and this list only knew about `.claude/`. Host
+# configuration directories are per-machine by nature — their content is
+# local absolute paths — so none of them belongs in a public tree.
+BANNED_PATHS='^(tests/corpus/v2_0/.+\.jsonl|\.claude/|\.gemini/|\.codex/|\.planning/|.*/handoffs/.*\.md)$'
 
 # Banned vocabulary in diff content — case-insensitive extended regex.
 # Word boundaries are intentional to avoid blocking on substrings like "claude.md".
@@ -144,6 +149,34 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         echo "$bad_phrases" | head -20 | sed 's/^/  /' >&2
         echo "" >&2
         fail=1
+    fi
+
+    # Check 3b: absolute home-directory paths (#1617).
+    # The vocabulary checks look for words; this looks for a shape. A path
+    # like /home/<name>/... publishes a username and a machine layout, which
+    # no banned-word list was going to catch — PR #1610 shipped eleven of
+    # them past every scanner, local and CI alike.
+    #
+    # This delegates to scripts/check_no_personal_paths.py rather than
+    # carrying a second copy of the regex. One pattern, one allowlist, one
+    # set of fixtures (tests/test_no_personal_paths.py); a shell duplicate
+    # would drift from it silently, which is the failure mode that produced
+    # the hole in the first place.
+    checker="$(git rev-parse --show-toplevel)/scripts/check_no_personal_paths.py"
+    if [ -f "$checker" ]; then
+        py=$(command -v python3 || command -v python || echo "")
+        if [ -n "$py" ]; then
+            if ! personal=$("$py" "$checker" --range "$range" 2>&1); then
+                echo "" >&2
+                echo "PRE-PUSH BLOCKED: absolute home-directory path in diff for $local_ref" >&2
+                echo "$personal" | head -20 | sed 's/^/  /' >&2
+                echo "  Replace it with ~/ or a placeholder such as /home/user." >&2
+                echo "" >&2
+                fail=1
+            fi
+        else
+            echo "pre-push: no python found; skipping the personal-path check." >&2
+        fi
     fi
 
     # Check 4: banned vocabulary in commit messages.

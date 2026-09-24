@@ -75,6 +75,16 @@ jobs:
           fi
           echo "$PATTERNS" | base64 -d > /tmp/p
           [ -s /tmp/p ] || { echo "::error::empty"; exit 1; }
+      # #1617: a rule that lives in the tree, not in SCAN_RULES_B64.
+      # PR #1610 added a developer's absolute venv path eleven times and
+      # this job reported PASS, because the secret's patterns do not match
+      # a home-directory path. This step runs the committed checker, whose
+      # pattern and allowlist are reviewable in a diff and pinned by
+      # tests/test_no_personal_paths.py. Tracked-file mode, because this
+      # job checks out shallow and has no base ref to diff against.
+      - name: No personal paths, no tracked host dotdirs
+        run: python3 scripts/check_no_personal_paths.py
+
       - name: Scan tracked files
         run: |
           set -euo pipefail
