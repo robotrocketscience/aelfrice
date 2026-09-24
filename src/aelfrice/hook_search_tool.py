@@ -558,15 +558,32 @@ def _read_payload(
     return cast(dict[str, object], parsed)
 
 
+# #1626: every tool that performs a search, not just the local ones.
+#
+# The value of this hook is ORDERING: aelfrice runs first, so the model
+# already holds the relevant brain-graph context before it chooses grep,
+# the web, or anything else. A search the model runs afterwards, or not
+# at all, is worth much less. Covering only Grep and Glob left the web
+# tools reaching out with no brain-graph context at all, and whether
+# that path is taken is exactly the model choice this product exists to
+# remove.
+SEARCH_TOOL_NAMES: Final[tuple[str, ...]] = (
+    "Grep",
+    "Glob",
+    "WebSearch",
+    "WebFetch",
+)
+
+
 def _is_search_tool_call(payload: dict[str, object]) -> bool:
-    tool_name = payload.get("tool_name")
-    return tool_name in ("Grep", "Glob")
+    return payload.get("tool_name") in SEARCH_TOOL_NAMES
 
 
 def _extract_query(payload: dict[str, object]) -> str | None:
     """Lift the search query out of tool_input.pattern.
 
-    Both Grep and Glob use the field name `pattern`. Strips regex/glob
+    Grep and Glob use `pattern`, WebSearch uses `query`, and WebFetch
+    uses `prompt`. Strips regex/glob
     metacharacters by extracting only alphanumeric word tokens, then
     joins the first QUERY_TOKEN_LIMIT with FTS5 ` OR ` to form a query.
     Returns None when no usable tokens are present (pure-glob patterns,
@@ -575,7 +592,18 @@ def _extract_query(payload: dict[str, object]) -> str | None:
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return None
-    raw = cast(dict[str, object], tool_input).get("pattern")
+    ti = cast(dict[str, object], tool_input)
+    # #1626: each search tool names its query differently. Grep and Glob
+    # use `pattern`; WebSearch uses `query`; WebFetch carries a `url`
+    # plus the `prompt` describing what is wanted from it, and the
+    # prompt is the part worth searching memory for — a bare URL
+    # tokenises into host fragments that match nothing useful.
+    raw: object = None
+    for field in ("pattern", "query", "prompt"):
+        candidate = ti.get(field)
+        if isinstance(candidate, str) and candidate.strip():
+            raw = candidate
+            break
     if not isinstance(raw, str) or not raw.strip():
         return None
     tokens = _TOKEN_RE.findall(raw)

@@ -773,7 +773,9 @@ def uninstall_claude_memory_mirror_hook(
 
 
 SEARCH_TOOL_EVENT: Final[str] = "PreToolUse"
-SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob"
+# #1626: the web tools join the local ones. aelfrice must run BEFORE
+# any search, or the ordering that makes this hook valuable is lost.
+SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob|WebSearch|WebFetch"
 SEARCH_TOOL_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
 
 SEARCH_TOOL_BASH_MATCHER: Final[str] = "Bash"

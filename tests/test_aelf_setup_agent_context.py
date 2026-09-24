@@ -118,7 +118,11 @@ def test_uninstall_removes_only_agent_entry(tmp_path: Path) -> None:
     assert result.removed == 1
     entries = _pre_tool_use_entries(_settings(p))
     assert len(entries) == 1
-    assert entries[0]["matcher"] == "Grep|Glob"
+    # Derived, not transcribed: the search matcher widened to cover the
+    # web tools in #1626, and a hard-coded copy went stale.
+    from aelfrice.setup import SEARCH_TOOL_MATCHER
+
+    assert entries[0]["matcher"] == SEARCH_TOOL_MATCHER
 
 
 def test_uninstall_missing_is_zero(tmp_path: Path) -> None:

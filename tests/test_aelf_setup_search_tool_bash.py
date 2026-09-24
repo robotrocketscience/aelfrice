@@ -59,7 +59,20 @@ def _bash_entries(data: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _grep_glob_entries(data: dict[str, object]) -> list[dict[str, object]]:
-    return [e for e in _pre_tool_use_entries(data) if e.get("matcher") == "Grep|Glob"]
+    """Entries on the search-tool matcher, whatever it currently is.
+
+    Read from `SEARCH_TOOL_MATCHER` rather than transcribed. The literal
+    "Grep|Glob" was hard-coded here and went stale the moment the matcher
+    widened to cover the web tools (#1626); a transcribed constant is a
+    second copy free to drift from the one that ships.
+    """
+    from aelfrice.setup import SEARCH_TOOL_MATCHER
+
+    return [
+        e
+        for e in _pre_tool_use_entries(data)
+        if e.get("matcher") == SEARCH_TOOL_MATCHER
+    ]
 
 
 def _run_setup(settings_path: Path, *extra_args: str) -> tuple[int, str]:

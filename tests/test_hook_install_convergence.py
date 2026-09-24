@@ -44,6 +44,7 @@ from aelfrice.doctor import (
     prune_broken_aelf_hooks,
 )
 from aelfrice.setup import (
+    SEARCH_TOOL_MATCHER,
     install_search_tool_hook,
     install_user_prompt_submit_hook,
 )
@@ -193,7 +194,7 @@ def test_matcher_scoped_duplicates_do_not_collapse_across_matchers(
     settings = tmp_path / "settings.json"
     _write(settings, {
         "PreToolUse": [
-            _entry("/opt/bin/aelf-search-tool-hook", matcher="Grep|Glob"),
+            _entry("/opt/bin/aelf-search-tool-hook", matcher=SEARCH_TOOL_MATCHER),
             _entry("/opt/bin/aelf-search-tool-hook", matcher="Bash"),
         ],
     })
@@ -201,7 +202,7 @@ def test_matcher_scoped_duplicates_do_not_collapse_across_matchers(
         settings, command="/opt/bin/aelf-search-tool-hook", timeout=15,
     )
     matchers = sorted(e.get("matcher") for e in _event(settings, "PreToolUse"))
-    assert matchers == ["Bash", "Grep|Glob"]
+    assert matchers == sorted(["Bash", SEARCH_TOOL_MATCHER])
 
 
 # --- detection -----------------------------------------------------------
