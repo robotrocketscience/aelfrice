@@ -192,6 +192,10 @@ also_copy = [
     # `tests/test_documented_setup_1548.py` reads the § Development setup
     # block to compare its extras against the workflow syncs.
     "CONTRIBUTING.md",
+    # `tests/test_no_personal_paths.py` reads it to check that every
+    # directory the #1617 checker refuses is also ignored, so the two
+    # lists cannot drift apart.
+    ".gitignore",
 ]
 
 # `src/aelfrice/__init__.py` is six hand-written lines of package metadata:
