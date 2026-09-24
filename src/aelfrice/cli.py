@@ -2094,14 +2094,25 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # rows. With promotion already done, the skip is unnecessary.
         #
         # And a user who typed `lock` must end up with a locked
-        # statement. Previously a matching phantom was promoted, the
-        # lock write skipped it, and the command printed "locked: <id>"
-        # and exited 0 for something `aelf locked` did not list.
+        # statement. The skipped write printed "locked: <id>" and exited
+        # 0 for something `aelf locked` did not list.
+        #
+        # Honest scope: that skip is INERT on today's writers, so this
+        # reordering is hardening rather than a fix for an observed
+        # failure. `actual_id` resolves by `sha256(text)`, and the only
+        # producer of ORIGIN_SPECULATIVE is `wonder/lifecycle.py`, which
+        # keys `content_hash` on `_constituent_key` — sha256 of the
+        # constituent ids plus the generator, explicitly NOT the content.
+        # So `actual_id` cannot land on a real phantom row, and pre- and
+        # post-change code produce identical store state on one. Two
+        # independent reviews established this; do not re-assert that
+        # restoring the skip is caught by a test, because it is not.
         from aelfrice.promotion import (
             SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
             find_phantom_lock_matches,
             promote,
         )
+        promoted_ids: list[str] = []
         for phantom_id in find_phantom_lock_matches(store, args.statement):
             promote(
                 store,
@@ -2109,6 +2120,7 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 source_label=SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
                 now=now,
             )
+            promoted_ids.append(str(phantom_id))
             print(f"promoted phantom: {phantom_id}", file=out)  # type: ignore[arg-type]
 
         resolved = store.get_belief(actual_id, include_retired=True)
@@ -2125,20 +2137,34 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 resolved.origin = ORIGIN_USER_STATED
             store.update_belief(resolved)
 
-        # #1620: never report a lock that did not happen. Everything
-        # above either locked the belief or promoted it and then locked
-        # it, so reaching here unlocked means a state no branch covers —
-        # report it rather than printing success, which is what made the
-        # original failure invisible for six weeks.
-        verified = store.get_belief(actual_id, include_retired=True)
+        # #1620: never report a lock that did not happen.
+        #
+        # Checked against the SAME predicate `aelf locked` uses, which is
+        # the surface the message below sends the reader to:
+        # `list_locked_beliefs` filters `valid_to IS NULL`, so reading
+        # with `include_retired=True` would pass a retired-but-locked row
+        # and then tell the user to confirm it in a listing that excludes
+        # it. Not reachable today — #1215 revives a retired row on an
+        # explicit user corroboration, and `cli_remember` is one — but a
+        # guard written against the wrong predicate for the exact failure
+        # class it exists to catch is a guard waiting to be wrong.
+        verified = store.get_belief(actual_id)
         if verified is None or verified.lock_level != LOCK_USER:
             print(
-                f"aelf lock: FAILED — {actual_id} is not locked. Nothing "
-                f"was added to the locked set.",
+                f"aelf lock: FAILED — {actual_id} is not locked.",
                 file=sys.stderr,
             )
+            if promoted_ids:
+                # Say what DID change. Surface B commits per call, so
+                # "nothing happened" would be false about the store.
+                print(
+                    f"  {len(promoted_ids)} phantom(s) were promoted and that "
+                    f"is committed: {', '.join(promoted_ids)}",
+                    file=sys.stderr,
+                )
             print(
-                "  Confirm with `aelf locked` — this statement is NOT in it.",
+                "  Nothing was added to the locked set. Confirm with "
+                "`aelf locked` — this statement is NOT in it.",
                 file=sys.stderr,
             )
             return 1

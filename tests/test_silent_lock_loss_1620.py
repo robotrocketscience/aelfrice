@@ -340,6 +340,11 @@ def test_ingest_does_not_write_an_aelfrice_command_as_a_belief(
         "<aelfrice-memory>",
         "<core>",
         "<locked>",
+        # Removing these four together used to fail nothing.
+        "<belief>bare open tag with no attributes</belief>",
+        "<session-start>",
+        "<recent-work>",
+        "<cadence-checkpoint>",
     ],
 )
 def test_commands_and_rendered_output_are_transcript_noise(text: str) -> None:
@@ -364,3 +369,33 @@ def test_commands_and_rendered_output_are_transcript_noise(text: str) -> None:
 )
 def test_ordinary_prose_is_still_captured(text: str) -> None:
     assert not is_transcript_noise(text), f"dropped a real statement: {text[:60]!r}"
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "aelf locks are injected verbatim every session",
+        "aelf is the tool we use for durable memory",
+    ],
+)
+def test_unpunctuated_prose_opening_with_the_cli_name_is_dropped(text: str) -> None:
+    """A known limitation, pinned so it is visible rather than implied.
+
+    The category-1 escape hatch is punctuation-only
+    (`_looks_like_written_prose`), so only a *punctuated* sentence
+    opening with `aelf ` survives. The unpunctuated form is dropped.
+
+    That is the pre-existing #1371 design, shared with the `git ` and
+    `pytest ` prefixes, not something this change introduced — and the
+    module docstring notes the transcript logger writes prompts
+    verbatim, so unpunctuated prose is common in this corpus. Recorded
+    here because an earlier draft of the changelog claimed such
+    sentences "still land", which holds only with a full stop.
+
+    If this arm starts failing, the escape hatch got smarter and the
+    claim can be widened.
+    """
+    assert is_transcript_noise(text), (
+        "the limitation changed — update the claim in the changelog too"
+    )
