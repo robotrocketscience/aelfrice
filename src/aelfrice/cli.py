@@ -2089,17 +2089,26 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             resolved.locked_at = now
             resolved.origin = ORIGIN_USER_STATED
             store.update_belief(resolved)
+
+        # #1620: the outcome line is BUILT here and PRINTED at the end,
+        # once #550 Surface B has run and the result is actually known.
+        #
+        # It used to print here. On a speculative collision that Surface
+        # B then declined, stdout said "locked: <id>" while the statement
+        # was not locked — and a user reading a terminal believes stdout.
+        # Announcing success before the work finishes is what made the
+        # reported failure invisible for six weeks.
         if pre_existing_at_lock_id and actual_id == lock_bid:
-            print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="upgrade")
+            success_line = f"upgraded existing belief to lock: {actual_id}"
+            success_kind = "upgrade"
         elif actual_id in ids_before:
             # content_hash collision with a different-source belief —
             # worker corroborated; preserve the prior surface message.
-            print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="corroborated")
+            success_line = f"locked: {actual_id} (corroborated existing)"
+            success_kind = "corroborated"
         else:
-            print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="new")
+            success_line = f"locked: {actual_id}"
+            success_kind = "new"
 
         # #1016-B layered locks: apply an explicit --reference/--frozen
         # tier. None = no flag → leave the tier as-is (new locks keep the
@@ -2215,6 +2224,53 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 f"promoted phantom: {phantom_id}",
                 file=out,
             )
+
+        # #1620: never report success without having locked something.
+        #
+        # The speculative exclusion further up is deliberate — #550
+        # Surface B, just above, owns phantom rows and promotes them to
+        # ORIGIN_USER_VALIDATED, and rewriting origin at the lock site
+        # would disqualify the phantom from its own path. But the
+        # exclusion fell through to the success lines regardless, so a
+        # statement that matched a speculative row which Surface B then
+        # did NOT promote printed "locked: <id>", exited 0, and left
+        # `lock_level` at 'none'.
+        #
+        # That is the worst failure a durability primitive can have: the
+        # user is told a statement is ground truth when it is not, and
+        # nothing anywhere contradicts them. Reported after a lock went
+        # missing and the instruction was restated twelve times over six
+        # weeks without binding.
+        #
+        # Checked HERE, after Surface B, because promotion is a
+        # legitimate outcome — the belief ends up user-validated rather
+        # than locked, and that is success. Only reaching this point with
+        # neither outcome is a failure.
+        final = store.get_belief(actual_id, include_retired=True)
+        if (
+            final is not None
+            and final.lock_level != LOCK_USER
+            and final.origin != ORIGIN_USER_VALIDATED
+        ):
+            print(
+                f"aelf lock: nothing was locked. {actual_id} already exists "
+                f"as a speculative belief that the phantom promotion path "
+                f"did not claim.",
+                file=sys.stderr,
+            )
+            print(
+                f"  Promote it explicitly:  aelf promote {actual_id}",
+                file=sys.stderr,
+            )
+            print(
+                "  Confirm with `aelf locked` — this statement is NOT in it.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Outcome known and good: announce it now, not before.
+        print(success_line, file=out)  # type: ignore[arg-type]
+        _feed_log_event("belief.locked", actual_id, args, kind=success_kind)
     finally:
         store.close()
     return 0
