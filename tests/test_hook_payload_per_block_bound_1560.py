@@ -9,7 +9,7 @@ first.
 Which four blocks those are is itself pinned here rather than left to a
 reader: `test_the_stdout_writer_enumeration_is_re_derived_from_the_source`
 parses `user_prompt_submit` and compares its stdout writers against
-`_STDOUT_WRITERS`, so a fifth one reds instead of quietly falsifying the
+`_STDOUT_WRITERS`, so a sixth one reds instead of quietly falsifying the
 docstring's "those four are the whole of it".
 
 **Both options pass a test that checks each block separately**, which is
@@ -332,6 +332,10 @@ _STDOUT_WRITERS = {
     "write:cadence_checkpoint_block": "<cadence-checkpoint>",
     "write:phantom_block": "<aelfrice-phantom-opportunity>",
     "write:promotion_block": "<aelfrice-phantom-promotion-opportunity>",
+    # #1626: the executed-command note. Bounded by
+    # COMMAND_BLOCK_CHAR_CAP, a character length like the two phantom
+    # notes above, not a token budget.
+    "write:command_note": "<aelfrice-command-executed>",
 }
 
 # The stream expressions `user_prompt_submit` starts with: its own

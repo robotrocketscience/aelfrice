@@ -126,7 +126,12 @@ def _shipped_content_caps() -> dict[str, int]:
 # on a block where every line had been cut. The test asserts the resulting
 # length against that discovered maximum rather than trusting this number,
 # so a cap added later fails the assert instead of slipping under it.
-_PAD_CHARS = 1200
+# Raised from 1200 for #1626, which added
+# `hook.COMMAND_BLOCK_CHAR_CAP = 2000` — larger than every cap this
+# padding previously had to dominate. The assert below discovers the
+# maximum rather than trusting this number, which is exactly how the
+# new cap was caught.
+_PAD_CHARS = 2400
 
 
 def _mk(

@@ -378,10 +378,19 @@ one line per opportunity, and what bounds it is `max_fires_per_session`
 the entries a session can emit at all — together with `_TOPIC_MAX`, which
 truncates the topic on each line. Those are an entry count and a
 character length; neither is a token budget, and nothing compares either
-note against one. Those four are the whole of what `user_prompt_submit`
+note against one.
+
+A fifth (#1626) carries no token bound either: the
+`<aelfrice-command-executed>` note, written when the hook executes a
+typed `/aelf:` command on the user's behalf. It is one line plus a fixed
+two-line frame, and what bounds it is `COMMAND_BLOCK_CHAR_CAP` — again a
+character length rather than a token budget, because the thing being
+bounded is a single command's echoed output and not a pack.
+
+Those five are the whole of what `user_prompt_submit`
 sends to stdout, and that is re-derived rather than asserted:
 `test_hook_payload_per_block_bound_1560.py` parses the function and
-compares its stdout writers against the same four, so a fifth one reds a
+compares its stdout writers against the same five, so a sixth one reds a
 test instead of quietly falsifying this sentence.
 The `<cadence-resume>` recap (#871) is not a fifth: it is
 prepended to the session-start sub-block and emitted *inside* this
@@ -2180,6 +2189,136 @@ def read_user_prompt_submit_telemetry(
     return records
 
 
+# --- #1626: mechanical execution of a typed /aelf: command --------------
+
+# The commands the hook runs on the user's behalf.
+#
+# aelfrice's promise is that memory does not depend on the model
+# choosing to act. A slash command is a *skill*: nothing runs it unless
+# the model decides to, and when it does not, the command silently does
+# not happen. A user's `/aelf:lock` was lost exactly that way, and the
+# same instruction was restated twelve times over six weeks before
+# anyone noticed (#1620).
+#
+# The allowlist is narrow on purpose, and the boundary is "additive and
+# idempotent", not "useful":
+#
+#   lock       writes L0 ground truth — the command that failed
+#   confirm    bumps a posterior toward truth; repeating is harmless
+#   promote    raises an origin; idempotent by design
+#   scope-out  suppresses matches for this session only
+#
+# Read-only commands are deliberately absent: the model running
+# `aelf search` or not costs nothing durable, and the PreToolUse hooks
+# already put retrieval in front of the search tools.
+#
+# Destructive and environment-changing commands are deliberately absent
+# and must stay that way. `delete`, `retire`, `unlock`, `restore`,
+# `uninstall`, `upgrade` and `setup` either lose data or reconfigure the
+# machine. Running one off raw prompt text that no human confirmed, and
+# which the model may merely be quoting, is a worse failure than the one
+# this closes.
+_EXECUTABLE_COMMANDS: Final[frozenset[str]] = frozenset(
+    {"lock", "confirm", "promote", "scope-out"}
+)
+
+# Character cap on the executed-command note (#1626).
+#
+# The note carries the command's own stdout, and a command may print as
+# much as it likes — `aelf lock` echoes the statement back. Generous,
+# because the note is one line and truncating it mid-id would make the
+# result unreadable; it is a guard against a pathological output, not a
+# retrieval knob. A character length rather than a token budget, the
+# same shape the two phantom notes use.
+COMMAND_BLOCK_CHAR_CAP: Final[int] = 2000
+
+# Anchored at the start. A prompt that MENTIONS a command is a claim
+# about the world, not a request to run one — "the command /aelf:lock
+# did not take effect yesterday" must be inert. Same distinction the
+# capture filter draws (#1620).
+_AELF_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*(.*)\Z", re.DOTALL
+)
+
+
+def parse_aelf_command(prompt: str) -> tuple[str, str] | None:
+    """Return `(command, argument)` when `prompt` IS an aelf invocation.
+
+    None when it is not one, including when it merely mentions one.
+    """
+    m = _AELF_COMMAND_RE.match(prompt.strip())
+    if m is None:
+        return None
+    return m.group(1), m.group(2).strip()
+
+
+def execute_aelf_command(
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    stderr: IO[str],
+) -> str | None:
+    """Run a typed aelf command. Return a line for the model, or None.
+
+    None when the prompt is not a command, or names one outside
+    `_EXECUTABLE_COMMANDS` — in which case nothing happens and the model
+    handles it as before, which is how destructive commands stay manual.
+
+    Never raises. A failure here must not cost the prompt its memory
+    injection, so every error is reported and swallowed. It is reported
+    LOUDLY, though: a silent failure would reproduce the defect this
+    exists to close, inside the fix for it.
+    """
+    parsed = parse_aelf_command(prompt)
+    if parsed is None:
+        return None
+    command, argument = parsed
+    if command not in _EXECUTABLE_COMMANDS:
+        return None
+    if not argument:
+        line = f"aelfrice: /aelf:{command} needs an argument; nothing was done."
+        print(line, file=stderr)
+        return line
+
+    import io as _io  # noqa: PLC0415 - hot path, imported only on a command
+
+    buf = _io.StringIO()
+    # Session attribution travels by env var, not by flag. Every command
+    # resolves it through `resolve_session_id`, which reads
+    # AELF_SESSION_ID — whereas `--session-id` is not accepted uniformly
+    # across the subcommands, so passing it fails the ones that lack it.
+    # Restored afterwards so the hook leaves the process as it found it.
+    _prev = os.environ.get("AELF_SESSION_ID")
+    if session_id:
+        os.environ["AELF_SESSION_ID"] = session_id
+    try:
+        from aelfrice import cli as _cli  # noqa: PLC0415
+
+        rc = _cli.main([command, argument], out=buf)
+    except SystemExit as exc:
+        rc = int(exc.code or 1) if exc.code is not None else 0
+    except Exception as exc:  # noqa: BLE001 - loud, never fatal
+        line = f"aelfrice: /aelf:{command} FAILED: {exc}"
+        print(line, file=stderr)
+        return line
+    finally:
+        if session_id:
+            if _prev is None:
+                os.environ.pop("AELF_SESSION_ID", None)
+            else:
+                os.environ["AELF_SESSION_ID"] = _prev
+
+    output = " ".join(buf.getvalue().split())
+    if rc == 0:
+        line = f"aelfrice: ran /aelf:{command} — {output or 'done'}"
+    else:
+        line = f"aelfrice: /aelf:{command} FAILED (exit {rc})"
+        if output:
+            line += f" — {output}"
+    print(line, file=stderr)
+    return line
+
+
 @config_discovery_scope()
 def user_prompt_submit(
     *,
@@ -2237,6 +2376,43 @@ def user_prompt_submit(
         if prompt is None:
             return 0
         session_id = _extract_session_id(raw)
+        # #1626: execute a typed aelf command before anything else.
+        #
+        # The hook is authoritative here. It runs the command and tells
+        # the model it already ran, so the model does not repeat it and
+        # the outcome no longer depends on the model choosing to invoke
+        # a skill. That is the whole point: a lock the user typed must
+        # land whether or not anything downstream cooperates.
+        command_line: str | None = None
+        try:
+            command_line = execute_aelf_command(
+                prompt, session_id=session_id, stderr=serr
+            )
+        except Exception:
+            # Belt for the executor's own net. A command must never cost
+            # this prompt its memory injection.
+            command_line = None
+        if command_line is not None:
+            # Tell the model it already ran, so it does not repeat the
+            # command. The hook is authoritative: this line is a report
+            # of work already done, not a task to perform.
+            #
+            # Bounded at the source rather than at the emit boundary.
+            # `command_line` carries the command's own stdout, and a
+            # command is free to print as much as it likes — `aelf lock`
+            # echoes the statement back, and a future executable command
+            # could echo far more. `COMMAND_BLOCK_CHAR_CAP` is a
+            # character length, not a token budget, which is the same
+            # shape the two phantom notes use and for the same reason:
+            # what needs bounding here is one line, not a pack.
+            command_note = command_line[:COMMAND_BLOCK_CHAR_CAP]
+            sout.write(
+                "<aelfrice-command-executed>\n"
+                f"{command_note}\n"
+                "aelfrice ran this command itself when you submitted the "
+                "prompt. Do not run it again; report the result above.\n"
+                "</aelfrice-command-executed>\n\n"
+            )
         # #1522: stamp the turn boundary the PreToolUse search hook's
         # per-turn Bash fire cap resets on. This hook is the only one
         # guaranteed to fire exactly once per turn. Fail-soft.
