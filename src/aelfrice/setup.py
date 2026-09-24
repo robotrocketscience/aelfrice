@@ -776,6 +776,22 @@ SEARCH_TOOL_EVENT: Final[str] = "PreToolUse"
 # #1626: the web tools join the local ones. aelfrice must run BEFORE
 # any search, or the ordering that makes this hook valuable is lost.
 SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob|WebSearch|WebFetch"
+
+# Matcher strings this hook used to ship under.
+#
+# `_install_or_replace_entry` keys on (command, matcher), so widening the
+# matcher does NOT replace an entry installed under the old one — it
+# appends a second. Both then match Grep and Glob, so every Grep call
+# would run the hook twice: two store opens, two retrievals, and the
+# locked block injected twice, because `filter_against_ring` lets locked
+# beliefs through as new every time. `prune_broken_aelf_hooks` does not
+# remove it either; the entry is not broken, just superseded.
+#
+# Every existing install is the affected case, so install removes these
+# before appending. Append to this tuple whenever SEARCH_TOOL_MATCHER
+# changes, and never remove an entry: a user upgrading from any prior
+# version has to land on exactly one.
+SUPERSEDED_SEARCH_TOOL_MATCHERS: Final[tuple[str, ...]] = ("Grep|Glob",)
 SEARCH_TOOL_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
 
 SEARCH_TOOL_BASH_MATCHER: Final[str] = "Bash"
@@ -795,10 +811,46 @@ def resolve_search_tool_command(scope: SettingsScope) -> str:
     return _resolve_script(SEARCH_TOOL_SCRIPT_NAME, scope)
 
 
+def _drop_superseded_search_entries(
+    entries: list[dict[str, object]], *, command: str
+) -> bool:
+    """Remove this hook's entries on a superseded matcher. True if any went.
+
+    Scoped to `command`, so a user's own PreToolUse entry that happens to
+    sit on the old matcher is left alone: only the entry running THIS
+    hook is retired, and only from a matcher aelfrice itself used to
+    install.
+
+    Compared by basename, because the same hook is installed by absolute
+    path and the path differs between a venv install and a `uv tool` one
+    — an upgrade that changed the prefix would otherwise leave the old
+    entry behind, which is the whole defect this exists to prevent.
+    """
+    target = Path(command).name
+    keep: list[dict[str, object]] = []
+    removed = False
+    for entry in entries:
+        matcher = entry.get("matcher")
+        hooks = entry.get("hooks")
+        if matcher in SUPERSEDED_SEARCH_TOOL_MATCHERS and isinstance(hooks, list):
+            names = {
+                Path(str(h.get("command", ""))).name
+                for h in hooks
+                if isinstance(h, dict)
+            }
+            if names == {target}:
+                removed = True
+                continue
+        keep.append(entry)
+    if removed:
+        entries[:] = keep
+    return removed
+
+
 def install_search_tool_hook(
     settings_path: Path, *, command: str, timeout: int | None = None,
 ) -> InstallResult:
-    """Add a PreToolUse:matcher=Grep|Glob hook entry running `command`.
+    """Add a PreToolUse hook entry on `SEARCH_TOOL_MATCHER` running `command`.
 
     Idempotent against the same `command`. Coexists with other PreToolUse
     entries — appending only after confirming no matching entry already
@@ -808,13 +860,17 @@ def install_search_tool_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
+    # #1626: retire entries on a superseded matcher first, or widening
+    # the matcher leaves every existing install with two entries that
+    # both match Grep and Glob, firing this hook twice per call.
+    removed_superseded = _drop_superseded_search_entries(entries, command=command)
     if _install_or_replace_entry(
         entries,
         command=command,
         timeout=timeout,
         status_message=None,
         matcher=SEARCH_TOOL_MATCHER,
-    ):
+    ) and not removed_superseded:
         return InstallResult(
             path=settings_path, installed=False, already_present=True,
         )
