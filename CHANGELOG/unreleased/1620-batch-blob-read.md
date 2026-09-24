@@ -1,0 +1,9 @@
+### Fixed
+
+- **The personal-path gate forked a subprocess per tracked file ([#1620](https://github.com/robotrocketscience/aelfrice/issues/1620)).** `scan_tracked` read each blob through its own `git show`, measured at 74.6 ms/file and **85.9s** over 1,151 files. It had begun to blow the 60-second budget on `test_the_tracked_tree_is_clean` under the CI timeout scale, which is how it surfaced. One `git cat-file --batch` for the whole tree instead: **0.97s**, and the results are byte-identical — compared file by file across all 1,147 candidates, zero mismatches, including the 19 empty tracked files.
+
+  Determinism is unchanged, and it is the reason this reads blobs rather than the working tree at all: following a tracked symlink would make a required check depend on the host filesystem instead of on the commit (#605). Symlink blobs are still scanned, which is correct — a symlink whose target is a home directory publishes that path just as a file containing it would.
+
+  Two behaviour differences worth recording, neither a regression on any path this repo exercises. A single unreadable object now aborts the scan rather than being skipped, because the batch runs under `check=True`; that fails closed, which is the right direction for a gate. And a path present at several merge stages resolves to the last stage listed, where the per-file form failed on a conflicted path and skipped it.
+
+  Pre-existing and **not** fixed here: `tracked_files()` uses `git ls-files`, which C-quotes non-ASCII paths, while the batch reads `git ls-files -s -z`, which does not. A path git quotes therefore never matches and is not scanned. The old per-file form was blind to exactly the same files — verified by running both against a repository containing tab, space, and non-ASCII filenames, where they return the identical findings — so this is a gap in the gate, not a change in it. It is the same class as [#1621](https://github.com/robotrocketscience/aelfrice/issues/1621).
