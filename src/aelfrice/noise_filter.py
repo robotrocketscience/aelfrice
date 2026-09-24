@@ -183,12 +183,44 @@ _TRANSCRIPT_SHELL_PREFIXES: Final[tuple[str, ...]] = (
     "uv run",
     "pytest",
     "python ",
+    # #1620: aelfrice's own CLI. A prompt of `aelf lock <statement>` is
+    # an instruction to the tool, not a claim about the world, and
+    # storing it spends the evidence that a command was requested on a
+    # belief ABOUT the request. `uv run` above already covers the
+    # `uv run aelf …` form.
+    #
+    # Prose-escaped like its neighbours, deliberately: "aelf locks are
+    # injected verbatim in every session." is a claim and must survive.
+    # The `/aelf:` slash form is NOT escaped — see the XML group below.
+    "aelf ",
 )
 
 # U+23FA — tool-call rendering glyph emitted by some transcript surfaces.
 _TRANSCRIPT_GLYPH_PREFIX: Final[str] = "⏺"
 
 _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
+    # #1620: the `/aelf:` slash invocation, and aelfrice's own rendered
+    # injection blocks. Unconditional, unlike the shell prefixes above,
+    # for two different reasons.
+    #
+    # `/aelf:lock <statement>` carries a statement that usually DOES end
+    # like written prose, so the prose escape hatch would rescue exactly
+    # the string this rule exists to drop. No English sentence opens with
+    # `/aelf:`, so nothing is lost by matching it outright. Two such rows
+    # exist on the reporting store, and neither produced a lock.
+    #
+    # The rendered blocks are aelfrice's own output being read back in: a
+    # belief whose content is the XML of another belief. One such row
+    # exists, dated 2026-08-19.
+    "/aelf:",
+    "<aelfrice-",
+    "<belief ",
+    "<belief>",
+    "<locked>",
+    "<core>",
+    "<session-start>",
+    "<recent-work>",
+    "<cadence-checkpoint>",
     "<worktree",
     "<output-file",
     "<task-",
