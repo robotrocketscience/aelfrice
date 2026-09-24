@@ -28,7 +28,7 @@ mutants/
 # Host configuration directories (#1617). Per-machine config whose
 # content is almost entirely local absolute paths, so committing one
 # publishes a home-directory layout. PR #1610 added `.gemini/settings.json`
-# carrying a developer path eleven times and every scanner passed it.
+# carrying a developer path twelve times and every scanner passed it.
 # This repo tracks none of these and must not start; the check in
 # `scripts/check_no_personal_paths.py` enforces it for anything already
 # staged, and these lines stop it being staged in the first place.

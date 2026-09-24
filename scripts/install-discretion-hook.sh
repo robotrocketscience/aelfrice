@@ -72,7 +72,7 @@ z40=0000000000000000000000000000000000000000
 # Banned paths — extended regex.
 # `.gemini/` and `.codex/` joined `.claude/` under #1617: PR #1610 added
 # `.gemini/settings.json` carrying a developer's absolute venv path
-# eleven times, and this list only knew about `.claude/`. Host
+# twelve times, and this list only knew about `.claude/`. Host
 # configuration directories are per-machine by nature — their content is
 # local absolute paths — so none of them belongs in a public tree.
 BANNED_PATHS='^(tests/corpus/v2_0/.+\.jsonl|\.claude/|\.gemini/|\.codex/|\.planning/|.*/handoffs/.*\.md)$'

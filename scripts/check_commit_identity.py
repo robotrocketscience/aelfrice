@@ -51,6 +51,58 @@ NOREPLY_RE = re.compile(
     r")$"
 )
 
+# The disclosure that motivated this check was a real name AND a routable
+# address. GitHub's no-reply forms anonymise the address and do nothing
+# about `%an`, so an email-only gate would refuse half of what it was
+# written for. A generic "is this a real name" test does not exist, so
+# this repo states who it publishes as: every commit not from this set is
+# refused, and the set is visible in the diff that changes it.
+#
+# 1,107 of 1,109 commits already use one of these. Add a contributor here
+# deliberately, with the same care as widening any other allowlist.
+ALLOWED_AUTHOR_NAMES: frozenset[str] = frozenset(
+    {
+        "rrs",
+        "robotrocketscience",
+        "dependabot[bot]",
+        "github-actions[bot]",
+        "GitHub",
+        # Vendor automation identities. Not personal data — no human is
+        # named — which is the distinction this gate actually cares
+        # about. Already present on `main`, so refusing them would fail
+        # the check on history rather than on new work.
+        "Gemini CLI",
+    }
+)
+
+# Addresses that are routable but name no person. The email rule exists
+# to stop a personal mailbox reaching a public commit; a vendor's
+# automation address discloses nobody, and these are already on `main`.
+# An explicit short list rather than a domain wildcard, so widening it
+# is a visible act in the diff.
+ALLOWED_TOOL_EMAILS: frozenset[str] = frozenset(
+    {
+        "gemini-cli@google.com",
+    }
+)
+
+# An address in the name field is a leak wearing the wrong hat, and no
+# legitimate display name contains one.
+_EMAIL_IN_NAME_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def email_is_allowed(email: str) -> bool:
+    """True for a no-reply form, or a listed vendor automation address."""
+    return bool(NOREPLY_RE.match(email)) or email in ALLOWED_TOOL_EMAILS
+
+
+def name_is_allowed(name: str) -> bool:
+    """True when `name` is one this repository publishes under."""
+    if _EMAIL_IN_NAME_RE.search(name):
+        return False
+    return name.strip() in ALLOWED_AUTHOR_NAMES
+
+
 _ACCEPTED = (
     "276464689+robotrocketscience@users.noreply.github.com",
     "49699333+dependabot[bot]@users.noreply.github.com",
@@ -103,11 +155,25 @@ def offenders(rev_range: str) -> list[tuple[str, str, str, str, str]]:
         if len(parts) != 6:
             continue
         sha, subject, an, ae, cn, ce = parts
-        if not NOREPLY_RE.match(ae):
-            found.append((sha, subject, an, ae, "author"))
-        if not NOREPLY_RE.match(ce):
-            found.append((sha, subject, cn, ce, "committer"))
+        if not email_is_allowed(ae):
+            found.append((sha, subject, an, ae, "author email"))
+        if not email_is_allowed(ce):
+            found.append((sha, subject, cn, ce, "committer email"))
+        if not name_is_allowed(an):
+            found.append((sha, subject, an, ae, "author name"))
+        if not name_is_allowed(cn):
+            found.append((sha, subject, cn, ce, "committer name"))
     return found
+
+
+_ACCEPTED_NAMES = ("rrs", "dependabot[bot]", "GitHub")
+_REFUSED_NAMES = (
+    "Jane Doe",
+    "J. Random Hacker",
+    "jane@example.org",
+    "Jane <jane@example.org>",
+    "",
+)
 
 
 def self_test() -> int:
@@ -120,9 +186,18 @@ def self_test() -> int:
         if NOREPLY_RE.match(e):
             print(f"SELF-TEST accepted a routable address: {e!r}")
             bad += 1
+    for n in _ACCEPTED_NAMES:
+        if not name_is_allowed(n):
+            print(f"SELF-TEST rejected a published name: {n!r}")
+            bad += 1
+    for n in _REFUSED_NAMES:
+        if name_is_allowed(n):
+            print(f"SELF-TEST accepted an unpublished name: {n!r}")
+            bad += 1
     print(
-        f"self-test: {len(_ACCEPTED)} accepted, {len(_REFUSED)} refused, "
-        f"{bad} failures"
+        f"self-test: {len(_ACCEPTED)} accepted addresses, {len(_REFUSED)} "
+        f"refused, {len(_ACCEPTED_NAMES)} accepted names, "
+        f"{len(_REFUSED_NAMES)} refused names, {bad} failures"
     )
     return 1 if bad else 0
 
@@ -147,7 +222,7 @@ def main() -> int:
         print(f"::error::{exc}")
         return 0 if args.dry_run else 1
     for sha, subject, name, email, which in found:
-        print(f"::error::{which} email is not a noreply form: {sha[:12]} {subject}")
+        print(f"::error::{which} is not a published identity: {sha[:12]} {subject}")
         print(f"    {name} <{email}>")
     if found:
         print(
@@ -162,7 +237,10 @@ def main() -> int:
             "the next machine starts correct."
         )
     else:
-        print(f"clean: every author and committer in {args.rev_range} is a noreply form.")
+        print(
+            f"clean: every author and committer in {args.rev_range} is a "
+            "published identity with a noreply address."
+        )
 
     return 0 if args.dry_run else (1 if found else 0)
 
