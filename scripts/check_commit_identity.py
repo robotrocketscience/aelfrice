@@ -73,10 +73,27 @@ def _git(*args: str) -> str:
     ).stdout
 
 
+class UnreadableRange(RuntimeError):
+    """The revision walk could not read the range that was asked for.
+
+    Usually a shallow checkout: the CI checkout action defaults to depth
+    1, so `HEAD~1..HEAD` resolves to nothing there even though it is fine
+    in a full clone. Raised rather than swallowed, because a gate that
+    silently reports "clean" when it could not read the history is worse
+    than one that fails.
+    """
+
+
 def offenders(rev_range: str) -> list[tuple[str, str, str, str, str]]:
     """Return `(sha, subject, author_name, author_email, which)` per offence."""
     fmt = "%H%x1f%s%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1e"
-    out = _git("log", f"--format={fmt}", rev_range)
+    try:
+        out = _git("log", f"--format={fmt}", rev_range)
+    except subprocess.CalledProcessError as exc:
+        raise UnreadableRange(
+            f"could not walk {rev_range!r} (shallow checkout? "
+            f"fetch the base ref first): {(exc.stderr or '').strip()[:200]}"
+        ) from exc
     found: list[tuple[str, str, str, str, str]] = []
     for record in out.split("\x1e"):
         record = record.strip("\n")
@@ -122,7 +139,13 @@ def main() -> int:
     if not args.rev_range:
         ap.error("--range is required unless --self-test is given")
 
-    found = offenders(args.rev_range)
+    try:
+        found = offenders(args.rev_range)
+    except UnreadableRange as exc:
+        # Fail closed. Reporting "clean" for a range we could not read
+        # would make the gate decorative exactly where it matters.
+        print(f"::error::{exc}")
+        return 0 if args.dry_run else 1
     for sha, subject, name, email, which in found:
         print(f"::error::{which} email is not a noreply form: {sha[:12]} {subject}")
         print(f"    {name} <{email}>")

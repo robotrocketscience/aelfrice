@@ -100,9 +100,50 @@ def test_the_script_self_test_passes() -> None:
 
 @pytest.mark.timeout(60)
 def test_dry_run_exits_zero() -> None:
-    """The reusable-script rule wants a report mode that never fails."""
+    """The reusable-script rule wants a report mode that never fails.
+
+    `HEAD..HEAD`, not `HEAD~1..HEAD`: the CI checkout is shallow, so a
+    range naming a parent commit is unreadable there and this arm would
+    be asserting the environment rather than the flag. That is exactly
+    how it first failed.
+    """
     r = subprocess.run(
-        [sys.executable, str(_SCRIPT), "--range", "HEAD~1..HEAD", "--dry-run"],
+        [sys.executable, str(_SCRIPT), "--range", "HEAD..HEAD", "--dry-run"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=_REPO_ROOT,
+    )
+    assert r.returncode == 0, f"--dry-run must exit 0, got {r.returncode}"
+
+
+@pytest.mark.timeout(60)
+def test_an_unreadable_range_fails_closed() -> None:
+    """A range the walk cannot read must FAIL, never report clean.
+
+    A shallow checkout is the common case. Reporting "clean" because the
+    history was unreadable would make the gate decorative precisely
+    where it is load-bearing, so this pins the opposite.
+    """
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--range", "definitely-not-a-ref..HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=_REPO_ROOT,
+    )
+    assert r.returncode != 0, "an unreadable range must not pass"
+    assert "clean" not in r.stdout, f"reported clean on an unreadable range:\n{r.stdout}"
+    assert "could not walk" in r.stdout, (
+        f"expected a diagnosable message, got:\n{r.stdout}\n{r.stderr}"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_an_unreadable_range_still_exits_zero_under_dry_run() -> None:
+    """`--dry-run` reports; it never fails. Including on a bad range."""
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--range", "definitely-not-a-ref..HEAD", "--dry-run"],
         capture_output=True,
         text=True,
         timeout=60,
