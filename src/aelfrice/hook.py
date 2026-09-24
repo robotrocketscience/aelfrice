@@ -2236,8 +2236,16 @@ COMMAND_BLOCK_CHAR_CAP: Final[int] = 2000
 # about the world, not a request to run one — "the command /aelf:lock
 # did not take effect yesterday" must be inert. Same distinction the
 # capture filter draws (#1620).
+#
+# The argument is the FIRST LINE ONLY, and that is the whole point of
+# the `[^\n]*`. An earlier revision used `(.*)` under `re.DOTALL`, so
+# `/aelf:lock Always use uv.\n\nAlso draft the release note` locked the entire
+# remainder of the prompt as ONE user-locked belief — the highest-trust
+# tier in the product, re-injected as standing ground truth on every
+# later turn. Typing a command and then continuing the message is the
+# most natural thing a user does, so that was not a corner case.
 _AELF_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
-    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*(.*)\Z", re.DOTALL
+    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*([^\n]*)"
 )
 
 
@@ -2279,7 +2287,22 @@ def execute_aelf_command(
         line = f"aelfrice: /aelf:{command} needs an argument; nothing was done."
         print(line, file=stderr)
         return line
+    if argument.startswith("-"):
+        # The argument is user text, never a flag. `argv` is
+        # `[command, argument]`, so an argument beginning with `-` is
+        # handed to argparse as an option: `/aelf:lock --help` dumped
+        # 2,265 characters of usage onto this hook's stdout protocol
+        # channel, and `/aelf:lock --advanced` exited 0 and reported a
+        # successful lock that never happened. The executable set is
+        # meant to be "additive and idempotent", not "arbitrary CLI".
+        line = (
+            f"aelfrice: /aelf:{command} argument may not start with '-'; "
+            f"nothing was done."
+        )
+        print(line, file=stderr)
+        return line
 
+    import contextlib as _contextlib  # noqa: PLC0415
     import io as _io  # noqa: PLC0415 - hot path, imported only on a command
 
     buf = _io.StringIO()
@@ -2294,9 +2317,20 @@ def execute_aelf_command(
     try:
         from aelfrice import cli as _cli  # noqa: PLC0415
 
-        rc = _cli.main([command, argument], out=buf)
+        # stdout is redirected for the duration, not merely passed as
+        # `out=`. `out=` is honoured by the command body, but argparse
+        # writes usage and errors to the real `sys.stdout`/`sys.stderr`
+        # itself — and this hook's stdout IS the protocol channel, so
+        # anything printed there is injected verbatim into the model's
+        # context, outside COMMAND_BLOCK_CHAR_CAP and outside the writer
+        # enumeration that exists to make that impossible.
+        with _contextlib.redirect_stdout(buf), _contextlib.redirect_stderr(buf):
+            rc = _cli.main([command, argument], out=buf)
     except SystemExit as exc:
-        rc = int(exc.code or 1) if exc.code is not None else 0
+        # `exc.code` of 0 is a CLEAN exit. `int(exc.code or 1)` turned it
+        # into 1, so a command that succeeded through a SystemExit path
+        # was reported as failed.
+        rc = 0 if exc.code is None else int(exc.code)
     except Exception as exc:  # noqa: BLE001 - loud, never fatal
         line = f"aelfrice: /aelf:{command} FAILED: {exc}"
         print(line, file=stderr)
