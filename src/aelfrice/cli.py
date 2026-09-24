@@ -2079,16 +2079,69 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # the phantom from its own promotion path.
         # include_retired (#1210): `actual_id` may be a retired row that
         # insert_belief's collision guard corroborated rather than inserted.
+        # #550 Surface B: promote any speculative phantom whose
+        # content_hash or normalized text (Jaccard >= 0.9) matches the
+        # lock statement. promote() commits on each call, which is safe
+        # here because each promote is idempotent.
+        #
+        # #1620: this runs BEFORE the lock write, not after it. Two
+        # things fall out of that order and both are the point.
+        #
+        # `find_phantom_lock_matches` only sees rows still carrying
+        # ORIGIN_SPECULATIVE, so promoting first means the lock write
+        # below can no longer disqualify a phantom from its own path —
+        # which is the entire reason the write used to skip speculative
+        # rows. With promotion already done, the skip is unnecessary.
+        #
+        # And a user who typed `lock` must end up with a locked
+        # statement. Previously a matching phantom was promoted, the
+        # lock write skipped it, and the command printed "locked: <id>"
+        # and exited 0 for something `aelf locked` did not list.
+        from aelfrice.promotion import (
+            SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
+            find_phantom_lock_matches,
+            promote,
+        )
+        for phantom_id in find_phantom_lock_matches(store, args.statement):
+            promote(
+                store,
+                phantom_id,
+                source_label=SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
+                now=now,
+            )
+            print(f"promoted phantom: {phantom_id}", file=out)  # type: ignore[arg-type]
+
         resolved = store.get_belief(actual_id, include_retired=True)
-        if (
-            resolved is not None
-            and resolved.lock_level != LOCK_USER
-            and resolved.origin != ORIGIN_SPECULATIVE
-        ):
+        if resolved is not None and resolved.lock_level != LOCK_USER:
             resolved.lock_level = LOCK_USER
             resolved.locked_at = now
-            resolved.origin = ORIGIN_USER_STATED
+            # Do not overwrite a promotion. If Surface B just promoted
+            # this row, its origin is ORIGIN_USER_VALIDATED, which is a
+            # STRONGER provenance than ORIGIN_USER_STATED — the user
+            # both asserted the statement and validated a phantom that
+            # already carried it. Locking records that it is ground
+            # truth; it should not demote how the row got there.
+            if resolved.origin != ORIGIN_USER_VALIDATED:
+                resolved.origin = ORIGIN_USER_STATED
             store.update_belief(resolved)
+
+        # #1620: never report a lock that did not happen. Everything
+        # above either locked the belief or promoted it and then locked
+        # it, so reaching here unlocked means a state no branch covers —
+        # report it rather than printing success, which is what made the
+        # original failure invisible for six weeks.
+        verified = store.get_belief(actual_id, include_retired=True)
+        if verified is None or verified.lock_level != LOCK_USER:
+            print(
+                f"aelf lock: FAILED — {actual_id} is not locked. Nothing "
+                f"was added to the locked set.",
+                file=sys.stderr,
+            )
+            print(
+                "  Confirm with `aelf locked` — this statement is NOT in it.",
+                file=sys.stderr,
+            )
+            return 1
         if pre_existing_at_lock_id and actual_id == lock_bid:
             print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
             _feed_log_event("belief.locked", actual_id, args, kind="upgrade")
@@ -2193,28 +2246,6 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 msg = f"  category: skipped {cat_name!r} ({exc})"
                 print(msg, file=out)  # type: ignore[arg-type]
 
-        # #550 Surface B: promote any speculative phantom whose
-        # content_hash or normalized text (Jaccard ≥ 0.9) matches the
-        # lock statement. Runs in the same DB transaction as the lock
-        # write — promote() commits on each call, which is safe here
-        # because each promote is idempotent.
-        from aelfrice.promotion import (
-            SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
-            find_phantom_lock_matches,
-            promote,
-        )
-        phantom_ids = find_phantom_lock_matches(store, args.statement)
-        for phantom_id in phantom_ids:
-            promote(
-                store,
-                phantom_id,
-                source_label=SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
-                now=now,
-            )
-            print(  # type: ignore[arg-type]
-                f"promoted phantom: {phantom_id}",
-                file=out,
-            )
     finally:
         store.close()
     return 0
