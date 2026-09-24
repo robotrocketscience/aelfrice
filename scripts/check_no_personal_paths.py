@@ -203,37 +203,83 @@ def scan_text(path: str, text: str) -> list[tuple[str, int, str, str]]:
     return out
 
 
-def _read_blob(path: str) -> str | None:
-    """Return a tracked file's CONTENT as text, or None if unreadable.
+def _read_blobs(paths: list[str]) -> dict[str, str]:
+    """Return `{path: text}` for tracked paths, read from the INDEX.
 
-    Reads the blob through git rather than the working tree: a tracked
-    symlink would otherwise be followed off the repository, so the
-    check's result would depend on the host filesystem instead of on the
-    commit — a determinism violation (#605), and one that made an early
-    draft report findings out of a developer's shell profile.
+    Reads blobs rather than the working tree: a tracked symlink would
+    otherwise be followed off the repository, so the check's result would
+    depend on the host filesystem instead of on the commit — a
+    determinism violation (#605), and one that made an early draft report
+    findings out of a developer's shell profile.
+
+    ONE `git cat-file --batch` for the whole tree, not one `git show` per
+    file. The per-file form measured 74.6 ms/file, 85.9s over 1,151
+    files, which blew the test's 60s budget; batching is 1 fork.
 
     Non-UTF-8 content is decoded latin-1 rather than skipped, so an
     encoding cannot hide a path.
     """
-    try:
-        raw = subprocess.run(
-            ["git", "show", f":{path}"], capture_output=True, check=True
-        ).stdout
-    except subprocess.CalledProcessError:
-        return None
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1", errors="replace")
+    if not paths:
+        return {}
+    # `<mode> <sha> <stage>\t<path>` — mode 120000 is a symlink, whose
+    # blob is its target string. Scanning that is right: a symlink
+    # pointing into a home directory publishes the path just as a file
+    # containing it would.
+    listing = _git("ls-files", "-s", "-z").split("\0")
+    sha_for: dict[str, str] = {}
+    for entry in listing:
+        if not entry or "\t" not in entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        parts = meta.split()
+        if len(parts) >= 2:
+            sha_for[path] = parts[1]
+
+    wanted = [(p, sha_for[p]) for p in paths if p in sha_for]
+    if not wanted:
+        return {}
+    proc = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        input="\n".join(sha for _, sha in wanted).encode() + b"\n",
+        capture_output=True,
+        check=True,
+    )
+    out = proc.stdout
+    result: dict[str, str] = {}
+    pos = 0
+    for path, _sha in wanted:
+        nl = out.find(b"\n", pos)
+        if nl == -1:
+            break
+        header = out[pos:nl].split()
+        if len(header) < 3:  # "<sha> missing"
+            pos = nl + 1
+            continue
+        try:
+            size = int(header[2])
+        except ValueError:
+            pos = nl + 1
+            continue
+        raw = out[nl + 1 : nl + 1 + size]
+        pos = nl + 1 + size + 1  # trailing newline
+        try:
+            result[path] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            result[path] = raw.decode("latin-1", errors="replace")
+    return result
 
 
 def scan_tracked() -> list[tuple[str, int, str, str]]:
     globs = exempt_globs()
+    candidates = [
+        f
+        for f in tracked_files()
+        if not _is_exempt(f, globs) and Path(f).suffix.lower() not in _BINARY_SUFFIXES
+    ]
+    blobs = _read_blobs(candidates)
     findings: list[tuple[str, int, str, str]] = []
-    for f in tracked_files():
-        if _is_exempt(f, globs) or Path(f).suffix.lower() in _BINARY_SUFFIXES:
-            continue
-        text = _read_blob(f)
+    for f in candidates:
+        text = blobs.get(f)
         if text is None:
             continue
         findings.extend(scan_text(f, text))
