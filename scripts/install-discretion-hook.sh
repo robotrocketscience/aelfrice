@@ -87,7 +87,19 @@ BANNED_VOCAB='\b(Setr|Kulili|Gylf|Sonnet|Opus|Haiku|Anthropic|Claude Code|parall
 # section slipped past BANNED_VOCAB). This is a deliberately narrow allowlist
 # of high-signal phrases; the durable fix is a similarity-check redesign
 # (filed as a separate aelfrice issue).
-BANNED_PHRASES='(branch off main|staging gate|gitleaks|pii (scan|pattern)|commit.history audit|DO_NOT_PUSH_PERSONAL_DATA|aelfrice-lab|PII_PATTERNS_SECRET|two-repo workflow|publish-to-quarantine|publish-to-github)'
+# Narrowed 2026-09-23 (#1617). Three entries were removed because the
+# terms are already published by this repo itself, so banning them
+# protected nothing and forced an override to write ordinary prose
+# about our own CI. An override habit is how a real block gets waved
+# through, which makes an over-broad rule a security cost, not a
+# margin of safety. Each was verified against the public tree before
+# removal:
+#   staging gate    -> workflow name "Staging Gate", CHANGELOG/v1.md
+#   gitleaks        -> .gitleaks.toml, staging-gate.yml, and 3 docs
+#   pii scan|pattern-> CHANGELOG/v1.md "PII pattern-scan"
+# The rest stay: they name private-workspace machinery that appears
+# nowhere in the public tree.
+BANNED_PHRASES='(branch off main|commit.history audit|DO_NOT_PUSH_PERSONAL_DATA|aelfrice-lab|PII_PATTERNS_SECRET|two-repo workflow|publish-to-quarantine|publish-to-github)'
 
 # Read each ref being pushed.
 fail=0
@@ -176,6 +188,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             fi
         else
             echo "pre-push: no python found; skipping the personal-path check." >&2
+        fi
+    fi
+
+    # Check 3c: commit author/committer identity (#1617).
+    # A routable address in commit metadata is the one disclosure that
+    # editing a file cannot undo later, so it has to be refused here
+    # rather than cleaned up afterwards.
+    idcheck="$(git rev-parse --show-toplevel)/scripts/check_commit_identity.py"
+    if [ -f "$idcheck" ]; then
+        py=$(command -v python3 || command -v python || echo "")
+        if [ -n "$py" ]; then
+            if ! ident=$("$py" "$idcheck" --range "$msg_range" 2>&1); then
+                echo "" >&2
+                echo "PRE-PUSH BLOCKED: commit identity for $local_ref" >&2
+                echo "$ident" | head -24 | sed 's/^/  /' >&2
+                echo "" >&2
+                fail=1
+            fi
         fi
     fi
 

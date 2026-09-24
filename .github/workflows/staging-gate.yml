@@ -125,6 +125,19 @@ jobs:
       - name: Fetch base ref
         run: |
           git fetch --no-tags origin "$BASE_REF"
+      # #1617: refuse a routable email in the commits this PR adds.
+      # Two commits reached main carrying a real name and corporate
+      # address as author. Commit metadata is copied into every clone and
+      # fork, served by the public API, and pinned by refs/pull/<n>/head,
+      # so it cannot be withdrawn by editing a file the way a path in a
+      # tracked file can. This job is the right home: it is required, and
+      # it already fetches the base ref and scopes to PR-incoming commits.
+      - name: Commit identity is a noreply form
+        run: |
+          set -euo pipefail
+          python3 scripts/check_commit_identity.py \
+            --range "origin/$BASE_REF..$HEAD_SHA"
+
       - name: Decode patterns
         env:
           PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
