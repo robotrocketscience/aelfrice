@@ -1717,6 +1717,40 @@ _SYSTEM_TAG_PREFIXES: Final[tuple[str, ...]] = (
     "<tool-result>",
 )
 
+# #1620: aelfrice's own rendered output. Re-admitting an injected block
+# as a belief stores the XML of one belief as the content of another; one
+# such row exists on the reporting user's store, dated 2026-08-19.
+_OWN_OUTPUT_PREFIXES: Final[tuple[str, ...]] = (
+    "<aelfrice-",
+    "<belief ",
+    "<belief>",
+    "<locked>",
+    "<core>",
+    "<cadence-checkpoint>",
+)
+
+# #1620: a prompt that IS an aelfrice command is an instruction to the
+# tool, not a claim about the world.
+#
+# The reported failure: a user typed `/aelf:lock <statement>`, the lock
+# never ran, and this path stored the command text as an
+# `agent_inferred` belief at mu=0.375 — spending the evidence that a lock
+# was requested on a low-confidence row ABOUT the request. Two such rows
+# exist on that store and neither produced a lock.
+#
+# Anchored at the start deliberately. A sentence that MENTIONS a command
+# ("the command /aelf:lock did not take effect yesterday") is a claim
+# about the world and must still be captured; only a prompt that opens
+# with the invocation is skipped.
+_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
+    "/aelf:",
+    "/aelf ",
+    "aelf ",
+    "uv run aelf ",
+    "uvx aelf ",
+    "python -m aelfrice",
+)
+
 # Trivial single-word acks that carry no retrieval signal.
 _ACK_SET: Final[frozenset[str]] = frozenset(
     {
@@ -1765,6 +1799,17 @@ def _should_skip_bm25(prompt: str) -> tuple[bool, str | None]:
         known system-envelope tag (``<task-notification>``,
         ``<system-*``, ``<tool-result>``) are skipped.
 
+    Filter A2 — own output (#1620):
+        Prompts opening with a rendered aelfrice block are skipped, so
+        an injected belief is never re-ingested as a belief.
+
+    Filter A3 — aelfrice command (#1620):
+        Prompts opening with an aelfrice invocation are skipped. They
+        are instructions to the tool, not claims about the world, and
+        storing one spends the evidence that a command was requested on
+        a belief about the request. A prompt that merely MENTIONS a
+        command is not a command and is still captured.
+
     Filter B — triviality gate:
         Prompts are skipped when stripped length < 12, token count
         ≤ 2 after stripping punctuation, or normalized lowercase
@@ -1776,6 +1821,20 @@ def _should_skip_bm25(prompt: str) -> tuple[bool, str | None]:
     for prefix in _SYSTEM_TAG_PREFIXES:
         if stripped.startswith(prefix):
             return True, f"system-tag:{prefix}"
+
+    # Filter A2 (#1620): aelfrice's own rendered output, so an injected
+    # block is never re-admitted as a belief about itself.
+    for prefix in _OWN_OUTPUT_PREFIXES:
+        if stripped.startswith(prefix):
+            return True, f"own-output:{prefix.strip()}"
+
+    # Filter A3 (#1620): the prompt IS an aelfrice command. Case-folded
+    # on the invocation only; the statement after it keeps its case
+    # because it is not what is being matched.
+    lowered = stripped.lower()
+    for prefix in _COMMAND_PREFIXES:
+        if lowered.startswith(prefix):
+            return True, f"command:{prefix.strip()}"
 
     # Filter B: triviality
     if len(stripped) < _MIN_PROMPT_LEN:
