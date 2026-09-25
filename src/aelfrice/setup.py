@@ -858,6 +858,18 @@ def _drop_superseded_search_entries(
         surviving: list[object] = []
         dropped_here = False
         for hook in cast(list[object], inner):
+            # A bare string is a command too. The settings schema wants
+            # `{"type": ..., "command": ...}`, but a hand-edited file
+            # may hold the command string directly, and skipping those
+            # left the superseded entry -- and so the duplicate -- in
+            # place for exactly the users most likely to have edited
+            # the file by hand.
+            if isinstance(hook, str):
+                if target in launcher.command_program_keys(hook):
+                    dropped_here = True
+                    continue
+                surviving.append(hook)
+                continue
             if not isinstance(hook, dict):
                 surviving.append(hook)
                 continue

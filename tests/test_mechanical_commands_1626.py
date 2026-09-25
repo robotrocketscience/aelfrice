@@ -1148,3 +1148,140 @@ def test_ownership_is_keyed_the_same_way_on_the_side_we_resolved(
 
     assert removed is True, f"a {shape} left the superseded entry behind"
     assert entries == [], entries
+
+
+# --- review round 5 ----------------------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_what_was_stored_is_reported_even_when_it_is_not_what_was_typed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated lock must never be silent.
+
+    `/aelf:lock Always use uv<U+2028>for python projects.` stores
+    "Always use uv". The separator ends the first line, as it must --
+    but to the person who typed it that was one sentence, and
+    `aelf lock` reports only `locked: <id>`, so nothing told the user
+    or the model that half of it was dropped.
+
+    The length cap refuses rather than truncates because "too long" is
+    decidable. "They meant this to be one line" is not, so the answer
+    here is to show what was stored rather than to guess.
+    """
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    typed = "Always use uv for python projects."
+    outcome = execute_aelf_command(
+        f"/aelf:lock {typed}", session_id="t", stderr=io.StringIO()
+    )
+
+    assert outcome is not None and outcome.took_effect is True
+    stored = _locked(db)
+    assert stored == ["Always use uv"], stored
+    # The report has to carry the stored text, not just the id.
+    assert "Always use uv" in outcome.line, outcome.line
+    assert "for python projects" not in outcome.line, (
+        "the report claims text that was not stored"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_the_injected_block_shows_what_was_stored(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same, end to end: the model sees the stored text."""
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    _rc, out, _err = _run_hook(f"/aelf:lock {STATEMENT}", tmp_path)
+    assert STATEMENT in out, out
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "typo",
+    [
+        "/aelf:lockFOO bar baz",
+        "/aelf:lock_it or not",
+        "/aelf:scope-out.stuff",
+        "/aelf:lock!now",
+    ],
+)
+def test_a_mistyped_command_name_is_not_a_command(typo: str) -> None:
+    """A typo must fall through to the model, not write a belief.
+
+    `[a-z0-9-]*` stops at the first character outside the class, so
+    without a boundary `/aelf:lockFOO bar` parsed as command `lock`
+    with argument `FOO bar` and wrote it at the highest trust tier.
+    No destructive command was reachable this way -- none has an
+    allowlisted prefix -- but a user-locked belief from a typo is its
+    own defect.
+    """
+    parsed = parse_aelf_command(typo)
+    assert parsed is None or parsed[0] not in _EXECUTABLE_COMMANDS, (
+        f"{typo!r} parsed as {parsed!r} and would have executed"
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "prompt,expected",
+    [
+        ("/aelf:lock A real statement.", ("lock", "A real statement.")),
+        ("/aelf:lock\tTab separated.", ("lock", "Tab separated.")),
+        ("/aelf:lock", ("lock", "")),
+        ("/aelf:scope-out benchmarks", ("scope-out", "benchmarks")),
+    ],
+)
+def test_the_boundary_does_not_break_a_real_invocation(
+    prompt: str, expected: tuple[str, str]
+) -> None:
+    """The other direction, so the boundary is not "refuse everything"."""
+    assert parse_aelf_command(prompt) == expected
+
+
+@pytest.mark.timeout(60)
+def test_a_bare_string_hook_on_the_old_matcher_is_retired(tmp_path) -> None:
+    """A hand-edited settings file stores the command as a plain string.
+
+    Skipping non-dict inner hooks left the superseded entry in place,
+    so the duplicate survived for exactly the users most likely to have
+    edited the file by hand -- and the install still reported success.
+    """
+    from aelfrice.setup import (
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        _drop_superseded_search_entries,
+    )
+
+    entries: list[dict[str, object]] = [
+        {
+            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+            "hooks": ["/old/prefix/aelf-search-tool-hook"],
+        }
+    ]
+    removed = _drop_superseded_search_entries(
+        entries, command="/usr/local/bin/aelf-search-tool-hook"
+    )
+    assert removed is True
+    assert entries == []
+
+
+@pytest.mark.timeout(60)
+def test_a_bare_string_hook_that_is_not_ours_is_left_alone(tmp_path) -> None:
+    """The safe direction still holds for the string shape."""
+    from aelfrice.setup import (
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        _drop_superseded_search_entries,
+    )
+
+    entries: list[dict[str, object]] = [
+        {
+            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+            "hooks": ["/usr/bin/somebody-else"],
+        }
+    ]
+    removed = _drop_superseded_search_entries(
+        entries, command="/usr/local/bin/aelf-search-tool-hook"
+    )
+    assert removed is False
+    assert entries[0]["hooks"] == ["/usr/bin/somebody-else"]

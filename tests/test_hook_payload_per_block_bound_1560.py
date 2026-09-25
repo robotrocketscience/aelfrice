@@ -68,6 +68,7 @@ the cache it would have been read from.
 from __future__ import annotations
 
 import ast
+import re
 import io
 import json
 from pathlib import Path
@@ -335,7 +336,15 @@ _STDOUT_WRITERS = {
     # #1626: the executed-command note. Bounded by
     # COMMAND_NOTE_CAP, a character length like the two phantom
     # notes above, not a token budget.
-    "write:command_note": "<aelfrice-command-executed>",
+    # Two spellings of one writer, and they must be two entries: the
+    # frame differs by whether the command took effect, and a table
+    # carrying only one of them cannot notice the other going missing.
+    "write:command_note@<aelfrice-command-executed>": (
+        "<aelfrice-command-executed>"
+    ),
+    "write:command_note@<aelfrice-command-failed>": (
+        "<aelfrice-command-failed>"
+    ),
 }
 
 # The stream expressions `user_prompt_submit` starts with: its own
@@ -396,6 +405,35 @@ def _stream_names(fn: ast.FunctionDef) -> set[str]:
     return names
 
 
+_BLOCK_TAG_RE = re.compile(r"^\s*<(/?[a-z][a-z0-9-]*)>")
+
+
+def _leading_block_tag(node: ast.Call) -> str | None:
+    """The `<tag>` a write call opens with, when it writes a literal one.
+
+    Returns None for a call that writes only variables, which keeps the
+    pre-existing keys for those writers unchanged -- this qualifier adds
+    resolution where a literal tag exists and changes nothing where one
+    does not.
+    """
+    found: list[str] = []
+    for arg in node.args:
+        for sub in ast.walk(arg):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                m = _BLOCK_TAG_RE.match(sub.value)
+                if m:
+                    found.append(m.group(1))
+    # Prefer the OPENING tag. `ast.walk` is breadth-first, so for a
+    # write built by concatenation the closing tag can be reached
+    # first; keying on it still separates the blocks but names the
+    # wrong half in the failure message, which is the part a reader
+    # acts on.
+    for tag in found:
+        if not tag.startswith("/"):
+            return f"<{tag}>"
+    return f"<{found[0]}>" if found else None
+
+
 def _stdout_writer_sites() -> dict[str, list[int]]:
     """Every site in `user_prompt_submit` that can reach stdout.
 
@@ -435,7 +473,21 @@ def _stdout_writer_sites() -> dict[str, list[int]]:
                 sub.id for arg in node.args for sub in ast.walk(arg)
                 if isinstance(sub, ast.Name)
             })
-            add("write:" + "+".join(written or ["<literal>"]), node.lineno)
+            key = "write:" + "+".join(written or ["<literal>"])
+            # Qualified by the block's own opening tag when the call
+            # carries one. Keying on the written NAMES alone collapsed
+            # two distinct blocks that reuse one local into a single
+            # entry -- `<aelfrice-command-executed>` and
+            # `<aelfrice-command-failed>` both wrote `command_note` --
+            # so the table recorded only the first tag, and a third
+            # block reusing the same local was invisible to this scan.
+            # That is the exact regression this gate exists to catch,
+            # and it was reachable while the ceiling docstring claimed
+            # otherwise.
+            tag = _leading_block_tag(node)
+            if tag:
+                key += f"@{tag}"
+            add(key, node.lineno)
             continue
         keywords = {kw.arg: kw.value for kw in node.keywords}
         if isinstance(func, ast.Name) and func.id == "print":

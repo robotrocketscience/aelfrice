@@ -2309,8 +2309,17 @@ COMMAND_ARGUMENT_CAP: Final[int] = 4000
 # exactly `str.splitlines`'s terminator set, so "first line" here means
 # what it means everywhere else in Python.
 _LINE_TERMINATORS: Final[str] = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+# The command name must END where it ends. `[a-z0-9-]*` stops at the
+# first character outside the class, so without a boundary
+# `/aelf:lockFOO bar` parsed as command `lock` with argument `FOO bar`
+# and wrote a user-locked belief from a typo. `/aelf:lock_it or not`
+# and `/aelf:scope-out.stuff` did the same. The lookahead requires
+# whitespace or end-of-line after the name, so a mistyped command is
+# simply not a command and falls through to the model, which is the
+# behaviour every non-allowlisted command already has.
 _AELF_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
-    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*([^" + _LINE_TERMINATORS + r"]*)"
+    r"^/aelf:([a-z][a-z0-9-]*)(?=[ \t]|[" + _LINE_TERMINATORS + r"]|$)"
+    r"[ \t]*([^" + _LINE_TERMINATORS + r"]*)"
 )
 
 
@@ -2448,7 +2457,24 @@ def execute_aelf_command(
 
     output = " ".join(buf.getvalue().split())
     if rc == 0:
-        line = f"aelfrice: ran /aelf:{command} — {output or 'done'}"
+        # The argument is echoed back, and that is load-bearing rather
+        # than cosmetic. `aelf lock` reports only `locked: <id>`, so
+        # without this NOTHING tells the user or the model what was
+        # actually stored — and the argument is not always what was
+        # typed. `/aelf:lock Always use uv<U+2028>for python projects.`
+        # stores "Always use uv": the separator ends the first line, as
+        # it must, but the remainder is dropped in the middle of a
+        # sentence that looks like one line to the person who typed it.
+        #
+        # The same rule as the length cap, applied to the case the cap
+        # cannot see: a statement the user did not type must never be
+        # stored silently. The cap can refuse because "too long" is
+        # decidable; "they meant this to be one line" is not, so the
+        # answer here is to show the result rather than to guess.
+        line = (
+            f"aelfrice: ran /aelf:{command} {argument!r} — "
+            f"{output or 'done'}"
+        )
     else:
         line = f"aelfrice: /aelf:{command} FAILED (exit {rc})"
         if output:
