@@ -831,13 +831,16 @@ def _drop_superseded_search_entries(
     removed = False
     for entry in entries:
         matcher = entry.get("matcher")
-        hooks = entry.get("hooks")
-        if matcher in SUPERSEDED_SEARCH_TOOL_MATCHERS and isinstance(hooks, list):
-            names = {
-                Path(str(h.get("command", ""))).name
-                for h in hooks
-                if isinstance(h, dict)
-            }
+        inner = entry.get(_INNER_HOOKS_KEY)
+        if matcher in SUPERSEDED_SEARCH_TOOL_MATCHERS and isinstance(
+            inner, list
+        ):
+            names: set[str] = set()
+            for hook in cast(list[object], inner):
+                if not isinstance(hook, dict):
+                    continue
+                hook_dict = cast(dict[str, object], hook)
+                names.add(Path(str(hook_dict.get(_COMMAND_KEY, ""))).name)
             if names == {target}:
                 removed = True
                 continue
