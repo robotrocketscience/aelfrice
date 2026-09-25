@@ -1,15 +1,30 @@
 """PreToolUse hook that runs `aelf search` against the per-project belief
-store before a `Grep` or `Glob` tool call fires, and emits the results as
+store before a search tool call fires, and emits the results as
 `additionalContext` so the agent sees them and can decide to skip / refine
 the tool call or use the tool to fill in gaps.
+
+Ordering is the whole value. aelfrice runs FIRST, so the model already
+holds the relevant brain-graph context before it chooses grep, the web,
+or anything else. A search the model runs afterwards, or not at all, is
+worth much less — and whether it ran one was exactly the model choice
+aelfrice exists to remove.
 
 Hook contract (Claude Code PreToolUse):
 - payload includes `tool_name`, `tool_input`, `cwd`, plus the standard
   event fields. We act only when:
-    * tool_name in {"Grep", "Glob"}
-    * tool_input.pattern is a string with at least one extractable token
+    * tool_name is in `SEARCH_TOOL_NAMES` — the single source for this,
+      so a tool added there needs no edit here. It currently covers the
+      local tools (`Grep`, `Glob`) and the web tools (`WebSearch`,
+      `WebFetch`); `setup.SEARCH_TOOL_MATCHER` is the installed matcher
+      for the same set.
+    * the query field for that tool is a string with at least one
+      extractable token. The field differs by tool and is tried in
+      order: `pattern` for Grep and Glob, `query` for WebSearch,
+      `prompt` for WebFetch. The prompt, not the URL — a bare URL
+      tokenises into host fragments that match nothing useful, so
+      searching it would satisfy the matcher while defeating the point.
 - All failure modes return exit 0 silently. The hook may NEVER cause a
-  `Grep` or `Glob` to feel broken.
+  search tool to feel broken.
 
 Latency budget per docs/design/search_tool_hook.md:
     median <= 50 ms, p95 <= 200 ms
@@ -785,8 +800,8 @@ def _do_search(
 
     Lazy imports keep the cold-start path light: the hook does not pay
     for `aelfrice.store` / `aelfrice.retrieval` import cost on tool
-    calls that aren't `Grep` / `Glob`, or on patterns that have no
-    extractable tokens.
+    calls whose tool is not in `SEARCH_TOOL_NAMES`, or on queries that
+    have no extractable tokens.
     """
     bash_source: tuple[str, str] | None = None
     session_id: str | None = None

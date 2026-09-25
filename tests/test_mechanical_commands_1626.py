@@ -54,6 +54,22 @@ def _locked(db) -> list[str]:
         store.close()
 
 
+def _exclusions_for(session_id: str) -> list[str]:
+    """The exclusions `session_id` would actually get at retrieval time.
+
+    Resolved the way the hook resolves them, not by reading the file
+    directly: the whole defect was that the file said one thing and
+    `load_exclusions` returned [] because the stored session did not
+    match. A test that read the JSON would have passed throughout.
+    """
+    from aelfrice.hook import _session_state_path
+    from aelfrice.session_exclusions import exclusions_path, load_exclusions
+
+    state_path = _session_state_path()
+    assert state_path is not None
+    return load_exclusions(exclusions_path(state_path.parent), session_id)
+
+
 # --- AC1: the command runs, with no model involvement -------------------
 
 
@@ -207,10 +223,12 @@ def test_an_invocation_parses(prompt: str, expected: tuple[str, str]) -> None:
 def test_a_command_with_no_argument_says_so(tmp_path) -> None:
     """Silence here would reproduce the defect inside its own fix."""
     err = io.StringIO()
-    line = execute_aelf_command("/aelf:lock", session_id="t", stderr=err)
-    assert line is not None
-    assert "needs an argument" in line
+    out = execute_aelf_command("/aelf:lock", session_id="t", stderr=err)
+    assert out is not None
+    assert "needs an argument" in out.line
     assert "needs an argument" in err.getvalue()
+    # The flag, not the prose, is what the caller branches on.
+    assert out.took_effect is False
 
 
 @pytest.mark.timeout(60)
@@ -227,11 +245,12 @@ def test_a_failing_command_reports_loudly(
 
     monkeypatch.setattr(cli, "main", _boom)
     err = io.StringIO()
-    line = execute_aelf_command(
+    out = execute_aelf_command(
         "/aelf:lock A statement.", session_id="t", stderr=err
     )
-    assert line is not None and "FAILED" in line
+    assert out is not None and "FAILED" in out.line
     assert "FAILED" in err.getvalue()
+    assert out.took_effect is False
 
 
 @pytest.mark.timeout(120)
@@ -397,10 +416,11 @@ def test_an_argument_may_not_be_a_flag(prompt: str) -> None:
     is meant to be additive and idempotent, not arbitrary CLI.
     """
     err = io.StringIO()
-    line = execute_aelf_command(prompt, session_id="t", stderr=err)
-    assert line is not None
-    assert "may not start with" in line, line
-    assert "ran /aelf:" not in line
+    out = execute_aelf_command(prompt, session_id="t", stderr=err)
+    assert out is not None
+    assert "may not start with" in out.line, out
+    assert "ran /aelf:" not in out.line
+    assert out.took_effect is False
 
 
 @pytest.mark.timeout(120)
@@ -410,7 +430,7 @@ def test_nothing_the_command_prints_escapes_onto_the_protocol_channel(
     """argparse writes to the real sys.stdout, which IS the protocol.
 
     Anything printed there is injected verbatim into the model's
-    context, outside COMMAND_BLOCK_CHAR_CAP and outside the writer
+    context, outside COMMAND_NOTE_CAP and outside the writer
     enumeration that exists to make that impossible. So the CLI call
     runs under a stdout redirect, not merely with `out=`.
     """
@@ -443,12 +463,12 @@ def test_the_note_is_capped(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     short and removing the cap passed.
     """
     from aelfrice import cli
-    from aelfrice.hook import COMMAND_BLOCK_CHAR_CAP
+    from aelfrice.hook import COMMAND_NOTE_CAP
 
     monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "m.db"))
 
     def _chatty(_argv: object, out: object = None) -> int:
-        print("y" * (COMMAND_BLOCK_CHAR_CAP + 5000), file=out)  # type: ignore[arg-type]
+        print("y" * (COMMAND_NOTE_CAP + 5000), file=out)  # type: ignore[arg-type]
         return 0
 
     monkeypatch.setattr(cli, "main", _chatty)
@@ -457,7 +477,7 @@ def test_the_note_is_capped(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     start = out.index("<aelfrice-command-executed>")
     end = out.index("</aelfrice-command-executed>")
     body = out[start:end]
-    assert len(body) < COMMAND_BLOCK_CHAR_CAP + 500, (
+    assert len(body) < COMMAND_NOTE_CAP + 500, (
         f"the note is unbounded: {len(body)} characters"
     )
 
@@ -482,12 +502,13 @@ def test_a_clean_systemexit_is_not_reported_as_failure(
 
     monkeypatch.setattr(cli, "main", _clean_exit)
     err = io.StringIO()
-    line = execute_aelf_command(
+    out = execute_aelf_command(
         "/aelf:lock A statement.", session_id="t", stderr=err
     )
-    assert line is not None
-    assert "FAILED" not in line, f"a clean exit was reported as failure: {line!r}"
-    assert "ran /aelf:lock" in line
+    assert out is not None
+    assert "FAILED" not in out.line, f"a clean exit reported as failure: {out!r}"
+    assert "ran /aelf:lock" in out.line
+    assert out.took_effect is True
 
 
 @pytest.mark.timeout(60)
@@ -504,11 +525,12 @@ def test_a_nonzero_systemexit_is_reported_as_failure(
 
     monkeypatch.setattr(cli, "main", _bad_exit)
     err = io.StringIO()
-    line = execute_aelf_command(
+    out = execute_aelf_command(
         "/aelf:lock A statement.", session_id="t", stderr=err
     )
-    assert line is not None and "FAILED" in line, line
-    assert "exit 2" in line
+    assert out is not None and "FAILED" in out.line, out
+    assert "exit 2" in out.line
+    assert out.took_effect is False
 
 
 # --- session attribution is restored ------------------------------------
@@ -675,3 +697,454 @@ def test_a_foreign_entry_on_the_old_matcher_is_left_alone(tmp_path) -> None:
         if any(h.get("command") == "/usr/bin/somebody-else" for h in e["hooks"])
     ]
     assert foreign, f"a foreign entry was removed: {entries}"
+
+
+# --- review round 4: the defects a blind adversarial pass found --------
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "terminator,name",
+    [
+        ("\n", "LF"),
+        ("\r", "CR"),
+        ("\r\n", "CRLF"),
+        ("\v", "VT"),
+        ("\f", "FF"),
+        ("\x1c", "FS"),
+        ("\x1d", "GS"),
+        ("\x1e", "RS"),
+        ("\x85", "NEL"),
+        (" ", "LS"),
+        (" ", "PS"),
+    ],
+)
+def test_every_line_terminator_ends_the_argument(
+    terminator: str, name: str
+) -> None:
+    """"First line" must mean what `str.splitlines` means.
+
+    The first fix for the swallowing defect excluded `\\n` alone, so the
+    whole defect stayed reachable from a CR-only client and from every
+    other terminator Python recognises: the rest of the message was
+    still locked as one user-locked belief. Ten of these eleven arms
+    failed before the character class was widened.
+    """
+    rest = "Also draft the release note for me."
+    parsed = parse_aelf_command(
+        f"/aelf:lock {STATEMENT}{terminator}{terminator}{rest}"
+    )
+    assert parsed is not None
+    command, argument = parsed
+    assert command == "lock"
+    assert argument == STATEMENT, f"{name} leaked: {argument!r}"
+    assert rest not in argument, f"{name} swallowed the rest of the prompt"
+
+
+@pytest.mark.timeout(60)
+def test_a_refused_command_is_not_announced_as_having_run(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The #1620 class, reproduced inside its own fix.
+
+    A refusal used to get the identical frame as a success: "aelfrice
+    ran this command itself ... Do not run it again". Nothing had run,
+    nothing was written, and the one fallback that could still have
+    saved it -- the model running the command -- was explicitly
+    disabled. That is the silent-loss shape #1626 exists to close.
+    """
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "m.db"))
+    _rc, out, _err = _run_hook("/aelf:lock --advanced", tmp_path)
+
+    assert "<aelfrice-command-failed>" in out, out
+    assert "<aelfrice-command-executed>" not in out, out
+    assert "ran this command itself" not in out, out
+    assert "did NOT take effect" in out, out
+
+
+@pytest.mark.timeout(120)
+def test_a_command_that_took_effect_still_says_so(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other direction, so the fix is not "never claim success".
+
+    Without this arm, making `took_effect` always False would pass the
+    refusal arm above and silently disable the authoritative report
+    that stops the model running the command a second time.
+    """
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    _rc, out, _err = _run_hook(f"/aelf:lock {STATEMENT}", tmp_path)
+
+    assert "<aelfrice-command-executed>" in out, out
+    assert "<aelfrice-command-failed>" not in out, out
+    assert "ran this command itself" in out, out
+    assert STATEMENT in _locked(db)
+
+
+@pytest.mark.timeout(120)
+def test_scope_out_attaches_to_the_session_that_typed_it(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor must run AFTER the session-state file is stamped.
+
+    `is_session_first_prompt` is the only writer of the top-level
+    `session_id` key, and `aelf scope-out` resolves its target session
+    from that key. Executing ahead of it wrote the exclusion under
+    whichever session most recently *started*, so `load_exclusions`
+    returned [] on the mismatch -- a dead exclusion, reported as
+    applied. A model-invoked `aelf scope-out` necessarily ran after the
+    hook, so this was a regression introduced by executing early.
+    """
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "m.db"))
+
+    def _run(prompt: str, sid: str) -> str:
+        payload = json.dumps(
+            {"prompt": prompt, "session_id": sid, "cwd": str(tmp_path)}
+        )
+        out, err = io.StringIO(), io.StringIO()
+        user_prompt_submit(stdin=io.StringIO(payload), stdout=out, stderr=err)
+        return out.getvalue()
+
+    # Session A starts first and stamps the state file.
+    _run("hello", "SESSION-A")
+    # Session B then types the command. The exclusion must be B's.
+    out_b = _run("/aelf:scope-out benchmarks", "SESSION-B")
+
+    assert "<aelfrice-command-failed>" not in out_b, out_b
+    assert _exclusions_for("SESSION-B") == ["benchmarks"], (
+        "the exclusion did not attach to the session that typed it"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_scope_out_works_on_a_sessions_very_first_prompt(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The degenerate case of the same ordering bug.
+
+    With no state file yet, the command failed outright -- and the same
+    turn then created the file, so it worked on the second try and
+    looked like a flake.
+    """
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "m.db"))
+    payload = json.dumps(
+        {
+            "prompt": "/aelf:scope-out vendor",
+            "session_id": "ONLY-SESSION",
+            "cwd": str(tmp_path),
+        }
+    )
+    out, err = io.StringIO(), io.StringIO()
+    user_prompt_submit(stdin=io.StringIO(payload), stdout=out, stderr=err)
+
+    assert "no active session" not in out.getvalue() + err.getvalue()
+    assert _exclusions_for("ONLY-SESSION") == ["vendor"]
+
+
+@pytest.mark.timeout(60)
+def test_the_stdout_redirect_holds_without_the_leading_dash_guard(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """Bind the redirect on its own, not through the dash guard.
+
+    The first version of this arm was vacuous: removing the redirect
+    left the whole file green, because the only input that reached
+    argparse was a flag, and the dash guard refused those first. Two
+    guards, one test, and the mutation of either was survived by the
+    other. This drives a command whose own body writes to the real
+    `sys.stdout` directly, so the redirect is the only thing between it
+    and the protocol channel.
+    """
+    from aelfrice import cli
+
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "m.db"))
+
+    def _chatty(_argv: object, out: object = None) -> int:
+        import sys
+
+        sys.stdout.write("LEAK" * 1000)
+        return 0
+
+    monkeypatch.setattr(cli, "main", _chatty)
+    capsys.readouterr()
+    execute_aelf_command(
+        f"/aelf:lock {STATEMENT}", session_id="t", stderr=io.StringIO()
+    )
+    captured = capsys.readouterr()
+    assert "LEAK" not in captured.out, (
+        f"{len(captured.out)} characters reached the real stdout, "
+        "which IS this hook's protocol channel"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_an_overlong_argument_is_refused_rather_than_truncated(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paste must not become a user-locked belief.
+
+    The CLI has always accepted an arbitrarily long statement. What is
+    new is that no human confirms a Bash call: the hook writes off raw
+    prompt text, so a pasted blob beginning with `/aelf:lock` reached
+    the highest-trust tier and could crowd the whole lock budget.
+    Refused rather than truncated, because a truncated lock stores
+    something the user did not type.
+    """
+    from aelfrice.hook import COMMAND_ARGUMENT_CAP
+
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    blob = "x" * (COMMAND_ARGUMENT_CAP + 1)
+    err = io.StringIO()
+    outcome = execute_aelf_command(
+        f"/aelf:lock {blob}", session_id="t", stderr=err
+    )
+
+    assert outcome is not None
+    assert outcome.took_effect is False
+    assert "over the" in outcome.line, outcome.line
+    assert _locked(db) == [], "an overlong paste was locked"
+
+
+@pytest.mark.timeout(60)
+def test_an_argument_at_the_cap_is_still_accepted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boundary, so the cap is not "refuse everything long"."""
+    from aelfrice.hook import COMMAND_ARGUMENT_CAP
+
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    statement = "y" * COMMAND_ARGUMENT_CAP
+    outcome = execute_aelf_command(
+        f"/aelf:lock {statement}", session_id="t", stderr=io.StringIO()
+    )
+
+    assert outcome is not None and outcome.took_effect is True, outcome
+    assert _locked(db) == [statement]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "stored,shape",
+    [
+        ("/opt/bin/aelf-search-tool-hook --debug", "trailing argument"),
+        ('"/opt/my bin/aelf-search-tool-hook"', "quoted spaced path"),
+        ("/opt/my bin/aelf-search-tool-hook", "unquoted spaced path"),
+    ],
+)
+def test_the_superseded_entry_is_retired_whatever_shape_it_was_stored_in(
+    stored: str, shape: str, tmp_path
+) -> None:
+    """Ownership is decided by the project's key rule, not `Path().name`.
+
+    The first version rolled its own basename with `Path(command).name`,
+    which keeps a trailing argument, keeps a closing quote, and on
+    Windows keeps an `.EXE` suffix. In each of those shapes the stored
+    command did not compare equal to the installed one, the old entry
+    survived, and the duplicate this exists to prevent came back --
+    silently, because the install still reported success.
+
+    `_command_basename` / `launcher.command_program_keys` is the rule
+    the rest of the module already uses, hardened for exactly these
+    shapes by #1412 and #1482.
+    """
+    from aelfrice.setup import (
+        SEARCH_TOOL_MATCHER,
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        install_search_tool_hook,
+    )
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+                            "hooks": [{"type": "command", "command": stored}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    install_search_tool_hook(
+        settings, command="/usr/local/bin/aelf-search-tool-hook"
+    )
+
+    matchers = [
+        e.get("matcher")
+        for e in json.loads(settings.read_text())["hooks"]["PreToolUse"]
+    ]
+    assert SUPERSEDED_SEARCH_TOOL_MATCHERS[0] not in matchers, (
+        f"a {shape} left the superseded entry behind: {matchers}"
+    )
+    assert SEARCH_TOOL_MATCHER in matchers
+
+
+@pytest.mark.timeout(60)
+def test_a_grouped_entry_keeps_the_foreign_hook_and_loses_ours(tmp_path) -> None:
+    """Granular to the inner hook, not the whole entry.
+
+    A settings file may group our hook and a user's onto one matcher.
+    Retiring the whole entry deletes theirs; keeping the whole entry
+    leaves the duplicate. Neither is acceptable, so only our hook is
+    dropped out of the inner list.
+    """
+    from aelfrice.setup import (
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        install_search_tool_hook,
+    )
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/old/bin/aelf-search-tool-hook",
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "/usr/bin/somebody-else",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    install_search_tool_hook(
+        settings, command="/usr/local/bin/aelf-search-tool-hook"
+    )
+
+    entries = json.loads(settings.read_text())["hooks"]["PreToolUse"]
+    superseded = [
+        e
+        for e in entries
+        if e.get("matcher") == SUPERSEDED_SEARCH_TOOL_MATCHERS[0]
+    ]
+    assert len(superseded) == 1, entries
+    commands = [h.get("command") for h in superseded[0]["hooks"]]
+    assert commands == ["/usr/bin/somebody-else"], (
+        f"the foreign hook must survive and ours must not: {commands}"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_install_converges_when_both_the_old_and_new_entry_exist(
+    tmp_path,
+) -> None:
+    """The reachable half-upgraded state must converge, not stall.
+
+    A settings merge, or an upgrade that was interrupted between
+    retiring and installing, leaves both entries present. Without the
+    `and not removed_superseded` term the install sees the new matcher
+    already there, reports `already_present`, and returns before
+    writing -- so the retirement is computed and then thrown away, and
+    the duplicate persists across every subsequent upgrade.
+    """
+    from aelfrice.setup import (
+        SEARCH_TOOL_MATCHER,
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        install_search_tool_hook,
+    )
+
+    command = "/usr/local/bin/aelf-search-tool-hook"
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+                            "hooks": [{"type": "command", "command": command}],
+                        },
+                        {
+                            "matcher": SEARCH_TOOL_MATCHER,
+                            "hooks": [{"type": "command", "command": command}],
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    install_search_tool_hook(settings, command=command)
+
+    matchers = [
+        e.get("matcher")
+        for e in json.loads(settings.read_text())["hooks"]["PreToolUse"]
+    ]
+    assert matchers == [SEARCH_TOOL_MATCHER], (
+        f"install did not converge from the half-upgraded state: {matchers}"
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "installed,shape",
+    [
+        ('"/opt/my bin/aelf-search-tool-hook"', "quoted install path"),
+        ("/opt/bin/aelf-search-tool-hook --quiet", "argument-bearing command"),
+    ],
+)
+def test_ownership_is_keyed_the_same_way_on_the_side_we_resolved(
+    installed: str, shape: str
+) -> None:
+    """The *target* side needs the project's key rule too, not just the
+    stored side.
+
+    The arms above vary how the OLD entry was written and all pass under
+    a plain `Path(command).name`, because the command being installed in
+    those is a clean path where the two rules agree. They disagree the
+    moment the installed command is quoted, carries an argument, or (on
+    Windows) ends in `.EXE` -- and there `Path().name` yields
+    `aelf-search-tool-hook"` or `aelf-search-tool-hook --quiet`, which
+    matches no stored entry, so the superseded entry silently survives.
+
+    Driven against the function directly rather than through
+    `install_search_tool_hook`, on purpose: `_resolve_script` does not
+    produce these shapes on POSIX today, so a test routed through the
+    current caller cannot reach them and a mutation back to
+    `Path(command).name` survives the whole suite. The contract being
+    pinned is the function's own -- "retire the entries belonging to
+    THIS command" -- which is what a future caller, and the Windows
+    install path, both depend on.
+    """
+    from aelfrice.setup import (
+        SUPERSEDED_SEARCH_TOOL_MATCHERS,
+        _drop_superseded_search_entries,
+    )
+
+    entries: list[dict[str, object]] = [
+        {
+            "matcher": SUPERSEDED_SEARCH_TOOL_MATCHERS[0],
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "/old/prefix/aelf-search-tool-hook",
+                }
+            ],
+        }
+    ]
+
+    removed = _drop_superseded_search_entries(entries, command=installed)
+
+    assert removed is True, f"a {shape} left the superseded entry behind"
+    assert entries == [], entries

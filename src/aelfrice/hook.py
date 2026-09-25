@@ -44,6 +44,7 @@ from typing import (
     Final,
     Iterator,
     Mapping,
+    NamedTuple,
     Sequence,
     cast,
 )
@@ -380,12 +381,16 @@ truncates the topic on each line. Those are an entry count and a
 character length; neither is a token budget, and nothing compares either
 note against one.
 
-A fifth (#1626) carries no token bound either: the
-`<aelfrice-command-executed>` note, written when the hook executes a
-typed `/aelf:` command on the user's behalf. It is one line plus a fixed
-two-line frame, and what bounds it is `COMMAND_BLOCK_CHAR_CAP` — again a
-character length rather than a token budget, because the thing being
-bounded is a single command's echoed output and not a pack.
+A fifth (#1626) carries no token bound either: the note written when the
+hook executes a typed `/aelf:` command on the user's behalf. It is one
+line plus a fixed frame, and what bounds the line is `COMMAND_NOTE_CAP`
+— again a character length rather than a token budget, because the thing
+being bounded is one command's output and not a pack. The cap applies to
+the note; the fixed frame is added after it and is never truncated, so
+the emitted block runs about 170 characters longer than the cap. The tag
+is `<aelfrice-command-executed>` when the command took effect and
+`<aelfrice-command-failed>` when it did not, which is one writer with
+two spellings rather than two writers.
 
 Those five are the whole of what `user_prompt_submit`
 sends to stdout, and that is re-derived rather than asserted:
@@ -2225,27 +2230,87 @@ _EXECUTABLE_COMMANDS: Final[frozenset[str]] = frozenset(
 # Character cap on the executed-command note (#1626).
 #
 # The note carries the command's own stdout, and a command may print as
-# much as it likes — `aelf lock` echoes the statement back. Generous,
-# because the note is one line and truncating it mid-id would make the
-# result unreadable; it is a guard against a pathological output, not a
-# retrieval knob. A character length rather than a token budget, the
-# same shape the two phantom notes use.
-COMMAND_BLOCK_CHAR_CAP: Final[int] = 2000
+# much as it likes. NOT because `aelf lock` echoes the statement back —
+# it does not, and three comments here used to say so. `aelf lock` prints
+# `locked: <id>`, 25 characters whatever the statement's length:
+#
+#     cli.main(["lock", "a" * 5000], out=buf) -> rc 0, 25 chars
+#
+# So the cap is a guard against a *future* executable command, or a
+# verbose failure path, printing something long — not against a long
+# statement. Getting this backwards is what made the first cap test
+# vacuous: it fed a long statement and asserted the note stayed short,
+# which it does unconditionally.
+#
+# Generous, because the note is one line and truncating it mid-id would
+# make the result unreadable; it is a guard against pathological output,
+# not a retrieval knob. A character length rather than a token budget,
+# the same shape the two phantom notes use.
+#
+# Named without a `CHAR_CAP` / `_CHARS` suffix ON PURPOSE. Those suffixes
+# are what `test_render_cost_1526._shipped_content_caps()` discovers, and
+# that helper is documented as finding "every per-belief character cap" —
+# the fixture it sizes has to dominate every cap that could trim a
+# *belief*. This is not one: it bounds one line of hook prose. Named with
+# the suffix, it was swept into that maximum and silently forced an
+# unrelated test's padding from 1200 to 2400, which is a false coupling
+# in both directions. What bounds a belief's content is
+# `BELIEF_CONTENT_CHAR_CAP`.
+#
+# This caps the NOTE, not the block. The block is the note plus a fixed
+# frame (the open tag, the instruction sentence, the close tag), so the
+# emitted block runs to roughly 170 characters more than this. That is
+# deliberate — the frame is fixed-size and is the part that must never be
+# truncated, because a block whose closing tag was cut is worse than a
+# long one.
+COMMAND_NOTE_CAP: Final[int] = 2000
+
+# Length cap on the ARGUMENT a mechanically-executed command accepts
+# (#1626, D10).
+#
+# Distinct from the note cap above, and it guards the other direction:
+# the note cap bounds what the model is shown, this bounds what gets
+# WRITTEN. A 200,000-character single-line argument was accepted and
+# stored as one `lock_level='user'` belief — the highest-trust tier,
+# re-injected on every later turn, so one pasted blob could crowd the
+# whole lock budget (`lock_budget_starvation`).
+#
+# The CLI has always accepted it. What is new is that no human confirms
+# a Bash call any more: the hook runs on raw prompt text, so a paste
+# that merely begins with `/aelf:lock` now writes. A cap is the cheap
+# half of that; refusing loudly is the other half, because silently
+# truncating a lock would store something the user did not type.
+#
+# Generous on purpose. A real locked instruction is a sentence or two;
+# this is two orders of magnitude above that, so it only catches a
+# paste.
+COMMAND_ARGUMENT_CAP: Final[int] = 4000
 
 # Anchored at the start. A prompt that MENTIONS a command is a claim
 # about the world, not a request to run one — "the command /aelf:lock
 # did not take effect yesterday" must be inert. Same distinction the
 # capture filter draws (#1620).
 #
-# The argument is the FIRST LINE ONLY, and that is the whole point of
-# the `[^\n]*`. An earlier revision used `(.*)` under `re.DOTALL`, so
-# `/aelf:lock Always use uv.\n\nAlso draft the release note` locked the entire
-# remainder of the prompt as ONE user-locked belief — the highest-trust
-# tier in the product, re-injected as standing ground truth on every
-# later turn. Typing a command and then continuing the message is the
-# most natural thing a user does, so that was not a corner case.
+# The argument is the FIRST LINE ONLY. An earlier revision used `(.*)`
+# under `re.DOTALL`, so `/aelf:lock Always use uv.` followed by any
+# further prose locked the entire remainder of the prompt as ONE
+# user-locked belief — the highest-trust tier in the product,
+# re-injected as standing ground truth on every later turn. Typing a
+# command and then continuing the message is the most natural thing a
+# user does, so that was not a corner case.
+#
+# "Line" means every terminator Python itself recognises, not just
+# `\n`. The first revision of the fix excluded `\n` alone, which left
+# the whole defect reachable from a CR-only client (classic Mac line
+# endings, and anything that normalises pasted text to `\r`), from
+# `\v` / `\f`, and from the Unicode separators `\x1c`-`\x1e`, NEL
+# (`\x85`), U+2028 and U+2029 — each of which `str.splitlines` treats
+# as a break while `[^\n]*` happily swallows it. The class below is
+# exactly `str.splitlines`'s terminator set, so "first line" here means
+# what it means everywhere else in Python.
+_LINE_TERMINATORS: Final[str] = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _AELF_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
-    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*([^\n]*)"
+    r"^/aelf:([a-z][a-z0-9-]*)[ \t]*([^" + _LINE_TERMINATORS + r"]*)"
 )
 
 
@@ -2260,22 +2325,50 @@ def parse_aelf_command(prompt: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2).strip()
 
 
+class CommandOutcome(NamedTuple):
+    """What the executor did, and whether it actually took effect.
+
+    `took_effect` is the field the caller must branch on. It is True
+    only for a clean exit: a refused argument, a missing argument, an
+    exception and a non-zero exit all report False, because in every
+    one of those cases nothing was written.
+
+    Kept separate from `line` on purpose. The line is prose for the
+    model and its wording is free to change; the flag is the contract,
+    and a caller that reads the prose to decide what happened is the
+    defect this type exists to prevent.
+    """
+
+    line: str
+    took_effect: bool
+
+
 def execute_aelf_command(
     prompt: str,
     *,
     session_id: str | None = None,
     stderr: IO[str],
-) -> str | None:
-    """Run a typed aelf command. Return a line for the model, or None.
+) -> CommandOutcome | None:
+    """Run a typed aelf command. Return a `CommandOutcome`, or None.
 
     None when the prompt is not a command, or names one outside
     `_EXECUTABLE_COMMANDS` — in which case nothing happens and the model
     handles it as before, which is how destructive commands stay manual.
 
-    Never raises. A failure here must not cost the prompt its memory
-    injection, so every error is reported and swallowed. It is reported
-    LOUDLY, though: a silent failure would reproduce the defect this
-    exists to close, inside the fix for it.
+    A returned outcome is NOT a claim that the command ran. Check
+    `took_effect`: the four non-execution paths (no argument, a flag
+    argument, an exception, a non-zero exit) all return False, and
+    telling the model "this already ran, do not run it again" on one of
+    those reproduces #1620's silent-loss class inside its own fix.
+
+    Never raises for the command's own failures. A failure here must not
+    cost the prompt its memory injection, so every error from the
+    command is reported and swallowed. It is reported LOUDLY, though: a
+    silent failure would reproduce the defect this exists to close.
+
+    Writing the report can still fail — a closed `stderr` raises from
+    `print` — so the caller keeps its own guard. That is deliberate: the
+    guard is one line and the alternative is swallowing a broken stream.
     """
     parsed = parse_aelf_command(prompt)
     if parsed is None:
@@ -2286,7 +2379,18 @@ def execute_aelf_command(
     if not argument:
         line = f"aelfrice: /aelf:{command} needs an argument; nothing was done."
         print(line, file=stderr)
-        return line
+        return CommandOutcome(line, took_effect=False)
+    if len(argument) > COMMAND_ARGUMENT_CAP:
+        # Refused, not truncated. Truncating would write a belief the
+        # user never typed, at the highest trust tier, and the whole
+        # point of this path is that what the user typed is what lands.
+        line = (
+            f"aelfrice: /aelf:{command} argument is "
+            f"{len(argument)} characters, over the "
+            f"{COMMAND_ARGUMENT_CAP} limit; nothing was done."
+        )
+        print(line, file=stderr)
+        return CommandOutcome(line, took_effect=False)
     if argument.startswith("-"):
         # The argument is user text, never a flag. `argv` is
         # `[command, argument]`, so an argument beginning with `-` is
@@ -2300,7 +2404,7 @@ def execute_aelf_command(
             f"nothing was done."
         )
         print(line, file=stderr)
-        return line
+        return CommandOutcome(line, took_effect=False)
 
     import contextlib as _contextlib  # noqa: PLC0415
     import io as _io  # noqa: PLC0415 - hot path, imported only on a command
@@ -2322,7 +2426,7 @@ def execute_aelf_command(
         # writes usage and errors to the real `sys.stdout`/`sys.stderr`
         # itself — and this hook's stdout IS the protocol channel, so
         # anything printed there is injected verbatim into the model's
-        # context, outside COMMAND_BLOCK_CHAR_CAP and outside the writer
+        # context, outside COMMAND_NOTE_CAP and outside the writer
         # enumeration that exists to make that impossible.
         with _contextlib.redirect_stdout(buf), _contextlib.redirect_stderr(buf):
             rc = _cli.main([command, argument], out=buf)
@@ -2334,7 +2438,7 @@ def execute_aelf_command(
     except Exception as exc:  # noqa: BLE001 - loud, never fatal
         line = f"aelfrice: /aelf:{command} FAILED: {exc}"
         print(line, file=stderr)
-        return line
+        return CommandOutcome(line, took_effect=False)
     finally:
         if session_id:
             if _prev is None:
@@ -2350,7 +2454,7 @@ def execute_aelf_command(
         if output:
             line += f" — {output}"
     print(line, file=stderr)
-    return line
+    return CommandOutcome(line, took_effect=rc == 0)
 
 
 @config_discovery_scope()
@@ -2410,6 +2514,26 @@ def user_prompt_submit(
         if prompt is None:
             return 0
         session_id = _extract_session_id(raw)
+        # #1626/D1: stamp the session-state file BEFORE the executor runs.
+        #
+        # `is_session_first_prompt` is the only writer of the top-level
+        # `session_id` key, and that key is how `aelf scope-out` resolves
+        # which session it acts on. Executing `/aelf:scope-out` ahead of
+        # it wrote the exclusion under whichever session most recently
+        # *started*, and `load_exclusions` then returns [] on the
+        # mismatch — so the exclusion was dead while the model was told
+        # it had taken effect. On a session's genuine first prompt the
+        # file did not exist yet and the command failed outright.
+        #
+        # The boolean is consumed further down, where the session-start
+        # block is built. Hoisting only the call, not the use: the
+        # function is idempotent for the boolean (first call True and
+        # stamps, later calls False) and fail-soft on every error path.
+        first_prompt = False
+        try:
+            first_prompt = is_session_first_prompt(session_id)
+        except Exception:
+            pass
         # #1626: execute a typed aelf command before anything else.
         #
         # The hook is authoritative here. It runs the command and tells
@@ -2417,36 +2541,59 @@ def user_prompt_submit(
         # the outcome no longer depends on the model choosing to invoke
         # a skill. That is the whole point: a lock the user typed must
         # land whether or not anything downstream cooperates.
-        command_line: str | None = None
+        # Named `command_outcome`, not `outcome`: this function already
+        # binds `outcome` to a `BlockCeilingOutcome` further down, and a
+        # second annotation on the same name is a type error rather than
+        # a shadow.
+        command_outcome: CommandOutcome | None = None
         try:
-            command_line = execute_aelf_command(
+            command_outcome = execute_aelf_command(
                 prompt, session_id=session_id, stderr=serr
             )
         except Exception:
             # Belt for the executor's own net. A command must never cost
             # this prompt its memory injection.
-            command_line = None
-        if command_line is not None:
-            # Tell the model it already ran, so it does not repeat the
-            # command. The hook is authoritative: this line is a report
-            # of work already done, not a task to perform.
+            command_outcome = None
+        if command_outcome is not None:
+            # The frame differs by `took_effect`, and that is the whole
+            # point of the flag.
+            #
+            # A single unconditional "aelfrice ran this command itself
+            # ... Do not run it again" was #1620's failure class
+            # reproduced inside its own fix: on a refused argument, a
+            # missing argument, an exception or a non-zero exit, nothing
+            # was written, yet the model was told the work was done AND
+            # instructed not to redo it — so the fallback was disabled
+            # for exactly the cases that needed it.
             #
             # Bounded at the source rather than at the emit boundary.
-            # `command_line` carries the command's own stdout, and a
-            # command is free to print as much as it likes — `aelf lock`
-            # echoes the statement back, and a future executable command
-            # could echo far more. `COMMAND_BLOCK_CHAR_CAP` is a
+            # The line carries the command's own stdout, and a command is
+            # free to print as much as it likes. `COMMAND_NOTE_CAP` is a
             # character length, not a token budget, which is the same
             # shape the two phantom notes use and for the same reason:
-            # what needs bounding here is one line, not a pack.
-            command_note = command_line[:COMMAND_BLOCK_CHAR_CAP]
-            sout.write(
-                "<aelfrice-command-executed>\n"
-                f"{command_note}\n"
-                "aelfrice ran this command itself when you submitted the "
-                "prompt. Do not run it again; report the result above.\n"
-                "</aelfrice-command-executed>\n\n"
-            )
+            # what needs bounding here is one line, not a pack. See the
+            # constant for why "a long statement" is NOT the case it
+            # guards against.
+            command_note = command_outcome.line[:COMMAND_NOTE_CAP]
+            if command_outcome.took_effect:
+                sout.write(
+                    "<aelfrice-command-executed>\n"
+                    f"{command_note}\n"
+                    "aelfrice ran this command itself when you submitted "
+                    "the prompt. Do not run it again; report the result "
+                    "above.\n"
+                    "</aelfrice-command-executed>\n\n"
+                )
+            else:
+                sout.write(
+                    "<aelfrice-command-failed>\n"
+                    f"{command_note}\n"
+                    "aelfrice tried to run this command and it did NOT "
+                    "take effect. Nothing was written. Report the error "
+                    "above to the user; do not claim the command "
+                    "succeeded.\n"
+                    "</aelfrice-command-failed>\n\n"
+                )
         # #1522: stamp the turn boundary the PreToolUse search hook's
         # per-turn Bash fire cap resets on. This hook is the only one
         # guaranteed to fire exactly once per turn. Fail-soft.
@@ -2501,7 +2648,7 @@ def user_prompt_submit(
         # left off" block prepended to the session-start sub-block.
         session_start_block = ""
         try:
-            if is_session_first_prompt(session_id):
+            if first_prompt:
                 session_start_block = _retrieve_session_start_block(
                     serr, cwd=payload_cwd, store=ups_store,
                 )

@@ -126,12 +126,15 @@ def _shipped_content_caps() -> dict[str, int]:
 # on a block where every line had been cut. The test asserts the resulting
 # length against that discovered maximum rather than trusting this number,
 # so a cap added later fails the assert instead of slipping under it.
-# Raised from 1200 for #1626, which added
-# `hook.COMMAND_BLOCK_CHAR_CAP = 2000` — larger than every cap this
-# padding previously had to dominate. The assert below discovers the
-# maximum rather than trusting this number, which is exactly how the
-# new cap was caught.
-_PAD_CHARS = 2400
+# #1626 briefly raised this to 2400. That was wrong and is reverted: the
+# constant it was raised for bounds one line of hook prose, not a
+# belief's content, and it only entered the discovered set because it had
+# been named `..._CHAR_CAP`. It is now `hook.COMMAND_NOTE_CAP`, which
+# these suffixes correctly do not match. The assert below still
+# discovers the maximum rather than trusting this number, so a real
+# per-belief cap added later fails the assert instead of slipping under
+# it — which is exactly how the misnamed one was caught.
+_PAD_CHARS = 1200
 
 
 def _mk(

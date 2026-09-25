@@ -333,7 +333,7 @@ _STDOUT_WRITERS = {
     "write:phantom_block": "<aelfrice-phantom-opportunity>",
     "write:promotion_block": "<aelfrice-phantom-promotion-opportunity>",
     # #1626: the executed-command note. Bounded by
-    # COMMAND_BLOCK_CHAR_CAP, a character length like the two phantom
+    # COMMAND_NOTE_CAP, a character length like the two phantom
     # notes above, not a token budget.
     "write:command_note": "<aelfrice-command-executed>",
 }

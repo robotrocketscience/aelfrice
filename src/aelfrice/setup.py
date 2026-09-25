@@ -814,37 +814,73 @@ def resolve_search_tool_command(scope: SettingsScope) -> str:
 def _drop_superseded_search_entries(
     entries: list[dict[str, object]], *, command: str
 ) -> bool:
-    """Remove this hook's entries on a superseded matcher. True if any went.
+    """Retire this hook from a superseded matcher. True if anything went.
 
     Scoped to `command`, so a user's own PreToolUse entry that happens to
-    sit on the old matcher is left alone: only the entry running THIS
-    hook is retired, and only from a matcher aelfrice itself used to
-    install.
+    sit on the old matcher is left alone: only hooks running THIS command
+    are retired, and only from a matcher aelfrice itself used to install.
 
-    Compared by basename, because the same hook is installed by absolute
-    path and the path differs between a venv install and a `uv tool` one
-    — an upgrade that changed the prefix would otherwise leave the old
-    entry behind, which is the whole defect this exists to prevent.
+    Granular to the inner hook, not the entry. A settings file may group
+    our hook and a user's onto one matcher; retiring the whole entry
+    would delete theirs, and keeping the whole entry leaves the duplicate
+    this exists to prevent. So our hooks are dropped out of the inner
+    list and the entry survives if anything else does.
+
+    Compared by ownership key rather than a raw basename, because the
+    same hook is installed by absolute path and the path differs between
+    a venv install and a `uv tool` one. `Path(command).name` is not that
+    rule: it keeps a trailing argument (`aelf-hook --debug`), a closing
+    quote (`"…/my bin/aelf-hook"`), and a Windows `.EXE` suffix, and in
+    each of those shapes the old entry survived. `_command_basename` and
+    `launcher.command_program_keys` are the rule the rest of this file
+    already uses, hardened against those exact shapes by #1412/#1482.
     """
-    target = Path(command).name
+    target = _command_basename(command)
+    if not target:
+        return False
     keep: list[dict[str, object]] = []
     removed = False
     for entry in entries:
         matcher = entry.get("matcher")
         inner = entry.get(_INNER_HOOKS_KEY)
-        if matcher in SUPERSEDED_SEARCH_TOOL_MATCHERS and isinstance(
+        if matcher not in SUPERSEDED_SEARCH_TOOL_MATCHERS or not isinstance(
             inner, list
         ):
-            names: set[str] = set()
-            for hook in cast(list[object], inner):
-                if not isinstance(hook, dict):
-                    continue
-                hook_dict = cast(dict[str, object], hook)
-                names.add(Path(str(hook_dict.get(_COMMAND_KEY, ""))).name)
-            if names == {target}:
-                removed = True
+            keep.append(entry)
+            continue
+        # Drop only OUR hooks out of the inner list, and keep the entry
+        # if anything of someone else's survives. An earlier revision
+        # required *every* inner hook to be ours before retiring the
+        # entry, which was safe but incomplete: a settings file that
+        # grouped a user's own hook onto the same matcher kept the
+        # superseded entry, and the duplicate this exists to prevent
+        # came back for exactly those installs.
+        surviving: list[object] = []
+        dropped_here = False
+        for hook in cast(list[object], inner):
+            if not isinstance(hook, dict):
+                surviving.append(hook)
                 continue
-        keep.append(entry)
+            hook_dict = cast(dict[str, object], hook)
+            stored = str(hook_dict.get(_COMMAND_KEY, ""))
+            # Asymmetric on purpose, per #1482. `target` is the most
+            # specific reading of a path THIS project resolved; the
+            # stored side is a command someone else may have written, so
+            # it is accepted under ANY reading. Symmetrising either way
+            # reintroduces #1412: two first-token keys make every hook
+            # of a spaced install compare equal, and two most-specific
+            # keys stop matching an entry whose path splits differently.
+            if target in launcher.command_program_keys(stored):
+                dropped_here = True
+                continue
+            surviving.append(hook_dict)
+        if not dropped_here:
+            keep.append(entry)
+            continue
+        removed = True
+        if surviving:
+            entry[_INNER_HOOKS_KEY] = surviving
+            keep.append(entry)
     if removed:
         entries[:] = keep
     return removed
