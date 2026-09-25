@@ -2428,6 +2428,15 @@ def execute_aelf_command(
     if session_id:
         os.environ["AELF_SESSION_ID"] = session_id
     try:
+        # Deliberately function-local, and that IS the cycle fix rather
+        # than a violation of it. `cli` imports `hook` the same way
+        # (`cli.py:4662`), so a module-scope import in either direction
+        # would be a real circular import at interpreter start; the
+        # convention is already recorded at `hook.py:5463` and
+        # `hook.py:6818`. CodeQL reports the cycle on the import graph
+        # regardless of scope, so its alert here names the mitigation,
+        # not the defect. Moving this to module scope to satisfy it
+        # would break `import aelfrice.hook`.
         from aelfrice import cli as _cli  # noqa: PLC0415
 
         # stdout is redirected for the duration, not merely passed as
@@ -2559,6 +2568,15 @@ def user_prompt_submit(
         try:
             first_prompt = is_session_first_prompt(session_id)
         except Exception:
+            # Swallowed, and the swallow is the point. This call is
+            # here for its SIDE EFFECT — stamping the session-state
+            # file so the executed command below attributes to the
+            # right session — and the boolean is secondary. The
+            # function is already fail-soft and documents that it never
+            # raises; this is a second net, because a session-state
+            # failure must not cost the prompt its memory injection.
+            # Reading False on failure is the safe direction: it skips
+            # the session-start block rather than injecting a wrong one.
             pass
         # #1626: execute a typed aelf command before anything else.
         #

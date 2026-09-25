@@ -598,8 +598,6 @@ def test_upgrading_retires_the_superseded_search_matcher(tmp_path) -> None:
     install is the affected case, and `prune_broken_aelf_hooks` does not
     clean it because the entry is superseded, not broken.
     """
-    import json
-
     from aelfrice.setup import (
         SEARCH_TOOL_MATCHER,
         SUPERSEDED_SEARCH_TOOL_MATCHERS,
@@ -660,8 +658,6 @@ def test_a_foreign_entry_on_the_old_matcher_is_left_alone(tmp_path) -> None:
     somebody else's PreToolUse entry that happens to sit on the same
     matcher.
     """
-    import json
-
     from aelfrice.setup import (
         SUPERSEDED_SEARCH_TOOL_MATCHERS,
         install_search_tool_hook,
