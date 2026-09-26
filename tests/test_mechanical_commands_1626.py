@@ -1316,11 +1316,23 @@ def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             mod = node.module or ""
+            # `from . import hook` and `from .hook import x` are the same
+            # edge as their absolute forms; both modules sit at package top.
+            if node.level == 1:
+                mod = f"aelfrice.{mod}" if mod else "aelfrice"
             if mod == f"aelfrice.{target}" or (
                 mod == "aelfrice"
                 and any(a.name == target for a in node.names)
             ):
                 found.append((node.lineno, ast.unparse(node)))
+        elif (
+            isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == f"aelfrice.{target}"
+        ):
+            # importlib.import_module / __import__ by string literal.
+            found.append((node.lineno, ast.unparse(node)))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == f"aelfrice.{target}":
