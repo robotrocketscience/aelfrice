@@ -4659,7 +4659,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
     if not getattr(args, "sessionstart_recap", True):
-        from aelfrice.hook import ENV_SESSIONSTART_RECAP
+        from aelfrice.env_names import ENV_SESSIONSTART_RECAP
         print(
             f"SessionStart recap disabled. To persist across shells, add "
             f"{ENV_SESSIONSTART_RECAP}=0 to your shell profile.",

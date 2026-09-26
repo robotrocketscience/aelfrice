@@ -1281,3 +1281,124 @@ def test_a_bare_string_hook_that_is_not_ours_is_left_alone(tmp_path) -> None:
     )
     assert removed is False
     assert entries[0]["hooks"] == ["/usr/bin/somebody-else"]
+
+
+# --- the import cycle #1626 created, and closed -------------------------
+
+
+def _aelfrice_src() -> "pathlib.Path":
+    import pathlib
+
+    import aelfrice
+
+    return pathlib.Path(aelfrice.__file__).parent
+
+
+def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
+    """Every import of `aelfrice.<target>` in `aelfrice.<module>`.
+
+    Parsed, not grepped: the claim is about the module graph, and a
+    substring scan counts the word in a comment or a docstring -- of
+    which the two modules involved have several, precisely because this
+    boundary has been reasoned about before.
+    """
+    import ast
+
+    tree = ast.parse((_aelfrice_src() / f"{module}.py").read_text())
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == f"aelfrice.{target}" or (
+                mod == "aelfrice"
+                and any(a.name == target for a in node.names)
+            ):
+                found.append((node.lineno, ast.unparse(node)))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == f"aelfrice.{target}":
+                    found.append((node.lineno, ast.unparse(node)))
+    return sorted(found)
+
+
+@pytest.mark.timeout(60)
+def test_cli_does_not_import_hook_so_there_is_no_cycle() -> None:
+    """#1626 created a cli<->hook cycle; this keeps it closed.
+
+    `hook` has to import `cli` -- running a typed command is the point.
+    `cli` imported exactly one thing from `hook`,
+    `ENV_SESSIONSTART_RECAP`, and only to interpolate the name into a
+    help string. Together those two edges closed a cycle that CodeQL
+    flagged.
+
+    Both edges were function-local, so nothing failed at interpreter
+    start. That is not a defence: a cycle survivable only because every
+    edge is deferred fails the first time someone needs one of them at
+    module scope, and the failure lands at import of the whole package.
+    The constant moved to `env_names`, which imports nothing from
+    `aelfrice` by construction, so the `cli -> hook` edge is gone rather
+    than documented.
+
+    Asserted in the cheap direction: `cli` must not import `hook` at
+    all. Permitting "only lazily" is what allowed this to accumulate.
+    """
+    edges = _import_edges("cli", "hook")
+    assert edges == [], (
+        "aelfrice.cli imports aelfrice.hook, which re-closes the cycle "
+        f"with hook's own import of cli: {edges}. Put anything both "
+        "modules need in aelfrice.env_names, or another module that "
+        "imports nothing from aelfrice."
+    )
+    # The other direction must still exist, or this test passes for the
+    # wrong reason -- a cycle is also absent when the feature is gone.
+    assert _import_edges("hook", "cli"), (
+        "hook no longer imports cli, so this test would pass even with "
+        "the cycle reintroduced later"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_env_names_imports_nothing_from_aelfrice() -> None:
+    """The property that makes `env_names` a safe place to put a shared
+    constant.
+
+    A module with no outgoing edges cannot be part of a cycle. The
+    moment it imports from `aelfrice`, it stops being a solution and
+    becomes another way to build one.
+    """
+    import ast
+
+    tree = ast.parse((_aelfrice_src() / "env_names.py").read_text())
+    offenders = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and "aelfrice" in ast.unparse(node)
+    ]
+    assert offenders == [], (
+        f"env_names must import nothing from aelfrice: {offenders}"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_the_constant_has_exactly_one_home() -> None:
+    """`env_names` owns the name, and `hook` does not shadow it.
+
+    A re-export would have kept `hook.ENV_SESSIONSTART_RECAP` working,
+    but it costs a module-scope import and so a place on the pinned
+    import-cost budget -- for a string constant with one reader. Asserted
+    as an absence, because a re-export added back later is exactly the
+    regression: it is invisible at the call site and only shows up as
+    `test_hook_import_cost_1351` going from 18 to 19.
+    """
+    import aelfrice.env_names
+    import aelfrice.hook
+
+    assert (
+        aelfrice.env_names.ENV_SESSIONSTART_RECAP
+        == "AELFRICE_SESSIONSTART_RECAP"
+    )
+    assert not hasattr(aelfrice.hook, "ENV_SESSIONSTART_RECAP"), (
+        "hook re-exports ENV_SESSIONSTART_RECAP again, which puts "
+        "env_names back on hook's import-time graph"
+    )

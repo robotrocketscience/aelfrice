@@ -2428,15 +2428,19 @@ def execute_aelf_command(
     if session_id:
         os.environ["AELF_SESSION_ID"] = session_id
     try:
-        # Deliberately function-local, and that IS the cycle fix rather
-        # than a violation of it. `cli` imports `hook` the same way
-        # (`cli.py:4662`), so a module-scope import in either direction
-        # would be a real circular import at interpreter start; the
-        # convention is already recorded at `hook.py:5463` and
-        # `hook.py:6818`. CodeQL reports the cycle on the import graph
-        # regardless of scope, so its alert here names the mitigation,
-        # not the defect. Moving this to module scope to satisfy it
-        # would break `import aelfrice.hook`.
+        # Function-local to keep `cli` off this module's import-time
+        # graph, which is gated for cost (#1289) — not to dodge a cycle.
+        # There is no cycle to dodge: `cli` imports nothing from `hook`,
+        # asserted by `test_cli_does_not_import_hook_so_there_is_no_cycle`.
+        #
+        # It did briefly. This import was new in #1626, `cli` imported
+        # one constant back from `hook`, and the two closed a cycle
+        # CodeQL flagged. Both edges were lazy, so nothing failed at
+        # start-up — which is exactly why it went unnoticed, and is not a
+        # defence: a cycle that only survives because every edge is
+        # deferred fails the first time one is needed at module scope.
+        # The constant moved to `aelfrice.env_names`, which imports
+        # nothing from `aelfrice` by construction.
         from aelfrice import cli as _cli  # noqa: PLC0415
 
         # stdout is redirected for the duration, not merely passed as
@@ -7819,8 +7823,21 @@ _RECAP_BELIEF_WRITE_EVENTS: Final[frozenset[str]] = frozenset({
     "feedback.applied",
 })
 
-ENV_SESSIONSTART_RECAP: Final[str] = "AELFRICE_SESSIONSTART_RECAP"
-"""Set to '0' to suppress the SessionStart belief-write recap line."""
+# This name lives in `aelfrice.env_names`, not here. `cli` needs it too
+# — only to interpolate it into a help string — and importing it from
+# `hook` closed an import cycle once `hook` gained its own import of
+# `cli` for #1626. See `env_names`'s docstring.
+#
+# Read through a function rather than re-exported as a module-scope
+# constant, and the reason is measured rather than stylistic: a
+# module-scope `from aelfrice.env_names import ...` takes the modules
+# loaded by `import aelfrice.hook` from 18 to 19, which is a ceiling
+# `test_hook_import_cost_1351` pins deliberately because every process
+# that imports this module pays it. The A/B was ~1.0 ms at the median
+# of 9 fresh interpreters (23.6 vs 22.6 ms), inside the run-to-run
+# spread and so not cleanly separable from noise — but a cost that is
+# merely small is still a cost to pay for a string constant, and the
+# only caller is the SessionStart recap path. Imported there instead.
 
 ENV_SESSIONSTART_RECAP_THRESHOLD: Final[str] = (
     "AELFRICE_SESSIONSTART_RECAP_THRESHOLD"
@@ -7845,6 +7862,10 @@ def _recap_threshold(env: dict[str, str] | None = None) -> int:
 def _recap_enabled(env: dict[str, str] | None = None) -> bool:
     """Return True unless AELFRICE_SESSIONSTART_RECAP=0."""
     src = os.environ if env is None else env
+    from aelfrice.env_names import (  # noqa: PLC0415 - see above
+        ENV_SESSIONSTART_RECAP,
+    )
+
     return src.get(ENV_SESSIONSTART_RECAP) != "0"
 
 

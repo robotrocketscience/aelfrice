@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.env_names import ENV_SESSIONSTART_RECAP
 from aelfrice.hook import (
-    ENV_SESSIONSTART_RECAP,
     ENV_SESSIONSTART_RECAP_THRESHOLD,
     _DEFAULT_RECAP_THRESHOLD,
     build_session_start_recap_line,
