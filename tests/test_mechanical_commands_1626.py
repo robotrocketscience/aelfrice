@@ -1287,11 +1287,18 @@ def test_a_bare_string_hook_that_is_not_ours_is_left_alone(tmp_path) -> None:
 
 
 def _aelfrice_src() -> "pathlib.Path":
+    """The installed package directory, found without importing the
+    package under a second import form.
+
+    `import aelfrice` alongside this file's `from aelfrice.hook import
+    ...` is one module reached two ways, which is its own finding. The
+    hook module is already imported at module scope, so its own
+    `__file__` locates the package.
+    """
     import pathlib
+    import sys
 
-    import aelfrice
-
-    return pathlib.Path(aelfrice.__file__).parent
+    return pathlib.Path(sys.modules["aelfrice.hook"].__file__ or "").parent
 
 
 def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
@@ -1323,31 +1330,32 @@ def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
 
 @pytest.mark.timeout(60)
 def test_cli_does_not_import_hook_so_there_is_no_cycle() -> None:
-    """#1626 created a cli<->hook cycle; this keeps it closed.
+    """`cli` must not import `hook`. This does NOT mean hook is acyclic.
 
-    `hook` has to import `cli` -- running a typed command is the point.
-    `cli` imported exactly one thing from `hook`,
-    `ENV_SESSIONSTART_RECAP`, and only to interpolate the name into a
-    help string. Together those two edges closed a cycle that CodeQL
-    flagged.
+    Scope, stated precisely because an earlier version of this docstring
+    overclaimed and the overclaim survived a review round. `hook` was
+    already in an import cycle on main, with `provenance_render`, and
+    #1626's `hook -> cli` edge grew that component from two modules to
+    five via `hook -> cli -> doctor -> hook`. Removing the `cli -> hook`
+    edge does not break that cycle and this test does not claim it does.
 
-    Both edges were function-local, so nothing failed at interpreter
-    start. That is not a defence: a cycle survivable only because every
-    edge is deferred fails the first time someone needs one of them at
-    module scope, and the failure lands at import of the whole package.
-    The constant moved to `env_names`, which imports nothing from
-    `aelfrice` by construction, so the `cli -> hook` edge is gone rather
-    than documented.
+    What it pins is the one edge that had no reason to exist: `cli`
+    imported `ENV_SESSIONSTART_RECAP` from `hook` only to interpolate
+    the name into a help string, and a string constant belongs in a leaf
+    module. It now lives in `env_names`, which imports nothing from
+    `aelfrice` at all.
 
-    Asserted in the cheap direction: `cli` must not import `hook` at
-    all. Permitting "only lazily" is what allowed this to accumulate.
+    Asserted as an absence rather than as "not at module scope", because
+    both edges here were already function-local and that is exactly how
+    the coupling accumulated unnoticed.
     """
     edges = _import_edges("cli", "hook")
     assert edges == [], (
-        "aelfrice.cli imports aelfrice.hook, which re-closes the cycle "
-        f"with hook's own import of cli: {edges}. Put anything both "
-        "modules need in aelfrice.env_names, or another module that "
-        "imports nothing from aelfrice."
+        f"aelfrice.cli imports aelfrice.hook again: {edges}. Put "
+        "anything both modules need in aelfrice.env_names, or another "
+        "module that imports nothing from aelfrice. This edge is not the "
+        "whole cycle -- hook -> cli -> doctor -> hook is -- but it is "
+        "the one with no reason to exist."
     )
     # The other direction must still exist, or this test passes for the
     # wrong reason -- a cycle is also absent when the feature is gone.
@@ -1391,14 +1399,18 @@ def test_the_constant_has_exactly_one_home() -> None:
     regression: it is invisible at the call site and only shows up as
     `test_hook_import_cost_1351` going from 18 to 19.
     """
-    import aelfrice.env_names
-    import aelfrice.hook
+    import sys
 
-    assert (
-        aelfrice.env_names.ENV_SESSIONSTART_RECAP
-        == "AELFRICE_SESSIONSTART_RECAP"
-    )
-    assert not hasattr(aelfrice.hook, "ENV_SESSIONSTART_RECAP"), (
+    from aelfrice.env_names import ENV_SESSIONSTART_RECAP
+
+    assert ENV_SESSIONSTART_RECAP == "AELFRICE_SESSIONSTART_RECAP"
+    # The module object via sys.modules, not `import aelfrice.hook`:
+    # this file already does `from aelfrice.hook import ...` at module
+    # scope, and mixing the two forms for one module is its own CodeQL
+    # finding. `hook` is imported by that module-scope line, so it is
+    # always present here.
+    hook_mod = sys.modules["aelfrice.hook"]
+    assert not hasattr(hook_mod, "ENV_SESSIONSTART_RECAP"), (
         "hook re-exports ENV_SESSIONSTART_RECAP again, which puts "
         "env_names back on hook's import-time graph"
     )
