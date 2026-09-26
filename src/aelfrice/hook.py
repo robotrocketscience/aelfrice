@@ -2429,18 +2429,15 @@ def execute_aelf_command(
         os.environ["AELF_SESSION_ID"] = session_id
     try:
         # Function-local to keep `cli` off this module's import-time
-        # graph, which is gated for cost (#1289) — not to dodge a cycle.
-        # There is no cycle to dodge: `cli` imports nothing from `hook`,
-        # asserted by `test_cli_does_not_import_hook_so_there_is_no_cycle`.
+        # graph, which is gated for cost (#1289).
         #
-        # It did briefly. This import was new in #1626, `cli` imported
-        # one constant back from `hook`, and the two closed a cycle
-        # CodeQL flagged. Both edges were lazy, so nothing failed at
-        # start-up — which is exactly why it went unnoticed, and is not a
-        # defence: a cycle that only survives because every edge is
-        # deferred fails the first time one is needed at module scope.
-        # The constant moved to `aelfrice.env_names`, which imports
-        # nothing from `aelfrice` by construction.
+        # This edge IS part of an import cycle: `hook -> cli -> doctor ->
+        # hook`. Every edge on it is function-local, so nothing fails at
+        # start-up, which is not a defence; #1631 tracks breaking it.
+        # What was removed is the direct `cli -> hook` edge, which
+        # existed only to read one constant, now in `aelfrice.env_names`.
+        # `test_cli_does_not_import_hook` pins that one edge, not
+        # acyclicity.
         from aelfrice import cli as _cli  # noqa: PLC0415
 
         # stdout is redirected for the duration, not merely passed as

@@ -1283,7 +1283,7 @@ def test_a_bare_string_hook_that_is_not_ours_is_left_alone(tmp_path) -> None:
     assert entries[0]["hooks"] == ["/usr/bin/somebody-else"]
 
 
-# --- the import cycle #1626 created, and closed -------------------------
+# --- the cli -> hook edge #1626 added, and removed ----------------------
 
 
 def _aelfrice_src() -> "pathlib.Path":
@@ -1329,7 +1329,7 @@ def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
 
 
 @pytest.mark.timeout(60)
-def test_cli_does_not_import_hook_so_there_is_no_cycle() -> None:
+def test_cli_does_not_import_hook() -> None:
     """`cli` must not import `hook`. This does NOT mean hook is acyclic.
 
     Scope, stated precisely because an earlier version of this docstring
