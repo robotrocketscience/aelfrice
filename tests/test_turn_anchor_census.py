@@ -45,11 +45,13 @@ def test_census_counts_turns_and_anchor_kinds(
         {"session_id": "s1", "ts": "2026-08-01T00:00:00Z",
          "text": "The configuration file lives at /etc/aelfrice/conf. "
                  "Radio telescopes calibrate against known pulsar timings."},
-        {"session_id": "s2", "ts": "2026-08-02T00:00:00Z",
+        # aelfrice's own transcript logger writes `+00:00`, not `Z`.
+        {"session_id": "s2", "ts": "2026-08-02T00:00:00+00:00",
          "text": "Astronomers process supernova imagery nightly using "
                  "clusters."},
-        # No ts of its own: ingest stamps the clock, so the census
-        # counts it apart, and its belief keeps the label-only anchor.
+        # No ts of its own: ingest stamps the clock, the belief keeps the
+        # label-only anchor, and the census cannot tell this row from a
+        # logged turn -- which is why the count is an upper bound.
         {"session_id": "s2",
          "text": "Glaciers retreat measurably faster in warmer decades."},
     ]
@@ -64,11 +66,10 @@ def test_census_counts_turns_and_anchor_kinds(
 
     assert census_module.census(db) == {
         "transcript_rows": 4,
-        "rows_with_turn_identity": 3,
-        "rows_with_clock_ts": 1,
-        "distinct_turns": 2,
+        "rows_with_turn_identity": 4,
+        "distinct_turns": 3,
         "distinct_sessions": 2,
-        "beliefs_reachable": 3,
+        "beliefs_reachable": 4,
         "rows_with_turn_sha": 3,
         "anchors_by_kind": {"turn": 3, "label_only": 1},
         # The two sentences of one turn share its anchor URI.

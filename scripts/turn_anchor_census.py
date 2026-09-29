@@ -4,13 +4,13 @@ This produces the #1602 AC1 figures (AC6: no figure without a producer in
 the tree). It reads one aelfrice `memory.db` and prints JSON with:
 
 - `transcript_rows`: `ingest_log` rows with `source_kind = 'transcript'`.
-- `rows_with_turn_identity`: those rows that carry a `session_id` and a
-  `ts` the host wrote. A turn ingested without its own timestamp gets one
-  from the clock (`_now_utc_iso`, which ends `+00:00`); that `ts` names
-  the ingest, not the turn, so those rows are counted apart as
-  `rows_with_clock_ts` and are not a turn identity. Before #1602 the row
-  records nothing else, so the timestamp's format is the only way to
-  tell the two apart on an old store.
+- `rows_with_turn_identity`: those rows that carry both `session_id` and
+  `ts`, the two halves of a turn's identity. On a store written before
+  #1602 this is an upper bound: a turn ingested without its own
+  timestamp got one from the clock, and nothing on the row records which
+  happened. The format cannot tell them apart either, because aelfrice's
+  own transcript logger also writes `+00:00` timestamps. Through
+  `ingest_jsonl`, the fallback fires only for a line that has no `ts`.
 - `distinct_turns` and `distinct_sessions`: over those rows.
 - `beliefs_reachable`: distinct beliefs derived from those rows, which is
   the population a turn anchor could cover.
@@ -40,11 +40,6 @@ from pathlib import Path
 
 from aelfrice.derivation import META_TURN_SHA
 
-# `datetime.now(timezone.utc).isoformat()`, the ingest fallback, always
-# ends with this offset. Hosts write `Z`.
-_CLOCK_TS_SUFFIX = "+00:00"
-
-
 def census(db_path: Path) -> dict[str, object]:
     """Return the #1602 AC1 counts for the store at `db_path`."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -62,12 +57,9 @@ def census(db_path: Path) -> dict[str, object]:
     turns: set[tuple[str, str]] = set()
     beliefs: set[str] = set()
     with_identity = 0
-    with_clock_ts = 0
     with_sha = 0
     for session_id, ts, raw_meta, derived in rows:
-        if ts and ts.endswith(_CLOCK_TS_SUFFIX):
-            with_clock_ts += 1
-        elif session_id and ts:
+        if session_id and ts:
             with_identity += 1
             turns.add((session_id, ts))
             for bid in json.loads(derived) if derived else []:
@@ -81,7 +73,6 @@ def census(db_path: Path) -> dict[str, object]:
     return {
         "transcript_rows": len(rows),
         "rows_with_turn_identity": with_identity,
-        "rows_with_clock_ts": with_clock_ts,
         "distinct_turns": len(turns),
         "distinct_sessions": len({s for s, _ in turns}),
         "beliefs_reachable": len(beliefs),
