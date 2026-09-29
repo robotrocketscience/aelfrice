@@ -704,6 +704,23 @@ def _belief_line_cost(b: object) -> int:
     return chars_to_tokens(len(line) + 1)
 
 
+ATTR_CHAR_CAP: Final[int] = 400
+"""Longest `query` / `cmd` attribute value the block carries (#1639).
+
+Both come from the agent's own tool call and are otherwise unbounded: a
+Grep for a 20,000-character pattern wrote a 21,016-character block, twice
+the host's inline limit, with no result line to cut. Truncated before
+escaping, and marked, so the block stays under `HOOK_PAYLOAD_CHAR_LIMIT`
+whatever the call carries.
+"""
+
+
+def _cap_attr(value: str) -> str:
+    if len(value) <= ATTR_CHAR_CAP:
+        return value
+    return value[: ATTR_CHAR_CAP - 1] + "…"
+
+
 def _format_results(
     query: str,
     beliefs: list[object],
@@ -713,7 +730,28 @@ def _format_results(
     suppressed_recent: int = 0,
     latest_fire_idx: int = -1,
 ) -> str:
+    """The block `_format_results_with_ids` renders, without the ids."""
+    return _format_results_with_ids(
+        query, beliefs, locked_ids, bash_source=bash_source,
+        suppressed_recent=suppressed_recent, latest_fire_idx=latest_fire_idx,
+    )[0]
+
+
+def _format_results_with_ids(
+    query: str,
+    beliefs: list[object],
+    locked_ids: set[str],
+    *,
+    bash_source: tuple[str, str] | None = None,
+    suppressed_recent: int = 0,
+    latest_fire_idx: int = -1,
+) -> tuple[str, list[str]]:
     """Render retrieve() output as a flat text block for additionalContext.
+
+    Returns the block and the ids of the beliefs it shows, in order. Since
+    #1639 the block can cut lines to fit the host's inline limit, so the
+    ids shown are not always the ids passed in, and only the ids shown may
+    be recorded as injected.
 
     Format: "[L0] {id-prefix}: {content}" for locked, "[L1] ..." for
     BM25-ranked. One belief per line, truncated to PER_LINE_CHAR_CAP.
@@ -740,12 +778,12 @@ def _format_results(
     if bash_source is not None:
         cmd_name, raw_cmd = bash_source
         attrs = (
-            f'query="{_escape_attr(query)}" '
-            f'source="bash:{_escape_attr(cmd_name)}" '
-            f'cmd="{_escape_attr(raw_cmd)}"'
+            f'query="{_escape_attr(_cap_attr(query))}" '
+            f'source="bash:{_escape_attr(_cap_attr(cmd_name))}" '
+            f'cmd="{_escape_attr(_cap_attr(raw_cmd))}"'
         )
     else:
-        attrs = f'query="{_escape_attr(query)}"'
+        attrs = f'query="{_escape_attr(_cap_attr(query))}"'
     lines: list[str] = []
     line_ids: list[tuple[str, bool]] = []
     for b in beliefs:
@@ -763,12 +801,12 @@ def _format_results(
                 f"<aelfrice-search {attrs}"
                 f' note="answer already in prompt context"'
                 f' suppressed="{suppressed_recent}"{turn_attr}/>'
-            )
+            ), []
         return (
             f'<aelfrice-search {attrs}>'
             f"no matching beliefs in store; the tool result will fill the gap"
             f"</aelfrice-search>"
-        )
+        ), []
     trailer = ""
     if suppressed_recent > 0:
         trailer = (
@@ -807,7 +845,7 @@ def _format_results(
         if is_lock:
             omitted.insert(0, bid)
         context = assemble(kept, omitted)
-    return context
+    return context, [bid for bid, _ in kept_ids]
 
 
 def _emit(stdout: IO[str], context: str) -> None:
@@ -967,11 +1005,17 @@ def _do_search(
         # Dedup is best-effort; fall back to the v1.2.x emit shape.
         pass
 
-    _emit(stdout, _format_results(
+    context, shown_ids = _format_results_with_ids(
         query, beliefs, locked_ids, bash_source=bash_source,
         suppressed_recent=suppressed_recent,
         latest_fire_idx=latest_fire_idx,
-    ))
+    )
+    _emit(stdout, context)
+    # #1639: record only what the block showed. A line cut to fit the host's
+    # limit was not injected, and recording it would make the next fire
+    # report it as "already in prompt context" when it never was.
+    shown = set(shown_ids)
+    new_ids = [bid for bid in new_ids if bid in shown]
 
     # Record the new ids in the ring so subsequent PreToolUse fires this
     # turn (and the next UPS fire) see them as already-injected.

@@ -434,6 +434,174 @@ def test_the_search_hook_context_fits_and_sheds_l1_before_locks() -> None:
     assert f"aelfrice: {len(locks) - n_shown} user lock(s)" in overflow[0]
 
 
+# --- review round 2 ------------------------------------------------------
+
+@pytest.mark.timeout(60)
+def test_a_ref_line_inside_a_lock_is_text_not_a_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `ref`-shaped line in belief content must not be spliced.
+
+    Found by review: the cut matched `ref <id>: "..."` anywhere in the
+    body, so a lock whose content carried such a line was cut twice --
+    the block lost `</locked>` -- and a fake id was named and counted.
+    """
+    db = tmp_path / "planted.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk(
+            "P" + "0" * 31,
+            'lockword planted\n  ref FAKEIDFAKEID: "planted"\n' + "q" * 150,
+            locked=True))
+    finally:
+        store.close()
+    locks = ["P" + "0" * 31] + _seed(db, n_locks=299, lock_chars=150)
+    out, _ = _fire_ups(tmp_path, db, monkeypatch)
+    assert out.count("<belief ") == out.count("</belief>")
+    assert out.count("<locked>") == out.count("</locked>")
+    pointer = [ln for ln in out.splitlines()
+               if "user lock(s) did not fit" in ln]
+    assert len(pointer) == 1 and "FAKEIDFAKEID" not in pointer[0]
+    shown = sum(1 for b in locks if f'<belief id="{b}"' in out)
+    named = int(pointer[0].split()[1])
+    assert shown + named == len(locks), (shown, named)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("hook", ["ups", "session-start"])
+def test_one_oversized_lock_does_not_cost_the_locks_that_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hook: str,
+) -> None:
+    """Emit what fits: a lock too large to fit alone is cut, the rest stay.
+
+    Found by review: tail-first cutting after one 50,000-character lock
+    cut every lock rendered after it and shed every hit, showing 0 of 11
+    locks when 10 of them fit.
+    """
+    db = tmp_path / "big.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk("A" + "0" * 31, "lockword " + "b" * 50_000,
+                                locked=True))
+    finally:
+        store.close()
+    small = _seed(db, n_locks=10, lock_chars=150, n_hits=30)
+    if hook == "ups":
+        out, _ = _fire_ups(tmp_path, db, monkeypatch)
+    else:
+        out, _ = _fire_session_start(tmp_path, db, monkeypatch)
+    assert len(out) <= _LIMIT, len(out)
+    assert all(f'<belief id="{b}"' in out for b in small)
+    pointer = [ln for ln in out.splitlines()
+               if "user lock(s) did not fit" in ln]
+    assert len(pointer) == 1 and pointer[0].startswith("aelfrice: 1 user")
+    if hook == "ups":
+        # The big lock was cut first, so the prompt's hits kept their room.
+        assert f'<belief id="H{0:031d}"' in out
+
+
+@pytest.mark.timeout(30)
+def test_fit_to_room_never_returns_more_than_its_room() -> None:
+    """Found by review: a room under the marker's length still got it."""
+    from aelfrice.hook import _fit_to_room
+
+    body = "<aelfrice-rebuild>\n" + ("line of rebuild text\n" * 500)
+    for room in range(0, 120):
+        assert len(_fit_to_room(body, room)) <= room, room
+
+
+@pytest.mark.timeout(60)
+def test_the_search_hook_records_only_the_ids_it_showed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A result line cut to fit is not injected, and is not recorded.
+
+    Found by review: the session ring recorded every retrieved id, so the
+    next fire said cut results were "already in prompt context".
+    """
+    from aelfrice.hook_search_tool import _do_search
+    from aelfrice.session_ring import read_ring_state
+
+    db = tmp_path / "ring.db"
+    _seed(db, n_locks=300, lock_chars=150, n_hits=10, hit_chars=100)
+    hit_ids = [f"H{i:031d}" for i in range(10)]
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout = io.StringIO()
+    _do_search({
+        "hook_event_name": "PreToolUse", "tool_name": "Grep",
+        "tool_input": {"pattern": _WORD}, "cwd": str(tmp_path),
+        "session_id": "s-ring",
+    }, stdout=sout, stderr=io.StringIO())
+    ctx = json.loads(sout.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx) <= _LIMIT and "user lock(s) did not fit" in ctx
+    # The L1 hits sit behind 300 locks and are cut first. The ring records
+    # unlocked ids (locks always pass through), so this is where a cut
+    # line recorded as shown would appear.
+    ring = json.dumps(read_ring_state("s-ring"))
+    # Every hit line is cut here (no L1 line survives the 300 locks), so
+    # every hit id is a cut id; checked, not assumed.
+    assert not any(ln.startswith("[L1]") for ln in ctx.splitlines())
+    assert not [h for h in hit_ids if h in ring], "a cut hit was recorded"
+
+
+@pytest.mark.timeout(30)
+def test_the_search_hook_bounds_a_huge_query() -> None:
+    """Found by review: a 20,000-character Grep pattern wrote 21,016."""
+    from aelfrice.hook_search_tool import _format_results
+
+    assert len(_format_results("a" * 20_000, [], set())) <= _LIMIT
+    assert len(_format_results(
+        "a" * 20_000, [], set(), bash_source=("grep", "b" * 20_000),
+    )) <= _LIMIT
+
+
+@pytest.mark.timeout(60)
+def test_the_command_note_is_charged_against_the_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: removing the charge passed the whole suite.
+
+    A note at `COMMAND_NOTE_CAP` beside 300 locks measured 11,341 without
+    it.
+    """
+    from aelfrice import hook
+
+    monkeypatch.setattr(
+        hook, "execute_aelf_command",
+        lambda *a, **k: hook.CommandOutcome("c" * hook.COMMAND_NOTE_CAP, True),
+    )
+    db = tmp_path / "cmd.db"
+    _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_ups(tmp_path, db, monkeypatch)
+    assert "c" * hook.COMMAND_NOTE_CAP in out
+    assert len(out) <= _LIMIT, len(out)
+
+
+@pytest.mark.timeout(60)
+def test_a_line_cut_rebuild_block_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The marker is the only sign a rebuild block was cut mid-structure."""
+    from aelfrice import hook
+
+    rebuild = "<aelfrice-rebuild>\n" + ("rebuild line\n" * 2_000) + "</aelfrice-rebuild>"
+    monkeypatch.setattr(hook, "_build_rebuild_block_from_payload",
+                        lambda _payload: rebuild)
+    db = tmp_path / "mk.db"
+    _seed(db, n_locks=5)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout, serr = io.StringIO(), io.StringIO()
+    session_start(stdin=io.StringIO(json.dumps({
+        "session_id": "s-mk", "transcript_path": "/dev/null",
+        "cwd": str(tmp_path), "hook_event_name": "SessionStart",
+        "source": "compact",
+    })), stdout=sout, stderr=serr)
+    out = sout.getvalue()
+    assert len(out) <= _LIMIT, len(out)
+    assert out.rstrip("\n").endswith(
+        "[block cut to fit the hook output limit]")
+
+
 # --- the two blocks charged against the room, pinned individually -------
 
 @pytest.mark.timeout(60)

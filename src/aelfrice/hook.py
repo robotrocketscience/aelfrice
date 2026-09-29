@@ -957,8 +957,43 @@ def lock_overflow_line(omitted: list[str]) -> str:
     )
 
 
+def _lock_renders(
+    body: str,
+    elements: list[re.Match[str]],
+    recap: tuple[int, int],
+    pointers: dict[str, tuple[int, int]],
+) -> list[tuple[int, int, str, int]]:
+    """Every render of a user lock in `body`, in order, with its cut cost.
+
+    Both renders count: a full `<belief lock="user">` element, and the
+    one-line `ref <id>` manifest entry a reference-tier lock (#1016-B) gets
+    instead. A `ref`-shaped line inside some belief's content is text, not
+    a render, and is skipped the way `seen` pointers are -- splicing it
+    would cut the element it sits in twice. The cost is the render plus
+    the `seen` pointer that names it, which goes with it.
+    """
+    spans = [m.span() for m in elements]
+    renders: list[tuple[int, int, str, int]] = []
+    for m in elements:
+        if recap[0] <= m.start() < recap[1]:
+            continue
+        if not _element_is_locked(m.group("attrs")):
+            continue
+        ptr = pointers.get(m.group("id"))
+        cost = m.end() - m.start() + (ptr[1] - ptr[0] if ptr else 0)
+        renders.append((m.start(), m.end(), m.group("id"), cost))
+    for m in _REF_MANIFEST_RE.finditer(body):
+        if any(lo <= m.start() < hi for lo, hi in spans):
+            continue
+        end = m.end() + (1 if body[m.end():m.end() + 1] == "\n" else 0)
+        renders.append((m.start(), end, m.group("id"), end - m.start()))
+    renders.sort()
+    return renders
+
+
 def enforce_block_ceiling(
     body: str, ceiling: int | None = None, *, omit_locks: bool = False,
+    precut_limit: int | None = None, prior_omitted: tuple[str, ...] = (),
 ) -> BlockCeilingOutcome:
     """Drop whole non-locked `<belief>` elements until `body` fits.
 
@@ -1056,7 +1091,15 @@ def enforce_block_ceiling(
     note belongs to the emit path, which has a stderr to write to).
     """
     limit = resolve_block_ceiling() if ceiling is None else ceiling
-    if limit <= 0 or _audit_tokens_from_block(body) <= limit:
+    owed = (
+        lock_overflow_line(list(prior_omitted))
+        if omit_locks and prior_omitted else ""
+    )
+    if limit <= 0 or _tokens_from_chars(len(body) + len(owed)) <= limit:
+        # A block that fits still owes the line naming locks an earlier
+        # pass cut (#1639), and the fit above is priced with it.
+        if owed:
+            body = body.rstrip("\n") + owed
         return BlockCeilingOutcome(body, (), False)
     elements = list(_BELIEF_ELEMENT_RE.finditer(body))
     recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
@@ -1125,9 +1168,46 @@ def enforce_block_ceiling(
         for m in elements
         if not (recap[0] <= m.start() < recap[1])
     }
+    # #1639: a lock whose render cannot fit the budget even alone is cut
+    # before anything droppable is shed. Shedding the prompt's hits to make
+    # room for a lock that will be cut anyway would cost them for nothing.
+    #
+    # `precut_limit` asks for that cut alone, against a budget other than
+    # this call's: the first of `_write_memory_block`'s two passes trims to
+    # the token ceiling with every lock exempt, and without it would shed
+    # the hits for a lock the second pass then cuts.
+    #
+    # `prior_omitted` carries locks an earlier pass cut: they are priced into
+    # the one line and named in it, so a block never carries two.
+    omitted: list[tuple[int, str]] = [(-1, b) for b in prior_omitted]
+    budget_chars = 4 * limit  # `_tokens_from_chars` is ceil(n / 4)
+    precut_chars = (
+        4 * precut_limit if precut_limit is not None
+        else budget_chars if omit_locks else None
+    )
+    lock_renders: list[tuple[int, int, str, int]] = []
+    if precut_chars is not None:
+        lock_renders = _lock_renders(body, elements, recap, pointers)
+        keep_renders: list[tuple[int, int, str, int]] = []
+        for render in lock_renders:
+            start, end, bid, cost = render
+            if cost > precut_chars:
+                cut.append((start, end))
+                remaining -= end - start
+                omitted.append((start, bid))
+                pointer = pointers.pop(bid, None)
+                if pointer is not None:
+                    cut.append(pointer)
+                    remaining -= pointer[1] - pointer[0]
+            else:
+                keep_renders.append(render)
+        lock_renders = keep_renders
     recap_shed = False
     taken = 0
-    while taken < len(order) and _tokens_from_chars(remaining) > limit:
+    while taken < len(order) and _tokens_from_chars(
+        remaining + (len(lock_overflow_line([b for _, b in omitted]))
+                     if omitted else 0)
+    ) > limit:
         m = order[taken]
         taken += 1
         if recap[0] <= m.start() < recap[1]:
@@ -1166,44 +1246,42 @@ def enforce_block_ceiling(
         if pointer is not None:
             cut.append(pointer)
             remaining -= pointer[1] - pointer[0]
-    # #1639: the locks alone do not fit. Cut them from the tail of the
-    # render order, one whole element at a time, and pay for the line that
-    # names them out of the same budget -- a pointer the block cannot hold
-    # would be the silent loss this exists to prevent.
-    omitted: list[str] = []
-    if omit_locks and _tokens_from_chars(remaining) > limit:
-        # Both renders of a lock: a full `<belief lock="user">` element,
-        # and the one-line `ref <id>` manifest entry a reference-tier lock
-        # (#1016-B) gets instead. A bound that cut only the first would
-        # hold on a store of short locks and break on the tier the docs
-        # recommend for long ones.
-        renders: list[tuple[int, int, str]] = [
-            (m.start(), m.end(), m.group("id")) for m in elements
-            if not (recap[0] <= m.start() < recap[1])
-            and _element_is_locked(m.group("attrs"))
-        ]
-        for m in _REF_MANIFEST_RE.finditer(body):
-            end = m.end() + (1 if body[m.end():m.end() + 1] == "\n" else 0)
-            renders.append((m.start(), end, m.group("id")))
-        renders.sort()
-        while renders and _tokens_from_chars(
-            remaining + len(lock_overflow_line(omitted) if omitted else "")
-        ) > limit:
-            start, end, bid = renders.pop()
-            cut.append((start, end))
-            remaining -= end - start
-            omitted.insert(0, bid)
+    # #1639: the locks alone do not fit. Keep them first-fit in render
+    # order -- each lock that fits what is left stays, whole -- and cut the
+    # rest, paying for the line that names them out of the same budget. A
+    # pointer the block cannot hold would be the silent loss this exists to
+    # prevent, so the line is priced at its worst case before any lock is
+    # kept.
+    if omit_locks and lock_renders and _tokens_from_chars(
+        remaining + (len(lock_overflow_line([b for _, b in omitted]))
+                     if omitted else 0)
+    ) > limit:
+        all_ids = [b for _, b in omitted] + [r[2] for r in lock_renders]
+        line_cap = len(lock_overflow_line(
+            sorted(all_ids, key=len, reverse=True)
+        ))
+        base = remaining - sum(r[3] for r in lock_renders)
+        used = base + line_cap
+        for start_i, end_i, bid, cost in lock_renders:
+            if used + cost <= budget_chars:
+                used += cost
+                continue
+            cut.append((start_i, end_i))
+            remaining -= end_i - start_i
+            omitted.append((start_i, bid))
             pointer = pointers.pop(bid, None)
             if pointer is not None:
                 cut.append(pointer)
                 remaining -= pointer[1] - pointer[0]
     for start, end in sorted(cut, reverse=True):
         body = body[:start] + body[end:]
-    if omitted:
-        body = body.rstrip("\n") + lock_overflow_line(omitted)
+    omitted_ids = [b for _, b in sorted(omitted, key=lambda t: t[0])]
+    if omitted_ids and omit_locks:
+        body = body.rstrip("\n") + lock_overflow_line(omitted_ids)
+    new_ids = tuple(b for b in omitted_ids if b not in prior_omitted)
     return BlockCeilingOutcome(
         body, tuple(dropped), _audit_tokens_from_block(body) > limit,
-        tuple(omitted),
+        new_ids,
     )
 
 
@@ -1337,16 +1415,25 @@ def _write_memory_block(
         # The second pass runs only when the first left the block over the
         # room, and that is the only way a lock is ever cut. One call site,
         # which `test_hook_injection_ceiling.py` pins.
-        if omit_locks and _tokens_from_chars(len(outcome.body)) <= pass_limit:
+        if (
+            omit_locks
+            and not outcome.omitted_lock_ids
+            and _tokens_from_chars(len(outcome.body)) <= pass_limit
+        ):
             break
         step = enforce_block_ceiling(
             outcome.body, pass_limit, omit_locks=omit_locks,
+            precut_limit=None if omit_locks else room_tokens,
+            prior_omitted=outcome.omitted_lock_ids,
         )
         outcome = BlockCeilingOutcome(
             step.body,
             outcome.dropped_ids + step.dropped_ids,
-            step.over_ceiling,
-            step.omitted_lock_ids,
+            # Against the token ceiling, whichever pass ran last: the
+            # second pass's own flag is about the room, and taking it would
+            # drop the operator's note that the ceiling was not met.
+            limit > 0 and _audit_tokens_from_block(step.body) > limit,
+            outcome.omitted_lock_ids + step.omitted_lock_ids,
         )
     if outcome.omitted_lock_ids:
         stderr.write(
@@ -6470,11 +6557,10 @@ def session_start(
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
-    # #1639: priced before the retrieval `try`, like the print below is
-    # run after it: the recap is independent of retrieval (#1527).
-    # #1639: the recap line is printed last, after both blocks, but it
-    # is priced first so they leave it room. It is one fixed-format
-    # line; `print` adds the newline counted here.
+    # #1639: the recap line is printed last, after both blocks, but it is
+    # priced first so they leave it room -- and before the retrieval `try`,
+    # because the recap is independent of retrieval (#1527). `print` adds
+    # the newline counted here.
     recap_line: str | None = None
     recap_enabled = _recap_enabled()
     if recap_enabled:
@@ -6601,9 +6687,10 @@ def session_start(
                     rebuild_block,
                     max(0, payload_room - len(body) - len(sep)),
                 )
-                if sep:
-                    sout.write(sep)
-                sout.write(rebuild_block)
+                if rebuild_block:
+                    if sep:
+                        sout.write(sep)
+                    sout.write(rebuild_block)
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
@@ -7518,7 +7605,9 @@ def _fit_to_room(body: str, room_chars: int) -> str:
     `<belief>` elements go first, so what remains is well-formed. A body
     that still does not fit -- one with no elements, or a long preamble --
     is cut at the last line that fits and says so, rather than being
-    emitted over the payload bound.
+    emitted over the payload bound; that cut can leave a tag unclosed,
+    which the marker states. A room too small for the marker itself gets
+    nothing: the result is never longer than `room_chars`.
     """
     if len(body) <= room_chars:
         return body
@@ -7527,7 +7616,9 @@ def _fit_to_room(body: str, room_chars: int) -> str:
         if len(body) <= room_chars:
             return body
     marker = "\n[block cut to fit the hook output limit]"
-    keep = max(0, room_chars - len(marker))
+    if room_chars < len(marker):
+        return ""
+    keep = room_chars - len(marker)
     cut = body.rfind("\n", 0, keep)
     return body[: cut if cut > 0 else keep] + marker
 
