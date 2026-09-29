@@ -19,9 +19,16 @@ Three emit sites carry the same envelope and all three are exercised:
   <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
 * `session_start`, likewise unbounded.
 
-The drop policy under test: **both bounds stop at `lock="user"`.** Every
-lock survives every trim, and a block that cannot fit without dropping
-one is emitted over the ceiling with a note saying so.
+The drop policy under test: **both bounds stop at `lock="user"` until
+the locks alone overflow.** Every lock survives the per-belief cap and the
+token ceiling's shed order. Since #1639 the whole fire's stdout is also
+bounded, at 9,500 characters, and when the locks alone do not fit that
+bound the trailing ones are cut whole and named in the block's final line
+with a pointer to `aelf locked`. Before #1639 such a block was emitted over
+the ceiling with a note on stderr, which the host then cut to a
+2,000-character preview (https://code.claude.com/docs/en/hooks.md). Most
+fixtures below keep their locks inside the bound on purpose, so the trim
+under test falls on the lane each test is about.
 
 Fixture sizes are literals, sized by `scripts/measure_block_ceiling.py`
 against the shipped ceiling rather than derived from it. Nothing here
@@ -313,11 +320,15 @@ def test_ups_ceiling_sheds_core_before_the_prompts_own_hits(
     per-turn hits, so a dropper that pops the body's tail takes the hits
     the prompt selected and keeps the `<core>` pool the prompt had no part
     in choosing — `<core>` is ranked by corroboration and posterior, and
-    neither consults the prompt. Measured by
-    `scripts/measure_block_ceiling.py --lanes` on this fixture's shape: 50
-    locks, 20 `<core>` beliefs without the query term and 20 hits with it
-    gave 6/20 hits and 19/20 core untrimmed, 0/20 hits and 17/20 core
-    under tail-first, 6/20 hits and 7/20 core under the lane order.
+    neither consults the prompt.
+
+    10 locks, not the 50 this fixture used before #1639: 50 locks of 150
+    characters no longer fit the 9,500-character payload bound, so the
+    trim would cut locks rather than exercise the lane order under test.
+    Measured by firing this fixture through `user_prompt_submit` on the
+    #1639 branch: untrimmed (`AELFRICE_HOOK_BLOCK_CEILING=0`) the block
+    carries 7/20 hits and 20/20 core; bounded, 7/20 hits and 5/20 core,
+    every lock kept.
 
     The control arm is the same store with `AELFRICE_HOOK_BLOCK_CEILING=0`,
     so what a hit lane of this store looks like untrimmed is measured
@@ -329,7 +340,7 @@ def test_ups_ceiling_sheds_core_before_the_prompts_own_hits(
     """
     _, core_ids, hit_ids = _seed(
         tmp_path / "ceiling.db",
-        n_locks=50, lock_chars=150,
+        n_locks=10, lock_chars=150,
         n_core=20, core_chars=200,
         n_hits=20, hit_chars=400,
     )
@@ -338,7 +349,7 @@ def test_ups_ceiling_sheds_core_before_the_prompts_own_hits(
     # second arm's ranking.
     _seed(
         tmp_path / "control.db",
-        n_locks=50, lock_chars=150,
+        n_locks=10, lock_chars=150,
         n_core=20, core_chars=200,
         n_hits=20, hit_chars=400,
     )
@@ -372,12 +383,16 @@ def test_ups_retrieval_branch_trims_to_the_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "memory.db"
+    # 20 locks, not 60: since #1639 the payload bound is 9,500 characters
+    # and 60 locks of 150 no longer fit it, so this fixture would test the
+    # lock cut rather than the hit trim. 20 fit and leave the hits over.
     lock_ids, _, hit_ids = _seed(
-        db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400
+        db, n_locks=20, lock_chars=150, n_hits=20, hit_chars=400
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch)
 
     assert _audit_tokens_from_block(out) <= _CEILING
+    assert len(out) <= 9_500
     assert "dropped" in err
     # Framing intact and no element half-removed.
     assert OPEN_TAG in out and CLOSE_TAG in out
@@ -407,8 +422,9 @@ def test_ups_notes_a_malformed_ceiling_on_the_hooks_own_stderr(
     """
     monkeypatch.setenv(_CEILING_ENV, "-1")
     db = tmp_path / "memory.db"
+    # 20 locks: see test_ups_retrieval_branch_trims_to_the_ceiling (#1639).
     lock_ids, _, hit_ids = _seed(
-        db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400
+        db, n_locks=20, lock_chars=150, n_hits=20, hit_chars=400
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch)
 
@@ -604,11 +620,15 @@ def test_ups_exposure_rows_leave_a_dropped_belief_unexplored(
     this call site for the suppression switch; the ceiling is the same
     argument one step later.
 
-    Measured on this fixture with the write left inside `_retrieve`: one fire
-    on shipped defaults dropped 3 elements, all 3 collected a row and a
-    `last_retrieved_at` stamp, and the pool went 20 -> 14 with 3 of the 6
-    departures never rendered. With the write at the emit boundary it is 63
-    rows, 0 unrendered, and the pool goes 20 -> 17.
+    Measured when this fixture held 60 locks, before #1639 (a historical
+    figure, not re-derived at the current size), with the write left inside
+    `_retrieve`: one fire on shipped defaults dropped 3 elements, all 3
+    collected a row and a `last_retrieved_at` stamp, and the pool went
+    20 -> 14 with 3 of the 6 departures never rendered. With the write at
+    the emit boundary it was 63 rows, 0 unrendered, and the pool went
+    20 -> 17. The fixture now holds 20 locks: 60 of 150 characters no
+    longer fit the #1639 payload bound, and the cut would fall on locks
+    rather than on the hits whose exposure this test is about.
 
     `record_retrieval` moves whole rather than in pieces, so #1373's
     invariant survives: it resolves one timestamp and writes the audit row
@@ -624,7 +644,7 @@ def test_ups_exposure_rows_leave_a_dropped_belief_unexplored(
     """
     db = tmp_path / "memory.db"
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
-    _seed(db, n_locks=60, lock_chars=150, n_hits=20, hit_chars=400)
+    _seed(db, n_locks=20, lock_chars=150, n_hits=20, hit_chars=400)
     store = MemoryStore(str(db))
     try:
         pool_before = set(store.exploration_pool(_PROMPT))
@@ -832,8 +852,11 @@ def test_ups_total_chars_stays_in_one_unit_across_the_ceiling(
     """
     db = tmp_path / "memory.db"
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    # 5 short locks, not 40 (#1639): the 5,009-character lock has to fit
+    # the 9,500-character payload bound alongside them, or the bound cuts
+    # it and the `locked=` exemption has nothing left to bite on.
     _seed(
-        db, n_locks=40, lock_chars=150, n_hits=20, hit_chars=400,
+        db, n_locks=5, lock_chars=150, n_hits=20, hit_chars=400,
         n_core=10, core_chars=2_000,
         n_long=1, long_chars=5_000,
         n_long_locks=1, long_lock_chars=5_000,
@@ -979,9 +1002,24 @@ def test_ups_caps_one_oversized_belief_instead_of_dropping_the_block(
 def test_ups_does_not_cap_a_user_locked_belief(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The drop policy: a lock is emitted whole, however long it is."""
+    """A lock is exempt from `BELIEF_CONTENT_CHAR_CAP`: shown whole or not at all.
+
+    Until #1639 this seeded a 35,000-character lock and required it in the
+    block whole, over every bound, under #379's "never dropped". #1639
+    reverses that wording by operator ruling (2026-09-29): the host inlines
+    at most 10,000 characters of hook output and shows the model a
+    2,000-character preview of anything longer
+    (https://code.claude.com/docs/en/hooks.md), so a lock emitted over the
+    bound was not delivered either. What survives is the half of the
+    property that was about the *cap*: a lock is never truncated. This arm
+    is a 5,009-character lock -- over the 1,200-character cap, inside the
+    9,500-character payload bound -- and it must arrive whole, unmarked, and
+    unnamed by the overflow line.
+    `test_ups_names_a_lock_too_large_for_the_payload_bound` is the other half.
+    """
     db = tmp_path / "memory.db"
-    body = "lockword " + "q" * 35_000
+    body = "lockword " + "q" * 5_000
+    assert len(body) > 1_200, "must exceed BELIEF_CONTENT_CHAR_CAP"
     store = MemoryStore(str(db))
     try:
         store.insert_belief(_mk("L" + "0" * 31, body, locked=True))
@@ -989,8 +1027,38 @@ def test_ups_does_not_cap_a_user_locked_belief(
         store.close()
     out, err = _fire_ups(tmp_path, db, monkeypatch)
     assert "[…truncated]" not in out
-    assert "q" * 35_000 in out
-    assert "still over the" in err
+    assert "q" * 5_000 in out
+    assert "did not fit" not in out and "did not fit" not in err
+
+
+def test_ups_names_a_lock_too_large_for_the_payload_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1639: a lock that cannot fit is named, never truncated mid-content.
+
+    Reverses #379's "a lock is emitted whole, however long it is", which
+    this module pinned before #1639 with the same 35,000-character lock.
+    Four properties, each a distinct failure: the payload fits the bound;
+    no fragment of the lock's content is in the block (a truncated lock
+    reads as a shorter ground truth, worse than a missing one); the final
+    line names it and points to `aelf locked`; stderr counts it.
+    """
+    db = tmp_path / "memory.db"
+    bid = "L" + "0" * 31
+    body = "lockword " + "q" * 35_000
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(_mk(bid, body, locked=True))
+    finally:
+        store.close()
+    out, err = _fire_ups(tmp_path, db, monkeypatch)
+    assert len(out) <= 9_500, len(out)
+    assert "q" * 200 not in out
+    assert "[…truncated]" not in out
+    last = out.rstrip("\n").splitlines()[-1]
+    assert last.startswith("aelfrice: 1 user lock(s) did not fit"), last
+    assert bid in last and "aelf locked" in last
+    assert "1 user lock(s) did not fit" in err
 
 
 def test_ups_does_not_cap_a_user_locked_belief_on_a_later_turn(
@@ -1051,12 +1119,16 @@ def test_gate_skip_branch_trims_to_the_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "memory.db"
+    # 20 locks, not 100 (#1639): 100 locks of 150 characters no longer fit
+    # the 9,500-character payload bound, and the cut would fall on locks
+    # rather than on the `<core>` lane this test is about.
     lock_ids, core_ids, _ = _seed(
-        db, n_locks=100, lock_chars=150, n_core=30, core_chars=200
+        db, n_locks=20, lock_chars=150, n_core=30, core_chars=200
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)
 
     assert _audit_tokens_from_block(out) <= _CEILING
+    assert len(out) <= 9_500
     assert "dropped" in err
     assert OPEN_TAG in out and CLOSE_TAG in out
     assert out.count("<belief ") == out.count("</belief>")
@@ -1121,24 +1193,44 @@ def test_core_section_caps_an_oversized_belief(
     assert err == ""
 
 
-def test_gate_skip_branch_keeps_every_lock_and_reports_the_overrun(
+def test_gate_skip_branch_names_the_locks_that_do_not_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#379 under the ceiling: 130 locks that cannot fit are all emitted.
+    """#1639: 130 locks that cannot fit are cut whole and named, not emitted over.
 
-    Before the exemption the dropper popped from the tail and `<locked>`
-    sits at the head, so the locks went last — but they went. On a
-    300-lock store every locked element was deleted, leaving an empty
-    `<locked>` section under 300 dangling `seen <id>` manifest pointers.
+    Until #1639 this test was `..._keeps_every_lock_and_reports_the_overrun`
+    and required all 130 locks in a block over every bound, under #379's
+    "never dropped". #1639 reverses that by operator ruling (2026-09-29),
+    and with it #1560 option A's "no payload bound": the host shows the
+    model only a 2,000-character preview of hook output over 10,000
+    characters (https://code.claude.com/docs/en/hooks.md), so a block
+    emitted over the bound delivered roughly its first dozen locks and
+    silently lost the rest. Now the locks that fit are emitted whole, the
+    rest are cut from the tail of the render order, and one final line
+    names them and points to `aelf locked`.
+
+    What #379's exemption guarded against still cannot happen: a cut lock
+    is named, so it is never silently lost, and its `seen` pointer goes
+    with it (the element-count equality below).
     """
     db = tmp_path / "memory.db"
     lock_ids, _, _ = _seed(db, n_locks=130, lock_chars=200)
     out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)
 
-    assert [b for b in lock_ids if b not in out] == []
-    assert _audit_tokens_from_block(out) > _CEILING
-    assert "still over the 6000-token ceiling" in err
-    assert "never happens (#379)" in err
+    assert len(out) <= 9_500, len(out)
+    shown = [b for b in lock_ids if f'<belief id="{b}"' in out]
+    omitted = [b for b in lock_ids if b not in shown]
+    assert shown and omitted, (len(shown), len(omitted))
+    # Cut from the tail of the render order, whole elements only.
+    assert shown == lock_ids[: len(shown)]
+    assert out.count("<belief ") == out.count("</belief>")
+    last = out.rstrip("\n").splitlines()[-1]
+    assert last.startswith(f"aelfrice: {len(omitted)} user lock(s) did not fit")
+    assert "aelf locked" in last
+    assert all(b in last for b in omitted[:20])
+    assert f"and {len(omitted) - 20} more" in last
+    assert f"{len(omitted)} user lock(s) did not fit" in err
+    assert "still over the" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -1146,16 +1238,21 @@ def test_gate_skip_branch_keeps_every_lock_and_reports_the_overrun(
 # ---------------------------------------------------------------------------
 
 
-def test_session_start_keeps_every_lock_and_reports_the_overrun(
+def test_session_start_names_the_locks_that_do_not_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third emit site, which had no ceiling at all.
+    """The third emit site, under the #1639 payload bound.
 
     Its block comes from `retrieve(store, "", ...)`, which fires the L0
-    lane only, so in practice every element is a lock and the drop arm is
-    unreachable here by construction. What this site gains is the overrun
-    note — the honest outcome for a baseline #379 forbids trimming — and
-    the guarantee that it is on the same write path as its two siblings.
+    lane only, so every element is a lock and the `dropped_ids` arm stays
+    unreachable here. Until #1639 this test was
+    `..._keeps_every_lock_and_reports_the_overrun`: the honest outcome for
+    a baseline #379 forbade trimming was a note on stderr and a block over
+    every bound. #1639 reverses that (operator ruling 2026-09-29): the
+    host inlines at most 10,000 characters and previews 2,000 of anything
+    longer (https://code.claude.com/docs/en/hooks.md), so the overrun lost
+    locks silently. The locks that fit are emitted whole; the rest are cut
+    from the tail and named.
     """
     db = tmp_path / "memory.db"
     lock_ids, _, _ = _seed(db, n_locks=130, lock_chars=200)
@@ -1163,32 +1260,37 @@ def test_session_start_keeps_every_lock_and_reports_the_overrun(
 
     assert SESSION_START_OPEN_TAG in out
     assert SESSION_START_CLOSE_TAG in out
-    assert [b for b in lock_ids if b not in out] == []
-    assert _audit_tokens_from_block(out) > _CEILING
-    assert "still over the 6000-token ceiling" in err
+    assert len(out) <= 9_500, len(out)
+    shown = [b for b in lock_ids if f'<belief id="{b}"' in out]
+    omitted = [b for b in lock_ids if b not in shown]
+    assert shown and omitted, (len(shown), len(omitted))
+    # Cut from the tail of the render order, whole elements only.
+    assert shown == lock_ids[: len(shown)]
+    assert out.count("<belief ") == out.count("</belief>")
+    last = out.rstrip("\n").splitlines()[-1]
+    assert last.startswith(f"aelfrice: {len(omitted)} user lock(s) did not fit")
+    assert "aelf locked" in last
+    assert all(b in last for b in omitted[:20])
+    assert f"and {len(omitted) - 20} more" in last
+    assert f"{len(omitted)} user lock(s) did not fit" in err
+    assert "still over the" not in err
 
 
 def test_session_start_audit_row_records_the_block_it_emitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same pair at the third site, and it cannot be falsified here.
+    """The same pair at the third site, falsifiable here since #1639.
 
-    Said plainly, because a reader is entitled to know which of these
-    three is a guard and which is a statement: **no fixture can red this
-    one.** The two siblings kill the removal of `body = ….body` at their
-    own emit site; this one cannot, because the trim it would undo is
-    the identity here. The baseline comes from `retrieve(store, "", …)`,
-    every relevance lane in `retrieve_with_tiers` is gated on
-    `query.strip()`, so L0 is the only tier that contributes and every
-    element it renders carries `lock="user"` — which
-    `enforce_block_ceiling` filters out of its droppable set before the
-    loop runs. `outcome.body is body` on every input this site can
-    produce.
+    Until #1639 no fixture could red this one: the baseline is L0 only,
+    every element carries `lock="user"`, and the trim declined to touch a
+    lock, so `outcome.body is body` on every input. The #1639 payload
+    bound cuts locks that do not fit, so on this 130-lock store the
+    emitted block is shorter than the assembled one and the removal of
+    `body = ss_outcome.body` now reds here: the audit row would store the
+    pre-cut block.
 
-    It is asserted anyway, and it is not a test that proves nothing: it
-    is the only test in this file that reds when this site's
-    `rendered_block=body` stops naming the stream at all — replacing it
-    with `""` fails here and nowhere else in the file. What it pins is
+    It also still reds when this site's `rendered_block=body` stops naming
+    the stream at all. What it pins is
     that the
     `<aelfrice-baseline>` envelope is the entire stdout of a non-compact
     SessionStart, the post-compaction rebuild block that
@@ -1201,10 +1303,9 @@ def test_session_start_audit_row_records_the_block_it_emitted(
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
     _seed(db, n_locks=130, lock_chars=200)
     out, err = _fire_session_start(tmp_path, db, monkeypatch)
-    # The block is over the ceiling, so the trim ran and declined to act:
-    # the one state in which a pre-trim body could differ, if this lane
-    # had anything droppable in it.
-    assert "still over the 6000-token ceiling" in err, err
+    # The bound cut locks, so the pre-cut body differs from the emitted one:
+    # the state in which a stale `rendered_block` would be caught.
+    assert "user lock(s) did not fit" in err, err
     _assert_audit_row_is_the_emitted_block(db, AUDIT_HOOK_SESSION_START, out)
 
 

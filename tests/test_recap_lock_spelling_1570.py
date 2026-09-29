@@ -102,6 +102,15 @@ _REF_TOPIC = _lock_topic(_REF_BODY)
 # duplicate-bytes arm below is measured against the store #1564 was ruled
 # on rather than against a store too small to show the loss.
 _FROZEN_LOCKS = 40
+# The frozen-lock count for `test_the_recap_does_not_cost_the_prompt_a_matched_belief`
+# under the #1639 payload bound. 40 locks of 150 characters no longer leave
+# the 9,500-character bound any room for a prompt hit, so that test's
+# control fails with no mutant applied. Swept on the #1639 branch against
+# the test's own named mutant (`_recap_shed` exempting every recognised
+# lock): the test passes clean and fails under the mutant for 13 through
+# 19 frozen locks, passes both ways at 12 and below, and fails clean at
+# 20. 16 is the middle of that window.
+_FROZEN_LOCKS_UNDER_PAYLOAD_BOUND = 16
 
 
 @pytest.fixture(autouse=True)
@@ -471,7 +480,7 @@ def test_a_recap_of_nothing_but_locks_is_still_reached_by_the_ceiling(
 # ---------------------------------------------------------------------------
 
 
-def _seed(db: Path) -> None:
+def _seed(db: Path, *, n_frozen: int = _FROZEN_LOCKS) -> None:
     """One reference lock, plus enough bulk to put the block over the ceiling.
 
     The reference lock is the subject; the frozen locks beside it are the
@@ -491,7 +500,7 @@ def _seed(db: Path) -> None:
         # discriminating, because the duplicate bytes an over-broad
         # exemption would pin have to be worth more than the prompt's own
         # hits before their loss is visible.
-        for i in range(_FROZEN_LOCKS):
+        for i in range(n_frozen):
             store.insert_belief(
                 _mk(f"F{i:031d}", "frozenword " + "q" * 150, locked=True)
             )
@@ -541,6 +550,7 @@ def _write_recap(work: Path, db: Path) -> None:
 
 def _fire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, name: str,
+    n_frozen: int = _FROZEN_LOCKS,
 ) -> tuple[str, str]:
     """One first-prompt fire against a store seeded for this arm alone.
 
@@ -555,7 +565,7 @@ def _fire(
     work = tmp_path / name
     work.mkdir()
     db = work / "memory.db"
-    _seed(db)
+    _seed(db, n_frozen=n_frozen)
     monkeypatch.setenv("AELFRICE_DB", str(db))
     _write_recap(work, db)
     sout, serr = io.StringIO(), io.StringIO()
@@ -689,8 +699,15 @@ def test_the_recap_does_not_cost_the_prompt_a_matched_belief(
     Mutation: exempt every recognised lock in `_recap_shed` by dropping
     the `rendered_outside` test. FAIL -- the frozen lock's recap copy is
     pinned and the matched beliefs fall to zero. Restored: PASS.
+
+    Fired with `_FROZEN_LOCKS_UNDER_PAYLOAD_BOUND` frozen locks since
+    #1639, not 40: see that constant for the window in which this
+    mutation still discriminates.
     """
-    out, err = _fire(tmp_path, monkeypatch, name="hits")
+    out, err = _fire(
+        tmp_path, monkeypatch, name="hits",
+        n_frozen=_FROZEN_LOCKS_UNDER_PAYLOAD_BOUND,
+    )
     assert "dropped" in err, err
     seen = set(re.findall(r'^  seen (.+?): ".*"$', out, re.MULTILINE))
     reached = {i for i in _element_ids(out) | seen if i.startswith("H")}

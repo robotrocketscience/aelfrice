@@ -91,6 +91,19 @@ _KNOWN_CONTENT_CAPS = frozenset(
 )
 
 
+# Constants the suffixes match that do not bound a belief's content. Kept
+# to a named, reasoned list: the discovery exists to catch a cap nobody
+# listed, so every exclusion must say what the constant bounds instead.
+_NOT_CONTENT_CAPS = frozenset(
+    {
+        # #1639: the room a UPS cadence checkpoint must leave for the
+        # memory envelope as a whole -- a share of the payload bound, not
+        # a cap on any one belief's text.
+        "aelfrice.hook.CADENCE_ENVELOPE_RESERVE_CHARS",
+    }
+)
+
+
 def _shipped_content_caps() -> dict[str, int]:
     """Every per-belief character cap the two injection modules ship.
 
@@ -111,8 +124,9 @@ def _shipped_content_caps() -> dict[str, int]:
                 continue
             if not isinstance(value, int):
                 continue
-            if name.endswith(_CONTENT_CAP_SUFFIXES):
-                caps[f"{mod.__name__}.{name}"] = value
+            key = f"{mod.__name__}.{name}"
+            if name.endswith(_CONTENT_CAP_SUFFIXES) and key not in _NOT_CONTENT_CAPS:
+                caps[key] = value
     return caps
 
 

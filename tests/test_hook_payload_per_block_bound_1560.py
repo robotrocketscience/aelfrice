@@ -1,10 +1,23 @@
-"""#1560: the payload is bounded per block, and nothing bounds their sum.
+"""#1560 and #1639: every block is bounded, and so is their sum.
 
-The ruling these tests pin is the one `HOOK_BLOCK_TOKEN_CEILING`'s
-docstring states: every block `user_prompt_submit` writes is bounded on
-its own, and no bound spans two of them. The rejected alternative was a
-single payload ceiling with the `<cadence-checkpoint>` block shedding
-first.
+**This module now pins the #1639 contract, which reverses #1560 option A.**
+#1560 ruled (2026-09-17) that each block `user_prompt_submit` writes is
+bounded on its own and that no bound spans two of them. #1639 reopened that
+ruling for one change (operator ruling 2026-09-29): the host inlines at
+most 10,000 characters of a hook's output and replaces anything longer with
+a 2,000-character preview (https://code.claude.com/docs/en/hooks.md). That
+cap applies to the fire's whole stdout, so per-block bounds cannot
+guarantee delivery: a payload whose blocks each fit could still reach the
+model as its first 2,000 characters. `HOOK_PAYLOAD_CHAR_LIMIT` (9,500) now
+bounds the sum. The per-block bounds stay. The `<cadence-checkpoint>` block
+packs to the room the bound leaves after the envelope's reserve, and the
+memory envelope gets what is left after every other block, trimmed in the
+shed order it already had.
+
+Two contract tests carry that. One fires every writer and asserts the whole
+payload fits. The other fires one store twice, cadence on and off, and
+asserts the cadence block's presence takes further beliefs out of the
+envelope: the exact outcome #1560's version of this module ruled out.
 
 Which four blocks those are is itself pinned here rather than left to a
 reader: `test_the_stdout_writer_enumeration_is_re_derived_from_the_source`
@@ -12,21 +25,11 @@ parses `user_prompt_submit` and compares its stdout writers against
 `_STDOUT_WRITERS`, so a sixth one reds instead of quietly falsifying the
 docstring's "those four are the whole of it".
 
-**Both options pass a test that checks each block separately**, which is
-why neither test below does that. What separates them is a payload whose
-blocks are each *inside* their own bound while their sum is *outside*
-`HOOK_BLOCK_TOKEN_CEILING`: under the shipped contract that payload is
-correct and is emitted whole, and under a payload ceiling something in it
-would have been shed. So the fixture constructs exactly that payload, and
-the assertions are on captured stdout from the real hook entrypoint
-rather than on either block in isolation.
-
-The second test is the shed-order half. A cadence fire and a
-cadence-disabled fire are run against identically seeded stores, on a
-fixture large enough that the memory block's own ceiling *does* trim, and
-the emitted envelope must be byte-identical across the pair: the bytes
-the ceiling deletes cannot depend on whether a sibling block shares the
-payload.
+**A test that checks each block separately passes under both contracts**,
+which is why neither test below does that. The fixture's envelope fits the
+payload bound on its own and does not fit beside the cadence block, so the
+two arms differ exactly where the contracts do. The assertions are on
+captured stdout from the real hook entrypoint.
 
 **Reachability, so nothing here is read as a defect everyone is exposed
 to.** `[cadence] enabled` is unset by default and
@@ -78,13 +81,8 @@ import pytest
 from aelfrice import hook
 from aelfrice.cadence import DEFAULT_K
 from aelfrice.context_rebuilder import RecentTurn
-from aelfrice.hook import (
-    HOOK_BLOCK_TOKEN_CEILING,
-    _audit_tokens_from_block,
-    user_prompt_submit,
-)
+from aelfrice.hook import user_prompt_submit
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.rebuild_log import DEFAULT_REBUILDER_TOKEN_BUDGET
 from aelfrice.store import MemoryStore
 
 _CEILING_ENV = "AELFRICE_HOOK_BLOCK_CEILING"
@@ -100,41 +98,36 @@ _K = 5
 # the cheap way to stay divisible by both if either constant moves.
 _FIRE_IDX = _K * DEFAULT_K
 
-# The store the first test fires: small enough that the memory block
-# stays under its ceiling untrimmed, so "emitted whole" is a claim about
-# the payload rather than about what survived a trim.
-_FITS_LOCKS = 40
+# The store both contract tests fire. Sized so the envelope fits the
+# #1639 payload bound on its own (6,661 characters measured, cadence off)
+# and does not fit the room a cadence fire leaves it (about 4,000). Every
+# lock still fits that room, so the cadence arm's cut falls on the hits,
+# not on the locks. Was 40 locks under #1560, when the fixture needed the
+# envelope large enough that the two blocks' sum crossed the token ceiling.
+_FITS_LOCKS = 8
 _FITS_HITS = 6
 
-# Sized so the checkpoint block lands inside
-# `DEFAULT_REBUILDER_TOKEN_BUDGET`, wrapper tags included, at the shipped
-# 4-chars-per-token estimator. The tests assert that containment rather
-# than trusting the arithmetic, but the literal is chosen for it: a body
-# over the budget would make the "each block is inside its own bound"
-# premise false, and the payload under test would no longer be the one
-# the ruling is about.
+# The stubbed checkpoint body. Over the whole payload bound on its own, so
+# the #1639 backstop in `_fit_to_room` must cut it: the stub ignores the
+# token budget it is handed, which makes it stand in for the rebuilder's
+# soft pack loop (#1546) at its worst. It carries no `<belief>` element, so
+# the cut is the last-resort one, at a line boundary with a marker.
 #
-# **The margins are asserted, not just intended.** This constant used to
-# sit close enough to the rebuilder budget that a render change of a few
-# hundred characters would have crossed it — a contract test one edit
-# away from being a flake, and nothing said so. `_FITS_LOCKS` grew when
-# this shrank: the first test needs the two blocks' *sum* over the block
-# ceiling while each stays inside its own bound, so buying headroom in
-# the cadence body is paid for by a larger envelope.
+# **The margins are asserted, not just intended.**
 # `test_the_emit_boundary_fixture_keeps_its_margins` holds all three
-# distances at `_MIN_MARGIN_TOKENS`, so the next person to move either
+# distances at `_MIN_MARGIN_CHARS`, so the next person to move either
 # literal is told rather than trusted.
 _CADENCE_BODY_CHARS = 10_000
 _CADENCE_BODY = (
     "CADENCE-BODY-" + "c" * (_CADENCE_BODY_CHARS - len("CADENCE-BODY-"))
 )
 
-# How much room each of the fixture's three distances must keep: the
-# cadence block under the rebuilder budget, the memory block under the
-# block ceiling, and their sum over the block ceiling. Chosen as a round
-# number well clear of any plausible single-render drift, not derived —
-# the point is that a margin exists and is checked, not its exact size.
-_MIN_MARGIN_TOKENS = 500
+# How much room each of the fixture's three distances must keep, in
+# characters (the unit the #1639 bound counts). Chosen as a round number
+# well clear of any plausible single-render drift, not derived: the point
+# is that a margin exists and is checked, not its exact size.
+_MIN_MARGIN_CHARS = 500
+_PAYLOAD_LIMIT = 9_500
 
 
 @pytest.fixture(autouse=True)
@@ -339,10 +332,12 @@ _STDOUT_WRITERS = {
     # Two spellings of one writer, and they must be two entries: the
     # frame differs by whether the command took effect, and a table
     # carrying only one of them cannot notice the other going missing.
-    "write:command_note@<aelfrice-command-executed>": (
+    # #1639 binds each frame to `command_block` so its length is charged
+    # against the payload bound; the literal tag stays in the call.
+    "write:command_block+command_note@<aelfrice-command-executed>": (
         "<aelfrice-command-executed>"
     ),
-    "write:command_note@<aelfrice-command-failed>": (
+    "write:command_block+command_note@<aelfrice-command-failed>": (
         "<aelfrice-command-failed>"
     ),
 }
@@ -578,53 +573,59 @@ def test_the_emit_boundary_fixture_keeps_its_margins(
 ) -> None:
     """The fixture's three distances are not near their boundaries.
 
-    The test below asserts three inequalities; each of them is a premise
-    the ruling's comparison rests on, and a fixture sitting a few dozen
-    tokens from any of them is a flake waiting for a render change rather
-    than a contract. This one asserts the *distance* instead of the
-    inequality, so the failure a drift produces names the fixture rather
-    than looking like the contract breaking.
+    Each is a premise the two contract tests below rest on: the stubbed
+    checkpoint body is over the payload bound on its own, so the backstop
+    cut is live; the envelope fits the bound on its own, so the cadence-off
+    arm is untrimmed; and the envelope does not fit the room a cadence fire
+    leaves it, so the cadence-on arm must shed. The distances are asserted
+    rather than the inequalities, so a drift names the fixture instead of
+    looking like the contract breaking.
     """
     _stub_rebuilder(monkeypatch)
-    out, _ = _fire(
+    on, _ = _fire(
         tmp_path, monkeypatch,
         config=_cadence_toml(enabled=True),
-        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="margins",
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="margins-on",
     )
-    cadence_block, memory_block = _split(out)
+    off, _ = _fire(
+        tmp_path, monkeypatch,
+        config=_cadence_toml(enabled=False),
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="margins-off",
+    )
+    cadence_block, _ = _split(on)
+    room_beside_cadence = _PAYLOAD_LIMIT - len(cadence_block) - 2
     margins = {
-        "cadence block under the rebuilder budget": (
-            DEFAULT_REBUILDER_TOKEN_BUDGET
-            - _audit_tokens_from_block(cadence_block)
+        "cadence body over the payload bound": (
+            _CADENCE_BODY_CHARS - _PAYLOAD_LIMIT
         ),
-        "memory block under the block ceiling": (
-            HOOK_BLOCK_TOKEN_CEILING - _audit_tokens_from_block(memory_block)
-        ),
-        "payload over the block ceiling": (
-            _audit_tokens_from_block(out) - HOOK_BLOCK_TOKEN_CEILING
+        "envelope alone under the payload bound": _PAYLOAD_LIMIT - len(off),
+        "envelope alone over the room beside the cadence block": (
+            len(off) - room_beside_cadence
         ),
     }
     tight = {
         name: value for name, value in margins.items()
-        if value < _MIN_MARGIN_TOKENS
+        if value < _MIN_MARGIN_CHARS
     }
     assert not tight, (
-        f"fixture margins under {_MIN_MARGIN_TOKENS} tokens: {tight}; "
+        f"fixture margins under {_MIN_MARGIN_CHARS} characters: {tight}; "
         f"all three are {margins}. Re-size `_CADENCE_BODY_CHARS` and "
         "`_FITS_LOCKS` together — they trade against each other."
     )
 
 
-def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
+def test_a_cadence_fire_fits_the_payload_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The case that tells the two contracts apart.
+    """#1639: every writer live, and the whole payload still fits.
 
-    Each block is inside its own bound and their sum is outside
-    `HOOK_BLOCK_TOKEN_CEILING`. Under the shipped per-block contract that
-    payload is correct: both blocks reach stdout whole, and nothing was
-    shed to bring the total under a bound that does not exist. Under the
-    rejected single-payload ceiling one of them would have been trimmed.
+    Replaces `test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits`,
+    which pinned #1560 option A: a payload over the token ceiling was
+    correct as long as each block fit its own bound. Under the host's
+    10,000-character cap that payload reached the model as a
+    2,000-character preview, so it is now the defect. The checkpoint still
+    ships, cut to its room and marked; the envelope still ships, with every
+    lock whole; and the sum fits.
     """
     _stub_rebuilder(monkeypatch)
     out, err = _fire(
@@ -634,68 +635,66 @@ def test_payload_over_the_ceiling_is_emitted_whole_when_each_block_fits(
     )
     cadence_block, memory_block = _split(out)
 
-    # Premise 1: each block is inside its own bound.
-    assert _audit_tokens_from_block(cadence_block) <= (
-        DEFAULT_REBUILDER_TOKEN_BUDGET
-    )
-    assert _audit_tokens_from_block(memory_block) <= HOOK_BLOCK_TOKEN_CEILING
-
-    # Premise 2: their sum is outside the block ceiling. Without this the
-    # test is satisfied by a payload neither contract disagrees about.
-    assert _audit_tokens_from_block(out) > HOOK_BLOCK_TOKEN_CEILING
-
-    # The claim: the payload is emitted whole anyway.
-    assert _CADENCE_BODY in out
+    assert len(out) <= _PAYLOAD_LIMIT, len(out)
+    # The checkpoint was cut, not dropped, and says so.
+    assert cadence_block.endswith(_CADENCE_CLOSE)
+    assert "CADENCE-BODY-" in cadence_block
+    assert _CADENCE_BODY not in out
+    assert "cut to fit the hook output limit" in cadence_block
+    # The envelope shipped, and every lock is in it whole.
     assert memory_block.startswith(_MEMORY_OPEN)
-    # Every seeded hit is still in the envelope. An `in` on one id would
-    # pass a payload that had shed most of the lane to fit a bound.
     missing = [
-        i for i in range(_FITS_HITS)
-        if f'<belief id="H{i:031d}"' not in memory_block
+        i for i in range(_FITS_LOCKS)
+        if f'<belief id="L{i:031d}"' not in memory_block
     ]
     assert not missing, missing
-    # Nothing was trimmed and nothing overran: a payload ceiling that
-    # sheds would have had to say so here, on the stream the ceiling
-    # reports to.
-    assert "ceiling" not in err, err
+    assert "did not fit" not in err, err
+    assert "still over the" not in err, err
 
 
-def test_the_ceiling_sheds_the_same_bytes_with_and_without_a_cadence_block(
+def test_a_cadence_block_takes_further_beliefs_from_the_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The shed order does not reach across blocks.
+    """#1639: the shed now reaches across blocks, in the existing order.
 
-    Same store, same prompt, cadence on and off, on a fixture whose
-    memory block is over its ceiling so the trim is live rather than the
-    identity. The emitted envelope must be byte-identical: which beliefs
-    `enforce_block_ceiling` deletes is a function of that block alone.
-    Were the bound extended over the payload — the rejected option — the
-    cadence block's presence would take further beliefs out of the
-    envelope, or the recap would be shed to keep them.
+    Replaces `test_the_ceiling_sheds_the_same_bytes_with_and_without_a_cadence_block`,
+    which required the envelope byte-identical across the two arms: the
+    #1560 option A property "the bytes the ceiling deletes cannot depend on
+    whether a sibling block shares the payload". #1639 reverses exactly
+    that. The same store fired with cadence off emits every hit untrimmed;
+    fired with cadence on, the envelope sheds hits to make room, keeps every
+    lock, and the hits it keeps are a subset of the ones the off arm kept.
+    No new shed order: this fixture has no `<core>` or recap, so the hits
+    are the lane the existing order reaches.
     """
     _stub_rebuilder(monkeypatch)
     on, err_on = _fire(
         tmp_path, monkeypatch,
         config=_cadence_toml(enabled=True),
-        n_locks=60, n_hits=20, name="on",
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="on",
     )
     off, err_off = _fire(
         tmp_path, monkeypatch,
         config=_cadence_toml(enabled=False),
-        n_locks=60, n_hits=20, name="off",
+        n_locks=_FITS_LOCKS, n_hits=_FITS_HITS, name="off",
     )
     assert _CADENCE_OPEN not in off
     _, memory_on = _split(on)
 
-    # The trim is live on this fixture, in both arms. A fixture the
-    # ceiling never acts on cannot tell a per-block shed from a
-    # cross-block one.
-    assert "dropped" in err_on, err_on
-    assert "dropped" in err_off, err_off
+    def ids(block: str, prefix: str, n: int) -> set[int]:
+        return {i for i in range(n) if f'<belief id="{prefix}{i:031d}"' in block}
 
-    assert memory_on == off
-    assert _CADENCE_BODY in on
-    assert _audit_tokens_from_block(on) > HOOK_BLOCK_TOKEN_CEILING
+    hits_off = ids(off, "H", _FITS_HITS)
+    hits_on = ids(memory_on, "H", _FITS_HITS)
+    # The off arm is untrimmed: every hit, and nothing shed.
+    assert hits_off == set(range(_FITS_HITS)), hits_off
+    assert "dropped" not in err_off, err_off
+    # The on arm shed hits because the cadence block shares the bound.
+    assert hits_on < hits_off, (hits_on, hits_off)
+    assert "dropped" in err_on, err_on
+    # Locks are not what went.
+    assert ids(memory_on, "L", _FITS_LOCKS) == set(range(_FITS_LOCKS))
+    assert len(on) <= _PAYLOAD_LIMIT, len(on)
 
 
 @pytest.mark.parametrize(

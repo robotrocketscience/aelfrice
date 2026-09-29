@@ -534,11 +534,20 @@ def test_write_memory_block_trims_notes_and_writes(
 def test_write_memory_block_notes_an_unavoidable_overrun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The token ceiling's overrun note, for a caller with room to spare.
+
+    Since #1639 the default room is `HOOK_PAYLOAD_CHAR_LIMIT`, which is
+    under the token ceiling, so on the default path a lock-only overrun is
+    cut and named instead (the next test). This note is reached when a
+    caller's room exceeds the ceiling, so the room is passed explicitly.
+    """
     monkeypatch.delenv(_CEILING_ENV, raising=False)
     locks = [f"L{i:015d}" for i in range(20)]
     body = _block(*(_element(b, _ELEMENT_CHARS, locked=True) for b in locks))
     sout, serr = io.StringIO(), io.StringIO()
-    out = _write_memory_block(body, stdout=sout, stderr=serr)
+    out = _write_memory_block(
+        body, stdout=sout, stderr=serr, room_chars=10**9,
+    )
     assert sout.getvalue() == body
     assert out.dropped_ids == ()
     err = serr.getvalue()
@@ -556,6 +565,37 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     # per-write vacuity guard reds if any one of those pairs is equal.
     assert "`aelf lock --reference`" in err
     assert "#1558" not in err
+
+
+def test_write_memory_block_names_locks_the_payload_bound_cuts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1639: on the default room a lock-only overrun is cut and named.
+
+    The same 20 locks as the test above, which overrun the token ceiling;
+    on the default room (`HOOK_PAYLOAD_CHAR_LIMIT`) they also overrun the
+    payload bound. The emitted block fits it, keeps a prefix of the locks
+    whole, ends with one line naming the rest, and says so on stderr. The
+    #379 invariant the ceiling guards still holds: no lock is in
+    `dropped_ids`; the cut ones are in `omitted_lock_ids`.
+    """
+    monkeypatch.delenv(_CEILING_ENV, raising=False)
+    locks = [f"L{i:015d}" for i in range(20)]
+    body = _block(*(_element(b, _ELEMENT_CHARS, locked=True) for b in locks))
+    sout, serr = io.StringIO(), io.StringIO()
+    out = _write_memory_block(body, stdout=sout, stderr=serr)
+    emitted = sout.getvalue()
+    assert emitted == out.body
+    assert len(emitted) <= 9_500, len(emitted)
+    assert out.dropped_ids == ()
+    omitted = list(out.omitted_lock_ids)
+    assert omitted and omitted == locks[len(locks) - len(omitted):]
+    assert all(f'id="{b}"' in emitted for b in locks[: len(locks) - len(omitted)])
+    last = emitted.rstrip("\n").splitlines()[-1]
+    assert last.startswith(f"aelfrice: {len(omitted)} user lock(s) did not fit")
+    assert all(b in last for b in omitted) and "aelf locked" in last
+    assert f"{len(omitted)} user lock(s) did not fit" in serr.getvalue()
+    assert not out.over_ceiling
 
 
 def test_write_memory_block_is_silent_on_a_block_that_fits(

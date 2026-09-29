@@ -115,6 +115,13 @@ _PROMPT = f"tell me everything about the {_WORD} please"
 _LOCKS = 40
 _CORE = 20
 _HITS = 20
+# The lock count for the two tests that need a prompt hit to reach the
+# model under the #1639 payload bound. 40 locks of 150 characters take most
+# of the 9,500-character bound, so on those arms every hit is shed and the
+# test has nothing to compare. The module default stays 40: the recap
+# tests depend on those locks filling the rebuilder's budget, which keeps
+# every `H` id the recap carries inside the prompt's own hits.
+_LOCKS_UNDER_PAYLOAD_BOUND = 10
 
 _SEEN_ID_RE = re.compile(r'^  seen (.+?): ".*"$', re.MULTILINE)
 
@@ -147,10 +154,10 @@ def _mk(bid: str, content: str, *, locked: bool = False,
     )
 
 
-def _seed(db: Path) -> None:
+def _seed(db: Path, *, n_locks: int = _LOCKS) -> None:
     store = MemoryStore(str(db))
     try:
-        for i in range(_LOCKS):
+        for i in range(n_locks):
             store.insert_belief(
                 _mk(f"L{i:031d}", "lockword " + "q" * 150, locked=True)
             )
@@ -177,6 +184,7 @@ def _arm(
     name: str,
     recap: bool,
     ceiling: int | None,
+    n_locks: int = _LOCKS,
 ) -> tuple[str, str]:
     """One first-prompt fire against a store seeded for this arm alone.
 
@@ -193,7 +201,7 @@ def _arm(
     work = tmp_path / name
     work.mkdir()
     db = work / "memory.db"
-    _seed(db)
+    _seed(db, n_locks=n_locks)
     monkeypatch.setenv("AELFRICE_DB", str(db))
     if ceiling is None:
         monkeypatch.delenv(_CEILING_ENV, raising=False)
@@ -421,9 +429,11 @@ def test_the_recap_costs_the_envelope_no_prompt_matched_belief(
     """
     control, _ = _arm(
         tmp_path, monkeypatch, name="control", recap=False, ceiling=None,
+        n_locks=_LOCKS_UNDER_PAYLOAD_BOUND,
     )
     with_recap, err = _arm(
         tmp_path, monkeypatch, name="recap", recap=True, ceiling=None,
+        n_locks=_LOCKS_UNDER_PAYLOAD_BOUND,
     )
     assert _RESUME_OPEN not in control
     assert "dropped" in err, err
@@ -620,6 +630,7 @@ def test_the_audit_row_records_every_prompt_hit_the_envelope_shows(
     """
     out, err = _arm(
         tmp_path, monkeypatch, name="audit", recap=True, ceiling=None,
+        n_locks=_LOCKS_UNDER_PAYLOAD_BOUND,
     )
     assert "dropped" in err, err
     assert _RESUME_OPEN not in out, "the recap survived; nothing was shed"

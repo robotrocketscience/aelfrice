@@ -323,42 +323,36 @@ a session, where the `<locked>` sub-block and the per-turn hits share one
 envelope, the ceiling first reports at **66 user locks of 150 characters**
 and at **58 of 200 characters** — ordinary lock counts, not a pathology.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
---lock-chars 150 200`. Treat this constant as the size at which the block
-stops growing, not as a number nothing reaches.
+--lock-chars 150 200`. Those counts, and every figure in this docstring,
+measure this ceiling with the #1639 payload bound lifted, which isolates
+the machinery described here; see "Inside the payload bound" below.
 <!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_150 = 66 -->
 <!-- derived: scripts/measure_block_ceiling.py#first_trim_locks_200 = 58 -->
 
-What "reports" means at those counts is the #379 exemption below: the
-locks are emitted whole and the overrun goes to stderr. A store trims
-only once it holds non-locked material for the ceiling to drop.
-
-**Scope: this bounds the `<aelfrice-memory>` envelope, not everything the
-fire writes to stdout. The payload is bounded per block.** That is the
-contract #1560 ruled, stated positively: every block a fire writes is
-bounded on its own, and no bound spans two of them. An earlier revision
-of this sentence said each block "names its own bound", which the
-enumeration below contradicts: only two of the four writers name a token
-budget, and the two phantom notes name none. What bounds those is a
-per-session fire budget and a per-entry truncation — a count and a
-character length, not tokens. So "bounded on its own" is the claim that
-holds across all four, and "each names a token budget" is not. There is
-deliberately no payload ceiling either way, and a reader should not
-expect the sum of the blocks to be under this number.
-
-The two blocks with a token bound, and the two mechanisms that enforce
-them:
+**Inside the payload bound (#1639).** This constant bounds the
+`<aelfrice-memory>` envelope. `HOOK_PAYLOAD_CHAR_LIMIT` bounds the fire's
+whole stdout, every block together, at 9,500 characters, because the host
+shows the model only a 2,000-character preview of any hook output over
+10,000. The envelope is trimmed to whichever is tighter: this ceiling, or
+the room the fire's other blocks leave under the payload limit. On a stock
+store the payload room is always the tighter of the two, since 9,500
+characters is under 2,400 estimated tokens. #1560 ruled out a bound that
+spans blocks; #1639 reopened that ruling for the payload limit only, and
+every per-block bound below still holds inside it.
 
 | block | bound | enforced by |
 | --- | --- | --- |
-| `<aelfrice-memory>` | this constant | `enforce_block_ceiling`, hard with the #379 lock exemption |
-| `<cadence-checkpoint>` | `DEFAULT_REBUILDER_TOKEN_BUDGET` | the rebuilder's pack loop, soft |
+| whole stdout | `HOOK_PAYLOAD_CHAR_LIMIT` | the room each writer is given, below |
+| `<aelfrice-memory>` | this constant, or the payload room if tighter | `enforce_block_ceiling` |
+| `<cadence-checkpoint>` | `DEFAULT_REBUILDER_TOKEN_BUDGET`, or the payload room less `CADENCE_ENVELOPE_RESERVE_CHARS` | the rebuilder's pack loop, soft, then `_fit_to_room` |
 
-The first row read a bare "hard" until #1560 round two, which the same
-docstring contradicts fourteen lines above: `enforce_block_ceiling` never
-drops a `lock="user"` element, so a block whose locks alone are oversized
-is emitted over the ceiling with a note on stderr. Hard against everything
-the dropper is allowed to touch is the accurate reading, and it is a
-different claim from hard against the block.
+User locks are the last thing the envelope gives up. Against this ceiling
+alone they are exempt (#379): a block whose locks alone exceed it is
+emitted over it with a note on stderr. Against the payload room they are
+not exempt, because a block over the host's limit loses them anyway, in the
+preview. There, trailing locks are cut whole and named in one final line
+that points to `aelf locked`, with a note on stderr. A lock is never lost
+without the block saying so.
 
 **The second bound is soft, and a contract calling the two equivalent
 would be false.** #1546 records that `<retrieved-beliefs
@@ -435,39 +429,35 @@ as a loss.
 <!-- derived: scripts/measure_block_ceiling.py#resume_hits_without_recap = 6 -->
 <!-- derived: scripts/measure_block_ceiling.py#resume_hits_with_recap = 6 -->
 
-So a payload can exceed this number while every block in it is inside its
-own bound, and under the ruling that payload is correct. Measured on one
-fire with all four writers live: 11926 estimated tokens on stdout, of
-which this ceiling bounded 5898. That fire carries no recap — its work
-directory holds no resume cache, so `_maybe_read_cadence_resume` returns
-empty — and the arm asserts the absence rather than assuming it, so the
-figures above are a four-writer sum and nothing else.
+With the payload bound lifted, one fire with all four writers live puts
+11926 estimated tokens on stdout, of which this ceiling bounded 5898. That
+fire carries no recap, and the arm asserts the absence rather than
+assuming it. Re-derive with `uv run python
+scripts/measure_block_ceiling.py --cadence`.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
+
+With the payload bound in force, the same fire writes 9176 characters
+where it wrote 47703, and a 300-lock store writes 9172 where it wrote
+106565: 21 locks shown whole and 279 named in the overflow line.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
---cadence`; `test_hook_payload_per_block_bound_1560.py` asserts the
-contract against captured stdout.
+--payload`; `test_hook_inline_limit_1639.py` asserts the bound against
+captured stdout.
+<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_bounded = 9176 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_lifted = 47703 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_bounded = 9172 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_lifted = 106565 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_locks_shown_bounded = 21 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_locks_omitted_bounded = 279 -->
 
-**Why per block, and not one ceiling across them.** The per-block ruling
-stands, and the trade inside this envelope is now measured rather than
-assumed. The shed order below deletes prompt-independent lanes before the
-prompt's own hits; until #1564 the recap was not treated as one of those
-lanes, so the hook dropped retrieved beliefs to keep a rebuild recap and
-on the fixture above that cost the prompt every one of its matched
-beliefs. The recap is a lane now and the trade runs the other way. An
-earlier revision of this paragraph called it "a trade nobody has
-measured"; what is still unmeasured is the *other* one — extending a
-bound
-across blocks, so that the `<aelfrice-memory>` envelope and the separate
-`<cadence-checkpoint>` block compete for a single budget. Today's code
-does the within-envelope trade and does not do the cross-block one:
-`_write_memory_block` applies this ceiling to the memory body alone and
-the cadence write is emitted whole beside it.
-
-Whether the within-envelope trade is the right one is #871's question,
-not this bound's, and this docstring takes no position on it beyond
-naming it. The exposure is narrow either way, and saying so is part of
-the contract: `[cadence] enabled` is unset by default, so
+**How the payload room is shared.** No new shed order was added. The
+small blocks are priced first: the command note, the cadence checkpoint
+(packed to the room less `CADENCE_ENVELOPE_RESERVE_CHARS`), and the two
+phantom notes. The envelope gets the rest and sheds inside it in the order
+`enforce_block_ceiling` already uses. On a cadence fire the envelope
+therefore gives up more than it would alone, which is the cross-block
+trade #1560 declined and #1639 takes. The exposure is narrow: `[cadence]
+enabled` is unset by default, so
 `_maybe_run_ups_cadence_checkpoint` returns None, no Stop-side fire
 writes a resume cache, and a stock install gets neither the second block
 nor a recap. Both halves are fired rather than inferred in
@@ -476,12 +466,64 @@ stock spellings of the flag's absence, and `stop()` itself on the same
 two, against a cadence-enabled control that shows the cache write the
 stock arms decline to make.
 
-Override with `AELFRICE_HOOK_BLOCK_CEILING`; a literal `0` disables it.
+Override with `AELFRICE_HOOK_BLOCK_CEILING`. A literal `0` disables this
+ceiling and the envelope's share of the payload bound, so the host may
+truncate the envelope. The cadence checkpoint and the post-compaction
+rebuild block stay packed to the payload room either way.
 Re-tuning `DEFAULT_HOOK_TOKEN_BUDGET` itself needs a retrieval-quality
 gate and is deliberately not attempted here.
 """
 
 _BLOCK_CEILING_ENV: Final[str] = "AELFRICE_HOOK_BLOCK_CEILING"
+
+HOOK_PAYLOAD_CHAR_LIMIT: Final[int] = 9_500
+"""Characters one hook fire may write to stdout in total (#1639).
+
+The host inlines at most 10,000 characters of a hook's output. Anything
+longer is saved to a file and replaced in the model's context by a
+2,000-character preview and the file's path
+(https://code.claude.com/docs/en/hooks.md). A block over that limit is
+therefore not a large injection but a small one: the model reads the
+first 2,000 characters and nothing after them unless it opens the file.
+Measured on transcripts before this constant existed, 41% of aelfrice
+hook outputs were saved rather than inlined, and of the saved ones that
+carried user locks, 46% lost at least one lock from the preview.
+
+The limit is 9,500, not 10,000, by operator ruling: 5% headroom for the
+host's framing. It is counted with `len()`, which is what the host counts,
+not in estimated tokens.
+
+This is the payload-wide bound #1560 ruled out. #1639 reopened that
+ruling for this one change, because the host's cap applies to a fire's
+whole stdout and a set of per-block bounds cannot guarantee a sum.
+`HOOK_BLOCK_TOKEN_CEILING` and every per-block bound still hold; this
+constant sits outside them. It does not add a shed order: the memory
+envelope gets whatever room the fire's other blocks leave, and
+`enforce_block_ceiling` trims to that room in the order it already uses.
+The one new behaviour is what happens when the user locks alone do not
+fit, described on `enforce_block_ceiling`.
+"""
+
+CADENCE_ENVELOPE_RESERVE_CHARS: Final[int] = 4_000
+"""Room a UPS cadence checkpoint must leave for the memory envelope (#1639).
+
+The checkpoint is written before the envelope and, measured before
+#1639, came to about 23,000 characters on its own -- more than twice the
+whole `HOOK_PAYLOAD_CHAR_LIMIT`. Packed first and unbounded, it would take
+every character and leave the envelope, and so the user locks, nothing.
+This reserve is what it may not take. 4,000 characters holds the envelope
+header, a typical store's locks and its manifest; a store whose locks
+need more still gets them named by the #1639 overflow line.
+"""
+
+LOCK_POINTER_ID_CAP: Final[int] = 20
+"""Most lock ids the #1639 overflow line names before it says "and N more".
+
+Every omitted id is named when there are this many or fewer. Past it, the
+line names the first ones and counts the rest, because on a store of
+hundreds of locks the full list alone would fill the limit and leave no
+room for a single lock to be shown.
+"""
 
 _BELIEF_ELEMENT_RE: Final[re.Pattern[str]] = re.compile(
     r'<belief id="(?P<id>[^"]*)"(?P<attrs>[^>]*)>.*?</belief>\n?', re.DOTALL
@@ -616,16 +658,27 @@ class BlockCeilingOutcome:
     `--resume-drop` fixture that put 40 user locks into a list the two
     call sites below read as "never shown".
 
-    `over_ceiling` is the #379 escape hatch made visible: True when the
-    body is still over the limit after every droppable element is gone,
-    which happens when what remains is user-locked content or manifest
-    lines. `n_dropped == 0 and over_ceiling` is therefore a real state and
-    is not the same as "it fits".
+    `over_ceiling` is True when the body is still over the limit after
+    everything the trim may cut is gone. Without `omit_locks` that is the
+    #379 exemption made visible: what remains is user-locked content or
+    manifest lines. With it (#1639) the locks are cut too, so only framing
+    and manifest lines can leave the body over. `n_dropped == 0 and
+    over_ceiling` is therefore a real state and is not the same as "it
+    fits".
     """
 
     body: str
     dropped_ids: tuple[str, ...]
     over_ceiling: bool
+    omitted_lock_ids: tuple[str, ...] = ()
+    """User locks cut to fit the payload bound (#1639), in render order.
+
+    Separate from `dropped_ids` on purpose. `dropped_ids` never holds a
+    lock, and the #379 guards read that invariant; a lock cut here is not
+    dropped silently, because the block names it in a pointer line. Every
+    caller that skips exposure accounting for `dropped_ids` must skip
+    these too: neither reached the model.
+    """
 
     @property
     def n_dropped(self) -> int:
@@ -892,8 +945,20 @@ def _recap_shed(
     return [(recap[0], end)], ids
 
 
+def _lock_overflow_line(omitted: list[str]) -> str:
+    """The #1639 line that names user locks the payload bound cut."""
+    named = omitted[:LOCK_POINTER_ID_CAP]
+    more = len(omitted) - len(named)
+    ids = ", ".join(named) + (f", and {more} more" if more else "")
+    return (
+        f"\naelfrice: {len(omitted)} user lock(s) did not fit this hook's "
+        f"output limit and are not shown: {ids}. Run `aelf locked` to read "
+        "every lock.\n"
+    )
+
+
 def enforce_block_ceiling(
-    body: str, ceiling: int | None = None
+    body: str, ceiling: int | None = None, *, omit_locks: bool = False,
 ) -> BlockCeilingOutcome:
     """Drop whole non-locked `<belief>` elements until `body` fits.
 
@@ -922,10 +987,10 @@ def enforce_block_ceiling(
     `scripts/measure_block_ceiling.py --resume-drop` is the producer and
     `test_hook_recap_shed_order_1564.py` pins the directions.
 
-    **User-locked content is never lost.** That is the #379 / #1016-B
-    contract — locks are the always-injected pool, uncapped and untrimmed
-    — and a ceiling that deleted them would have made this module's bound
-    the thing that broke it. `_element_is_locked` is the test, and since
+    **User-locked content is never lost silently.** That is the #379 /
+    #1016-B contract — locks are the always-injected pool, uncapped and
+    untrimmed — and a ceiling that deleted them unannounced would have made
+    this module's bound the thing that broke it. `_element_is_locked` is the test, and since
     #1570 it answers for the `<cadence-resume>` recap's own render as well
     as this module's.
 
@@ -938,9 +1003,17 @@ def enforce_block_ceiling(
     distinction is worked through. Measured before the exemption
     existed: a 300-lock store had all 300 locked elements removed, leaving
     an empty `<locked>` section under 300 `seen <id>` manifest pointers.
-    When the locks alone do not fit, the body is emitted over the limit
-    and `over_ceiling` says so; `_write_memory_block` turns that into a
-    stderr note.
+    When the locks alone do not fit, what happens depends on
+    `omit_locks`. Without it, the body is emitted over the limit and
+    `over_ceiling` says so; `_write_memory_block` turns that into a stderr
+    note. With it, which `_write_memory_block` passes when the #1639
+    payload room is the binding limit, trailing locks are cut whole, in
+    reverse render order, until the rest fits together with one final line
+    that names them and points to `aelf locked`. They are reported in
+    `omitted_lock_ids`, never in `dropped_ids`. The payload room is not a
+    bound this module may exceed: past the host's limit the model sees a
+    2,000-character preview, and the locks after it are lost with no line
+    naming them.
 
     **A dropped element takes its `seen` pointer with it.** The dangling
     pointer above was not a locks-only accident; it is the class, and the
@@ -1093,15 +1166,41 @@ def enforce_block_ceiling(
         if pointer is not None:
             cut.append(pointer)
             remaining -= pointer[1] - pointer[0]
+    # #1639: the locks alone do not fit. Cut them from the tail of the
+    # render order, one whole element at a time, and pay for the line that
+    # names them out of the same budget -- a pointer the block cannot hold
+    # would be the silent loss this exists to prevent.
+    omitted: list[str] = []
+    if omit_locks and _tokens_from_chars(remaining) > limit:
+        locked = [
+            m for m in elements
+            if not (recap[0] <= m.start() < recap[1])
+            and _element_is_locked(m.group("attrs"))
+        ]
+        while locked and _tokens_from_chars(
+            remaining + len(_lock_overflow_line(omitted) if omitted else "")
+        ) > limit:
+            m = locked.pop()
+            cut.append(m.span())
+            remaining -= m.end() - m.start()
+            omitted.insert(0, m.group("id"))
+            pointer = pointers.pop(m.group("id"), None)
+            if pointer is not None:
+                cut.append(pointer)
+                remaining -= pointer[1] - pointer[0]
     for start, end in sorted(cut, reverse=True):
         body = body[:start] + body[end:]
+    if omitted:
+        body = body.rstrip("\n") + _lock_overflow_line(omitted)
     return BlockCeilingOutcome(
-        body, tuple(dropped), _audit_tokens_from_block(body) > limit
+        body, tuple(dropped), _audit_tokens_from_block(body) > limit,
+        tuple(omitted),
     )
 
 
 def _write_memory_block(
-    body: str, *, stdout: IO[str], stderr: IO[str]
+    body: str, *, stdout: IO[str], stderr: IO[str],
+    room_chars: int = HOOK_PAYLOAD_CHAR_LIMIT,
 ) -> BlockCeilingOutcome:
     """Trim `body` to the ceiling, note what happened, and write it.
 
@@ -1119,6 +1218,12 @@ def _write_memory_block(
     nothing on stderr. Re-derive with `uv run python
     scripts/measure_block_ceiling.py --gate-skip`.
     <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
+    `room_chars` is the envelope's share of `HOOK_PAYLOAD_CHAR_LIMIT`
+    (#1639): what the fire's other blocks leave. When it is tighter than
+    the ceiling, it becomes the limit and the trim may cut user locks,
+    naming them; see `enforce_block_ceiling`. The figures in this docstring
+    measure the ceiling alone, with the payload bound lifted.
+
     Routing the write itself through the trim is what keeps a
     fourth emit site from being added unbounded;
     `test_hook_injection_ceiling.py` pins that there is exactly one caller
@@ -1193,7 +1298,33 @@ def _write_memory_block(
     measure_block_ceiling.py --resume-drop` reports the span.
     """
     limit = resolve_block_ceiling(stderr=stderr)
-    outcome = enforce_block_ceiling(body, limit)
+    # #1639: the envelope gets the room the fire's other blocks leave under
+    # `HOOK_PAYLOAD_CHAR_LIMIT`, priced in the same four-characters-per-
+    # token estimate the ceiling uses, so `room // 4` tokens can never
+    # exceed `room` characters. `AELFRICE_HOOK_BLOCK_CEILING=0` turns off
+    # this ceiling and the envelope's share of the payload bound; an
+    # operator who sets it accepts the host's truncation.
+    omit_locks = False
+    if limit > 0:
+        # The largest token count whose every body fits `room_chars`:
+        # `_tokens_from_chars` is ceil(n / 4), so t tokens admits at most
+        # 4t characters. Derived from the estimator, not a second copy.
+        room_tokens = max(0, room_chars) // 4
+        assert _tokens_from_chars(4 * room_tokens) == room_tokens
+        if room_tokens < limit:
+            # Never 0: `enforce_block_ceiling` reads a limit of 0 as
+            # "disabled", so a fire whose other blocks left no room would
+            # emit the envelope untrimmed -- the opposite of the intent.
+            # 1 sheds everything sheddable and names every lock instead.
+            limit = max(1, room_tokens)
+            omit_locks = True
+    outcome = enforce_block_ceiling(body, limit, omit_locks=omit_locks)
+    if outcome.omitted_lock_ids:
+        stderr.write(
+            f"aelfrice hook: {len(outcome.omitted_lock_ids)} user lock(s) "
+            "did not fit the hook's output limit and were not shown; the "
+            "block names them and points to `aelf locked`\n"
+        )
     if outcome.dropped_ids:
         stderr.write(
             "aelfrice hook: block over ceiling, dropped "
@@ -2527,6 +2658,11 @@ def user_prompt_submit(
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
+    # #1639: characters this fire has written outside the memory envelope,
+    # charged against `HOOK_PAYLOAD_CHAR_LIMIT` so the envelope gets only
+    # the room they leave. Every `sout.write` in this function adds to it;
+    # `test_hook_payload_per_block_bound_1560.py` enumerates those writes.
+    payload_used = 0
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
         return _report_incomplete_install(_IMPORT_ERR, serr)
@@ -2620,17 +2756,19 @@ def user_prompt_submit(
             # constant for why "a long statement" is NOT the case it
             # guards against.
             command_note = command_outcome.line[:COMMAND_NOTE_CAP]
+            # Each frame is written with its literal tag in the call, so the
+            # #1560 writer enumeration still tells the two spellings apart.
             if command_outcome.took_effect:
-                sout.write(
+                sout.write(command_block := (
                     "<aelfrice-command-executed>\n"
                     f"{command_note}\n"
                     "aelfrice ran this command itself when you submitted "
                     "the prompt. Do not run it again; report the result "
                     "above.\n"
                     "</aelfrice-command-executed>\n\n"
-                )
+                ))
             else:
-                sout.write(
+                sout.write(command_block := (
                     "<aelfrice-command-failed>\n"
                     f"{command_note}\n"
                     "aelfrice tried to run this command and it did NOT "
@@ -2638,7 +2776,8 @@ def user_prompt_submit(
                     "above to the user; do not claim the command "
                     "succeeded.\n"
                     "</aelfrice-command-failed>\n\n"
-                )
+                ))
+            payload_used += len(command_block)
         # #1522: stamp the turn boundary the PreToolUse search hook's
         # per-turn Bash fire cap resets on. This hook is the only one
         # guaranteed to fire exactly once per turn. Fail-soft.
@@ -2756,8 +2895,18 @@ def user_prompt_submit(
             payload_obj: Any = json.loads(raw) if raw.strip() else {}
             if isinstance(payload_obj, dict):
                 payload_dict = cast(dict[str, object], payload_obj)
+                # #1639: the checkpoint gets what the payload bound leaves
+                # after what is already written, the envelope's reserve,
+                # and its own wrapper and trailing blank line.
+                ck_room = (
+                    HOOK_PAYLOAD_CHAR_LIMIT
+                    - payload_used
+                    - CADENCE_ENVELOPE_RESERVE_CHARS
+                    - len("<cadence-checkpoint>\n\n</cadence-checkpoint>\n\n")
+                )
                 ck_body = _maybe_run_ups_cadence_checkpoint(
                     payload_dict, session_id or "", serr,
+                    room_chars=max(0, ck_room),
                 )
                 if ck_body:
                     cadence_checkpoint_block = (
@@ -2769,15 +2918,14 @@ def user_prompt_submit(
             # — mirrors the traceback in the outer except at end of
             # user_prompt_submit. CodeRabbit / Sourcery feedback on PR #874.
             traceback.print_exc(file=serr)
-        # #1560: this write is deliberately NOT routed through
-        # `_write_memory_block`. The payload is bounded per block — this
-        # one by the rebuilder's own budget, softly — and no bound spans
-        # the blocks, so the ceiling that trims the memory envelope below
-        # never sees these bytes and never trims them to make room for
-        # it, or it for them. `HOOK_BLOCK_TOKEN_CEILING`'s docstring
-        # carries the contract and the measured sum.
+        # Not routed through `_write_memory_block`: this block is bounded
+        # on its own, packed to the payload room above (#1639). Its length
+        # is charged to `payload_used`, so the envelope below is trimmed to
+        # what is left. `HOOK_BLOCK_TOKEN_CEILING`'s docstring carries the
+        # contract and the measured totals.
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
+            payload_used += len(cadence_checkpoint_block) + 2
         budget = (
             token_budget
             if token_budget is not None
@@ -2926,6 +3074,31 @@ def user_prompt_submit(
             hits, category_focus = _apply_category_boost(
                 hits, prompt, payload_cwd, session_id, serr,
             )
+        # #1639: the phantom notes are written after the envelope but priced
+        # before it, so the envelope's room is known when it is trimmed.
+        # Both depend only on the hit count and store state, not on what
+        # the envelope emits. Skipped on gate_skip turns, as before.
+        phantom_block = ""
+        promotion_block = ""
+        if not gate_skip:
+            phantom_block = _maybe_phantom_opportunity_block(
+                prompt=prompt,
+                session_id=session_id,
+                hit_count=len(hits),
+                cwd=payload_cwd,
+                stderr=serr,
+            ) or ""
+            promotion_block = _maybe_phantom_promotion_block(
+                session_id=session_id,
+                cwd=payload_cwd,
+                stderr=serr,
+            ) or ""
+        envelope_room = (
+            HOOK_PAYLOAD_CHAR_LIMIT
+            - payload_used
+            - len(phantom_block)
+            - len(promotion_block)
+        )
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -3083,7 +3256,9 @@ def user_prompt_submit(
             # measured the overrun without acting on it. The write goes
             # through `_write_memory_block` rather than `sout` directly so
             # this branch cannot drift away from its two siblings.
-            outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            outcome = _write_memory_block(
+                body, stdout=sout, stderr=serr, room_chars=envelope_room,
+            )
             # Load-bearing, and the only consumer is `rendered_block=`
             # below: without it the audit row stores the PRE-trim block
             # and derives `tokens` from it, which is the over-report
@@ -3097,7 +3272,12 @@ def user_prompt_submit(
             # `belief_touches`, the #1382 ledger — takes this list, not
             # `hits`, so the trim does not manufacture exposure evidence
             # for text that was deleted before the write.
-            dropped_ids = set(outcome.dropped_ids)
+            # #1639: a lock the payload bound cut was named, not shown, and
+            # takes no exposure write either. It is kept out of
+            # `outcome.dropped_ids` itself, which the #379 guards read.
+            dropped_ids = set(outcome.dropped_ids) | set(
+                outcome.omitted_lock_ids
+            )
             emitted_hits = (
                 [h for h in hits if h.id not in dropped_ids]
                 if dropped_ids
@@ -3383,7 +3563,7 @@ def user_prompt_submit(
                 # holds. The test that reds:
                 # test_gate_skip_audit_row_records_the_block_it_emitted
                 body = _write_memory_block(
-                    body, stdout=sout, stderr=serr
+                    body, stdout=sout, stderr=serr, room_chars=envelope_room,
                 ).body
             else:
                 body = ""
@@ -3457,28 +3637,16 @@ def user_prompt_submit(
         # the opt-in flag is on. Skipped on gate_skip turns — a prompt the
         # shape-gate refused to retrieve against is not a real "gap".
         # Default-off, fail-soft: never blocks the turn.
-        if not gate_skip:
-            phantom_block = _maybe_phantom_opportunity_block(
-                prompt=prompt,
-                session_id=session_id,
-                hit_count=len(hits),
-                cwd=payload_cwd,
-                stderr=serr,
-            )
-            if phantom_block:
-                sout.write(phantom_block)
-            # #1132 Q2 trigger-driven phantom promotion: surface a
-            # promotion-opportunity note for phantoms that have crossed the
-            # cross-session corroboration threshold, so the user can validate
-            # them. Store-state-driven (not prompt-driven); default-off,
-            # fail-soft.
-            promotion_block = _maybe_phantom_promotion_block(
-                session_id=session_id,
-                cwd=payload_cwd,
-                stderr=serr,
-            )
-            if promotion_block:
-                sout.write(promotion_block)
+        # Computed above, before the envelope, so its room is known (#1639).
+        if phantom_block:
+            sout.write(phantom_block)
+        # #1132 Q2 trigger-driven phantom promotion: surface a
+        # promotion-opportunity note for phantoms that have crossed the
+        # cross-session corroboration threshold, so the user can validate
+        # them. Store-state-driven (not prompt-driven); default-off,
+        # fail-soft.
+        if promotion_block:
+            sout.write(promotion_block)
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
@@ -6329,28 +6497,29 @@ def session_start(
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             # #1551: the third emit site, and the only one that was never
-            # bounded at all. What it buys is the overrun note, which is
-            # the honest outcome for a baseline the #379 contract forbids
-            # trimming — **this lane has nothing droppable.** The block
-            # comes from `_retrieve_baseline_with_block`, which calls
+            # bounded at all. The block comes from
+            # `_retrieve_baseline_with_block`, which calls
             # `retrieve(store, "", ...)`, and `retrieve_with_tiers` gates
             # every relevance lane on `query.strip()`, so L0 is the only
             # tier that contributes and every element it renders carries
-            # `lock="user"`, which `enforce_block_ceiling` never drops.
-            # Measured on a store of 200 unlocked core-qualifying beliefs
-            # plus 5 locks: 5 elements in the emitted baseline, 5
-            # `lock="user"`, 0 `lock="none"`.
+            # `lock="user"`. Measured on a store of 200 unlocked
+            # core-qualifying beliefs plus 5 locks: 5 elements in the
+            # emitted baseline, 5 `lock="user"`, 0 `lock="none"`.
             #
-            # So there is no `dropped_ids` routing below, and its absence
-            # is deliberate: subtracting the dropped set from `hits` here
-            # selected `hits` from `hits`, and no fixture can make it do
-            # otherwise. Do not re-add it.
-            # `.body` for the audit row below, as at both sibling sites.
-            # No fixture can red its removal here — this lane has nothing
-            # droppable, so the trim is the identity. The test says that
-            # in full rather than implying a guard it is not:
+            # So `dropped_ids` is always empty here and is not routed. The
+            # one thing the trim can remove is a lock, and only under the
+            # #1639 payload room: trailing locks are cut whole and named in
+            # the block's last line, and `omitted_lock_ids` below keeps them
+            # out of the ledger and the audit row.
+            # `.body` for the audit row below, as at both sibling sites:
             # test_session_start_audit_row_records_the_block_it_emitted
-            body = _write_memory_block(body, stdout=sout, stderr=serr).body
+            ss_outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            body = ss_outcome.body
+            # #1639: a lock the payload bound cut was named, not shown, so
+            # it is not "shown verbatim" to the ledger or the audit row.
+            if ss_outcome.omitted_lock_ids:
+                omitted = set(ss_outcome.omitted_lock_ids)
+                hits = [h for h in hits if h.id not in omitted]
             # Now that the baseline is on stdout, record what it showed
             # verbatim. Only reachable once the bytes are written.
             _begin_injection_epoch(session_id, hits)
@@ -6381,8 +6550,15 @@ def session_start(
                 rebuild_block = ""
                 traceback.print_exc(file=serr)
             if rebuild_block:
-                if body:
-                    sout.write("\n\n")
+                # #1639: the rebuild block shares the hook's output limit
+                # with the baseline written above, and gets what it left.
+                sep = "\n\n" if body else ""
+                rebuild_block = _fit_to_room(
+                    rebuild_block,
+                    max(0, HOOK_PAYLOAD_CHAR_LIMIT - len(body) - len(sep)),
+                )
+                if sep:
+                    sout.write(sep)
                 sout.write(rebuild_block)
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
@@ -7298,10 +7474,37 @@ def _maybe_fire_cadence_checkpoint(
     # Unknown policy / POLICY_OFF — no-op.
 
 
+def _fit_to_room(body: str, room_chars: int) -> str:
+    """Cut a block body to `room_chars`, at element boundaries (#1639).
+
+    Used for the UPS cadence checkpoint and for the post-compaction rebuild
+    block `session_start` writes after its baseline.
+
+    The backstop for the rebuilder's pack loop, which is soft (#1546): it
+    has reported `budget_used` over its own budget. Whole trailing
+    `<belief>` elements go first, so what remains is well-formed. A body
+    that still does not fit -- one with no elements, or a long preamble --
+    is cut at the last line that fits and says so, rather than being
+    emitted over the payload bound.
+    """
+    if len(body) <= room_chars:
+        return body
+    for m in reversed(list(_BELIEF_ELEMENT_RE.finditer(body))):
+        body = body[: m.start()] + body[m.end():]
+        if len(body) <= room_chars:
+            return body
+    marker = "\n[cadence checkpoint cut to fit the hook output limit]"
+    keep = max(0, room_chars - len(marker))
+    cut = body.rfind("\n", 0, keep)
+    return body[: cut if cut > 0 else keep] + marker
+
+
 def _maybe_run_ups_cadence_checkpoint(
     payload: dict[str, object],
     session_id: str,
     serr: IO[str],
+    *,
+    room_chars: int | None = None,
 ) -> str | None:
     """UPS-side cadence dispatch — return body to inject or None.
 
@@ -7372,7 +7575,7 @@ def _maybe_run_ups_cadence_checkpoint(
         fire_idx = raw_idx
         if not should_fire(fire_idx, cfg):
             return None
-        body = _run_cadence_rebuild(payload, cwd)
+        body = _run_cadence_rebuild(payload, cwd, room_chars=room_chars)
         if body is None:
             return None
         print(
@@ -7406,7 +7609,7 @@ def _maybe_run_ups_cadence_checkpoint(
             config=cfg,
         ):
             return None
-        body = _run_cadence_rebuild(payload, cwd)
+        body = _run_cadence_rebuild(payload, cwd, room_chars=room_chars)
         if body is None:
             return None
         print(
@@ -7454,7 +7657,7 @@ def _maybe_run_ups_cadence_checkpoint(
             config=cfg,
         ):
             return None
-        body = _run_cadence_rebuild(payload, cwd)
+        body = _run_cadence_rebuild(payload, cwd, room_chars=room_chars)
         if body is None:
             return None
         # Update both p3-velocity state slots atomically — mirrors Stop-side.
@@ -7502,7 +7705,7 @@ def _maybe_run_ups_cadence_checkpoint(
             config=cfg,
         ):
             return None
-        body = _run_cadence_rebuild(payload, cwd)
+        body = _run_cadence_rebuild(payload, cwd, room_chars=room_chars)
         if body is None:
             return None
         print(
@@ -7722,6 +7925,8 @@ def _maybe_log_cadence_shadow_tick(
 def _run_cadence_rebuild(
     payload: dict[str, object],
     cwd: Path,
+    *,
+    room_chars: int | None = None,
 ) -> str | None:
     """Run the cadence rebuilder pass; return formatted body or None.
 
@@ -7740,14 +7945,25 @@ def _run_cadence_rebuild(
     p = db_path()
     if str(p) != ":memory:" and not p.exists():
         return None
-    return _rebuild_and_format(
+    # #1639: on the UPS side the checkpoint shares the hook's output limit
+    # with the memory envelope. Pack to the room first -- the rebuilder
+    # drops whole beliefs to meet a budget -- then cut at element
+    # boundaries, because that pack loop is soft (#1546). The Stop side
+    # passes no room: its body goes to the resume cache, not to stdout.
+    token_budget = rebuilder_cfg.token_budget
+    if room_chars is not None:
+        token_budget = max(1, min(token_budget, max(0, room_chars) // 4))
+    body = _rebuild_and_format(
         recent,
-        rebuilder_cfg.token_budget,
+        token_budget,
         rebuild_log_enabled=rebuilder_cfg.rebuild_log_enabled,
         floor_session=rebuilder_cfg.floor_session,
         floor_l1=rebuilder_cfg.floor_l1,
         query_strategy=rebuilder_cfg.query_strategy,
     )
+    if room_chars is not None:
+        body = _fit_to_room(body, max(0, room_chars))
+    return body
 
 
 def _cadence_resume_cache_path() -> Path | None:

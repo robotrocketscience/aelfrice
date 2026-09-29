@@ -198,6 +198,16 @@ would print as a figure while saying nothing. The trimmed arm's recap is
 deliberately not a precondition: since #1564 the ceiling sheds it whole,
 so requiring the wrapper there would refuse to print the result.
 
+`--payload` answers the #1639 question: **does the whole stdout fit the
+host's inline limit?** It fires the `--cadence` store and a 300-lock store
+twice each, with `HOOK_PAYLOAD_CHAR_LIMIT` lifted and in force, and prints
+each total in characters. It exits non-zero if a lifted fire already fits
+(the bound would be doing no work), if a bounded fire exceeds the limit, if
+the bounded cadence fire lost its checkpoint, or if the bounded lock fire
+cut locks without the line that names them. Every other arm runs under
+`_payload_bound_lifted`, so it measures the per-block machinery it names
+rather than the payload bound, which is tighter on every fixture here.
+
 The `--reference-tier` guard is per write rather than over the set on
 purpose. An "equal on every write" guard passes as long as one write
 differs, and until #1558 one did: turn two and `session_start` bounded
@@ -220,8 +230,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
+import contextlib  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+
+import aelfrice.hook as _hook  # noqa: E402
 from aelfrice.hook import (  # noqa: E402
     HOOK_BLOCK_TOKEN_CEILING,
+    HOOK_PAYLOAD_CHAR_LIMIT,
     _audit_tokens_from_block,
     session_start,
     user_prompt_submit,
@@ -245,6 +260,43 @@ from aelfrice.store import MemoryStore  # noqa: E402
 # Long enough to clear the #674 prompt-shape gate, so the fire takes the
 # retrieval branch rather than the gate-skip one.
 PROMPT = "tell me everything about the locked material please"
+
+# Large enough that no fixture here reaches it.
+_LIFTED_LIMIT = 10**9
+
+
+@contextlib.contextmanager
+def _payload_bound_lifted() -> Iterator[None]:
+    """Run a fire with the #1639 payload bound lifted and every other bound on.
+
+    Every arm below except `--payload` measures the per-block machinery --
+    `HOOK_BLOCK_TOKEN_CEILING`, the shed order, the reference tier, the
+    rebuilder's soft budget -- and publishes figures a released CHANGELOG
+    cites. Since #1639, `HOOK_PAYLOAD_CHAR_LIMIT` bounds the whole payload
+    and is tighter than that ceiling on every fixture here, so with it in
+    force these arms would measure the payload bound instead of what they
+    name. Lifting it isolates the machinery they describe, which still runs
+    inside the payload bound. `--payload` measures the bound itself.
+
+    The module global covers the sites that read it at call time. The
+    `room_chars` default of `_write_memory_block` was bound when the module
+    was imported, so the function is wrapped as well.
+    """
+    original_limit = _hook.HOOK_PAYLOAD_CHAR_LIMIT
+    original_write = _hook._write_memory_block
+
+    def lifted_write(body, *, stdout, stderr, room_chars=_LIFTED_LIMIT):
+        return original_write(
+            body, stdout=stdout, stderr=stderr, room_chars=room_chars,
+        )
+
+    _hook.HOOK_PAYLOAD_CHAR_LIMIT = _LIFTED_LIMIT
+    _hook._write_memory_block = lifted_write
+    try:
+        yield
+    finally:
+        _hook.HOOK_PAYLOAD_CHAR_LIMIT = original_limit
+        _hook._write_memory_block = original_write
 
 # Under `hook._MIN_PROMPT_LEN` (12), so `_should_skip_bm25` refuses BM25 and
 # the fire takes the `elif gate_skip:` emit path instead of the retrieval one.
@@ -883,6 +935,12 @@ def cadence_payload() -> dict[str, object]:
     publishable; and a payload that fits inside the ceiling is not the
     arithmetic this arm exists to report.
     """
+    out = _cadence_fire()
+    return _cadence_rows(out)
+
+
+def _cadence_fire() -> str:
+    """Seed the cadence store, fire UPS once, and return its stdout."""
     work = Path(tempfile.mkdtemp(prefix="aelf-cadence-"))
     db = _cadence_store(work)
     transcript = _cadence_transcript(work, CADENCE_SESSION)
@@ -922,7 +980,11 @@ def cadence_payload() -> dict[str, object]:
     rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
     if rc != 0:
         raise SystemExit(f"hook returned {rc}")
-    out = sout.getvalue()
+    return sout.getvalue()
+
+
+def _cadence_rows(out: str) -> dict[str, object]:
+    """The per-writer figures of one cadence fire's stdout, guarded."""
     missing = [
         name for name, open_tag, close_tag in CADENCE_BLOCKS
         if open_tag not in out or close_tag not in out
@@ -982,6 +1044,86 @@ def cadence_payload() -> dict[str, object]:
             "make that statement false while the sum still printed"
         )
     return rows
+
+
+# --- #1639: the payload bound itself -------------------------------------
+#
+# Every other arm runs under `_payload_bound_lifted`. This one does not: it
+# fires the same two fixtures with the bound lifted and in force, and
+# reports the whole stdout in characters -- the unit the host counts.
+PAYLOAD_LOCKS = 300
+PAYLOAD_LOCK_CHARS = 150
+_LOCK_RE = re.compile(r'<belief id="([^"]+)" lock="user"')
+
+
+def _locks_fire(n_locks: int, chars: int) -> str:
+    """One retrieval-branch UPS fire on a store of `n_locks` user locks."""
+    work = Path(tempfile.mkdtemp(prefix="aelf-payload-"))
+    db = work / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        for i in range(n_locks):
+            store.insert_belief(_lock(i, chars))
+    finally:
+        store.close()
+    os.environ["AELFRICE_DB"] = str(db)
+    os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": "payload", "transcript_path": "/dev/null",
+        "cwd": str(work), "hook_event_name": "UserPromptSubmit",
+        "prompt": PROMPT,
+    })
+    if user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr):
+        raise SystemExit("hook returned non-zero")
+    return sout.getvalue()
+
+
+def payload_bound() -> dict[str, object]:
+    """Whole-payload characters with the #1639 bound lifted and in force.
+
+    Refuses a vacuous run: a lifted fire that already fits the limit shows
+    no work done by the bound; a bounded fire over it is the defect the
+    bound exists to prevent; a bounded cadence fire without its checkpoint
+    means the lane was skipped rather than packed; and a bounded lock fire
+    that names no omitted lock means the overflow line did not fire.
+    """
+    with _payload_bound_lifted():
+        cadence_lifted = _cadence_fire()
+        locks_lifted = _locks_fire(PAYLOAD_LOCKS, PAYLOAD_LOCK_CHARS)
+    cadence_bounded = _cadence_fire()
+    locks_bounded = _locks_fire(PAYLOAD_LOCKS, PAYLOAD_LOCK_CHARS)
+    for name, out in (("cadence", cadence_lifted), ("locks", locks_lifted)):
+        if len(out) <= HOOK_PAYLOAD_CHAR_LIMIT:
+            raise SystemExit(
+                f"the lifted {name} fire fits the payload limit: the bound "
+                "does no work on this fixture and the figure would be vacuous"
+            )
+    for name, out in (("cadence", cadence_bounded), ("locks", locks_bounded)):
+        if len(out) > HOOK_PAYLOAD_CHAR_LIMIT:
+            raise SystemExit(
+                f"the bounded {name} fire wrote {len(out)} characters "
+                f"against a {HOOK_PAYLOAD_CHAR_LIMIT}-character limit"
+            )
+    if "</cadence-checkpoint>" not in cadence_bounded:
+        raise SystemExit(
+            "the bounded cadence fire carried no checkpoint: it was skipped, "
+            "not packed to the room left"
+        )
+    shown = len(_LOCK_RE.findall(locks_bounded))
+    if "user lock(s) did not fit" not in locks_bounded:
+        raise SystemExit(
+            "the bounded lock fire cut locks without the line that names them"
+        )
+    return {
+        "limit_chars": HOOK_PAYLOAD_CHAR_LIMIT,
+        "cadence_chars_lifted": len(cadence_lifted),
+        "cadence_chars_bounded": len(cadence_bounded),
+        "locks_chars_lifted": len(locks_lifted),
+        "locks_chars_bounded": len(locks_bounded),
+        "locks_shown_bounded": shown,
+        "locks_omitted_bounded": PAYLOAD_LOCKS - shown,
+    }
 
 
 # --- #1560 round two: what the ceiling does to the #871 recap -------------
@@ -1307,6 +1449,11 @@ def main(argv: list[str] | None = None) -> int:
              "recap, and what the same prompt reaches without one",
     )
     ap.add_argument(
+        "--payload", action="store_true",
+        help="print the whole stdout of a cadence fire and a 300-lock fire, "
+             "in characters, with the #1639 payload bound lifted and in force",
+    )
+    ap.add_argument(
         "--dry-run", action="store_true",
         help="print what would be swept and exit 0 without firing the hook",
     )
@@ -1317,68 +1464,113 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if args.payload and not args.dry_run:
+        row = payload_bound()
+        if args.json:
+            print(json.dumps(row, indent=2))
+        else:
+            print(
+                f"whole stdout against a {row['limit_chars']}-character limit"
+            )
+            print(
+                f"  cadence fire  {row['cadence_chars_lifted']:>7} lifted -> "
+                f"{row['cadence_chars_bounded']:>5} bounded"
+            )
+            print(
+                f"  300-lock fire {row['locks_chars_lifted']:>7} lifted -> "
+                f"{row['locks_chars_bounded']:>5} bounded, "
+                f"{row['locks_shown_bounded']} locks shown and "
+                f"{row['locks_omitted_bounded']} named"
+            )
+        # Vacuity is refused inside `payload_bound`.
+        return 0
+
     if args.emit_figures:
-        # The two lengths the docstring, `HOOK_BLOCK_TOKEN_CEILING` and the
-        # CHANGELOG entry all publish. Fixed here rather than read off
-        # `--lock-chars`, because the key names are what the markers cite:
-        # a sweep the caller re-pointed would emit keys nothing published.
-        figures: dict[str, object] = {
-            f"first_trim_locks_{chars}": crossing(
-                chars, args.max_locks, args.step,
-            )["locks"]
-            for chars in (150, 200)
-        }
-        figures["gate_skip_tokens_300_locks_150"] = gate_skip_tokens(300, 150)
-        for tier, writes in reference_tier_table().items():
-            for write, tokens in writes.items():
-                figures[f"ref_lock_30026_{write}_{tier}"] = tokens
-        slot = exploration_slot()
-        figures["exploration_slot_block_tokens"] = slot["tokens"]
-        figures["exploration_slot_drawn_emitted"] = slot["drawn_emitted"]
-        # #1560. Keyed by what each figure describes, not by the dict the
-        # producer returns, because the marker cites the key: a rename
-        # inside `cadence_payload` must not silently orphan a marker.
-        cadence = cadence_payload()
-        figures["cadence_fire_payload_tokens"] = cadence["payload_tokens"]
-        figures["cadence_fire_checkpoint_tokens"] = (
-            cadence["cadence_checkpoint_tokens"]
-        )
-        figures["cadence_fire_memory_tokens"] = cadence["memory_tokens"]
-        figures["cadence_fire_phantom_opportunity_tokens"] = (
-            cadence["phantom_opportunity_tokens"]
-        )
-        figures["cadence_fire_phantom_promotion_tokens"] = (
-            cadence["phantom_promotion_tokens"]
-        )
-        # The two bounds the figures above are read against. Emitted so
-        # prose that cites either number is re-derived with the rest of
-        # the table instead of being a literal nothing checks: a block
-        # size means nothing without the bound it is compared to.
-        figures["cadence_fire_block_ceiling"] = cadence["ceiling"]
-        figures["cadence_fire_rebuilder_budget"] = cadence["rebuilder_budget"]
-        figures["cadence_fire_rebuild_budget_used_chars"] = (
-            cadence["rebuild_budget_used_chars"]
-        )
-        figures["cadence_fire_rebuild_budget_chars"] = (
-            cadence["rebuild_budget_chars"]
-        )
-        # #1560 round two. The recap's charge to the envelope, and what
-        # the envelope loses to it. Both counts are published, so a
-        # change in either reddens rather than quietly restating the
-        # sentence the docstring used to get wrong.
-        resume = resume_drop()
-        figures["resume_recap_elements_untrimmed"] = (
-            resume["recap_elements_untrimmed"]
-        )
-        figures["resume_recap_elements_trimmed"] = (
-            resume["recap_elements_trimmed"]
-        )
-        figures["resume_hits_without_recap"] = resume["hits_without_recap"]
-        figures["resume_hits_with_recap"] = resume["hits_with_recap"]
+        # Measured before the lifted arms below, with the bound in force.
+        payload = payload_bound()
+        with _payload_bound_lifted():
+            figures = _legacy_figures(args)
+        for key, value in payload.items():
+            figures[f"payload_{key}"] = value
         print(json.dumps(figures))
         return 0
 
+    with _payload_bound_lifted():
+        return _legacy_main(args)
+
+
+def _legacy_figures(args: argparse.Namespace) -> dict[str, object]:
+    """Every pre-#1639 figure, measured with the payload bound lifted."""
+    # The two lengths the docstring, `HOOK_BLOCK_TOKEN_CEILING` and the
+    # CHANGELOG entry all publish. Fixed here rather than read off
+    # `--lock-chars`, because the key names are what the markers cite:
+    # a sweep the caller re-pointed would emit keys nothing published.
+    figures: dict[str, object] = {
+        f"first_trim_locks_{chars}": crossing(
+            chars, args.max_locks, args.step,
+        )["locks"]
+        for chars in (150, 200)
+    }
+    figures["gate_skip_tokens_300_locks_150"] = gate_skip_tokens(300, 150)
+    for tier, writes in reference_tier_table().items():
+        for write, tokens in writes.items():
+            figures[f"ref_lock_30026_{write}_{tier}"] = tokens
+    slot = exploration_slot()
+    figures["exploration_slot_block_tokens"] = slot["tokens"]
+    figures["exploration_slot_drawn_emitted"] = slot["drawn_emitted"]
+    # #1560. Keyed by what each figure describes, not by the dict the
+    # producer returns, because the marker cites the key: a rename
+    # inside `cadence_payload` must not silently orphan a marker.
+    cadence = cadence_payload()
+    figures["cadence_fire_payload_tokens"] = cadence["payload_tokens"]
+    figures["cadence_fire_checkpoint_tokens"] = (
+        cadence["cadence_checkpoint_tokens"]
+    )
+    figures["cadence_fire_memory_tokens"] = cadence["memory_tokens"]
+    figures["cadence_fire_phantom_opportunity_tokens"] = (
+        cadence["phantom_opportunity_tokens"]
+    )
+    figures["cadence_fire_phantom_promotion_tokens"] = (
+        cadence["phantom_promotion_tokens"]
+    )
+    # The two bounds the figures above are read against. Emitted so
+    # prose that cites either number is re-derived with the rest of
+    # the table instead of being a literal nothing checks: a block
+    # size means nothing without the bound it is compared to.
+    figures["cadence_fire_block_ceiling"] = cadence["ceiling"]
+    figures["cadence_fire_rebuilder_budget"] = cadence["rebuilder_budget"]
+    figures["cadence_fire_rebuild_budget_used_chars"] = (
+        cadence["rebuild_budget_used_chars"]
+    )
+    figures["cadence_fire_rebuild_budget_chars"] = (
+        cadence["rebuild_budget_chars"]
+    )
+    # #1560 round two. The recap's charge to the envelope, and what
+    # the envelope loses to it. Both counts are published, so a
+    # change in either reddens rather than quietly restating the
+    # sentence the docstring used to get wrong.
+    resume = resume_drop()
+    figures["resume_recap_elements_untrimmed"] = (
+        resume["recap_elements_untrimmed"]
+    )
+    figures["resume_recap_elements_trimmed"] = (
+        resume["recap_elements_trimmed"]
+    )
+    figures["resume_hits_without_recap"] = resume["hits_without_recap"]
+    figures["resume_hits_with_recap"] = resume["hits_with_recap"]
+    return figures
+
+
+def _legacy_main(args: argparse.Namespace) -> int:
+    """The per-arm entry points, run under `_payload_bound_lifted`."""
     if args.dry_run:
+        if args.payload:
+            print(
+                f"would fire the --cadence store and a {PAYLOAD_LOCKS}-lock "
+                "store twice each, with the #1639 payload bound lifted and "
+                f"at {HOOK_PAYLOAD_CHAR_LIMIT} characters"
+            )
+            return 0
         if args.resume_drop:
             print(
                 f"would fire one {RESUME_LOCKS}-lock / {RESUME_CORE}-core "
