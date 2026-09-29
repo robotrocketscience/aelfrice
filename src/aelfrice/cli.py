@@ -45,6 +45,7 @@ from aelfrice.health import (
     regime_description,
 )
 from aelfrice.models import (
+    CORROBORATION_MIN_EPISODES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
     EDGE_CONTRADICTS,
     EDGE_SUPERSEDES,
@@ -3661,12 +3662,28 @@ _CORE_MIN_POSTERIOR: float = 2.0 / 3.0
 _CORE_MIN_ALPHA_BETA: int = 4
 
 
-def _qualifies_core(b: object, args: argparse.Namespace) -> bool:
+def _corroboration_signal(
+    b: object, args: argparse.Namespace, episodes: int,
+) -> bool:
+    """The corroboration arm, in one place for the gate and its labels.
+
+    Counts only at `CORROBORATION_MIN_EPISODES` or more (#1635): sightings
+    within an hour of each other are one burst, not N re-assertions.
+    """
+    corr: int = b.corroboration_count  # type: ignore[attr-defined]
+    min_corr: int = args.min_corroboration
+    if corr < min_corr:
+        return False
+    return episodes >= CORROBORATION_MIN_EPISODES
+
+
+def _qualifies_core(
+    b: object, args: argparse.Namespace, episodes: int = 0,
+) -> bool:
     """Return True if belief b meets any non-lock core signal."""
     alpha: float = b.alpha  # type: ignore[attr-defined]
     beta: float = b.beta  # type: ignore[attr-defined]
-    corr: int = b.corroboration_count  # type: ignore[attr-defined]
-    if corr >= args.min_corroboration:
+    if _corroboration_signal(b, args, episodes):
         return True
     ab = alpha + beta
     if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
@@ -3679,7 +3696,11 @@ def _emit_core(
     candidates: list[object],
     args: argparse.Namespace,
     out: object,
+    episodes: dict[str, int] | None = None,
 ) -> None:
+    # #1635: the labels use the same corroboration rule as the gate, so a
+    # burst is never shown as corroboration evidence.
+    ep: dict[str, int] = episodes or {}
     seen: set[str] = {b.id for b in locked}  # type: ignore[attr-defined]
     unlocked = [b for b in candidates if b.id not in seen]  # type: ignore[attr-defined]
 
@@ -3705,7 +3726,7 @@ def _emit_core(
             signals: list[str] = []
             if b.lock_level != LOCK_NONE:  # type: ignore[attr-defined]
                 signals.append("lock")
-            if b.corroboration_count >= args.min_corroboration:  # type: ignore[attr-defined]
+            if _corroboration_signal(b, args, ep.get(b.id, 0)):  # type: ignore[attr-defined]
                 signals.append("corroboration")
             alpha: float = b.alpha  # type: ignore[attr-defined]
             beta: float = b.beta  # type: ignore[attr-defined]
@@ -3733,7 +3754,7 @@ def _emit_core(
         parts: list[str] = []
         if b.lock_level != LOCK_NONE:  # type: ignore[attr-defined]
             parts.append("LOCK")
-        if corr >= args.min_corroboration:
+        if _corroboration_signal(b, args, ep.get(b.id, 0)):  # type: ignore[attr-defined]
             parts.append(f"CORR={corr}")
         if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
             parts.append(f"α={alpha:.1f}")
@@ -3758,16 +3779,19 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
     try:
         locked: list[object] = [] if args.no_locked else store.list_locked_beliefs()
         candidates: list[object] = []
+        # #1635: read once; the gate and the labels both use it, and the
+        # labels cover the locked beliefs too.
+        episodes = store.corroboration_episodes()
         if not args.locked_only:
             for bid in store.list_belief_ids():
                 b = store.get_belief(bid)
                 if b is None or b.lock_level != LOCK_NONE:
                     continue
-                if _qualifies_core(b, args):
+                if _qualifies_core(b, args, episodes.get(b.id, 0)):
                     candidates.append(b)
     finally:
         store.close()
-    _emit_core(locked, candidates, args, out)
+    _emit_core(locked, candidates, args, out, episodes)
     return 0
 
 
@@ -9121,7 +9145,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--min-corroboration", type=int, default=_CORE_MIN_CORROBORATION,
         metavar="N",
         help="corroboration_count threshold (default 2; lower to widen "
-             "lens — 0 admits any non-negative count)",
+             "lens). The arm also needs two episodes an hour apart "
+             "(#1635), so no threshold admits a belief seen only once",
     )
     p_core.add_argument(
         "--min-posterior", type=float, default=_CORE_MIN_POSTERIOR,

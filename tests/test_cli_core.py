@@ -79,11 +79,13 @@ def _seed_store(db: Path) -> dict[str, Belief]:
         # b-corr: record 3 corroboration rows via the public API. Each
         # must be a DISTINCT source (#1020 dedupes same-source repeats),
         # so use distinct session_ids to count as 3 independent re-asserts.
+        # #1635: a day apart, so the rows read as recurrence, not a burst.
         for i in range(3):
             s.record_corroboration(
                 beliefs["b-corr"].id,
                 source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
                 session_id=f"sess-{i}",
+                ts=f"2026-05-0{i + 1}T00:00:00+00:00",
             )
     finally:
         s.close()

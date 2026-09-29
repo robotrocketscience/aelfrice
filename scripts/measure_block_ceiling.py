@@ -807,11 +807,14 @@ def _cadence_store(work: Path) -> Path:
                 retention_class=RETENTION_SNAPSHOT,
             )
         )
-        for session in ("s1", "s2", "s3"):
+        # #1635: a day apart. Rows written in one moment are one burst, and
+        # the promotion selectors now need two episodes an hour apart.
+        for day, session in enumerate(("s1", "s2", "s3"), start=1):
             store.record_corroboration(
                 CADENCE_PHANTOM_ID,
                 source_type="filesystem_ingest",
                 session_id=session,
+                ts=f"2026-01-{day:02d}T00:00:00+00:00",
             )
     finally:
         store.close()

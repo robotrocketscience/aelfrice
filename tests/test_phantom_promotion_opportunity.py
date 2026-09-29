@@ -13,6 +13,9 @@ Groups:
 """
 from __future__ import annotations
 
+import itertools
+from datetime import datetime, timedelta, timezone
+
 from pathlib import Path
 
 import pytest
@@ -69,9 +72,24 @@ def _mk_phantom(
     return b
 
 
+# #1635: each corroboration a day after the last. Rows written in one
+# moment are one burst, and the selectors need two episodes an hour apart
+# to count them as recurrence. Reset per test, so a row's time does not
+# depend on how many tests ran before it.
+_DAY = itertools.count(1)
+_EPOCH = datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _reset_day_counter() -> None:
+    global _DAY
+    _DAY = itertools.count(1)
+
+
 def _corr(store: MemoryStore, bid: str, *, session: str | None) -> None:
     store.record_corroboration(
-        bid, source_type="filesystem_ingest", session_id=session
+        bid, source_type="filesystem_ingest", session_id=session,
+        ts=(_EPOCH + timedelta(days=next(_DAY))).isoformat(),
     )
 
 

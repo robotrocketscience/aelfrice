@@ -613,3 +613,36 @@ class PhantomLifecycleCounts:
     latest: str | None
 
 
+CORROBORATION_EPISODE_GAP_SECONDS: Final[int] = 3600
+"""Gap that separates two corroboration episodes (#1635).
+
+A belief's corroboration count was read as independent re-assertion, but
+a scripted replay gets a new session id every few seconds: one afternoon
+of headless evaluation runs gave 67 beliefs 13 or 27 rows each, all
+inside about 1.5 minutes, and every one reached `aelf core`. Sightings
+closer together than this, measured to the millisecond, are one
+episode, however many sessions they name. One hour of elapsed time, not a calendar day, which leaked bursts
+that straddle midnight. The measured bursts spread over about 1.5
+minutes, so an hour separates them with room to spare; a longer gap only
+merges more real recurrence (on one store, measured read-only on
+2026-09-29, core held 698 non-lock beliefs at 1 h, 685 at 24 h, and 670
+at 72 h).
+
+A belief's sightings are its `created_at` and the `ingested_at` of each
+corroboration row. The transcript-ingest path stamps each with the turn's
+own time, so a bulk backfill of old sessions keeps its real spread. A timestamp
+that cannot be parsed is not a sighting.
+"""
+
+CORROBORATION_MIN_EPISODES: Final[int] = 2
+"""Episodes a belief needs before its corroboration count is evidence (#1635).
+
+Two: the belief was seen, and then seen again at least
+`CORROBORATION_EPISODE_GAP_SECONDS` later. A belief born inside a burst
+has one episode however many rows the burst wrote, so it does not
+qualify. A belief that already existed and is then hit by one burst has
+two, and does -- the operator accepted that residual case over a rule
+that would also drop a belief re-asserted in one sitting days after it
+was first said.
+"""
+

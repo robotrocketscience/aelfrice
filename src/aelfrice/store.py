@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
+    CORROBORATION_EPISODE_GAP_SECONDS,
+    CORROBORATION_MIN_EPISODES,
     DEFAULT_LOCK_TIER,
     FEEDBACK_SOURCE_LOCK_EXPIRE,
     LOCK_NONE,
@@ -1411,6 +1413,44 @@ def hash_query(query: str) -> str:
     table ever holding the prompt itself.
     """
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+
+
+
+# #1635: one definition of a belief's corroboration episodes, used by
+# `MemoryStore.corroboration_episodes` and by both promotion selectors so
+# none of them can drift from the others. A belief's sightings are its
+# `created_at` and each corroboration row's `ingested_at`, taken as
+# `julianday` instants -- not as text, because rows mix `Z` and `+HH:MM`
+# offsets and text order is not time order. An unparseable timestamp is
+# NULL and drops out. Consecutive sightings at least the gap apart start a
+# new episode. `julianday` keeps time to the millisecond, and its
+# arithmetic puts an exact hour at 3599.99998 seconds, so the difference
+# is rounded to the millisecond: an exact hour counts, and so can a gap
+# within a millisecond of it, while 3599.998 seconds does not. Only
+# beliefs with at least one corroboration row are listed.
+_CORROBORATION_EPISODES_SQL: Final[str] = f"""
+    SELECT belief_id,
+           1 + SUM(CASE WHEN prev IS NOT NULL
+                         AND ROUND((t - prev) * 86400.0, 3)
+                             >= {CORROBORATION_EPISODE_GAP_SECONDS}
+                    THEN 1 ELSE 0 END) AS episodes
+    FROM (
+        SELECT belief_id, t,
+               LAG(t) OVER (PARTITION BY belief_id ORDER BY t) AS prev
+        FROM (
+            SELECT b.id AS belief_id, julianday(b.created_at) AS t
+            FROM beliefs b
+            WHERE EXISTS (
+                SELECT 1 FROM belief_corroborations c WHERE c.belief_id = b.id
+            )
+            UNION ALL
+            SELECT belief_id, julianday(ingested_at) AS t
+            FROM belief_corroborations
+        )
+        WHERE t IS NOT NULL
+    )
+    GROUP BY belief_id
+"""
 
 
 class MemoryStore:
@@ -5019,6 +5059,16 @@ class MemoryStore:
         )
         self._commit()
 
+    def corroboration_episodes(self) -> dict[str, int]:
+        """Corroboration episodes per belief (#1635), in one grouped read.
+
+        For the consumers that walk every belief. A belief with no
+        corroboration row is absent; see `_CORROBORATION_EPISODES_SQL`
+        for what an episode is.
+        """
+        cur = self._conn.execute(_CORROBORATION_EPISODES_SQL)
+        return {str(r[0]): int(r[1] or 0) for r in cur.fetchall()}
+
     def count_corroborations(self, belief_id: str) -> int:
         """Return the count of belief_corroborations rows for one belief.
 
@@ -6256,10 +6306,12 @@ class MemoryStore:
                 FROM belief_corroborations
                 GROUP BY belief_id
             ) bc ON bc.belief_id = b.id
+            JOIN ({_CORROBORATION_EPISODES_SQL}) ep ON ep.belief_id = b.id
             WHERE b.retention_class = 'snapshot'
               AND b.origin != ?
               AND bc.n_corr >= ?
               AND bc.n_sess >= ?
+              AND ep.episodes >= ?
               AND NOT EXISTS (
                   SELECT 1 FROM edges e
                   WHERE e.dst = b.id AND e.type = 'CONTRADICTS'
@@ -6267,7 +6319,8 @@ class MemoryStore:
             ORDER BY b.created_at ASC
             {limit_clause}
             """,
-            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions)),
+            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions),
+             CORROBORATION_MIN_EPISODES),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
@@ -6311,10 +6364,12 @@ class MemoryStore:
                 FROM belief_corroborations
                 GROUP BY belief_id
             ) bc ON bc.belief_id = b.id
+            JOIN ({_CORROBORATION_EPISODES_SQL}) ep ON ep.belief_id = b.id
             WHERE b.origin = ?
               AND b.valid_to IS NULL
               AND bc.n_corr >= ?
               AND bc.n_sess >= ?
+              AND ep.episodes >= ?
               AND NOT EXISTS (
                   SELECT 1 FROM edges e
                   WHERE e.dst = b.id AND e.type = 'CONTRADICTS'
@@ -6322,7 +6377,8 @@ class MemoryStore:
             ORDER BY b.created_at ASC
             {limit_clause}
             """,
-            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions)),
+            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions),
+             CORROBORATION_MIN_EPISODES),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 

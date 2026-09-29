@@ -53,9 +53,11 @@ def _seed_promotable_db(db: Path, bid: str = "ph1") -> None:
             retention_class=RETENTION_SNAPSHOT,
         )
     )
-    for sess in ("s1", "s2", "s3"):
+    # #1635: a day apart, so the rows read as recurrence, not a burst.
+    for day, sess in enumerate(("s1", "s2", "s3"), start=1):
         store.record_corroboration(
-            bid, source_type="filesystem_ingest", session_id=sess
+            bid, source_type="filesystem_ingest", session_id=sess,
+            ts=f"2026-01-{day:02d}T00:00:00+00:00",
         )
     store.close()
 

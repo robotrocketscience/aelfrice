@@ -5476,16 +5476,29 @@ _CORE_MIN_POSTERIOR: Final[float] = 2.0 / 3.0
 _CORE_MIN_ALPHA_BETA: Final[int] = 4
 
 
-def _belief_qualifies_core(b: "Belief") -> bool:
+def _belief_qualifies_core(b: "Belief", episodes: int = 0) -> bool:
     """Return True when b meets any non-lock core signal.
 
     Mirrors the logic in cli._qualifies_core using the module-level
-    defaults (corroboration>=2 OR posterior_mean>=2/3 with alpha+beta>=4).
+    defaults (corroboration>=2 in at least two episodes, OR
+    posterior_mean>=2/3 with alpha+beta>=4).
     Does NOT include the lock signal — locked beliefs are already in the
     locked section.
+
+    `episodes` is the belief's corroboration episodes
+    (`MemoryStore.corroboration_episodes`). The corroboration arm counts
+    only at `CORROBORATION_MIN_EPISODES` or more (#1635): sightings within
+    an hour of each other are one burst, however many sessions they name.
     """
+    # Local: every name in this module's guarded top-level import reads
+    # as possibly unbound, and `models` is already loaded by then.
+    from aelfrice.models import CORROBORATION_MIN_EPISODES  # noqa: PLC0415
+
     corr: int = b.corroboration_count
-    if corr >= _CORE_MIN_CORROBORATION:
+    if (
+        corr >= _CORE_MIN_CORROBORATION
+        and episodes >= CORROBORATION_MIN_EPISODES
+    ):
         return True
     alpha: float = b.alpha
     beta: float = b.beta
@@ -5605,6 +5618,7 @@ def _build_session_start_subblock(
     locked_ids: set[str] = {b.id for b in locked}
 
     core_candidates: list[Belief] = []
+    episodes = store.corroboration_episodes()
     for bid in store.list_belief_ids():
         if bid in locked_ids:
             continue
@@ -5614,7 +5628,7 @@ def _build_session_start_subblock(
         if b.lock_level != LOCK_NONE and b.id not in locked_ids:
             # Locked but not surfaced via list_locked_beliefs — skip.
             continue
-        if _belief_qualifies_core(b):
+        if _belief_qualifies_core(b, episodes.get(b.id, 0)):
             core_candidates.append(b)
 
     # Sort core candidates by posterior_mean DESC, then id ASC for stability.
