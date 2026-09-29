@@ -558,9 +558,38 @@ def _assistant_text_codex(obj: dict[str, object]) -> str | None:
     return None
 
 
+def _skip_headless(payload: dict[str, object]) -> bool:
+    """True when this hook runs in a headless host session that is not captured.
+
+    #1634: a headless session (`claude -p`, an Agent SDK app) is scripted,
+    not a user's, so neither handler records it unless capture is
+    configured. The host's entrypoint is the signal; its SESSION_ATTENDED
+    flag is not, because background, daemon, and teammate sessions also set
+    it to 0. The override is read from the payload's `cwd`, the session's
+    project. A malformed or non-bool setting reads as the default, so the
+    turn is skipped; only an exception -- an import error, say -- records it,
+    so a broken install never costs the logger a turn.
+    """
+    try:
+        from aelfrice.print_mode import (  # noqa: PLC0415
+            is_headless_hook_env,
+            is_print_mode_capture_enabled,
+        )
+
+        if not is_headless_hook_env():
+            return False
+        cwd = payload.get("cwd")
+        start = Path(cwd) if isinstance(cwd, str) and cwd else None
+        return not is_print_mode_capture_enabled(start=start)
+    except Exception:
+        return False
+
+
 def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
+        return
+    if _skip_headless(payload):
         return
     # #747: harness-wrapper prompts (<task-notification>, <summary>Monitor,
     # <tool-result>, etc.) carry no user intent and crowd real turns out of
@@ -649,10 +678,13 @@ def _handle_stop(payload: dict[str, object]) -> None:
         text = ""
     session_id = payload.get("session_id")
     sid = session_id if isinstance(session_id, str) else None
-    line = _build_turn_line(
-        role="assistant", text=text, session_id=sid, ctx=_turn_context(),
-    )
-    _append_turn(line)
+    # #1634: a headless session's reply is not recorded either. The flush
+    # below still runs: it folds turns other sessions already logged.
+    if not _skip_headless(payload):
+        line = _build_turn_line(
+            role="assistant", text=text, session_id=sid, ctx=_turn_context(),
+        )
+        _append_turn(line)
     # #1011: fold accumulated turns into beliefs without waiting for a
     # compaction. Fail-soft — a flush error must never break turn logging.
     _maybe_stop_flush(transcripts_dir())

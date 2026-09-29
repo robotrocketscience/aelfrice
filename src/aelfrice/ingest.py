@@ -571,9 +571,16 @@ def ingest_jsonl(
     Lines without role/text (compaction markers, file-history
     snapshots, tool-result entries, malformed), plus well-formed
     assistant-role lines excluded by the #785 speaker-attribution gate,
-    are counted under `skipped_lines` and ignored without raising.
+    are counted under `skipped_lines` and ignored without raising. So is
+    a session-log record from a headless host session (#1634) --
+    `entrypoint` of `sdk-cli`, `sdk-ts`, or `sdk-py` -- unless capture is
+    on (`AELFRICE_CAPTURE_PRINT_MODE`, or `[ingest] capture_print_mode`).
     """
     from aelfrice.inedible import is_inedible_path
+    from aelfrice.print_mode import (
+        is_print_mode_capture_enabled,
+        is_print_mode_record,
+    )
 
     path = Path(jsonl_path)
     lines_read = 0
@@ -583,6 +590,7 @@ def ingest_jsonl(
     skipped = 0
     last_per_session: dict[str, tuple[str, str]] = {}
     # session_id -> (last_belief_id_inserted, last_turn_text)
+    capture_print_mode: bool | None = None
 
     if not path.is_file():
         return IngestJsonlResult(0, 0, 0, 0, 0)
@@ -608,6 +616,15 @@ def ingest_jsonl(
                 skipped += 1
                 continue
             obj_typed = cast(dict[str, object], obj)
+            # #1634: a record from a headless (print-mode) host session is
+            # a scripted prompt, not a user's; skipped unless capture is
+            # configured. Resolved once, on the first such record.
+            if is_print_mode_record(obj_typed):
+                if capture_print_mode is None:
+                    capture_print_mode = is_print_mode_capture_enabled()
+                if not capture_print_mode:
+                    skipped += 1
+                    continue
             normalized = _normalize_jsonl_turn(obj_typed)
             if normalized is None:
                 # compaction markers, file-history snapshots, tool

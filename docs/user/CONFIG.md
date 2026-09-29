@@ -303,6 +303,12 @@ temporal_spine_budget = 32
 # is byte-identical. AELFRICE_TEMPORAL_SPINE_WRITE env var overrides.
 write_temporal_spine = true
 
+# #1634. Default `false`: a headless host session (entrypoint sdk-cli,
+# sdk-ts or sdk-py) is not captured, because its prompt is scripted rather
+# than typed by a user. Set to true if you drive aelfrice through the
+# host's SDK on purpose. AELFRICE_CAPTURE_PRINT_MODE env var overrides.
+capture_print_mode = false
+
 [relationship_detector]
 # #988 / #1299. Deterministic contradiction detector. `auto_detect` is
 # default-OFF: when false, ingest writes no CONTRADICTS edges and the
@@ -931,6 +937,37 @@ an existing store that predates the writer, `aelf spine backfill` builds
 the chains; it is idempotent and supports `--dry-run`. `aelf doctor`
 reports whether the spine is present, along with the edge count. The
 `AELFRICE_TEMPORAL_SPINE_WRITE` environment variable overrides this key.
+
+### `capture_print_mode`
+
+Default `false` (#1634). aelfrice does not capture a headless host session:
+one started with `claude -p`, or by an app built on the Agent SDK. Its
+prompts are scripted, often by an evaluation harness that runs the same
+prompt in many sessions, so storing them as user text would count one
+scripted run as many independent sessions of corroboration.
+
+aelfrice recognizes a headless session by the entrypoint the host records
+for it. The headless entrypoints are `sdk-cli`, `sdk-ts`, and `sdk-py`.
+Interactive entrypoints, such as `cli`, `claude-vscode`, `remote`, and
+`claude-desktop`, are captured as before.
+
+- `ingest_jsonl` (and so `aelf ingest-transcript`) skips a session-log
+  record whose `entrypoint` is headless, and counts it as a skipped line.
+  A log from a host that writes no `entrypoint` is ingested as before.
+- The transcript logger records no prompt when the hook's
+  `CLAUDE_CODE_ENTRYPOINT` is headless. The logger does not use
+  `CLAUDE_CODE_SESSION_ATTENDED`, because the host also sets it to `0` for
+  background, daemon, and teammate sessions.
+
+This covers those two capture paths only. The memory-mirror hook and the
+commit-ingest hook do not check the entrypoint.
+
+If you drive aelfrice through the host's SDK on purpose, set this key to
+`true`, or set `AELFRICE_CAPTURE_PRINT_MODE=1`. The environment variable
+overrides this key. The transcript logger reads this key from the
+session's working directory. If the logger cannot resolve the setting,
+for example because of an import error, it records the prompt rather than
+dropping it.
 
 ## `[relationship_detector]` (v4.x+)
 
