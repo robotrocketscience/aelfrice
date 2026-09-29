@@ -35,7 +35,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 _LOCK_RE = re.compile(r'<belief id="([0-9A-Za-z]+)" lock="user"')
@@ -51,7 +51,9 @@ def _default_root() -> Path:
 
 
 def _parse_ts(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    """Parse an ISO 8601 timestamp; one with no offset is read as UTC."""
+    parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def census(root: Path, since: datetime | None = None) -> dict[str, object]:

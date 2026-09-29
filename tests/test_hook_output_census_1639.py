@@ -70,6 +70,8 @@ def test_census_counts_inline_saved_and_lost_locks(
     }
     since = census_mod.census(root, census_mod._parse_ts("2026-09-01T00:00:00Z"))
     assert since["inline"] == 1
+    # A date with no offset is read as UTC, not compared naive-vs-aware.
+    assert census_mod.census(root, census_mod._parse_ts("2026-09-01")) == since
 
 
 @pytest.mark.timeout(30)
