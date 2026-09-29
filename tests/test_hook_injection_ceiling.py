@@ -552,7 +552,7 @@ def test_write_memory_block_notes_an_unavoidable_overrun(
     assert out.dropped_ids == ()
     err = serr.getvalue()
     assert "still over the 6000-token ceiling" in err
-    assert "never happens (#379)" in err
+    assert "the token ceiling never does (#379)" in err
     # The note names the remedy again. It was withdrawn while the `<locked>`
     # loop of `_build_session_start_subblock` rendered a reference lock
     # verbatim, because on a session's first prompt — the fire a lock-only
@@ -764,6 +764,9 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
     new `sout.write` of a memory block either goes through
     `_write_memory_block` or does not get a ceiling — and the reviewer of
     that change is looking at this assertion.
+
+    The function's call to itself (#1639, pricing the frame a lock must
+    fit beside) is not an emit site, so it is not counted.
     """
     src = Path(hook_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
@@ -776,6 +779,7 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "enforce_block_ceiling"
+                and func.name != "enforce_block_ceiling"
             ):
                 callers.append(func.name)
     assert callers == ["_write_memory_block"], callers

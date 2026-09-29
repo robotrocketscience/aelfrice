@@ -284,11 +284,16 @@ def evaluate_promotion_opportunities(
     session_id: str | None,
     config: PhantomPromotionConfig | None = None,
     stderr: IO[str] | None = None,
+    room_chars: int | None = None,
 ) -> list[PromotionOpportunity]:
     """Detect this session's phantom promotion opportunities, apply the
     per-session budget + dedup, record the fires, and return the ones to
     surface (possibly empty). Pure-deterministic; never raises (fail-soft via
     session_ring).
+
+    With `room_chars`, stops at the first opportunity whose note would no
+    longer fit in that many characters (#1639). Only what is returned is
+    recorded as fired, so an opportunity that did not fit is still owed.
 
     Candidates are drawn in ``created_at`` order so the oldest qualifying
     phantom is surfaced first when the budget is tight.
@@ -321,6 +326,10 @@ def evaluate_promotion_opportunities(
             break
         if opp.dedup_key in seen:
             continue
+        if room_chars is not None and len(
+            format_promotion_note([*fired, opp])
+        ) > room_chars:
+            break
         seen.add(opp.dedup_key)
         fired.append(opp)
 

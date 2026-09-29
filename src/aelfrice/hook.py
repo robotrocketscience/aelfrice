@@ -373,7 +373,10 @@ one line per opportunity, and what bounds it is `max_fires_per_session`
 the entries a session can emit at all — together with `_TOPIC_MAX`, which
 truncates the topic on each line. Those are an entry count and a
 character length; neither is a token budget, and nothing compares either
-note against one.
+note against one. Since #1639 both notes are also fitted, by whole
+entry, to what `HOOK_PAYLOAD_CHAR_LIMIT` leaves after
+`CADENCE_ENVELOPE_RESERVE_CHARS`: a character bound on the fire, not a
+token budget on the note.
 
 A fifth (#1626) carries no token bound either: the note written when the
 hook executes a typed `/aelf:` command on the user's behalf. It is one
@@ -437,13 +440,13 @@ scripts/measure_block_ceiling.py --cadence`.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
 
-With the payload bound in force, the same fire writes 9176 characters
+With the payload bound in force, the same fire writes 9370 characters
 where it wrote 47703, and a 300-lock store writes 9172 where it wrote
 106565: 21 locks shown whole and 279 named in the overflow line.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
 --payload`; `test_hook_inline_limit_1639.py` asserts the bound against
 captured stdout.
-<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_bounded = 9176 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_bounded = 9370 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_lifted = 47703 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_bounded = 9172 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_lifted = 106565 -->
@@ -1188,10 +1191,27 @@ def enforce_block_ceiling(
     lock_renders: list[tuple[int, int, str, int]] = []
     if precut_chars is not None:
         lock_renders = _lock_renders(body, elements, recap, pointers)
+        # "Fits alone" means beside what cannot be shed: the frame left
+        # once every droppable element is gone and no lock is rendered.
+        # Pricing the lock by itself let one that fits only without its
+        # frame escape this cut, shed every hit, and be cut anyway. When
+        # some lock must be cut whatever happens -- an earlier pass cut
+        # one, or the locks together overflow -- the line naming them is
+        # owed too, priced at its longest; when none must be, it is not.
+        frame = len(enforce_block_ceiling(body, 1).body) - sum(
+            r[3] for r in lock_renders
+        )
+        line_owed = bool(prior_omitted) or (
+            frame + sum(r[3] for r in lock_renders) > precut_chars
+        )
+        line_cap = len(lock_overflow_line(sorted(
+            [*prior_omitted, *(r[2] for r in lock_renders)],
+            key=len, reverse=True,
+        ))) if line_owed else 0
         keep_renders: list[tuple[int, int, str, int]] = []
         for render in lock_renders:
             start, end, bid, cost = render
-            if cost > precut_chars:
+            if frame + line_cap + cost > precut_chars:
                 cut.append((start, end))
                 remaining -= end - start
                 omitted.append((start, bid))
@@ -1450,8 +1470,8 @@ def _write_memory_block(
         stderr.write(
             f"aelfrice hook: block still over the {limit}-token ceiling at "
             f"{_audit_tokens_from_block(outcome.body)} tokens; it could not "
-            "be trimmed further without dropping a user lock, which never "
-            "happens (#379). Move long-form locks to `aelf lock "
+            "be trimmed further without dropping a user lock, which the "
+            "token ceiling never does (#379). Move long-form locks to `aelf lock "
             "--reference`, which bounds them on every write this hook "
             "makes.\n"
         )
@@ -3193,21 +3213,32 @@ def user_prompt_submit(
         # #1639: the phantom notes are written after the envelope but priced
         # before it, so the envelope's room is known when it is trimmed.
         # Both depend only on the hit count and store state, not on what
-        # the envelope emits. Skipped on gate_skip turns, as before.
+        # the envelope emits. Skipped on gate_skip turns, as before. They
+        # share what the payload bound leaves after the envelope's reserve,
+        # so neither can eat that reserve; an opportunity that does not fit
+        # is not recorded as fired, and surfaces on a later turn.
         phantom_block = ""
         promotion_block = ""
         if not gate_skip:
+            notes_room = max(
+                0,
+                HOOK_PAYLOAD_CHAR_LIMIT
+                - payload_used
+                - CADENCE_ENVELOPE_RESERVE_CHARS,
+            )
             phantom_block = _maybe_phantom_opportunity_block(
                 prompt=prompt,
                 session_id=session_id,
                 hit_count=len(hits),
                 cwd=payload_cwd,
                 stderr=serr,
+                room_chars=notes_room,
             ) or ""
             promotion_block = _maybe_phantom_promotion_block(
                 session_id=session_id,
                 cwd=payload_cwd,
                 stderr=serr,
+                room_chars=notes_room - len(phantom_block),
             ) or ""
         envelope_room = (
             HOOK_PAYLOAD_CHAR_LIMIT
@@ -3783,6 +3814,7 @@ def _maybe_phantom_opportunity_block(
     hit_count: int,
     cwd: Path | None = None,
     stderr: IO[str] | None = None,
+    room_chars: int | None = None,
 ) -> str:
     """Evaluate the #980 phantom-generation triggers and return the
     ``<aelfrice-phantom-opportunity>`` block, or ``""`` when the feature is
@@ -3818,6 +3850,7 @@ def _maybe_phantom_opportunity_block(
                 hit_count=hit_count,
                 config=config,
                 stderr=serr,
+                room_chars=room_chars,
             )
         finally:
             store.close()
@@ -3837,6 +3870,7 @@ def _maybe_phantom_promotion_block(
     session_id: str | None,
     cwd: Path | None = None,
     stderr: IO[str] | None = None,
+    room_chars: int | None = None,
 ) -> str:
     """Evaluate the #1132 Q2 phantom promotion-opportunity trigger and return
     the ``<aelfrice-phantom-promotion-opportunity>`` block, or ``""`` when the
@@ -3870,6 +3904,7 @@ def _maybe_phantom_promotion_block(
                 session_id=session_id,
                 config=config,
                 stderr=serr,
+                room_chars=room_chars,
             )
         finally:
             store.close()

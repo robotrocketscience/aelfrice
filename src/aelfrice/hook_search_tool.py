@@ -1031,8 +1031,10 @@ def _do_search(
     # Write telemetry for the Bash branch only (AC3 prerequisite).
     if bash_source is not None and t0 is not None:
         latency_ms = (time.perf_counter() - t0) * 1000.0
-        n_l0 = sum(1 for b in beliefs if getattr(b, "id", "") in locked_ids)
-        n_l1 = len(beliefs) - n_l0
+        # #1639: what the block showed, not what retrieval returned; a line
+        # cut to fit the host's limit was not injected.
+        n_l0 = sum(1 for bid in shown_ids if bid in locked_ids)
+        n_l1 = len(shown_ids) - n_l0
         tel_path = _telemetry_path_for_db(p)
         _append_telemetry(
             tel_path,

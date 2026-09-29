@@ -317,11 +317,16 @@ def evaluate_opportunities(
     hit_count: int,
     config: PhantomGenerationConfig | None = None,
     stderr: IO[str] | None = None,
+    room_chars: int | None = None,
 ) -> list[PhantomOpportunity]:
     """Detect this turn's phantom-generation opportunities, apply the
     per-session budget and dedup, record the fires, and refresh the
     CONTRADICTS snapshot. Returns the opportunities to surface (possibly
     empty). Pure-deterministic; never raises (fail-soft via session_ring).
+
+    With `room_chars`, stops at the first opportunity whose note would no
+    longer fit in that many characters (#1639). Only what is returned is
+    recorded as fired, so an opportunity that did not fit is still owed.
 
     Order of precedence among candidates when the budget is tight: gap →
     new-entity → contradiction (gap is the cheapest and most directly the
@@ -363,6 +368,10 @@ def evaluate_opportunities(
             break
         if opp.dedup_key in seen:
             continue
+        if room_chars is not None and len(format_opportunity_note(
+            [*fired, opp], auto_dispatch=cfg.auto_dispatch,
+        )) > room_chars:
+            break
         seen.add(opp.dedup_key)
         fired.append(opp)
 
