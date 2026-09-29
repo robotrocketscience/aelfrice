@@ -626,6 +626,23 @@ _AMBIENT_LAYOUT_ENV_VARS: tuple[str, ...] = (
 )
 
 
+# #1634: the transcript logger skips a turn when the host's entrypoint is
+# headless, so a suite run from `claude -p` or an Agent SDK app would drop
+# the turns the logger tests expect. Measured on the #1634 branch before
+# this: `CLAUDE_CODE_ENTRYPOINT=sdk-cli` failed 36 tests in four logger
+# modules that pass with it unset. A test that wants a headless host sets
+# the variable with its own function-scoped monkeypatch.
+@pytest.fixture(scope="session", autouse=True)
+def _clear_ambient_host_entrypoint() -> Iterator[None]:
+    """Unset the host's entrypoint for the whole suite (#1634)."""
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+        yield
+    finally:
+        mp.undo()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _clear_ambient_layout_env() -> Iterator[None]:
     """Unset uv/XDG layout variables for the whole suite (#1431)."""
