@@ -304,7 +304,7 @@ temporal_spine_budget = 32
 write_temporal_spine = true
 
 # #1634. Default `false`: a headless host session (entrypoint sdk-cli,
-# sdk-ts or sdk-py) is not captured, because its prompt is scripted rather
+# sdk-ts, or sdk-py) is not captured, because its prompt is scripted rather
 # than typed by a user. Set to true if you drive aelfrice through the
 # host's SDK on purpose. AELFRICE_CAPTURE_PRINT_MODE env var overrides.
 capture_print_mode = false
@@ -954,10 +954,20 @@ Interactive entrypoints, such as `cli`, `claude-vscode`, `remote`, and
 - `ingest_jsonl` (and so `aelf ingest-transcript`) skips a session-log
   record whose `entrypoint` is headless, and counts it as a skipped line.
   A log from a host that writes no `entrypoint` is ingested as before.
-- The transcript logger records no prompt when the hook's
-  `CLAUDE_CODE_ENTRYPOINT` is headless. The logger does not use
+- The transcript logger records neither the prompt nor the reply when the
+  hook's `CLAUDE_CODE_ENTRYPOINT` is headless. The logger does not use
   `CLAUDE_CODE_SESSION_ATTENDED`, because the host also sets it to `0` for
   background, daemon, and teammate sessions.
+
+The entrypoint is the host's label. A process started inside a host
+session can inherit that session's label. On a non-interactive start
+(`-p` or `--print`, for example, or output that is not a terminal), the
+host turns an inherited `cli` into `sdk-cli`, but keeps an IDE, desktop,
+or `sdk-*` label. So `claude -p` run from a terminal session is skipped,
+but `claude -p` run inside an IDE or desktop session can keep that
+session's label and be captured. An interactive session started from an SDK process can keep
+`sdk-*` and be skipped. If your setup does either, set the override that
+matches what you want.
 
 This covers those two capture paths only. The memory-mirror hook and the
 commit-ingest hook do not check the entrypoint.
@@ -965,9 +975,12 @@ commit-ingest hook do not check the entrypoint.
 If you drive aelfrice through the host's SDK on purpose, set this key to
 `true`, or set `AELFRICE_CAPTURE_PRINT_MODE=1`. The environment variable
 overrides this key. The transcript logger reads this key from the
-session's working directory. If the logger cannot resolve the setting,
-for example because of an import error, it records the prompt rather than
-dropping it.
+session's working directory; `aelf ingest-transcript` reads it from the
+directory you run the command in. A value that is not `true` or `false`,
+or an `.aelfrice.toml` that does not parse, reads as the default, so a
+headless session is skipped. Bytes that are not valid UTF-8 are replaced
+before the file is parsed. Only an unexpected error, such as a failed import, makes the
+logger record the turn instead.
 
 ## `[relationship_detector]` (v4.x+)
 
