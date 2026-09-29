@@ -123,7 +123,7 @@ class DerivationInput:
     raw_text: str
     source_kind: str        # one of INGEST_SOURCE_KINDS
     source_path: str | None = None
-    raw_meta: dict | None = None  # type: ignore[type-arg]
+    raw_meta: dict[str, object] | None = None
     session_id: str | None = None
     ts: str = ""            # ISO-8601; empty string -> utc-now
     classifier_version: str | None = None

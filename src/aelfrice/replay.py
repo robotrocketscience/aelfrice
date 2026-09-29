@@ -443,7 +443,9 @@ def replay_full_equality(
                 ov = meta_obj.get(_META_OVERRIDE_BELIEF_TYPE)
                 if isinstance(ov, str) and ov:
                     override_belief_type = ov
-        meta_dict = meta_obj if isinstance(meta_obj, dict) else None
+        meta_dict: dict[str, object] | None = (
+            meta_obj if isinstance(meta_obj, dict) else None
+        )
         route_overrides = _route_overrides_from_raw_meta(meta_dict)
         inp = DerivationInput(
             raw_text=raw_text,
