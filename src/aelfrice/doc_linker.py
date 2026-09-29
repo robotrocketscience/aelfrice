@@ -44,6 +44,7 @@ __all__ = (
     "file_uri_from_path",
     "get_doc_anchors",
     "link_belief_to_document",
+    "turn_position_hint",
 )
 
 
@@ -77,6 +78,21 @@ def file_uri_from_path(
     if position_hint:
         uri = f"{uri}#{position_hint}"
     return uri
+
+
+def turn_position_hint(session_id: str, ts: str, turn_sha: str) -> str:
+    """Name one transcript turn as ``<session_id>/<ts>/<turn_sha>`` (#1602).
+
+    Used as the ``position_hint`` of a transcript belief's anchor, so the
+    URI keeps its source-label prefix and gains the turn as a fragment:
+    ``file:transcript#<session_id>/<ts>/<turn_sha>``. ``turn_sha`` is the
+    hash of the whole turn, so a later reader holding the transcript can
+    tell whether that turn still says what it said at ingest.
+
+    Every part comes from the ingest row, so the hint is a pure function
+    of it and a re-derive of the row writes the same anchor (AC4, AC5).
+    """
+    return f"{session_id}/{ts}/{turn_sha}"
 
 
 def link_belief_to_document(

@@ -72,6 +72,15 @@ META_DERIVED_FROM: Final[str] = "derived_from"
 _DF_PRIOR_TEXT: Final[str] = "prior_text"
 _DF_ANCHOR_TEXT: Final[str] = "anchor_text"
 
+# #1602: the sha256 of the whole user turn a transcript row came from,
+# truncated to TURN_SHA_LEN hex characters. The worker, not `derive()`,
+# reads it to write a per-turn document anchor, so it rides in `raw_meta`
+# for the same reason as META_DERIVED_FROM: the worker sees one sentence,
+# and only the ingest entry point sees the turn. `derive()` never reads
+# it, which keeps replay equality independent of it.
+META_TURN_SHA: Final[str] = "turn_sha"
+TURN_SHA_LEN: Final[int] = 16
+
 
 # ---------------------------------------------------------------------------
 # Input / output dataclasses

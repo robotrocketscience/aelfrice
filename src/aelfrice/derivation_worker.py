@@ -46,11 +46,16 @@ from typing import Final
 
 from aelfrice.derivation import (
     DerivationInput,
+    META_TURN_SHA,
     DerivationOutput,
     RouteOverrides,
     derive,
 )
-from aelfrice.doc_linker import ANCHOR_INGEST, file_uri_from_path
+from aelfrice.doc_linker import (
+    ANCHOR_INGEST,
+    file_uri_from_path,
+    turn_position_hint,
+)
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
     CORROBORATION_SOURCE_CLI_REMEMBER,
@@ -208,6 +213,20 @@ def _route_overrides_from_raw_meta(
             else None
         ),
     )
+
+
+def _turn_position_hint(inp: DerivationInput) -> str | None:
+    """The #1602 turn fragment for this row, or None when it lacks one.
+
+    None for every row written before #1602 and for any turn ingested
+    without both a session id and its own timestamp, which then keeps
+    the label-only anchor.
+    """
+    turn_sha = inp.raw_meta.get(META_TURN_SHA) if inp.raw_meta else None
+    if not (isinstance(turn_sha, str) and turn_sha
+            and inp.session_id and inp.ts):
+        return None
+    return turn_position_hint(inp.session_id, inp.ts, turn_sha)
 
 
 def _derivation_input_from_row(row: dict[str, object]) -> DerivationInput:
@@ -392,12 +411,21 @@ def _write_derived_row(
     # doc_uri) at the storage layer, so re-derive of the same row is a
     # no-op. Skip when source_path is None (transcript-ingest, lock /
     # remember without --doc, etc.) per spec § "Linker invocation point".
+    #
+    # #1602: a transcript row that carries its turn's fingerprint anchors
+    # to that turn, not to the bare source label -- which is one of a few
+    # constants and so names no part of any transcript. The label stays
+    # the URI's prefix; the turn is the fragment. A belief corroborated
+    # in N turns gets N anchors, one per turn that asserted it.
     if inp.source_path:
+        position_hint = _turn_position_hint(inp)
         store.link_belief_to_document(
             belief_id=actual_id,
-            doc_uri=file_uri_from_path(inp.source_path),
+            doc_uri=file_uri_from_path(
+                inp.source_path, position_hint=position_hint,
+            ),
             anchor_type=ANCHOR_INGEST,
-            position_hint=None,
+            position_hint=position_hint,
         )
 
     store.update_ingest_derived_ids(

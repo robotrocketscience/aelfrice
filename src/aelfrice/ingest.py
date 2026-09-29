@@ -16,6 +16,7 @@ structure is recoverable downstream by the v1.4.0 context rebuilder.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, cast
 
-from aelfrice.derivation import META_DERIVED_FROM
+from aelfrice.derivation import META_DERIVED_FROM, META_TURN_SHA, TURN_SHA_LEN
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
 from aelfrice.noise_filter import is_transcript_noise
@@ -295,6 +296,15 @@ def _ingest_turn(
     }
     if role is not None:
         raw_meta["role"] = role
+    # #1602: fingerprint the whole turn so the worker can anchor each
+    # sentence to the turn it came from rather than to the source label.
+    # Only when the caller supplied both halves of the turn's identity: a
+    # `ts` minted from the clock above would give a re-ingest of the same
+    # turn a different anchor, which AC4/AC5 rule out.
+    if session_id and created_at:
+        raw_meta[META_TURN_SHA] = hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest()[:TURN_SHA_LEN]
 
     # #1135: one write group per turn. Pre-batching this was ~8
     # commits per 2-sentence turn (record_ingest per sentence, the
