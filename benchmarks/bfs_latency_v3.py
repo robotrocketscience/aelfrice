@@ -208,15 +208,15 @@ def seed_corpus(
             src = _belief_id(t, i)
             for hop in (1, 2):
                 dst = _belief_id(t, (i + hop) % per_topic)
-                store.insert_edge(
+                if store.insert_edge(
                     Edge(
                         src=src, dst=dst, type=EDGE_SUPPORTS,
                         weight=1.0, anchor_text=_anchor_for(t, i),
                     )
-                )
-                edge_count += 1
+                ):
+                    edge_count += 1
         # cross-topic CITES from topic_t's b00 to topic_(t+7)'s b00.
-        store.insert_edge(
+        if store.insert_edge(
             Edge(
                 src=_belief_id(t, 0),
                 dst=_belief_id((t + 7) % topics, 0),
@@ -224,8 +224,8 @@ def seed_corpus(
                 weight=0.5,
                 anchor_text=f"topic_{t:03d}_entity_0",
             )
-        )
-        edge_count += 1
+        ):
+            edge_count += 1
 
     return CorpusSpec(beliefs=inserted, edges=edge_count, topics=topics)
 

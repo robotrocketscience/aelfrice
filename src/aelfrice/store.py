@@ -6724,8 +6724,12 @@ class MemoryStore:
 
     # --- Edge CRUD --------------------------------------------------------
 
-    def insert_edge(self, e: Edge) -> None:
+    def insert_edge(self, e: Edge) -> bool:
         """Write one edge, after gating both endpoints on ownership.
+
+        A self-loop is refused before the gate (see below), so a peer-owned
+        `src == dst` returns False rather than raising `ForeignBeliefError`;
+        nothing is written either way.
 
         Every other mutation entry point already calls
         `assert_local_ownership` — `apply_feedback`, `lock`, `unlock`,
@@ -6745,7 +6749,22 @@ class MemoryStore:
         both endpoints in one store before emitting. `assert_local_ownership`
         is additionally a no-op for an id that is local *or absent*, so
         edges naming ids this store has never seen are unaffected.
+
+        **An edge from a belief to itself is not written (#1636).** It is
+        not a relationship: BFS and propagation drop it, but it counts in
+        edge statistics and reads as provenance. Some writers check for one
+        themselves and others cannot produce one by the shape of their
+        data; the ingest inter-turn writer,
+        `contradiction.resolve_contradiction`, `migrate`, and the
+        `bfs_latency_v3` benchmark corpus did neither. The check here
+        covers them and any writer added later. Skipped, not raised,
+        because hooks call this.
+
+        Returns True when the edge was written and False when it was
+        skipped, so a caller that counts writes counts only real ones.
         """
+        if e.src == e.dst:
+            return False
         self.assert_local_ownership(e.src)
         self.assert_local_ownership(e.dst)
         self._conn.execute(
@@ -6755,6 +6774,7 @@ class MemoryStore:
         )
         self._bump_edge_version(e.src, e.dst, e.type)
         self._commit_mutation()
+        return True
 
     def get_edge(self, src: str, dst: str, type_: str) -> Edge | None:
         cur = self._conn.execute(

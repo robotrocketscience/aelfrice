@@ -377,15 +377,19 @@ def test_an_intra_group_edge_does_not_become_a_self_loop(
 def test_a_preexisting_self_loop_on_the_canonical_row_is_kept(
     tmp_path: Path,
 ) -> None:
-    """The self-loop guard must not reach edges the migration didn't make."""
+    """The self-loop guard must not reach edges the migration didn't make.
+
+    Seeded by raw SQL: since #1636 `insert_edge` refuses a self-loop, so
+    one on disk can only be a row an older version wrote -- which is what
+    this migration meets on a legacy store.
+    """
     db = tmp_path / "keep_selfloop.db"
-    _make_legacy_store(
-        db,
-        seed=lambda st: st.insert_edge(
-            Edge(src=CANON, dst=CANON, type="SUPPORTS", weight=0.8)
-        ),
-        raw=lambda conn, dupes: _raw_edge(conn, dupes[0], OTHER),
-    )
+
+    def raw(conn: sqlite3.Connection, dupes: list[str]) -> None:
+        _raw_edge(conn, CANON, CANON, weight=0.8)
+        _raw_edge(conn, dupes[0], OTHER)
+
+    _make_legacy_store(db, raw=raw)
     store = MemoryStore(str(db))
     assert (CANON, CANON, "SUPPORTS") in _edges(store)
     store.close()

@@ -266,16 +266,14 @@ def resolve_contradiction(
     existing = store.get_edge(
         winner.id, loser.id, EDGE_SUPERSEDES,
     )
-    if existing is None:
-        store.insert_edge(Edge(
-            src=winner.id,
-            dst=loser.id,
-            type=EDGE_SUPERSEDES,
-            weight=SUPERSEDES_WEIGHT,
-        ))
-        supersedes_created = True
-    else:
-        supersedes_created = False
+    # `insert_edge` refuses a self-loop (#1636), so "created" is what it
+    # reports, not an assumption: a belief paired with itself gets no edge.
+    supersedes_created = existing is None and store.insert_edge(Edge(
+        src=winner.id,
+        dst=loser.id,
+        type=EDGE_SUPERSEDES,
+        weight=SUPERSEDES_WEIGHT,
+    ))
 
     timestamp = now if now is not None else _utc_now_iso()
     audit_id = store.insert_feedback_event(
@@ -316,6 +314,12 @@ def find_unresolved_contradictions(
     ).fetchall()
     for row in rows:
         a, b = row["src"], row["dst"]
+        # #1636: a belief does not contradict itself. A legacy CONTRADICTS
+        # self-loop can never be resolved -- `insert_edge` refuses the
+        # SUPERSEDES self-loop that would settle it -- so listing it would
+        # re-resolve it, and write an audit row, on every run forever.
+        if a == b:
+            continue
         # Canonicalise pair (lower id first) so A→B and B→A dedupe.
         if a < b:
             pairs.add((a, b))

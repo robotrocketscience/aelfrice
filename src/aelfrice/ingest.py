@@ -649,6 +649,11 @@ def ingest_jsonl(
             if head_id is None or sess_str is None:
                 continue
             prior = last_per_session.get(sess_str)
+            # #1636: a turn that repeats the one before it resolves to the
+            # same head. `insert_edge` refuses the resulting self-loop and
+            # reports it did, so it is not counted; the pointer still
+            # advances below, so the next turn links to this one and its
+            # anchor carries this turn's text.
             if prior is not None:
                 prior_id, prior_text = prior
                 anchor = prior_text[:ANCHOR_TEXT_MAX_LEN]
@@ -657,8 +662,8 @@ def ingest_jsonl(
                     weight=1.0, anchor_text=anchor,
                 )
                 if store.get_edge(edge.src, edge.dst, edge.type) is None:
-                    store.insert_edge(edge)
-                    edges_inserted += 1
+                    if store.insert_edge(edge):
+                        edges_inserted += 1
             last_per_session[sess_str] = (head_id, cast(str, text))
 
     return IngestJsonlResult(

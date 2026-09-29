@@ -250,8 +250,8 @@ def migrate(
                 if e.src in valid_endpoints and e.dst in valid_endpoints:
                     if target.get_edge(e.src, e.dst, e.type) is not None:
                         continue
-                    target.insert_edge(e)
-                    inserted_edges += 1
+                    if target.insert_edge(e):
+                        inserted_edges += 1
                 else:
                     skipped_orphan_edges += 1
         finally:

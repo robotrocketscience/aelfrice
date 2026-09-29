@@ -67,6 +67,24 @@ def test_seed_corpus_size_and_edge_count(tmp_path: Path):
         store.close()
 
 
+def test_seed_corpus_counts_only_edges_it_wrote(tmp_path: Path):
+    """#1636: on settings that produce self-loops, the count stays honest.
+
+    Two beliefs per topic and seven topics make the SUPPORTS ring link a
+    belief to itself and the `(t + 7) % topics` CITES edge point back at
+    its own topic; `insert_edge` refuses those, and `CorpusSpec.edges`
+    must count what was written, not what was attempted.
+    """
+    store = MemoryStore(str(tmp_path / "loops.sqlite"))
+    try:
+        spec = seed_corpus(store, belief_count=14, topics=7)
+        written = len(list(store.iter_all_edges()))
+        assert spec.edges == written
+        assert all(e.src != e.dst for e in store.iter_all_edges())
+    finally:
+        store.close()
+
+
 def test_seed_corpus_rejects_non_multiple():
     with pytest.raises(ValueError):
         # 100 / 7 is not integer; seeder must reject.
