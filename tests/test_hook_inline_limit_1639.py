@@ -1294,9 +1294,10 @@ def test_the_lock_choice_keeps_a_lock_that_fits_exactly() -> None:
     from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
 
     groups = {"A1": [(0, 100)], "B2": [(200, 500)], "C3": [(600, 1_600)]}
-    line = len(lock_overflow_line(["A1", "B2", "C3"]))
+    line = len(lock_overflow_line(["C3"]))
     frame = 1_000
-    # B2 fills the room exactly beside the frame, the line, and A1.
+    # B2 fills the room exactly beside the frame, A1, and the line naming
+    # the one lock cut -- the line at its real length, not its longest.
     room = frame + line + 100 + 300
     assert _choose_locks_for_room(groups, set(), 0, frame, room) == ("C3",)
     assert _choose_locks_for_room(groups, set(), 0, frame, room - 1) == (
@@ -1309,7 +1310,7 @@ def test_the_first_recap_lock_kept_pays_for_the_recap() -> None:
     from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
 
     groups = {"R1": [(0, 100)], "R2": [(100, 200)], "L3": [(300, 700)]}
-    line = len(lock_overflow_line(["R1", "R2", "L3"]))
+    line = len(lock_overflow_line(["L3"]))
     frame, wrapper = 1_000, 80
     room = frame + line + wrapper + 200  # both recap locks, once wrapped
     assert _choose_locks_for_room(
@@ -1455,3 +1456,159 @@ def test_a_note_that_never_reached_stdout_records_nothing(
     assert "phantom" not in sout.getvalue()
     assert int(read_promotion_state("s-fail")["promotion_fires"]) == 0
     assert int(read_phantom_state("s-fail")["phantom_fires"]) == 0
+
+
+# --- review round 6 ---------------------------------------------------------
+
+@pytest.mark.timeout(120)
+def test_no_cut_lock_would_fit_in_what_the_block_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the line was priced at 20 ids when 6 were cut, so
+    hits and free room held two locks' worth. A cut lock now could not fit
+    even in the hits' room plus what is left."""
+    db = tmp_path / "turns.db"
+    _seed(db, n_locks=40, lock_chars=150, n_hits=600, hit_chars=60)
+    lock_re = re.compile(r'<belief id="L\d+" lock="user"[^>]*>.*?</belief>\n?', re.S)
+    hit_re = re.compile(r'<belief id="H\d+"[^>]*>.*?</belief>\n?', re.S)
+    for turn in range(3):
+        out, _ = _fire_ups(tmp_path, db, monkeypatch,
+                           prompt=f"{_PROMPT} turn {turn}", session_id="s-t")
+        assert len(out) <= _LIMIT
+        if "did not fit" not in out:
+            continue
+        one_lock = min(len(m) for m in lock_re.findall(out))
+        spare = _LIMIT - len(out) + sum(len(h) for h in hit_re.findall(out))
+        assert spare < one_lock, (turn, spare, one_lock)
+
+
+def test_a_recap_emptied_by_the_cut_goes_with_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: a recap whose every element was a copy of a cut
+    lock stayed as an empty wrapper."""
+    from aelfrice import hook
+
+    big = "q" * 3_000
+    recap = (
+        "<cadence-resume from='prev' policy='p1' ts='t'>\n"
+        '    <belief id="F1" locked="true">lockword short</belief>\n'
+        '    <belief id="F2" locked="true">lockword short</belief>\n'
+        "</cadence-resume>"
+    )
+    locked = (f'<belief id="F1" lock="user">{big}</belief>\n'
+              f'<belief id="F2" lock="user">{big}</belief>\n')
+    body = f"{hook.OPEN_TAG}\n{recap}\n\n{locked}{hook.CLOSE_TAG}\n"
+    out = _trim(body, 1_000, monkeypatch)
+    assert out.omitted_lock_ids == ("F1", "F2")  # type: ignore[attr-defined]
+    text = out.body  # type: ignore[attr-defined]
+    assert "<cadence-resume" not in text and len(text) <= 1_000
+
+
+def test_a_lock_the_fire_already_showed_is_not_named_as_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: on a cadence fire the checkpoint renders a lock
+    the envelope then named as "not shown"."""
+    from aelfrice import hook
+    from aelfrice.hook import _write_memory_block
+
+    big = "q" * 3_000
+    body = (f"{hook.OPEN_TAG}\n"
+            f'<belief id="F1" lock="user">{big}</belief>\n'
+            f'<belief id="F2" lock="user">{big}</belief>\n{hook.CLOSE_TAG}\n')
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    out = _write_memory_block(
+        body, stdout=io.StringIO(), stderr=io.StringIO(), room_chars=1_000,
+        shown_elsewhere=frozenset({"F1"}))
+    assert out.omitted_lock_ids == ("F2",)
+    assert "F2" in out.body and "F1" not in out.body
+    assert len(out.body) <= 1_000
+
+
+@pytest.mark.timeout(120)
+def test_the_checkpoint_ids_reach_the_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook
+
+    seen: list[frozenset[str]] = []
+    real = hook._write_memory_block  # pyright: ignore[reportPrivateUsage]
+
+    def _spy(body: str, **kw: object) -> object:
+        seen.append(kw["shown_elsewhere"])  # type: ignore[arg-type]
+        return real(body, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook, "_write_memory_block", _spy)
+    out, _ = _cadence_fire(tmp_path, monkeypatch)
+    ck = out[:out.index("</cadence-checkpoint>")]
+    ids = frozenset(re.findall(r'<belief id="([^"]+)"', ck))
+    assert ids and seen == [ids]
+
+
+class _FailOnNote(io.StringIO):
+    def write(self, s: str) -> int:
+        if "phantom" in s:
+            raise RuntimeError("note write failed")
+        return super().write(s)
+
+
+@pytest.mark.timeout(60)
+def test_a_note_whose_write_failed_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record follows the note's own write, not only the envelope's."""
+    from aelfrice.session_ring import read_phantom_state, read_promotion_state
+
+    db = tmp_path / "notefail.db"
+    _seed(db, n_hits=3)
+    _add_promotable_phantoms(db, 3, "claim " + "x" * 60)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nenabled = true\n"
+        "[phantom_promotion]\nenabled = true\n", encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    serr = io.StringIO()
+    payload = json.dumps({
+        "session_id": "s-nf", "transcript_path": "/dev/null",
+        "cwd": str(tmp_path), "hook_event_name": "UserPromptSubmit",
+        "prompt": f"what is the QuetzalRouter {_WORD} plan",
+    })
+    user_prompt_submit(stdin=io.StringIO(payload), stdout=_FailOnNote(),
+                       stderr=serr)
+    assert "note write failed" in serr.getvalue()
+    assert int(read_promotion_state("s-nf")["promotion_fires"]) == 0
+    assert int(read_phantom_state("s-nf")["phantom_fires"]) == 0
+
+
+def test_a_seen_line_inside_a_belief_is_text_not_a_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A belief whose content holds a `seen` line for a cut lock keeps its
+    content whole: only a pointer outside every element goes with a lock."""
+    from aelfrice import hook
+
+    big = "q" * 3_000
+    note = '<belief id="N1" lock="user">see\n  seen F1: "lockword"\nend</belief>\n'
+    body = (f"{hook.OPEN_TAG}\n{note}"
+            f'<belief id="F1" lock="user">{big}</belief>\n{hook.CLOSE_TAG}\n')
+    out = _trim(body, 1_000, monkeypatch)
+    assert out.omitted_lock_ids == ("F1",)  # type: ignore[attr-defined]
+    assert note in out.body  # type: ignore[attr-defined]
+
+
+def test_a_recap_lock_that_fits_exactly_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frame leaves out a recap the cut would empty, so the recap is
+    charged once, to the lock that keeps it, and an exact fit holds."""
+    from aelfrice import hook
+    from aelfrice.hook import lock_overflow_line
+
+    recap = ("<cadence-resume from='p' policy='p1' ts='t'>\n"
+             f'<belief id="R2" lock="user">{"r" * 200}</belief>\n'
+             "</cadence-resume>")
+    big = f'<belief id="L3" lock="user">{"q" * 3_000}</belief>\n'
+    body = f"{hook.OPEN_TAG}\n{recap}\n\n{big}{hook.CLOSE_TAG}\n"
+    expected = body.replace(big, "").rstrip("\n") + lock_overflow_line(["L3"])
+    out = _trim(body, len(expected), monkeypatch)
+    assert out.body == expected  # type: ignore[attr-defined]

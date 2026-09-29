@@ -1074,12 +1074,15 @@ def _lock_groups(
 
 def _choose_locks_for_room(
     groups: dict[str, list[tuple[int, int]]], recap_ids: set[str],
-    wrapper: int, frame: int, room_chars: int,
+    wrapper: int, frame: int, room_chars: int, *,
+    frame_before_line: int | None = None,
 ) -> tuple[str, ...]:
     """The locks the payload room cannot hold, in render order (#1639).
 
     `frame` is what the block costs with every droppable element shed and
-    no lock rendered: what stays whatever is cut. When every lock fits
+    no lock rendered: what stays whatever is cut. `frame_before_line` is
+    the same less its trailing newlines, which the block drops before it
+    appends the line naming cut locks; it defaults to `frame`. When every lock fits
     beside it, none is cut and no line is owed. Otherwise the line that
     names the cut locks is owed, and it is priced at its longest before
     any lock is kept; then each lock, in render order, stays if it fits
@@ -1095,24 +1098,59 @@ def _choose_locks_for_room(
     total = frame + sum(cost.values()) + (wrapper if recap_ids else 0)
     if total <= room_chars:
         return ()
-    used = frame + len(lock_overflow_line(
-        sorted(groups, key=len, reverse=True)))
-    wrapper_paid = False
-    omitted: list[str] = []
-    for bid in groups:
-        extra = wrapper if bid in recap_ids and not wrapper_paid else 0
-        if used + cost[bid] + extra <= room_chars:
-            used += cost[bid] + extra
-            wrapper_paid = wrapper_paid or bid in recap_ids
-        else:
-            omitted.append(bid)
-    return tuple(omitted)
+
+    base = frame if frame_before_line is None else frame_before_line
+
+    def pick(line_chars: int) -> tuple[list[str], int]:
+        used = base + line_chars
+        wrapper_paid = False
+        cut: list[str] = []
+        for bid in groups:
+            extra = wrapper if bid in recap_ids and not wrapper_paid else 0
+            if used + cost[bid] + extra <= room_chars:
+                used += cost[bid] + extra
+                wrapper_paid = wrapper_paid or bid in recap_ids
+            else:
+                cut.append(bid)
+        return cut, used - line_chars
+
+    # Price the line up from its shortest: choose with a line of that
+    # length, and if the line the choice actually needs is longer, choose
+    # again priced at that. A longer line only cuts more, so the price only
+    # rises, and the first choice whose own line fits is the answer. The
+    # line at its longest -- every id, longest first -- always fits what
+    # it chose, so it ends the search if nothing shorter does.
+    longest = len(lock_overflow_line(sorted(groups, key=len, reverse=True)))
+    line_chars = len(lock_overflow_line([min(groups, key=len)]))
+    while line_chars < longest:
+        cut, kept = pick(line_chars)
+        needed = len(lock_overflow_line(cut))
+        if kept + needed <= room_chars:
+            return tuple(cut)
+        line_chars = max(needed, line_chars + 1)
+    return tuple(pick(longest)[0])
 
 
 def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
     for lo, hi in sorted(spans, reverse=True):
         body = body[:lo] + body[hi:]
     return body
+
+
+def _without_empty_recap(body: str) -> str:
+    """`body` less a `<cadence-resume>` recap that holds no belief.
+
+    Cutting locks can leave a recap whose every element was one of them.
+    The trim cannot shed it -- it schedules the recap by its elements --
+    and a wrapper recapping nothing is the fragment #1564 AC4 rules out.
+    """
+    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
+    if recap[0] < 0 or _BELIEF_ELEMENT_RE.search(body, recap[0], recap[1]):
+        return body
+    end = recap[1]
+    while end < len(body) and body[end] == "\n":
+        end += 1
+    return body[:recap[0]] + body[end:]
 
 
 def enforce_block_ceiling(
@@ -1331,6 +1369,7 @@ def enforce_block_ceiling(
 def _write_memory_block(
     body: str, *, stdout: IO[str], stderr: IO[str],
     room_chars: int = HOOK_PAYLOAD_CHAR_LIMIT,
+    shown_elsewhere: frozenset[str] = frozenset(),
 ) -> BlockCeilingOutcome:
     """Trim `body` to the ceiling, note what happened, and write it.
 
@@ -1446,12 +1485,18 @@ def _write_memory_block(
             return [sp for bid in ids
                     for sp in groups[bid] + copies.get(bid, [])]
 
-        frame = len(enforce_block_ceiling(
-            _splice_out(body, spans_of(list(groups))), 1,
-        ).body) if groups else 0
-        omitted = _choose_locks_for_room(
-            groups, recap_ids, wrapper, frame, room)
-        cut_body = _splice_out(body, spans_of(omitted))
+        frame_body = enforce_block_ceiling(_without_empty_recap(
+            _splice_out(body, spans_of(list(groups)))), 1,
+        ).body if groups else ""
+        cut = _choose_locks_for_room(
+            groups, recap_ids, wrapper, len(frame_body), room,
+            frame_before_line=len(frame_body.rstrip("\n")),
+        )
+        cut_body = _without_empty_recap(_splice_out(body, spans_of(cut)))
+        # A lock this fire's stdout already renders -- in the cadence
+        # checkpoint written before the envelope -- was shown, so it is
+        # not named as cut and keeps its exposure record.
+        omitted = tuple(b for b in cut if b not in shown_elsewhere)
         line = lock_overflow_line(list(omitted)) if omitted else ""
         # Then trim the droppable lanes once, to the tighter of the token
         # ceiling and the room the line leaves. The largest token count
@@ -3077,6 +3122,10 @@ def user_prompt_submit(
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
             payload_used += len(cadence_checkpoint_block) + 2
+        checkpoint_ids = frozenset(
+            m.group("id")
+            for m in _BELIEF_ELEMENT_RE.finditer(cadence_checkpoint_block)
+        )
         budget = (
             token_budget
             if token_budget is not None
@@ -3425,6 +3474,7 @@ def user_prompt_submit(
             # this branch cannot drift away from its two siblings.
             outcome = _write_memory_block(
                 body, stdout=sout, stderr=serr, room_chars=envelope_room,
+                shown_elsewhere=checkpoint_ids,
             )
             # Load-bearing, and the only consumer is `rendered_block=`
             # below: without it the audit row stores the PRE-trim block
@@ -3720,6 +3770,7 @@ def user_prompt_submit(
                 # test_gate_skip_audit_row_records_the_block_it_emitted
                 body = _write_memory_block(
                     body, stdout=sout, stderr=serr, room_chars=envelope_room,
+                    shown_elsewhere=checkpoint_ids,
                 ).body
             else:
                 body = ""
