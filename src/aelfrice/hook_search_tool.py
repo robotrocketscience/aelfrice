@@ -747,10 +747,13 @@ def _format_results(
     else:
         attrs = f'query="{_escape_attr(query)}"'
     lines: list[str] = []
+    line_ids: list[tuple[str, bool]] = []
     for b in beliefs:
         line = _belief_line(b, locked_ids)
         if line is not None:
             lines.append(line)
+            bid = str(getattr(b, "id", "") or "")
+            line_ids.append((bid, bid in locked_ids))
     if not lines:
         if suppressed_recent > 0:
             turn_attr = (
@@ -766,19 +769,45 @@ def _format_results(
             f"no matching beliefs in store; the tool result will fill the gap"
             f"</aelfrice-search>"
         )
-    body = "\n".join(lines)
     trailer = ""
     if suppressed_recent > 0:
         trailer = (
             f"\n({suppressed_recent} more matching belief(s) already in prompt "
             f"context from earlier this session)"
         )
-    return (
-        f'<aelfrice-search {attrs}>aelf search ran on this query before '
-        f"the tool fires; results:\n{body}{trailer}\n"
-        f"If this answers the question, you may skip the tool call. Otherwise "
-        f"use the tool to fill gaps.</aelfrice-search>"
-    )
+
+    def assemble(kept: list[str], omitted_locks: list[str]) -> str:
+        note = ""
+        if omitted_locks:
+            from aelfrice.hook import lock_overflow_line  # noqa: PLC0415
+
+            note = lock_overflow_line(omitted_locks).rstrip("\n")
+        return (
+            f'<aelfrice-search {attrs}>aelf search ran on this query before '
+            f"the tool fires; results:\n" + "\n".join(kept)
+            + f"{trailer}{note}\n"
+            f"If this answers the question, you may skip the tool call. "
+            f"Otherwise use the tool to fill gaps.</aelfrice-search>"
+        )
+
+    # #1639: the host inlines at most 10,000 characters of a hook's
+    # `additionalContext`, and user locks bypass this lane's token budget,
+    # so a store of many locks wrote 55,108. Cut whole lines from the tail
+    # -- retrieval orders L0 first, so L1 goes before any lock -- and name
+    # every lock that does not fit rather than dropping it silently.
+    from aelfrice.hook import HOOK_PAYLOAD_CHAR_LIMIT  # noqa: PLC0415
+
+    kept = list(lines)
+    kept_ids = list(line_ids)
+    omitted: list[str] = []
+    context = assemble(kept, omitted)
+    while kept and len(context) > HOOK_PAYLOAD_CHAR_LIMIT:
+        kept.pop()
+        bid, is_lock = kept_ids.pop()
+        if is_lock:
+            omitted.insert(0, bid)
+        context = assemble(kept, omitted)
+    return context
 
 
 def _emit(stdout: IO[str], context: str) -> None:

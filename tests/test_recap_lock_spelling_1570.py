@@ -611,7 +611,10 @@ def test_a_reference_locks_only_element_render_survives_a_shed_recap(
     FAIL -- no `tier="reference"` element in the payload and no
     `<cadence-resume>` wrapper. Restored: PASS.
     """
-    out, err = _fire(tmp_path, monkeypatch, name="ref")
+    # 16 frozen locks: few enough that every lock fits the #1639 payload
+    # room, so the `ref` line is not the lock the bound cuts from the tail.
+    # What this pins is the recap shed, not the payload cut.
+    out, err = _fire(tmp_path, monkeypatch, name="ref", n_frozen=16)
 
     # The trim is live. A fire the ceiling never acted on says nothing
     # about what the ceiling sheds.

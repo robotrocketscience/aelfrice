@@ -945,7 +945,7 @@ def _recap_shed(
     return [(recap[0], end)], ids
 
 
-def _lock_overflow_line(omitted: list[str]) -> str:
+def lock_overflow_line(omitted: list[str]) -> str:
     """The #1639 line that names user locks the payload bound cut."""
     named = omitted[:LOCK_POINTER_ID_CAP]
     more = len(omitted) - len(named)
@@ -1172,26 +1172,35 @@ def enforce_block_ceiling(
     # would be the silent loss this exists to prevent.
     omitted: list[str] = []
     if omit_locks and _tokens_from_chars(remaining) > limit:
-        locked = [
-            m for m in elements
+        # Both renders of a lock: a full `<belief lock="user">` element,
+        # and the one-line `ref <id>` manifest entry a reference-tier lock
+        # (#1016-B) gets instead. A bound that cut only the first would
+        # hold on a store of short locks and break on the tier the docs
+        # recommend for long ones.
+        renders: list[tuple[int, int, str]] = [
+            (m.start(), m.end(), m.group("id")) for m in elements
             if not (recap[0] <= m.start() < recap[1])
             and _element_is_locked(m.group("attrs"))
         ]
-        while locked and _tokens_from_chars(
-            remaining + len(_lock_overflow_line(omitted) if omitted else "")
+        for m in _REF_MANIFEST_RE.finditer(body):
+            end = m.end() + (1 if body[m.end():m.end() + 1] == "\n" else 0)
+            renders.append((m.start(), end, m.group("id")))
+        renders.sort()
+        while renders and _tokens_from_chars(
+            remaining + len(lock_overflow_line(omitted) if omitted else "")
         ) > limit:
-            m = locked.pop()
-            cut.append(m.span())
-            remaining -= m.end() - m.start()
-            omitted.insert(0, m.group("id"))
-            pointer = pointers.pop(m.group("id"), None)
+            start, end, bid = renders.pop()
+            cut.append((start, end))
+            remaining -= end - start
+            omitted.insert(0, bid)
+            pointer = pointers.pop(bid, None)
             if pointer is not None:
                 cut.append(pointer)
                 remaining -= pointer[1] - pointer[0]
     for start, end in sorted(cut, reverse=True):
         body = body[:start] + body[end:]
     if omitted:
-        body = body.rstrip("\n") + _lock_overflow_line(omitted)
+        body = body.rstrip("\n") + lock_overflow_line(omitted)
     return BlockCeilingOutcome(
         body, tuple(dropped), _audit_tokens_from_block(body) > limit,
         tuple(omitted),
@@ -1304,21 +1313,41 @@ def _write_memory_block(
     # exceed `room` characters. `AELFRICE_HOOK_BLOCK_CEILING=0` turns off
     # this ceiling and the envelope's share of the payload bound; an
     # operator who sets it accepts the host's truncation.
-    omit_locks = False
+    room_tokens: int | None = None
     if limit > 0:
         # The largest token count whose every body fits `room_chars`:
         # `_tokens_from_chars` is ceil(n / 4), so t tokens admits at most
         # 4t characters. Derived from the estimator, not a second copy.
-        room_tokens = max(0, room_chars) // 4
+        # Never 0: `enforce_block_ceiling` reads a limit of 0 as
+        # "disabled", so a fire whose other blocks left no room would emit
+        # the envelope untrimmed -- the opposite of the intent.
+        room_tokens = max(1, max(0, room_chars) // 4)
         assert _tokens_from_chars(4 * room_tokens) == room_tokens
-        if room_tokens < limit:
-            # Never 0: `enforce_block_ceiling` reads a limit of 0 as
-            # "disabled", so a fire whose other blocks left no room would
-            # emit the envelope untrimmed -- the opposite of the intent.
-            # 1 sheds everything sheddable and names every lock instead.
-            limit = max(1, room_tokens)
-            omit_locks = True
-    outcome = enforce_block_ceiling(body, limit, omit_locks=omit_locks)
+    # Two passes, because the two bounds treat locks differently. The first
+    # trims the droppable lanes to the token ceiling and exempts every lock
+    # (#379), as the ceiling always has. The second runs only if the block
+    # still exceeds the payload room: it sheds whatever droppable content
+    # is left first, in the same order, and only then cuts whole locks and
+    # names them. A lock is never cut to meet the token ceiling alone.
+    passes: list[tuple[int, bool]] = [(limit, False)]
+    if room_tokens is not None:
+        passes.append((room_tokens, True))
+    outcome = BlockCeilingOutcome(body, (), False)
+    for pass_limit, omit_locks in passes:
+        # The second pass runs only when the first left the block over the
+        # room, and that is the only way a lock is ever cut. One call site,
+        # which `test_hook_injection_ceiling.py` pins.
+        if omit_locks and _tokens_from_chars(len(outcome.body)) <= pass_limit:
+            break
+        step = enforce_block_ceiling(
+            outcome.body, pass_limit, omit_locks=omit_locks,
+        )
+        outcome = BlockCeilingOutcome(
+            step.body,
+            outcome.dropped_ids + step.dropped_ids,
+            step.over_ceiling,
+            step.omitted_lock_ids,
+        )
     if outcome.omitted_lock_ids:
         stderr.write(
             f"aelfrice hook: {len(outcome.omitted_lock_ids)} user lock(s) "
@@ -1327,7 +1356,7 @@ def _write_memory_block(
         )
     if outcome.dropped_ids:
         stderr.write(
-            "aelfrice hook: block over ceiling, dropped "
+            "aelfrice hook: block over its limit, dropped "
             f"{outcome.n_dropped} belief element(s)\n"
         )
     if outcome.over_ceiling:
@@ -3361,24 +3390,13 @@ def user_prompt_submit(
                 # there is a row the reader cannot find in the block
                 # beside it.
                 n_beliefs=len(emitted_hits),
-                # `hits`, not `emitted_hits`, and the two carry the same
-                # locked rows. `enforce_block_ceiling` filters a locked
-                # element out of its droppable set, and since #1570
-                # `_element_is_locked` recognises both renders that put an
-                # element in this envelope: this module's `lock="user"` and
-                # the `<cadence-resume>` recap's `locked="true"`. So the
-                # exemption covers the recap's own locks too, and the
-                # reference lock below is no longer the exception it was --
-                # the recap keeps its bounded-topic element rather than
-                # shedding it, which is what #1570 fixed.
-                #
-                # The second half of the guarantee is #1564's: the ceiling
-                # reports an id only when nothing outside the recap renders
-                # it, and `<locked>` renders every non-reference lock
-                # uncapped in the same envelope, because the recap and the
-                # sub-block both appear on a session's first prompt and on
-                # no other.
-                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
+                # `emitted_hits`, like `n_beliefs`: since #1639 the payload
+                # bound can cut a lock and name it instead, and a named lock
+                # was not shown. Counting from `hits` reported every lock as
+                # injected on the fires where some were cut.
+                n_locked=sum(
+                    1 for h in emitted_hits if h.lock_level == LOCK_USER
+                ),
                 session_id=session_id,
                 beliefs=emitted_hits,
                 latency_ms=latency_ms,
@@ -3494,12 +3512,12 @@ def user_prompt_submit(
             # in `test_hook_recap_shed_order_1564.py` states the reason.
             #
             # The divergence is bounded by two properties that hold
-            # elsewhere, and the ledger is only sound while they do:
-            # `<locked>` is exempt from the trim, and
-            # `enforce_block_ceiling` removes a `seen` pointer with the
-            # element it names. So a surviving pointer's referent is always
-            # in this envelope, and a dropped one's id never reaches
-            # `emitted_hits`.
+            # elsewhere, and the ledger is only sound while they do: a lock
+            # the payload bound cuts (#1639) joins the dropped ids that
+            # `emitted_hits` excludes, and `enforce_block_ceiling` removes
+            # a `seen` pointer with the element it names. So a surviving
+            # pointer's referent is always in this envelope, and a cut or
+            # dropped id never reaches `emitted_hits`.
             if emit_memory_block and _turn_differential_enabled():
                 try:
                     from aelfrice.injection_ledger import (  # noqa: PLC0415
@@ -6452,6 +6470,30 @@ def session_start(
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
+    # #1639: priced before the retrieval `try`, like the print below is
+    # run after it: the recap is independent of retrieval (#1527).
+    # #1639: the recap line is printed last, after both blocks, but it
+    # is priced first so they leave it room. It is one fixed-format
+    # line; `print` adds the newline counted here.
+    recap_line: str | None = None
+    recap_enabled = _recap_enabled()
+    if recap_enabled:
+        try:
+            from aelfrice.feed_log import (  # noqa: PLC0415
+                feed_path as _feed_path,
+                read_rows as _read_rows,
+            )
+            recap_line = build_session_start_recap_line(
+                feed_rows=_read_rows(_feed_path()),
+                last_ts=_read_recap_last_ts(),
+                threshold=_recap_threshold(),
+            )
+        except Exception:
+            # never break SessionStart on recap-side errors
+            recap_line = None
+    payload_room = HOOK_PAYLOAD_CHAR_LIMIT - (
+        len(recap_line) + 1 if recap_line else 0
+    )
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
         return _report_incomplete_install(_IMPORT_ERR, serr)
@@ -6513,7 +6555,9 @@ def session_start(
             # out of the ledger and the audit row.
             # `.body` for the audit row below, as at both sibling sites:
             # test_session_start_audit_row_records_the_block_it_emitted
-            ss_outcome = _write_memory_block(body, stdout=sout, stderr=serr)
+            ss_outcome = _write_memory_block(
+                body, stdout=sout, stderr=serr, room_chars=payload_room,
+            )
             body = ss_outcome.body
             # #1639: a lock the payload bound cut was named, not shown, so
             # it is not "shown verbatim" to the ledger or the audit row.
@@ -6555,7 +6599,7 @@ def session_start(
                 sep = "\n\n" if body else ""
                 rebuild_block = _fit_to_room(
                     rebuild_block,
-                    max(0, HOOK_PAYLOAD_CHAR_LIMIT - len(body) - len(sep)),
+                    max(0, payload_room - len(body) - len(sep)),
                 )
                 if sep:
                     sout.write(sep)
@@ -6575,21 +6619,10 @@ def session_start(
         _ = _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
-    if _recap_enabled():
+    if recap_enabled:
         try:
-            from aelfrice.feed_log import (
-                feed_path as _feed_path,
-                read_rows as _read_rows,
-            )
-            rows = _read_rows(_feed_path())
-            last_ts = _read_recap_last_ts()
-            line = build_session_start_recap_line(
-                feed_rows=rows,
-                last_ts=last_ts,
-                threshold=_recap_threshold(),
-            )
-            if line:
-                print(line, file=sout)
+            if recap_line:
+                print(recap_line, file=sout)
             _write_recap_last_ts(_utc_now_iso())
         except Exception:
             # never break SessionStart on recap-side errors
@@ -7493,7 +7526,7 @@ def _fit_to_room(body: str, room_chars: int) -> str:
         body = body[: m.start()] + body[m.end():]
         if len(body) <= room_chars:
             return body
-    marker = "\n[cadence checkpoint cut to fit the hook output limit]"
+    marker = "\n[block cut to fit the hook output limit]"
     keep = max(0, room_chars - len(marker))
     cut = body.rfind("\n", 0, keep)
     return body[: cut if cut > 0 else keep] + marker

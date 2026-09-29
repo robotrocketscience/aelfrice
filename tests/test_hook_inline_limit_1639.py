@@ -270,6 +270,170 @@ def test_locks_that_do_not_fit_are_named(
     assert f"{len(omitted)} user lock(s)" in err
 
 
+# --- review round 1 ------------------------------------------------------
+
+def _seed_reference_locks(db: Path, n: int) -> list[str]:
+    """Reference-tier locks: each renders as a one-line `ref` entry."""
+    from dataclasses import replace
+
+    from aelfrice.models import LOCK_TIER_REFERENCE
+
+    ids: list[str] = []
+    store = MemoryStore(str(db))
+    try:
+        for i in range(n):
+            bid = f"R{i:031d}"
+            b = _mk(bid, f"reference rule {i} " + "t" * 400, locked=True)
+            store.insert_belief(replace(b, lock_tier=LOCK_TIER_REFERENCE))
+            ids.append(bid)
+    finally:
+        store.close()
+    return ids
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("hook", ["ups", "ups-gated", "session-start"])
+def test_reference_locks_are_cut_and_named_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hook: str,
+) -> None:
+    """A `ref` manifest line is a lock render; the bound cuts it like one.
+
+    Found by review: 200 reference-tier locks wrote 25,765 characters,
+    because only `<belief>` elements were cut and `ref` lines never were.
+    """
+    db = tmp_path / "ref.db"
+    ids = _seed_reference_locks(db, 200)
+    if hook == "session-start":
+        out, err = _fire_session_start(tmp_path, db, monkeypatch)
+    else:
+        out, err = _fire_ups(tmp_path, db, monkeypatch,
+                             prompt=_PROMPT if hook == "ups" else _GATED_PROMPT)
+    assert len(out) <= _LIMIT, len(out)
+    shown = [b for b in ids if f"ref {b}:" in out]
+    assert shown and len(shown) < len(ids)
+    assert "user lock(s) did not fit" in out and "user lock(s)" in err
+
+
+@pytest.mark.timeout(60)
+def test_a_lower_block_ceiling_still_names_the_locks_it_cuts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator ceiling under the room must not switch omission off.
+
+    Found by review: `AELFRICE_HOOK_BLOCK_CEILING=2000` emitted 106,565
+    characters, because omission was only enabled when the room was the
+    tighter of the two. Locks are cut against the payload room, never to
+    meet the token ceiling alone, so the output lands under the bound and
+    not necessarily under 2,000 tokens.
+    """
+    monkeypatch.setenv("AELFRICE_HOOK_BLOCK_CEILING", "2000")
+    db = tmp_path / "low.db"
+    _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_ups(tmp_path, db, monkeypatch)
+    assert len(out) <= _LIMIT, len(out)
+    assert "user lock(s) did not fit" in out
+
+
+@pytest.mark.timeout(60)
+def test_the_ups_audit_row_counts_only_the_locks_it_showed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "aud.db"
+    locks = _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_ups(tmp_path, db, monkeypatch)
+    from aelfrice.hook import (
+        AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        _audit_path_for_db,
+        read_hook_audit,
+    )
+
+    row = [r for r in read_hook_audit(_audit_path_for_db(db))
+           if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT][-1]
+    shown = sum(1 for b in locks if f'<belief id="{b}"' in out)
+    assert 0 < shown < len(locks)
+    assert row["n_locked"] == shown, (row["n_locked"], shown)
+
+
+@pytest.mark.timeout(60)
+def test_session_start_records_only_the_locks_it_showed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The epoch ledger and audit row skip a lock the bound cut."""
+    db = tmp_path / "ssx.db"
+    locks = _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_session_start(tmp_path, db, monkeypatch)
+    from aelfrice.hook import (
+        AUDIT_HOOK_SESSION_START,
+        _audit_path_for_db,
+        read_hook_audit,
+    )
+
+    shown = {b for b in locks if f'<belief id="{b}"' in out}
+    assert 0 < len(shown) < len(locks)
+    row = [r for r in read_hook_audit(_audit_path_for_db(db))
+           if r.get("hook") == AUDIT_HOOK_SESSION_START][-1]
+    assert row["n_beliefs"] == len(shown)
+    assert row["n_locked"] == len(shown)
+    audited = {b["id"] for b in row["beliefs"]}
+    assert audited == shown
+
+
+@pytest.mark.timeout(60)
+def test_the_session_start_recap_line_is_charged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recap line is printed after both blocks and still fits.
+
+    Found by review: 42 recap-eligible feed rows took a SessionStart fire
+    to 9,511 characters, because the line was printed uncounted.
+    """
+    from aelfrice import hook
+
+    # Longer than the real line on purpose: locks are cut in ~210-character
+    # steps, and a slack under one lock would absorb an 85-character line
+    # whether it was charged or not.
+    line = "aelfrice: recap " + "x" * 1_000
+    monkeypatch.setattr(hook, "_recap_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(hook, "build_session_start_recap_line",
+                        lambda **_: line)
+    db = tmp_path / "rc.db"
+    _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_session_start(tmp_path, db, monkeypatch)
+    assert out.rstrip("\n").endswith(line)
+    assert len(out) <= _LIMIT, len(out)
+
+
+@pytest.mark.timeout(30)
+def test_the_search_hook_context_fits_and_sheds_l1_before_locks() -> None:
+    """The PreToolUse search hook is an aelfrice hook too (AC1).
+
+    Found by review: locks bypass this lane's 600-token budget, and 300 of
+    them wrote an `additionalContext` of 55,108 characters.
+    """
+    from types import SimpleNamespace
+
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    locks = [SimpleNamespace(id=f"L{i:015d}", content="lockword " + "q" * 150,
+                             lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+             for i in range(300)]
+    hits = [SimpleNamespace(id=f"H{i:015d}", content=f"{_WORD} fact " + "z" * 150,
+                            lock_level=LOCK_NONE, lock_tier=LOCK_TIER_FROZEN)
+            for i in range(20)]
+    locked_ids = {b.id for b in locks}
+    ctx = _format_results(_WORD, [*locks, *hits], locked_ids)
+    assert len(ctx) <= _LIMIT, len(ctx)
+    lines = ctx.splitlines()
+    # L1 goes before any lock.
+    assert not any(ln.startswith("[L1]") for ln in lines)
+    n_shown = sum(1 for ln in lines if ln.startswith("[L0]"))
+    assert 0 < n_shown < len(locks)
+    overflow = [ln for ln in lines if "user lock(s) did not fit" in ln]
+    assert len(overflow) == 1 and "aelf locked" in overflow[0]
+    assert f"aelfrice: {len(locks) - n_shown} user lock(s)" in overflow[0]
+
+
 # --- the two blocks charged against the room, pinned individually -------
 
 @pytest.mark.timeout(60)

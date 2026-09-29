@@ -26,9 +26,12 @@ bounded, at 9,500 characters, and when the locks alone do not fit that
 bound the trailing ones are cut whole and named in the block's final line
 with a pointer to `aelf locked`. Before #1639 such a block was emitted over
 the ceiling with a note on stderr, which the host then cut to a
-2,000-character preview (https://code.claude.com/docs/en/hooks.md). Most
-fixtures below keep their locks inside the bound on purpose, so the trim
-under test falls on the lane each test is about.
+2,000-character preview (https://code.claude.com/docs/en/hooks.md). The
+fixtures #1639 resized keep their locks inside the bound on purpose, so the
+trim under test falls on the lane each test is about, and they check each
+lock by its rendered element rather than its id -- the overflow line names
+a cut lock's id too. The 60-lock fixtures left unchanged overflow the bound
+and exercise the cut-and-name path as well as the lane they test.
 
 Fixture sizes are literals, sized by `scripts/measure_block_ceiling.py`
 against the shipped ceiling rather than derived from it. Nothing here
@@ -391,14 +394,20 @@ def test_ups_retrieval_branch_trims_to_the_ceiling(
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch)
 
-    assert _audit_tokens_from_block(out) <= _CEILING
+    # Under #1639 the payload bound (2,375 tokens of room) is tighter than
+    # the token ceiling, so `<= _CEILING` holds untrimmed and proves
+    # nothing. What must hold here is that the locks fit and none is cut.
+    assert "user lock(s) did not fit" not in out
     assert len(out) <= 9_500
     assert "dropped" in err
     # Framing intact and no element half-removed.
     assert OPEN_TAG in out and CLOSE_TAG in out
     assert out.count("<belief ") == out.count("</belief>")
     # Every lock survived; some retrieval hits did not.
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
     assert any(b not in out for b in hit_ids)
 
 
@@ -417,7 +426,7 @@ def test_ups_notes_a_malformed_ceiling_on_the_hooks_own_stderr(
     `resolve_block_ceiling` was written to prevent, and `-1` used to do
     exactly that.
 
-    The store is over the ceiling too, so one fire proves the fallback
+    The store is over its limit too, so one fire proves the fallback
     took effect and not merely that a string was printed.
     """
     monkeypatch.setenv(_CEILING_ENV, "-1")
@@ -433,9 +442,15 @@ def test_ups_notes_a_malformed_ceiling_on_the_hooks_own_stderr(
     assert "only 0 disables it" in err
     # The fallback applied: the block is bounded by the default, not left
     # unbounded by a negative limit.
-    assert _audit_tokens_from_block(out) <= _CEILING
+    # Under #1639 the payload bound (2,375 tokens of room) is tighter than
+    # the token ceiling, so `<= _CEILING` holds untrimmed and proves
+    # nothing. What must hold here is that the locks fit and none is cut.
+    assert "user lock(s) did not fit" not in out
     assert "dropped" in err
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
     assert any(b not in out for b in hit_ids)
 
 
@@ -447,7 +462,10 @@ def test_ups_retrieval_branch_leaves_a_fitting_block_alone(
     lock_ids, _, _ = _seed(db, n_locks=3, lock_chars=150, n_hits=2)
     out, err = _fire_ups(tmp_path, db, monkeypatch)
     assert err == ""
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
 
 
 def test_ups_audit_record_omits_the_beliefs_the_ceiling_dropped(
@@ -916,11 +934,12 @@ def test_ups_total_chars_sums_the_beliefs_the_ceiling_left_in_the_block(
     published total goes stale without the claim it carries changing.
 
     This fixture seeds no `<core>`, so the trim comes out of the hit lane and
-    the two lists differ. Measured on it: 66 beliefs packed, 3 hit elements
-    dropped, and the field reads 10,776 characters against the 12,012 a sum
-    over `hits` charges. The difference is 1,236 characters of content the
-    ceiling deleted: 10.3% of the 12,012 retrieved, and an 11.5%
-    overstatement of the 10,776 the field should report. `aelf doctor`
+    the two lists differ. Measured on it before #1639, against the 6,000-token
+    ceiling alone: 66 beliefs packed, 3 hit elements dropped, and the field
+    read 10,776 characters against the 12,012 a sum over `hits` charged -- an
+    11.5% overstatement. Under the #1639 payload bound the same fixture also
+    cuts locks and drops every hit, so the two lists differ by more; the
+    assertions below are derived from the store and hold either way. `aelf doctor`
     prints it as "injection size p50/p95: N chars", so the overstatement is
     what an operator reads.
     The overstatement lands only on the over-ceiling fires, which are the tail
@@ -1127,12 +1146,18 @@ def test_gate_skip_branch_trims_to_the_ceiling(
     )
     out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)
 
-    assert _audit_tokens_from_block(out) <= _CEILING
+    # Under #1639 the payload bound (2,375 tokens of room) is tighter than
+    # the token ceiling, so `<= _CEILING` holds untrimmed and proves
+    # nothing. What must hold here is that the locks fit and none is cut.
+    assert "user lock(s) did not fit" not in out
     assert len(out) <= 9_500
     assert "dropped" in err
     assert OPEN_TAG in out and CLOSE_TAG in out
     assert out.count("<belief ") == out.count("</belief>")
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
     assert any(b not in out for b in core_ids)
 
 
@@ -1166,7 +1191,10 @@ def test_gate_skip_branch_leaves_a_fitting_block_alone(
     lock_ids, _, _ = _seed(db, n_locks=3, lock_chars=150)
     out, err = _fire_ups(tmp_path, db, monkeypatch, prompt=_GATED_PROMPT)
     assert err == ""
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
 
 
 def test_core_section_caps_an_oversized_belief(
@@ -1316,4 +1344,7 @@ def test_session_start_leaves_a_fitting_baseline_alone(
     lock_ids, _, _ = _seed(db, n_locks=3, lock_chars=150)
     out, err = _fire_session_start(tmp_path, db, monkeypatch)
     assert err == ""
-    assert [b for b in lock_ids if b not in out] == []
+    # The rendered element, not the id: since #1639 the overflow line
+    # names every lock it cut, so a bare id match would count a cut lock
+    # as present and hide a dropper that cuts locks before hits.
+    assert [b for b in lock_ids if f'<belief id="{b}"' not in out] == []
