@@ -432,6 +432,9 @@ def test_the_search_hook_context_fits_and_sheds_l1_before_locks() -> None:
     overflow = [ln for ln in lines if "user lock(s) did not fit" in ln]
     assert len(overflow) == 1 and "aelf locked" in overflow[0]
     assert f"aelfrice: {len(locks) - n_shown} user lock(s)" in overflow[0]
+    # Found by review: the line must name the first locks cut, in order.
+    named = overflow[0].split("not shown: ", 1)[1].split(", and", 1)[0]
+    assert named.split(", ") == [f"L{i:015d}" for i in range(n_shown, n_shown + 20)]
 
 
 # --- review round 2 ------------------------------------------------------
@@ -870,33 +873,33 @@ def _raw_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return out[start:end] + "\n"
 
 
+def _trim(body: str, room: int, monkeypatch: pytest.MonkeyPatch) -> object:
+    """`_write_memory_block` on `body` with `room` characters, default
+    ceiling. The envelope fixtures turn the ceiling off to build `body`."""
+    from aelfrice.hook import _write_memory_block
+
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    return _write_memory_block(
+        body, stdout=io.StringIO(), stderr=io.StringIO(), room_chars=room)
+
+
 @pytest.mark.timeout(120)
 def test_every_room_is_met_with_its_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The line that names cut locks is paid for inside the room, both
-    while hits are shed and when a block that already fits still owes it.
-    """
-    from aelfrice.hook import _tokens_from_chars, enforce_block_ceiling
-
+    """Every room the frame can fit in is met, the line naming the cut
+    locks included, and every block stays well-formed."""
     body = _raw_envelope(tmp_path, monkeypatch)
-    prior = ("Z" * 32,)
-    # Below the frame plus the line, nothing can fit; that is the floor.
-    floor = _tokens_from_chars(len(enforce_block_ceiling(
-        body, 1, omit_locks=True, prior_omitted=prior).body))
-    assert 300 < floor < 600, floor
-    for limit in range(floor, 2_600, 23):
-        for owed in ((), prior):
-            got = enforce_block_ceiling(
-                body, limit, omit_locks=True, prior_omitted=owed,
-            ).body
-            assert _tokens_from_chars(len(got)) <= limit, (limit, owed)
-            assert got.count("<belief ") == got.count("</belief>")
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    assert 1_000 < floor < 2_500, floor
+    for room in range(floor, 10_000, 97):
+        got = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert len(got) <= room, room
+        assert got.count("<belief ") == got.count("</belief>")
+        assert got.count("did not fit") <= 1
 
 
-def test_a_recap_lock_is_never_cut_as_a_lock_render() -> None:
-    """A lock inside a recap goes with the recap's own rule, not the lock
-    cut, or the two would splice the same span twice."""
+def _recap_body(lock_pad: int) -> str:
     from aelfrice import hook
     from aelfrice.hook import CORE_CLOSE_TAG, CORE_OPEN_TAG
 
@@ -904,16 +907,40 @@ def test_a_recap_lock_is_never_cut_as_a_lock_render() -> None:
     recap = (
         "<cadence-resume from='prev' policy='p1' ts='t'>\n"
         f'<belief id="R1" lock="none">{pad}</belief>\n'
-        f'<belief id="R2" lock="user">{pad * 3}</belief>\n'
+        f'<belief id="R2" lock="user">{"z" * lock_pad}</belief>\n'
         "</cadence-resume>"
     )
     core = (f"{CORE_OPEN_TAG}\n"
             f'<belief id="C1" lock="none">{pad}</belief>\n{CORE_CLOSE_TAG}')
-    body = f"{hook.OPEN_TAG}\n{recap}\n{core}\n{hook.CLOSE_TAG}\n"
-    out = hook.enforce_block_ceiling(body, 300, omit_locks=True)
-    assert out.omitted_lock_ids == ()
-    assert out.body.count("<belief ") == out.body.count("</belief>")
-    assert '<belief id="R2" lock="user">' in out.body
+    return f"{hook.OPEN_TAG}\n{recap}\n{core}\n{hook.CLOSE_TAG}\n"
+
+
+def test_a_recap_lock_the_room_holds_keeps_its_recap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock whose only element is in the recap stays with the recap
+    around it, and the recap's droppable elements still go (#1570)."""
+    out = _trim(_recap_body(300), 1_200, monkeypatch)
+    assert out.omitted_lock_ids == ()  # type: ignore[attr-defined]
+    body = out.body  # type: ignore[attr-defined]
+    assert '<belief id="R2" lock="user">' in body
+    assert "<cadence-resume" in body and '<belief id="R1"' not in body
+    assert len(body) <= 1_200
+
+
+def test_a_recap_lock_the_room_cannot_hold_is_cut_and_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: a recap-held lock was neither cut nor shed, and 80
+    of them took a fire to 25,421 characters. It is a lock render like any
+    other now: cut whole, named, and the recap goes with it."""
+    out = _trim(_recap_body(3_000), 1_200, monkeypatch)
+    assert out.omitted_lock_ids == ("R2",)  # type: ignore[attr-defined]
+    body = out.body  # type: ignore[attr-defined]
+    assert len(body) <= 1_200
+    assert "<cadence-resume" not in body
+    assert "aelfrice: 1 user lock(s) did not fit" in body and "R2" in body
+    assert body.count("<belief ") == body.count("</belief>")
 
 
 def test_fit_to_room_drops_whole_trailing_elements_first() -> None:
@@ -1132,20 +1159,6 @@ def test_the_phantom_note_fits_its_room_and_records_only_what_it_shows(
     assert int(state["phantom_fires"]) == len(fired)
 
 
-@pytest.mark.timeout(60)
-def test_a_block_that_fits_without_its_owed_line_still_pays_for_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice.hook import _tokens_from_chars, enforce_block_ceiling
-
-    body = _raw_envelope(tmp_path, monkeypatch)
-    limit = _tokens_from_chars(len(body))
-    got = enforce_block_ceiling(
-        body, limit, omit_locks=True, prior_omitted=("Z" * 32,)).body
-    assert "Z" * 32 in got
-    assert _tokens_from_chars(len(got)) <= limit
-
-
 def _envelope_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                    name: str, n_locks: int, n_hits: int) -> str:
     from aelfrice import hook
@@ -1181,10 +1194,10 @@ def test_a_lone_lock_that_fits_beside_its_frame_is_kept(
     assert lock_id in alone and "<belief id=\"H" not in alone
     fits = 4 * limit - len(alone) + 150   # the largest lock that fits alone
     assert fits > 150
-    kept = enforce_block_ceiling(sized(body, fits), limit, omit_locks=True)
+    kept = _trim(sized(body, fits), 4 * limit, monkeypatch)
     assert kept.omitted_lock_ids == ()
     assert f'<belief id="{lock_id}"' in kept.body
-    cut = enforce_block_ceiling(sized(body, fits + 1), limit, omit_locks=True)
+    cut = _trim(sized(body, fits + 1), 4 * limit, monkeypatch)
     assert cut.omitted_lock_ids == (lock_id,)
     assert f'<belief id="H{0:031d}"' in cut.body
 
@@ -1245,7 +1258,7 @@ def test_a_lock_that_fits_its_frame_but_not_the_owed_line_is_cut_first(
     assert first is not None
     sized = body.replace(first.group(0),
                          first.group(1) + "lockword " + "q" * s + first.group(2))
-    got = enforce_block_ceiling(sized, limit, omit_locks=True)
+    got = _trim(sized, 4 * limit, monkeypatch)
     assert got.omitted_lock_ids == (big,)
     assert all(f'<belief id="L{i:031d}"' in got.body for i in range(1, 5))
     assert f'<belief id="H{0:031d}"' in got.body
@@ -1273,3 +1286,172 @@ def test_the_checkpoint_is_charged_whole_before_the_envelope(
     # envelope's, including the lines it writes after its close tag.
     assert "phantom" not in out[out.index(hook.OPEN_TAG):]
     assert rooms == [_LIMIT - out.index(hook.OPEN_TAG)]
+
+
+# --- review round 5 ---------------------------------------------------------
+
+def test_the_lock_choice_keeps_a_lock_that_fits_exactly() -> None:
+    from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
+
+    groups = {"A1": [(0, 100)], "B2": [(200, 500)], "C3": [(600, 1_600)]}
+    line = len(lock_overflow_line(["A1", "B2", "C3"]))
+    frame = 1_000
+    # B2 fills the room exactly beside the frame, the line, and A1.
+    room = frame + line + 100 + 300
+    assert _choose_locks_for_room(groups, set(), 0, frame, room) == ("C3",)
+    assert _choose_locks_for_room(groups, set(), 0, frame, room - 1) == (
+        "B2", "C3")
+    # Everything fits: nothing is cut, and no line is owed.
+    assert _choose_locks_for_room(groups, set(), 0, frame, frame + 1_400) == ()
+
+
+def test_the_first_recap_lock_kept_pays_for_the_recap() -> None:
+    from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
+
+    groups = {"R1": [(0, 100)], "R2": [(100, 200)], "L3": [(300, 700)]}
+    line = len(lock_overflow_line(["R1", "R2", "L3"]))
+    frame, wrapper = 1_000, 80
+    room = frame + line + wrapper + 200  # both recap locks, once wrapped
+    assert _choose_locks_for_room(
+        groups, {"R1", "R2"}, wrapper, frame, room) == ("L3",)
+    assert _choose_locks_for_room(
+        groups, {"R1", "R2"}, wrapper, frame, room - 1) == ("R2", "L3")
+
+
+@pytest.mark.timeout(120)
+def test_the_checkpoint_room_leaves_its_wrapper_and_the_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook
+
+    rooms: list[int] = []
+    real = hook._maybe_run_ups_cadence_checkpoint  # pyright: ignore[reportPrivateUsage]
+
+    def _spy(*a: object, **kw: object) -> object:
+        rooms.append(int(kw["room_chars"]))  # type: ignore[arg-type]
+        return real(*a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook, "_maybe_run_ups_cadence_checkpoint", _spy)
+    out, _ = _cadence_fire(tmp_path, monkeypatch)
+    before = out.index("<cadence-checkpoint>")
+    wrapper = len("<cadence-checkpoint>\n\n</cadence-checkpoint>\n\n")
+    assert rooms == [_LIMIT - before - hook.CADENCE_ENVELOPE_RESERVE_CHARS
+                     - wrapper]
+
+
+def test_a_phantom_note_stops_at_the_first_opportunity_that_does_not_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In order, not first-fit, as the promotion note is."""
+    from aelfrice.phantom_trigger import (
+        PhantomGenerationConfig,
+        PhantomOpportunity,
+        evaluate_opportunities,
+        format_opportunity_note,
+    )
+
+    db = tmp_path / "order.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
+    prompt = "Why does QuetzalRouter fail " + "slowly " * 40
+    entity = PhantomOpportunity(
+        reason="new_entity", topic="QuetzalRouter",
+        dedup_key="new_entity:quetzalrouter")
+    room = len(format_opportunity_note([entity]))
+    store = MemoryStore(str(db))
+    try:
+        fired = evaluate_opportunities(
+            prompt=prompt, store=store, session_id="s-order-gen",
+            hit_count=0,
+            config=PhantomGenerationConfig(enabled=True,
+                                           max_fires_per_session=10),
+            room_chars=room,
+        )
+    finally:
+        store.close()
+    # The gap comes first and does not fit; the shorter entity after it
+    # does not jump the queue.
+    assert fired == []
+
+
+def test_an_unshown_contradiction_is_still_new_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: a contradiction left out for room went into the
+    snapshot anyway, so it never surfaced."""
+    from aelfrice.models import EDGE_CONTRADICTS, Edge
+    from aelfrice.phantom_trigger import (
+        PhantomGenerationConfig,
+        evaluate_opportunities,
+    )
+
+    db = tmp_path / "contra.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    cfg = PhantomGenerationConfig(enabled=True, max_fires_per_session=10)
+    store = MemoryStore(str(db))
+    try:
+        for bid in ("A000000000000001", "B000000000000002"):
+            store.insert_belief(_mk(bid, f"claim {bid}"))
+
+        def turn(room: int | None) -> list[str]:
+            return [o.reason for o in evaluate_opportunities(
+                prompt="", store=store, session_id="s-contra", hit_count=1,
+                config=cfg, room_chars=room)]
+
+        assert turn(None) == []           # baselines the snapshot
+        store.insert_edge(Edge(src="A000000000000001",
+                               dst="B000000000000002",
+                               type=EDGE_CONTRADICTS, weight=1.0))
+        assert turn(0) == []              # new, but no room
+        assert turn(None) == ["contradiction"]
+    finally:
+        store.close()
+
+
+def test_a_recap_lock_is_priced_to_the_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every room meets its bound: the recap's wrapper, the newlines in it,
+    and the blank lines after it are all charged to the lock that keeps
+    it, so no room is a character short."""
+    body = _recap_body(300) + "\n\n"
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, 2_400):  # every room: the edge is one char
+        got = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert len(got) <= room, room
+        assert got.count("<belief ") == got.count("</belief>")
+
+
+@pytest.mark.timeout(60)
+def test_a_note_that_never_reached_stdout_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the notes recorded their fires before the envelope
+    was written, so a fire that failed there spent opportunities it never
+    showed."""
+    from aelfrice import hook
+    from aelfrice.session_ring import read_phantom_state, read_promotion_state
+
+    db = tmp_path / "fail.db"
+    _seed(db, n_hits=3)   # hits, so the envelope is written
+    _add_promotable_phantoms(db, 3, "claim " + "x" * 60)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nenabled = true\n"
+        "[phantom_promotion]\nenabled = true\n", encoding="utf-8")
+
+    def _boom(body: str, **kw: object) -> object:
+        raise RuntimeError("envelope write failed")
+
+    monkeypatch.setattr(hook, "_write_memory_block", _boom)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": "s-fail", "transcript_path": "/dev/null",
+        "cwd": str(tmp_path), "hook_event_name": "UserPromptSubmit",
+        "prompt": f"what is the QuetzalRouter {_WORD} plan",
+    })
+    user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+    assert "envelope write failed" in serr.getvalue()
+    assert "phantom" not in sout.getvalue()
+    assert int(read_promotion_state("s-fail")["promotion_fires"]) == 0
+    assert int(read_phantom_state("s-fail")["phantom_fires"]) == 0

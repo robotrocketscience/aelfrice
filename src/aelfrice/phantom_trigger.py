@@ -36,6 +36,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO, TYPE_CHECKING, Any, Final
 
 from aelfrice.config_discovery import discover_config
@@ -318,6 +319,7 @@ def evaluate_opportunities(
     config: PhantomGenerationConfig | None = None,
     stderr: IO[str] | None = None,
     room_chars: int | None = None,
+    commits: list[Callable[[], None]] | None = None,
 ) -> list[PhantomOpportunity]:
     """Detect this turn's phantom-generation opportunities, apply the
     per-session budget and dedup, record the fires, and refresh the
@@ -326,7 +328,13 @@ def evaluate_opportunities(
 
     With `room_chars`, stops at the first opportunity whose note would no
     longer fit in that many characters (#1639). Only what is returned is
-    recorded as fired, so an opportunity that did not fit is still owed.
+    recorded as fired, so an opportunity that did not fit is still owed: a
+    new contradiction left out stays out of the snapshot, so the next turn
+    finds it new again.
+
+    With `commits`, the recording -- the fires and the snapshot -- is
+    appended there instead of done, for a caller that records only once
+    the note is written.
 
     Order of precedence among candidates when the budget is tight: gap →
     new-entity → contradiction (gap is the cheapest and most directly the
@@ -375,12 +383,27 @@ def evaluate_opportunities(
         seen.add(opp.dedup_key)
         fired.append(opp)
 
-    for opp in fired:
-        record_phantom_fire(session_id, opp.dedup_key, stderr=stderr)
     # Refresh / baseline the snapshot to the live set (also sets phantom_init),
-    # so the next turn diffs against the current reality.
-    update_phantom_contradicts(session_id, sorted(live_keys), stderr=stderr)
+    # so the next turn diffs against the current reality -- less the new
+    # contradictions this turn did not show, which stay new (#1639).
+    shown = {opp.dedup_key for opp in fired}
+    owed = {
+        opp.dedup_key.removeprefix("contradiction:")
+        for opp in candidates
+        if opp.reason == REASON_CONTRADICTION and opp.dedup_key not in shown
+    }
+    sid = session_id
 
+    def _record() -> None:
+        for opp in fired:
+            record_phantom_fire(sid, opp.dedup_key, stderr=stderr)
+        update_phantom_contradicts(
+            sid, sorted(live_keys - owed), stderr=stderr)
+
+    if commits is None:
+        _record()
+    else:
+        commits.append(_record)
     return fired
 
 

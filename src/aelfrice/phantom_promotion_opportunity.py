@@ -37,6 +37,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO, TYPE_CHECKING, Any, Final
 
 from aelfrice.config_discovery import discover_config
@@ -285,6 +286,7 @@ def evaluate_promotion_opportunities(
     config: PhantomPromotionConfig | None = None,
     stderr: IO[str] | None = None,
     room_chars: int | None = None,
+    commits: list[Callable[[], None]] | None = None,
 ) -> list[PromotionOpportunity]:
     """Detect this session's phantom promotion opportunities, apply the
     per-session budget + dedup, record the fires, and return the ones to
@@ -294,6 +296,9 @@ def evaluate_promotion_opportunities(
     With `room_chars`, stops at the first opportunity whose note would no
     longer fit in that many characters (#1639). Only what is returned is
     recorded as fired, so an opportunity that did not fit is still owed.
+
+    With `commits`, the recording is appended there instead of done, for a
+    caller that records only once the note is written.
 
     Candidates are drawn in ``created_at`` order so the oldest qualifying
     phantom is surfaced first when the budget is tight.
@@ -333,9 +338,16 @@ def evaluate_promotion_opportunities(
         seen.add(opp.dedup_key)
         fired.append(opp)
 
-    for opp in fired:
-        record_promotion_fire(session_id, opp.dedup_key, stderr=stderr)
+    sid = session_id
 
+    def _record() -> None:
+        for opp in fired:
+            record_promotion_fire(sid, opp.dedup_key, stderr=stderr)
+
+    if commits is None:
+        _record()
+    else:
+        commits.append(_record)
     return fired
 
 

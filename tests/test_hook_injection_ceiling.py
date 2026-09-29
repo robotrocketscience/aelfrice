@@ -765,8 +765,8 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
     `_write_memory_block` or does not get a ceiling — and the reviewer of
     that change is looking at this assertion.
 
-    The function's call to itself (#1639, pricing the frame a lock must
-    fit beside) is not an emit site, so it is not counted.
+    #1639 calls it twice there, once to price the frame a lock must fit
+    beside and once to trim; both are inside the one emit function.
     """
     src = Path(hook_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
@@ -779,7 +779,6 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "enforce_block_ceiling"
-                and func.name != "enforce_block_ceiling"
             ):
                 callers.append(func.name)
-    assert callers == ["_write_memory_block"], callers
+    assert set(callers) == {"_write_memory_block"}, callers

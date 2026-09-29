@@ -350,9 +350,11 @@ User locks are the last thing the envelope gives up. Against this ceiling
 alone they are exempt (#379): a block whose locks alone exceed it is
 emitted over it with a note on stderr. Against the payload room they are
 not exempt, because a block over the host's limit loses them anyway, in the
-preview. There, trailing locks are cut whole and named in one final line
-that points to `aelf locked`, with a note on stderr. A lock is never lost
-without the block saying so.
+preview. There, the envelope first decides which locks the room holds, in
+render order, and cuts the rest whole -- every render of each, recap copy
+included -- before it sheds anything else; the cut locks are named in one
+final line that points to `aelf locked`, with a note on stderr. A lock is
+never lost without the block saying so.
 
 **The second bound is soft, and a contract calling the two equivalent
 would be false.** #1546 records that `<retrieved-beliefs
@@ -662,10 +664,11 @@ class BlockCeilingOutcome:
     call sites below read as "never shown".
 
     `over_ceiling` is True when the body is still over the limit after
-    everything the trim may cut is gone. Without `omit_locks` that is the
-    #379 exemption made visible: what remains is user-locked content or
-    manifest lines. With it (#1639) the locks are cut too, so only framing
-    and manifest lines can leave the body over. `n_dropped == 0 and
+    everything the trim may cut is gone: the #379 exemption made visible,
+    because what remains is user-locked content or manifest lines. Under
+    #1639 `_write_memory_block` sets it against the token ceiling after
+    the room has cut what it must, so it can be True for a block the room
+    holds. `n_dropped == 0 and
     over_ceiling` is therefore a real state and is not the same as "it
     fits".
     """
@@ -994,9 +997,126 @@ def _lock_renders(
     return renders
 
 
+
+def _lock_groups(
+    body: str,
+) -> tuple[
+    dict[str, list[tuple[int, int]]], set[str], int,
+    dict[str, list[tuple[int, int]]],
+]:
+    """Every user lock `body` renders, by id, with the spans that go with it.
+
+    A lock can render more than once: its `<locked>` element or, for a
+    reference-tier lock (#1016-B), its `ref` manifest line; its `seen`
+    pointer; and, when the body carries a `<cadence-resume>` recap, the
+    recap's element for it. The recap's copy is a render only when it is
+    the lock's last element -- the case `_recap_shed` keeps (#1570). A
+    lock the body also renders as an element outside the recap has a
+    droppable recap copy, which the trim sheds with the recap.
+
+    Returns the groups in first-render order, the ids whose recap element
+    is a render, and what the recap costs besides its elements: its
+    wrapper, the newlines between elements, and the blank lines after it.
+    That is what keeping any recap lock costs on top of the lock itself.
+
+    Last, the recap copies of the other locks. They cost nothing here,
+    because the trim sheds them with the recap, but a cut lock takes them
+    with it: once its `<locked>` element is gone its recap copy would be
+    its last render, and `_recap_shed` would keep the recap for it.
+    """
+    elements = list(_BELIEF_ELEMENT_RE.finditer(body))
+    recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
+    pointers = {
+        m.group("id"): m.span()
+        for m in _SEEN_MANIFEST_RE.finditer(body)
+        if not any(lo <= m.start() < hi for lo, hi in
+                   (e.span() for e in elements))
+    }
+    found: list[tuple[int, str, tuple[int, int]]] = [
+        (start, bid, (start, end))
+        for start, end, bid, _cost in _lock_renders(
+            body, elements, recap, pointers)
+    ]
+    outside = {
+        m.group("id") for m in elements
+        if not (recap[0] <= m.start() < recap[1])
+    }
+    recap_ids: set[str] = set()
+    copies: dict[str, list[tuple[int, int]]] = {}
+    for m in elements:
+        if not (recap[0] <= m.start() < recap[1]):
+            continue
+        if not _element_is_locked(m.group("attrs")):
+            continue
+        if m.group("id") in outside:
+            copies.setdefault(m.group("id"), []).append(m.span())
+        else:
+            recap_ids.add(m.group("id"))
+            found.append((m.start(), m.group("id"), m.span()))
+    found.sort()
+    groups: dict[str, list[tuple[int, int]]] = {}
+    for _pos, bid, span in found:
+        groups.setdefault(bid, []).append(span)
+    for bid, spans in groups.items():
+        if bid in pointers:
+            spans.append(pointers[bid])
+    wrapper = 0
+    if recap_ids:
+        end = recap[1]
+        while end < len(body) and body[end] == "\n":
+            end += 1
+        wrapper = (end - recap[0]) - sum(
+            m.end() - m.start() for m in elements
+            if recap[0] <= m.start() < recap[1]
+        )
+    return groups, recap_ids, wrapper, copies
+
+
+def _choose_locks_for_room(
+    groups: dict[str, list[tuple[int, int]]], recap_ids: set[str],
+    wrapper: int, frame: int, room_chars: int,
+) -> tuple[str, ...]:
+    """The locks the payload room cannot hold, in render order (#1639).
+
+    `frame` is what the block costs with every droppable element shed and
+    no lock rendered: what stays whatever is cut. When every lock fits
+    beside it, none is cut and no line is owed. Otherwise the line that
+    names the cut locks is owed, and it is priced at its longest before
+    any lock is kept; then each lock, in render order, stays if it fits
+    what is left, and is cut whole if it does not. The first recap lock
+    kept also pays for the recap around it.
+
+    Deciding this before anything is shed is the point: the droppable
+    lanes are then trimmed to what the kept locks leave, so no hit is ever
+    shed to make room for a lock that is cut anyway.
+    """
+    cost = {bid: sum(hi - lo for lo, hi in spans)
+            for bid, spans in groups.items()}
+    total = frame + sum(cost.values()) + (wrapper if recap_ids else 0)
+    if total <= room_chars:
+        return ()
+    used = frame + len(lock_overflow_line(
+        sorted(groups, key=len, reverse=True)))
+    wrapper_paid = False
+    omitted: list[str] = []
+    for bid in groups:
+        extra = wrapper if bid in recap_ids and not wrapper_paid else 0
+        if used + cost[bid] + extra <= room_chars:
+            used += cost[bid] + extra
+            wrapper_paid = wrapper_paid or bid in recap_ids
+        else:
+            omitted.append(bid)
+    return tuple(omitted)
+
+
+def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
+    for lo, hi in sorted(spans, reverse=True):
+        body = body[:lo] + body[hi:]
+    return body
+
+
 def enforce_block_ceiling(
-    body: str, ceiling: int | None = None, *, omit_locks: bool = False,
-    precut_limit: int | None = None, prior_omitted: tuple[str, ...] = (),
+    body: str, ceiling: int | None = None
 ) -> BlockCeilingOutcome:
     """Drop whole non-locked `<belief>` elements until `body` fits.
 
@@ -1025,10 +1145,10 @@ def enforce_block_ceiling(
     `scripts/measure_block_ceiling.py --resume-drop` is the producer and
     `test_hook_recap_shed_order_1564.py` pins the directions.
 
-    **User-locked content is never lost silently.** That is the #379 /
-    #1016-B contract — locks are the always-injected pool, uncapped and
-    untrimmed — and a ceiling that deleted them unannounced would have made
-    this module's bound the thing that broke it. `_element_is_locked` is the test, and since
+    **User-locked content is never lost.** That is the #379 / #1016-B
+    contract — locks are the always-injected pool, uncapped and untrimmed
+    — and a ceiling that deleted them would have made this module's bound
+    the thing that broke it. `_element_is_locked` is the test, and since
     #1570 it answers for the `<cadence-resume>` recap's own render as well
     as this module's.
 
@@ -1041,17 +1161,14 @@ def enforce_block_ceiling(
     distinction is worked through. Measured before the exemption
     existed: a 300-lock store had all 300 locked elements removed, leaving
     an empty `<locked>` section under 300 `seen <id>` manifest pointers.
-    When the locks alone do not fit, what happens depends on
-    `omit_locks`. Without it, the body is emitted over the limit and
-    `over_ceiling` says so; `_write_memory_block` turns that into a stderr
-    note. With it, which `_write_memory_block` passes when the #1639
-    payload room is the binding limit, trailing locks are cut whole, in
-    reverse render order, until the rest fits together with one final line
-    that names them and points to `aelf locked`. They are reported in
-    `omitted_lock_ids`, never in `dropped_ids`. The payload room is not a
-    bound this module may exceed: past the host's limit the model sees a
-    2,000-character preview, and the locks after it are lost with no line
-    naming them.
+    When the locks alone do not fit, the body is emitted over the limit
+    and `over_ceiling` says so; `_write_memory_block` turns that into a
+    stderr note.
+
+    This function never cuts a lock, and that holds under #1639 too. The
+    payload bound can cut one, but `_write_memory_block` decides which
+    before this runs, with `_choose_locks_for_room`, so a lock is never
+    cut after the hits were shed to make room for it.
 
     **A dropped element takes its `seen` pointer with it.** The dangling
     pointer above was not a locks-only accident; it is the class, and the
@@ -1094,15 +1211,7 @@ def enforce_block_ceiling(
     note belongs to the emit path, which has a stderr to write to).
     """
     limit = resolve_block_ceiling() if ceiling is None else ceiling
-    owed = (
-        lock_overflow_line(list(prior_omitted))
-        if omit_locks and prior_omitted else ""
-    )
-    if limit <= 0 or _tokens_from_chars(len(body) + len(owed)) <= limit:
-        # A block that fits still owes the line naming locks an earlier
-        # pass cut (#1639), and the fit above is priced with it.
-        if owed:
-            body = body.rstrip("\n") + owed
+    if limit <= 0 or _audit_tokens_from_block(body) <= limit:
         return BlockCeilingOutcome(body, (), False)
     elements = list(_BELIEF_ELEMENT_RE.finditer(body))
     recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
@@ -1171,63 +1280,9 @@ def enforce_block_ceiling(
         for m in elements
         if not (recap[0] <= m.start() < recap[1])
     }
-    # #1639: a lock whose render cannot fit the budget even alone is cut
-    # before anything droppable is shed. Shedding the prompt's hits to make
-    # room for a lock that will be cut anyway would cost them for nothing.
-    #
-    # `precut_limit` asks for that cut alone, against a budget other than
-    # this call's: the first of `_write_memory_block`'s two passes trims to
-    # the token ceiling with every lock exempt, and without it would shed
-    # the hits for a lock the second pass then cuts.
-    #
-    # `prior_omitted` carries locks an earlier pass cut: they are priced into
-    # the one line and named in it, so a block never carries two.
-    omitted: list[tuple[int, str]] = [(-1, b) for b in prior_omitted]
-    budget_chars = 4 * limit  # `_tokens_from_chars` is ceil(n / 4)
-    precut_chars = (
-        4 * precut_limit if precut_limit is not None
-        else budget_chars if omit_locks else None
-    )
-    lock_renders: list[tuple[int, int, str, int]] = []
-    if precut_chars is not None:
-        lock_renders = _lock_renders(body, elements, recap, pointers)
-        # "Fits alone" means beside what cannot be shed: the frame left
-        # once every droppable element is gone and no lock is rendered.
-        # Pricing the lock by itself let one that fits only without its
-        # frame escape this cut, shed every hit, and be cut anyway. When
-        # some lock must be cut whatever happens -- an earlier pass cut
-        # one, or the locks together overflow -- the line naming them is
-        # owed too, priced at its longest; when none must be, it is not.
-        frame = len(enforce_block_ceiling(body, 1).body) - sum(
-            r[3] for r in lock_renders
-        )
-        line_owed = bool(prior_omitted) or (
-            frame + sum(r[3] for r in lock_renders) > precut_chars
-        )
-        line_cap = len(lock_overflow_line(sorted(
-            [*prior_omitted, *(r[2] for r in lock_renders)],
-            key=len, reverse=True,
-        ))) if line_owed else 0
-        keep_renders: list[tuple[int, int, str, int]] = []
-        for render in lock_renders:
-            start, end, bid, cost = render
-            if frame + line_cap + cost > precut_chars:
-                cut.append((start, end))
-                remaining -= end - start
-                omitted.append((start, bid))
-                pointer = pointers.pop(bid, None)
-                if pointer is not None:
-                    cut.append(pointer)
-                    remaining -= pointer[1] - pointer[0]
-            else:
-                keep_renders.append(render)
-        lock_renders = keep_renders
     recap_shed = False
     taken = 0
-    while taken < len(order) and _tokens_from_chars(
-        remaining + (len(lock_overflow_line([b for _, b in omitted]))
-                     if omitted else 0)
-    ) > limit:
+    while taken < len(order) and _tokens_from_chars(remaining) > limit:
         m = order[taken]
         taken += 1
         if recap[0] <= m.start() < recap[1]:
@@ -1266,42 +1321,10 @@ def enforce_block_ceiling(
         if pointer is not None:
             cut.append(pointer)
             remaining -= pointer[1] - pointer[0]
-    # #1639: the locks alone do not fit. Keep them first-fit in render
-    # order -- each lock that fits what is left stays, whole -- and cut the
-    # rest, paying for the line that names them out of the same budget. A
-    # pointer the block cannot hold would be the silent loss this exists to
-    # prevent, so the line is priced at its worst case before any lock is
-    # kept.
-    if omit_locks and lock_renders and _tokens_from_chars(
-        remaining + (len(lock_overflow_line([b for _, b in omitted]))
-                     if omitted else 0)
-    ) > limit:
-        all_ids = [b for _, b in omitted] + [r[2] for r in lock_renders]
-        line_cap = len(lock_overflow_line(
-            sorted(all_ids, key=len, reverse=True)
-        ))
-        base = remaining - sum(r[3] for r in lock_renders)
-        used = base + line_cap
-        for start_i, end_i, bid, cost in lock_renders:
-            if used + cost <= budget_chars:
-                used += cost
-                continue
-            cut.append((start_i, end_i))
-            remaining -= end_i - start_i
-            omitted.append((start_i, bid))
-            pointer = pointers.pop(bid, None)
-            if pointer is not None:
-                cut.append(pointer)
-                remaining -= pointer[1] - pointer[0]
     for start, end in sorted(cut, reverse=True):
         body = body[:start] + body[end:]
-    omitted_ids = [b for _, b in sorted(omitted, key=lambda t: t[0])]
-    if omitted_ids and omit_locks:
-        body = body.rstrip("\n") + lock_overflow_line(omitted_ids)
-    new_ids = tuple(b for b in omitted_ids if b not in prior_omitted)
     return BlockCeilingOutcome(
-        body, tuple(dropped), _audit_tokens_from_block(body) > limit,
-        new_ids,
+        body, tuple(dropped), _audit_tokens_from_block(body) > limit
     )
 
 
@@ -1406,54 +1429,46 @@ def _write_memory_block(
     """
     limit = resolve_block_ceiling(stderr=stderr)
     # #1639: the envelope gets the room the fire's other blocks leave under
-    # `HOOK_PAYLOAD_CHAR_LIMIT`, priced in the same four-characters-per-
-    # token estimate the ceiling uses, so `room // 4` tokens can never
-    # exceed `room` characters. `AELFRICE_HOOK_BLOCK_CEILING=0` turns off
+    # `HOOK_PAYLOAD_CHAR_LIMIT`. `AELFRICE_HOOK_BLOCK_CEILING=0` turns off
     # this ceiling and the envelope's share of the payload bound; an
     # operator who sets it accepts the host's truncation.
-    room_tokens: int | None = None
-    if limit > 0:
-        # The largest token count whose every body fits `room_chars`:
-        # `_tokens_from_chars` is ceil(n / 4), so t tokens admits at most
-        # 4t characters. Derived from the estimator, not a second copy.
-        # Never 0: `enforce_block_ceiling` reads a limit of 0 as
-        # "disabled", so a fire whose other blocks left no room would emit
-        # the envelope untrimmed -- the opposite of the intent.
-        room_tokens = max(1, max(0, room_chars) // 4)
+    if limit <= 0:
+        outcome = enforce_block_ceiling(body, limit)
+    else:
+        room = max(0, room_chars)
+        # First, which locks the room holds. The frame is the block with
+        # every lock cut and every droppable element shed: what stays
+        # whatever is cut. A lock is never cut to meet the token ceiling
+        # alone (#379), only the room.
+        groups, recap_ids, wrapper, copies = _lock_groups(body)
+
+        def spans_of(ids: Sequence[str]) -> list[tuple[int, int]]:
+            return [sp for bid in ids
+                    for sp in groups[bid] + copies.get(bid, [])]
+
+        frame = len(enforce_block_ceiling(
+            _splice_out(body, spans_of(list(groups))), 1,
+        ).body) if groups else 0
+        omitted = _choose_locks_for_room(
+            groups, recap_ids, wrapper, frame, room)
+        cut_body = _splice_out(body, spans_of(omitted))
+        line = lock_overflow_line(list(omitted)) if omitted else ""
+        # Then trim the droppable lanes once, to the tighter of the token
+        # ceiling and the room the line leaves. The largest token count
+        # whose every body fits: `_tokens_from_chars` is ceil(n / 4), so t
+        # tokens admits at most 4t characters. Never 0, which
+        # `enforce_block_ceiling` reads as "disabled".
+        room_tokens = max(1, (room - len(line)) // 4)
         assert _tokens_from_chars(4 * room_tokens) == room_tokens
-    # Two passes, because the two bounds treat locks differently. The first
-    # trims the droppable lanes to the token ceiling and exempts every lock
-    # (#379), as the ceiling always has. The second runs only if the block
-    # still exceeds the payload room: it sheds whatever droppable content
-    # is left first, in the same order, and only then cuts whole locks and
-    # names them. A lock is never cut to meet the token ceiling alone.
-    passes: list[tuple[int, bool]] = [(limit, False)]
-    if room_tokens is not None:
-        passes.append((room_tokens, True))
-    outcome = BlockCeilingOutcome(body, (), False)
-    for pass_limit, omit_locks in passes:
-        # The second pass runs only when the first left the block over the
-        # room, and that is the only way a lock is ever cut. One call site,
-        # which `test_hook_injection_ceiling.py` pins.
-        if (
-            omit_locks
-            and not outcome.omitted_lock_ids
-            and _tokens_from_chars(len(outcome.body)) <= pass_limit
-        ):
-            break
-        step = enforce_block_ceiling(
-            outcome.body, pass_limit, omit_locks=omit_locks,
-            precut_limit=None if omit_locks else room_tokens,
-            prior_omitted=outcome.omitted_lock_ids,
-        )
+        step = enforce_block_ceiling(cut_body, min(limit, room_tokens))
+        trimmed = step.body.rstrip("\n") + line if line else step.body
         outcome = BlockCeilingOutcome(
-            step.body,
-            outcome.dropped_ids + step.dropped_ids,
-            # Against the token ceiling, whichever pass ran last: the
-            # second pass's own flag is about the room, and taking it would
-            # drop the operator's note that the ceiling was not met.
-            limit > 0 and _audit_tokens_from_block(step.body) > limit,
-            outcome.omitted_lock_ids + step.omitted_lock_ids,
+            trimmed,
+            step.dropped_ids,
+            # Against the token ceiling: a block the room holds can still
+            # be over an operator's lower ceiling, and that note stays.
+            _audit_tokens_from_block(trimmed) > limit,
+            omitted,
         )
     if outcome.omitted_lock_ids:
         stderr.write(
@@ -3216,9 +3231,12 @@ def user_prompt_submit(
         # the envelope emits. Skipped on gate_skip turns, as before. They
         # share what the payload bound leaves after the envelope's reserve,
         # so neither can eat that reserve; an opportunity that does not fit
-        # is not recorded as fired, and surfaces on a later turn.
+        # is not recorded as fired, and surfaces on a later turn. What they
+        # record runs only once they are written, below: a fire that fails
+        # before then shows nothing and so records nothing.
         phantom_block = ""
         promotion_block = ""
+        note_commits: list[Callable[[], None]] = []
         if not gate_skip:
             notes_room = max(
                 0,
@@ -3233,12 +3251,14 @@ def user_prompt_submit(
                 cwd=payload_cwd,
                 stderr=serr,
                 room_chars=notes_room,
+                commits=note_commits,
             ) or ""
             promotion_block = _maybe_phantom_promotion_block(
                 session_id=session_id,
                 cwd=payload_cwd,
                 stderr=serr,
                 room_chars=notes_room - len(phantom_block),
+                commits=note_commits,
             ) or ""
         envelope_room = (
             HOOK_PAYLOAD_CHAR_LIMIT
@@ -3783,6 +3803,15 @@ def user_prompt_submit(
         # fail-soft.
         if promotion_block:
             sout.write(promotion_block)
+        for commit in note_commits:
+            try:
+                commit()
+            except Exception as exc:  # fail-soft: bookkeeping only
+                print(
+                    f"aelfrice: phantom note record failed (non-fatal): "
+                    f"{exc}",
+                    file=serr,
+                )
     except ImportError as exc:
         # #1527: the retrieval subtree resolves through `_lazy` and a few
         # function-scope imports, so a partial install no longer trips the
@@ -3815,6 +3844,7 @@ def _maybe_phantom_opportunity_block(
     cwd: Path | None = None,
     stderr: IO[str] | None = None,
     room_chars: int | None = None,
+    commits: list[Callable[[], None]] | None = None,
 ) -> str:
     """Evaluate the #980 phantom-generation triggers and return the
     ``<aelfrice-phantom-opportunity>`` block, or ``""`` when the feature is
@@ -3851,6 +3881,7 @@ def _maybe_phantom_opportunity_block(
                 config=config,
                 stderr=serr,
                 room_chars=room_chars,
+                commits=commits,
             )
         finally:
             store.close()
@@ -3871,6 +3902,7 @@ def _maybe_phantom_promotion_block(
     cwd: Path | None = None,
     stderr: IO[str] | None = None,
     room_chars: int | None = None,
+    commits: list[Callable[[], None]] | None = None,
 ) -> str:
     """Evaluate the #1132 Q2 phantom promotion-opportunity trigger and return
     the ``<aelfrice-phantom-promotion-opportunity>`` block, or ``""`` when the
@@ -3905,6 +3937,7 @@ def _maybe_phantom_promotion_block(
                 config=config,
                 stderr=serr,
                 room_chars=room_chars,
+                commits=commits,
             )
         finally:
             store.close()
@@ -6671,8 +6704,8 @@ def session_start(
             #
             # So `dropped_ids` is always empty here and is not routed. The
             # one thing the trim can remove is a lock, and only under the
-            # #1639 payload room: trailing locks are cut whole and named in
-            # the block's last line, and `omitted_lock_ids` below keeps them
+            # #1639 payload room: locks the room cannot hold are cut whole
+            # and named in the block's last line, and `omitted_lock_ids` below keeps them
             # out of the ledger and the audit row.
             # `.body` for the audit row below, as at both sibling sites:
             # test_session_start_audit_row_records_the_block_it_emitted
