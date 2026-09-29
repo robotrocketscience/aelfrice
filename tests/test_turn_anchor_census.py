@@ -54,6 +54,9 @@ def test_census_counts_turns_and_anchor_kinds(
         # logged turn -- which is why the count is an upper bound.
         {"session_id": "s2",
          "text": "Glaciers retreat measurably faster in warmer decades."},
+        # No session id: not a turn identity, and no turn anchor.
+        {"ts": "2026-08-03T00:00:00Z",
+         "text": "Migratory birds navigate using magnetic field lines."},
     ]
     path = tmp_path / "t.jsonl"
     path.write_text("".join(
@@ -62,18 +65,31 @@ def test_census_counts_turns_and_anchor_kinds(
     db = tmp_path / "census.db"
     store = MemoryStore(str(db))
     ingest_jsonl(store, path)
+    # Manual anchors are not transcript anchors, with a fragment or not.
+    some_belief = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT belief_id FROM belief_documents LIMIT 1"
+    ).fetchone()[0]
+    store.link_belief_to_document(
+        belief_id=some_belief, doc_uri="file:notes.md#setup",
+        anchor_type="manual", position_hint="setup",
+    )
+    store.link_belief_to_document(
+        belief_id=some_belief, doc_uri="file:notes.md",
+        anchor_type="manual", position_hint=None,
+    )
     store.close()
 
     assert census_module.census(db) == {
-        "transcript_rows": 4,
+        "transcript_rows": 5,
         "rows_with_turn_identity": 4,
         "distinct_turns": 3,
         "distinct_sessions": 2,
         "beliefs_reachable": 4,
         "rows_with_turn_sha": 3,
-        "anchors_by_kind": {"turn": 3, "label_only": 1},
-        # The two sentences of one turn share its anchor URI.
-        "distinct_doc_uris": 3,
+        "transcript_anchors": {"turn": 3, "label_only": 2},
+        # Two turn URIs (the two sentences of one turn share one), the
+        # bare label, and the two manual anchors.
+        "distinct_doc_uris": 5,
     }
 
 
