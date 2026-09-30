@@ -708,8 +708,8 @@ ATTR_CHAR_CAP: Final[int] = 400
 """Longest `query` / `cmd` attribute value the block carries (#1639).
 
 Both come from the agent's own tool call and are otherwise unbounded: a
-Grep for a 20,000-character pattern wrote a 21,016-character block, twice
-the host's inline limit, with no result line to cut. Truncated before
+Grep for a 20,000-character pattern wrote a block of more than 20,000
+characters, twice the host's inline limit, with no result line to cut. Truncated before
 escaping, and marked, so the block stays under `HOOK_PAYLOAD_CHAR_LIMIT`
 whatever the call carries.
 """
@@ -839,12 +839,28 @@ def _format_results_with_ids(
     kept_ids = list(line_ids)
     omitted: list[str] = []
     context = assemble(kept, omitted)
+    popped: list[tuple[str, str, bool]] = []
     while kept and len(context) > HOOK_PAYLOAD_CHAR_LIMIT:
-        kept.pop()
+        line = kept.pop()
         bid, is_lock = kept_ids.pop()
+        popped.append((line, bid, is_lock))
         if is_lock:
             omitted.insert(0, bid)
         context = assemble(kept, omitted)
+    # The tail pop reserved room for a line naming every lock it cut; a cut
+    # lock may fit in what a shorter line leaves. Take locks back in order,
+    # each only if the block still fits -- never an L1 line, which the
+    # ruling sheds before any lock.
+    for line, bid, is_lock in reversed(popped):
+        if not is_lock or bid not in omitted:
+            continue
+        trial_omitted = [b for b in omitted if b != bid]
+        trial = assemble([*kept, line], trial_omitted)
+        if len(trial) <= HOOK_PAYLOAD_CHAR_LIMIT:
+            kept.append(line)
+            kept_ids.append((bid, is_lock))
+            omitted = trial_omitted
+            context = trial
     return context, [bid for bid, _ in kept_ids]
 
 

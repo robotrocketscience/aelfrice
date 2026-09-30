@@ -790,6 +790,12 @@ def test_ups_seen_pointer_on_turn_two_names_a_belief_turn_one_rendered(
     rest of the session.
     """
     monkeypatch.setenv("AELFRICE_TURN_DIFFERENTIAL", "1")
+    # The ledger is the subject, not the payload bound: under the #1639
+    # bound this store's turn two sheds its earlier-turn pointers to fit,
+    # which would leave nothing here to check.
+    from aelfrice import hook as hook_mod
+
+    monkeypatch.setattr(hook_mod, "HOOK_PAYLOAD_CHAR_LIMIT", 10**6)
     db = tmp_path / "memory.db"
     session_id = "s-ledger"
     _seed(

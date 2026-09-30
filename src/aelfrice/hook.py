@@ -442,16 +442,16 @@ scripts/measure_block_ceiling.py --cadence`.
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_payload_tokens = 11926 -->
 <!-- derived: scripts/measure_block_ceiling.py#cadence_fire_memory_tokens = 5898 -->
 
-With the payload bound in force, the same fire writes 9370 characters
-where it wrote 47703, and a 300-lock store writes 9172 where it wrote
+With the payload bound in force, the same fire writes 9383 characters
+where it wrote 47703, and a 300-lock store writes 9185 where it wrote
 106565: 21 locks shown whole, and 279 cut and listed in the overflow
 line, 20 by id and the rest as a count.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
 --payload`; `test_hook_inline_limit_1639.py` asserts the bound against
 captured stdout.
-<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_bounded = 9370 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_bounded = 9383 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_cadence_chars_lifted = 47703 -->
-<!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_bounded = 9172 -->
+<!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_bounded = 9185 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_locks_chars_lifted = 106565 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_locks_shown_bounded = 21 -->
 <!-- derived: scripts/measure_block_ceiling.py#payload_locks_omitted_bounded = 279 -->
@@ -961,7 +961,8 @@ def lock_overflow_line(omitted: list[str]) -> str:
     ids = ", ".join(named) + (f", and {more} more" if more else "")
     return (
         f"\naelfrice: {len(omitted)} user lock(s) did not fit this hook's "
-        f"output limit and are not shown: {ids}. Run `aelf locked` to read "
+        f"output limit and are not shown in full here: {ids}. Run "
+        f"`aelf locked` to read "
         "every lock.\n"
     )
 
@@ -1148,6 +1149,58 @@ def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
     for lo, hi in sorted(spans, reverse=True):
         body = body[:lo] + body[hi:]
     return body
+
+
+def _shed_frame(
+    body: str, target: int, *, stripped: bool = True,
+) -> tuple[str, int]:
+    """Shed what the envelope can lose without losing content (#1639).
+
+    The last resort when the block is still over `target` with every
+    droppable element shed and the locks chosen: that can only be frame
+    the trim does not schedule. Two parts of it carry no content the model
+    lacks. First, `seen` pointers to beliefs this block does not render --
+    a turn-differential block points at beliefs an earlier turn showed, and
+    their text is already in the context window -- dropped from the last
+    one back, and their manifest wrapper with them if it empties. Then the
+    `<recent-work>` lane, which repeats what the repository's history says.
+    What is left is headers and the locks the room was chosen to hold.
+
+    `stripped` measures the body without its trailing newlines, as it is
+    written when a line naming cut locks follows it.
+
+    Returns the body and how many pieces it shed.
+    """
+    def size(text: str) -> int:
+        return len(text.rstrip("\n")) if stripped else len(text)
+
+    shed = 0
+    if size(body) <= target:
+        return body, shed
+    elements = [m.span() for m in _BELIEF_ELEMENT_RE.finditer(body)]
+    rendered = {m.group("id") for m in _BELIEF_ELEMENT_RE.finditer(body)}
+    pointers = [
+        m.span() for m in _SEEN_MANIFEST_RE.finditer(body)
+        if m.group("id") not in rendered
+        and not any(lo <= m.start() < hi for lo, hi in elements)
+    ]
+    for lo, hi in reversed(pointers):
+        body = body[:lo] + body[hi:]
+        shed += 1
+        if size(body) <= target:
+            break
+    if pointers:
+        body = _EMPTY_MANIFEST_RE.sub("", body)
+    if size(body) <= target:
+        return body, shed
+    recent = _section_span(body, RECENT_WORK_OPEN_TAG, RECENT_WORK_CLOSE_TAG)
+    if recent[0] >= 0:
+        end = recent[1]
+        while end < len(body) and body[end] == "\n":
+            end += 1
+        body = body[:recent[0]] + body[end:]
+        shed += 1
+    return body, shed
 
 
 def _without_empty_recap(body: str, before: str) -> str:
@@ -1503,15 +1556,22 @@ def _write_memory_block(
             return [sp for bid in ids
                     for sp in groups[bid] + copies.get(bid, [])]
 
-        frame_body = enforce_block_ceiling(_without_empty_recap(
-            _splice_out(body, spans_of(list(groups))), body), 1,
-        ).body if groups else ""
+        # The frame leaves out what `_shed_frame` can shed, so a lock is
+        # never cut to keep an earlier turn's pointer or `<recent-work>`.
+        # The manifest wrapper stays in the frame: a kept lock's pointer
+        # keeps it in the block.
+        frame_body = _shed_frame(enforce_block_ceiling(
+            _without_empty_recap(
+                _splice_out(body, spans_of(list(groups))), body), 1,
+        ).body, 0)[0] if groups else ""
         cut = _choose_locks_for_room(
             groups, recap_ids, wrapper, len(frame_body), room,
             frame_before_line=len(frame_body.rstrip("\n")),
         )
         cut_body = _without_empty_recap(
             _splice_out(body, spans_of(cut)), body)
+        if cut:
+            cut_body = _EMPTY_MANIFEST_RE.sub("", cut_body)
         omitted = cut
         line = lock_overflow_line(list(omitted)) if omitted else ""
         # Then trim the droppable lanes once, to the tighter of the token
@@ -1521,8 +1581,19 @@ def _write_memory_block(
         # `enforce_block_ceiling` reads as "disabled".
         room_tokens = max(1, (room - len(line)) // 4)
         assert _tokens_from_chars(4 * room_tokens) == room_tokens
+        # Earlier turns' pointers and `<recent-work>` carry nothing the
+        # model lacks, so they go before the droppable lanes do.
+        cut_body, frame_shed = _shed_frame(
+            cut_body, room - len(line), stripped=bool(line))
         step = enforce_block_ceiling(cut_body, min(limit, room_tokens))
-        trimmed = step.body.rstrip("\n") + line if line else step.body
+        fitted = step.body
+        if frame_shed:
+            stderr.write(
+                f"aelfrice hook: shed {frame_shed} frame piece(s) -- earlier "
+                "turns' `seen` pointers or `<recent-work>` -- to fit the "
+                "hook's output limit\n"
+            )
+        trimmed = fitted.rstrip("\n") + line if line else fitted
         outcome = BlockCeilingOutcome(
             trimmed,
             step.dropped_ids,
@@ -4985,6 +5056,12 @@ smaller: `_drop_duplicate_ref_lines` is never handed a rendered block. It
 is handed the manifest entries `_lift_manifest_block` cut out of one, so
 belief content is not in its input at all.
 """
+
+_EMPTY_MANIFEST_RE: Final[re.Pattern[str]] = re.compile(
+    re.escape(LOCKS_MANIFEST_OPEN_TAG) + r"\n" + re.escape(LOCKS_MANIFEST_CLOSE_TAG)
+    + r"\n?",
+)
+"""A `<aelfrice-locks-manifest>` wrapper left holding no entry (#1639)."""
 
 _LOCKS_MANIFEST_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     re.escape(LOCKS_MANIFEST_OPEN_TAG)

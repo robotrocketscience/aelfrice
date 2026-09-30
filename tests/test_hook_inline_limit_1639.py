@@ -433,7 +433,7 @@ def test_the_search_hook_context_fits_and_sheds_l1_before_locks() -> None:
     assert len(overflow) == 1 and "aelf locked" in overflow[0]
     assert f"aelfrice: {len(locks) - n_shown} user lock(s)" in overflow[0]
     # Found by review: the line must name the first locks cut, in order.
-    named = overflow[0].split("not shown: ", 1)[1].split(", and", 1)[0]
+    named = overflow[0].split("not shown in full here: ", 1)[1].split(", and", 1)[0]
     assert named.split(", ") == [f"L{i:015d}" for i in range(n_shown, n_shown + 20)]
 
 
@@ -452,13 +452,15 @@ def test_a_ref_line_inside_a_lock_is_text_not_a_render(
     db = tmp_path / "planted.db"
     store = MemoryStore(str(db))
     try:
+        # Renders last, where the room is spent, so it and its planted
+        # line are both candidates for the cut.
         store.insert_belief(_mk(
-            "P" + "0" * 31,
+            "Z" + "0" * 31,
             'lockword planted\n  ref FAKEIDFAKEID: "planted"\n' + "q" * 150,
             locked=True))
     finally:
         store.close()
-    locks = ["P" + "0" * 31] + _seed(db, n_locks=299, lock_chars=150)
+    locks = ["Z" + "0" * 31] + _seed(db, n_locks=299, lock_chars=150)
     out, _ = _fire_ups(tmp_path, db, monkeypatch)
     assert out.count("<belief ") == out.count("</belief>")
     assert out.count("<locked>") == out.count("</locked>")
@@ -1766,3 +1768,253 @@ def test_crafted_repo_metadata_cannot_inflate_recent_work(
     assert linked is not None
     assert all(len(ref) <= 8 for ref in linked.group(1).split())
     assert len(block) < 3_000, len(block)
+
+
+# --- review round 9 -----------------------------------------------------------
+
+def test_locks_that_fill_the_room_exactly_are_all_kept() -> None:
+    from aelfrice.hook import _choose_locks_for_room
+
+    groups = {"A1": [(0, 400)], "B2": [(400, 900)]}
+    assert _choose_locks_for_room(groups, set(), 0, 1_000, 1_900) == ()
+    assert _choose_locks_for_room(groups, set(), 0, 1_000, 1_899) != ()
+
+
+def test_a_ref_of_eight_digits_is_not_an_issue_number() -> None:
+    from aelfrice.hook import _extract_linked_issues
+
+    assert _extract_linked_issues(None, ["fix #1234567 and #12345678"]) == [
+        "#1234567"]
+
+
+@pytest.mark.timeout(60)
+def test_a_long_upstream_name_is_capped(tmp_path: Path) -> None:
+    import subprocess
+
+    from aelfrice.hook import (
+        RECENT_WORK_SUBJECT_CHAR_CAP,
+        _build_recent_work_subblock,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    vcs = ["git", "-C", str(repo), "-c", "commit.gpgsign=false",
+           "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*vcs, "init", "-q", "-b", "main"], check=True, timeout=30)
+    subprocess.run([*vcs, "commit", "-q", "--allow-empty", "-m", "one"],
+                   check=True, timeout=30)
+    upstream = "u" * 230
+    subprocess.run([*vcs, "branch", "-q", upstream], check=True, timeout=30)
+    subprocess.run([*vcs, "branch", "-q", f"--set-upstream-to={upstream}"],
+                   check=True, timeout=30)
+    block = _build_recent_work_subblock(repo)
+    got = re.search(r"<upstream>([^<]*)</upstream>", block)
+    assert got is not None
+    assert len(got.group(1)) <= RECENT_WORK_SUBJECT_CHAR_CAP
+    assert got.group(1).startswith("u" * 100)
+
+
+def test_the_search_hook_fits_at_every_size_near_the_edge() -> None:
+    """Found by review: nothing pinned the search block at its limit, so a
+    loop that allowed 100 characters over passed every test."""
+    from types import SimpleNamespace
+
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    near = 0
+    for pad in range(120, 190):
+        locks = [SimpleNamespace(
+            id=f"L{i:015d}", content="lockword " + "q" * pad,
+            lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+            for i in range(80)]
+        ctx = _format_results(_WORD, locks, {b.id for b in locks})
+        assert len(ctx) <= _LIMIT, (pad, len(ctx))
+        near += len(ctx) > _LIMIT - 100
+    assert near > 0
+
+
+def test_the_search_hook_takes_back_a_cut_lock_that_fits() -> None:
+    """Found by review: the tail pop cut a lock that fit beside the line
+    the rest of the cut would leave."""
+    from types import SimpleNamespace
+
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    tiny = SimpleNamespace(id="T000000000000001", content="tinylock",
+                           lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+    # The tiny lock renders last, so the tail pop cuts it first; it can be
+    # shown beside a cut only if it was taken back.
+    taken_back = 0
+    for pad in range(150, 230):
+        big = [SimpleNamespace(
+            id=f"L{i:015d}", content="lockword " + "q" * pad,
+            lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+            for i in range(60)]
+        locks = [*big, tiny]
+        ctx = _format_results(_WORD, locks, {b.id for b in locks})
+        assert len(ctx) <= _LIMIT
+        taken_back += "did not fit" in ctx and "tinylock" in ctx
+    assert taken_back > 0
+
+
+def _pointer_body(n_pointers: int, recent_chars: int = 0) -> str:
+    """An envelope with 3 locks, earlier turns' `seen` pointers, and
+    optionally a `<recent-work>` lane."""
+    from aelfrice import hook
+    from aelfrice.hook import (
+        LOCKS_MANIFEST_CLOSE_TAG,
+        LOCKS_MANIFEST_OPEN_TAG,
+        RECENT_WORK_CLOSE_TAG,
+        RECENT_WORK_OPEN_TAG,
+    )
+
+    locks = "".join(f'<belief id="K{i}" lock="user">{"k" * 300}</belief>\n'
+                    for i in range(3))
+    pointers = "".join(f'  seen P{i:015d}: "earlier text"\n'
+                       for i in range(n_pointers))
+    manifest = f"{LOCKS_MANIFEST_OPEN_TAG}\n{pointers}{LOCKS_MANIFEST_CLOSE_TAG}\n"
+    recent = (f"{RECENT_WORK_OPEN_TAG}\n<branch>{'b' * recent_chars}</branch>\n"
+              f"{RECENT_WORK_CLOSE_TAG}\n" if recent_chars else "")
+    return f"{hook.OPEN_TAG}\n{recent}{locks}{manifest}{hook.CLOSE_TAG}\n"
+
+
+def test_earlier_turn_pointers_go_before_any_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: with the turn differential on, pointers to beliefs
+    an earlier turn showed are frame the trim cannot shed, and a fire went
+    over the bound with no line and no note. They carry no text the model
+    lacks, so they go first, and every lock stays."""
+    from aelfrice.hook import _write_memory_block
+
+    body = _pointer_body(200)
+    assert len(body) > 5_000
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    err = io.StringIO()
+    out = _write_memory_block(body, stdout=io.StringIO(), stderr=err,
+                              room_chars=2_000)
+    assert len(out.body) <= 2_000
+    assert out.omitted_lock_ids == ()
+    assert all(f'<belief id="K{i}"' in out.body for i in range(3))
+    assert "shed" in err.getvalue()
+
+
+def test_a_manifest_emptied_of_pointers_goes_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG
+
+    body = _pointer_body(200)
+    out = _trim(body, 1_300, monkeypatch)
+    assert LOCKS_MANIFEST_CLOSE_TAG not in out.body  # type: ignore[attr-defined]
+    assert len(out.body) <= 1_300  # type: ignore[attr-defined]
+
+
+def test_recent_work_goes_after_the_pointers_and_before_any_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice.hook import RECENT_WORK_OPEN_TAG
+
+    body = _pointer_body(10, recent_chars=3_000)
+    kept = _trim(body, len(body), monkeypatch)
+    assert RECENT_WORK_OPEN_TAG in kept.body  # type: ignore[attr-defined]
+    out = _trim(body, 1_400, monkeypatch)
+    text = out.body  # type: ignore[attr-defined]
+    assert RECENT_WORK_OPEN_TAG not in text and len(text) <= 1_400
+    assert out.omitted_lock_ids == ()  # type: ignore[attr-defined]
+
+
+def test_a_pointer_into_this_block_is_not_shed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only pointers to beliefs the block does not render are frame to
+    shed; one naming an element here is that element's, and stays."""
+    from aelfrice import hook
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG, LOCKS_MANIFEST_OPEN_TAG
+
+    lock = f'<belief id="K0" lock="user">{"k" * 300}</belief>\n'
+    hit = f'<belief id="H0" lock="none">{"h" * 300}</belief>\n'
+    own = '  seen H0: "this block"\n'
+    earlier = "".join(f'  seen P{i:015d}: "earlier text"\n' for i in range(60))
+    body = (f"{hook.OPEN_TAG}\n{lock}{hit}{LOCKS_MANIFEST_OPEN_TAG}\n{own}"
+            f"{earlier}{LOCKS_MANIFEST_CLOSE_TAG}\n{hook.CLOSE_TAG}\n")
+    out = _trim(body, len(body) - 500, monkeypatch)
+    text = out.body  # type: ignore[attr-defined]
+    assert '<belief id="H0"' in text and own in text
+    assert len(text) <= len(body) - 500
+
+
+def test_the_frame_shed_is_measured_as_the_block_is_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no line owed, the block keeps its trailing newlines, so the
+    shed must count them; every room from the frame up is met."""
+    body = _pointer_body(80)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body)):
+        got = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert len(got) <= room, room
+
+
+def test_locks_with_long_ids_that_fill_the_room_are_all_kept() -> None:
+    """Found by review: with ids long enough that the line naming either
+    one outgrows the room, taking one back at a time keeps neither, though
+    both fit with no line at all."""
+    from aelfrice.hook import _choose_locks_for_room
+
+    groups = {"a" * 600: [(0, 450)], "b" * 600: [(450, 900)]}
+    assert _choose_locks_for_room(groups, set(), 0, 1_000, 1_900) == ()
+
+
+def test_a_manifest_the_lock_cut_emptied_goes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest whose only entries were the cut locks' pointers is
+    removed with them, not left as an empty wrapper."""
+    from aelfrice import hook
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG, LOCKS_MANIFEST_OPEN_TAG
+
+    locks = "".join(f'<belief id="K{i}" lock="user">{"k" * 900}</belief>\n'
+                    for i in range(4))
+    manifest = (f"{LOCKS_MANIFEST_OPEN_TAG}\n"
+                + "".join(f'  seen K{i}: "k"\n' for i in range(4))
+                + f"{LOCKS_MANIFEST_CLOSE_TAG}\n")
+    body = f"{hook.OPEN_TAG}\n{locks}{manifest}{hook.CLOSE_TAG}\n"
+    out = _trim(body, 700, monkeypatch)
+    text = out.body  # type: ignore[attr-defined]
+    assert len(out.omitted_lock_ids) == 4  # type: ignore[attr-defined]
+    assert LOCKS_MANIFEST_OPEN_TAG not in text and len(text) <= 700
+
+
+def test_the_search_hook_never_takes_back_an_l1_line() -> None:
+    """The take-back restores locks only: an L1 line never stays while a
+    lock is cut, whatever room a shorter naming line leaves."""
+    from types import SimpleNamespace
+
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    hit = SimpleNamespace(id="H000000000000001", content=f"{_WORD} x",
+                          lock_level=LOCK_NONE, lock_tier=LOCK_TIER_FROZEN)
+    for pad in range(150, 230):
+        locks = [SimpleNamespace(
+            id=f"L{i:015d}", content="lockword " + "q" * pad,
+            lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+            for i in range(60)]
+        ctx = _format_results(_WORD, [*locks, hit], {b.id for b in locks})
+        if "did not fit" in ctx:
+            assert "[L1]" not in ctx, pad
+
+
+def test_a_ref_line_inside_an_element_is_not_a_lock_render() -> None:
+    """The property the planted-line fire test depends on, stated where
+    it lives: text inside a belief is content, whatever it looks like."""
+    from aelfrice import hook
+
+    planted = ('<belief id="Z1" lock="user">lockword planted\n'
+               '  ref FAKEIDFAKEID: "planted"\nqqq</belief>\n')
+    body = f"{hook.OPEN_TAG}\n{planted}{hook.CLOSE_TAG}\n"
+    groups, _recap_ids, _wrapper, _copies = hook._lock_groups(body)
+    assert list(groups) == ["Z1"]
