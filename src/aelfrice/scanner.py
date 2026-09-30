@@ -81,6 +81,14 @@ _DOC_EXTENSIONS: Final[frozenset[str]] = frozenset({
 # Stops trivial one-liners from polluting the store.
 _MIN_PARAGRAPH_CHARS: Final[int] = 24
 
+# Maximum paragraph length (in chars); a longer paragraph is dropped
+# (#1616). A data file with no blank lines is one "paragraph", and one
+# such file produced a 54 MB candidate that went whole into a classifier
+# prompt. 4,000 sits just above the measured p99 of real doc paragraphs
+# (3,541), so it drops about 1% of candidates and keeps a candidate
+# near 1k tokens.
+_MAX_PARAGRAPH_CHARS: Final[int] = 4_000
+
 
 @dataclass
 class SentenceCandidate:
@@ -774,6 +782,11 @@ def extract_filesystem(
         rel = path.relative_to(root).as_posix()
         commit_date = rec.get(rel)
         for idx, para in enumerate(_split_paragraphs(text)):
+            # Dropped after numbering, not in _split_paragraphs: the index
+            # is part of the source and so of the belief id, and filtering
+            # first would renumber every later paragraph in the file.
+            if len(para) > _MAX_PARAGRAPH_CHARS:
+                continue
             candidates.append(
                 SentenceCandidate(
                     text=para,
