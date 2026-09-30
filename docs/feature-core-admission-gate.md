@@ -71,6 +71,10 @@ arms only if a classifier has labeled it as one of the following:
   CLI emits the candidates, the host dispatches its cheapest model, and the
   CLI accepts the labels. The aelfrice CLI makes no outbound call. For that
   flow, read [`design/llm_classifier.md`](design/llm_classifier.md).
+- The precedent is the pattern, not the payload. The onboard handshake
+  accepts `belief_type` and `persist` for the four belief types, and it
+  rejects any other type. This gate needs its own accepted schema that
+  carries the A, B, or C label and the classifier version.
 
 ### Self-verification
 
