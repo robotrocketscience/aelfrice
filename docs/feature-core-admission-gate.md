@@ -62,8 +62,11 @@ arms only if a classifier has labeled it as one of the following:
   ships with the implementation.
 - The classifier runs offline and in batches, never on the hot path. It runs
   over new core candidates, for example at session end or from `aelf doctor`.
-- Results are cached by the hash of the belief's content, and the cached
-  label is reused. Given the cache, the gate is deterministic.
+- Results are cached. The cache key is the hash of the belief's content
+  together with a classifier version that identifies the rubric, the prompt,
+  and the model. Changing any of the three bumps the version, so an old label
+  is never applied under a new classifier. Given the cache, the gate is
+  deterministic.
 - The host-driven onboard classifier is the precedent for the call path. The
   CLI emits the candidates, the host dispatches its cheapest model, and the
   CLI accepts the labels. The aelfrice CLI makes no outbound call. For that
