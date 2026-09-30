@@ -2403,3 +2403,17 @@ def test_a_trim_fits_every_room_it_is_given(
     for room in range(floor, len(body) + 4):
         out = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
         assert len(out) <= room, (room, len(out))
+
+
+@pytest.mark.parametrize("pad", range(3))
+def test_the_wider_trim_never_passes_the_ceiling(pad: int) -> None:
+    """Found by review: at avail // 4 == limit the t + 1 trim is one token
+    over the ceiling, and no test held that boundary. The body fits its
+    room, but the ceiling sits one token below it."""
+    from aelfrice.hook import _trim_to_chars
+
+    body = _four_hits(pad)
+    assert len(body) % 4, "the boundary needs a length t + 1 tokens covers"
+    limit = len(body) // 4
+    out = _trim_to_chars(body, len(body), limit)
+    assert -(-len(out.body) // 4) <= limit, (len(body), len(out.body))

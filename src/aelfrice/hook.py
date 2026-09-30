@@ -1244,7 +1244,9 @@ def _trim_to_chars(body: str, avail: int, limit: int) -> BlockCeilingOutcome:
     sits between two token counts: t = avail // 4 admits at most 4t
     characters, and t + 1 admits up to 4t + 4, which can overrun `avail`.
     The t + 1 trim is kept when its body fits -- always, for a body that
-    already fits -- and t, which always fits, is the fallback. Rounding t
+    already fits and is under `limit` -- and t is the fallback. t fits
+    whenever `avail` covers the locks and frame the trim cannot drop;
+    below that the caller cuts another lock and renders again. Rounding t
     down alone cut a body up to 3 characters under its room, and trimmed
     one element more than the room called for (#1639). t is never 0,
     which `enforce_block_ceiling` reads as "disabled".
