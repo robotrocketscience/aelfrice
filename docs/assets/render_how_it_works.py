@@ -8,7 +8,8 @@ all-pairs for color-vision deficiency in both modes; everything else is
 neutral ink, and every colored mark carries a text label, so color is
 never the only cue.
 
-  violet   retrieval: every prompt, the hook reads the store and adds a block
+  violet   retrieval: on every prompt, and on every search the agent runs,
+           a hook reads the store and adds a block
   magenta  lock: a typed /aelf:lock writes a rule that comes back every time
   green    capture: each turn is logged, and your sentences are ingested
            as beliefs linked by DERIVED_FROM edges
@@ -155,7 +156,7 @@ def render(mode: str) -> pathlib.Path:
     row = [
         (0.4, "You type", "a prompt, or /aelf:lock <rule>"),
         (4.4, "Prompt hook", "UserPromptSubmit"),
-        (8.4, "The model replies", ""),
+        (8.4, "The model replies", "its searches fire the search hook"),
         (12.2, "Stop hook", "runs after each reply"),
     ]
     for x, title, sub in row:
@@ -170,7 +171,7 @@ def render(mode: str) -> pathlib.Path:
     col = [0.4, 5.75, 11.1]
     width = 4.5
     heads = [
-        (t["violet"], "Every prompt: retrieve"),
+        (t["violet"], "Every prompt and search: retrieve"),
         (t["magenta"], "A typed /aelf:lock: store a rule"),
         (t["green"], "After each reply: capture"),
     ]
@@ -259,7 +260,7 @@ def render(mode: str) -> pathlib.Path:
          "(α, β), typed edges, and locks, in one file under your "
          "repository's .git directory", 9.5, color=t["ink2"])
     for x, color, label, up in [
-        (col[0], t["violet"], "read on every prompt", True),
+        (col[0], t["violet"], "read on every prompt and search", True),
         (col[1], t["magenta"], "locks written", False),
         (col[2], t["green"], "beliefs written", False),
     ]:
