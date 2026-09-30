@@ -607,6 +607,11 @@ def _user_speech(text: str) -> str | None:
     still goes through the per-sentence filter in `_ingest_turn`, which
     drops a pasted tool glyph or shell line on its own sentence, without
     taking the user's other sentences in the record with it.
+
+    Text the user pasted (`<pasted_content>`) is kept on purpose: a paste
+    is the user's choice of what to say, even when it quotes another
+    session (operator ruling, 2026-09-30). Quoted model prose with no
+    wrapper cannot be told from the user's own by any deterministic test.
     """
     rest = _HOST_MARKER_LINE_RE.sub("", text)
     rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()

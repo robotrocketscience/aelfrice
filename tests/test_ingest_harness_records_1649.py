@@ -97,7 +97,10 @@ def test_the_local_logger_shape_is_gated_too(tmp_path: Path) -> None:
 BANNER = (
     "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
     "This is an automated background-task event, NOT a message from the user.\n"
-    "No human input has been received since the last genuine user message.\n\n"
+    "Do NOT interpret this as user acknowledgement, confirmation, or response "
+    "to any pending question.\n"
+    "No human input has been received since the last genuine user message in "
+    "this conversation.\n\n"
 )
 
 
@@ -242,3 +245,49 @@ def test_the_chain_anchor_is_the_cleaned_text(tmp_path: Path) -> None:
     assert anchors, "expected a DERIVED_FROM edge between the two turns"
     assert all("mutation harness" not in (a or "") for a in anchors), anchors
     assert any("pyright" in (a or "") for a in anchors), anchors
+
+
+from aelfrice.ingest import _user_speech  # noqa: E402
+
+# Spelled out here, not read from `ingest._HARNESS_BLOCK_TAGS`: a test
+# parametrized over the module's own list loses the case for any tag the
+# list loses, so it could never catch the removal it exists to catch.
+AUDITED_TAGS = (
+    "task-notification", "system-reminder", "tool-result",
+    "cross-session-message", "aelfrice-worker-context",
+    "task-id", "tool-use-id", "output-file", "status", "summary", "result",
+    "usage", "bash-input", "bash-stdout", "bash-stderr",
+    "local-command-stdout", "local-command-stderr", "local-command-caveat",
+    "user-prompt-submit-hook", "command-name", "command-message",
+    "command-args",
+)
+
+
+@pytest.mark.parametrize("tag", AUDITED_TAGS)
+def test_every_harness_tag_is_cut_after_the_users_words(tag: str) -> None:
+    """Found by the third review: dropping any one tag from the list left
+    every test green while real records leaked (five `bash-input`, ten
+    `local-command-stdout`). One case per tag pins the whole list."""
+    speech = _user_speech(USER + "\n" + _wrap(tag))
+    assert speech == USER, (tag, speech)
+
+
+@pytest.mark.parametrize("line", [ln for ln in BANNER.splitlines() if ln])
+def test_each_banner_line_is_cut_on_its_own(line: str) -> None:
+    """Each of the host's four banner lines goes, whichever of them a
+    record carries, and the user's words beside it stay."""
+    assert _user_speech(line + "\n" + USER) == USER
+
+
+def test_an_unclosed_reminder_is_cut_to_the_end() -> None:
+    """The reminder pass only matches a closed block; an unclosed one is
+    left to the tag list's unclosed-block pass."""
+    assert _user_speech(USER + "\n<system-reminder>\n" + REPORT) == USER
+
+
+@pytest.mark.parametrize("tag", ["bash-stdout", "system-reminder"])
+def test_the_users_words_between_two_blocks_are_kept(tag: str) -> None:
+    """A greedy match would run from the first block's opener to the last
+    block's closer and take the user's words between them."""
+    text = f"{_wrap(tag, 'first')}\n{USER}\n{_wrap(tag, 'second')}"
+    assert _user_speech(text) == USER
