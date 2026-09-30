@@ -3,10 +3,12 @@
 **Status:** proposal. Nothing in this document is implemented.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
-This spec proposes a content gate for `aelf core` and for the SessionStart
-`<core>` lane that `aelf core` feeds. A belief qualifies through the non-lock
-arms only if an offline classifier has judged it truth-apt. Locked beliefs
-aren't affected.
+This spec proposes a content gate for core admission. Two consumers select
+core independently: `aelf core` (`cli._qualifies_core`) and the SessionStart
+`<core>` lane (`hook._belief_qualifies_core`). Neither reads the other's
+output, so the gate must apply in both. A belief qualifies through the
+non-lock arms only if an offline classifier has judged it truth-apt. Locked
+beliefs aren't affected.
 
 ## Problem
 
