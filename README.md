@@ -10,7 +10,7 @@
 [![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
-**aelfrice gives an AI coding agent a local memory: the rules you lock, and the beliefs that match what you ask, reach the model before it reads your message.**
+**aelfrice gives an AI coding agent a local memory: the rules you lock, and the memories that match what you ask, reach the model before it reads your message.**
 
 - **Problem.** An agent forgets your corrections between sessions, so you repeat them.
 - **Method.** Before the model reads each prompt, a hook adds every rule you locked and the beliefs that best match the prompt, from an entity index and BM25 full-text search over a local SQLite store.
