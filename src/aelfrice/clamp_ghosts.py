@@ -16,7 +16,9 @@ Every current α-mutation path leaves at least one of those trails:
   ``UPDATE beliefs SET alpha = alpha + ?`` AND the feedback_history
   row inside the same ``BEGIN IMMEDIATE`` transaction.
 - ``store.insert_or_corroborate`` content-hash hit → does NOT bump α
-  but DOES record a corroboration row.
+  but DOES record a corroboration row. A filesystem re-read (#1615)
+  records no row, and it does not bump α either, so it is not an
+  α-mutation path and leaves the invariant intact.
 
 That list has one hole, and it is the *insert* path. `derive()` stamps
 the undeflated `TYPE_PRIORS` α straight onto a brand-new row for

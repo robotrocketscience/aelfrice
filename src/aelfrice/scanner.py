@@ -181,8 +181,8 @@ def scan_repo(
     Idempotent: a belief id is `sha256(source\\x00text)[:16]`, so
     re-scanning the same tree produces no duplicates. Existing beliefs
     are detected via `MemoryStore.insert_or_corroborate()`'s content-hash
-    lookup (`get_belief_by_content_hash`) and corroborated instead of
-    re-inserted.
+    lookup (`get_belief_by_content_hash`) and left as they are, with no
+    corroboration row: re-reading a file is not a re-assertion (#1615).
 
     Non-persistable candidates (classifier returned `persist=False` —
     empty paragraphs, question-form sentences) are counted in
