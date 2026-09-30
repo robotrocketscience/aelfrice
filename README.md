@@ -35,11 +35,13 @@
    uv tool install aelfrice
    ```
 
-3. Connect it to your agent. For the Codex CLI, run `aelf setup --host codex`, then run `/hooks` in Codex to trust the new hooks; Codex uses `$aelf-*` skills where this page says `/aelf:`.
+3. Connect it to your agent:
 
    ```bash
    aelf setup
    ```
+
+   If your agent is the Codex CLI, run `aelf setup --host codex` instead, then run `/hooks` in Codex to trust the new hooks. Codex uses `$aelf-*` skills where this page says `/aelf:`.
 
 4. In your agent, from your project directory, scan the project:
 
