@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -464,11 +465,18 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
     """Return `{relative-path: most-recent-author-date-iso}` for every
     file in the git work-tree.
 
-    Walks `git log --name-only --pretty=format:%aI` once. Output is
-    pairs of `<iso-date>` lines followed by a blank line followed by
-    one or more `<file>` lines, separated by blank lines between
-    commits. Newer commits come first; we record the first date seen
-    for each file (which is the most recent).
+    Walks `git log --name-only -z --pretty=format:%x00%aI` once. Newer
+    commits come first; we record the first date seen for each file
+    (which is the most recent).
+
+    The parse reads framing git emits, never the content of a line
+    (#1629, #1621). With `-z`, paths are NUL-terminated and printed raw,
+    so git does not C-quote non-ASCII names, quotes, or backslashes.
+    Split on NUL, a commit is `<date>` or `<date>\\n<first path>`,
+    followed by its remaining paths. git never emits an empty path, so
+    an empty token only ever comes from the commit separator or the
+    leading `%x00`, and the token after one is always a commit header.
+    A path whose text looks like a date is therefore read as a path.
 
     Returns an empty dict when:
     - `root` is not a directory
@@ -490,12 +498,10 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
                 str(root),
                 "log",
                 "--name-only",
-                "--pretty=format:%aI",
+                "-z",
+                "--pretty=format:%x00%aI",
             ],
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=_GIT_LOG_TIMEOUT_SECONDS,
             check=False,
         )
@@ -506,20 +512,26 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
 
     out: dict[str, str] = {}
     current_date: str | None = None
-    for raw in result.stdout.splitlines():
-        line = raw.rstrip()
-        if not line:
+    at_header = False
+    for token in result.stdout.split(b"\x00"):
+        if not token:
+            at_header = True
             continue
-        # ISO-8601 author date starts with a 4-digit year; file paths
-        # never do. Cheap classifier without re-parsing the format.
-        if len(line) >= 10 and line[0:4].isdigit() and line[4] == "-":
-            current_date = line
-            continue
+        if at_header:
+            at_header = False
+            date, _, first_path = token.partition(b"\n")
+            current_date = _git_date_to_utc(date.decode("ascii", errors="replace"))
+            if not first_path:
+                continue
+            token = first_path
         if current_date is None:
             continue
+        # Decode as the filesystem does, so the key equals the
+        # `relative_to(root).as_posix()` string every lookup computes.
+        path = os.fsdecode(token)
         # First-seen wins (newer commits come first). Don't overwrite.
-        if line not in out:
-            out[line] = _git_date_to_utc(current_date)
+        if path not in out:
+            out[path] = current_date
     return out
 
 
