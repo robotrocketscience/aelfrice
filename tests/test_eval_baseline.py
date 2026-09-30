@@ -114,6 +114,13 @@ def test_the_baseline_ignores_an_ambient_config(
     monkeypatch.chdir(dirty)
     monkeypatch.setenv("AELFRICE_BM25F", "0")
     monkeypatch.setenv("AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE", "1")
+    # The arms are live before isolation: the harness would read 1.5 here,
+    # from `dirty` and from above `tmp_path`, so a pass below is the
+    # isolation's doing and not a mis-spelled key's.
+    from aelfrice.retrieval import resolve_posterior_weight
+
+    assert resolve_posterior_weight() == 1.5
+    assert resolve_posterior_weight(start=tmp_path) == 1.5
     _assert_matches_baseline(tmp_path, monkeypatch)
 
 
