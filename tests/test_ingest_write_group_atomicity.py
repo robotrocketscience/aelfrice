@@ -36,6 +36,7 @@ from aelfrice.derivation_worker import run_worker
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_SUPPORTS,
     INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
@@ -63,10 +64,9 @@ def _record(
     overrides: dict[str, object] | None = None,
     ts: str = _ROW_TS,
     source_path: str | None = "doc:notes.md",
+    call_site: str = CORROBORATION_SOURCE_FILESYSTEM_INGEST,
 ) -> str:
-    raw_meta: dict[str, object] = {
-        "call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST,
-    }
+    raw_meta: dict[str, object] = {"call_site": call_site}
     if overrides is not None:
         raw_meta["route_overrides"] = overrides
     return store.record_ingest(
@@ -233,7 +233,9 @@ def test_worker_stamps_corroboration_with_the_log_rows_ts(
     assert bid is not None
 
     # A second log row with the same text corroborates the first belief.
-    _record(store, text, ts=_ROW_TS, source_path="doc:other.md")
+    # Transcript, because a filesystem re-read no longer corroborates (#1615).
+    _record(store, text, ts=_ROW_TS, source_path="doc:other.md",
+            call_site=CORROBORATION_SOURCE_TRANSCRIPT_INGEST)
     run_worker(store)
 
     rows = store.list_corroborations(bid)
@@ -256,7 +258,8 @@ def test_worker_falls_back_to_wall_clock_when_the_row_has_no_ts(
     bid = _only_belief_id(store)
     assert bid is not None
 
-    log_id = _record(store, text, source_path="doc:other.md")
+    log_id = _record(store, text, source_path="doc:other.md",
+                     call_site=CORROBORATION_SOURCE_TRANSCRIPT_INGEST)
     store._conn.execute(  # pyright: ignore[reportPrivateUsage]
         "UPDATE ingest_log SET ts = '' WHERE id = ?", (log_id,)
     )

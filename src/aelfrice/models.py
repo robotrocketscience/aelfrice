@@ -300,6 +300,19 @@ CORROBORATION_SOURCES_USER_EXPLICIT: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_MCP_REMEMBER,
 })
 
+# #1615: sources that re-read stored text rather than assert anything.
+# `aelf onboard` rescans the same files under a new scan session every
+# run, and a rebase or amend re-ingests an unchanged commit message under
+# a new hash, so each pass looked like a fresh re-assertion: three scans
+# gave every doc belief a corroboration count of 2. A paragraph copied
+# into a second file is copy-paste, not independent evidence either.
+# Content from these sources is still inserted when new; a hit on an
+# existing belief records no corroboration row. Ruled 2026-09-30.
+CORROBORATION_SOURCES_NON_ASSERTING: Final[frozenset[str]] = frozenset({
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+})
+
 # #1215: feedback_history `source` for the revival above. Audit only — it
 # records *why* a retired belief came back so the transition is not silent,
 # and carries valence 0.0 because the posterior is deliberately preserved at

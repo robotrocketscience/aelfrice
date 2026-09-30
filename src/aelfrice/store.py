@@ -49,6 +49,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCES_NON_ASSERTING,
     CORROBORATION_SOURCES_USER_EXPLICIT,
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
@@ -4924,6 +4925,12 @@ class MemoryStore:
         is raised immediately on an unknown value so the caller's test
         suite catches misconfigured mappings early.
 
+        **File and commit re-reads (#1615).** A hit from a source in
+        `CORROBORATION_SOURCES_NON_ASSERTING` (filesystem and commit
+        ingest) records no corroboration row. Those sources re-read text
+        that already exists, on every scan or rebase, so a row per read
+        counted re-reading as re-assertion. New content is still inserted.
+
         **Re-assertion of retired content (#1215).** The content-hash
         lookup opts into retired rows because `content_hash` is UNIQUE
         (#219) — a tombstone still owns its hash, so an insert that could
@@ -4985,6 +4992,9 @@ class MemoryStore:
                 ),
             )
         if existing is not None:
+            # #1615: re-reading a file or commit is not a re-assertion.
+            if source_type in CORROBORATION_SOURCES_NON_ASSERTING:
+                return (existing.id, False)
             self.record_corroboration(
                 existing.id,
                 source_type=source_type,
@@ -5005,6 +5015,8 @@ class MemoryStore:
         # INSERT below trip a UNIQUE constraint on a retired id.
         existing_by_id = self.get_belief(b.id, include_retired=True)
         if existing_by_id is not None:
+            if source_type in CORROBORATION_SOURCES_NON_ASSERTING:
+                return (existing_by_id.id, False)
             self.record_corroboration(
                 existing_by_id.id,
                 source_type=source_type,

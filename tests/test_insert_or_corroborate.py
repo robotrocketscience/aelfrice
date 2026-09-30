@@ -10,8 +10,11 @@ import pytest
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCES_NON_ASSERTING,
     LOCK_NONE,
     Belief,
 )
@@ -121,9 +124,11 @@ def test_corroboration_count_increments_per_hit() -> None:
         b1 = _belief("id-001", "The sky is blue.", "hash-aaa")
         store.insert_belief(b1)
 
+        # Asserting sources only: a commit or file re-read records no row
+        # (#1615), which test_non_asserting_sources_never_corroborate pins.
         for src in [
             CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-            CORROBORATION_SOURCE_COMMIT_INGEST,
+            CORROBORATION_SOURCE_WONDER_INGEST,
             CORROBORATION_SOURCE_MCP_REMEMBER,
         ]:
             b_dup = _belief("id-dup", "The sky is blue.", "hash-aaa")
@@ -136,6 +141,58 @@ def test_corroboration_count_increments_per_hit() -> None:
             b_dup, source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST
         )
         assert store.count_corroborations("id-001") == 3
+    finally:
+        store.close()
+
+
+def test_the_non_asserting_sources_are_files_and_commits() -> None:
+    assert CORROBORATION_SOURCES_NON_ASSERTING == frozenset({
+        CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+        CORROBORATION_SOURCE_COMMIT_INGEST,
+    })
+
+
+def test_non_asserting_sources_never_corroborate() -> None:
+    """#1615: a file or commit re-read resolves to the belief, adds no row."""
+    store = _fresh_store()
+    try:
+        store.insert_belief(_belief("id-001", "The sky is blue.", "hash-aaa"))
+        for src in sorted(CORROBORATION_SOURCES_NON_ASSERTING):
+            for session in ("scan-1", "scan-2", "scan-3"):
+                bid, inserted = store.insert_or_corroborate(
+                    _belief("id-dup", "The sky is blue.", "hash-aaa"),
+                    source_type=src, session_id=session,
+                )
+                assert (bid, inserted) == ("id-001", False)
+        assert store.count_corroborations("id-001") == 0
+    finally:
+        store.close()
+
+
+def test_non_asserting_sources_still_insert_new_content() -> None:
+    """The rule withholds corroboration, not ingestion."""
+    store = _fresh_store()
+    try:
+        for i, src in enumerate(sorted(CORROBORATION_SOURCES_NON_ASSERTING)):
+            b = _belief(f"id-new-{i}", f"New fact number {i}.", f"hash-new-{i}")
+            assert store.insert_or_corroborate(b, source_type=src) == (b.id, True)
+            assert store.get_belief(b.id) is not None
+    finally:
+        store.close()
+
+
+def test_non_asserting_sources_skip_the_id_collision_row_too() -> None:
+    """The #264 id-collision branch applies the same rule."""
+    store = _fresh_store()
+    try:
+        store.insert_belief(_belief("id-001", "Original text.", "hash-aaa"))
+        for src in sorted(CORROBORATION_SOURCES_NON_ASSERTING):
+            # Same id, different content hash: only the id branch matches.
+            bid, inserted = store.insert_or_corroborate(
+                _belief("id-001", "Other text.", "hash-bbb"), source_type=src,
+            )
+            assert (bid, inserted) == ("id-001", False)
+        assert store.count_corroborations("id-001") == 0
     finally:
         store.close()
 

@@ -31,6 +31,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCES_NON_ASSERTING,
     CORROBORATION_SOURCES_USER_EXPLICIT,
     CORROBORATION_SOURCE_TYPES,
     FEEDBACK_SOURCE_REASSERT_REVIVE,
@@ -120,7 +121,10 @@ def test_capture_writes_no_corroboration_against_a_tombstone(
     assert row.corroboration_count == 0
 
 
-@pytest.mark.parametrize("source", _CAPTURE_SOURCES)
+@pytest.mark.parametrize(
+    "source",
+    [s for s in _CAPTURE_SOURCES if s not in CORROBORATION_SOURCES_NON_ASSERTING],
+)
 def test_capture_still_corroborates_live_content(
     tmp_path: Path, source: str,
 ) -> None:
@@ -140,6 +144,26 @@ def test_capture_still_corroborates_live_content(
         row = s.get_belief(_ORIGINAL)
         assert row is not None
         assert row.corroboration_count == 1
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("source", sorted(CORROBORATION_SOURCES_NON_ASSERTING))
+def test_non_asserting_capture_is_not_a_no_op(tmp_path: Path, source: str) -> None:
+    """Negative control for file and commit capture, which since #1615
+    record no corroboration even on live content. Their tombstone tests
+    above would pass on a no-op too, so assert the call still does work:
+    it resolves to the live belief, and it inserts content that is new."""
+    s = MemoryStore(str(tmp_path / f"control-{source}.db"))
+    try:
+        s.insert_belief(_belief(_ORIGINAL))  # deliberately NOT retired
+        assert s.insert_or_corroborate(_belief(_REASSERT), source_type=source) == (
+            _ORIGINAL, False,
+        )
+        fresh = _belief("fresh-belief-id", content_hash="fresh-hash")
+        assert s.insert_or_corroborate(fresh, source_type=source) == (
+            "fresh-belief-id", True,
+        )
     finally:
         s.close()
 
