@@ -441,6 +441,25 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _git_date_to_utc(iso: str) -> str:
+    """Rewrite a git `%aI` author date in the stored UTC form (#1611).
+
+    git keeps the author's local offset (`...T10:00:00-08:00`), and
+    `created_at` is ordered as text, so a store that mixes offsets with
+    the `Z` rows every other writer produces sorts out of real order.
+    A value that does not parse as an aware datetime is returned as is:
+    this function only changes the form of a date, never which line is
+    taken as one.
+    """
+    try:
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    if parsed.tzinfo is None:
+        return iso
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _build_file_recency_map(root: Path) -> dict[str, str]:
     """Return `{relative-path: most-recent-author-date-iso}` for every
     file in the git work-tree.
@@ -500,7 +519,7 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
             continue
         # First-seen wins (newer commits come first). Don't overwrite.
         if line not in out:
-            out[line] = current_date
+            out[line] = _git_date_to_utc(current_date)
     return out
 
 
@@ -564,7 +583,7 @@ def extract_git_log(
             SentenceCandidate(
                 text=subject,
                 source=f"git:commit:{sha[:7]}",
-                commit_date=iso_date or None,
+                commit_date=_git_date_to_utc(iso_date) if iso_date else None,
             )
         )
     return candidates
