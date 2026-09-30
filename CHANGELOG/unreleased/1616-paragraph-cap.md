@@ -1,0 +1,3 @@
+### Fixed
+
+- **Onboarding skips doc paragraphs longer than 4,000 characters ([#1616](https://github.com/robotrocketscience/aelfrice/issues/1616)).** The scanner had no maximum paragraph length, so a `.txt` data file with no blank lines became one candidate of several megabytes (54 MB in one real repository), and `/aelf:onboard` put it whole into the classifier prompt. A paragraph over 4,000 characters is now dropped, not truncated. The limit sits just above the measured 99th percentile of real doc paragraphs (3,541). On this repository it drops 51 of 5,455 paragraphs (0.9%). The paragraphs around a dropped one keep their source index, so their belief ids don't change and re-onboarding doesn't duplicate them.
