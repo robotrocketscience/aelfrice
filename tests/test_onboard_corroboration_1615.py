@@ -1,0 +1,115 @@
+"""#1615: re-reading documents never counts as re-assertion.
+
+Before, every `aelf onboard` run was a new scan session, and nothing
+recorded the source path, so re-reading unchanged text added a
+corroboration row each run. Measured on this repository, three scans gave
+all 12,633 doc beliefs a count of 2. A paragraph at a second path was
+also reported as new on every run, because the pre-scan looked it up by
+its (source, text) id while the store dedups on content.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from aelfrice.classification import (
+    HostClassification,
+    accept_classifications,
+    check_onboard_candidates,
+    start_onboard_session,
+)
+from aelfrice.models import BELIEF_FACTUAL
+from aelfrice.scanner import scan_repo
+from aelfrice.store import MemoryStore
+
+_P = (
+    "The widget service retries failed uploads three times with exponential "
+    "backoff before giving up."
+)
+
+
+def _corroboration_rows(store: MemoryStore) -> int:
+    return store._conn.execute(  # noqa: SLF001 - read-only probe
+        "SELECT COUNT(*) FROM belief_corroborations"
+    ).fetchone()[0]
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "r"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "docs/a.md").write_text(f"# A\n\n{_P}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+    }
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+           "-c", "commit.gpgsign=false"]
+    subprocess.run([*git, "init", "-q"], cwd=repo, check=True, timeout=30)
+    subprocess.run([*git, "add", "-A"], cwd=repo, check=True, timeout=30)
+    subprocess.run([*git, "commit", "-qm", "init"], cwd=repo, check=True,
+                   timeout=30, env=env)
+    return repo
+
+
+def _onboard(store: MemoryStore, repo: Path, day: int) -> tuple[int, int]:
+    """One full handshake, accepting everything. Returns (n_new, emitted)."""
+    now = f"2026-10-{day:02d}T00:00:00Z"
+    n_new = check_onboard_candidates(store, repo).n_new
+    result = start_onboard_session(store, repo, now=now)
+    cls = [
+        HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)
+        for s in result.sentences
+    ]
+    accept_classifications(store, result.session_id, cls, now=now)
+    return n_new, len(result.sentences)
+
+
+@pytest.mark.timeout(60)
+def test_the_issue_reproduction_stops_after_the_first_re_onboard(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        assert _onboard(store, repo, 1) == (2, 2)
+        # The same paragraph appears at a second path.
+        (repo / "docs/b.md").write_text(f"# B\n\n{_P}\n", encoding="utf-8")
+        for day in (2, 3, 4):
+            assert _onboard(store, repo, day) == (0, 0), f"day {day}"
+        assert _corroboration_rows(store) == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.timeout(60)
+def test_repeated_scans_add_no_corroboration(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        for day in (1, 2, 3):
+            scan_repo(store, repo, now=f"2026-10-{day:02d}T00:00:00Z")
+        assert _corroboration_rows(store) == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.timeout(60)
+def test_one_paragraph_at_two_paths_in_one_scan_adds_no_corroboration(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    (repo / "docs/b.md").write_text(f"# B\n\n{_P}\n", encoding="utf-8")
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        scan_repo(store, repo, now="2026-10-01T00:00:00Z")
+        assert _corroboration_rows(store) == 0
+        count = store._conn.execute(  # noqa: SLF001 - read-only probe
+            "SELECT COUNT(*) FROM beliefs WHERE content = ?", (_P,)
+        ).fetchone()[0]
+        assert count == 1
+    finally:
+        store.close()
