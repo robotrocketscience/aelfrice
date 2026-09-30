@@ -465,9 +465,21 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
     """Return `{relative-path: most-recent-author-date-iso}` for every
     file in the git work-tree.
 
-    Walks `git log --name-only -z --pretty=format:%x00%aI` once. Newer
-    commits come first; we record the first date seen for each file
-    (which is the most recent).
+    Walks `git log --name-only --cc -z --pretty=format:%x00%aI` once.
+    Newer commits come first; we record the first date seen for each
+    file (which is the most recent).
+
+    `--cc` makes a merge commit list the paths it changed relative to
+    every parent (#1612). Without it git lists no paths for a merge, so a
+    file that arrived only through a merge, such as a history import,
+    had no date, and a conflict resolved to new content was dated to the
+    last edit before the merge. A merge that took a path unchanged from
+    one parent does not list it, so that path keeps the date of the
+    commit that made the change, not of the merge. It is the same test
+    git's default history simplification applies to a merge in
+    `git log -1 -- <path>`. One case still differs from that per-path
+    answer: a side-branch edit that a merge discarded is still seen by
+    this walk, because only a pathspec lets git prune it.
 
     The parse reads framing git emits, never the content of a line
     (#1629, #1621). With `-z`, paths are NUL-terminated and printed raw,
@@ -498,6 +510,7 @@ def _build_file_recency_map(root: Path) -> dict[str, str]:
                 str(root),
                 "log",
                 "--name-only",
+                "--cc",
                 "-z",
                 "--pretty=format:%x00%aI",
             ],
