@@ -1,7 +1,7 @@
 """Illustrative schematic of aelfrice's retrieval lanes activating over a
 belief graph. Layer = color; distance from center = graph-walk depth.
 
-Lanes mirror the real design (README "How it works"); for legibility the
+Lanes mirror the real design (docs/concepts/ARCHITECTURE.md, "Retrieval"); for legibility the
 figure draws the lanes that fan out visibly from the query:
   L0    locked       - always returned, pinned at the query
   L1    FTS5 / BM25  - keyword seeds
