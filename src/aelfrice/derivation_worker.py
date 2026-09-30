@@ -63,11 +63,13 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCES_NON_ASSERTING,
     INGEST_SOURCE_CLAUDE_MEMORY,
     INGEST_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_FILESYSTEM,
     INGEST_SOURCE_GIT,
     INGEST_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_TRANSCRIPT,
 )
 from aelfrice.store import MemoryStore
 
@@ -83,6 +85,11 @@ _CORROBORATION_BY_SOURCE_KIND: dict[str, str] = {
     INGEST_SOURCE_CLI_REMEMBER: CORROBORATION_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_MCP_REMEMBER: CORROBORATION_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_CLAUDE_MEMORY: CORROBORATION_SOURCE_CLAUDE_MEMORY,
+    # #1615: a transcript row without `call_site` used to fall through to
+    # the filesystem default below. That default no longer corroborates,
+    # so the fall-through would drop a real re-assertion, not only
+    # mislabel it.
+    INGEST_SOURCE_TRANSCRIPT: CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
 }
 
 # Sentinel keys recognised inside `raw_meta` by the worker.
@@ -134,8 +141,11 @@ class WorkerResult:
 
     `rows_scanned` is every unstamped row visited.
     `beliefs_inserted` counts new canonical rows written to `beliefs`.
-    `beliefs_corroborated` counts hits on the content_hash UNIQUE
-        constraint (existing belief, corroboration row appended).
+    `beliefs_corroborated` counts hits on an existing belief from a
+        source that corroborates. A filesystem hit (#1615) resolves to
+        the belief but records no row, so it is not counted. A hit the
+        #1020 unique index or the #1215 tombstone rule declines is
+        still counted: the worker cannot see that outcome.
     `rows_stamped` counts log rows whose `derived_belief_ids` we wrote
         (orphan recovery + new derivations both contribute).
     `rows_skipped_no_belief` counts rows where `derive()` returned no
@@ -443,7 +453,10 @@ def _write_derived_row(
         rows_scanned=rows_scanned,
         beliefs_inserted=acc.beliefs_inserted + (1 if was_inserted else 0),
         beliefs_corroborated=(
-            acc.beliefs_corroborated + (0 if was_inserted else 1)
+            acc.beliefs_corroborated
+            + (0 if was_inserted
+               or corroboration_source in CORROBORATION_SOURCES_NON_ASSERTING
+               else 1)
         ),
         rows_stamped=acc.rows_stamped + 1,
         rows_skipped_no_belief=acc.rows_skipped_no_belief,

@@ -21,7 +21,14 @@ from aelfrice.classification import (
     check_onboard_candidates,
     start_onboard_session,
 )
-from aelfrice.models import BELIEF_FACTUAL
+from aelfrice.derivation_worker import run_worker
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    INGEST_SOURCE_FILESYSTEM,
+    INGEST_SOURCE_TRANSCRIPT,
+)
 from aelfrice.scanner import scan_repo
 from aelfrice.store import MemoryStore
 
@@ -111,5 +118,50 @@ def test_one_paragraph_at_two_paths_in_one_scan_adds_no_corroboration(
             "SELECT COUNT(*) FROM beliefs WHERE content = ?", (_P,)
         ).fetchone()[0]
         assert count == 1
+    finally:
+        store.close()
+
+
+# --- the derivation worker ----------------------------------------------
+
+
+def test_the_worker_does_not_report_a_filesystem_hit_as_corroborated(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        for _ in range(2):
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM, source_path="doc:a.md",
+                raw_text=_P,
+                raw_meta={"call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST},
+            )
+        result = run_worker(store)
+        assert (result.beliefs_inserted, result.beliefs_corroborated) == (1, 0)
+        assert _corroboration_rows(store) == 0
+    finally:
+        store.close()
+
+
+def test_a_transcript_row_without_a_call_site_still_corroborates(
+    tmp_path: Path,
+) -> None:
+    """Without the explicit mapping it fell back to filesystem_ingest,
+    which since #1615 records nothing."""
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        for session in ("s1", "s2"):
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_TRANSCRIPT, raw_text=_P,
+                session_id=session,
+            )
+        run_worker(store)
+        rows = [
+            r[0]
+            for r in store._conn.execute(  # noqa: SLF001 - read-only probe
+                "SELECT source_type FROM belief_corroborations"
+            ).fetchall()
+        ]
+        assert rows == [CORROBORATION_SOURCE_TRANSCRIPT_INGEST]
     finally:
         store.close()
