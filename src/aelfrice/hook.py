@@ -1107,7 +1107,9 @@ def _choose_locks_for_room(
 
     Deciding this before anything is shed is the point: the droppable
     lanes are then trimmed to what the kept locks leave, so no hit is ever
-    shed to make room for a lock that is cut anyway.
+    shed to make room for a lock that is cut anyway. `_write_memory_block`
+    then measures the block this choice renders and corrects it both
+    ways; this is the model it starts from.
     """
     cost = {bid: sum(hi - lo for lo, hi in spans)
             for bid, spans in groups.items()}
@@ -1330,9 +1332,9 @@ def enforce_block_ceiling(
     stderr note.
 
     This function never cuts a lock, and that holds under #1639 too. The
-    payload bound can cut one, but `_write_memory_block` decides which
-    before this runs, with `_choose_locks_for_room`, so a lock is never
-    cut after the hits were shed to make room for it.
+    payload bound can cut one, but `_write_memory_block` chooses which
+    locks go before it trims, and measures each candidate block, so a lock
+    is never cut after the hits were shed to make room for it.
 
     **A dropped element takes its `seen` pointer with it.** The dangling
     pointer above was not a locks-only accident; it is the class, and the
@@ -1627,8 +1629,9 @@ def _write_memory_block(
         # cut the last lock kept; then take back, one render at a time, each
         # cut lock the leftover room could hold. The first loop bounds the
         # block whatever the model missed, and the second keeps a lock the
-        # model priced out. Both run only near the edge, so a fire renders
-        # a handful of times at most.
+        # model priced out. Both run only near the edge: a fire renders once
+        # when the model is right, and a take-back renders only a lock whose
+        # growth, wrappers included, could fit.
         order = list(groups)
         cut_list = [b for b in order if b in set(cut)]
 
@@ -1652,6 +1655,8 @@ def _write_memory_block(
         # back the same wrappers fails too, and is not rendered.
         manifest = _LOCKS_MANIFEST_BLOCK_RE.search(body)
         m_span = manifest.span() if manifest else (-1, -1)
+        manifest_wrapper = (len(LOCKS_MANIFEST_OPEN_TAG)
+                            + len(LOCKS_MANIFEST_CLOSE_TAG) + 2)
 
         def wrappers_of(bid: str) -> tuple[bool, bool]:
             in_manifest = any(m_span[0] <= lo < m_span[1]
@@ -1665,8 +1670,12 @@ def _write_memory_block(
             rest = [b for b in cut_list if b != bid]
             line_saved = len(lock_overflow_line(cut_list)) - (
                 len(lock_overflow_line(rest)) if rest else 0)
-            growth = cost - line_saved
             key = wrappers_of(bid)
+            # A wrapper the block no longer holds comes back with the lock.
+            back_recap = key[0] and RESUME_OPEN_TAG not in trimmed
+            back_manifest = key[1] and LOCKS_MANIFEST_OPEN_TAG not in trimmed
+            growth = (cost - line_saved + (wrapper if back_recap else 0)
+                      + (manifest_wrapper if back_manifest else 0))
             if growth >= failed.get(key, growth + 1):
                 continue
             if growth > room - len(trimmed) + sheddable:

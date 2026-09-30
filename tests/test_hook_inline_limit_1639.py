@@ -19,8 +19,8 @@ Operator rulings 2026-09-29, which reopen #1560 for one change:
 * **The cadence checkpoint packs to the room left,** with a hard cut at an
   element boundary as the backstop for its soft pack loop.
 
-Each fixture here was measured over the bound on github/main before the fix
-(`FIX_1639_HYPOTHESES.md`, F1/F2/F4), so a pass is not vacuous.
+Each fixture here was measured over the bound on github/main before the
+fix, so a pass is not vacuous.
 """
 from __future__ import annotations
 
@@ -2166,7 +2166,7 @@ def test_recent_work_is_measured_with_its_trailing_lines(
         assert len(got) <= room, room
 
 
-def test_the_trim_renders_a_handful_of_times_at_most(
+def test_the_trim_renders_few_times_on_these_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The size model chooses; renders only correct it near the edge. A
@@ -2265,3 +2265,93 @@ def test_a_take_back_that_fails_on_a_wrapper_does_not_turn_away_others(
             spans = [sp for b in rest for sp in groups[b] + copies.get(b, [])]
             text, _s, _f = hook._render_for_room(body, spans, rest, room, 6_000)
             assert len(text) > room, (room, bid)
+
+
+# --- review round 11 ----------------------------------------------------------
+
+def test_the_measured_loop_cuts_from_the_last_lock_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the model keeps too much, the measured loop cuts the last lock
+    kept first, so locks earlier in render order keep their place."""
+    from aelfrice import hook
+
+    locks = "".join(f'<belief id="K{i}" lock="user">{"k" * 400}</belief>\n'
+                    for i in range(6))
+    body = f"{hook.OPEN_TAG}\n{locks}{hook.CLOSE_TAG}\n"
+    monkeypatch.setattr(hook, "_choose_locks_for_room",
+                        lambda *a, **k: ())  # a model that keeps everything
+    out = _trim(body, 1_600, monkeypatch)
+    cut = out.omitted_lock_ids  # type: ignore[attr-defined]
+    assert cut and len(out.body) <= 1_600  # type: ignore[attr-defined]
+    kept = [f"K{i}" for i in range(6) if f"K{i}" not in cut]
+    assert kept == [f"K{i}" for i in range(len(kept))]
+
+
+def test_returning_wrappers_are_charged_before_a_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: 80 reference locks with topics shrinking by one
+    character each took 81 renders, because a take-back that brings the
+    manifest back was priced without it. Charged, they are ruled out
+    without rendering."""
+    from aelfrice import hook
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG, LOCKS_MANIFEST_OPEN_TAG
+
+    frozen = "".join(f'<belief id="F{i}" lock="user">{"f" * 900}</belief>\n'
+                     for i in range(3))
+    refs = "".join(f'  ref R{i:015d}: "{"t" * (100 - i)}"\n' for i in range(80))
+    manifest = f"{LOCKS_MANIFEST_OPEN_TAG}\n{refs}{LOCKS_MANIFEST_CLOSE_TAG}\n"
+    body = f"{hook.OPEN_TAG}\n{frozen}{manifest}{hook.CLOSE_TAG}\n"
+    real = hook._render_for_room
+    renders = [0]
+
+    def counted(*a: object, **k: object) -> object:
+        renders[0] += 1
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook, "_render_for_room", counted)
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    worst = 0
+    for room in range(3_000, len(body), 17):
+        renders[0] = 0
+        out = hook._write_memory_block(body, stdout=io.StringIO(),
+                                       stderr=io.StringIO(), room_chars=room)
+        assert len(out.body) <= room
+        worst = max(worst, renders[0])
+    assert worst <= 6, worst
+
+
+def test_a_returning_recap_is_charged_before_a_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recap form of the same case: locks held only in the recap,
+    shrinking by a character each, would each bring the recap back."""
+    from aelfrice import hook
+
+    frozen = "".join(f'<belief id="F{i}" lock="user">{"f" * 900}</belief>\n'
+                     for i in range(3))
+    held = "".join(
+        f'<belief id="R{i:015d}" lock="user">{"t" * (100 - i)}</belief>\n'
+        for i in range(60))
+    recap = ("<cadence-resume from='prev' policy='p1' ts='t'>\n"
+             + "<recent-turns>" + "w" * 300 + "</recent-turns>\n"
+             + held + "</cadence-resume>")
+    body = f"{hook.OPEN_TAG}\n{recap}\n\n{frozen}{hook.CLOSE_TAG}\n"
+    real = hook._render_for_room
+    renders = [0]
+
+    def counted(*a: object, **k: object) -> object:
+        renders[0] += 1
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook, "_render_for_room", counted)
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    worst = 0
+    for room in range(3_000, len(body), 13):
+        renders[0] = 0
+        out = hook._write_memory_block(body, stdout=io.StringIO(),
+                                       stderr=io.StringIO(), room_chars=room)
+        assert len(out.body) <= room
+        worst = max(worst, renders[0])
+    assert worst <= 6, worst
