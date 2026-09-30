@@ -2,7 +2,7 @@
 
 Renders docs/assets/how-it-works-light.png and how-it-works-dark.png.
 
-Color does one job: it tells the three paths out of the prompt hook apart.
+Color does one job: it tells the three paths apart.
 The palette is three slots of a validated categorical palette, checked
 all-pairs for color-vision deficiency in both modes; everything else is
 neutral ink, and every colored mark carries a text label, so color is
@@ -10,7 +10,8 @@ never the only cue.
 
   violet   retrieval: every prompt, the hook reads the store and adds a block
   magenta  lock: a typed /aelf:lock writes a rule that comes back every time
-  green    capture: each turn is logged and ingested as typed beliefs
+  green    capture: each turn is logged, and your sentences are ingested
+           as beliefs linked by DERIVED_FROM edges
 
 The quoted blocks are real hook output for a five-belief demo store (two
 locks, three ordinary beliefs); the two ranked lists are real `aelf search`
@@ -150,34 +151,42 @@ def render(mode: str) -> pathlib.Path:
     code(0.4, 14.85, 15.2, BASELINE)
 
     # 2. One turn: the prompt hook and its three paths.
-    heading(12.75, "2   Each turn: the prompt hook runs before the model reads you")
-    panel(0.4, 11.6, 3.4, 0.8)
-    text(0.65, 12.17, "You type", 11.5, weight="bold")
-    text(0.65, 11.83, "a prompt, or /aelf:lock <rule>", 9.5, color=t["ink2"])
-    panel(4.6, 11.6, 3.4, 0.8)
-    text(4.85, 12.17, "Prompt hook", 11.5, weight="bold")
-    text(4.85, 11.83, "UserPromptSubmit", 9.5, color=t["ink2"])
-    arrow((3.85, 12.0), (4.55, 12.0), t["ink2"])
+    heading(12.75, "2   Each turn: hooks run before the model reads you, and after it replies")
+    row = [
+        (0.4, "You type", "a prompt, or /aelf:lock <rule>"),
+        (4.4, "Prompt hook", "UserPromptSubmit"),
+        (8.4, "The model replies", ""),
+        (12.2, "Stop hook", "runs after each reply"),
+    ]
+    for x, title, sub in row:
+        panel(x, 11.6, 3.4, 0.8)
+        text(x + 0.25, 12.0 + (0.17 if sub else 0), title, 11.5,
+             weight="bold")
+        if sub:
+            text(x + 0.25, 11.83, sub, 9.5, color=t["ink2"])
+    for x in (3.85, 7.85, 11.85):
+        arrow((x, 12.0), (x + 0.5, 12.0), t["ink2"])
 
     col = [0.4, 5.75, 11.1]
     width = 4.5
     heads = [
         (t["violet"], "Every prompt: retrieve"),
         (t["magenta"], "A typed /aelf:lock: store a rule"),
-        (t["green"], "Every turn: capture"),
+        (t["green"], "After each reply: capture"),
     ]
-    rads = [0.0, 0.0, 0.0]
-    for x, (color, head), rad in zip(col, heads, rads):
-        arrow((6.3, 11.55), (x + width / 2, 11.05), color, rad=rad)
+    # Retrieve and lock leave the prompt hook; capture leaves the Stop hook.
+    starts = [(6.1, 11.55), (6.1, 11.55), (13.9, 11.55)]
+    for x, (color, head), p0 in zip(col, heads, starts):
+        arrow(p0, (x + width / 2, 11.05), color)
         text(x, 10.8, head, 11.5, weight="bold")
 
     # Retrieval path.
     step(col[0], 9.65, width, 0.8, t["violet"], "Search stack",
          "locks always · entity index · BM25 full text")
     step(col[0], 8.5, width, 0.8, t["violet"], "Ranking engine",
-         "locks first, then relevance × confidence")
+         "locks, then entity matches, then BM25 × confidence")
     arrow((col[0] + width / 2, 9.6), (col[0] + width / 2, 9.35), t["violet"])
-    text(col[0], 8.2, "Added before your prompt (real hook output):", 9.5,
+    text(col[0], 8.2, "Added to what the model reads (real hook output):", 9.5,
          color=t["ink2"])
     code(col[0], 8.02, width, MEMORY, size=7.6, step_y=0.22)
 
@@ -193,44 +202,43 @@ def render(mode: str) -> pathlib.Path:
 
     # Capture path, ending in a small typed graph.
     step(col[2], 9.65, width, 0.8, t["green"], "Turn logged",
-         "your prompt and the reply")
-    step(col[2], 8.5, width, 0.8, t["green"], "Ingested as typed beliefs",
-         "sentences become beliefs linked by typed edges")
+         "your prompt, then the reply")
+    step(col[2], 8.5, width, 0.8, t["green"], "Ingested as beliefs",
+         "every 12 turns and at compaction; replies skipped")
     arrow((col[2] + width / 2, 9.6), (col[2] + width / 2, 9.35), t["green"])
     gx, gy = col[2], 5.6
     panel(gx, gy, width, 2.55, edge=t["hair"])
-    text(gx + 0.15, gy + 2.3, "A small typed graph (illustrative)", 9,
+    text(gx + 0.15, gy + 2.3, "Each belief DERIVED_FROM the one before (illustrative)", 9,
          color=t["muted"])
     nodes = {
-        "a": (gx + 1.0, gy + 1.55, "publish script\nruns the checks"),
-        "b": (gx + 3.5, gy + 1.55, "checks include\nthe full suite"),
-        "c": (gx + 1.0, gy + 0.5, "turn 14"),
-        "d": (gx + 3.5, gy + 0.5, "staging deploys\nfrom release"),
+        "a": (gx + 1.05, gy + 1.55, "turn 14: release from\nthe publish script"),
+        "b": (gx + 3.45, gy + 1.55, "turn 14: run the\nfull suite first"),
+        "c": (gx + 3.45, gy + 0.5, "turn 15: staging\ndeploys from release"),
+        "d": (gx + 1.05, gy + 0.5, "turn 16: keep\nmain protected"),
     }
     for nx, ny, label in nodes.values():
         ax.add_patch(FancyBboxPatch(
-            (nx - 0.72, ny - 0.26), 1.44, 0.52,
+            (nx - 0.85, ny - 0.26), 1.7, 0.52,
             boxstyle="round,pad=0,rounding_size=0.1",
             facecolor=t["surface"], edgecolor=t["green"], lw=1.6, zorder=4))
         text(nx, ny, label, 7.8, ha="center")
+    # Every edge is DERIVED_FROM, which the panel title names, so the
+    # arrows carry no labels: later belief -> the one before it.
     edges = [
-        (("a", "right"), ("b", "left"), "RELATES_TO", (0, 0.14)),
-        (("a", "bottom"), ("c", "top"), "DERIVED_FROM", (0.1, 0)),
-        (("b", "bottom"), ("d", "top"), "RELATES_TO", (0.1, 0)),
+        (("b", "left"), ("a", "right")),
+        (("c", "top"), ("b", "bottom")),
+        (("d", "right"), ("c", "left")),
     ]
 
     def anchor(key, side):
         nx, ny, _ = nodes[key]
-        return {"right": (nx + 0.74, ny), "left": (nx - 0.74, ny),
+        return {"right": (nx + 0.87, ny), "left": (nx - 0.87, ny),
                 "top": (nx, ny + 0.28), "bottom": (nx, ny - 0.28)}[side]
 
-    for (a, sa), (b, sb), label, (ox, oy) in edges:
-        p0, p1 = anchor(a, sa), anchor(b, sb)
+    for (a, sa), (b, sb) in edges:
         ax.add_patch(FancyArrowPatch(
-            p0, p1, arrowstyle="-|>", mutation_scale=10, color=t["ink2"],
-            lw=1.2, zorder=3))
-        text((p0[0] + p1[0]) / 2 + ox, (p0[1] + p1[1]) / 2 + oy, label, 7.2,
-             color=t["muted"], ha="left" if ox else "center")
+            anchor(a, sa), anchor(b, sb), arrowstyle="-|>", mutation_scale=10,
+            color=t["ink2"], lw=1.2, zorder=3))
 
     # 3. The ranking engine, turn by turn: real `aelf search` orderings.
     heading(4.75, "3   The ranking follows each prompt (real search order)")
@@ -253,7 +261,7 @@ def render(mode: str) -> pathlib.Path:
     for x, color, label, up in [
         (col[0], t["violet"], "read on every prompt", True),
         (col[1], t["magenta"], "locks written", False),
-        (col[2], t["green"], "turns written", False),
+        (col[2], t["green"], "beliefs written", False),
     ]:
         cx = x + width / 2
         p_top, p_bot = (cx, 2.15), (cx, 1.6)
