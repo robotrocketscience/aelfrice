@@ -13,7 +13,6 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-    CORROBORATION_SOURCE_WONDER_INGEST,
     CORROBORATION_SOURCES_NON_ASSERTING,
     LOCK_NONE,
     Belief,
@@ -124,11 +123,9 @@ def test_corroboration_count_increments_per_hit() -> None:
         b1 = _belief("id-001", "The sky is blue.", "hash-aaa")
         store.insert_belief(b1)
 
-        # Asserting sources only: a commit or file re-read records no row
-        # (#1615), which test_non_asserting_sources_never_corroborate pins.
         for src in [
             CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-            CORROBORATION_SOURCE_WONDER_INGEST,
+            CORROBORATION_SOURCE_COMMIT_INGEST,
             CORROBORATION_SOURCE_MCP_REMEMBER,
         ]:
             b_dup = _belief("id-dup", "The sky is blue.", "hash-aaa")
@@ -145,11 +142,26 @@ def test_corroboration_count_increments_per_hit() -> None:
         store.close()
 
 
-def test_the_non_asserting_sources_are_files_and_commits() -> None:
+def test_the_only_non_asserting_source_is_filesystem_ingest() -> None:
+    """Ruled 2026-09-30: commits stay out, since each commit is its own event."""
     assert CORROBORATION_SOURCES_NON_ASSERTING == frozenset({
         CORROBORATION_SOURCE_FILESYSTEM_INGEST,
-        CORROBORATION_SOURCE_COMMIT_INGEST,
     })
+
+
+def test_distinct_commits_still_corroborate() -> None:
+    store = _fresh_store()
+    try:
+        store.insert_belief(_belief("id-001", "The retrieval pipeline.", "hash-aaa"))
+        for session in ("commit-1", "commit-2"):
+            store.insert_or_corroborate(
+                _belief("id-dup", "The retrieval pipeline.", "hash-aaa"),
+                source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
+                session_id=session,
+            )
+        assert store.count_corroborations("id-001") == 2
+    finally:
+        store.close()
 
 
 def test_non_asserting_sources_never_corroborate() -> None:

@@ -4925,11 +4925,11 @@ class MemoryStore:
         is raised immediately on an unknown value so the caller's test
         suite catches misconfigured mappings early.
 
-        **File and commit re-reads (#1615).** A hit from a source in
-        `CORROBORATION_SOURCES_NON_ASSERTING` (filesystem and commit
-        ingest) records no corroboration row. Those sources re-read text
-        that already exists, on every scan or rebase, so a row per read
-        counted re-reading as re-assertion. New content is still inserted.
+        **File re-reads (#1615).** A hit from a source in
+        `CORROBORATION_SOURCES_NON_ASSERTING` (filesystem ingest) records
+        no corroboration row. A scan re-reads files that already exist on
+        every run, so a row per read counted re-reading as re-assertion.
+        New content is still inserted.
 
         **Re-assertion of retired content (#1215).** The content-hash
         lookup opts into retired rows because `content_hash` is UNIQUE
@@ -4992,7 +4992,7 @@ class MemoryStore:
                 ),
             )
         if existing is not None:
-            # #1615: re-reading a file or commit is not a re-assertion.
+            # #1615: re-reading a file is not a re-assertion.
             if source_type in CORROBORATION_SOURCES_NON_ASSERTING:
                 return (existing.id, False)
             self.record_corroboration(
