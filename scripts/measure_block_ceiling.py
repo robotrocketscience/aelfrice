@@ -234,13 +234,14 @@ import contextlib  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 
 import aelfrice.hook as _hook  # noqa: E402
-from aelfrice.hook import (  # noqa: E402
-    HOOK_BLOCK_TOKEN_CEILING,
-    HOOK_PAYLOAD_CHAR_LIMIT,
-    _audit_tokens_from_block,
-    session_start,
-    user_prompt_submit,
-)
+# Bound once at import, as the `from` form would: the lifted-limit run
+# below patches `_hook.HOOK_PAYLOAD_CHAR_LIMIT`, and these names must
+# keep the shipped value through it.
+HOOK_BLOCK_TOKEN_CEILING = _hook.HOOK_BLOCK_TOKEN_CEILING
+HOOK_PAYLOAD_CHAR_LIMIT = _hook.HOOK_PAYLOAD_CHAR_LIMIT
+_audit_tokens_from_block = _hook._audit_tokens_from_block
+session_start = _hook.session_start
+user_prompt_submit = _hook.user_prompt_submit
 from aelfrice.models import (  # noqa: E402
     BELIEF_FACTUAL,
     BELIEF_SPECULATIVE,
@@ -1178,7 +1179,7 @@ def _write_resume_cache(work: Path, db: Path) -> str:
     which is the half of this measurement a canned body would decide
     rather than observe.
     """
-    from aelfrice.hook import _maybe_fire_cadence_checkpoint  # noqa: PLC0415
+    _maybe_fire_cadence_checkpoint = _hook._maybe_fire_cadence_checkpoint
 
     (work / ".aelfrice.toml").write_text(
         "[cadence]\n"
