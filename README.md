@@ -20,7 +20,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-it-works-dark.png">
-    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn the prompt hook runs before the model reads your prompt and takes three paths: every prompt, it searches the store (locks always, the entity index, and BM25), ranks the results with locks first, and adds an aelfrice-memory block before your prompt; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and every turn is logged and ingested as beliefs linked by typed edges. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
+    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook searches the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a DERIVED_FROM edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
   </picture>
 </p>
 
@@ -59,7 +59,7 @@ From then on, aelfrice runs by itself. To check the install, run `/aelf:doctor` 
 
 | Command | What it does | When to use it |
 |---|---|---|
-| `/aelf:lock <text>` | Locks a statement as ground truth that every relevant prompt carries. | You want a rule the agent never forgets. |
+| `/aelf:lock <text>` | Locks a statement as ground truth that every prompt carries. | You want a rule the agent never forgets. |
 | `/aelf:search <query>` | Shows what the store returns for a query, locked rules first. | You want to check what memory holds on a topic. |
 | `/aelf:locked` | Lists your locked rules. | You want to review the rules in force. |
 | `/aelf:onboard <path>` | Scans a project and stores what it learns. | You start using aelfrice on a project. |
@@ -86,16 +86,16 @@ From then on, aelfrice runs by itself. To check the install, run `/aelf:doctor` 
 | `/aelf:restore <id>` | Brings a retired belief back. | You retired something by mistake. |
 | `/aelf:delete <id>` | Deletes a belief permanently. | A belief must be gone for good. |
 | `/aelf:promote <id>` | Marks an agent-inferred belief as validated by you. | You confirm what the agent worked out. |
-| `/aelf:speculative` | Lists unlocked beliefs, highest confidence first. | You want to audit what isn't locked. |
+| `/aelf:speculative` | Lists unlocked beliefs, the most-supported first. | You want to audit what isn't locked. |
 | `/aelf:scope-out <text>` | Hides matching beliefs for the rest of this session. | A belief is noise for the task at hand. |
-| `/aelf:category` | Groups rules and binds them to trigger keywords; injection is off until you set `AELFRICE_BELIEF_CATEGORIES=1`. | A set of rules applies to one kind of task. |
+| `/aelf:category` | Groups rules and binds them to trigger keywords; injection is off by default. | A set of rules applies to one kind of task. |
 | `/aelf:graph <id>` | Emits the belief graph around a belief as DOT or JSON. | You want to visualize connections. |
 | `/aelf:introspect` | Shows beliefs by session or project with their confidence and grounding. | You want to judge what was captured. |
 | `/aelf:rebuild` | Prints the context block the rebuilder would restore. | You're debugging context after compaction. |
 | `/aelf:audit-claude-memory` | Compares locked beliefs with the `MEMORY.md` index your agent keeps. | You keep both and want them consistent. |
 | `/aelf:eval` | Runs the relevance-calibration harness on a corpus you pass with `--corpus`. | You're measuring retrieval quality. |
 | `/aelf:upgrade` | Upgrades aelfrice to the latest release. | A new version is out. |
-| `/aelf:uninstall` | Removes the hooks and the store, and can archive the store first; `uv tool uninstall aelfrice` then removes the package. | You stop using aelfrice. |
+| `/aelf:uninstall` | Removes the hooks, and keeps, deletes, or archives the store as you choose; `uv tool uninstall aelfrice` then removes the package. | You stop using aelfrice. |
 
 </details>
 
