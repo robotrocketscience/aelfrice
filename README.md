@@ -107,6 +107,13 @@ Each command has a terminal form, such as `aelf lock "..."`. The [command refere
 
 ## Belief types and edges
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/belief-graph-dark.png">
+    <img src="docs/assets/belief-graph-light.png" width="100%" alt="An illustrative belief graph of eight beliefs, colored by type. A locked factual belief, never push directly to main, has no edges: a lock is injected whether or not anything links to it. A requirement, the release checks must include pyright, is DERIVED_FROM a factual belief, the publish script runs the release checks. A factual belief from a commit, publish.sh runs pytest and pyright, SUPPORTS the requirement and IMPLEMENTS the publish-script belief. A correction, do not deploy staging from main and use the release branch, is TEMPORAL_NEXT after the publish-script belief and SUPERSEDES an older factual belief, staging deploys from main. A preference, I prefer small atomic commits, is TEMPORAL_NEXT after the correction. A speculative belief, drawn as a hollow outline, cache the wheel build between releases, RELATES_TO the publish-script belief.">
+  </picture>
+</p>
+
 Every belief has one type. Transcript text gets its type from a rule-based classifier, and `/aelf:onboard` uses your agent's model by default. New text from `aelf lock` or the commit hook is stored as `factual`, and `/aelf:wonder` stores `speculative`. Locked is a flag on top of the type, not a type of its own.
 
 | Type | What it holds | How a belief gets it |
@@ -134,13 +141,6 @@ Edges link beliefs, from a source to a target. Only the first two are written fo
 | `RESOLVES` | A phantom answers the target. | Nothing writes it yet ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | No |
 
 Work to write more of these edges automatically is tracked in [#1653](https://github.com/robotrocketscience/aelfrice/issues/1653).
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/belief-graph-dark.png">
-    <img src="docs/assets/belief-graph-light.png" width="100%" alt="An illustrative belief graph of eight beliefs, colored by type. A locked factual belief, never push directly to main, has no edges: a lock is injected whether or not anything links to it. A requirement, the release checks must include pyright, is DERIVED_FROM a factual belief, the publish script runs the release checks. A factual belief from a commit, publish.sh runs pytest and pyright, SUPPORTS the requirement and IMPLEMENTS the publish-script belief. A correction, do not deploy staging from main and use the release branch, is TEMPORAL_NEXT after the publish-script belief and SUPERSEDES an older factual belief, staging deploys from main. A preference, I prefer small atomic commits, is TEMPORAL_NEXT after the correction. A speculative belief, drawn as a hollow outline, cache the wheel build between releases, RELATES_TO the publish-script belief.">
-  </picture>
-</p>
 
 <p align="center"><img src="docs/assets/02-eterne-hrr.png" width="88%" alt="A pen-and-ink figure holding a sword, with ranks of armored figures branching above and behind him like a tree"></p>
 
