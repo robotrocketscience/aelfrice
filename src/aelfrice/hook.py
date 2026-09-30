@@ -444,7 +444,8 @@ scripts/measure_block_ceiling.py --cadence`.
 
 With the payload bound in force, the same fire writes 9370 characters
 where it wrote 47703, and a 300-lock store writes 9172 where it wrote
-106565: 21 locks shown whole and 279 named in the overflow line.
+106565: 21 locks shown whole, and 279 cut and listed in the overflow
+line, 20 by id and the rest as a count.
 Re-derive with `uv run python scripts/measure_block_ceiling.py
 --payload`; `test_hook_inline_limit_1639.py` asserts the bound against
 captured stdout.
@@ -495,8 +496,10 @@ hook outputs were saved rather than inlined, and of the saved ones that
 carried user locks, 46% lost at least one lock from the preview.
 
 The limit is 9,500, not 10,000, by operator ruling: 5% headroom for the
-host's framing. It is counted with `len()`, which is what the host counts,
-not in estimated tokens.
+host's framing. It is counted in characters with `len()`, as the host's
+documentation states its limit, not in estimated tokens. Whether the host
+counts code points or UTF-16 units is not documented; the headroom covers
+the difference for text that is mostly outside the astral planes.
 
 This is the payload-wide bound #1560 ruled out. #1639 reopened that
 ruling for this one change, because the host's cap applies to a fire's
@@ -506,7 +509,7 @@ constant sits outside them. It does not add a shed order: the memory
 envelope gets whatever room the fire's other blocks leave, and
 `enforce_block_ceiling` trims to that room in the order it already uses.
 The one new behaviour is what happens when the user locks alone do not
-fit, described on `enforce_block_ceiling`.
+fit, described on `_choose_locks_for_room`.
 """
 
 CADENCE_ENVELOPE_RESERVE_CHARS: Final[int] = 4_000
@@ -1085,11 +1088,11 @@ def _choose_locks_for_room(
     appends the line naming cut locks; it defaults to `frame`.
 
     When every lock fits beside the frame, none is cut and no line is
-    owed. Otherwise the line that names the cut locks is owed, priced at
-    the shortest length whose choice's own line fits. At a given price
-    each lock, in render order, stays if it fits what is left and is cut
-    whole if it does not; the first recap lock kept also pays for the
-    recap around it.
+    owed. Otherwise each lock, in render order, stays if it fits what is
+    left beside the line at its longest, and is cut whole if it does not;
+    the first recap lock kept also pays for the recap around it. Then
+    each cut lock that fits beside the line the cut would leave is taken
+    back, until none does, so no cut lock could have stayed.
 
     Deciding this before anything is shed is the point: the droppable
     lanes are then trimmed to what the kept locks leave, so no hit is ever
@@ -1116,38 +1119,28 @@ def _choose_locks_for_room(
                 cut.append(bid)
         return cut, used - line_chars
 
-    # Price the line at every length from its shortest up, and take the
-    # first whose choice's own line fits. A higher price only cuts more,
-    # so the first that fits keeps the most. The line at its longest --
-    # every id, longest first -- is the most any choice can need, so it is
-    # the answer when no shorter price leaves a fitting choice.
+    # First-fit with the line priced at its longest -- every id, longest
+    # first -- which is the most any choice can need, so the choice fits.
     longest = len(lock_overflow_line(sorted(groups, key=len, reverse=True)))
     cut, kept = pick(longest)
-    for line_chars in range(
-        len(lock_overflow_line([min(groups, key=len)])), longest,
-    ):
-        trial, trial_kept = pick(line_chars)
-        if trial_kept + len(lock_overflow_line(trial)) <= room_chars:
-            cut, kept = trial, trial_kept
-            break
-    # The price reserved room for a line at least as long as the one the
+    # That price reserved room for a line at least as long as the one the
     # choice names, and a cut lock may fit in the difference. Take back,
     # in render order, each cut lock that fits beside the line it leaves,
-    # until none does; recap locks are left to the priced pass, whose
-    # wrapper charge this does not model.
+    # until none does. A recap lock pays for the recap too when it is the
+    # first recap lock kept.
     changed = True
     while changed and cut:
         changed = False
         for bid in list(cut):
-            if bid in recap_ids:
-                continue
+            recap_kept = any(b in recap_ids and b not in cut for b in groups)
+            extra = wrapper if bid in recap_ids and not recap_kept else 0
             rest = [b for b in cut if b != bid]
             # With nothing left to name there is no line, and the block
             # keeps the trailing newlines it drops before one.
             line = (len(lock_overflow_line(rest)) if rest
                     else frame - base)
-            if kept + cost[bid] + line <= room_chars:
-                cut, kept, changed = rest, kept + cost[bid], True
+            if kept + cost[bid] + extra + line <= room_chars:
+                cut, kept, changed = rest, kept + cost[bid] + extra, True
     return tuple(cut)
 
 
@@ -1414,8 +1407,8 @@ def _write_memory_block(
     <!-- derived: scripts/measure_block_ceiling.py#gate_skip_tokens_300_locks_150 = 17201 -->
     `room_chars` is the envelope's share of `HOOK_PAYLOAD_CHAR_LIMIT`
     (#1639): what the fire's other blocks leave. When it is tighter than
-    the ceiling, it becomes the limit and the trim may cut user locks,
-    naming them; see `enforce_block_ceiling`. The figures in this docstring
+    the ceiling, it becomes the limit and user locks may be cut, and
+    named; see `_choose_locks_for_room`. The figures in this docstring
     measure the ceiling alone, with the payload bound lifted.
 
     Routing the write itself through the trim is what keeps a
@@ -5709,11 +5702,17 @@ _RECENT_WORK_GIT_TIMEOUT_S: Final[float] = 1.5
 # the SessionStart budget bounded.
 DEFAULT_RECENT_WORK_COMMIT_LIMIT: Final[int] = 8
 
-# Cap on each commit subject's characters (#1639). The lane is part of the
-# frame the payload bound cannot shed, so eight uncapped subjects of 1,200
-# characters took a fire past 9,500 on their own. 200 is about twice the
-# longest subject in this repository's history.
+# Cap on each field of <recent-work> -- branch, upstream, and each commit
+# subject -- in characters as rendered, escaping included (#1639). The lane
+# is frame the payload bound cannot shed, and its text is git metadata a
+# cloned repository controls: eight subjects of 1,200 characters, or of 200
+# `<` escaped fourfold, took a fire past 9,500 on their own. 200 is about
+# twice the longest subject in this repository's history.
 RECENT_WORK_SUBJECT_CHAR_CAP: Final[int] = 200
+
+# Digits allowed in a linked `#N` ref (#1639). Longer runs are not issue
+# numbers, and uncapped they let one subject render thousands of digits.
+_MAX_ISSUE_DIGITS: Final[int] = 7
 
 # Sub-block tags for the recent-work surface inside <session-start>.
 RECENT_WORK_OPEN_TAG: Final[str] = "<recent-work>"
@@ -5830,12 +5829,34 @@ def _extract_linked_issues(
     haystacks.extend(commit_subjects)
     for text in haystacks:
         for match in _ISSUE_REF_RE.finditer(text):
+            if len(match.group(1)) > _MAX_ISSUE_DIGITS:
+                continue
             try:
                 found.add(int(match.group(1)))
             except ValueError:
                 continue
     ordered = sorted(found)[:_MAX_LINKED_ISSUES]
     return [f"#{n}" for n in ordered]
+
+
+def _capped_escape(text: str, cap: int) -> str:
+    """`text` escaped for the hook block, at most `cap` characters (#1639).
+
+    Cut before escaping would let `<` render fourfold past the cap, so the
+    cut is on the escaped length: the longest prefix whose escape and the
+    ellipsis fit.
+    """
+    out = _escape_for_hook_block(text)
+    if len(out) <= cap:
+        return out
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(_escape_for_hook_block(text[:mid])) + 1 <= cap:
+            lo = mid
+        else:
+            hi = mid - 1
+    return _escape_for_hook_block(text[:lo]) + "…"
 
 
 def _build_recent_work_subblock(
@@ -5860,19 +5881,16 @@ def _build_recent_work_subblock(
     linked = _extract_linked_issues(branch, subjects)
 
     lines: list[str] = [RECENT_WORK_OPEN_TAG]
-    lines.append(f"<branch>{_escape_for_hook_block(branch)}</branch>")
+    cap = RECENT_WORK_SUBJECT_CHAR_CAP
+    lines.append(f"<branch>{_capped_escape(branch, cap)}</branch>")
     if upstream:
-        lines.append(
-            f"<upstream>{_escape_for_hook_block(upstream)}</upstream>",
-        )
+        lines.append(f"<upstream>{_capped_escape(upstream, cap)}</upstream>")
     if commits:
         lines.append("<commits>")
         for sha, subject in commits:
-            if len(subject) > RECENT_WORK_SUBJECT_CHAR_CAP:
-                subject = subject[:RECENT_WORK_SUBJECT_CHAR_CAP - 1] + "…"
             lines.append(
-                f'<commit sha="{_escape_for_hook_block(sha)}">'
-                f"{_escape_for_hook_block(subject)}</commit>",
+                f'<commit sha="{_capped_escape(sha, cap)}">'
+                f"{_capped_escape(subject, cap)}</commit>",
             )
         lines.append("</commits>")
     if linked:

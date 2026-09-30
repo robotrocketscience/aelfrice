@@ -1593,16 +1593,18 @@ def test_a_recap_that_never_held_a_belief_is_kept(
 
 def test_no_cut_lock_could_have_stayed() -> None:
     """Found by review: the price search jumped past prices that fit, so
-    4 of 24 random stores cut a lock that would have fit. Every choice now
-    fits, and no cut lock fits beside it with the line it would leave."""
+    4 of 24 random stores cut a lock that would have fit; a later round
+    found a one-character slack no test pinned. Every choice fits, and no
+    cut lock fits beside it with the line it would leave -- recap locks
+    included, paying for the recap when they would be its first."""
     import random
 
     from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
 
     rng = random.Random(1639)
-    judged = 0
-    for _ in range(300):
-        n = rng.randint(1, 40)
+    judged = edges = 0
+    for _ in range(120):
+        n = rng.randint(1, 30)
         groups: dict[str, list[tuple[int, int]]] = {}
         at = 0
         for i in range(n):
@@ -1610,22 +1612,29 @@ def test_no_cut_lock_could_have_stayed() -> None:
             bid = "L" + str(i).zfill(rng.choice([15, 31]))
             groups[bid] = [(at, at + size)]
             at += size
+        ids = list(groups)
+        recap = set(rng.sample(ids, rng.randint(0, min(5, n))))
+        wrapper = rng.randint(40, 200) if recap else 0
         frame = rng.randint(300, 1_500)
-        room = rng.randint(frame, frame + at + 200)
+        cost = {b: sp[0][1] - sp[0][0] for b, sp in groups.items()}
         longest = len(lock_overflow_line(sorted(groups, key=len, reverse=True)))
-        if frame + longest > room:
-            continue  # no choice is sure to fit: the room is below the frame
-        cut = _choose_locks_for_room(groups, set(), 0, frame, room)
-        cost = {b: s[0][1] - s[0][0] for b, s in groups.items()}
-        kept = frame + sum(c for b, c in cost.items() if b not in cut)
-        line = len(lock_overflow_line(list(cut))) if cut else 0
-        assert kept + line <= room
-        for c in cut:
-            rest = [b for b in cut if b != c]
-            again = len(lock_overflow_line(rest)) if rest else 0
-            assert kept + cost[c] + again > room, (c, room)
-        judged += 1
-    assert judged > 200
+        top = frame + at + wrapper + longest
+        for room in range(frame + longest, top, max(1, (top - frame) // 40)):
+            cut = _choose_locks_for_room(groups, recap, wrapper, frame, room)
+            kept_ids = [b for b in ids if b not in cut]
+            recap_kept = any(b in recap for b in kept_ids)
+            kept = frame + sum(cost[b] for b in kept_ids) + (
+                wrapper if recap_kept else 0)
+            line = len(lock_overflow_line(list(cut))) if cut else 0
+            assert kept + line <= room, (room, cut)
+            edges += kept + line == room
+            for c in cut:
+                rest = [b for b in cut if b != c]
+                again = len(lock_overflow_line(rest)) if rest else 0
+                extra = wrapper if c in recap and not recap_kept else 0
+                assert kept + cost[c] + extra + again > room, (c, room)
+            judged += 1
+    assert judged > 3_000 and edges > 0, (judged, edges)
 
 
 @pytest.mark.timeout(120)
@@ -1707,3 +1716,53 @@ def test_a_block_that_fits_exactly_cuts_nothing(
     assert out.omitted_lock_ids == ()  # type: ignore[attr-defined]
     assert '<belief id="R2" lock="user">' in out.body  # type: ignore[attr-defined]
     assert len(out.body) <= len(floor)  # type: ignore[attr-defined]
+
+
+@pytest.mark.timeout(60)
+def test_an_operator_ceiling_tighter_than_the_room_still_trims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: nothing tested a ceiling under the room, so a trim
+    to the room alone passed every test."""
+    from aelfrice.hook import _audit_tokens_from_block, _write_memory_block
+
+    body = _envelope_with(tmp_path, monkeypatch, "tight", 2, 30)
+    monkeypatch.setenv("AELFRICE_HOOK_BLOCK_CEILING", "300")
+    out = _write_memory_block(
+        body, stdout=io.StringIO(), stderr=io.StringIO(), room_chars=9_500)
+    assert '<belief id="H' not in out.body
+    assert _audit_tokens_from_block(out.body) <= 300 or out.over_ceiling
+
+
+@pytest.mark.timeout(60)
+def test_crafted_repo_metadata_cannot_inflate_recent_work(
+    tmp_path: Path,
+) -> None:
+    """Found by review: subjects of `<` escaped fourfold past the cap, an
+    uncapped branch name, and thousand-digit `#N` refs each overran the
+    bound through a lane the trim cannot shed."""
+    import subprocess
+
+    from aelfrice.hook import (
+        RECENT_WORK_SUBJECT_CHAR_CAP,
+        _build_recent_work_subblock,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    vcs = ["git", "-C", str(repo), "-c", "commit.gpgsign=false",
+           "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*vcs, "init", "-q", "-b", "b" * 250], check=True,
+                   timeout=30)
+    for i in range(8):
+        subject = ("<" * 300 if i % 2 else f"fix #{'9' * 1_000} #{i}")
+        subprocess.run([*vcs, "commit", "-q", "--allow-empty", "-m",
+                        subject], check=True, timeout=30)
+    block = _build_recent_work_subblock(repo)
+    fields = re.findall(r">([^<]*)</(?:branch|commit)>", block)
+    assert len(fields) == 9
+    assert all(len(f) <= RECENT_WORK_SUBJECT_CHAR_CAP for f in fields)
+    linked = re.search(r"<linked-issues>([^<]*)</linked-issues>", block)
+    assert linked is not None
+    assert all(len(ref) <= 8 for ref in linked.group(1).split())
+    assert len(block) < 3_000, len(block)
