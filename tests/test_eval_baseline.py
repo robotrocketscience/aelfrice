@@ -13,6 +13,7 @@ stripped before comparison; what we pin is the metric subset.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -46,18 +47,21 @@ def test_baseline_file_exists_and_parses():
 def _isolate_from_ambient_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Run from a directory with no `.aelfrice.toml` and a work-tree marker.
+    """Run with default flags: no project config and no `AELFRICE_*` env.
 
-    The harness calls `retrieve(..., posterior_weight=None)`, which reads
-    the weight from any `.aelfrice.toml` at or above the working
-    directory. The pin is for default flags, so a developer's project
-    config must not reach it (#1659, the #1295 class). The `.git` marker
-    stops the walk here instead of letting it climb out of `tmp_path`.
+    The harness's `retrieve()` reads 23 TOML keys, found by walking up
+    from the working directory, and more than 30 `AELFRICE_*` variables.
+    Some of the variables override the harness's own arguments, because
+    each resolver checks the environment first. The pin is for default
+    flags, so neither a developer's project config nor their shell may
+    reach it (#1659, the #1295 class). The `.git` marker stops the walk
+    here instead of letting it climb out of `tmp_path`.
     """
     clean = tmp_path / "clean"
     (clean / ".git").mkdir(parents=True)
     monkeypatch.chdir(clean)
-    monkeypatch.delenv("AELFRICE_POSTERIOR_WEIGHT", raising=False)
+    for name in [n for n in os.environ if n.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name)
 
 
 def _assert_matches_baseline(
@@ -97,13 +101,19 @@ def test_the_baseline_ignores_an_ambient_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Started from a project whose config raises the posterior weight,
-    the pinned metrics still match (#1659). Without the isolation this
-    reads `posterior_weight = 1.5` and the rank metrics drift."""
+    under a shell that sets knobs the metrics respond to, the pinned
+    metrics still match (#1659). Each arm fails alone without its guard:
+    the working-directory config without the `chdir`, the config above
+    `tmp_path` without the `.git` marker, and the environment without
+    the `delenv` loop."""
+    config = "[retrieval]\nposterior_weight = 1.5\n"
+    (tmp_path / ".aelfrice.toml").write_text(config, encoding="utf-8")
     dirty = tmp_path / "dirty"
     (dirty / ".git").mkdir(parents=True)
-    (dirty / ".aelfrice.toml").write_text(
-        "[retrieval]\nposterior_weight = 1.5\n", encoding="utf-8")
+    (dirty / ".aelfrice.toml").write_text(config, encoding="utf-8")
     monkeypatch.chdir(dirty)
+    monkeypatch.setenv("AELFRICE_BM25F", "0")
+    monkeypatch.setenv("AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE", "1")
     _assert_matches_baseline(tmp_path, monkeypatch)
 
 
