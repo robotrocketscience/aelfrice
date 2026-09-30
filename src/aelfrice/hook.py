@@ -1082,12 +1082,14 @@ def _choose_locks_for_room(
     `frame` is what the block costs with every droppable element shed and
     no lock rendered: what stays whatever is cut. `frame_before_line` is
     the same less its trailing newlines, which the block drops before it
-    appends the line naming cut locks; it defaults to `frame`. When every lock fits
-    beside it, none is cut and no line is owed. Otherwise the line that
-    names the cut locks is owed, and it is priced at its longest before
-    any lock is kept; then each lock, in render order, stays if it fits
-    what is left, and is cut whole if it does not. The first recap lock
-    kept also pays for the recap around it.
+    appends the line naming cut locks; it defaults to `frame`.
+
+    When every lock fits beside the frame, none is cut and no line is
+    owed. Otherwise the line that names the cut locks is owed, priced at
+    the shortest length whose choice's own line fits. At a given price
+    each lock, in render order, stays if it fits what is left and is cut
+    whole if it does not; the first recap lock kept also pays for the
+    recap around it.
 
     Deciding this before anything is shed is the point: the droppable
     lanes are then trimmed to what the kept locks leave, so no hit is ever
@@ -1114,21 +1116,39 @@ def _choose_locks_for_room(
                 cut.append(bid)
         return cut, used - line_chars
 
-    # Price the line up from its shortest: choose with a line of that
-    # length, and if the line the choice actually needs is longer, choose
-    # again priced at that. A longer line only cuts more, so the price only
-    # rises, and the first choice whose own line fits is the answer. The
-    # line at its longest -- every id, longest first -- always fits what
-    # it chose, so it ends the search if nothing shorter does.
+    # Price the line at every length from its shortest up, and take the
+    # first whose choice's own line fits. A higher price only cuts more,
+    # so the first that fits keeps the most. The line at its longest --
+    # every id, longest first -- is the most any choice can need, so it is
+    # the answer when no shorter price leaves a fitting choice.
     longest = len(lock_overflow_line(sorted(groups, key=len, reverse=True)))
-    line_chars = len(lock_overflow_line([min(groups, key=len)]))
-    while line_chars < longest:
-        cut, kept = pick(line_chars)
-        needed = len(lock_overflow_line(cut))
-        if kept + needed <= room_chars:
-            return tuple(cut)
-        line_chars = max(needed, line_chars + 1)
-    return tuple(pick(longest)[0])
+    cut, kept = pick(longest)
+    for line_chars in range(
+        len(lock_overflow_line([min(groups, key=len)])), longest,
+    ):
+        trial, trial_kept = pick(line_chars)
+        if trial_kept + len(lock_overflow_line(trial)) <= room_chars:
+            cut, kept = trial, trial_kept
+            break
+    # The price reserved room for a line at least as long as the one the
+    # choice names, and a cut lock may fit in the difference. Take back,
+    # in render order, each cut lock that fits beside the line it leaves,
+    # until none does; recap locks are left to the priced pass, whose
+    # wrapper charge this does not model.
+    changed = True
+    while changed and cut:
+        changed = False
+        for bid in list(cut):
+            if bid in recap_ids:
+                continue
+            rest = [b for b in cut if b != bid]
+            # With nothing left to name there is no line, and the block
+            # keeps the trailing newlines it drops before one.
+            line = (len(lock_overflow_line(rest)) if rest
+                    else frame - base)
+            if kept + cost[bid] + line <= room_chars:
+                cut, kept, changed = rest, kept + cost[bid], True
+    return tuple(cut)
 
 
 def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
@@ -1137,15 +1157,21 @@ def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
     return body
 
 
-def _without_empty_recap(body: str) -> str:
-    """`body` less a `<cadence-resume>` recap that holds no belief.
+def _without_empty_recap(body: str, before: str) -> str:
+    """`body` less a `<cadence-resume>` recap that the lock cut emptied.
 
     Cutting locks can leave a recap whose every element was one of them.
     The trim cannot shed it -- it schedules the recap by its elements --
-    and a wrapper recapping nothing is the fragment #1564 AC4 rules out.
+    and a wrapper that recapped beliefs and now holds none is the fragment
+    #1564 AC4 rules out. A recap that never held a belief is kept: the
+    rebuilder writes one on purpose, to say where a session was when no
+    belief matched.
     """
     recap = _section_span(body, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
     if recap[0] < 0 or _BELIEF_ELEMENT_RE.search(body, recap[0], recap[1]):
+        return body
+    was = _section_span(before, RESUME_OPEN_TAG, RESUME_CLOSE_TAG)
+    if not _BELIEF_ELEMENT_RE.search(before, was[0], was[1]):
         return body
     end = recap[1]
     while end < len(body) and body[end] == "\n":
@@ -1369,7 +1395,6 @@ def enforce_block_ceiling(
 def _write_memory_block(
     body: str, *, stdout: IO[str], stderr: IO[str],
     room_chars: int = HOOK_PAYLOAD_CHAR_LIMIT,
-    shown_elsewhere: frozenset[str] = frozenset(),
 ) -> BlockCeilingOutcome:
     """Trim `body` to the ceiling, note what happened, and write it.
 
@@ -1486,17 +1511,15 @@ def _write_memory_block(
                     for sp in groups[bid] + copies.get(bid, [])]
 
         frame_body = enforce_block_ceiling(_without_empty_recap(
-            _splice_out(body, spans_of(list(groups)))), 1,
+            _splice_out(body, spans_of(list(groups))), body), 1,
         ).body if groups else ""
         cut = _choose_locks_for_room(
             groups, recap_ids, wrapper, len(frame_body), room,
             frame_before_line=len(frame_body.rstrip("\n")),
         )
-        cut_body = _without_empty_recap(_splice_out(body, spans_of(cut)))
-        # A lock this fire's stdout already renders -- in the cadence
-        # checkpoint written before the envelope -- was shown, so it is
-        # not named as cut and keeps its exposure record.
-        omitted = tuple(b for b in cut if b not in shown_elsewhere)
+        cut_body = _without_empty_recap(
+            _splice_out(body, spans_of(cut)), body)
+        omitted = cut
         line = lock_overflow_line(list(omitted)) if omitted else ""
         # Then trim the droppable lanes once, to the tighter of the token
         # ceiling and the room the line leaves. The largest token count
@@ -3122,10 +3145,6 @@ def user_prompt_submit(
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
             payload_used += len(cadence_checkpoint_block) + 2
-        checkpoint_ids = frozenset(
-            m.group("id")
-            for m in _BELIEF_ELEMENT_RE.finditer(cadence_checkpoint_block)
-        )
         budget = (
             token_budget
             if token_budget is not None
@@ -3474,7 +3493,6 @@ def user_prompt_submit(
             # this branch cannot drift away from its two siblings.
             outcome = _write_memory_block(
                 body, stdout=sout, stderr=serr, room_chars=envelope_room,
-                shown_elsewhere=checkpoint_ids,
             )
             # Load-bearing, and the only consumer is `rendered_block=`
             # below: without it the audit row stores the PRE-trim block
@@ -3770,7 +3788,6 @@ def user_prompt_submit(
                 # test_gate_skip_audit_row_records_the_block_it_emitted
                 body = _write_memory_block(
                     body, stdout=sout, stderr=serr, room_chars=envelope_room,
-                    shown_elsewhere=checkpoint_ids,
                 ).body
             else:
                 body = ""
@@ -5692,6 +5709,12 @@ _RECENT_WORK_GIT_TIMEOUT_S: Final[float] = 1.5
 # the SessionStart budget bounded.
 DEFAULT_RECENT_WORK_COMMIT_LIMIT: Final[int] = 8
 
+# Cap on each commit subject's characters (#1639). The lane is part of the
+# frame the payload bound cannot shed, so eight uncapped subjects of 1,200
+# characters took a fire past 9,500 on their own. 200 is about twice the
+# longest subject in this repository's history.
+RECENT_WORK_SUBJECT_CHAR_CAP: Final[int] = 200
+
 # Sub-block tags for the recent-work surface inside <session-start>.
 RECENT_WORK_OPEN_TAG: Final[str] = "<recent-work>"
 RECENT_WORK_CLOSE_TAG: Final[str] = "</recent-work>"
@@ -5845,6 +5868,8 @@ def _build_recent_work_subblock(
     if commits:
         lines.append("<commits>")
         for sha, subject in commits:
+            if len(subject) > RECENT_WORK_SUBJECT_CHAR_CAP:
+                subject = subject[:RECENT_WORK_SUBJECT_CHAR_CAP - 1] + "…"
             lines.append(
                 f'<commit sha="{_escape_for_hook_block(sha)}">'
                 f"{_escape_for_hook_block(subject)}</commit>",

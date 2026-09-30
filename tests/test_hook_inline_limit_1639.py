@@ -1505,47 +1505,6 @@ def test_a_recap_emptied_by_the_cut_goes_with_it(
     assert "<cadence-resume" not in text and len(text) <= 1_000
 
 
-def test_a_lock_the_fire_already_showed_is_not_named_as_cut(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Found by review: on a cadence fire the checkpoint renders a lock
-    the envelope then named as "not shown"."""
-    from aelfrice import hook
-    from aelfrice.hook import _write_memory_block
-
-    big = "q" * 3_000
-    body = (f"{hook.OPEN_TAG}\n"
-            f'<belief id="F1" lock="user">{big}</belief>\n'
-            f'<belief id="F2" lock="user">{big}</belief>\n{hook.CLOSE_TAG}\n')
-    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
-    out = _write_memory_block(
-        body, stdout=io.StringIO(), stderr=io.StringIO(), room_chars=1_000,
-        shown_elsewhere=frozenset({"F1"}))
-    assert out.omitted_lock_ids == ("F2",)
-    assert "F2" in out.body and "F1" not in out.body
-    assert len(out.body) <= 1_000
-
-
-@pytest.mark.timeout(120)
-def test_the_checkpoint_ids_reach_the_envelope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from aelfrice import hook
-
-    seen: list[frozenset[str]] = []
-    real = hook._write_memory_block  # pyright: ignore[reportPrivateUsage]
-
-    def _spy(body: str, **kw: object) -> object:
-        seen.append(kw["shown_elsewhere"])  # type: ignore[arg-type]
-        return real(body, **kw)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(hook, "_write_memory_block", _spy)
-    out, _ = _cadence_fire(tmp_path, monkeypatch)
-    ck = out[:out.index("</cadence-checkpoint>")]
-    ids = frozenset(re.findall(r'<belief id="([^"]+)"', ck))
-    assert ids and seen == [ids]
-
-
 class _FailOnNote(io.StringIO):
     def write(self, s: str) -> int:
         if "phantom" in s:
@@ -1612,3 +1571,139 @@ def test_a_recap_lock_that_fits_exactly_is_kept(
     expected = body.replace(big, "").rstrip("\n") + lock_overflow_line(["L3"])
     out = _trim(body, len(expected), monkeypatch)
     assert out.body == expected  # type: ignore[attr-defined]
+
+
+def test_a_recap_that_never_held_a_belief_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the rebuilder writes a recap with no belief on
+    purpose, to say where the session was; only a recap the lock cut
+    emptied goes."""
+    from aelfrice import hook
+
+    recap = ("<cadence-resume from='prev' policy='p1' ts='t'>\n"
+             "<recent-turns>where we were</recent-turns>\n"
+             "</cadence-resume>")
+    big = f'<belief id="L3" lock="user">{"q" * 3_000}</belief>\n'
+    body = f"{hook.OPEN_TAG}\n{recap}\n\n{big}{hook.CLOSE_TAG}\n"
+    out = _trim(body, 1_000, monkeypatch)
+    assert out.omitted_lock_ids == ("L3",)  # type: ignore[attr-defined]
+    assert "where we were" in out.body  # type: ignore[attr-defined]
+
+
+def test_no_cut_lock_could_have_stayed() -> None:
+    """Found by review: the price search jumped past prices that fit, so
+    4 of 24 random stores cut a lock that would have fit. Every choice now
+    fits, and no cut lock fits beside it with the line it would leave."""
+    import random
+
+    from aelfrice.hook import _choose_locks_for_room, lock_overflow_line
+
+    rng = random.Random(1639)
+    judged = 0
+    for _ in range(300):
+        n = rng.randint(1, 40)
+        groups: dict[str, list[tuple[int, int]]] = {}
+        at = 0
+        for i in range(n):
+            size = rng.randint(20, 900)
+            bid = "L" + str(i).zfill(rng.choice([15, 31]))
+            groups[bid] = [(at, at + size)]
+            at += size
+        frame = rng.randint(300, 1_500)
+        room = rng.randint(frame, frame + at + 200)
+        longest = len(lock_overflow_line(sorted(groups, key=len, reverse=True)))
+        if frame + longest > room:
+            continue  # no choice is sure to fit: the room is below the frame
+        cut = _choose_locks_for_room(groups, set(), 0, frame, room)
+        cost = {b: s[0][1] - s[0][0] for b, s in groups.items()}
+        kept = frame + sum(c for b, c in cost.items() if b not in cut)
+        line = len(lock_overflow_line(list(cut))) if cut else 0
+        assert kept + line <= room
+        for c in cut:
+            rest = [b for b in cut if b != c]
+            again = len(lock_overflow_line(rest)) if rest else 0
+            assert kept + cost[c] + again > room, (c, room)
+        judged += 1
+    assert judged > 200
+
+
+@pytest.mark.timeout(120)
+def test_a_gate_skipped_cadence_fire_fits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the gate-skip branch's room had no test, and a
+    full room there took a cadence fire to 14,890 characters."""
+    mbc = _load_producer()
+    work = tmp_path / "cadence"
+    work.mkdir()
+    db = mbc._cadence_store(work)
+    store = MemoryStore(str(db))
+    try:
+        for i in range(60):
+            store.insert_belief(_mk(f"G{i:015d}", f"gatelock {i} " + "q" * 150,
+                                    locked=True))
+    finally:
+        store.close()
+    transcript = mbc._cadence_transcript(work, mbc.CADENCE_SESSION)
+    (work / ".aelfrice.toml").write_text(
+        "[cadence]\nenabled = true\npolicy = \"p1_every_k_turns\"\n"
+        f"k = {mbc.CADENCE_K}\n", encoding="utf-8")
+    (db.parent / "session_injected_ids.json").write_text(json.dumps({
+        "session_id": mbc.CADENCE_SESSION, "ring": [], "ring_max": 200,
+        "next_fire_idx": mbc.CADENCE_K, "evicted_total": 0,
+    }), encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout, serr = io.StringIO(), io.StringIO()
+    payload = json.dumps({
+        "session_id": mbc.CADENCE_SESSION, "transcript_path": str(transcript),
+        "cwd": str(work), "hook_event_name": "UserPromptSubmit",
+        "prompt": _GATED_PROMPT,
+    })
+    assert user_prompt_submit(
+        stdin=io.StringIO(payload), stdout=sout, stderr=serr) == 0
+    out = sout.getvalue()
+    assert "<cadence-checkpoint" in out and "did not fit" in out
+    assert len(out) <= _LIMIT, len(out)
+
+
+@pytest.mark.timeout(60)
+def test_long_commit_subjects_are_capped(tmp_path: Path) -> None:
+    """Found by review: eight 1,200-character subjects put the unsheddable
+    `<recent-work>` lane over the whole bound."""
+    import subprocess
+
+    from aelfrice.hook import (
+        RECENT_WORK_SUBJECT_CHAR_CAP,
+        _build_recent_work_subblock,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    vcs = ["git", "-C", str(repo), "-c", "commit.gpgsign=false",
+           "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*vcs, "init", "-q"], check=True, timeout=30)
+    for i in range(8):
+        subprocess.run([*vcs, "commit", "-q", "--allow-empty", "-m",
+                        f"{i} " + "s" * 1_200], check=True, timeout=30)
+    block = _build_recent_work_subblock(repo)
+    subjects = re.findall(r'<commit sha="[^"]*">([^<]*)</commit>', block)
+    assert len(subjects) == 8
+    assert all(len(s) <= RECENT_WORK_SUBJECT_CHAR_CAP for s in subjects)
+    assert len(block) < 3_000
+
+
+def test_a_block_that_fits_exactly_cuts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At a room of exactly what the locks need -- every droppable shed,
+    no lock cut -- every lock stays and no line is written, a lock held
+    only in the recap included."""
+    from aelfrice.hook import enforce_block_ceiling
+
+    body = _recap_body(300)
+    floor = enforce_block_ceiling(body, 1).body  # sheds all, keeps locks
+    out = _trim(body, len(floor), monkeypatch)
+    assert out.omitted_lock_ids == ()  # type: ignore[attr-defined]
+    assert '<belief id="R2" lock="user">' in out.body  # type: ignore[attr-defined]
+    assert len(out.body) <= len(floor)  # type: ignore[attr-defined]
