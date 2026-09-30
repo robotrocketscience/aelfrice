@@ -10,17 +10,19 @@
 [![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
-**aelfrice gives an AI coding agent a local memory: the rules you lock, and the memories that match what you ask, reach the model before it reads your message.**
+**aelfrice gives an AI coding agent a local memory: the rules you lock, and the beliefs that match what you ask, reach the model before it reads your message.**
 
 - **Problem.** An agent forgets your corrections between sessions, so you repeat them.
 - **Method.** Before the model reads each prompt, a hook adds every rule you locked and the beliefs that best match the prompt, from an entity index and BM25 full-text search over a local SQLite store.
 - **Provenance.** Every belief records where it came from and carries a Bayesian confidence that your feedback moves; a lock pins it as ground truth.
 - **Scope.** aelfrice captures your turns and commits as you work, and retrieval runs on your machine with no account, telemetry, embeddings, or LLM. By default it also checks PyPI for updates, and `/aelf:onboard` classifies with your agent's model ([privacy](docs/user/PRIVACY.md)).
 
+**How a conversation becomes beliefs.** A belief is one statement stored with its source, a type, and a confidence score. Every 12 turns, aelfrice splits your prompts into sentences, drops noise and questions, and stores the rest as facts, corrections, preferences, or requirements. The model's replies never become beliefs, so the agent's own narration doesn't come back to it as memory. When a later prompt matches stored beliefs, the best matches are ranked and added to it. They're beliefs, not facts: your feedback moves each one's confidence, and only a lock makes one ground truth.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-it-works-dark.png">
-    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook searches the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a DERIVED_FROM edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
+    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook, and a search hook that fires whenever the model searches, query the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a DERIVED_FROM edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
   </picture>
 </p>
 
@@ -60,7 +62,7 @@ From then on, aelfrice runs by itself. To check the install, run `/aelf:doctor` 
 | Command | What it does | When to use it |
 |---|---|---|
 | `/aelf:lock <text>` | Locks a statement as ground truth that every prompt carries. | You want a rule the agent never forgets. |
-| `/aelf:search <query>` | Shows what the store returns for a query, locked rules first. | You want to check what memory holds on a topic. |
+| `/aelf:search <query>` | Shows what the store returns for a query, locked rules first; a hook also runs it on the agent's own searches (Grep, Glob, WebSearch, WebFetch, and `grep` or `rg` in Bash) and returns the results next to the tool's output. | You want to check what memory holds on a topic. |
 | `/aelf:locked` | Lists your locked rules. | You want to review the rules in force. |
 | `/aelf:onboard <path>` | Scans a project and stores what it learns. | You start using aelfrice on a project. |
 | `/aelf:status` | Shows counts of beliefs, locks, and feedback. | You want a quick health summary. |
