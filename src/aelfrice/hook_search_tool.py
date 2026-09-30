@@ -848,19 +848,27 @@ def _format_results_with_ids(
             omitted.insert(0, bid)
         context = assemble(kept, omitted)
     # The tail pop reserved room for a line naming every lock it cut; a cut
-    # lock may fit in what a shorter line leaves. Take locks back in order,
-    # each only if the block still fits -- never an L1 line, which the
-    # ruling sheds before any lock.
-    for line, bid, is_lock in reversed(popped):
-        if not is_lock or bid not in omitted:
+    # lock may fit in what a shorter line leaves. Take locks back in render
+    # order, each only if the block still fits -- never an L1 line, which
+    # the ruling sheds before any lock. One pass is enough: a lock taken
+    # back adds its own line, which is longer than the id it takes off the
+    # naming line, so no take-back makes room for another.
+    back: set[str] = set()
+    for _line, bid, is_lock in reversed(popped):
+        if not is_lock:
             continue
-        trial_omitted = [b for b in omitted if b != bid]
-        trial = assemble([*kept, line], trial_omitted)
+        trial_back = back | {bid}
+        trial = assemble(
+            [*kept, *(ln for ln, b, _k in reversed(popped) if b in trial_back)],
+            [b for b in omitted if b not in trial_back],
+        )
         if len(trial) <= HOOK_PAYLOAD_CHAR_LIMIT:
-            kept.append(line)
-            kept_ids.append((bid, is_lock))
-            omitted = trial_omitted
-            context = trial
+            back, context = trial_back, trial
+    omitted = [b for b in omitted if b not in back]
+    for ln, b, _k in reversed(popped):
+        if b in back:
+            kept.append(ln)
+            kept_ids.append((b, True))
     return context, [bid for bid, _ in kept_ids]
 
 

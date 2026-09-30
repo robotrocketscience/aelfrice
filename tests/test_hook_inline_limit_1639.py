@@ -2018,3 +2018,250 @@ def test_a_ref_line_inside_an_element_is_not_a_lock_render() -> None:
     body = f"{hook.OPEN_TAG}\n{planted}{hook.CLOSE_TAG}\n"
     groups, _recap_ids, _wrapper, _copies = hook._lock_groups(body)
     assert list(groups) == ["Z1"]
+
+
+# --- review round 10 ----------------------------------------------------------
+
+def _manifest_body(n_locks: int, n_pointers: int, with_ref: bool) -> str:
+    """Locks, and a manifest holding a reference lock's `ref` line and
+    earlier turns' `seen` pointers -- the shape round 10 broke."""
+    from aelfrice import hook
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG, LOCKS_MANIFEST_OPEN_TAG
+
+    locks = "".join(f'<belief id="K{i:015d}" lock="user">{"k" * 300}</belief>\n'
+                    for i in range(n_locks))
+    ref = '  ref R000000000000001: "a reference lock"\n' if with_ref else ""
+    pointers = "".join(f'  seen P{i:015d}: "earlier text"\n'
+                       for i in range(n_pointers))
+    manifest = f"{LOCKS_MANIFEST_OPEN_TAG}\n{ref}{pointers}{LOCKS_MANIFEST_CLOSE_TAG}\n"
+    return f"{hook.OPEN_TAG}\n{locks}{manifest}{hook.CLOSE_TAG}\n"
+
+
+def test_a_kept_ref_lock_keeps_its_manifest_priced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: with earlier turns' pointers present, the frame
+    was priced without the manifest wrapper, but a kept reference lock's
+    `ref` line keeps it in the block, and fires ran up to 261 over. The
+    block is now measured as rendered, so every room is met."""
+    body = _manifest_body(40, 30, with_ref=True)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body), 37):
+        out = _trim(body, room, monkeypatch)
+        text = out.body  # type: ignore[attr-defined]
+        assert len(text) <= room, room
+        assert text.count("<belief ") == text.count("</belief>")
+
+
+def test_no_cut_lock_would_fit_in_the_rendered_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the size model and the render disagreed about the
+    manifest wrapper, so locks that fit were cut. Every cut lock is checked
+    against the block as rendered: restoring it would overrun the room."""
+    from aelfrice import hook
+
+    body = _manifest_body(30, 12, with_ref=True)
+    groups, _recap, _wrapper, copies = hook._lock_groups(body)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body), 53):
+        out = _trim(body, room, monkeypatch)
+        cut = list(out.omitted_lock_ids)  # type: ignore[attr-defined]
+        for bid in cut:
+            rest = [b for b in cut if b != bid]
+            spans = [sp for b in rest for sp in groups[b] + copies.get(b, [])]
+            text, _step, _shed = hook._render_for_room(
+                body, spans, rest, room, 6_000)
+            assert len(text) > room, (room, bid)
+
+
+def test_the_overflow_line_prints_long_ids_cut() -> None:
+    """Found by review: ids of 200 characters made the line alone outgrow
+    the search hook's room. Store ids are 16; a longer one prints cut."""
+    from aelfrice.hook import LOCK_POINTER_ID_CHARS, lock_overflow_line
+
+    line = lock_overflow_line(["x" * 250, "y" * 10])
+    assert "x" * LOCK_POINTER_ID_CHARS not in line
+    assert "x" * (LOCK_POINTER_ID_CHARS - 1) + "…" in line
+    assert "y" * 10 in line
+
+
+def test_the_search_hook_retries_a_lock_after_later_take_backs() -> None:
+    """Found by review: a single pass rejected a lock early and never
+    retried it once later take-backs shortened the line."""
+    from types import SimpleNamespace
+
+    from aelfrice.hook import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    for pad in range(150, 200):
+        locks = [SimpleNamespace(
+            id=f"L{i:015d}", content="lockword " + "q" * pad,
+            lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+            for i in range(80)]
+        ctx = _format_results(_WORD, locks, {b.id for b in locks})
+        assert len(ctx) <= HOOK_PAYLOAD_CHAR_LIMIT
+        lines = [ln for ln in ctx.splitlines() if ln.startswith("[L0]")]
+        cut = [b.id for b in locks if f"] {b.id}:" not in ctx]
+        if not cut:
+            continue
+        # Restoring the first cut lock adds its line and swaps the naming
+        # line for the one the rest would need; that overruns the room.
+        rest = cut[1:]
+        new_note = lock_overflow_line(rest).rstrip("\n") if rest else ""
+        grown = (len(ctx) + len(lines[0]) + 1
+                 - len(lock_overflow_line(cut).rstrip("\n")) + len(new_note))
+        assert grown > HOOK_PAYLOAD_CHAR_LIMIT, (pad, grown)
+
+
+def test_the_search_query_attribute_is_capped() -> None:
+    from aelfrice.hook_search_tool import ATTR_CHAR_CAP, _format_results
+
+    ctx = _format_results("q" * 5_000, [], set())
+    got = re.search(r'query="([^"]*)"', ctx)
+    assert got is not None and len(got.group(1)) <= ATTR_CHAR_CAP
+
+
+def test_a_pointer_shed_stops_once_the_block_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Earlier turns' pointers go from the last back only as far as the
+    room needs; the rest stay, since they still spare the model a reread."""
+    body = _pointer_body(60)
+    out = _trim(body, len(body) - 150, monkeypatch)
+    text = out.body  # type: ignore[attr-defined]
+    assert 0 < text.count("  seen P") < 60
+    assert len(text) <= len(body) - 150
+
+
+def test_a_recap_copy_goes_with_its_cut_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock rendered in `<locked>` and copied into the recap: cut, it
+    leaves no render behind, the recap's copy included."""
+    from aelfrice import hook
+
+    pad = "y" * 300
+    recap = ("<cadence-resume from='prev' policy='p1' ts='t'>\n"
+             f'<belief id="R1" lock="none">{pad}</belief>\n'
+             '<belief id="A1" locked="true">lockword a</belief>\n'
+             "</cadence-resume>")
+    locked = f'<belief id="A1" lock="user">{"a" * 3_000}</belief>\n'
+    body = f"{hook.OPEN_TAG}\n{recap}\n\n{locked}{hook.CLOSE_TAG}\n"
+    out = _trim(body, 1_000, monkeypatch)
+    assert out.omitted_lock_ids == ("A1",)  # type: ignore[attr-defined]
+    assert '<belief id="A1"' not in out.body  # type: ignore[attr-defined]
+
+
+def test_recent_work_is_measured_with_its_trailing_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lane's trailing blank lines go with it; every room from the
+    frame up is met with the lane in the block."""
+    body = _pointer_body(0, recent_chars=600)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body)):
+        got = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert len(got) <= room, room
+
+
+def test_the_trim_renders_a_handful_of_times_at_most(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The size model chooses; renders only correct it near the edge. A
+    model that drifts, or a take-back that renders every cut lock, shows
+    up here as renders -- 61 on this store before failed take-backs bounded
+    the rest."""
+    from aelfrice import hook
+
+    raw = _envelope_with(tmp_path, monkeypatch, "renders", 60, 30)
+    monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
+    bodies = [raw, _recap_body(300) + "\n",
+              _pointer_body(80, recent_chars=600),
+              _manifest_body(30, 12, with_ref=True)]
+    real = hook._render_for_room
+    renders = [0]
+
+    def counted(*a: object, **k: object) -> object:
+        renders[0] += 1
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(hook, "_render_for_room", counted)
+    worst = 0
+    for body in bodies:
+        for room in range(800, len(body) + 50, 29):
+            renders[0] = 0
+            out = hook._write_memory_block(
+                body, stdout=io.StringIO(), stderr=io.StringIO(),
+                room_chars=room)
+            worst = max(worst, renders[0])
+            floor = len(real(body, [], [], 0, 6_000)[0])
+            if room >= floor:
+                assert len(out.body) <= room
+    assert worst <= 6, worst
+
+
+def test_the_search_hook_drops_the_line_when_every_lock_comes_back() -> None:
+    """With two locks cut, taking one back leaves a line for the other;
+    taking both back drops the line altogether, which can free enough for
+    both. One pass turned the first away before the second came back."""
+    from types import SimpleNamespace
+
+    from aelfrice.hook import HOOK_PAYLOAD_CHAR_LIMIT
+    from aelfrice.hook_search_tool import _format_results
+    from aelfrice.models import LOCK_TIER_FROZEN
+
+    tiny = SimpleNamespace(id="T000000000000001", content="tinylock",
+                           lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+    for n in range(40, 70):
+        for pad in range(150, 200):
+            big = [SimpleNamespace(
+                id=f"L{i:015d}", content="lockword " + "q" * pad,
+                lock_level=LOCK_USER, lock_tier=LOCK_TIER_FROZEN)
+                for i in range(n)]
+            locks = [*big, tiny]
+            ctx = _format_results(_WORD, locks, {b.id for b in locks})
+            assert len(ctx) <= HOOK_PAYLOAD_CHAR_LIMIT
+            shown = {b.id for b in locks if f"] {b.id}:" in ctx}
+            cut = [b for b in locks if b.id not in shown]
+            if not cut:
+                continue
+            note = next(ln for ln in ctx.splitlines() if "did not fit" in ln)
+            one = len(next(ln for ln in ctx.splitlines()
+                           if ln.startswith("[L0] L")))
+            # Every cut lock back, and the line gone: that must not fit.
+            everything = (len(ctx) - len(note) - 1
+                          + sum(one + 1 if b is not tiny else 32 for b in cut))
+            assert everything > HOOK_PAYLOAD_CHAR_LIMIT, (n, pad)
+
+
+def test_a_take_back_that_fails_on_a_wrapper_does_not_turn_away_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock whose `seen` pointer brings the manifest back when it returns
+    can fail where a lock of the same size without one fits; the failure
+    bounds only locks that would bring back the same wrappers."""
+    from aelfrice import hook
+    from aelfrice.hook import LOCKS_MANIFEST_CLOSE_TAG, LOCKS_MANIFEST_OPEN_TAG
+
+    with_pointer = "".join(
+        f'<belief id="K{i:015d}" lock="user">{"k" * 300}</belief>\n'
+        for i in range(6))
+    without = "".join(
+        f'<belief id="J{i:015d}" lock="user">{"j" * 340}</belief>\n'
+        for i in range(6))
+    manifest = (f"{LOCKS_MANIFEST_OPEN_TAG}\n"
+                + "".join(f'  seen K{i:015d}: "k"\n' for i in range(6))
+                + f"{LOCKS_MANIFEST_CLOSE_TAG}\n")
+    body = f"{hook.OPEN_TAG}\n{with_pointer}{without}{manifest}{hook.CLOSE_TAG}\n"
+    groups, _r, _w, copies = hook._lock_groups(body)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body), 11):
+        out = _trim(body, room, monkeypatch)
+        cut = list(out.omitted_lock_ids)  # type: ignore[attr-defined]
+        for bid in cut:
+            rest = [b for b in cut if b != bid]
+            spans = [sp for b in rest for sp in groups[b] + copies.get(b, [])]
+            text, _s, _f = hook._render_for_room(body, spans, rest, room, 6_000)
+            assert len(text) > room, (room, bid)

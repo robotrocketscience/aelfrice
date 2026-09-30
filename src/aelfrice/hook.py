@@ -954,9 +954,19 @@ def _recap_shed(
     return [(recap[0], end)], ids
 
 
+LOCK_POINTER_ID_CHARS: Final[int] = 40
+"""Longest id the overflow line prints whole (#1639). Store ids are 16
+characters; one longer than this is shown cut, so no id can make the line
+itself outgrow the room it is priced into."""
+
+
 def lock_overflow_line(omitted: list[str]) -> str:
     """The #1639 line that names user locks the payload bound cut."""
-    named = omitted[:LOCK_POINTER_ID_CAP]
+    named = [
+        b if len(b) <= LOCK_POINTER_ID_CHARS
+        else b[:LOCK_POINTER_ID_CHARS - 1] + "…"
+        for b in omitted[:LOCK_POINTER_ID_CAP]
+    ]
     more = len(omitted) - len(named)
     ids = ", ".join(named) + (f", and {more} more" if more else "")
     return (
@@ -1146,9 +1156,14 @@ def _choose_locks_for_room(
 
 
 def _splice_out(body: str, spans: list[tuple[int, int]]) -> str:
-    for lo, hi in sorted(spans, reverse=True):
-        body = body[:lo] + body[hi:]
-    return body
+    """`body` less every span in `spans`, which must not overlap."""
+    pieces: list[str] = []
+    at = 0
+    for lo, hi in sorted(spans):
+        pieces.append(body[at:lo])
+        at = hi
+    pieces.append(body[at:])
+    return "".join(pieces)
 
 
 def _shed_frame(
@@ -1201,6 +1216,45 @@ def _shed_frame(
         body = body[:recent[0]] + body[end:]
         shed += 1
     return body, shed
+
+
+def _render_for_room(
+    body: str, spans: list[tuple[int, int]], cut: Sequence[str],
+    room: int, limit: int,
+) -> tuple[str, BlockCeilingOutcome, int]:
+    """The block `_write_memory_block` writes when the locks in `cut` go.
+
+    Cuts their spans, drops a recap or manifest the cut emptied, sheds the
+    frame `_shed_frame` may shed, trims the droppable lanes to the tighter
+    of `limit` and the room the naming line leaves, and appends the line.
+    Returns the text, the trim's outcome, and how many frame pieces went.
+    Pure: nothing is written, so the caller can measure a candidate.
+    """
+    cut_body = _without_empty_recap(_splice_out(body, spans), body)
+    if cut:
+        cut_body = _EMPTY_MANIFEST_RE.sub("", cut_body)
+    line = lock_overflow_line(list(cut)) if cut else ""
+    # The largest token count whose every body fits: `_tokens_from_chars`
+    # is ceil(n / 4), so t tokens admits at most 4t characters. Never 0,
+    # which `enforce_block_ceiling` reads as "disabled".
+    room_tokens = max(1, (room - len(line)) // 4)
+    # Earlier turns' pointers and `<recent-work>` carry nothing the model
+    # lacks, so they go before the droppable lanes do.
+    cut_body, frame_shed = _shed_frame(
+        cut_body, room - len(line), stripped=bool(line))
+    step = enforce_block_ceiling(cut_body, min(limit, room_tokens))
+    text = step.body.rstrip("\n") + line if line else step.body
+    return text, step, frame_shed
+
+
+def _freeable_chars(text: str) -> int:
+    """How much of `text` the trim and `_shed_frame` could still drop.
+
+    Every droppable element, and every earlier turn's pointer and the
+    `<recent-work>` lane: the room a lock taken back could claim.
+    """
+    floor = _shed_frame(enforce_block_ceiling(text, 1).body, 0)[0]
+    return len(text) - len(floor)
 
 
 def _without_empty_recap(body: str, before: str) -> str:
@@ -1568,32 +1622,69 @@ def _write_memory_block(
             groups, recap_ids, wrapper, len(frame_body), room,
             frame_before_line=len(frame_body.rstrip("\n")),
         )
-        cut_body = _without_empty_recap(
-            _splice_out(body, spans_of(cut)), body)
-        if cut:
-            cut_body = _EMPTY_MANIFEST_RE.sub("", cut_body)
-        omitted = cut
-        line = lock_overflow_line(list(omitted)) if omitted else ""
-        # Then trim the droppable lanes once, to the tighter of the token
-        # ceiling and the room the line leaves. The largest token count
-        # whose every body fits: `_tokens_from_chars` is ceil(n / 4), so t
-        # tokens admits at most 4t characters. Never 0, which
-        # `enforce_block_ceiling` reads as "disabled".
-        room_tokens = max(1, (room - len(line)) // 4)
-        assert _tokens_from_chars(4 * room_tokens) == room_tokens
-        # Earlier turns' pointers and `<recent-work>` carry nothing the
-        # model lacks, so they go before the droppable lanes do.
-        cut_body, frame_shed = _shed_frame(
-            cut_body, room - len(line), stripped=bool(line))
-        step = enforce_block_ceiling(cut_body, min(limit, room_tokens))
-        fitted = step.body
+        # The choice rests on a model of the block's size. Measure what it
+        # renders instead of trusting it: while the block is over the room,
+        # cut the last lock kept; then take back, one render at a time, each
+        # cut lock the leftover room could hold. The first loop bounds the
+        # block whatever the model missed, and the second keeps a lock the
+        # model priced out. Both run only near the edge, so a fire renders
+        # a handful of times at most.
+        order = list(groups)
+        cut_list = [b for b in order if b in set(cut)]
+
+        def attempt(ids: list[str]) -> tuple[str, BlockCeilingOutcome, int]:
+            return _render_for_room(body, spans_of(ids), ids, room, limit)
+
+        trimmed, step, frame_shed = attempt(cut_list)
+        while len(trimmed) > room and len(cut_list) < len(order):
+            last_kept = [b for b in order if b not in cut_list][-1]
+            cut_list = [b for b in order if b in {*cut_list, last_kept}]
+            trimmed, step, frame_shed = attempt(cut_list)
+        # Taking a lock back adds its renders; it frees what its leaving
+        # the line saves, and the trim and the frame shed can then drop
+        # more of what the block still holds that they may drop -- the
+        # droppable lanes, earlier turns' pointers, `<recent-work>`. A lock
+        # costing more than all of that plus the room left cannot fit, and
+        # is not rendered to find out.
+        # A lock that fails bounds the rest: until some take-back succeeds
+        # and changes the block, another that would grow it as much or more
+        # -- its cost less what its leaving the line saves -- and bring
+        # back the same wrappers fails too, and is not rendered.
+        manifest = _LOCKS_MANIFEST_BLOCK_RE.search(body)
+        m_span = manifest.span() if manifest else (-1, -1)
+
+        def wrappers_of(bid: str) -> tuple[bool, bool]:
+            in_manifest = any(m_span[0] <= lo < m_span[1]
+                              for lo, _hi in groups[bid])
+            return bid in recap_ids, in_manifest
+
+        sheddable = _freeable_chars(step.body)
+        failed: dict[tuple[bool, bool], int] = {}
+        for bid in list(cut_list):
+            cost = sum(hi - lo for lo, hi in groups[bid])
+            rest = [b for b in cut_list if b != bid]
+            line_saved = len(lock_overflow_line(cut_list)) - (
+                len(lock_overflow_line(rest)) if rest else 0)
+            growth = cost - line_saved
+            key = wrappers_of(bid)
+            if growth >= failed.get(key, growth + 1):
+                continue
+            if growth > room - len(trimmed) + sheddable:
+                continue
+            t_text, t_step, t_shed = attempt(rest)
+            if len(t_text) <= room:
+                cut_list, trimmed, step, frame_shed = rest, t_text, t_step, t_shed
+                sheddable = _freeable_chars(step.body)
+                failed.clear()
+            else:
+                failed[key] = min(growth, failed.get(key, growth))
+        omitted = tuple(cut_list)
         if frame_shed:
             stderr.write(
                 f"aelfrice hook: shed {frame_shed} frame piece(s) -- earlier "
                 "turns' `seen` pointers or `<recent-work>` -- to fit the "
                 "hook's output limit\n"
             )
-        trimmed = fitted.rstrip("\n") + line if line else fitted
         outcome = BlockCeilingOutcome(
             trimmed,
             step.dropped_ids,

@@ -765,8 +765,11 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
     `_write_memory_block` or does not get a ceiling — and the reviewer of
     that change is looking at this assertion.
 
-    #1639 calls it twice there, once to price the frame a lock must fit
-    beside and once to trim; both are inside the one emit function.
+    #1639 calls it from `_write_memory_block` to price the frame a lock
+    must fit beside, from `_render_for_room`, the pure render that
+    function measures candidates with, and from `_freeable_chars`, which
+    bounds what a candidate could free. Neither helper writes, and only
+    `_write_memory_block` emits.
     """
     src = Path(hook_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
@@ -781,4 +784,6 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
                 and node.func.id == "enforce_block_ceiling"
             ):
                 callers.append(func.name)
-    assert set(callers) == {"_write_memory_block"}, callers
+    assert set(callers) == {
+        "_write_memory_block", "_render_for_room", "_freeable_chars",
+    }, callers
