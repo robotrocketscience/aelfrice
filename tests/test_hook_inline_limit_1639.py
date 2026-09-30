@@ -2064,7 +2064,7 @@ def test_no_cut_lock_would_fit_in_the_rendered_block(
     body = _manifest_body(30, 12, with_ref=True)
     groups, _recap, _wrapper, copies = hook._lock_groups(body)
     floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
-    for room in range(floor, len(body), 53):
+    for room in range(floor, len(body), 7):
         out = _trim(body, room, monkeypatch)
         cut = list(out.omitted_lock_ids)  # type: ignore[attr-defined]
         for bid in cut:
@@ -2348,7 +2348,7 @@ def test_a_returning_recap_is_charged_before_a_render(
     monkeypatch.setattr(hook, "_render_for_room", counted)
     monkeypatch.delenv("AELFRICE_HOOK_BLOCK_CEILING", raising=False)
     worst = 0
-    for room in range(3_000, len(body), 13):
+    for room in range(800, len(body), 7):
         renders[0] = 0
         out = hook._write_memory_block(body, stdout=io.StringIO(),
                                        stderr=io.StringIO(), room_chars=room)

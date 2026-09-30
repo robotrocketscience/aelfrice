@@ -42,6 +42,7 @@ from typing import (
     Any,
     Callable,
     Final,
+    Iterable,
     Iterator,
     Mapping,
     NamedTuple,
@@ -1090,6 +1091,7 @@ def _choose_locks_for_room(
     groups: dict[str, list[tuple[int, int]]], recap_ids: set[str],
     wrapper: int, frame: int, room_chars: int, *,
     frame_before_line: int | None = None,
+    manifest_ids: frozenset[str] = frozenset(), manifest_wrapper: int = 0,
 ) -> tuple[str, ...]:
     """The locks the payload room cannot hold, in render order (#1639).
 
@@ -1097,6 +1099,12 @@ def _choose_locks_for_room(
     no lock rendered: what stays whatever is cut. `frame_before_line` is
     the same less its trailing newlines, which the block drops before it
     appends the line naming cut locks; it defaults to `frame`.
+
+    Two wrappers are paid only while a lock inside them stays: the recap's
+    (`wrapper`, for `recap_ids`) and the locks manifest's
+    (`manifest_wrapper`, for `manifest_ids`, the locks with a line in it).
+    The frame holds neither, and the first lock kept inside each pays for
+    it.
 
     When every lock fits beside the frame, none is cut and no line is
     owed. Otherwise each lock, in render order, stays if it fits what is
@@ -1113,21 +1121,31 @@ def _choose_locks_for_room(
     """
     cost = {bid: sum(hi - lo for lo, hi in spans)
             for bid, spans in groups.items()}
-    total = frame + sum(cost.values()) + (wrapper if recap_ids else 0)
+    total = (frame + sum(cost.values()) + (wrapper if recap_ids else 0)
+             + (manifest_wrapper if manifest_ids else 0))
     if total <= room_chars:
         return ()
+
+    def wrappers_due(bid: str, kept_ids: Iterable[str]) -> int:
+        kept = set(kept_ids)
+        due = 0
+        if bid in recap_ids and not kept & recap_ids:
+            due += wrapper
+        if bid in manifest_ids and not kept & manifest_ids:
+            due += manifest_wrapper
+        return due
 
     base = frame if frame_before_line is None else frame_before_line
 
     def pick(line_chars: int) -> tuple[list[str], int]:
         used = base + line_chars
-        wrapper_paid = False
+        kept_so_far: list[str] = []
         cut: list[str] = []
         for bid in groups:
-            extra = wrapper if bid in recap_ids and not wrapper_paid else 0
+            extra = wrappers_due(bid, kept_so_far)
             if used + cost[bid] + extra <= room_chars:
                 used += cost[bid] + extra
-                wrapper_paid = wrapper_paid or bid in recap_ids
+                kept_so_far.append(bid)
             else:
                 cut.append(bid)
         return cut, used - line_chars
@@ -1139,14 +1157,13 @@ def _choose_locks_for_room(
     # That price reserved room for a line at least as long as the one the
     # choice names, and a cut lock may fit in the difference. Take back,
     # in render order, each cut lock that fits beside the line it leaves,
-    # until none does. A recap lock pays for the recap too when it is the
-    # first recap lock kept.
+    # until none does. A lock pays for a wrapper too when it is the first
+    # lock kept inside it.
     changed = True
     while changed and cut:
         changed = False
         for bid in list(cut):
-            recap_kept = any(b in recap_ids and b not in cut for b in groups)
-            extra = wrapper if bid in recap_ids and not recap_kept else 0
+            extra = wrappers_due(bid, (b for b in groups if b not in cut))
             rest = [b for b in cut if b != bid]
             # With nothing left to name there is no line, and the block
             # keeps the trailing newlines it drops before one.
@@ -1613,16 +1630,25 @@ def _write_memory_block(
                     for sp in groups[bid] + copies.get(bid, [])]
 
         # The frame leaves out what `_shed_frame` can shed, so a lock is
-        # never cut to keep an earlier turn's pointer or `<recent-work>`.
-        # The manifest wrapper stays in the frame: a kept lock's pointer
-        # keeps it in the block.
-        frame_body = _shed_frame(enforce_block_ceiling(
+        # never cut to keep an earlier turn's pointer or `<recent-work>`,
+        # and it leaves out a locks manifest the cut would empty: the
+        # choice charges that wrapper to the first lock kept inside it.
+        manifest = _LOCKS_MANIFEST_BLOCK_RE.search(body)
+        m_span = manifest.span() if manifest else (-1, -1)
+        manifest_ids = frozenset(
+            bid for bid, spans in groups.items()
+            if any(m_span[0] <= lo < m_span[1] for lo, _hi in spans)
+        )
+        manifest_wrapper = (len(LOCKS_MANIFEST_OPEN_TAG)
+                            + len(LOCKS_MANIFEST_CLOSE_TAG) + 2)
+        frame_body = _EMPTY_MANIFEST_RE.sub("", _shed_frame(enforce_block_ceiling(
             _without_empty_recap(
                 _splice_out(body, spans_of(list(groups))), body), 1,
-        ).body, 0)[0] if groups else ""
+        ).body, 0)[0]) if groups else ""
         cut = _choose_locks_for_room(
             groups, recap_ids, wrapper, len(frame_body), room,
             frame_before_line=len(frame_body.rstrip("\n")),
+            manifest_ids=manifest_ids, manifest_wrapper=manifest_wrapper,
         )
         # The choice rests on a model of the block's size. Measure what it
         # renders instead of trusting it: while the block is over the room,
@@ -1653,15 +1679,8 @@ def _write_memory_block(
         # and changes the block, another that would grow it as much or more
         # -- its cost less what its leaving the line saves -- and bring
         # back the same wrappers fails too, and is not rendered.
-        manifest = _LOCKS_MANIFEST_BLOCK_RE.search(body)
-        m_span = manifest.span() if manifest else (-1, -1)
-        manifest_wrapper = (len(LOCKS_MANIFEST_OPEN_TAG)
-                            + len(LOCKS_MANIFEST_CLOSE_TAG) + 2)
-
         def wrappers_of(bid: str) -> tuple[bool, bool]:
-            in_manifest = any(m_span[0] <= lo < m_span[1]
-                              for lo, _hi in groups[bid])
-            return bid in recap_ids, in_manifest
+            return bid in recap_ids, bid in manifest_ids
 
         sheddable = _freeable_chars(step.body)
         failed: dict[tuple[bool, bool], int] = {}
@@ -1706,7 +1725,7 @@ def _write_memory_block(
         stderr.write(
             f"aelfrice hook: {len(outcome.omitted_lock_ids)} user lock(s) "
             "did not fit the hook's output limit and were not shown; the "
-            "block names them and points to `aelf locked`\n"
+            "block's last line lists them and points to `aelf locked`\n"
         )
     if outcome.dropped_ids:
         stderr.write(
