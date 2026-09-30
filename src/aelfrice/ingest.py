@@ -557,9 +557,10 @@ _HARNESS_BLOCK_TAGS: Final[tuple[str, ...]] = (
     "command-args",
 )
 _TAG_ALT: Final[str] = "|".join(re.escape(t) for t in _HARNESS_BLOCK_TAGS)
-# A closed block, from its opening line to its closer.
+# A closed block, from its opening line to its closer. Words after the
+# closer on the same line are the user's and stay.
 _HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*<(" + _TAG_ALT + r")\b[^>]*>.*?</\1\s*>[ \t]*$",
+    r"^[ \t]*<(" + _TAG_ALT + r")\b[^>]*>.*?</\1\s*>",
     re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 # An opening line whose block never closes: cut from it to the end.

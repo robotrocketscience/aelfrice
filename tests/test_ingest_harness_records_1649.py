@@ -279,6 +279,50 @@ def test_each_banner_line_is_cut_on_its_own(line: str) -> None:
     assert _user_speech(line + "\n" + USER) == USER
 
 
+@pytest.mark.parametrize("text", [
+    "<system-reminder>\nfirst line\nsecond line\n</system-reminder>\n"
+    "<command-name>/aelf:onboard</command-name>\n" + REPORT,
+    "<SYSTEM-REMINDER>x</SYSTEM-REMINDER>\n"
+    "<command-name>/aelf:onboard</command-name>\n" + REPORT,
+    "<command-args>.</command-args>\n" + REPORT,
+    "<bash-stdout>ok</bash-stdout>",
+], ids=["multiline-reminder-then-command", "uppercase-reminder-then-command",
+        "command-args-opens", "only-a-block"])
+def test_nothing_of_these_records_is_the_users(text: str) -> None:
+    """Found by the fourth review: real reminders span lines, and one in
+    front of a slash command let the command's body through when the
+    reminder pattern could not cross a newline. A record that is only a
+    block yields nothing at all, not an empty string."""
+    assert _user_speech(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "<bash-stdout>x</bash-stdout> " + USER,
+    USER + "\n<BASH-STDOUT>\n" + REPORT,
+    "<resultant> forces were measured twice.\n" + USER,
+    "<summaryx> pyright notes </summary> stay mine.",
+], ids=["words-after-closer", "unclosed-uppercase", "word-that-starts-like-a-tag",
+        "tag-prefix-with-a-closer"])
+def test_the_users_words_survive_the_block_boundaries(text: str) -> None:
+    """Words after a closer on its line are the user's; an unclosed block
+    is matched in any case; a word that merely starts like a tag is not
+    a tag."""
+    speech = _user_speech(text) or ""
+    assert "pyright" in speech, speech
+    assert "mutation harness" not in speech, speech
+
+
+def test_a_dropped_record_is_counted_as_skipped(tmp_path: Path) -> None:
+    log = _write(tmp_path / "turns.jsonl", [_tl(NOTICE), _tl(USER)])
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        result = ingest_jsonl(store, log)
+    finally:
+        store.close()
+    assert result.skipped_lines == 1, result
+    assert result.turns_ingested == 1, result
+
+
 def test_an_unclosed_reminder_is_cut_to_the_end() -> None:
     """The reminder pass only matches a closed block; an unclosed one is
     left to the tag list's unclosed-block pass."""
