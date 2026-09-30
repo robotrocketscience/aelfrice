@@ -1237,6 +1237,26 @@ def _shed_frame(
     return body, shed
 
 
+def _trim_to_chars(body: str, avail: int, limit: int) -> BlockCeilingOutcome:
+    """`enforce_block_ceiling` on `body`, held to `avail` characters.
+
+    The trim counts tokens as ceil(n / 4), so a room of `avail` characters
+    sits between two token counts: t = avail // 4 admits at most 4t
+    characters, and t + 1 admits up to 4t + 4, which can overrun `avail`.
+    The t + 1 trim is kept when its body fits -- always, for a body that
+    already fits -- and t, which always fits, is the fallback. Rounding t
+    down alone cut a body up to 3 characters under its room, and trimmed
+    one element more than the room called for (#1639). t is never 0,
+    which `enforce_block_ceiling` reads as "disabled".
+    """
+    tokens = max(1, avail // 4)
+    if tokens < limit:
+        wider = enforce_block_ceiling(body, tokens + 1)
+        if len(wider.body) <= avail:
+            return wider
+    return enforce_block_ceiling(body, min(limit, tokens))
+
+
 def _render_for_room(
     body: str, spans: list[tuple[int, int]], cut: Sequence[str],
     room: int, limit: int,
@@ -1253,15 +1273,11 @@ def _render_for_room(
     if cut:
         cut_body = _EMPTY_MANIFEST_RE.sub("", cut_body)
     line = lock_overflow_line(list(cut)) if cut else ""
-    # The largest token count whose every body fits: `_tokens_from_chars`
-    # is ceil(n / 4), so t tokens admits at most 4t characters. Never 0,
-    # which `enforce_block_ceiling` reads as "disabled".
-    room_tokens = max(1, (room - len(line)) // 4)
+    avail = room - len(line)
     # Earlier turns' pointers and `<recent-work>` carry nothing the model
     # lacks, so they go before the droppable lanes do.
-    cut_body, frame_shed = _shed_frame(
-        cut_body, room - len(line), stripped=bool(line))
-    step = enforce_block_ceiling(cut_body, min(limit, room_tokens))
+    cut_body, frame_shed = _shed_frame(cut_body, avail, stripped=bool(line))
+    step = _trim_to_chars(cut_body, avail, limit)
     text = step.body.rstrip("\n") + line if line else step.body
     return text, step, frame_shed
 

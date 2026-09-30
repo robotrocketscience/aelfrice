@@ -2355,3 +2355,51 @@ def test_a_returning_recap_is_charged_before_a_render(
         assert len(out.body) <= room
         worst = max(worst, renders[0])
     assert worst <= 6, worst
+
+
+def _four_hits(pad: int) -> str:
+    from aelfrice import hook
+
+    els = "".join(
+        f'<belief id="E{i}" lock="none">{"e" * (100 + (pad if i == 0 else 0))}'
+        "</belief>\n" for i in range(4))
+    return f"{hook.OPEN_TAG}\n{els}{hook.CLOSE_TAG}\n"
+
+
+@pytest.mark.parametrize("pad", range(4))
+@pytest.mark.parametrize("slack", range(4))
+def test_a_block_that_fits_its_room_is_not_trimmed(
+    pad: int, slack: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by review: the room was turned into tokens by rounding down,
+    so a block up to 3 characters under its room lost whole elements (a
+    589-character block in a 589-character room came back at 451)."""
+    body = _four_hits(pad)
+    out = _trim(body, len(body) + slack, monkeypatch)
+    assert out.body == body  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("pad", range(4))
+def test_a_trim_keeps_everything_that_fits_its_room(
+    pad: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rounding on the trim path: when the block must lose an
+    element, it loses one, not one more than the room calls for."""
+    body = _four_hits(pad)
+    last = body.rindex('<belief id="E3"')
+    one_less = body[:last] + body[body.index("</belief>\n", last) + 10:]
+    for room in range(len(one_less), len(one_less) + 4):
+        out = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert out == one_less, (room, len(out), len(one_less))
+
+
+def test_a_trim_fits_every_room_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every room, one character at a time: the wider of the two trims is
+    kept only when it fits, so no room is overrun by up to 3 characters."""
+    body = _four_hits(2)
+    floor = len(_trim(body, 0, monkeypatch).body)  # type: ignore[attr-defined]
+    for room in range(floor, len(body) + 4):
+        out = _trim(body, room, monkeypatch).body  # type: ignore[attr-defined]
+        assert len(out) <= room, (room, len(out))

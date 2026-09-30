@@ -766,9 +766,10 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
     that change is looking at this assertion.
 
     #1639 calls it from `_write_memory_block` to price the frame a lock
-    must fit beside, from `_render_for_room`, the pure render that
-    function measures candidates with, and from `_freeable_chars`, which
-    bounds what a candidate could free. Neither helper writes, and only
+    must fit beside, from `_trim_to_chars`, which holds the trim to a room
+    in characters for `_render_for_room`, the pure render that function
+    measures candidates with, and from `_freeable_chars`, which bounds
+    what a candidate could free. Neither helper writes, and only
     `_write_memory_block` emits.
     """
     src = Path(hook_mod.__file__).read_text(encoding="utf-8")
@@ -785,5 +786,5 @@ def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
             ):
                 callers.append(func.name)
     assert set(callers) == {
-        "_write_memory_block", "_render_for_room", "_freeable_chars",
+        "_write_memory_block", "_trim_to_chars", "_freeable_chars",
     }, callers
