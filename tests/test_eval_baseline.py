@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from aelfrice import eval_harness as eh
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +43,27 @@ def test_baseline_file_exists_and_parses():
     }
 
 
-def test_baseline_matches_default_eval_output():
+def _isolate_from_ambient_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run from a directory with no `.aelfrice.toml` and a work-tree marker.
+
+    The harness calls `retrieve(..., posterior_weight=None)`, which reads
+    the weight from any `.aelfrice.toml` at or above the working
+    directory. The pin is for default flags, so a developer's project
+    config must not reach it (#1659, the #1295 class). The `.git` marker
+    stops the walk here instead of letting it climb out of `tmp_path`.
+    """
+    clean = tmp_path / "clean"
+    (clean / ".git").mkdir(parents=True)
+    monkeypatch.chdir(clean)
+    monkeypatch.delenv("AELFRICE_POSTERIOR_WEIGHT", raising=False)
+
+
+def _assert_matches_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_from_ambient_config(tmp_path, monkeypatch)
     fixtures = eh.load_calibration_fixtures(eh.DEFAULT_CALIBRATION_CORPUS)
     report = eh.run_calibration_on_fixtures(
         fixtures, k=eh.DEFAULT_K, seed=eh.DEFAULT_SEED
@@ -63,6 +85,26 @@ def test_baseline_matches_default_eval_output():
         "output (with `corpus` key stripped) in the same commit. "
         f"observed={observed!r} expected={expected!r}"
     )
+
+
+def test_baseline_matches_default_eval_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_matches_baseline(tmp_path, monkeypatch)
+
+
+def test_the_baseline_ignores_an_ambient_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Started from a project whose config raises the posterior weight,
+    the pinned metrics still match (#1659). Without the isolation this
+    reads `posterior_weight = 1.5` and the rank metrics drift."""
+    dirty = tmp_path / "dirty"
+    (dirty / ".git").mkdir(parents=True)
+    (dirty / ".aelfrice.toml").write_text(
+        "[retrieval]\nposterior_weight = 1.5\n", encoding="utf-8")
+    monkeypatch.chdir(dirty)
+    _assert_matches_baseline(tmp_path, monkeypatch)
 
 
 def test_baseline_is_canonical_form():
