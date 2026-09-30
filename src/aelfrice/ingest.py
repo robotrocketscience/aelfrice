@@ -533,9 +533,11 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
     }
 
 
+# Opens on its own line, like every harness block: a reminder a user quotes
+# mid-sentence is their text (review, PR #1671).
 _SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
-    r"<system-reminder\b[^>]*>.*?</system-reminder\s*>",
-    re.DOTALL | re.IGNORECASE,
+    r"^[ \t]*<system-reminder\b[^>]*>.*?</system-reminder\s*>",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 
 # #1649: harness blocks that reach a transcript inside a *user* record. A

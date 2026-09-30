@@ -190,6 +190,16 @@ def test_the_users_own_words_beside_a_harness_block_are_kept(
     assert "Request interrupted" not in joined, contents
 
 
+def test_a_reminder_the_user_quotes_mid_sentence_is_their_text() -> None:
+    """Found in PR review: the reminder pass matched anywhere, so a user
+    quoting one inline lost the quoted words, unlike every other block."""
+    text = ("The hook adds <system-reminder>stay terse</system-reminder> "
+            "to my prompt. " + USER)
+    speech = _user_speech(text) or ""
+    assert "stay terse" in speech, speech
+    assert "pyright" in speech, speech
+
+
 def test_a_tag_the_user_mentions_mid_sentence_is_their_text(
     tmp_path: Path,
 ) -> None:
@@ -286,8 +296,10 @@ def test_each_banner_line_is_cut_on_its_own(line: str) -> None:
     "<command-name>/aelf:onboard</command-name>\n" + REPORT,
     "<command-args>.</command-args>\n" + REPORT,
     "<bash-stdout>ok</bash-stdout>",
+    "\n<system-reminder>x</system-reminder>\n"
+    "<command-name>/aelf:onboard</command-name>\n" + REPORT,
 ], ids=["multiline-reminder-then-command", "uppercase-reminder-then-command",
-        "command-args-opens", "only-a-block"])
+        "command-args-opens", "only-a-block", "blank-line-reminder-then-command"])
 def test_nothing_of_these_records_is_the_users(text: str) -> None:
     """Found by the fourth review: real reminders span lines, and one in
     front of a slash command let the command's body through when the
