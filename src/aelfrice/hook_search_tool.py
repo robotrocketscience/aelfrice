@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Final, cast
 
+from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
 from aelfrice.render_cost import chars_to_tokens
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
@@ -817,8 +818,6 @@ def _format_results_with_ids(
     def assemble(kept: list[str], omitted_locks: list[str]) -> str:
         note = ""
         if omitted_locks:
-            from aelfrice.hook import lock_overflow_line  # noqa: PLC0415
-
             note = lock_overflow_line(omitted_locks).rstrip("\n")
         return (
             f'<aelfrice-search {attrs}>aelf search ran on this query before '
@@ -833,8 +832,6 @@ def _format_results_with_ids(
     # so a store of many locks wrote 55,108. Cut whole lines from the tail
     # -- retrieval orders L0 first, so L1 goes before any lock -- and name
     # every lock that does not fit rather than dropping it silently.
-    from aelfrice.hook import HOOK_PAYLOAD_CHAR_LIMIT  # noqa: PLC0415
-
     kept = list(lines)
     kept_ids = list(line_ids)
     omitted: list[str] = []
@@ -864,7 +861,6 @@ def _format_results_with_ids(
         )
         if len(trial) <= HOOK_PAYLOAD_CHAR_LIMIT:
             back, context = trial_back, trial
-    omitted = [b for b in omitted if b not in back]
     for ln, b, _k in reversed(popped):
         if b in back:
             kept.append(ln)

@@ -359,13 +359,17 @@ def test_a_gate_skipped_fire_does_not_import_the_numeric_stack(tmp_path) -> None
 # an import that pytest already paid for. They are ceilings rather than
 # equalities so that a further reduction passes and only a regression fails.
 
-_MAX_AELFRICE_MODULES_AT_IMPORT = 18
-"""`import aelfrice.hook` was 35 before #1527; 18 after. Deterministic -- no
-lane resolver runs at import. Re-derive both numbers, for any pair of refs,
-with `scripts/measure_1527_import_closure.py`."""
+_MAX_AELFRICE_MODULES_AT_IMPORT = 19
+"""`import aelfrice.hook` was 35 before #1527; 18 after; 19 since #1639 moved
+the payload bound into the leaf `aelfrice.hook_payload`, so the PreToolUse
+search hook could share it without importing `aelfrice.hook`. That module
+imports only `typing` and costs about 0.17 ms of its own import time
+(`python -X importtime`, five runs, 2026-09-30). Deterministic -- no lane
+resolver runs at import. Re-derive both numbers, for any pair of refs, with
+`scripts/measure_1527_import_closure.py`."""
 
-_MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE = 26
-"""The whole fire was 40 before #1527; 26 after. Above the import-time figure
+_MAX_AELFRICE_MODULES_AFTER_SKIPPED_FIRE = 27
+"""The whole fire was 40 before #1527; 26 after; 27 with #1639's leaf. Above the import-time figure
 because the cadence, lifecycle, relevance and sentiment lanes run on a skipped
 fire and legitimately import at their call sites. Same producer as above."""
 

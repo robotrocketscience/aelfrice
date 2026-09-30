@@ -2078,7 +2078,7 @@ def test_no_cut_lock_would_fit_in_the_rendered_block(
 def test_the_overflow_line_prints_long_ids_cut() -> None:
     """Found by review: ids of 200 characters made the line alone outgrow
     the search hook's room. Store ids are 16; a longer one prints cut."""
-    from aelfrice.hook import LOCK_POINTER_ID_CHARS, lock_overflow_line
+    from aelfrice.hook_payload import LOCK_POINTER_ID_CHARS, lock_overflow_line
 
     line = lock_overflow_line(["x" * 250, "y" * 10])
     assert "x" * LOCK_POINTER_ID_CHARS not in line
