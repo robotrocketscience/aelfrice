@@ -110,7 +110,7 @@ A scalar column on `beliefs` collapses this to one anchor per belief. A sibling 
 
 ### Why not extend `belief_corroborations`
 
-`belief_corroborations` (`store.py:142-160`) records each **re-ingest** of an existing belief — when the same content shows up again under a new `source_kind` / `source_path`. Doc-linker writes apply on **first ingest** as well, when no corroboration row exists. The two cardinalities differ: corroborations are a 1+ event log; doc anchors are a 1+ membership relation. Separating them keeps the corroboration recorder's posterior-update semantics (#190) untouched.
+`belief_corroborations` (`store.py:142-160`) records each **re-ingest** of an existing belief — when the same content shows up again under a new `source_kind` / `source_path`. Since #1615, a filesystem re-read (an onboard or repository scan) records no row, because reading the same file again is not a re-assertion. Doc-linker writes apply on **first ingest** as well, when no corroboration row exists. The two cardinalities differ: corroborations are a 1+ event log; doc anchors are a 1+ membership relation. Separating them keeps the corroboration recorder's posterior-update semantics (#190) untouched.
 
 ---
 
