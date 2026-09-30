@@ -16,6 +16,12 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
+    Belief,
+)
 from aelfrice.scanner import (
     _build_file_recency_map,  # pyright: ignore[reportPrivateUsage]
     scan_repo,
@@ -175,3 +181,41 @@ def test_newest_commit_wins_across_an_empty_commit(tmp_path: Path) -> None:
     (repo / "both.md").write_text("changed later", encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "touch both", date=_NEW)
     assert _build_file_recency_map(repo) == {"both.md": _NEW, "old.md": _OLD}
+
+
+# --- #1629 AC2: the store refuses a created_at that is not a date ------
+
+
+def _belief_at(created_at: str) -> Belief:
+    return Belief(
+        id="b1629aaaaaaaaaaa", content="a belief about the boundary",
+        content_hash="h1629", alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE, locked_at=None, created_at=created_at,
+        last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
+    )
+
+
+@pytest.mark.parametrize("bad", ["2026-01-15-retro.md", "unknown", ""])
+def test_insert_belief_refuses_a_created_at_that_is_not_a_date(
+    tmp_path: Path, bad: str,
+) -> None:
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        with pytest.raises(ValueError, match="created_at"):
+            store.insert_belief(_belief_at(bad))
+        assert store._conn.execute(  # noqa: SLF001 - read-only probe
+            "SELECT COUNT(*) FROM beliefs"
+        ).fetchone()[0] == 0
+    finally:
+        store.close()
+
+
+def test_insert_belief_accepts_the_stored_timestamp_form(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        store.insert_belief(_belief_at("2026-01-01T17:00:00Z"))
+        b = store.get_belief("b1629aaaaaaaaaaa")
+        assert b is not None
+        assert b.created_at == "2026-01-01T17:00:00Z"
+    finally:
+        store.close()
