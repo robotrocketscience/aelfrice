@@ -22,7 +22,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-it-works-dark.png">
-    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook, and a search hook that fires whenever the model searches, query the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a DERIVED_FROM edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
+    <img src="docs/assets/how-it-works-light.png" width="100%" alt="How aelfrice works. At session start the context window holds the host's system prompt and tool definitions, CLAUDE.md, and an aelfrice-baseline block of your locked rules. On each turn, three paths run: the prompt hook, and a search hook that fires whenever the model searches, query the store (locks always, the entity index, and BM25), ranks locks first, then entity matches, then BM25 hits weighted by confidence, and adds an aelfrice-memory block to what the model reads; a typed /aelf:lock writes a locked belief that is injected at every session start and every prompt; and after each reply the Stop hook logs the turn, and every 12 turns your sentences are ingested as beliefs, each linked to the one before by a TEMPORAL_NEXT edge. The ranking follows each prompt: two example prompts return different orders. All three paths read or write one local SQLite belief graph.">
   </picture>
 </p>
 
@@ -104,6 +104,43 @@ From then on, aelfrice runs by itself. To check the install, run `/aelf:doctor` 
 </details>
 
 Each command has a terminal form, such as `aelf lock "..."`. The [command reference](docs/user/COMMANDS.md) documents all of them.
+
+## Belief types and edges
+
+Every belief has one type. Transcript text gets its type from a rule-based classifier, and `/aelf:onboard` uses your agent's model by default. New text from `aelf lock` or the commit hook is stored as `factual`, and `/aelf:wonder` stores `speculative`. Locked is a flag on top of the type, not a type of its own.
+
+| Type | What it holds | How a belief gets it |
+|---|---|---|
+| `factual` | A statement about the project or the world. | The default, when no other rule matches. |
+| `requirement` | A rule that has to hold. | It contains a word such as "must" or "required". |
+| `correction` | A fix to something said earlier. | The correction detector matches it. |
+| `preference` | How you like things done. | It contains a phrase such as "I prefer" or "always use". |
+| `speculative` | A guess that isn't trusted yet, called a phantom. | `/aelf:wonder` writes it. |
+
+Edges link beliefs, from a source to a target. Only the first two are written for every conversation today. The others need a command, an opt-in setting, or a specific phrase in a commit message. The commit hook reads a message when the agent runs `git commit`, and it matches only unambiguous phrasings: "is supported by" counts, but "supports" doesn't.
+
+| Edge | Meaning | Written by | On by default |
+|---|---|---|---|
+| `TEMPORAL_NEXT` | Stored right after the target, in the same session. | Transcript ingest, for each new belief; the commit hook ("comes after", "is after", "succeeds"). | Yes |
+| `DERIVED_FROM` | Follows from the target: the previous turn, or an earlier clause in the same turn. | Transcript ingest; the commit hook ("is derived from", "is based on"). | Yes |
+| `RELATES_TO` | About the same topic as the target. | `/aelf:wonder`; the commit hook ("relates to", "is related to"). | When you run it, or on those phrases |
+| `SUPPORTS` | Evidence for the target. | The commit hook ("is supported by"). | On that phrase only |
+| `CITES` | Mentions the target. | The commit hook ("cites", "mentions"). | On those phrases only |
+| `IMPLEMENTS` | Code that implements the target. | The commit hook ("implements", "is an implementation of", "realizes", "fulfills"). | On those phrases only |
+| `TESTS` | A test of the target. | The commit hook ("is a test for", "is test of", "is tested by", "is covered by"). | On those phrases only |
+| `CONTRADICTS` | Conflicts with the target. | The relationship detector at ingest; the commit hook ("contradicts", "disagrees with"). | Detector: no, set `[relationship_detector] auto_detect = true`. Commit hook: on those phrases |
+| `SUPERSEDES` | Replaces the target. | `aelf resolve`, which keeps the winner of each contradicting pair; the commit hook ("supersedes"). | When you run it, or on that phrase |
+| `POTENTIALLY_STALE` | Marks the target, an older belief, as possibly out of date. | `aelf doctor --detect-stale`. | When you run it |
+| `RESOLVES` | A phantom answers the target. | Nothing writes it yet ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | No |
+
+Work to write more of these edges automatically is tracked in [#1653](https://github.com/robotrocketscience/aelfrice/issues/1653).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/belief-graph-dark.png">
+    <img src="docs/assets/belief-graph-light.png" width="100%" alt="An illustrative belief graph of eight beliefs, colored by type. A locked factual belief, never push directly to main, has no edges: a lock is injected whether or not anything links to it. A requirement, the release checks must include pyright, is DERIVED_FROM a factual belief, the publish script runs the release checks. A factual belief from a commit, publish.sh runs pytest and pyright, SUPPORTS the requirement and IMPLEMENTS the publish-script belief. A correction, do not deploy staging from main and use the release branch, is TEMPORAL_NEXT after the publish-script belief and SUPERSEDES an older factual belief, staging deploys from main. A preference, I prefer small atomic commits, is TEMPORAL_NEXT after the correction. A speculative belief, drawn as a hollow outline, cache the wheel build between releases, RELATES_TO the publish-script belief.">
+  </picture>
+</p>
 
 <p align="center"><img src="docs/assets/02-eterne-hrr.png" width="88%" alt="A pen-and-ink figure holding a sword, with ranks of armored figures branching above and behind him like a tree"></p>
 
