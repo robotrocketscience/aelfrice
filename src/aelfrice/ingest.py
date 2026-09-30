@@ -533,6 +533,90 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
     }
 
 
+_SYSTEM_REMINDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"<system-reminder\b[^>]*>.*?</system-reminder\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# #1649: harness blocks that reach a transcript inside a *user* record. A
+# background task's completion notice carries a sub-agent's report in its
+# `<result>`; another session's message arrives in `<cross-session-message>`;
+# `<bash-stdout>`, `<tool-result>` and the rest carry machine output. None
+# of it is user speech. A harness block opens on its own line, so only a
+# tag at the start of a line is cut: a tag a user mentions mid-sentence is
+# their text. The list is checked against real session files, not guessed.
+_HARNESS_BLOCK_TAGS: Final[tuple[str, ...]] = (
+    "task-notification", "system-reminder", "tool-result",
+    "cross-session-message", "aelfrice-worker-context",
+    # A notice's own parts, cut even when its wrapper is missing.
+    "task-id", "tool-use-id", "output-file", "status", "summary", "result",
+    "usage",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "local-command-stdout", "local-command-stderr", "local-command-caveat",
+    "user-prompt-submit-hook", "command-name", "command-message",
+    "command-args",
+)
+_TAG_ALT: Final[str] = "|".join(re.escape(t) for t in _HARNESS_BLOCK_TAGS)
+# A closed block, from its opening line to its closer.
+_HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(" + _TAG_ALT + r")\b[^>]*>.*?</\1\s*>[ \t]*$",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# An opening line whose block never closes: cut from it to the end.
+_UNCLOSED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*<(?:" + _TAG_ALT + r")\b[^>]*>.*\Z",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
+)
+# A slash command: its wrapper is followed by the command's expanded body,
+# which is the command's text and not the user's, so the record goes whole.
+_COMMAND_WRAPPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"\A\s*<command-(?:name|message|args)\b", re.IGNORECASE,
+)
+# The host's own marker lines, cut wherever they sit and nothing more: the
+# background-task banner is four fixed lines, and an interrupted request
+# leaves one. Matching the lines themselves, not "the paragraph after the
+# banner", means a user paragraph next to one is never taken with it.
+_HOST_MARKER_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(?:"
+    r"\[SYSTEM NOTIFICATION[^\]\n]*\]"
+    r"|This is an automated background-task event\b[^\n]*"
+    r"|Do NOT interpret this as user acknowledgement\b[^\n]*"
+    r"|No human input has been received since\b[^\n]*"
+    r"|\[Request interrupted by user[^\]\n]*\]"
+    r")[ \t]*$\n?",
+    re.MULTILINE,
+)
+
+
+def _user_speech(text: str) -> str | None:
+    """The part of a user record the user wrote, or None if there is none.
+
+    The transcript logger drops a harness prompt whole before writing it
+    (#747, #1371), but `ingest_jsonl` also reads logs other loggers wrote
+    and the host's own session files. There a notice can follow a marker
+    line, whitespace or the user's own words, and the per-sentence filter
+    passes a report's plain sentences as the user's beliefs (#1649).
+
+    The host's marker lines and `<system-reminder>` blocks are cut first,
+    because the host puts them in front of real prompts. A record that then
+    opens with a slash command's wrapper goes whole: the wrapper is
+    followed by the command's expanded body, which is not the user's
+    either. Otherwise every harness block is cut, closed or not, and what
+    is left is the user's. An unclosed block is cut to the end of the
+    record, since nothing marks where it would have ended. What is left
+    still goes through the per-sentence filter in `_ingest_turn`, which
+    drops a pasted tool glyph or shell line on its own sentence, without
+    taking the user's other sentences in the record with it.
+    """
+    rest = _HOST_MARKER_LINE_RE.sub("", text)
+    rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()
+    if not rest or _COMMAND_WRAPPER_RE.match(rest):
+        return None
+    rest = _HARNESS_BLOCK_RE.sub("", rest)
+    rest = _UNCLOSED_BLOCK_RE.sub("", rest).strip()
+    return rest or None
+
+
 def ingest_jsonl(
     store: MemoryStore,
     jsonl_path: Path | str,
@@ -625,6 +709,14 @@ def ingest_jsonl(
                 if not capture_print_mode:
                     skipped += 1
                     continue
+            # #1649: host records that are not a person typing. A sidechain
+            # record is a sub-agent's prompt or reply, `isMeta` marks harness
+            # text (the transcript logger skips it too), and a compaction
+            # summary is the model's own digest of the session.
+            if (obj_typed.get("isSidechain") or obj_typed.get("isMeta")
+                    or obj_typed.get("isCompactSummary")):
+                skipped += 1
+                continue
             normalized = _normalize_jsonl_turn(obj_typed)
             if normalized is None:
                 # compaction markers, file-history snapshots, tool
@@ -647,8 +739,13 @@ def ingest_jsonl(
             if role == "assistant":
                 skipped += 1
                 continue
+            # #1649: keep only what the user wrote. See `_user_speech`.
+            speech = _user_speech(cast(str, text))
+            if speech is None:
+                skipped += 1
+                continue
             turn = _ingest_turn(
-                store=store, text=cast(str, text), source=source_label,
+                store=store, text=speech, source=source_label,
                 session_id=sess_str, created_at=created_at,
                 role=cast(str, role) if isinstance(role, str) else None,
             )
@@ -681,7 +778,7 @@ def ingest_jsonl(
                 if store.get_edge(edge.src, edge.dst, edge.type) is None:
                     if store.insert_edge(edge):
                         edges_inserted += 1
-            last_per_session[sess_str] = (head_id, cast(str, text))
+            last_per_session[sess_str] = (head_id, speech)
 
     return IngestJsonlResult(
         lines_read=lines_read,
