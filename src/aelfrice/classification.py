@@ -206,6 +206,19 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _already_present(store: "MemoryStore", text: str, bid: str) -> bool:
+    """True when the store already holds this candidate's belief.
+
+    The store dedups on `content_hash`, and a belief keeps the id derived
+    from the first source that ingested it, so a lookup by `bid` alone
+    misses the same paragraph at a second path (a moved file, repeated
+    boilerplate) and reported it as new on every re-onboard (#1615).
+    """
+    if store.get_belief(bid) is not None:
+        return True
+    return store.get_belief_by_content_hash(_content_hash(text)) is not None
+
+
 def start_onboard_session(
     store: "MemoryStore",
     repo_path: Path,
@@ -261,7 +274,7 @@ def start_onboard_session(
     n_already_rejected = 0
     for c in candidates:
         bid = _derive_belief_id(c.text, c.source)
-        if store.get_belief(bid) is not None:
+        if _already_present(store, c.text, bid):
             n_already_present += 1
             continue
         if bid in rejected_ids:
@@ -348,7 +361,7 @@ def check_onboard_candidates(
     n_new = 0
     for c in candidates:
         bid = _derive_belief_id(c.text, c.source)
-        if store.get_belief(bid) is not None:
+        if _already_present(store, c.text, bid):
             n_already_present += 1
         elif bid in rejected_ids:
             n_already_rejected += 1
