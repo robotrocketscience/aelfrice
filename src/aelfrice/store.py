@@ -3207,6 +3207,13 @@ class MemoryStore:
                 f"must be one of {sorted(LOCK_TIERS)}"
             )
         validate_belief_scope(b.scope)
+        try:
+            datetime.fromisoformat(b.created_at)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"invalid created_at {b.created_at!r}; must be an ISO-8601 "
+                "timestamp (#1629)"
+            ) from None
         project_context = self._project_context_for_insert(b)
         self._conn.execute(
             """

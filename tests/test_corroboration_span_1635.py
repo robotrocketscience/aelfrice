@@ -340,7 +340,14 @@ def test_only_beliefs_with_a_parseable_row_are_listed(tmp_path: Path) -> None:
     store = MemoryStore(str(tmp_path / "list.db"))
     try:
         store.insert_belief(_belief("b0none00000000000", "2026-08-01T09:00:00Z"))
-        store.insert_belief(_belief("b0junk00000000000", "unknown"))
+        # insert_belief refuses a non-date created_at since #1629, so a
+        # row like this exists only in a store written before that; plant
+        # it the way such a store holds it.
+        store.insert_belief(_belief("b0junk00000000000", "2026-08-01T09:00:00Z"))
+        store._conn.execute(  # noqa: SLF001 - reproduce a pre-#1629 row
+            "UPDATE beliefs SET created_at = 'unknown' WHERE id = ?",
+            ("b0junk00000000000",),
+        )
         _corr(store, "b0junk00000000000", ["unknown", "also unknown"])
         store.insert_belief(_belief("b0one000000000000", "2026-08-01T09:00:00Z"))
         _corr(store, "b0one000000000000", ["2026-08-01T09:00:05Z", "garbage"])
