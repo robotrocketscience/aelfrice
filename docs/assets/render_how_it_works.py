@@ -12,7 +12,7 @@ never the only cue.
            a hook reads the store and adds a block
   magenta  lock: a typed /aelf:lock writes a rule that comes back every time
   green    capture: each turn is logged, and your sentences are ingested
-           as beliefs linked by DERIVED_FROM edges
+           as beliefs, each linked to the one before by a TEMPORAL_NEXT edge
 
 The quoted blocks are real hook output for a five-belief demo store (two
 locks, three ordinary beliefs); the two ranked lists are real `aelf search`
@@ -209,7 +209,7 @@ def render(mode: str) -> pathlib.Path:
     arrow((col[2] + width / 2, 9.6), (col[2] + width / 2, 9.35), t["green"])
     gx, gy = col[2], 5.6
     panel(gx, gy, width, 2.55, edge=t["hair"])
-    text(gx + 0.15, gy + 2.3, "Each belief DERIVED_FROM the one before (illustrative)", 9,
+    text(gx + 0.15, gy + 2.3, "Each belief TEMPORAL_NEXT the one before (illustrative)", 9,
          color=t["muted"])
     nodes = {
         "a": (gx + 1.05, gy + 1.55, "turn 14: release from\nthe publish script"),
@@ -223,7 +223,7 @@ def render(mode: str) -> pathlib.Path:
             boxstyle="round,pad=0,rounding_size=0.1",
             facecolor=t["surface"], edgecolor=t["green"], lw=1.6, zorder=4))
         text(nx, ny, label, 7.8, ha="center")
-    # Every edge is DERIVED_FROM, which the panel title names, so the
+    # Every edge is TEMPORAL_NEXT, which the panel title names, so the
     # arrows carry no labels: later belief -> the one before it.
     edges = [
         (("b", "left"), ("a", "right")),
