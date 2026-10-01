@@ -20,10 +20,17 @@ A gap is resolved from the STORE, not only from a later request:
 * a belief with `content_hash == arg_sha256`, `lock_level = 'user'` and
   `valid_to IS NULL` exists, which covers a lock applied later from the
   CLI (which writes no outcome row), or
-* a belief carrying the statement has a row in `feedback_history` at or
+* a belief carrying the statement has a `feedback_history` row strictly
   after the failed attempt that ends it on purpose: `lock:unlock`,
   `lock:expire`, `aelf retire` or `aelf delete`. The user removed it, so
   reporting it as missing would tell them to restore it.
+
+"Strictly after" compares parsed instants at whole-second resolution,
+because the outcome row's `ts` is truncated to the second: a removal in
+the same second as the failure may have preceded it, and a tie leaves
+the gap open. Parsing also makes the formats comparable, since
+`lock:expire` stamps an `isoformat()` instant with microseconds and
+`+00:00` where every other writer stamps `%Y-%m-%dT%H:%M:%SZ`.
 
 `aelf delete` removes the `beliefs` row, so `content_hash` alone cannot
 find a deleted belief. The detector also reads the `cli_remember` rows
@@ -49,6 +56,7 @@ import json
 import shlex
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, cast
 
@@ -69,15 +77,21 @@ doctor and SessionStart path. A test pins the two together.
 
 # `feedback_history.source` values that end a lock on purpose. Literal for
 # the same import-cost reason; pinned to `promotion.SOURCE_LOCK_UNLOCK`,
-# `models.FEEDBACK_SOURCE_LOCK_EXPIRE` and the `aelf retire` and
-# `aelf delete` sources by a test.
-_LOCK_ENDED_SOURCES: Final[tuple[str, ...]] = (
-    "lock:unlock",
-    "lock:expire",
+# `models.FEEDBACK_SOURCE_LOCK_EXPIRE` and the literals `aelf retire` and
+# `aelf delete` write in `cli.py` by a test.
+_LOCK_DROPPED_SOURCES: Final[tuple[str, ...]] = ("lock:unlock", "lock:expire")
+"""End the lock and leave the statement in place. Always close a gap."""
+
+_BELIEF_REMOVED_SOURCES: Final[tuple[str, ...]] = (
     "user_retired",
     "user_retired_force",
     "user_deleted",
     "user_deleted_force",
+)
+"""Remove the statement. Close a gap only while it stays removed."""
+
+_LOCK_ENDED_SOURCES: Final[tuple[str, ...]] = (
+    _LOCK_DROPPED_SOURCES + _BELIEF_REMOVED_SOURCES
 )
 # `ingest_log.source_kind` of an `aelf lock`; pinned to
 # `models.INGEST_SOURCE_CLI_REMEMBER` by a test.
@@ -214,10 +228,41 @@ def _failed_lock_candidates(
     return out
 
 
+def _parse_ts(value: object) -> datetime | None:
+    """Parse a stored timestamp to a UTC instant truncated to the second.
+
+    Accepts both stored forms: `%Y-%m-%dT%H:%M:%SZ` and `isoformat()`
+    with microseconds and `+00:00`. Truncated because the outcome row's
+    `ts` is, so an instant inside the failure's second is not "after" it.
+    None for anything unparseable, which then closes nothing.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _strictly_after(value: object, failed_at: datetime) -> bool:
+    """Whether `value` is a stored instant in a later second than the failure."""
+    parsed = _parse_ts(value)
+    return parsed is not None and parsed > failed_at
+
+
 def _statement_belief_ids(
     conn: sqlite3.Connection, digests: set[str],
-) -> dict[str, set[str]]:
+) -> dict[str, dict[str, list[str]]]:
     """Map each statement hash to every belief id that has carried it.
+
+    The inner value lists the `ingest_log.ts` of each `aelf lock` that
+    resolved to that id; it is empty for an id found only in `beliefs`.
 
     Two sources. `beliefs.content_hash` covers a belief that still exists,
     including a retired one. `ingest_log` covers one `aelf delete`
@@ -227,14 +272,14 @@ def _statement_belief_ids(
     the log's index and keeps the scan to `aelf lock` and `aelf remember`
     rows.
     """
-    out: dict[str, set[str]] = {d: set() for d in digests}
+    out: dict[str, dict[str, list[str]]] = {d: {} for d in digests}
     for digest in digests:
         for (bid,) in conn.execute(
             "SELECT id FROM beliefs WHERE content_hash = ?", (digest,),
         ):
-            out[digest].add(str(bid))
-    for raw_text, derived in conn.execute(
-        "SELECT raw_text, derived_belief_ids FROM ingest_log "
+            out[digest].setdefault(str(bid), [])
+    for raw_text, derived, ts in conn.execute(
+        "SELECT raw_text, derived_belief_ids, ts FROM ingest_log "
         "WHERE source_kind = ?",
         (_INGEST_SOURCE_LOCK,),
     ):
@@ -250,12 +295,15 @@ def _statement_belief_ids(
         except json.JSONDecodeError:
             continue
         if isinstance(ids, list):
-            out[digest].update(str(i) for i in cast(list[object], ids))
+            for i in cast(list[object], ids):
+                stamps = out[digest].setdefault(str(i), [])
+                if isinstance(ts, str):
+                    stamps.append(ts)
     return out
 
 
 def _is_resolved(
-    conn: sqlite3.Connection, gap: LockGap, belief_ids: set[str],
+    conn: sqlite3.Connection, gap: LockGap, belief_ids: dict[str, list[str]],
 ) -> bool:
     """Whether the store shows the request applied or deliberately ended."""
     locked = conn.execute(
@@ -265,15 +313,18 @@ def _is_resolved(
     ).fetchone()
     if locked is not None:
         return True
+    failed_at = _parse_ts(gap.ts)
+    if failed_at is None:
+        return False
     marks = ", ".join("?" for _ in _LOCK_ENDED_SOURCES)
     for bid in sorted(belief_ids):
-        ended = conn.execute(
-            f"SELECT 1 FROM feedback_history WHERE belief_id = ? "
-            f"AND source IN ({marks}) AND created_at >= ? LIMIT 1",
-            (bid, *_LOCK_ENDED_SOURCES, gap.ts),
-        ).fetchone()
-        if ended is not None:
-            return True
+        for _source, created_at in conn.execute(
+            f"SELECT source, created_at FROM feedback_history "
+            f"WHERE belief_id = ? AND source IN ({marks})",
+            (bid, *_LOCK_ENDED_SOURCES),
+        ):
+            if _strictly_after(created_at, failed_at):
+                return True
     return False
 
 

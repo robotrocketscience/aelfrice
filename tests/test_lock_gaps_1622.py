@@ -43,6 +43,7 @@ from aelfrice.lock_gaps import (
     detect_lock_gaps,
     read_command_outcomes,
 )
+from aelfrice.store import MemoryStore
 
 STATEMENT = "Keep every widget in the blue drawer."
 _REAL_CLI_MAIN = cli.main
@@ -84,6 +85,48 @@ def _fail_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(cli, "main", _boom)
     _fire(f"/aelf:lock {statement}", tmp_path)
     monkeypatch.setattr(cli, "main", _REAL_CLI_MAIN)
+
+
+FAILED_AT = "2026-01-01T00:00:00Z"
+
+
+def _backdate_outcomes(db: Path, ts: str = FAILED_AT) -> None:
+    """Restamp every recorded outcome at `ts`.
+
+    A removal closes a gap only in a strictly later second, so a test
+    that fails a lock and then removes it within one second would see
+    the gap stay open. Moving the failure into the past makes "later"
+    hold by construction instead of by the clock.
+    """
+    path = command_outcomes_path_for_db(db)
+    rows = [json.loads(ln) for ln in path.read_text("utf-8").splitlines()
+            if ln.strip()]
+    path.write_text(
+        "".join(json.dumps({**r, "ts": ts}) + "\n" for r in rows),
+        encoding="utf-8",
+    )
+
+
+def _write_failure(db: Path, ts: str, statement: str = STATEMENT) -> None:
+    command_outcomes_path_for_db(db).write_text(json.dumps({
+        "ts": ts, "hook": "aelf_command",
+        "command": "lock", "reason": "exception",
+        "arg_sha256": _sha(statement), "arg_len": len(statement),
+        "statement": statement,
+    }) + "\n", encoding="utf-8")
+
+
+def _feedback(db: Path, bid: str) -> list[tuple[str, str]]:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        return [
+            (str(src), str(at)) for src, at in conn.execute(
+                "SELECT source, created_at FROM feedback_history "
+                "WHERE belief_id = ? ORDER BY rowid", (bid,),
+            )
+        ]
+    finally:
+        conn.close()
 
 
 # --- the stored hash identifies the belief ------------------------------
@@ -188,6 +231,7 @@ def test_an_unlock_after_the_failure_clears_the_gap(
     tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
     buf = io.StringIO()
     assert cli.main(["lock", STATEMENT], out=buf) == 0
     bid = buf.getvalue().split("locked:", 1)[1].split()[0]
@@ -204,13 +248,7 @@ def test_an_unlock_before_the_failure_does_not_clear_it(
     assert cli.main(["lock", STATEMENT], out=buf) == 0
     bid = buf.getvalue().split("locked:", 1)[1].split()[0]
     assert cli.main(["unlock", bid], out=io.StringIO()) == 0
-    path = command_outcomes_path_for_db(db)
-    path.write_text(json.dumps({
-        "ts": "2099-01-01T00:00:00Z", "hook": "aelf_command",
-        "command": "lock", "reason": "exception",
-        "arg_sha256": _sha(STATEMENT), "arg_len": len(STATEMENT),
-        "statement": STATEMENT,
-    }) + "\n", encoding="utf-8")
+    _write_failure(db, "2099-01-01T00:00:00Z")
     assert len(_gaps(db).gaps) == 1
 
 
@@ -227,6 +265,7 @@ def test_a_forced_retire_after_the_failure_clears_the_gap(
     """The user removed the lock on purpose. Reporting it as missing would
     tell them to put back what they just took out."""
     _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
     bid = _cli_lock()
     assert cli.main(["retire", bid, "--force"], out=io.StringIO()) == 0
     assert _gaps(db).gaps == ()
@@ -239,6 +278,7 @@ def test_a_forced_delete_after_the_failure_clears_the_gap(
     """`aelf delete` removes the beliefs row, so `content_hash` cannot
     reach it; the detector finds it through `ingest_log`."""
     _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
     bid = _cli_lock()
     assert cli.main(
         ["delete", bid, "--force", "--yes"], out=io.StringIO(),
@@ -262,13 +302,57 @@ def test_a_delete_before_the_failure_does_not_clear_it(
     assert cli.main(
         ["delete", bid, "--force", "--yes"], out=io.StringIO(),
     ) == 0
-    command_outcomes_path_for_db(db).write_text(json.dumps({
-        "ts": "2099-01-01T00:00:00Z", "hook": "aelf_command",
-        "command": "lock", "reason": "exception",
-        "arg_sha256": _sha(STATEMENT), "arg_len": len(STATEMENT),
-        "statement": STATEMENT,
-    }) + "\n", encoding="utf-8")
+    _write_failure(db, "2099-01-01T00:00:00Z")
     assert len(_gaps(db).gaps) == 1
+
+
+# --- "later" is a strictly later second, whatever the stamp format -------
+
+
+@pytest.mark.timeout(120)
+def test_an_unlock_in_the_failures_second_does_not_clear_it(
+    tmp_path: Path, db: Path,
+) -> None:
+    """The outcome `ts` is truncated to the second, so an unlock stamped
+    in the same second may have come first. A tie leaves the gap open."""
+    bid = _cli_lock()
+    assert cli.main(["unlock", bid], out=io.StringIO()) == 0
+    [(_, unlocked_at)] = [
+        r for r in _feedback(db, bid) if r[0] == "lock:unlock"
+    ]
+    _write_failure(db, unlocked_at)
+    assert len(_gaps(db).gaps) == 1
+
+
+def _expire_lock_at(db: Path, now: str) -> None:
+    s = MemoryStore(str(db))
+    try:
+        assert s.sweep_expired_locks(now=now) == 1
+    finally:
+        s.close()
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize(
+    ("expired_at", "open_gaps"),
+    [
+        ("2099-01-01T00:00:00.900000+00:00", 1),
+        ("2099-01-01T00:00:01.000001+00:00", 0),
+    ],
+    ids=["same-second", "next-second"],
+)
+def test_an_expiry_stamp_is_compared_as_an_instant(
+    db: Path, expired_at: str, open_gaps: int,
+) -> None:
+    """`lock:expire` stamps `isoformat()` with microseconds and `+00:00`;
+    the failure stamps `%Y-%m-%dT%H:%M:%SZ`. Both are read as instants at
+    whole-second resolution, so 0.9 s into the failure's second is a tie
+    and the next second is later."""
+    assert cli.main(["lock", STATEMENT, "--for", "1d"],
+                    out=io.StringIO()) == 0
+    _expire_lock_at(db, expired_at)
+    _write_failure(db, "2099-01-01T00:00:00Z")
+    assert len(_gaps(db).gaps) == open_gaps
 
 
 # --- the record is written where the outcome is known --------------------
