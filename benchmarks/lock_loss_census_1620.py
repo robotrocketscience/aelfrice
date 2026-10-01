@@ -16,7 +16,17 @@ running it against a store.
   counted as `user_expired_unswept`, not `user`: the product drops
   such a lock with `sweep_expired_locks` the next time a store opens,
   using the same `lock_expires_at <= now` test, and this census never
-  opens a store that way.
+  opens a store that way. The sweep compares the two as strings, which
+  is sound only because the product writes both in its own UTC
+  `+00:00` format. The census compares instants instead, so a `--now`
+  written in another offset, or with a `Z` suffix, can't skew which
+  locks count as due. A `lock_expires_at` that doesn't parse as an
+  ISO-8601 instant with a UTC offset is never counted as expired; the
+  census reports it in `lock_expiry_unparseable` instead.
+* `lock_expiry_unparseable` — beliefs whose `lock_expires_at` is set
+  but isn't an ISO-8601 instant with a UTC offset, with their ids. The
+  census can't decide whether such a lock is due, so it keeps the
+  row's own `lock_level`.
 * `aelf_commands` — beliefs whose content, after leading whitespace, is
   an aelfrice command: `/aelf:<name>`, or `aelf <subcommand>` or
   `uv run aelf <subcommand>` where `<subcommand>` is one the CLI
@@ -63,6 +73,10 @@ main database file never changes. Content is never printed beyond its
 first 80 characters. Output is JSON with sorted keys and every list in
 a fixed order, so two runs over the same stores at the same `--now`
 print the same bytes.
+
+`--now` must be an ISO-8601 instant with a UTC offset (`Z` is accepted).
+The census rejects a value without an offset, or one that doesn't
+parse, and reports the instant it used in UTC as the output's `now`.
 """
 from __future__ import annotations
 
@@ -114,9 +128,40 @@ def is_aelf_command(content: str) -> bool:
     return m is not None and m.group(1) in cli_subcommands()
 
 
-def lock_is_expired(lock_level: str, expires_at: str | None, now: str) -> bool:
-    """The `sweep_expired_locks` predicate: due when `lock_expires_at <= now`."""
-    return lock_level == LOCK_USER and expires_at is not None and expires_at <= now
+def parse_instant(text: str) -> datetime | None:
+    """`text` as a UTC instant, or None if it is unparseable or has no offset."""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def resolve_now(now: str | None) -> datetime:
+    """`now` (default: the current time) as a UTC instant.
+
+    Raise ValueError if `now` is unparseable or has no UTC offset.
+    """
+    text = now if now is not None else utc_now()
+    parsed = parse_instant(text)
+    if parsed is None:
+        raise ValueError(
+            f"now must be an ISO-8601 instant with a UTC offset, got {text!r}"
+        )
+    return parsed
+
+
+def lock_is_expired(lock_level: str, expires_at: str | None, now: datetime) -> bool:
+    """The `sweep_expired_locks` predicate, `lock_expires_at <= now`, on instants.
+
+    An expiry that `parse_instant` rejects is never due.
+    """
+    if lock_level != LOCK_USER or expires_at is None:
+        return False
+    expiry = parse_instant(expires_at)
+    return expiry is not None and expiry <= now
 
 
 def is_self_ingestion(content: str) -> bool:
@@ -155,7 +200,7 @@ def utc_now() -> str:
 def measure(
     store_path: str, pattern: re.Pattern[str] | None, *, now: str | None = None,
 ) -> dict[str, object]:
-    at = now if now is not None else utc_now()
+    at = resolve_now(now)
     conn = open_read_only(store_path)
     try:
         cols = _columns(conn, "beliefs")
@@ -191,12 +236,16 @@ def measure(
     self_ingested: list[Row] = []
     speculative: list[Row] = []
     family: list[Row] = []
+    unparseable: list[str] = []
     for bid, content, alpha, beta, raw_lock, created, orig, vto, exp in beliefs:
         text = str(content)
         active = vto is None
+        expiry = None if exp is None else str(exp)
+        if expiry is not None and parse_instant(expiry) is None:
+            unparseable.append(str(bid))
         lock = (
             EXPIRED_UNSWEPT
-            if lock_is_expired(str(raw_lock), None if exp is None else str(exp), at)
+            if lock_is_expired(str(raw_lock), expiry, at)
             else str(raw_lock)
         )
         level_all[lock] += 1
@@ -250,6 +299,10 @@ def measure(
             "active": dict(sorted(level_active.items())),
             "all": dict(sorted(level_all.items())),
         },
+        "lock_expiry_unparseable": {
+            "count": len(unparseable),
+            "ids": sorted(unparseable),
+        },
         "aelf_commands": _counted(commands),
         "self_ingestion": _counted(self_ingested),
         "speculative_active": _counted(speculative),
@@ -285,7 +338,7 @@ def cross_store(per_store: dict[str, dict[str, object]]) -> dict[str, object]:
 def run(
     stores: list[str], pattern_text: str | None, *, now: str | None = None,
 ) -> dict[str, object]:
-    at = now if now is not None else utc_now()
+    at = resolve_now(now).isoformat()
     pattern = (
         re.compile(pattern_text, re.IGNORECASE) if pattern_text is not None else None
     )
@@ -300,6 +353,13 @@ def run(
     return out
 
 
+def _now_arg(text: str) -> str:
+    try:
+        return resolve_now(text).isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="#1620 lock-loss census")
     ap.add_argument(
@@ -311,8 +371,9 @@ def main(argv: list[str] | None = None) -> int:
         help="case-insensitive regex selecting one instruction's family",
     )
     ap.add_argument(
-        "--now", default=None,
-        help="ISO-8601 instant that decides lock expiry (default: current UTC)",
+        "--now", default=None, type=_now_arg,
+        help="ISO-8601 instant with a UTC offset that decides lock expiry "
+        "(default: current UTC)",
     )
     args = ap.parse_args(argv)
     stores = list(dict.fromkeys(args.store))

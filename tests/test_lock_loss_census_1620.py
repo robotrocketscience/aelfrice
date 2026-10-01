@@ -389,3 +389,103 @@ def test_prose_about_aelf_is_not_a_command(text: str) -> None:
 ])
 def test_a_registered_subcommand_is_a_command(text: str) -> None:
     assert census.is_aelf_command(text)
+
+
+def _expiry_store(tmp_path: Path, expiries: dict[str, str]) -> Path:
+    """One user lock per id, each with the given `lock_expires_at` text."""
+    path = _make_store(tmp_path / "expiry-text.db")
+    conn = sqlite3.connect(path)
+    with conn:
+        for bid, expires in expiries.items():
+            _add(conn, bid, f"widgetprompt {bid}", lock_level="user")
+            conn.execute(
+                "UPDATE beliefs SET lock_expires_at = ? WHERE id = ?",
+                (expires, bid),
+            )
+    conn.close()
+    return path
+
+
+def _levels(path: Path, now: str) -> dict[object, object]:
+    """Lock level per family row, required to agree between `run` and `measure`.
+
+    `run` hands `measure` a normalised `now`; calling `measure` directly
+    hands it the caller's text, so both entry points are checked.
+    """
+    import re
+    out = census.run([str(path)], "widgetprompt", now=now)
+    via_run = cast("dict[str, dict[str, object]]", out["stores"])[str(path)]
+    via_measure = census.measure(
+        str(path), re.compile("widgetprompt", re.IGNORECASE), now=now,
+    )
+    levels = [
+        {r["id"]: r["lock_level"] for r in _rows(result, "family")}
+        for result in (via_run, via_measure)
+    ]
+    assert levels[0] == levels[1]
+    return levels[0]
+
+
+def test_now_in_another_offset_is_compared_as_an_instant(tmp_path: Path) -> None:
+    """01:00+02:00 is 23:00 UTC the day before, so a midnight-UTC expiry is not due."""
+    path = _expiry_store(tmp_path, {"k1": "2026-06-01T00:00:00+00:00"})
+    assert _levels(path, "2026-06-01T01:00:00+02:00") == {"k1": "user"}
+
+
+def test_fractional_expiry_after_a_z_now_is_not_due(tmp_path: Path) -> None:
+    path = _expiry_store(tmp_path, {"k1": "2026-06-01T00:00:00.500000+00:00"})
+    assert _levels(path, "2026-06-01T00:00:00Z") == {"k1": "user"}
+
+
+def test_an_expiry_in_another_offset_is_compared_as_an_instant(
+    tmp_path: Path,
+) -> None:
+    """01:00+02:00 is before midnight UTC, so the lock is due at midnight UTC."""
+    path = _expiry_store(tmp_path, {"k1": "2026-06-01T01:00:00+02:00"})
+    assert _levels(path, "2026-06-01T00:00:00+00:00") == {
+        "k1": census.EXPIRED_UNSWEPT,
+    }
+
+
+def test_an_expiry_equal_to_now_is_due(tmp_path: Path) -> None:
+    """The sweep's boundary: a lock due at exactly `now` is expired."""
+    path = _expiry_store(tmp_path, {"k1": "2026-06-01T00:00:00+00:00"})
+    assert _levels(path, "2026-06-01T00:00:00Z") == {"k1": census.EXPIRED_UNSWEPT}
+
+
+def test_now_is_reported_in_utc(store: Path) -> None:
+    out = census.run([str(store)], None, now="2026-06-01T01:00:00+02:00")
+    assert out["now"] == "2026-05-31T23:00:00+00:00"
+
+
+@pytest.mark.parametrize("now", ["garbage", "2026-06-01T00:00:00", "2026-06-01"])
+def test_run_and_measure_reject_a_now_that_is_not_an_instant(
+    store: Path, now: str,
+) -> None:
+    with pytest.raises(ValueError):
+        census.run([str(store)], None, now=now)
+    with pytest.raises(ValueError):
+        census.measure(str(store), None, now=now)
+
+
+@pytest.mark.parametrize("now", ["garbage", "2026-06-01T00:00:00"])
+def test_main_rejects_a_now_that_is_not_an_instant(
+    store: Path, now: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        census.main(["--store", str(store), "--now", now])
+    assert exc.value.code == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_an_unparseable_expiry_is_counted_apart_not_expired(tmp_path: Path) -> None:
+    path = _expiry_store(tmp_path, {
+        "bad": "garbage",
+        "naive": "2026-01-01T00:00:00",
+        "due": "2026-01-01T00:00:00+00:00",
+    })
+    assert _levels(path, _NOW) == {
+        "bad": "user", "naive": "user", "due": census.EXPIRED_UNSWEPT,
+    }
+    result = census.measure(str(path), None, now=_NOW)
+    assert result["lock_expiry_unparseable"] == {"count": 2, "ids": ["bad", "naive"]}
