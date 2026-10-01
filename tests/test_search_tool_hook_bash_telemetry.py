@@ -185,27 +185,28 @@ def _bash_payload(command: str, session_id: str = "s1") -> str:
 def test_hook_writes_telemetry_to_db_adjacent_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: main() writes a telemetry record next to the :memory: DB.
+    """End-to-end: main() writes a telemetry record next to the DB.
 
     We monkeypatch AELFRICE_DB so db_path() returns a path under tmp_path.
     The telemetry file must appear at <db_parent>/telemetry/search_tool_hook.jsonl.
+
+    The DB file is not created, so the not-yet-onboarded branch runs; it
+    still writes telemetry. An earlier version set AELFRICE_DB to
+    ":memory:", whose parent is the cwd, so every run wrote
+    `./telemetry/` into the checkout (#1678).
     """
     from aelfrice.hook_search_tool import main
 
-    # Create a fake DB file so the "not yet onboarded" guard doesn't fire.
     db_dir = tmp_path / "aelfrice"
     db_dir.mkdir()
     db_file = db_dir / "memory.db"
-
-    # Use an in-memory DB so we don't need a real store.
-    monkeypatch.setenv("AELFRICE_DB", ":memory:")
+    monkeypatch.setenv("AELFRICE_DB", str(db_file))
 
     sin = StringIO(_bash_payload("rg --type py configKey src/"))
     sout = StringIO()
     serr = StringIO()
 
-    # With :memory: the hook can't find the store but will still attempt
-    # to write telemetry (store exists check passes for :memory: path).
-    # We just verify no crash and that read_telemetry is importable.
     rc = main(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
+    tel = db_dir / "telemetry" / "search_tool_hook.jsonl"
+    assert tel.is_file(), serr.getvalue()
