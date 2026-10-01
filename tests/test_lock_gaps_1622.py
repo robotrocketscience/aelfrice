@@ -297,6 +297,27 @@ def test_the_record_survives_a_retrieval_that_dies(
     assert gap.statement == STATEMENT
 
 
+@pytest.mark.timeout(120)
+def test_a_lone_surrogate_is_refused_as_an_input_error(
+    tmp_path: Path, db: Path,
+) -> None:
+    """No store can hold it, so a recorded gap could never close."""
+    payload = (
+        '{"prompt": "/aelf:lock Keep \\ud800 this", "session_id": "s",'
+        f' "cwd": {json.dumps(str(tmp_path))}}}'
+    )
+    err = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(payload), stdout=io.StringIO(), stderr=err,
+    ) == 0
+    assert "not valid Unicode text" in err.getvalue()
+    [row] = read_command_outcomes(command_outcomes_path_for_db(db))
+    assert row["reason"] == CommandReason.INVALID_TEXT.value
+    report = _gaps(db)
+    assert report.known and report.gaps == ()
+    assert "/aelf:lock request" not in _session_start()
+
+
 # --- doctor -------------------------------------------------------------
 
 

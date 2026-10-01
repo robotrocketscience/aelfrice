@@ -2830,7 +2830,7 @@ def parse_aelf_command(prompt: str) -> tuple[str, str] | None:
 class CommandReason(str, Enum):
     """Why a typed command did or did not take effect (#1622).
 
-    The first three are input errors, refused before anything runs and
+    The four after `OK` are input errors, refused before anything runs and
     already reported in the turn. The last two are failures of the
     command itself, and only those leave a request the user believes
     was applied and that a later session must still surface. The values
@@ -2842,6 +2842,7 @@ class CommandReason(str, Enum):
     EMPTY_ARGUMENT = "empty_argument"
     OVER_CAP = "over_cap"
     LEADING_DASH = "leading_dash"
+    INVALID_TEXT = "invalid_text"
     EXCEPTION = "exception"
     NONZERO_EXIT = "nonzero_exit"
 
@@ -2940,6 +2941,23 @@ def execute_aelf_command(
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.LEADING_DASH, command, argument,
+        )
+    try:
+        argument.encode("utf-8")
+    except UnicodeEncodeError:
+        # A prompt payload can carry a lone surrogate, which is not text
+        # and which no store write accepts: the lock would raise on its
+        # hash. Refused here as an input error so it is reported in the
+        # turn and is not recorded as a lock a later session must still
+        # apply. Nothing could ever apply it, so a recorded gap would
+        # never close (#1622).
+        line = (
+            f"aelfrice: /aelf:{command} argument contains characters that "
+            f"are not valid Unicode text; nothing was done."
+        )
+        print(line, file=stderr)
+        return CommandOutcome(
+            line, False, CommandReason.INVALID_TEXT, command, argument,
         )
 
     import contextlib as _contextlib  # noqa: PLC0415
@@ -3078,9 +3096,9 @@ def _write_command_outcome_record(
         return
     argument = outcome.argument
     # `surrogatepass`: a prompt payload can carry a lone surrogate, which
-    # strict UTF-8 refuses. The store's own hash would raise on the same
-    # text, so that lock fails as an exception and this row must still
-    # be writable to say so.
+    # strict UTF-8 refuses. The executor refuses that argument as
+    # `invalid_text`, and the row recording the refusal must still be
+    # writable.
     digest = hashlib.sha256(
         argument.encode("utf-8", errors="surrogatepass")
     ).hexdigest()
