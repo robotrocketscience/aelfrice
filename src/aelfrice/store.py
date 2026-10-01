@@ -1833,6 +1833,17 @@ class MemoryStore:
         """
         return self._read_only
 
+    @property
+    def transaction_open(self) -> bool:
+        """True when a `transaction()` block or an implicit SQLite
+        transaction is open on this handle.
+
+        #1669: a pass that writes and then rolls back to measure a change
+        must own its whole transaction. Inside an outer block, its
+        rollback would either not happen or discard the caller's writes.
+        """
+        return self._txn_depth > 0 or self._conn.in_transaction
+
     def store_generation(self) -> int:
         """Durable belief/edge mutation counter (#1135).
 
@@ -5157,7 +5168,8 @@ class MemoryStore:
 
         #1669: removes the rows filesystem ingest wrote before #1615
         stopped it. Destructive; the caller is responsible for
-        confirmation.
+        confirmation. Commits as a mutation, because the count is
+        rendered into injected beliefs (`corr=`).
         """
         types = sorted(set(source_types))
         if not types:
@@ -5167,7 +5179,7 @@ class MemoryStore:
             f"DELETE FROM belief_corroborations WHERE source_type IN ({marks})",
             types,
         )
-        self._commit()
+        self._commit_mutation()
         return cur.rowcount
 
     # --- #435 doc linker --------------------------------------------------

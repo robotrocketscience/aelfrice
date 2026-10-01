@@ -50,11 +50,14 @@ def _mk(store: MemoryStore, bid: str, *, locked: bool = False) -> None:
     )
 
 
-def _row(store: MemoryStore, bid: str, source: str, day: int) -> None:
-    # A day apart, so each row is its own episode under #1635.
+def _row(
+    store: MemoryStore, bid: str, source: str, day: int, minute: int = 0,
+) -> None:
+    # Rows a day apart are separate episodes under #1635; rows within an
+    # hour of each other are one.
     store.record_corroboration(
-        bid, source_type=source, session_id=f"s{day}",
-        ts=f"2026-01-{day:02d}T00:00:00Z",
+        bid, source_type=source, session_id=f"s{day}-{minute}",
+        ts=f"2026-01-{day:02d}T00:{minute:02d}:00Z",
     )
 
 
@@ -74,6 +77,16 @@ def _seed(store: MemoryStore) -> None:
     _row(store, "LOCKED", _FS, 3)
     _mk(store, "WEAK")  # one row: never in core
     _row(store, "WEAK", _FS, 2)
+    # Keeps two rows after the cleanup, but both fall in the creation
+    # hour, so it drops to one episode and leaves core on episodes alone.
+    _mk(store, "EP_LOSS")
+    _row(store, "EP_LOSS", _TX, 1, minute=10)
+    _row(store, "EP_LOSS", _TX, 1, minute=20)
+    _row(store, "EP_LOSS", _FS, 5)
+    _mk(store, "RETIRED")  # in core by its rows, but retired: not listed
+    _row(store, "RETIRED", _FS, 2)
+    _row(store, "RETIRED", _FS, 3)
+    store.soft_delete_belief("RETIRED")
 
 
 def _all_rows(store: MemoryStore) -> list[tuple[object, ...]]:
@@ -97,9 +110,9 @@ def test_dry_run_reports_rows_and_core_loss_and_changes_nothing(
 ) -> None:
     before = _all_rows(store)
     report = gc_filesystem_corroboration(store, dry_run=True)
-    assert report.rows_found == 6
-    assert report.beliefs_affected == 4
-    assert report.leaving_core == ["FS_ONLY"]
+    assert report.rows_found == 9
+    assert report.beliefs_affected == 6
+    assert report.leaving_core == ["EP_LOSS", "FS_ONLY"]
     assert report.deleted == 0
     assert _all_rows(store) == before
 
@@ -107,8 +120,8 @@ def test_dry_run_reports_rows_and_core_loss_and_changes_nothing(
 def test_apply_deletes_only_filesystem_rows(store: MemoryStore) -> None:
     other_before = [r for r in _all_rows(store) if r[2] != _FS]
     report = gc_filesystem_corroboration(store, dry_run=False)
-    assert report.deleted == 6
-    assert report.leaving_core == ["FS_ONLY"]
+    assert report.deleted == 9
+    assert report.leaving_core == ["EP_LOSS", "FS_ONLY"]
     after = _all_rows(store)
     assert [r for r in after if r[2] == _FS] == []
     assert after == other_before
@@ -121,18 +134,49 @@ def test_apply_reports_what_the_dry_run_reported(store: MemoryStore) -> None:
     assert applied.rows_found == dry.rows_found
 
 
+def test_apply_bumps_the_store_generation(store: MemoryStore) -> None:
+    """`corr=` is rendered into injected beliefs, so caches keyed on the
+    generation must see the delete."""
+    gen = store.store_generation()
+    gc_filesystem_corroboration(store, dry_run=True)
+    assert store.store_generation() == gen
+    gc_filesystem_corroboration(store, dry_run=False)
+    assert store.store_generation() > gen
+
+
 def test_second_apply_is_a_no_op(store: MemoryStore) -> None:
     gc_filesystem_corroboration(store, dry_run=False)
     again = gc_filesystem_corroboration(store, dry_run=False)
     assert (again.rows_found, again.deleted, again.leaving_core) == (0, 0, [])
 
 
+def test_refuses_inside_an_open_transaction(store: MemoryStore) -> None:
+    """A nested dry run can't roll back, so it must not run at all."""
+    before = _all_rows(store)
+    with store.transaction():
+        with pytest.raises(RuntimeError, match="own transaction"):
+            gc_filesystem_corroboration(store, dry_run=True)
+    assert _all_rows(store) == before
+
+
+def test_refuses_with_pending_writes(store: MemoryStore) -> None:
+    """Its rollback would discard a caller's uncommitted write."""
+    store._conn.execute(  # noqa: SLF001 - plant an uncommitted write
+        "UPDATE beliefs SET alpha = 5.0 WHERE id = 'TX_ONLY'"
+    )
+    with pytest.raises(RuntimeError, match="own transaction"):
+        gc_filesystem_corroboration(store, dry_run=True)
+    store._conn.commit()  # noqa: SLF001
+    b = store.get_belief("TX_ONLY")
+    assert b is not None and b.alpha == 5.0
+
+
 def test_format_names_the_beliefs_leaving_core(store: MemoryStore) -> None:
     text = format_filesystem_corroboration_report(
         gc_filesystem_corroboration(store, dry_run=True)
     )
-    assert "filesystem corroboration rows: 6 on 4 belief(s)" in text
-    assert "beliefs leaving `aelf core`: 1" in text
+    assert "filesystem corroboration rows: 9 on 6 belief(s)" in text
+    assert "beliefs leaving `aelf core`: 2" in text
     assert "  FS_ONLY" in text
     assert "--apply" in text
 
@@ -157,15 +201,16 @@ def test_cli_dry_run_then_apply(
         s.close()
     code, out = _run_cli(monkeypatch, db, "doctor", "--gc-filesystem-corroboration")
     assert code == 0
-    assert "filesystem corroboration rows: 6" in out
+    assert "filesystem corroboration rows: 9" in out
     assert "dry-run" in out
     code, out = _run_cli(
         monkeypatch, db, "doctor", "--gc-filesystem-corroboration", "--apply"
     )
     assert code == 0
-    assert "deleted: 6" in out
+    assert "deleted: 9" in out
     s = MemoryStore(str(db))
     try:
         assert s.count_corroborations_by_source({_FS}) == {}
     finally:
         s.close()
+

@@ -2544,21 +2544,30 @@ def gc_filesystem_corroboration(
 
     The dry run deletes inside a transaction, reads core membership
     back, and rolls the transaction back, so its `leaving_core` is
-    measured rather than estimated.
+    measured rather than estimated. Every read happens under the write
+    lock, so a concurrent writer can't change core between the two
+    reads. The pass must own that transaction: it raises `RuntimeError`
+    when one is already open on `store`, where the rollback would either
+    not happen or discard the caller's writes.
     """
     from aelfrice.models import CORROBORATION_SOURCES_NON_ASSERTING  # noqa: PLC0415
 
+    if store.transaction_open:
+        raise RuntimeError(
+            "gc_filesystem_corroboration needs its own transaction; "
+            "call it outside store.transaction() and with no pending writes"
+        )
     sources = CORROBORATION_SOURCES_NON_ASSERTING
     report = FilesystemCorroborationReport(dry_run=dry_run)
-    per_belief = store.count_corroborations_by_source(sources)
-    report.rows_found = sum(per_belief.values())
-    report.beliefs_affected = len(per_belief)
-    if report.rows_found == 0:
-        return report
-    affected = sorted(per_belief)
-    before = _core_members(store, affected)
     try:
         with store.transaction(immediate=True):
+            per_belief = store.count_corroborations_by_source(sources)
+            report.rows_found = sum(per_belief.values())
+            report.beliefs_affected = len(per_belief)
+            if report.rows_found == 0:
+                return report
+            affected = sorted(per_belief)
+            before = _core_members(store, affected)
             deleted = store.delete_corroborations_by_source(sources)
             after = _core_members(store, affected)
             report.leaving_core = sorted(before - after)
