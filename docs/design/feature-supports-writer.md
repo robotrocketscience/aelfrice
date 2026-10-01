@@ -67,7 +67,12 @@ The thresholds match `find_promotable_phantoms`' defaults (`_DEFAULT_MIN_CORROBO
 - **An allowlist, not a denylist.** A corroboration row counts only when its source type is `transcript_ingest` **and** its speaker is the user. Every other source type never counts: `wonder_ingest`, `commit_ingest`, `cli_remember` and `mcp_remember` (the agent can run both), `filesystem_ingest`, `consolidation_migration`, and `claude_memory_mirror`. A source type added later doesn't count until it's added to the allowlist.
 - **A speaker column.** A `transcript_ingest` row doesn't record who spoke today, so the implementation adds it first. A row with no speaker, including every row written before the column exists, never counts.
 
-It also adds the reworded-restatement edges to the count, with each edge's session taken from the supporting belief's ingest session.
+It also adds the reworded-restatement edges to the count, with each edge's session taken from the supporting belief's ingest session. A supporting belief counts only when all of these hold:
+- **It's provably yours.** Its `ingest_log` row is a `transcript` ingest whose `raw_meta` records `"role": "user"`. A belief with no such row, or with any other role, never counts. Origin alone doesn't decide it, because rows ingested from assistant turns before #785 were never purged.
+- **It's newer than the phantom.** It was ingested after the phantom's `created_at`, in a session other than the one that created the phantom. The same rule applies to corroboration rows. Evidence that existed before the phantom can't confirm it.
+- **It isn't one of the phantom's own sources.** Wonder links each phantom to the beliefs it was built from (`RELATES_TO`, `wonder/lifecycle.py`). Those beliefs, and any belief linked to the phantom by a wonder edge, never count, however closely they match.
+
+The speaker isn't part of the corroboration table's unique key `(belief_id, session_id, source_path_hash, source_type)`. When an insert hits an existing row, the speaker becomes `user` if either write came from a user turn, and otherwise stays as it was.
 
 A promoted belief gets a new origin, `evidence_promoted`. It's added to `ORIGINS` and gets `ORIGIN_RETRIEVAL_PRIORITY` 3, tying with `user_transcript`: above a phantom (default 2) and below `user_validated` (4), so it never claims that you validated it. The tie fits, because its evidence is your own typed restatements. `promote()` stamps `user_validated` today, so it needs an origin parameter or a sibling function.
 
