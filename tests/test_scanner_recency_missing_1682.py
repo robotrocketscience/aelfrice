@@ -24,6 +24,7 @@ from aelfrice.scanner import extract_ast, extract_filesystem
 from aelfrice.store import MemoryStore
 
 _COMMITTED = "2001-01-01T00:00:00Z"
+_SIBLING = "2010-03-04T00:00:00Z"
 _START = "2098-01-01T00:00:00Z"
 _ACCEPT = "2099-01-01T00:00:00Z"
 
@@ -50,24 +51,28 @@ def _write(root: Path, rel: str, text: str) -> None:
 def test_extract_ast_leaves_a_file_missing_from_the_map_undated(
     tmp_path: Path,
 ) -> None:
+    # p/n.py is a dated sibling in the same directory, the common real
+    # case: a new untracked file next to tracked ones.
     _write(tmp_path, "p/m.py", _module("p"))
+    _write(tmp_path, "p/n.py", _module("n"))
     _write(tmp_path, "q/m.py", _module("q"))
-    recency = {"q/m.py": _COMMITTED}
+    recency = {"p/n.py": _SIBLING, "q/m.py": _COMMITTED}
     got = {_path_of(c.source): c.commit_date for c in extract_ast(tmp_path, recency=recency)}
-    assert got == {"p/m.py": None, "q/m.py": _COMMITTED}
+    assert got == {"p/m.py": None, "p/n.py": _SIBLING, "q/m.py": _COMMITTED}
 
 
 def test_extract_filesystem_leaves_a_file_missing_from_the_map_undated(
     tmp_path: Path,
 ) -> None:
     _write(tmp_path, "p/m.md", _paragraph("p"))
+    _write(tmp_path, "p/n.md", _paragraph("n"))
     _write(tmp_path, "q/m.md", _paragraph("q"))
-    recency = {"q/m.md": _COMMITTED}
+    recency = {"p/n.md": _SIBLING, "q/m.md": _COMMITTED}
     got = {
         _path_of(c.source): c.commit_date
         for c in extract_filesystem(tmp_path, recency=recency)
     }
-    assert got == {"p/m.md": None, "q/m.md": _COMMITTED}
+    assert got == {"p/m.md": None, "p/n.md": _SIBLING, "q/m.md": _COMMITTED}
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> None:
@@ -107,7 +112,7 @@ def test_the_handshake_dates_an_untracked_file_at_accept_time(
             for s in files
         ]
         accept_classifications(store, result.session_id, cls, now=_ACCEPT)
-        rows = store._conn.execute(  # read-only probe
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
             "SELECT content, created_at FROM beliefs"
         ).fetchall()
     finally:
