@@ -34,7 +34,9 @@ from aelfrice.hook import (
 )
 from aelfrice.hook_audit import command_outcomes_path_for_db
 from aelfrice.lock_gaps import (
+    _BELIEF_REMOVED_SOURCES,
     _INGEST_SOURCE_LOCK,
+    _LOCK_DROPPED_SOURCES,
     _LOCK_ENDED_SOURCES,
     _LOCK_LEVEL_USER,
     GAP_REASONS,
@@ -688,8 +690,35 @@ def test_the_detector_literals_match_their_sources() -> None:
     assert GAP_REASONS == {
         CommandReason.EXCEPTION.value, CommandReason.NONZERO_EXIT.value,
     }
-    assert _LOCK_ENDED_SOURCES[:2] == (
+    assert _LOCK_DROPPED_SOURCES == (
         SOURCE_LOCK_UNLOCK, FEEDBACK_SOURCE_LOCK_EXPIRE,
+    )
+    assert _LOCK_ENDED_SOURCES == (
+        _LOCK_DROPPED_SOURCES + _BELIEF_REMOVED_SOURCES
     )
     assert _LOCK_LEVEL_USER == LOCK_USER
     assert _INGEST_SOURCE_LOCK == INGEST_SOURCE_CLI_REMEMBER
+
+
+@pytest.mark.timeout(120)
+def test_the_removal_literals_match_what_retire_and_delete_write(
+    db: Path,
+) -> None:
+    """`cli.py` writes these four sources inline, with no constant to
+    import, so each is produced end to end and read back from the store."""
+    retired = _seed_unlocked(db, "aaaa000000000001", "Retire me plainly.")
+    deleted = _seed_unlocked(db, "aaaa000000000002", "Delete me plainly.")
+    retired_force = _cli_lock("Retire me by force.")
+    deleted_force = _cli_lock("Delete me by force.")
+    for argv in (
+        ["retire", retired],
+        ["delete", deleted, "--yes"],
+        ["retire", retired_force, "--force"],
+        ["delete", deleted_force, "--force", "--yes"],
+    ):
+        assert cli.main(argv, out=io.StringIO()) == 0, argv
+    written = tuple(
+        next(src for src, _ in _feedback(db, bid) if src.startswith("user_"))
+        for bid in (retired, retired_force, deleted, deleted_force)
+    )
+    assert written == _BELIEF_REMOVED_SOURCES
