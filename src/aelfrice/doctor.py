@@ -43,7 +43,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Callable, Final, Literal, cast
 
 from aelfrice import launcher
 from aelfrice import setup as _setup
@@ -54,6 +54,7 @@ from aelfrice.setup import (
 )
 
 if TYPE_CHECKING:
+    from aelfrice.models import Belief
     from aelfrice.store import MemoryStore
 
 
@@ -2504,16 +2505,16 @@ class _DryRunRollback(Exception):
     """Raised inside the transaction to undo a dry run's delete."""
 
 
-def _core_members(store: "MemoryStore", belief_ids: list[str]) -> set[str]:
-    """The subset of `belief_ids` that the default `aelf core` rule admits.
+def _core_members(
+    store: "MemoryStore",
+    belief_ids: list[str],
+    qualifies: Callable[["Belief", int], bool],
+) -> set[str]:
+    """The subset of `belief_ids` that `qualifies` admits to core.
 
     Locked beliefs are left out: they're in core through the lock arm,
     which corroboration rows never affect.
     """
-    # The SessionStart rule, which uses the `aelf core` defaults.
-    from aelfrice.hook import (  # noqa: PLC0415
-        _belief_qualifies_core,  # pyright: ignore[reportPrivateUsage]
-    )
     from aelfrice.models import LOCK_NONE  # noqa: PLC0415
 
     episodes = store.corroboration_episodes()
@@ -2522,7 +2523,7 @@ def _core_members(store: "MemoryStore", belief_ids: list[str]) -> set[str]:
         b = store.get_belief(bid)
         if b is None or b.lock_level != LOCK_NONE:
             continue
-        if _belief_qualifies_core(b, episodes.get(bid, 0)):
+        if qualifies(b, episodes.get(bid, 0)):
             members.add(bid)
     return members
 
@@ -2530,6 +2531,7 @@ def _core_members(store: "MemoryStore", belief_ids: list[str]) -> set[str]:
 def gc_filesystem_corroboration(
     store: "MemoryStore",
     *,
+    qualifies: Callable[["Belief", int], bool],
     dry_run: bool = True,
 ) -> FilesystemCorroborationReport:
     """Count and (with `dry_run=False`) delete corroboration rows from
@@ -2541,6 +2543,10 @@ def gc_filesystem_corroboration(
     count of 2, and enough wall-clock spread to pass the episode rule.
     #1615 stopped the writes; this pass removes the rows already
     stored. Rows of every other source are untouched.
+
+    `qualifies(belief, episodes)` is the unlocked `aelf core` rule. The
+    caller passes it, because the rule lives in `cli`, which imports
+    this module.
 
     The dry run deletes inside a transaction, reads core membership
     back, and rolls the transaction back, so its `leaving_core` is
@@ -2567,9 +2573,9 @@ def gc_filesystem_corroboration(
             if report.rows_found == 0:
                 return report
             affected = sorted(per_belief)
-            before = _core_members(store, affected)
+            before = _core_members(store, affected, qualifies)
             deleted = store.delete_corroborations_by_source(sources)
-            after = _core_members(store, affected)
+            after = _core_members(store, affected, qualifies)
             report.leaving_core = sorted(before - after)
             if dry_run:
                 raise _DryRunRollback

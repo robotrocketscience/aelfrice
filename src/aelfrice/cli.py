@@ -3693,6 +3693,18 @@ def _qualifies_core(
     return False
 
 
+def default_core_rule(b: object, episodes: int) -> bool:
+    """The unlocked `aelf core` rule at its default thresholds."""
+    return _qualifies_core(b, _DEFAULT_CORE_ARGS, episodes)
+
+
+_DEFAULT_CORE_ARGS: Final[argparse.Namespace] = argparse.Namespace(
+    min_corroboration=_CORE_MIN_CORROBORATION,
+    min_posterior=_CORE_MIN_POSTERIOR,
+    min_alpha_beta=_CORE_MIN_ALPHA_BETA,
+)
+
+
 def _emit_core(
     locked: list[object],
     candidates: list[object],
@@ -7593,7 +7605,9 @@ def _cmd_doctor_gc_filesystem_corroboration(
     apply = bool(getattr(args, "apply", False))
     store = _open_store()
     try:
-        report = _gc_filesystem_corroboration(store, dry_run=not apply)
+        report = _gc_filesystem_corroboration(
+            store, qualifies=default_core_rule, dry_run=not apply,
+        )
     finally:
         store.close()
     print(_format_fs_corroboration_report(report), file=out)  # type: ignore[arg-type]
