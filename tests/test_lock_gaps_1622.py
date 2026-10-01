@@ -633,8 +633,12 @@ def test_a_truncated_row_prints_no_runnable_fix(
 def test_a_recorded_lone_surrogate_cannot_break_doctor() -> None:
     """Defence in depth for a row the input check did not stop: printed
     raw, it raises on a strict UTF-8 stream and ends the whole run."""
-    gap = LockGap("0" * 64, "Keep \ud800 this", 16, "exception",
+    statement = "Keep \ud800 this"
+    gap = LockGap("0" * 64, statement, len(statement), "exception",
                   "2026-01-01T00:00:00Z", None, 1)
+    # The whole statement is recorded, so only the invalid text, not
+    # truncation, can be what withholds the fix command.
+    assert not gap.truncated and not gap.valid_text
     report = DoctorReport(lock_gaps=LockGapReport(known=True, gaps=(gap,)))
     text = format_report(report)
     text.encode("utf-8")
