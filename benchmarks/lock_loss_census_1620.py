@@ -188,6 +188,9 @@ def _sort_key(row: Row) -> tuple[str, str]:
 def open_read_only(store_path: str) -> sqlite3.Connection:
     """Open a store so that no statement through the connection can write."""
     conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+    # Defence in depth behind mode=ro, which already refuses every write;
+    # no test isolates this pragma, because none can fail without mode=ro
+    # also being removed.
     conn.execute("PRAGMA query_only = 1")
     return conn
 
