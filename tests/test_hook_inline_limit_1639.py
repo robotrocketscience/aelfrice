@@ -573,7 +573,9 @@ def test_the_command_note_is_charged_against_the_envelope(
 
     monkeypatch.setattr(
         hook, "execute_aelf_command",
-        lambda *a, **k: hook.CommandOutcome("c" * hook.COMMAND_NOTE_CAP, True),
+        lambda *a, **k: hook.CommandOutcome(
+            "c" * hook.COMMAND_NOTE_CAP, True, hook.CommandReason.OK,
+        ),
     )
     db = tmp_path / "cmd.db"
     _seed(db, n_locks=300, lock_chars=150)

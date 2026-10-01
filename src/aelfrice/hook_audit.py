@@ -178,6 +178,27 @@ def _audit_path_for_db(db_path_val: Path) -> Path:
     return db_path_val.parent / AUDIT_FILENAME
 
 
+COMMAND_OUTCOMES_FILENAME: Final[str] = "command_outcomes.jsonl"
+"""Outcome log for typed `/aelf:lock` commands (#1622), sibling of memory.db.
+
+A file of its own rather than rows in `hook_audit.jsonl`. Every prompt
+appends a full rendered block to the main audit log, so its 10 MB cap
+rotates the log out in weeks; a failed lock must stay visible until it
+is fixed, and SessionStart reads this file on every fire, which must not
+mean reading 10 MB. It shares everything else with the main log: the
+`AELFRICE_HOOK_AUDIT` / `[hook_audit] enabled` switch, the `max_bytes`
+cap, and `_append_audit`'s single-slot rotation.
+"""
+
+COMMAND_OUTCOME_HOOK: Final[str] = "aelf_command"
+"""`hook` value of a command-outcome row (#1622)."""
+
+
+def command_outcomes_path_for_db(db_path_val: Path) -> Path:
+    """Derive the command-outcome log path from the DB path (#1622)."""
+    return db_path_val.parent / COMMAND_OUTCOMES_FILENAME
+
+
 def _is_int(value: object) -> bool:
     """True for a real int. `bool` is an int subclass and is excluded."""
     return isinstance(value, int) and not isinstance(value, bool)

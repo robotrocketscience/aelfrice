@@ -35,6 +35,7 @@ import tomllib
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -65,9 +66,11 @@ try:
     from aelfrice.db_paths import active_project_context, db_path
     from aelfrice.hook_audit import (
         AUDIT_ROTATED_SUFFIX,
+        COMMAND_OUTCOME_HOOK,
         HookAuditConfig,
         _append_audit,
         _audit_path_for_db,
+        command_outcomes_path_for_db,
         load_hook_audit_config,
     )
     # Re-exported so existing `from aelfrice.hook import ...` callers keep
@@ -2824,6 +2827,25 @@ def parse_aelf_command(prompt: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2).strip()
 
 
+class CommandReason(str, Enum):
+    """Why a typed command did or did not take effect (#1622).
+
+    The first three are input errors, refused before anything runs and
+    already reported in the turn. The last two are failures of the
+    command itself, and only those leave a request the user believes
+    was applied and that a later session must still surface. The values
+    are written to the command-outcome log, so they are a stored format:
+    rename one and older rows stop matching.
+    """
+
+    OK = "ok"
+    EMPTY_ARGUMENT = "empty_argument"
+    OVER_CAP = "over_cap"
+    LEADING_DASH = "leading_dash"
+    EXCEPTION = "exception"
+    NONZERO_EXIT = "nonzero_exit"
+
+
 class CommandOutcome(NamedTuple):
     """What the executor did, and whether it actually took effect.
 
@@ -2836,10 +2858,19 @@ class CommandOutcome(NamedTuple):
     model and its wording is free to change; the flag is the contract,
     and a caller that reads the prose to decide what happened is the
     defect this type exists to prevent.
+
+    `reason` says which path produced the outcome (#1622), for the same
+    reason: a caller that needs to tell an input error from a failed
+    command branches on it, never on `line`. `command` and `argument`
+    are what the executor parsed, so the caller can record the request
+    without parsing the prompt a second time.
     """
 
     line: str
     took_effect: bool
+    reason: CommandReason
+    command: str = ""
+    argument: str = ""
 
 
 def execute_aelf_command(
@@ -2878,7 +2909,9 @@ def execute_aelf_command(
     if not argument:
         line = f"aelfrice: /aelf:{command} needs an argument; nothing was done."
         print(line, file=stderr)
-        return CommandOutcome(line, took_effect=False)
+        return CommandOutcome(
+            line, False, CommandReason.EMPTY_ARGUMENT, command, argument,
+        )
     if len(argument) > COMMAND_ARGUMENT_CAP:
         # Refused, not truncated. Truncating would write a belief the
         # user never typed, at the highest trust tier, and the whole
@@ -2889,7 +2922,9 @@ def execute_aelf_command(
             f"{COMMAND_ARGUMENT_CAP} limit; nothing was done."
         )
         print(line, file=stderr)
-        return CommandOutcome(line, took_effect=False)
+        return CommandOutcome(
+            line, False, CommandReason.OVER_CAP, command, argument,
+        )
     if argument.startswith("-"):
         # The argument is user text, never a flag. `argv` is
         # `[command, argument]`, so an argument beginning with `-` is
@@ -2903,7 +2938,9 @@ def execute_aelf_command(
             f"nothing was done."
         )
         print(line, file=stderr)
-        return CommandOutcome(line, took_effect=False)
+        return CommandOutcome(
+            line, False, CommandReason.LEADING_DASH, command, argument,
+        )
 
     import contextlib as _contextlib  # noqa: PLC0415
     import io as _io  # noqa: PLC0415 - hot path, imported only on a command
@@ -2947,7 +2984,9 @@ def execute_aelf_command(
     except Exception as exc:  # noqa: BLE001 - loud, never fatal
         line = f"aelfrice: /aelf:{command} FAILED: {exc}"
         print(line, file=stderr)
-        return CommandOutcome(line, took_effect=False)
+        return CommandOutcome(
+            line, False, CommandReason.EXCEPTION, command, argument,
+        )
     finally:
         if session_id:
             if _prev is None:
@@ -2980,7 +3019,83 @@ def execute_aelf_command(
         if output:
             line += f" — {output}"
     print(line, file=stderr)
-    return CommandOutcome(line, took_effect=rc == 0)
+    return CommandOutcome(
+        line,
+        rc == 0,
+        CommandReason.OK if rc == 0 else CommandReason.NONZERO_EXIT,
+        command,
+        argument,
+    )
+
+
+# Characters of a lock statement kept in its outcome row for display
+# (#1622). The row identifies the statement by `arg_sha256`, which is
+# exact; this copy only has to be readable in `aelf doctor`. Arguments
+# run to `COMMAND_ARGUMENT_CAP` (4,000), and the row is read on every
+# SessionStart, so it carries a prefix and `arg_len` says how much is
+# missing.
+COMMAND_OUTCOME_STATEMENT_CAP: Final[int] = 500
+
+# The commands whose outcome is persisted (#1622). Only `lock` writes
+# ground truth that the user expects to find in later sessions; the
+# others are either repeatable at no cost or scoped to the session.
+_PERSISTED_OUTCOME_COMMANDS: Final[frozenset[str]] = frozenset({"lock"})
+
+
+def _write_command_outcome_record(
+    outcome: CommandOutcome,
+    *,
+    session_id: str | None,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one row recording a typed lock's outcome (#1622). Fail-soft.
+
+    Written by the caller immediately after the executor returns, and
+    never folded into the retrieval audit row: retrieval runs later in
+    the same turn, and an exception or a timeout there would drop the
+    record. A store fault that fails the lock is likely to fail
+    retrieval too, so that is the case this record exists for.
+
+    `arg_sha256` is sha256 of the exact string `_cmd_lock` receives as
+    its statement, which is how the store keys `content_hash` for a
+    lock. The detector in `aelfrice.lock_gaps` uses it to find the
+    belief without matching on text.
+
+    No-op when the hook audit is disabled, for commands other than
+    `lock`, and for an in-memory store.
+    """
+    if outcome.command not in _PERSISTED_OUTCOME_COMMANDS:
+        return
+    cfg = load_hook_audit_config(stderr=stderr)
+    if not cfg.enabled:
+        return
+    try:
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        path = command_outcomes_path_for_db(p)
+    except Exception:
+        return
+    argument = outcome.argument
+    # `surrogatepass`: a prompt payload can carry a lone surrogate, which
+    # strict UTF-8 refuses. The store's own hash would raise on the same
+    # text, so that lock fails as an exception and this row must still
+    # be writable to say so.
+    digest = hashlib.sha256(
+        argument.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    record: dict[str, object] = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hook": COMMAND_OUTCOME_HOOK,
+        "command": outcome.command,
+        "reason": outcome.reason.value,
+        "arg_sha256": digest,
+        "arg_len": len(argument),
+        "statement": argument[:COMMAND_OUTCOME_STATEMENT_CAP],
+    }
+    if session_id is not None:
+        record["session_id"] = session_id
+    _append_audit(path, record, cfg.max_bytes, stderr=stderr)
 
 
 @config_discovery_scope()
@@ -3095,6 +3210,18 @@ def user_prompt_submit(
             # this prompt its memory injection.
             command_outcome = None
         if command_outcome is not None:
+            # #1622: record the outcome HERE, before anything else in the
+            # turn can fail. The retrieval below can raise or be killed at
+            # the hook timeout, and a row written after it would be lost
+            # in exactly the store-fault case that failed the lock.
+            try:
+                _write_command_outcome_record(
+                    command_outcome, session_id=session_id, stderr=serr,
+                )
+            except Exception:
+                # The writer is already fail-soft; this nets a raise from
+                # writing its own warning to a broken stderr.
+                pass
             # The frame differs by `took_effect`, and that is the whole
             # point of the flag.
             #
