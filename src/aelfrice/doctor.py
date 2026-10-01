@@ -54,6 +54,7 @@ from aelfrice.setup import (
 )
 
 if TYPE_CHECKING:
+    from aelfrice.lock_gaps import LockGapReport
     from aelfrice.models import Belief
     from aelfrice.store import MemoryStore
 
@@ -213,6 +214,31 @@ def diagnose_reference_signal(store_path: str) -> ReferenceSignalStats | None:
         positives=int(row[2] or 0),
         distinct_positive_beliefs=int(row[3] or 0),
     )
+
+
+# ---------------------------------------------------------------------------
+# Unapplied typed locks (#1622)
+# ---------------------------------------------------------------------------
+
+
+def diagnose_lock_gaps(
+    store_path: str, project_root: Path | None = None,
+) -> "LockGapReport":
+    """Return the typed `/aelf:lock` requests still unapplied (#1622).
+
+    The `[hook_audit]` switch is resolved from `project_root` so a
+    project-local `.aelfrice.toml` that disables the audit makes the
+    answer unknown rather than zero. Read-only and fail-soft: see
+    `aelfrice.lock_gaps.detect_lock_gaps`.
+    """
+    import io  # noqa: PLC0415
+
+    from aelfrice.hook_audit import load_hook_audit_config  # noqa: PLC0415
+    from aelfrice.lock_gaps import detect_lock_gaps  # noqa: PLC0415
+
+    # Config warnings belong to the hook's stderr, not to doctor's report.
+    cfg = load_hook_audit_config(project_root, stderr=io.StringIO())
+    return detect_lock_gaps(store_path, audit_enabled=cfg.enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +642,12 @@ class DoctorReport:
     # and means the probe itself failed — `aelfrice.hook` would not
     # import — which is a broken install doctor reports elsewhere.
     memory_block_enabled: bool | None = None
+    # #1622: typed `/aelf:lock` requests that failed and are still not
+    # locked. Rendered on both `format_report` paths whatever its value.
+    # None means no store path was supplied, which renders as unknown;
+    # the report's own `known` flag covers a disabled audit and an
+    # unreadable store. Informational: it never changes the exit code.
+    lock_gaps: "LockGapReport | None" = None
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -722,6 +754,8 @@ def diagnose(
         report.reference_signal = diagnose_reference_signal(store_path)
         # #1375: dangling-edge count, same policy again.
         report.dangling_edges = diagnose_dangling_edges(store_path)
+        # #1622: unapplied typed locks, read-only, same policy.
+        report.lock_gaps = diagnose_lock_gaps(store_path, project_root)
     # #593: auto-migrate any detected legacy DBs in place. Operator
     # decision was "no prompt, no banner" — silent migration with a
     # `.pre-v1x.bak` backup hop. Failures degrade to the residual
@@ -1511,6 +1545,8 @@ def format_report(report: DoctorReport) -> str:
         _format_dangling_edges_section(report, lines)
         # #1359: config-derived, independent of settings.json.
         _format_memory_block_section(report, lines)
+        # #1622: store- and audit-derived, independent of settings.json.
+        _format_lock_gaps_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1580,6 +1616,7 @@ def format_report(report: DoctorReport) -> str:
     _format_dangling_edges_section(report, lines)
     _format_hrr_section(report, lines)
     _format_memory_block_section(report, lines)
+    _format_lock_gaps_section(report, lines)
     return "\n".join(lines)
 
 
@@ -2135,6 +2172,44 @@ def _format_reference_signal_section(
             f"  status: too few resolved events to judge "
             f"(need {REFERENCE_SIGNAL_MIN_RESOLVED})"
         )
+
+
+def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
+    """Append the unapplied-typed-lock block to `lines` (#1622).
+
+    Always rendered. Zero is printed as zero only when the detector could
+    tell; otherwise the section says unknown and why.
+    """
+    st = report.lock_gaps
+    lines.append("")
+    lines.append("typed /aelf:lock requests that did not take effect:")
+    if st is None:
+        lines.append("  unknown: no store was checked")
+        return
+    if not st.known:
+        lines.append(f"  unknown: {st.unknown_reason}")
+        return
+    since = f" since {st.first_ts}" if st.first_ts else ""
+    if not st.gaps:
+        lines.append(f"  none ({st.records_seen} recorded outcome(s){since})")
+    else:
+        lines.append(
+            f"  {len(st.gaps)} still not locked "
+            f"({st.records_seen} recorded outcome(s){since}):"
+        )
+        for g in st.gaps:
+            tries = f", {g.attempts} attempts" if g.attempts > 1 else ""
+            lines.append(f"  - {g.ts} ({g.reason}{tries}): {g.statement}")
+            if g.truncated:
+                lines.append(
+                    f"      statement shown is the first {len(g.statement)} "
+                    f"of {g.arg_len} characters; retype it in full"
+                )
+            lines.append(f"      fix: {g.fix_command}")
+    lines.append(
+        "  only requests typed since this check shipped are recorded; "
+        "earlier failures are not listed."
+    )
 
 
 def _format_dangling_edges_section(
