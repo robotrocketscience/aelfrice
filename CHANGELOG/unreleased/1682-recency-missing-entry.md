@@ -1,0 +1,3 @@
+### Internal
+
+- **The recency lookup is tested with a file missing from a non-empty map ([#1682](https://github.com/robotrocketscience/aelfrice/issues/1682)).** Earlier fixtures gave every file an entry or used an empty map, so a lookup that fell back to another file's date when a file had no entry passed them. New fixtures for `extract_ast` and `extract_filesystem` omit one of two files from the map and assert that it has no commit date. An onboard handshake with one committed and one untracked directory asserts that the untracked files' beliefs take the `now` passed to `accept_classifications` as `created_at`, not the committed date. The fallback lookup now fails two tests at each lookup site. No production code changed.
