@@ -691,7 +691,7 @@ def test_instructions_that_merely_contain_a_negative_word_do_not_fire(
     ("that's wrong", "wrong"),
     ("you're wrong about the port", "wrong"),
     ("wrong file", "wrong"),
-], ids=["leading-no", "nope", "still", "thats-wrong", "youre-wrong", "leading-wrong"])
+], ids=["leading-no", "nope", "still", "thats-wrong", "you-are-wrong", "leading-wrong"])
 def test_verdicts_on_the_answer_still_fire(prompt: str, pattern: str) -> None:
     signal = detect_sentiment(prompt)
     assert signal is not None and signal.sentiment == NEGATIVE, (prompt, signal)
