@@ -6858,6 +6858,15 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
+    if getattr(args, "gc_orphan_feedback", False) and getattr(
+        args, "gc_filesystem_corroboration", False
+    ):
+        print(
+            "doctor: --gc-orphan-feedback and --gc-filesystem-corroboration "
+            "are separate passes; run them one at a time.",
+            file=sys.stderr,
+        )
+        return 2
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
     if getattr(args, "gc_filesystem_corroboration", False):
@@ -9664,8 +9673,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "with --gc-orphan-feedback or --gc-filesystem-corroboration: "
-            "actually delete the rows (default: dry-run)."
+            "with --gc-orphan-feedback, --gc-filesystem-corroboration, "
+            "--prune-noise, or --prune-dormant: actually make the change "
+            "(default: dry-run)."
         ),
     )
     p_doctor.add_argument(

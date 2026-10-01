@@ -214,3 +214,16 @@ def test_cli_dry_run_then_apply(
     finally:
         s.close()
 
+
+def test_cli_refuses_both_gc_passes_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db = tmp_path / "cli.db"
+    MemoryStore(str(db)).close()
+    code, _ = _run_cli(
+        monkeypatch, db, "doctor", "--gc-orphan-feedback",
+        "--gc-filesystem-corroboration", "--apply",
+    )
+    assert code == 2
+    assert "one at a time" in capsys.readouterr().err
