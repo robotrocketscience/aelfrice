@@ -90,10 +90,12 @@ from aelfrice.doctor import (
     _check_dormant_dbs,
     classify_orphans as _classify_orphans,
     diagnose,
+    format_filesystem_corroboration_report as _format_fs_corroboration_report,
     format_orphan_feedback_report as _format_orphan_feedback_report,
     format_orphan_report as _format_orphan_report,
     format_promotion_report as _format_promotion_report,
     format_report,
+    gc_filesystem_corroboration as _gc_filesystem_corroboration,
     gc_orphan_feedback as _gc_orphan_feedback,
     promote_retention as _promote_retention,
     prune_broken_aelf_hooks,
@@ -6858,6 +6860,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_classify_orphans(args, out)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
+    if getattr(args, "gc_filesystem_corroboration", False):
+        return _cmd_doctor_gc_filesystem_corroboration(args, out)
     if getattr(args, "promote_retention", False):
         return _cmd_doctor_promote_retention(args, out)
     if getattr(args, "replay", False):
@@ -7564,6 +7568,26 @@ def _cmd_doctor_gc_orphan_feedback(
     finally:
         store.close()
     print(_format_orphan_feedback_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_gc_filesystem_corroboration(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Remove corroboration rows that filesystem ingest wrote before
+    #1615 stopped it (issue #1669).
+
+    Default is dry-run: it reports the rows and the beliefs that would
+    leave `aelf core`. With `--apply`, it deletes the rows. Bypasses the
+    hooks/graph checks.
+    """
+    apply = bool(getattr(args, "apply", False))
+    store = _open_store()
+    try:
+        report = _gc_filesystem_corroboration(store, dry_run=not apply)
+    finally:
+        store.close()
+    print(_format_fs_corroboration_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -9622,13 +9646,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
+        "--gc-filesystem-corroboration",
+        dest="gc_filesystem_corroboration",
+        action="store_true",
+        default=False,
+        help=(
+            "find the corroboration rows that onboard and repository "
+            "scans wrote before #1615, and report how many beliefs would "
+            "leave `aelf core` without them (issue #1669). Bypasses the "
+            "hooks/graph checks. Combine with --apply to delete the rows; "
+            "default is dry-run."
+        ),
+    )
+    p_doctor.add_argument(
         "--apply",
         dest="apply",
         action="store_true",
         default=False,
         help=(
-            "with --gc-orphan-feedback: actually delete the orphan "
-            "rows (default: dry-run)."
+            "with --gc-orphan-feedback or --gc-filesystem-corroboration: "
+            "actually delete the rows (default: dry-run)."
         ),
     )
     p_doctor.add_argument(

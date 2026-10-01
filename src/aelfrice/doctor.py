@@ -2477,6 +2477,123 @@ def format_orphan_feedback_report(report: OrphanFeedbackReport) -> str:
 
 
 # ---------------------------------------------------------------------------
+# gc-filesystem-corroboration pass (issue #1669)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FilesystemCorroborationReport:
+    """Summary of one `gc_filesystem_corroboration` pass.
+
+    `rows_found` is the number of corroboration rows from non-asserting
+    sources, spread over `beliefs_affected` beliefs. `leaving_core` lists
+    the active, unlocked beliefs that meet the `aelf core` rule now and
+    don't once those rows are gone. It's computed by running the delete
+    and reading core back, so a dry run reports the same ids an apply
+    would. `deleted` is zero on a dry run.
+    """
+
+    rows_found: int = 0
+    beliefs_affected: int = 0
+    leaving_core: list[str] = field(default_factory=list[str])
+    deleted: int = 0
+    dry_run: bool = True
+
+
+class _DryRunRollback(Exception):
+    """Raised inside the transaction to undo a dry run's delete."""
+
+
+def _core_members(store: "MemoryStore", belief_ids: list[str]) -> set[str]:
+    """The subset of `belief_ids` that the default `aelf core` rule admits.
+
+    Locked beliefs are left out: they're in core through the lock arm,
+    which corroboration rows never affect.
+    """
+    # The SessionStart rule, which uses the `aelf core` defaults.
+    from aelfrice.hook import (  # noqa: PLC0415
+        _belief_qualifies_core,  # pyright: ignore[reportPrivateUsage]
+    )
+    from aelfrice.models import LOCK_NONE  # noqa: PLC0415
+
+    episodes = store.corroboration_episodes()
+    members: set[str] = set()
+    for bid in belief_ids:
+        b = store.get_belief(bid)
+        if b is None or b.lock_level != LOCK_NONE:
+            continue
+        if _belief_qualifies_core(b, episodes.get(bid, 0)):
+            members.add(bid)
+    return members
+
+
+def gc_filesystem_corroboration(
+    store: "MemoryStore",
+    *,
+    dry_run: bool = True,
+) -> FilesystemCorroborationReport:
+    """Count and (with `dry_run=False`) delete corroboration rows from
+    non-asserting sources. Issue #1669.
+
+    Before #1615, every onboard or repository scan re-read the same
+    files under a new scan session and wrote a corroboration row for
+    each paragraph it found again. Three scans gave every doc belief a
+    count of 2, and enough wall-clock spread to pass the episode rule.
+    #1615 stopped the writes; this pass removes the rows already
+    stored. Rows of every other source are untouched.
+
+    The dry run deletes inside a transaction, reads core membership
+    back, and rolls the transaction back, so its `leaving_core` is
+    measured rather than estimated.
+    """
+    from aelfrice.models import CORROBORATION_SOURCES_NON_ASSERTING  # noqa: PLC0415
+
+    sources = CORROBORATION_SOURCES_NON_ASSERTING
+    report = FilesystemCorroborationReport(dry_run=dry_run)
+    per_belief = store.count_corroborations_by_source(sources)
+    report.rows_found = sum(per_belief.values())
+    report.beliefs_affected = len(per_belief)
+    if report.rows_found == 0:
+        return report
+    affected = sorted(per_belief)
+    before = _core_members(store, affected)
+    try:
+        with store.transaction(immediate=True):
+            deleted = store.delete_corroborations_by_source(sources)
+            after = _core_members(store, affected)
+            report.leaving_core = sorted(before - after)
+            if dry_run:
+                raise _DryRunRollback
+    except _DryRunRollback:
+        return report
+    report.deleted = deleted
+    return report
+
+
+def format_filesystem_corroboration_report(
+    report: FilesystemCorroborationReport,
+) -> str:
+    """Human-readable rendering of `gc_filesystem_corroboration` output."""
+    lines: list[str] = [
+        f"filesystem corroboration rows: {report.rows_found} "
+        f"on {report.beliefs_affected} belief(s)",
+        f"beliefs leaving `aelf core`: {len(report.leaving_core)}",
+    ]
+    for bid in report.leaving_core[:15]:
+        lines.append(f"  {bid}")
+    if len(report.leaving_core) > 15:
+        lines.append(f"  ... and {len(report.leaving_core) - 15} more")
+    if report.dry_run:
+        if report.rows_found == 0:
+            lines.append("nothing to do.")
+        else:
+            lines.append("dry-run; re-run with --apply to delete these rows.")
+    else:
+        lines.append(f"deleted: {report.deleted}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # promote-retention pass (issue #290 phase-3)
 # ---------------------------------------------------------------------------
 
