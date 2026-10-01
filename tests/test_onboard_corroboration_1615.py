@@ -165,3 +165,30 @@ def test_a_transcript_row_without_a_call_site_still_corroborates(
         assert rows == [CORROBORATION_SOURCE_TRANSCRIPT_INGEST]
     finally:
         store.close()
+
+
+def _belief_id_for(store: MemoryStore, text: str) -> str:
+    row = store._conn.execute(  # noqa: SLF001 - read-only probe
+        "SELECT id FROM beliefs WHERE content = ?", (text,)
+    ).fetchone()
+    return str(row[0])
+
+
+@pytest.mark.timeout(60)
+def test_a_retired_paragraph_is_not_offered_again(tmp_path: Path) -> None:
+    """#1673: retired content counts as present, and stays retired."""
+    repo = _repo(tmp_path)
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        assert _onboard(store, repo, 1) == (2, 2)
+        bid = _belief_id_for(store, _P)
+        store.soft_delete_belief(bid)
+        # The same paragraph also appears at a second path.
+        (repo / "docs/b.md").write_text(f"# B\n\n{_P}\n", encoding="utf-8")
+        for day in (2, 3):
+            assert _onboard(store, repo, day) == (0, 0), f"day {day}"
+        assert store.get_belief(bid) is None
+        assert store.get_belief(bid, include_retired=True) is not None
+        assert _corroboration_rows(store) == 0
+    finally:
+        store.close()

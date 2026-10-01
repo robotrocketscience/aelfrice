@@ -213,10 +213,17 @@ def _already_present(store: "MemoryStore", text: str, bid: str) -> bool:
     from the first source that ingested it, so a lookup by `bid` alone
     misses the same paragraph at a second path (a moved file, repeated
     boilerplate) and reported it as new on every re-onboard (#1615).
+
+    Retired content counts as present (#1673). Capture never revives a
+    retired belief (#1215), so offering its paragraph again only made the
+    host classify it again on every run, to no effect.
     """
     if store.get_belief(bid) is not None:
         return True
-    return store.get_belief_by_content_hash(_content_hash(text)) is not None
+    found = store.get_belief_by_content_hash(
+        _content_hash(text), include_retired=True,
+    )
+    return found is not None
 
 
 def start_onboard_session(
