@@ -1,7 +1,7 @@
 """Implicit sentiment-from-prose feedback (#193, v2.0 opt-in).
 
 Reads each user prompt, regex-matches against 12 positive and
-12 negative sentiment patterns, and emits a `SentimentSignal`.
+11 negative sentiment patterns, and emits a `SentimentSignal`.
 The signal is split equally across the previous turn's retrieved
 beliefs via `apply_sentiment_to_pending`, which calls
 `feedback.apply_feedback` once per *live* pending belief id with 1/N of
@@ -12,24 +12,37 @@ count so the offered magnitudes still sum to one unit.
 
 Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
 
-  * **Default off.** Opt-in via `[feedback] sentiment_from_prose = true`
-    in `.aelfrice.toml`, or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1`.
-    Off by default means existing users see no behavior change.
+  * **Positive on, negative opt-in (#1647).** Measured on real prompts
+    by two graders, positive fires were 95-98% precise and negative fires
+    58-64%, then 62-74% on 34 graded held-out prompts after the patterns
+    were tightened. The pre-registered bar was 70% on both graders, and
+    one grader's 61.8% fell short. So positive signals
+    apply by default, and negative signals only with
+    `[feedback] sentiment_negative = true` or
+    `AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE=1`. A negative fire with the lane
+    off is still recorded in the hook audit, which is what a later
+    re-measurement reads. `[feedback] sentiment_from_prose = false` or
+    `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=0` turns both off.
   * **Inbound only.** Pure regex over text the hook already receives.
     No outbound calls. No LLM. Deterministic.
   * **Length guard.** Prompts longer than `MAX_PROMPT_CHARS` (200) are
     assumed task content, not user feedback. `detect_sentiment` returns
     `None` for these so the regex bank does not match incidental phrases
     in long pastes.
-  * **Pattern provenance.** 12 positive patterns and 12 negative
-    patterns ported from the research-line `agentmemory/sentiment_feedback.py`
-    per the v2.0 ratification. Those two counts and the length guard
+  * **Pattern provenance.** 12 positive patterns ported from the
+    research-line `agentmemory/sentiment_feedback.py` per the v2.0
+    ratification, and 11 negative patterns: the ported set, narrowed by
+    #1647 after a two-grader measurement on real prompts found negative
+    fires 58-64% precise. A bare "no" anywhere, "fix it" and "try again"
+    mostly open a new instruction rather than judge the previous answer,
+    so "no" now counts only when it opens the prompt, "wrong" only as a
+    verdict, and the other two are gone. Those two counts and the length guard
     above are store-free figures: `benchmarks/published_constants.py`
     re-derives them by importing this module, and CI hard-fails if a
     pattern is added or dropped without this prose moving with it
     (#1469).
     <!-- derived: benchmarks/published_constants.py#sentiment_positive_patterns = 12 -->
-    <!-- derived: benchmarks/published_constants.py#sentiment_negative_patterns = 12 -->
+    <!-- derived: benchmarks/published_constants.py#sentiment_negative_patterns = 11 -->
     <!-- derived: benchmarks/published_constants.py#sentiment_max_prompt_chars = 200 -->
     Two strong-amplifier subsets
     (STRONG_POSITIVE, STRONG_NEGATIVE) escalate `confidence` when the
@@ -84,6 +97,15 @@ SENTIMENT_INFERRED_SOURCE: Final[str] = "sentiment_inferred"
 CONFIG_FEEDBACK_SECTION: Final[str] = "feedback"
 CONFIG_SENTIMENT_KEY: Final[str] = "sentiment_from_prose"
 ENV_SENTIMENT: Final[str] = "AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE"
+CONFIG_SENTIMENT_NEGATIVE_KEY: Final[str] = "sentiment_negative"
+ENV_SENTIMENT_NEGATIVE: Final[str] = "AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE"
+
+# Openings of the harness records a prompt hook can receive (#1647).
+_HARNESS_PROMPT_PREFIXES: Final[tuple[str, ...]] = (
+    "<task-notification", "<command-", "<local-command-", "<bash-",
+    "<system-reminder", "<user-prompt-submit-hook", "<tool-result",
+    "<cross-session-message", "[SYSTEM NOTIFICATION",
+)
 
 POSITIVE: Final[str] = "positive"
 NEGATIVE: Final[str] = "negative"
@@ -169,18 +191,21 @@ _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 _NEGATIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
-    ("no", r"\bno\b"),
+    # #1647: only a "no" that opens the prompt is a verdict on the answer;
+    # mid-prompt it is almost always part of an instruction ("no paths").
+    ("no", r"^\W*no\b"),
+    ("still", r"\bstill (wrong|broken|no|not|does ?n'?t|isn'?t|hanging|failing)\b"),
     ("nope", r"\bnope\b"),
-    ("wrong", r"\b(that'?s |is )?wrong\b"),
+    # A verdict that something *is* wrong, or a prompt that opens with it;
+    # not "wrong" in "what was wrong last week" or "the wrong primary".
+    ("wrong", r"\b(that'?s|this is|it'?s|its|you'?re|is|are) (still )?wrong\b|^\W*wrong\b"),
     ("incorrect", r"\bincorrect\b"),
     ("not_what", r"\bnot what i\b"),
-    ("fix_it", r"\bfix (it|this|that)\b"),
     ("broken", r"\bbroken\b"),
     ("doesnt_work", r"\bdoes ?n'?t work\b"),
     ("stop", r"\bstop (doing |that)\b"),
     ("i_told_you", r"\bi (already )?told you\b"),
     ("undo", r"\bundo (that|it|this)\b"),
-    ("try_again", r"\btry again\b"),
 )
 
 _STRONG_POSITIVE: Final[frozenset[str]] = frozenset({
@@ -188,7 +213,7 @@ _STRONG_POSITIVE: Final[frozenset[str]] = frozenset({
 })
 
 _STRONG_NEGATIVE: Final[frozenset[str]] = frozenset({
-    "wrong", "incorrect", "i_told_you", "fix_it", "broken",
+    "wrong", "incorrect", "i_told_you", "broken",
 })
 
 _COMPILED_POSITIVE: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
@@ -237,6 +262,7 @@ def detect_sentiment(prompt: str) -> SentimentSignal | None:
 
     Detection order:
       1. Length guard. > MAX_PROMPT_CHARS -> None (assumed task content).
+         A harness record (`_HARNESS_PROMPT_PREFIXES`) -> None too.
       2. Strong negatives, then strong positives. Strong wins over base
          when both match because the higher-confidence interpretation
          is the safer one to act on.
@@ -248,6 +274,12 @@ def detect_sentiment(prompt: str) -> SentimentSignal | None:
     if not prompt:
         return None
     if len(prompt) > MAX_PROMPT_CHARS:
+        return None
+    # #1647: a harness record the hook receives as a prompt (a background
+    # task's notice, a slash command's wrapper) is not the user reacting.
+    # A prefix check, not `noise_filter.is_transcript_scaffolding`: that
+    # import costs ~1.8 ms on every short prompt's skipped fire (#1527).
+    if prompt.lstrip().startswith(_HARNESS_PROMPT_PREFIXES):
         return None
 
     strong_neg = _first_match(_COMPILED_NEGATIVE, prompt, _STRONG_NEGATIVE)
@@ -443,28 +475,48 @@ def apply_sentiment_to_pending(
 # --- Config -------------------------------------------------------------
 
 
-def is_enabled(config: dict[str, dict] | None = None) -> bool:
-    """Whether sentiment-from-prose is enabled.
+def is_enabled(config: dict[str, dict[str, object]] | None = None) -> bool:
+    """Whether sentiment-from-prose runs at all.
 
     Resolution order:
       1. Env var `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE` if set.
       2. `[feedback] sentiment_from_prose` in the supplied config dict.
-      3. Default False.
+      3. Default True since #1647. Negative signals need
+         `is_negative_enabled` as well; this gate alone applies positive
+         ones.
 
     The hook layer is the caller; this module does not read disk.
     """
-    raw = os.environ.get(ENV_SENTIMENT)
+    return _resolve_flag(config, ENV_SENTIMENT, CONFIG_SENTIMENT_KEY,
+                         default=True)
+
+
+def is_negative_enabled(config: dict[str, dict[str, object]] | None = None) -> bool:
+    """Whether a negative signal may move a posterior (#1647).
+
+    Resolution order: `AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE`, then
+    `[feedback] sentiment_negative`, then False. Held out of the default
+    because negative fires measured 62-74% precise on held-out prompts
+    and the pre-registered bar was 70% on both graders.
+    """
+    return _resolve_flag(config, ENV_SENTIMENT_NEGATIVE,
+                         CONFIG_SENTIMENT_NEGATIVE_KEY, default=False)
+
+
+def _resolve_flag(
+    config: dict[str, dict[str, object]] | None, env: str, key: str, *, default: bool,
+) -> bool:
+    raw = os.environ.get(env)
     if raw is not None:
         token = raw.strip().lower()
         if token in _ENV_TRUTHY:
             return True
         if token in _ENV_FALSY:
             return False
-
     if config is None:
-        return False
+        return default
     section = config.get(CONFIG_FEEDBACK_SECTION)
     if not isinstance(section, dict):
-        return False
-    value = section.get(CONFIG_SENTIMENT_KEY)
-    return bool(value) if isinstance(value, bool) else False
+        return default
+    value = section.get(key)
+    return value if isinstance(value, bool) else default

@@ -258,10 +258,12 @@ def test_prompt_shape_gate_audit_records_skip_reason(
     rc = user_prompt_submit(stdin=sin, stdout=sout)
     assert rc == 0
     audit_path = _audit_path_for_db(db)
-    records = read_hook_audit(audit_path)
+    # Since #1647 the sentiment lane runs by default, so "yes" also writes
+    # its own sentiment row (an abstention: nothing was injected before it).
+    records = [r for r in read_hook_audit(audit_path)
+               if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT]
     assert len(records) == 1
     rec = records[0]
-    assert rec["hook"] == AUDIT_HOOK_USER_PROMPT_SUBMIT
     assert rec["n_beliefs"] == 0
     assert "prompt_shape_gate_skip" in rec
     skip_reason = rec["prompt_shape_gate_skip"]

@@ -3305,8 +3305,9 @@ def user_prompt_submit(
         # #606: sentiment-feedback lane — apply correction signals from
         # this prompt to the prior UPS turn's retrieved beliefs BEFORE
         # this turn's retrieval, so demoted posteriors are reflected in
-        # the hits returned here. Default-off, fail-soft, opt-in via
-        # `[feedback] sentiment_from_prose = true` in `.aelfrice.toml`.
+        # the hits returned here. Fail-soft. Since #1647 the positive half
+        # runs by default and the negative half needs
+        # `[feedback] sentiment_negative = true`.
         apply_sentiment_feedback(prompt, session_id, stderr=serr)
         # #779 Layer 3: score the prior turn's pending injection_events
         # against the assistant transcript and push `relevance` evidence
@@ -5635,7 +5636,7 @@ def apply_sentiment_feedback(
     Returns the number of beliefs whose posterior was updated. Returns
     0 on:
 
-    - sentiment-from-prose disabled in config (default off),
+    - sentiment-from-prose disabled in config (default on since #1647),
     - no sentiment signal detected in the prompt,
     - no prior UPS fire in this session (or audit disabled),
     - prior fire returned zero beliefs,
@@ -5659,6 +5660,19 @@ def apply_sentiment_feedback(
             return 0
         signal = sf.detect_sentiment(prompt)
         if signal is None:
+            return 0
+        if signal.sentiment == sf.NEGATIVE and not sf.is_negative_enabled(toml_cfg):
+            # #1647: negative fires measured short of the precision bar,
+            # so they move nothing by default. The row still lands, and
+            # it is what a later re-measurement of the lane reads.
+            _write_sentiment_feedback_audit(
+                prompt=prompt,
+                session_id=session_id,
+                signal=signal,
+                applied_ids=[],
+                stderr=serr,
+                abstained="negative_disabled",
+            )
             return 0
         prior_ids = _load_prior_ups_belief_ids(session_id, stderr=serr)
         if not prior_ids:

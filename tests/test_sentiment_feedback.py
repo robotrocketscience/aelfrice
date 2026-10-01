@@ -17,6 +17,7 @@ from aelfrice.sentiment_feedback import (
     BASE_VALENCE,
     CORRECTION_FREQ_THRESHOLD,
     ENV_SENTIMENT,
+    ENV_SENTIMENT_NEGATIVE,
     ESCALATED_NEGATIVE_VALENCE,
     MAX_PROMPT_CHARS,
     NEGATIVE,
@@ -28,6 +29,7 @@ from aelfrice.sentiment_feedback import (
     detect_correction_frequency,
     detect_sentiment,
     is_enabled,
+    is_negative_enabled,
 )
 from aelfrice.store import MemoryStore
 
@@ -67,11 +69,16 @@ def store() -> MemoryStore:
 
 @pytest.fixture
 def clean_env() -> Iterator[None]:
-    """Snapshot + restore the sentiment env var around each test."""
+    """Snapshot + restore the sentiment env vars around each test."""
+    saved_negative = os.environ.pop(ENV_SENTIMENT_NEGATIVE, None)
     saved = os.environ.pop(ENV_SENTIMENT, None)
     try:
         yield
     finally:
+        if saved_negative is None:
+            os.environ.pop(ENV_SENTIMENT_NEGATIVE, None)
+        else:
+            os.environ[ENV_SENTIMENT_NEGATIVE] = saved_negative
         if saved is None:
             os.environ.pop(ENV_SENTIMENT, None)
         else:
@@ -525,8 +532,18 @@ def test_apply_empty_pending_returns_empty(store: MemoryStore) -> None:
 # --- is_enabled: config + env --------------------------------------------
 
 
-def test_is_enabled_default_off(clean_env: None) -> None:
-    assert is_enabled() is False
+def test_positive_sentiment_is_on_by_default(clean_env: None) -> None:
+    """#1647: positive fires measured 95-98% precise, so the lane runs by
+    default; negative fires fell short and need their own opt-in."""
+    assert is_enabled() is True
+    assert is_negative_enabled() is False
+
+
+def test_negative_sentiment_needs_its_own_opt_in(clean_env: None) -> None:
+    assert is_negative_enabled({"feedback": {"sentiment_negative": True}}) is True
+    assert is_negative_enabled({"feedback": {"sentiment_from_prose": True}}) is False
+    os.environ[ENV_SENTIMENT_NEGATIVE] = "1"
+    assert is_negative_enabled() is True
 
 
 def test_is_enabled_off_when_config_false(clean_env: None) -> None:
@@ -559,14 +576,17 @@ def test_is_enabled_env_unrecognized_falls_through_to_config(
     assert is_enabled(cfg) is True
 
 
-def test_is_enabled_missing_section(clean_env: None) -> None:
+def test_is_enabled_missing_section_takes_the_default(clean_env: None) -> None:
     cfg = {"other_section": {"x": 1}}
-    assert is_enabled(cfg) is False
+    assert is_enabled(cfg) is True
+    assert is_negative_enabled(cfg) is False
 
 
-def test_is_enabled_non_bool_value_treated_as_off(clean_env: None) -> None:
-    cfg = {"feedback": {"sentiment_from_prose": "yes"}}
-    assert is_enabled(cfg) is False
+def test_a_non_bool_value_takes_the_default(clean_env: None) -> None:
+    cfg = {"feedback": {"sentiment_from_prose": "no",
+                        "sentiment_negative": "yes"}}
+    assert is_enabled(cfg) is True
+    assert is_negative_enabled(cfg) is False
 
 
 # ---------------------------------------------------------------------------
@@ -639,3 +659,76 @@ def test_sentiment_signal_does_not_propagate() -> None:
     assert downstream is not None
     assert (downstream.alpha, downstream.beta) == (5.0, 5.0)
     assert store.count_feedback_events(belief_id="B") == 0
+
+
+# ---------------------------------------------------------------------------
+# #1647 — the negative patterns narrowed to what measured as verdicts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("prompt", [
+    "then rewrite it with no project names and no paths",
+    "fix it",
+    "ok lets fix that first",
+    "try again now",
+    "what was wrong two weeks ago that's fixed now",
+    "make the wrong primary problems self healing",
+], ids=["no-mid-prompt", "fix-it", "fix-that", "try-again",
+        "wrong-as-a-past-state", "wrong-as-an-adjective"])
+def test_instructions_that_merely_contain_a_negative_word_do_not_fire(
+    prompt: str,
+) -> None:
+    """Each shape was graded a misfire on real prompts (#1647): the word
+    opens or sits inside a new instruction, not a verdict on the answer."""
+    signal = detect_sentiment(prompt)
+    assert signal is None or signal.sentiment != NEGATIVE, (prompt, signal)
+
+
+@pytest.mark.parametrize("prompt,pattern", [
+    ("no, that's not it", "no"),
+    ("nope", "nope"),
+    ("it's still not loading", "still"),
+    ("that's wrong", "wrong"),
+    ("you're wrong about the port", "wrong"),
+    ("wrong file", "wrong"),
+], ids=["leading-no", "nope", "still", "thats-wrong", "youre-wrong", "leading-wrong"])
+def test_verdicts_on_the_answer_still_fire(prompt: str, pattern: str) -> None:
+    signal = detect_sentiment(prompt)
+    assert signal is not None and signal.sentiment == NEGATIVE, (prompt, signal)
+    assert signal.pattern == pattern, (prompt, signal.pattern)
+
+
+@pytest.mark.parametrize("prefix", [
+    "<task-notification", "<command-name", "<local-command-stdout", "<bash-stdout",
+    "<system-reminder", "<user-prompt-submit-hook", "<tool-result",
+    "<cross-session-message", "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+])
+def test_every_harness_prefix_is_skipped(prefix: str) -> None:
+    """One case per prefix, spelled out here rather than read from the
+    module, so dropping any one of them fails a test. Each body carries
+    "broken", which fires anywhere, so only the prefix check stops it.
+    Leading whitespace is tolerated, as the host may prepend it."""
+    assert detect_sentiment("  " + prefix + "> the build is broken") is None
+
+
+@pytest.mark.parametrize("prompt", [
+    "it's still hanging", "the deploy is still failing",
+])
+def test_still_covers_hanging_and_failing(prompt: str) -> None:
+    signal = detect_sentiment(prompt)
+    assert signal is not None and signal.pattern == "still", (prompt, signal)
+
+
+def test_a_leading_no_after_punctuation_still_fires() -> None:
+    signal = detect_sentiment("- no, not that one")
+    assert signal is not None and signal.pattern == "no", signal
+
+
+def test_a_harness_record_is_not_the_user_reacting() -> None:
+    """The hook receives a background task's notice as a prompt; its words
+    ("failed", "no") are not the user's verdict."""
+    notice = ("<task-notification>\n<status>failed</status>\n"
+              "<summary>the build is broken</summary>\n</task-notification>")
+    # Without the gate, "broken" fires anywhere in a prompt; with it, a
+    # harness record never reaches the patterns.
+    assert detect_sentiment(notice) is None

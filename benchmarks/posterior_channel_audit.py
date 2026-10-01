@@ -23,9 +23,12 @@ Three channels are checked:
 
   2. **Sentiment-from-prose** (`sentiment_feedback.apply_sentiment_to_pending`,
      wired into `UserPromptSubmit` at #606). Regex-matches the user's prose
-     and distributes the signal over the previous turn's pack. Emits
-     **negative** valence, so this is an automatic down-channel. Opt-in via
-     `[feedback] sentiment_from_prose`, default off.
+     and distributes the signal over the previous turn's pack. Since #1647
+     its **positive** half is on by default (measured 95-98% precise on real
+     prompts, two graders): an automatic up-channel. Its **negative** half,
+     the automatic down-channel, stays opt-in via
+     `[feedback] sentiment_negative`, default off, because it measured short
+     of the precision bar.
 
   3. **Deferred-feedback sweeper** (`deferred_feedback.sweep_deferred_feedback`).
      Audit-only since #1162 — classifies what it *would* have applied and
@@ -90,6 +93,7 @@ from aelfrice.sentiment_feedback import (  # noqa: E402
     apply_sentiment_to_pending,
     detect_sentiment,
     is_enabled as sentiment_is_enabled,
+    is_negative_enabled as sentiment_negative_is_enabled,
 )
 from aelfrice.store import MemoryStore  # noqa: E402
 
@@ -168,9 +172,13 @@ def channel_2_sentiment() -> list[str]:
     print("=" * 72)
 
     enabled = sentiment_is_enabled({})
-    print(f"  is_enabled(default config) = {enabled}")
-    if enabled:
-        failures.append("sentiment-from-prose is enabled by default")
+    negative = sentiment_negative_is_enabled({})
+    print(f"  is_enabled(default config) = {enabled}   (#1647: positive lane, on)")
+    print(f"  is_negative_enabled(default config) = {negative}")
+    if not enabled:
+        failures.append("the positive sentiment lane is not on by default (#1647)")
+    if negative:
+        failures.append("negative sentiment is enabled by default")
 
     signal = detect_sentiment("no that's wrong")
     if signal is None or signal.valence >= 0:
@@ -205,7 +213,7 @@ def channel_2_sentiment() -> list[str]:
         failures.append("escalated negative did not exceed the base negative")
 
     print("  => an automatic DOWN channel EXISTS and is wired to the hot "
-          "path; it is opt-in, exactly as the UP channel is.")
+          "path; it is opt-in. The positive half runs by default (#1647).")
     return failures
 
 
@@ -327,9 +335,10 @@ def main() -> int:
     print("=" * 72)
     print("VERDICT")
     print("=" * 72)
-    print("  At default settings NO automatic channel moves a belief")
-    print("  posterior in EITHER direction. Both automatic channels are")
-    print("  opt-in: exposure (up) and sentiment-from-prose (down).")
+    print("  At default settings ONE automatic channel moves a belief")
+    print("  posterior: positive sentiment-from-prose (up, #1647). The")
+    print("  other automatic channels are opt-in: exposure (up) and")
+    print("  negative sentiment-from-prose (down).")
 
     if failures:
         print()

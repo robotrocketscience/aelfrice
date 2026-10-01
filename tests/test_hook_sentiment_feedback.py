@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from aelfrice.hook import (
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.sentiment_feedback import (
     ENV_SENTIMENT,
+    ENV_SENTIMENT_NEGATIVE,
     SENTIMENT_INFERRED_SOURCE,
 )
 from aelfrice.store import MemoryStore
@@ -88,11 +90,21 @@ def _set_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
 
 
 def _enable_sentiment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both lanes. These tests drive corrections, and since #1647 a
+    negative signal needs its own opt-in."""
     monkeypatch.setenv(ENV_SENTIMENT, "1")
+    monkeypatch.setenv(ENV_SENTIMENT_NEGATIVE, "1")
 
 
 def _disable_sentiment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicitly off: since #1647 the lane is on by default."""
+    monkeypatch.setenv(ENV_SENTIMENT, "0")
+    monkeypatch.delenv(ENV_SENTIMENT_NEGATIVE, raising=False)
+
+
+def _default_sentiment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ENV_SENTIMENT, raising=False)
+    monkeypatch.delenv(ENV_SENTIMENT_NEGATIVE, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -631,3 +643,114 @@ def test_apply_records_abstention_when_every_candidate_is_gone(
     # The surviving, un-injected belief must not have moved.
     b = _read_belief(db, "F1")
     assert b.alpha == 1.0 and b.beta == 1.0
+
+
+def _seed_prior_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the answer is purple"),
+                  _mk("F2", "the answer is orange")])
+    _set_db(monkeypatch, db)
+    audit_path = _audit_path_for_db(db)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps({
+        "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT, "session_id": "s1",
+        "beliefs": [{"id": "F1"}, {"id": "F2"}],
+    }) + "\n", encoding="utf-8")
+    return db, audit_path
+
+
+def test_by_default_praise_raises_the_prior_turns_beliefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1647: the positive lane runs with no configuration."""
+    _default_sentiment(monkeypatch)
+    db, _ = _seed_prior_turn(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("perfect, thanks", "s1") == 2
+    for bid in ("F1", "F2"):
+        b = _read_belief(db, bid)
+        assert b.alpha > 1.0 and b.beta == 1.0, (bid, b.alpha, b.beta)
+
+
+def test_by_default_a_complaint_moves_nothing_but_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1647: negative fires measured short of the precision bar, so with no
+    opt-in they move nothing. The audit row still lands, marked, because a
+    later re-measurement of the lane reads exactly these rows."""
+    _default_sentiment(monkeypatch)
+    db, audit_path = _seed_prior_turn(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("no, that's wrong", "s1") == 0
+    for bid in ("F1", "F2"):
+        b = _read_belief(db, bid)
+        assert b.alpha == 1.0 and b.beta == 1.0, (bid, b.alpha, b.beta)
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    assert len(rows) == 1, rows
+    assert rows[0].get("abstained") == "negative_disabled", rows
+
+
+_OFF = "[feedback]\nsentiment_from_prose = false\n"
+_NEG_ON = "[feedback]\nsentiment_negative = true\n"
+
+
+@pytest.mark.parametrize(
+    "toml,env_prose,env_negative,prompt,applied,abstained,direction",
+    [
+        ("", None, None, "perfect, thanks", 2, None, "up"),
+        ("", None, None, "no, that's wrong", 0, "negative_disabled", "none"),
+        (_OFF, None, None, "perfect, thanks", 0, "no row", "none"),
+        (_OFF + "sentiment_negative = true\n", None, None, "no, that's wrong",
+         0, "no row", "none"),
+        ("", "0", None, "perfect, thanks", 0, "no row", "none"),
+        ("", "0", "1", "no, that's wrong", 0, "no row", "none"),
+        (_NEG_ON, None, None, "no, that's wrong", 2, None, "down"),
+        ("", None, "1", "no, that's wrong", 2, None, "down"),
+        (_NEG_ON, None, "0", "no, that's wrong", 0, "negative_disabled", "none"),
+        ("[feedback]\nsentiment_negative = false\n", None, "1",
+         "no, that's wrong", 2, None, "down"),
+        (_OFF, "1", None, "perfect, thanks", 2, None, "up"),
+    ],
+    ids=["default-praise", "default-complaint", "file-off", "file-off-beats-negative",
+         "env-off", "env-off-beats-negative", "file-negative-on", "env-negative-on",
+         "env-negative-off-beats-file", "env-negative-on-beats-file", "env-on-beats-file"],
+)
+def test_the_hook_honours_the_project_file_and_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    toml: str, env_prose: str | None, env_negative: str | None, prompt: str,
+    applied: int, abstained: str | None, direction: str,
+) -> None:
+    """Found by review: no test drove the hook through a real
+    `.aelfrice.toml`, so the hook could ignore the file and every test
+    passed, while `sentiment_from_prose = false` is now the main way to
+    turn the default-on lane off. The environment beats the file, and the
+    master switch off beats the negative opt-in."""
+    for name in [n for n in os.environ if n.startswith("AELFRICE_")]:
+        monkeypatch.delenv(name)
+    project = tmp_path / "project"
+    project.mkdir()
+    if toml:
+        (project / ".aelfrice.toml").write_text(toml, encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if env_prose is not None:
+        monkeypatch.setenv(ENV_SENTIMENT, env_prose)
+    if env_negative is not None:
+        monkeypatch.setenv(ENV_SENTIMENT_NEGATIVE, env_negative)
+    db, audit_path = _seed_prior_turn(tmp_path, monkeypatch)
+
+    assert apply_sentiment_feedback(prompt, "s1") == applied
+    b = _read_belief(db, "F1")
+    if direction == "up":
+        assert b.alpha > 1.0 and b.beta == 1.0, (b.alpha, b.beta)
+    elif direction == "down":
+        assert b.beta > 1.0, (b.alpha, b.beta)
+    else:
+        assert (b.alpha, b.beta) == (1.0, 1.0), (b.alpha, b.beta)
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    if abstained == "no row":
+        assert rows == [], rows
+    else:
+        assert len(rows) == 1 and rows[0].get("abstained") == abstained, rows
