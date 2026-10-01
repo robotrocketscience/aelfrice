@@ -734,6 +734,9 @@ def _sandbox_real_home(
     that re-imports `aelfrice.lifecycle` and recomputes `CACHE_FILE` from
     the real home. The env var is the only lever that crosses that boundary.
 
+    `AELFRICE_DB` is pinned for the same reason (#1678): a detached
+    `aelf ingest-transcript` child otherwise resolves the real repo store.
+
     Session-scoped, so a test wanting per-test control still overrides it
     with its own function-scoped `monkeypatch` (which is restored after).
     """
@@ -757,6 +760,16 @@ def _sandbox_real_home(
         # each fork a process that opens some other store; the #1513 tests
         # re-enable it with a function-scoped monkeypatch.
         mp.setenv("AELF_NO_SIDECAR_WARM", "1")
+        # #1678, the same lever again: PreCompact and the Stop flush spawn
+        # a detached `aelf ingest-transcript` that resolves its store with
+        # `db_path()`. Unpinned, that falls through to the git common dir
+        # of the test's cwd, which is the contributor's real
+        # `<repo>/.git/aelfrice/memory.db`, so fixture beliefs landed in
+        # the store that injects into real sessions. `HOME` does not cover
+        # it, because the git-dir branch wins before the home fallback.
+        # A test that exercises git-dir resolution deletes this with a
+        # function-scoped `monkeypatch.delenv`.
+        mp.setenv("AELFRICE_DB", str(home / "memory.db"))
         for mod_name, attr, relpath in _HOME_PINS:
             target = home / relpath
             if attr in _PRECREATED_SENTINELS:
