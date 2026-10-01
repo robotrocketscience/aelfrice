@@ -221,6 +221,13 @@ def diagnose_reference_signal(store_path: str) -> ReferenceSignalStats | None:
 # ---------------------------------------------------------------------------
 
 
+def _lock_gaps_on_windows() -> bool:
+    """`lock_gaps._on_windows`, looked up at call time so a test can patch it."""
+    from aelfrice import lock_gaps  # noqa: PLC0415
+
+    return lock_gaps._on_windows()  # pyright: ignore[reportPrivateUsage]
+
+
 def diagnose_lock_gaps(
     store_path: str, project_root: Path | None = None,
 ) -> "LockGapReport":
@@ -2225,6 +2232,7 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                     f"      statement shown is the first {len(g.statement)} "
                     f"of {g.arg_len} characters; to fix it, run "
                     f"`aelf lock` with the full statement"
+                    + (", quoted for your shell" if _lock_gaps_on_windows() else "")
                 )
             elif not g.valid_text:
                 lines.append(
@@ -2232,7 +2240,7 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                     "cannot be locked; retype it"
                 )
             else:
-                # No runnable command on Windows: no one quoting is safe
+                # No runnable command on Windows: no single quoting is safe
                 # in both cmd.exe and PowerShell (#1622).
                 lines.append(
                     "      to fix it, run `aelf lock` with the statement "

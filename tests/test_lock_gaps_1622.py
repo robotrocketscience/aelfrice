@@ -867,6 +867,24 @@ def test_doctor_on_windows_says_how_to_fix_without_a_command(
     assert "quoted for your shell" in text
 
 
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+def test_a_truncated_row_gets_the_shell_hint_only_on_windows(
+    monkeypatch: pytest.MonkeyPatch, windows: bool,
+) -> None:
+    from aelfrice import lock_gaps
+
+    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: windows)
+    gap = LockGap(_sha("x"), "Keep every widget", 700, "exception",
+                  FAILED_AT, None, 1)
+    report = DoctorReport()
+    report.lock_gaps = LockGapReport(known=True, gaps=(gap,), records_seen=1)
+    lines: list[str] = []
+    _format_lock_gaps_section(report, lines)
+    text = "\n".join(lines)
+    assert "with the full statement" in text
+    assert ("quoted for your shell" in text) is windows
+
+
 # --- SessionStart -------------------------------------------------------
 
 
