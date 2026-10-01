@@ -403,6 +403,23 @@ def test_the_session_start_recap_line_is_charged(
     assert len(out) <= _LIMIT, len(out)
 
 
+@pytest.mark.timeout(60)
+def test_the_session_start_lock_gap_notice_is_charged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #1622 notice is printed after both blocks, like the recap."""
+    from aelfrice import hook
+
+    # Oversized for the same reason as the recap arm above.
+    line = "aelfrice: lock gap " + "x" * 1_000
+    monkeypatch.setattr(hook, "build_lock_gap_notice", lambda **_: line)
+    db = tmp_path / "lg.db"
+    _seed(db, n_locks=300, lock_chars=150)
+    out, _ = _fire_session_start(tmp_path, db, monkeypatch)
+    assert line in out
+    assert len(out) <= _LIMIT, len(out)
+
+
 @pytest.mark.timeout(30)
 def test_the_search_hook_context_fits_and_sheds_l1_before_locks() -> None:
     """The PreToolUse search hook is an aelfrice hook too (AC1).

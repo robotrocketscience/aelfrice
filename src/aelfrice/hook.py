@@ -7033,9 +7033,13 @@ def session_start(
         except Exception:
             # never break SessionStart on recap-side errors
             recap_line = None
+    # #1622: one line while a typed lock that failed is still unapplied.
+    # Priced here with the recap, for the same reason: it is printed after
+    # both blocks, so they must leave it room.
+    lock_gap_line = build_lock_gap_notice(stderr=stderr)
     payload_room = HOOK_PAYLOAD_CHAR_LIMIT - (
         len(recap_line) + 1 if recap_line else 0
-    )
+    ) - (len(lock_gap_line) + 1 if lock_gap_line else 0)
     serr = stderr if stderr is not None else sys.stderr
     if not _IMPORTS_OK:
         return _report_incomplete_install(_IMPORT_ERR, serr)
@@ -7162,6 +7166,12 @@ def session_start(
         _ = _report_incomplete_install(exc, serr)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
+    if lock_gap_line:
+        try:
+            print(lock_gap_line, file=sout)
+        except Exception:
+            # never break SessionStart on a notice
+            pass
     if recap_enabled:
         try:
             if recap_line:
@@ -7172,6 +7182,27 @@ def session_start(
             pass
     _maybe_run_wonder_autogc(serr)
     return 0
+
+
+def build_lock_gap_notice(*, stderr: IO[str] | None = None) -> str | None:
+    """The SessionStart line for unapplied typed locks, or None (#1622).
+
+    Fail-soft: any error yields None. A missed notice costs one session
+    of visibility; `aelf doctor` still lists the gap. `aelfrice.lock_gaps`
+    is imported here, not at module scope, to keep it off the hook's
+    import graph (#1351).
+    """
+    try:
+        from aelfrice.lock_gaps import (  # noqa: PLC0415
+            detect_lock_gaps,
+            session_start_notice,
+        )
+
+        cfg = load_hook_audit_config(stderr=stderr)
+        report = detect_lock_gaps(str(db_path()), audit_enabled=cfg.enabled)
+        return session_start_notice(report)
+    except Exception:
+        return None
 
 
 def _retrieve_and_format_baseline() -> str:
