@@ -300,6 +300,17 @@ def test_the_record_survives_a_retrieval_that_dies(
 
 
 @pytest.mark.timeout(120)
+def test_no_record_is_written_while_the_hook_audit_is_disabled(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row holds statement text, so the audit switch must stop it."""
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "0")
+    _fail_lock(tmp_path, monkeypatch)
+    _fire(f"/aelf:lock {STATEMENT}", tmp_path)
+    assert not command_outcomes_path_for_db(db).exists()
+
+
+@pytest.mark.timeout(120)
 def test_a_lone_surrogate_is_refused_as_an_input_error(
     tmp_path: Path, db: Path,
 ) -> None:
@@ -361,6 +372,53 @@ def test_doctor_says_unknown_when_there_is_no_audit(
 @pytest.mark.timeout(60)
 def test_doctor_renders_the_section_with_no_store() -> None:
     assert "unknown: no store was checked" in _section(None)
+
+
+@pytest.mark.timeout(120)
+def test_aelf_doctor_prints_the_section(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The command itself, so the wiring in `diagnose` is covered."""
+    _fail_lock(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    buf = io.StringIO()
+    cli.main(["doctor"], out=buf)
+    text = buf.getvalue() + capsys.readouterr().out
+    assert "typed /aelf:lock requests that did not take effect:" in text
+    assert f"fix: aelf lock '{STATEMENT}'" in text
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "scanned", [False, True], ids=["no-settings", "settings"],
+)
+def test_both_report_paths_render_the_section(
+    tmp_path: Path, scanned: bool,
+) -> None:
+    gap = LockGap(_sha(STATEMENT), STATEMENT, len(STATEMENT), "exception",
+                  "2026-01-01T00:00:00Z", None, 1)
+    report = DoctorReport(lock_gaps=LockGapReport(known=True, gaps=(gap,)))
+    if scanned:
+        settings = tmp_path / "settings.json"
+        settings.write_text("{}", encoding="utf-8")
+        report.scopes_scanned.append(("user", settings))
+    assert f"fix: aelf lock '{STATEMENT}'" in format_report(report)
+
+
+@pytest.mark.timeout(60)
+def test_doctor_says_unknown_when_the_store_cannot_be_read(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fail_lock(tmp_path, monkeypatch)
+    db.write_bytes(b"not a sqlite file" * 100)
+    report = _gaps(db)
+    assert not report.known
+    assert report.unknown_reason is not None
+    assert report.unknown_reason.startswith("the store could not be read")
+    text = _section(report)
+    assert "unknown: the store could not be read" in text
+    assert "none" not in text
 
 
 @pytest.mark.timeout(120)
