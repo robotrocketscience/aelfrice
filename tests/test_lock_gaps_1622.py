@@ -43,6 +43,7 @@ from aelfrice.lock_gaps import (
     GAP_REASONS,
     LockGap,
     LockGapReport,
+    _quote_argument,
     detect_lock_gaps,
     read_command_outcomes,
 )
@@ -601,7 +602,7 @@ def test_doctor_lists_the_statement_and_the_fix(
     _fail_lock(tmp_path, monkeypatch)
     text = _section(diagnose_lock_gaps(str(db), tmp_path))
     assert STATEMENT in text
-    assert f"fix: aelf lock '{STATEMENT}'" in text
+    assert f"fix: aelf lock {_quote_argument(STATEMENT)}" in text
 
 
 @pytest.mark.timeout(60)
@@ -640,7 +641,7 @@ def test_aelf_doctor_prints_the_section(
     cli.main(["doctor"], out=buf)
     text = buf.getvalue() + capsys.readouterr().out
     assert "typed /aelf:lock requests that did not take effect:" in text
-    assert f"fix: aelf lock '{STATEMENT}'" in text
+    assert f"fix: aelf lock {_quote_argument(STATEMENT)}" in text
 
 
 @pytest.mark.timeout(60)
@@ -657,7 +658,8 @@ def test_both_report_paths_render_the_section(
         settings = tmp_path / "settings.json"
         settings.write_text("{}", encoding="utf-8")
         report.scopes_scanned.append(("user", settings))
-    assert f"fix: aelf lock '{STATEMENT}'" in format_report(report)
+    fix = f"fix: aelf lock {_quote_argument(STATEMENT)}"
+    assert fix in format_report(report)
 
 
 @pytest.mark.timeout(60)
@@ -816,6 +818,29 @@ def test_doctor_survives_a_lock_gap_check_that_raises(
     assert report.lock_gaps is not None
     assert not report.lock_gaps.known
     assert report.lock_gaps.unknown_reason == "the check failed: RuntimeError"
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    ("windows", "expected"),
+    [
+        (False, """aelf lock 'It'"'"'s "fine" here'"""),
+        (True, '''aelf lock "It's \\"fine\\" here"'''),
+    ],
+    ids=["posix", "windows"],
+)
+def test_the_fix_command_is_quoted_for_the_platform_shell(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, expected: str,
+) -> None:
+    """Single quotes are not quoting in `cmd.exe` or PowerShell, so a
+    POSIX-quoted fix would split the statement on Windows."""
+    from aelfrice import lock_gaps
+
+    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: windows)
+    statement = 'It\'s "fine" here'
+    gap = LockGap(_sha(statement), statement, len(statement), "exception",
+                  FAILED_AT, None, 1)
+    assert gap.fix_command == expected
 
 
 # --- SessionStart -------------------------------------------------------

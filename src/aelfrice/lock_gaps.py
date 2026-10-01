@@ -93,6 +93,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import sqlite3
 from dataclasses import dataclass
@@ -150,6 +151,29 @@ _INGEST_SOURCE_LOCK: Final[str] = "cli_remember"
 _LOCK_LEVEL_USER: Final[str] = "user"
 
 
+def _on_windows() -> bool:
+    """Whether the fix command is for a Windows shell.
+
+    A function, so a test can choose the branch without patching
+    `os.name`, which `pathlib` reads to pick its path class.
+    """
+    return os.name == "nt"
+
+
+def _quote_argument(text: str) -> str:
+    """Quote `text` as one argument for the platform's shell.
+
+    POSIX shells get `shlex.quote`, whose single quotes `cmd.exe` and
+    PowerShell do not treat as quoting. Windows gets the double-quote
+    rules the C runtime splits a command line by.
+    """
+    if _on_windows():
+        import subprocess  # noqa: PLC0415
+
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
+
+
 @dataclass(frozen=True)
 class LockGap:
     """One statement whose typed lock failed and that is still not locked."""
@@ -199,7 +223,7 @@ class LockGap:
         """
         if self.truncated or not self.valid_text:
             return None
-        return f"aelf lock {shlex.quote(self.statement)}"
+        return f"aelf lock {_quote_argument(self.statement)}"
 
 
 @dataclass(frozen=True)
