@@ -5129,6 +5129,47 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
+    def count_corroborations_by_source(
+        self, source_types: Iterable[str],
+    ) -> dict[str, int]:
+        """Return {belief_id: row count} for corroboration rows of the
+        given source types. Beliefs with no such row are absent.
+
+        Used by `aelf doctor --gc-filesystem-corroboration` (#1669) to
+        report what the cleanup would remove before it removes it.
+        """
+        types = sorted(set(source_types))
+        if not types:
+            return {}
+        marks = ",".join("?" * len(types))
+        cur = self._conn.execute(
+            f"SELECT belief_id, COUNT(*) FROM belief_corroborations "
+            f"WHERE source_type IN ({marks}) GROUP BY belief_id",
+            types,
+        )
+        return {str(r[0]): int(r[1]) for r in cur.fetchall()}
+
+    def delete_corroborations_by_source(
+        self, source_types: Iterable[str],
+    ) -> int:
+        """Delete corroboration rows of the given source types. Returns
+        the number deleted. Rows of every other source are untouched.
+
+        #1669: removes the rows filesystem ingest wrote before #1615
+        stopped it. Destructive; the caller is responsible for
+        confirmation.
+        """
+        types = sorted(set(source_types))
+        if not types:
+            return 0
+        marks = ",".join("?" * len(types))
+        cur = self._conn.execute(
+            f"DELETE FROM belief_corroborations WHERE source_type IN ({marks})",
+            types,
+        )
+        self._commit()
+        return cur.rowcount
+
     # --- #435 doc linker --------------------------------------------------
     #
     # `belief_documents` rows are 1:1 with (belief_id, doc_uri) pairs.
