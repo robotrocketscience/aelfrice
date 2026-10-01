@@ -2950,8 +2950,8 @@ def execute_aelf_command(
         # apply. Nothing could ever apply it, so a recorded gap would
         # never close (#1622).
         line = (
-            f"aelfrice: /aelf:{command} argument contains characters that "
-            f"are not valid Unicode text; nothing was done."
+            f"aelfrice: /aelf:{command} argument contains an unpaired "
+            f"surrogate, which no store can hold; nothing was done."
         )
         print(line, file=stderr)
         return CommandOutcome(

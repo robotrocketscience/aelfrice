@@ -2215,8 +2215,8 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                 )
             else:
                 lines.append(
-                    "      statement is not valid Unicode text and cannot "
-                    "be locked; retype it"
+                    "      statement contains an unpaired surrogate and "
+                    "cannot be locked; retype it"
                 )
     lines.append(
         "  only requests typed since this check shipped are recorded; "

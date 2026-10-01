@@ -513,7 +513,7 @@ def test_a_lone_surrogate_is_refused_as_an_input_error(
     assert user_prompt_submit(
         stdin=io.StringIO(payload), stdout=io.StringIO(), stderr=err,
     ) == 0
-    assert "not valid Unicode text" in err.getvalue()
+    assert "contains an unpaired surrogate" in err.getvalue()
     [row] = read_command_outcomes(command_outcomes_path_for_db(db))
     assert row["reason"] == CommandReason.INVALID_TEXT.value
     report = _gaps(db)
@@ -647,6 +647,7 @@ def test_a_recorded_lone_surrogate_cannot_break_doctor() -> None:
     assert "Keep \\ud800 this" in text
     assert gap.fix_command is None
     assert "fix: aelf lock" not in text
+    assert "statement contains an unpaired surrogate" in text
 
 
 # --- SessionStart -------------------------------------------------------
