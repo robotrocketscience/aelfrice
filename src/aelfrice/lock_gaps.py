@@ -21,9 +21,10 @@ A gap is resolved from the STORE, not only from a later request:
   `valid_to IS NULL` exists, which covers a lock applied later from the
   CLI (which writes no outcome row), or
 * a belief carrying the statement has a `feedback_history` row strictly
-  after the failed attempt that ends it on purpose: `lock:unlock`,
-  `lock:expire`, `aelf retire` or `aelf delete`. The user removed it, so
-  reporting it as missing would tell them to restore it.
+  after the failed attempt that ends it on purpose. `lock:unlock` and
+  `lock:expire` always count. `aelf retire` and `aelf delete` count only
+  while the belief is still retired or gone: after `aelf restore` the
+  statement is back and unlocked, so the gap is open again.
 
 "Strictly after" compares parsed instants at whole-second resolution,
 because the outcome row's `ts` is truncated to the second: a removal in
@@ -318,12 +319,18 @@ def _is_resolved(
         return False
     marks = ", ".join("?" for _ in _LOCK_ENDED_SOURCES)
     for bid in sorted(belief_ids):
-        for _source, created_at in conn.execute(
+        row = conn.execute(
+            "SELECT valid_to FROM beliefs WHERE id = ?", (bid,),
+        ).fetchone()
+        removed = row is None or row[0] is not None
+        for source, created_at in conn.execute(
             f"SELECT source, created_at FROM feedback_history "
             f"WHERE belief_id = ? AND source IN ({marks})",
             (bid, *_LOCK_ENDED_SOURCES),
         ):
-            if _strictly_after(created_at, failed_at):
+            if not _strictly_after(created_at, failed_at):
+                continue
+            if source in _LOCK_DROPPED_SOURCES or removed:
                 return True
     return False
 

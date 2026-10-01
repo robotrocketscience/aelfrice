@@ -43,6 +43,12 @@ from aelfrice.lock_gaps import (
     detect_lock_gaps,
     read_command_outcomes,
 )
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
+    Belief,
+)
 from aelfrice.store import MemoryStore
 
 STATEMENT = "Keep every widget in the blue drawer."
@@ -114,6 +120,22 @@ def _write_failure(db: Path, ts: str, statement: str = STATEMENT) -> None:
         "arg_sha256": _sha(statement), "arg_len": len(statement),
         "statement": statement,
     }) + "\n", encoding="utf-8")
+
+
+def _seed_unlocked(db: Path, bid: str = "aabbccddeeff1622",
+                   statement: str = STATEMENT) -> str:
+    """An ordinary, unlocked belief that carries the statement's hash."""
+    s = MemoryStore(str(db))
+    try:
+        s.insert_belief(Belief(
+            id=bid, content=statement, content_hash=_sha(statement),
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+            locked_at=None, created_at="2025-01-01T00:00:00Z",
+            last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
+        ))
+    finally:
+        s.close()
+    return bid
 
 
 def _feedback(db: Path, bid: str) -> list[tuple[str, str]]:
@@ -353,6 +375,37 @@ def test_an_expiry_stamp_is_compared_as_an_instant(
     _expire_lock_at(db, expired_at)
     _write_failure(db, "2099-01-01T00:00:00Z")
     assert len(_gaps(db).gaps) == open_gaps
+
+
+# --- a retire counts only while the statement stays retired ---------------
+
+
+@pytest.mark.timeout(120)
+def test_a_retire_after_the_failure_clears_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bid = _seed_unlocked(db)
+    _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
+    assert len(_gaps(db).gaps) == 1
+    assert cli.main(["retire", bid], out=io.StringIO()) == 0
+    assert _gaps(db).gaps == ()
+
+
+@pytest.mark.timeout(120)
+def test_a_restore_after_the_retire_reopens_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The statement is back and still unlocked, so the request the user
+    typed is still unapplied. The old retire row must not hide that."""
+    bid = _seed_unlocked(db)
+    _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
+    assert cli.main(["retire", bid], out=io.StringIO()) == 0
+    assert cli.main(["restore", bid], out=io.StringIO()) == 0
+    assert [src for src, _ in _feedback(db, bid)
+            if src.startswith("user_")] == ["user_retired", "user_restored"]
+    assert len(_gaps(db).gaps) == 1
 
 
 # --- the record is written where the outcome is known --------------------
