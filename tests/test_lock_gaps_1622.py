@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -650,6 +651,110 @@ def test_a_recorded_lone_surrogate_cannot_break_doctor() -> None:
     assert "statement contains an unpaired surrogate" in text
 
 
+# --- an unreadable outcome log is unknown, never a crash ----------------
+
+
+def _outcome_line(statement: str = STATEMENT) -> bytes:
+    return (json.dumps({
+        "ts": FAILED_AT, "hook": "aelf_command",
+        "command": "lock", "reason": "exception",
+        "arg_sha256": _sha(statement), "arg_len": len(statement),
+        "statement": statement,
+    }) + "\n").encode("utf-8")
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "bad_line",
+    [b"\xff\xfe not utf-8\n", b"[" * 100_000 + b"\n"],
+    ids=["non-utf8-line", "too-deep-line"],
+)
+def test_one_bad_line_is_skipped_like_a_torn_line(
+    tmp_path: Path, db: Path, bad_line: bytes,
+) -> None:
+    """A line that is not UTF-8, or one that `json.loads` cannot parse
+    without recursing past the limit, costs only itself: the valid row
+    after it is still reported."""
+    command_outcomes_path_for_db(db).write_bytes(bad_line + _outcome_line())
+    report = diagnose_lock_gaps(str(db), tmp_path)
+    assert report.known
+    assert [g.statement for g in report.gaps] == [STATEMENT]
+
+
+def _make_log_a_directory(path: Path) -> None:
+    path.mkdir()
+
+
+def _make_log_unreadable(path: Path) -> None:
+    path.write_bytes(_outcome_line())
+    path.chmod(0)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a mode-000 file",
+)
+@pytest.mark.parametrize(
+    ("make", "exc_name"),
+    [
+        (_make_log_a_directory, "IsADirectoryError"),
+        (_make_log_unreadable, "PermissionError"),
+    ],
+    ids=["directory", "mode-000"],
+)
+def test_an_unreadable_outcome_log_is_reported_as_unknown(
+    tmp_path: Path, db: Path, make: object, exc_name: str,
+) -> None:
+    path = command_outcomes_path_for_db(db)
+    assert callable(make)
+    make(path)
+    try:
+        report = diagnose_lock_gaps(str(db), tmp_path)
+    finally:
+        if path.is_file():
+            path.chmod(0o600)
+    assert not report.known
+    assert report.unknown_reason == (
+        f"the outcome log could not be read: {exc_name}"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_aelf_doctor_survives_an_unreadable_outcome_log(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End to end: the command exits 0 and says unknown."""
+    command_outcomes_path_for_db(db).mkdir()
+    monkeypatch.chdir(tmp_path)
+    buf = io.StringIO()
+    assert cli.main(["doctor"], out=buf) == 0
+    text = buf.getvalue() + capsys.readouterr().out
+    assert (
+        "unknown: the outcome log could not be read: IsADirectoryError"
+        in text
+    )
+
+
+@pytest.mark.timeout(120)
+def test_doctor_survives_a_lock_gap_check_that_raises(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The section is guarded in `diagnose` like its neighbours, so a
+    failure the detector did not anticipate is unknown, not a crash."""
+    from aelfrice import doctor
+
+    def _raise(*_a: object, **_k: object) -> LockGapReport:
+        raise RuntimeError("unanticipated")
+
+    monkeypatch.setattr(doctor, "diagnose_lock_gaps", _raise)
+    report = doctor.diagnose(store_path=str(db), project_root=tmp_path)
+    assert report.lock_gaps is not None
+    assert not report.lock_gaps.known
+    assert report.lock_gaps.unknown_reason == "the check failed: RuntimeError"
+
+
 # --- SessionStart -------------------------------------------------------
 
 
@@ -674,6 +779,19 @@ def test_session_start_prints_one_line_while_a_gap_remains(
         " — `/aelf:doctor` lists the statements and the fix."
     ]
     assert cli.main(["lock", STATEMENT], out=io.StringIO()) == 0
+    assert "/aelf:lock request" not in _session_start()
+
+
+@pytest.mark.timeout(120)
+def test_session_start_survives_a_notice_that_raises(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook
+
+    def _raise(*_a: object, **_k: object) -> str | None:
+        raise RuntimeError("notice fault")
+
+    monkeypatch.setattr(hook, "build_lock_gap_notice", _raise)
     assert "/aelf:lock request" not in _session_start()
 
 

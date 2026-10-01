@@ -179,22 +179,32 @@ def read_command_outcomes(path: Path) -> list[dict[str, object]]:
 
     Oldest first: the `.1` slot, then the live file. A line that is not
     a JSON object is skipped rather than raised on, because a torn final
-    line from a killed hook must not hide every other row.
+    line from a killed hook must not hide every other row. The same holds
+    for a line that is not valid UTF-8 and for one nested too deeply to
+    parse (`RecursionError`): each line is decoded and parsed on its own,
+    so one bad line costs only itself.
+
+    A file that is absent is skipped. Any other failure to read a file
+    (a directory at the path, no read permission) raises `OSError`;
+    `detect_lock_gaps` reports that as unknown rather than as zero.
     """
     rows: list[dict[str, object]] = []
     rotated = path.with_name(path.name + AUDIT_ROTATED_SUFFIX)
     for p in (rotated, path):
         try:
-            text = p.read_text(encoding="utf-8")
+            data = p.read_bytes()
         except (FileNotFoundError, NotADirectoryError):
             continue
-        for line in text.splitlines():
-            line = line.strip()
+        for raw in data.splitlines():
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
             if not line:
                 continue
             try:
                 parsed = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 continue
             if not isinstance(parsed, dict):
                 continue
@@ -383,7 +393,17 @@ def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
                 f"recorded anything for this store"
             ),
         )
-    rows = read_command_outcomes(outcomes)
+    try:
+        rows = read_command_outcomes(outcomes)
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        # Reported, not raised: an unreadable log must not take the
+        # doctor run or the SessionStart notice down with it.
+        return LockGapReport(
+            known=False,
+            unknown_reason=(
+                f"the outcome log could not be read: {type(exc).__name__}"
+            ),
+        )
     first_ts = next(
         (r["ts"] for r in rows if isinstance(r.get("ts"), str)), None,
     )

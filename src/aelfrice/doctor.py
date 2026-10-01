@@ -754,8 +754,21 @@ def diagnose(
         report.reference_signal = diagnose_reference_signal(store_path)
         # #1375: dangling-edge count, same policy again.
         report.dangling_edges = diagnose_dangling_edges(store_path)
-        # #1622: unapplied typed locks, read-only, same policy.
-        report.lock_gaps = diagnose_lock_gaps(store_path, project_root)
+        # #1622: unapplied typed locks, read-only, same policy. Guarded
+        # here as well: the detector reports its known failures as
+        # unknown, and anything it did not anticipate must not end the
+        # doctor run either.
+        try:
+            report.lock_gaps = diagnose_lock_gaps(store_path, project_root)
+        except Exception as exc:  # noqa: BLE001 - fail-soft section
+            from aelfrice.lock_gaps import (  # noqa: PLC0415
+                LockGapReport as _LockGapReport,
+            )
+
+            report.lock_gaps = _LockGapReport(
+                known=False,
+                unknown_reason=f"the check failed: {type(exc).__name__}",
+            )
     # #593: auto-migrate any detected legacy DBs in place. Operator
     # decision was "no prompt, no banner" — silent migration with a
     # `.pre-v1x.bak` backup hop. Failures degrade to the residual

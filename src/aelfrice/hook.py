@@ -7063,7 +7063,11 @@ def session_start(
     # #1622: one line while a typed lock that failed is still unapplied.
     # Priced here with the recap, for the same reason: it is printed after
     # both blocks, so they must leave it room.
-    lock_gap_line = build_lock_gap_notice(stderr=stderr)
+    try:
+        lock_gap_line = build_lock_gap_notice(stderr=stderr)
+    except Exception:
+        # never break SessionStart on a notice
+        lock_gap_line = None
     payload_room = HOOK_PAYLOAD_CHAR_LIMIT - (
         len(recap_line) + 1 if recap_line else 0
     ) - (len(lock_gap_line) + 1 if lock_gap_line else 0)
