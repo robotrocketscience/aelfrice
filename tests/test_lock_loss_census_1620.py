@@ -291,10 +291,101 @@ def test_census_does_not_write_the_store(
     assert out["stores"][str(family_store)]["beliefs_all"] == 4
 
 
+_NOW = "2026-06-01T00:00:00+00:00"
+
+
 def test_output_is_deterministic(
     family_store: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    census.main(["--store", str(family_store), "--pattern", _PATTERN])
+    argv = ["--store", str(family_store), "--pattern", _PATTERN, "--now", _NOW]
+    census.main(argv)
     first = capsys.readouterr().out
-    census.main(["--store", str(family_store), "--pattern", _PATTERN])
+    census.main(argv)
     assert capsys.readouterr().out == first
+    assert json.loads(first)["now"] == _NOW
+
+
+def test_rows_are_ordered_whatever_the_insert_order(tmp_path: Path) -> None:
+    """Rows inserted newest first still come out oldest first, in each section."""
+    here = _make_store(tmp_path / "order-a.db")
+    there = _make_store(tmp_path / "order-b.db")
+    for path, ids in ((here, ("x3", "x1")), (there, ("y2",))):
+        conn = sqlite3.connect(path)
+        with conn:
+            for bid in ids:
+                _add(conn, bid, f"/aelf:lock widgetprompt {bid}",
+                     created_at=f"2026-01-0{bid[1]}T00:00:00Z")
+        conn.close()
+    out = census.run([str(here), str(there)], "widgetprompt", now=_NOW)
+    stores = cast("dict[str, dict[str, object]]", out["stores"])
+    assert _ids(stores[str(here)], "aelf_commands") == ["x1", "x3"]
+    assert _ids(stores[str(here)], "family") == ["x1", "x3"]
+    cross = cast("dict[str, object]", out["cross_store"])
+    rows = cast("list[dict[str, object]]", cross["rows"])
+    assert [r["id"] for r in rows] == ["x1", "y2", "x3"]
+
+
+def test_an_expired_unswept_lock_is_not_counted_as_held(tmp_path: Path) -> None:
+    """The product sweeps a due lock to `none` on open; the census never opens that way."""
+    path = _make_store(tmp_path / "expiry.db")
+    conn = sqlite3.connect(path)
+    with conn:
+        _add(conn, "due", "widgetprompt lapsed", lock_level="user")
+        _add(conn, "later", "widgetprompt current", lock_level="user")
+        _add(conn, "open", "widgetprompt forever", lock_level="user")
+        conn.execute("UPDATE beliefs SET lock_expires_at = ? WHERE id = 'due'",
+                     ("2026-05-31T23:59:59+00:00",))
+        conn.execute("UPDATE beliefs SET lock_expires_at = ? WHERE id = 'later'",
+                     ("2026-06-01T00:00:01+00:00",))
+    conn.close()
+    out = census.run([str(path)], "widgetprompt", now=_NOW)
+    result = cast("dict[str, dict[str, object]]", out["stores"])[str(path)]
+    assert result["lock_level"] == {
+        "active": {"user": 2, census.EXPIRED_UNSWEPT: 1},
+        "all": {"user": 2, census.EXPIRED_UNSWEPT: 1},
+    }
+    levels = {r["id"]: r["lock_level"] for r in _rows(result, "family")}
+    assert levels == {"due": census.EXPIRED_UNSWEPT, "later": "user", "open": "user"}
+
+
+def test_an_expired_lock_does_not_make_a_store_hold_the_lock(tmp_path: Path) -> None:
+    path = _make_store(tmp_path / "only-expired.db")
+    conn = sqlite3.connect(path)
+    with conn:
+        _add(conn, "due", "widgetprompt lapsed", lock_level="user")
+        conn.execute("UPDATE beliefs SET lock_expires_at = ? WHERE id = 'due'",
+                     ("2026-01-01T00:00:00+00:00",))
+    conn.close()
+    out = census.run([str(path)], "widgetprompt", now=_NOW)
+    cross = cast("dict[str, object]", out["cross_store"])
+    assert cross["stores_with_active_lock"] == []
+
+
+def test_the_connection_refuses_writes(store: Path) -> None:
+    conn = census.open_read_only(str(store))
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE census_probe (x INTEGER)")
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("PRAGMA user_version = 7")
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("text", [
+    "aelf is the CLI entry point",
+    "aelf, the tool, stores beliefs",
+    "uv run aelfrice-bench --x",
+    "aelf notacommand here",
+])
+def test_prose_about_aelf_is_not_a_command(text: str) -> None:
+    assert not census.is_aelf_command(text)
+
+
+@pytest.mark.parametrize("text", [
+    "aelf lock a statement",
+    "uv run aelf search something",
+    "/aelf:lock a statement",
+])
+def test_a_registered_subcommand_is_a_command(text: str) -> None:
+    assert census.is_aelf_command(text)

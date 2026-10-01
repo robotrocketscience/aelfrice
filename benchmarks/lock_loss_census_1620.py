@@ -11,11 +11,18 @@ running it against a store.
   distribution over active beliefs (`valid_to IS NULL`) and over every
   row, reported separately. A cleanup that retires rows changes the
   second and leaves the first alone, so a "1 of N" figure is
-  meaningless until it says which N. Both are always reported.
+  meaningless until it says which N. Both are always reported. A
+  time-boxed lock whose `lock_expires_at` is at or before `--now` is
+  counted as `user_expired_unswept`, not `user`: the product drops
+  such a lock with `sweep_expired_locks` the next time a store opens,
+  using the same `lock_expires_at <= now` test, and this census never
+  opens a store that way.
 * `aelf_commands` — beliefs whose content, after leading whitespace, is
-  an aelfrice command: it starts with `/aelf:`, `aelf `, or
-  `uv run aelf`. These are instructions to the tool that the capture
-  path stored as claims about the world. This is the AC2 population.
+  an aelfrice command: `/aelf:<name>`, or `aelf <subcommand>` or
+  `uv run aelf <subcommand>` where `<subcommand>` is one the CLI
+  registers. Prose that merely starts with the word `aelf` does not
+  count. These are instructions to the tool that the capture path
+  stored as claims about the world. This is the AC2 population.
 * `self_ingestion` — beliefs whose content contains `<belief id=`, which
   is aelfrice re-admitting its own rendered injection block. This is
   the AC4 population.
@@ -49,10 +56,13 @@ Usage:
 
 Every `--store` is opened **read-only** through `sqlite3` with a
 `mode=ro` URI, never through `MemoryStore`: opening a store runs
-migrations and a lifecycle sweep, which is a write. Content is never
-printed beyond its first 80 characters. Output is JSON with sorted keys
-and every list in a fixed order, so two runs over the same stores print
-the same bytes.
+migrations and a lifecycle sweep, which is a write. The connection
+also sets `query_only`, so a write through it raises. On a WAL store
+with no `-wal` or `-shm` file yet, SQLite creates both on open; the
+main database file never changes. Content is never printed beyond its
+first 80 characters. Output is JSON with sorted keys and every list in
+a fixed order, so two runs over the same stores at the same `--now`
+print the same bytes.
 """
 from __future__ import annotations
 
@@ -62,23 +72,51 @@ import re
 import sqlite3
 import sys
 from collections import Counter
+from datetime import UTC, datetime
+from functools import cache
 from typing import Final, cast
 
 from aelfrice.models import FEEDBACK_SOURCE_LOCK_EXPIRE, LOCK_USER, ORIGIN_SPECULATIVE
+from aelfrice.promotion import SOURCE_LOCK_UNLOCK
 
 CONTENT_PREVIEW_CHARS: Final[int] = 80
-COMMAND_PREFIXES: Final[tuple[str, ...]] = ("/aelf:", "aelf ", "uv run aelf")
+EXPIRED_UNSWEPT: Final[str] = "user_expired_unswept"
 SELF_INGESTION_MARKER: Final[str] = "<belief id="
 LOCK_HISTORY_SOURCES: Final[tuple[str, ...]] = (
-    "lock:unlock",
+    SOURCE_LOCK_UNLOCK,
     FEEDBACK_SOURCE_LOCK_EXPIRE,
 )
+_SLASH_COMMAND = re.compile(r"/aelf:[a-z][a-z0-9-]*(?![a-z0-9-])")
+_CLI_COMMAND = re.compile(r"(?:uv run )?aelf ([a-z][a-z0-9-]*)(?![a-z0-9-])")
 
 Row = dict[str, object]
 
 
+@cache
+def cli_subcommands() -> frozenset[str]:
+    """Every subcommand the `aelf` parser registers, hidden ones included."""
+    from aelfrice.cli import build_parser
+
+    parser = build_parser(show_advanced=True)
+    names: set[str] = set()
+    for action in parser._actions:  # pyright: ignore[reportPrivateUsage]
+        if isinstance(action, argparse._SubParsersAction):  # pyright: ignore[reportPrivateUsage]
+            sub = cast("argparse._SubParsersAction[argparse.ArgumentParser]", action)  # pyright: ignore[reportPrivateUsage]
+            names.update(sub.choices)
+    return frozenset(names)
+
+
 def is_aelf_command(content: str) -> bool:
-    return content.lstrip().startswith(COMMAND_PREFIXES)
+    text = content.lstrip()
+    if _SLASH_COMMAND.match(text):
+        return True
+    m = _CLI_COMMAND.match(text)
+    return m is not None and m.group(1) in cli_subcommands()
+
+
+def lock_is_expired(lock_level: str, expires_at: str | None, now: str) -> bool:
+    """The `sweep_expired_locks` predicate: due when `lock_expires_at <= now`."""
+    return lock_level == LOCK_USER and expires_at is not None and expires_at <= now
 
 
 def is_self_ingestion(content: str) -> bool:
@@ -102,16 +140,31 @@ def _sort_key(row: Row) -> tuple[str, str]:
     return (str(row["created_at"]), str(row["id"]))
 
 
-def measure(store_path: str, pattern: re.Pattern[str] | None) -> dict[str, object]:
+def open_read_only(store_path: str) -> sqlite3.Connection:
+    """Open a store so that no statement through the connection can write."""
     conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = 1")
+    return conn
+
+
+def utc_now() -> str:
+    """The same clock and format `sweep_expired_locks` uses by default."""
+    return datetime.now(UTC).isoformat()
+
+
+def measure(
+    store_path: str, pattern: re.Pattern[str] | None, *, now: str | None = None,
+) -> dict[str, object]:
+    at = now if now is not None else utc_now()
+    conn = open_read_only(store_path)
     try:
-        conn.execute("PRAGMA query_only = 1")
         cols = _columns(conn, "beliefs")
         valid_to = "valid_to" if "valid_to" in cols else "NULL"
         origin = "origin" if "origin" in cols else "'unknown'"
+        expires = "lock_expires_at" if "lock_expires_at" in cols else "NULL"
         beliefs = conn.execute(
             f"SELECT id, content, alpha, beta, lock_level, created_at, "
-            f"{origin}, {valid_to} FROM beliefs ORDER BY created_at, id"
+            f"{origin}, {valid_to}, {expires} FROM beliefs ORDER BY created_at, id"
         ).fetchall()
         corroborations: Counter[str] = Counter()
         if _columns(conn, "belief_corroborations"):
@@ -138,16 +191,21 @@ def measure(store_path: str, pattern: re.Pattern[str] | None) -> dict[str, objec
     self_ingested: list[Row] = []
     speculative: list[Row] = []
     family: list[Row] = []
-    for bid, content, alpha, beta, lock, created, orig, vto in beliefs:
+    for bid, content, alpha, beta, raw_lock, created, orig, vto, exp in beliefs:
         text = str(content)
         active = vto is None
-        level_all[str(lock)] += 1
+        lock = (
+            EXPIRED_UNSWEPT
+            if lock_is_expired(str(raw_lock), None if exp is None else str(exp), at)
+            else str(raw_lock)
+        )
+        level_all[lock] += 1
         if active:
-            level_active[str(lock)] += 1
+            level_active[lock] += 1
         row: Row = {
             "id": str(bid),
             "origin": str(orig),
-            "lock_level": str(lock),
+            "lock_level": lock,
             "created_at": str(created),
             "valid_to": None if vto is None else str(vto),
             "content_prefix": _preview(text),
@@ -224,12 +282,16 @@ def cross_store(per_store: dict[str, dict[str, object]]) -> dict[str, object]:
     }
 
 
-def run(stores: list[str], pattern_text: str | None) -> dict[str, object]:
+def run(
+    stores: list[str], pattern_text: str | None, *, now: str | None = None,
+) -> dict[str, object]:
+    at = now if now is not None else utc_now()
     pattern = (
         re.compile(pattern_text, re.IGNORECASE) if pattern_text is not None else None
     )
-    per_store = {path: measure(path, pattern) for path in stores}
+    per_store = {path: measure(path, pattern, now=at) for path in stores}
     out: dict[str, object] = {
+        "now": at,
         "pattern": pattern_text,
         "stores": per_store,
     }
@@ -248,9 +310,15 @@ def main(argv: list[str] | None = None) -> int:
         "--pattern", default=None,
         help="case-insensitive regex selecting one instruction's family",
     )
+    ap.add_argument(
+        "--now", default=None,
+        help="ISO-8601 instant that decides lock expiry (default: current UTC)",
+    )
     args = ap.parse_args(argv)
     stores = list(dict.fromkeys(args.store))
-    print(json.dumps(run(stores, args.pattern), indent=2, sort_keys=True))
+    print(json.dumps(
+        run(stores, args.pattern, now=args.now), indent=2, sort_keys=True,
+    ))
     return 0
 
 
