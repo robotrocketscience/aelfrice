@@ -7060,9 +7060,17 @@ def session_start(
         except Exception:
             # never break SessionStart on recap-side errors
             recap_line = None
+    serr = stderr if stderr is not None else sys.stderr
+    if not _IMPORTS_OK:
+        return _report_incomplete_install(_IMPORT_ERR, serr)
+    # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
+    # the whole of this hook's own work plus the user's first typing pause
+    # to build in. Never blocks and never raises; see `sidecar_warm`.
+    _spawn_sidecar_warm()
     # #1622: one line while a typed lock that failed is still unapplied.
-    # Priced here with the recap, for the same reason: it is printed after
-    # both blocks, so they must leave it room.
+    # After the warm spawn, because the detector reads the outcome log and
+    # the store. Priced before the blocks with the recap, for the same
+    # reason: it is printed after both blocks, so they must leave it room.
     try:
         lock_gap_line = build_lock_gap_notice(stderr=stderr)
     except Exception:
@@ -7071,13 +7079,6 @@ def session_start(
     payload_room = HOOK_PAYLOAD_CHAR_LIMIT - (
         len(recap_line) + 1 if recap_line else 0
     ) - (len(lock_gap_line) + 1 if lock_gap_line else 0)
-    serr = stderr if stderr is not None else sys.stderr
-    if not _IMPORTS_OK:
-        return _report_incomplete_install(_IMPORT_ERR, serr)
-    # #1513: spawn the detached BM25 sidecar warm FIRST, so the child has
-    # the whole of this hook's own work plus the user's first typing pause
-    # to build in. Never blocks and never raises; see `sidecar_warm`.
-    _spawn_sidecar_warm()
     try:
         # Drain stdin so the hook protocol is honored. We read the
         # session_id (audit cross-reference) and, on a post-compaction

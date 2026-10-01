@@ -858,6 +858,30 @@ def test_session_start_survives_a_notice_that_raises(
     assert "/aelf:lock request" not in _session_start()
 
 
+@pytest.mark.timeout(120)
+def test_session_start_spawns_the_sidecar_warm_before_the_notice(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The warm must be spawned first so the child gets the whole hook's
+    run to build in; the notice reads the outcome log and the store."""
+    from aelfrice import hook
+
+    calls: list[str] = []
+
+    def _warm() -> bool:
+        calls.append("warm")
+        return False
+
+    def _notice(**_k: object) -> str | None:
+        calls.append("notice")
+        return None
+
+    monkeypatch.setattr(hook, "_spawn_sidecar_warm", _warm)
+    monkeypatch.setattr(hook, "build_lock_gap_notice", _notice)
+    _session_start()
+    assert calls == ["warm", "notice"]
+
+
 # --- the literals the detector cannot import ------------------------------
 
 
