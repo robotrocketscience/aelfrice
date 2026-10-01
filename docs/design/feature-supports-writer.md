@@ -76,6 +76,8 @@ The speaker isn't part of the corroboration table's unique key `(belief_id, sess
 
 A promoted belief gets a new origin, `evidence_promoted`. It's added to `ORIGINS` and gets `ORIGIN_RETRIEVAL_PRIORITY` 3, tying with `user_transcript`: above a phantom (default 2) and below `user_validated` (4), so it never claims that you validated it. The tie fits, because its evidence is your own typed restatements. `promote()` stamps `user_validated` today, so it needs an origin parameter or a sibling function.
 
+**Known gap: the echo loop.** A phantom can be injected, repeated by the model, and then typed back by you in a later session. That counts as your restatement, and this spec can't tell it apart from independent agreement. The promotion note below is the only safeguard, and the #1650 experiment should measure how often it happens.
+
 On promotion, the next injection of that belief carries a one-line note saying it was promoted automatically, so you can retire it if it's wrong. Promotion writes a `feedback_history` row, so it's audited and can be undone. The #1650 experiment may tune the thresholds.
 
 ## Storage
@@ -100,7 +102,7 @@ Until it passes, a source stays behind its own opt-in flag. Edges it would have 
 ## Left to the implementation
 
 - **Matching:** the algorithm and thresholds for "restates", "implements", and "matches". It has to be deterministic, and its precision is gated as above.
-- **Timing and cost:** when the writer runs (at ingest, at the Stop hook, or as a sweep), with performance bounds and batching. #1674 is a reminder that hook-path costs compound.
+- **Timing and cost:** when the writer runs (at ingest, at the Stop hook, or as a sweep), with performance bounds and batching. #1674 is a reminder that hook-path costs compound. Finding a supporting belief's `ingest_log` row means searching `derived_belief_ids`, an unindexed JSON column (39,268 transcript rows on the live store on 2026-09-30), so the implementation needs an index or a reverse map.
 
 ## Out of scope
 
