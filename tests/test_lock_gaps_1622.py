@@ -883,4 +883,45 @@ def test_the_removal_literals_match_what_retire_and_delete_write(
         next(src for src, _ in _feedback(db, bid) if src.startswith("user_"))
         for bid in (retired, retired_force, deleted, deleted_force)
     )
-    assert written == _BELIEF_REMOVED_SOURCES
+    assert written == _BELIEF_REMOVED_SOURCES[:4]
+
+
+def _review_remove(db: Path, bid: str, now: str) -> None:
+    from aelfrice.review import ParsedDecision, apply_decisions
+
+    s = MemoryStore(str(db))
+    try:
+        report = apply_decisions(
+            s, [ParsedDecision(bid, "remove", "")], now=now,
+        )
+    finally:
+        s.close()
+    assert report.removed == [bid]
+
+
+@pytest.mark.timeout(120)
+def test_the_review_remove_literal_matches_what_review_writes(
+    db: Path,
+) -> None:
+    """`review.py` writes its source inline too; produce it end to end."""
+    bid = _seed_unlocked(db, "aaaa000000000003", "Review me out.")
+    _review_remove(db, bid, "2026-02-01T00:00:00Z")
+    assert [src for src, _ in _feedback(db, bid)] == [
+        _BELIEF_REMOVED_SOURCES[4],
+    ]
+
+
+@pytest.mark.timeout(120)
+def test_a_review_remove_after_the_failure_clears_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The remove verdict retires the belief on purpose, like
+    `aelf retire`, and counts only while the belief stays retired."""
+    bid = _seed_unlocked(db)
+    _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
+    assert len(_gaps(db).gaps) == 1
+    _review_remove(db, bid, "2026-02-01T00:00:00Z")
+    assert _gaps(db).gaps == ()
+    assert cli.main(["restore", bid], out=io.StringIO()) == 0
+    assert len(_gaps(db).gaps) == 1

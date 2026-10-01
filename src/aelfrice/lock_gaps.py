@@ -26,9 +26,10 @@ A gap is resolved from the STORE, not only from a later request:
   is also strictly after the failure: the sweep stamps its row when it
   runs, so a lock that lapsed before the failure and was swept after it
   closes nothing, and an expiry with no recorded instant closes nothing.
-  `aelf retire` and `aelf delete` count only while the belief is still
-  retired or gone: after `aelf restore` the statement is back and
-  unlocked, so the gap is open again, or
+  `aelf retire`, `aelf delete` and the `/aelf:review` remove verdict
+  count only while the belief is still retired or gone: after
+  `aelf restore` the statement is back and unlocked, so the gap is open
+  again, or
 * `ingest_log` maps the statement to a belief that no longer exists, and
   that `ingest_log` row is strictly later than the failed attempt. This
   is a lock applied later from the CLI and then deleted. It survives
@@ -90,8 +91,9 @@ doctor and SessionStart path. A test pins the two together.
 
 # `feedback_history.source` values that end a lock on purpose. Literal for
 # the same import-cost reason; pinned to `promotion.SOURCE_LOCK_UNLOCK`,
-# `models.FEEDBACK_SOURCE_LOCK_EXPIRE` and the literals `aelf retire` and
-# `aelf delete` write in `cli.py` by a test.
+# `models.FEEDBACK_SOURCE_LOCK_EXPIRE`, the literals `aelf retire` and
+# `aelf delete` write in `cli.py`, and the one the `/aelf:review` remove
+# verdict writes in `review.py`, by tests.
 _SOURCE_LOCK_UNLOCK: Final[str] = "lock:unlock"
 _SOURCE_LOCK_EXPIRE: Final[str] = "lock:expire"
 _LOCK_DROPPED_SOURCES: Final[tuple[str, ...]] = (
@@ -109,6 +111,7 @@ _BELIEF_REMOVED_SOURCES: Final[tuple[str, ...]] = (
     "user_retired_force",
     "user_deleted",
     "user_deleted_force",
+    "review:remove",
 )
 """Remove the statement. Close a gap only while it stays removed."""
 
