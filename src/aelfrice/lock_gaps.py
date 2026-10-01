@@ -20,9 +20,15 @@ A gap is resolved from the STORE, not only from a later request:
 * a belief with `content_hash == arg_sha256`, `lock_level = 'user'` and
   `valid_to IS NULL` exists, which covers a lock applied later from the
   CLI (which writes no outcome row), or
-* that belief has a `lock:unlock` or `lock:expire` row in
-  `feedback_history` at or after the failed attempt, which is the user
-  deliberately ending the lock.
+* a belief carrying the statement has a row in `feedback_history` at or
+  after the failed attempt that ends it on purpose: `lock:unlock`,
+  `lock:expire`, `aelf retire` or `aelf delete`. The user removed it, so
+  reporting it as missing would tell them to restore it.
+
+`aelf delete` removes the `beliefs` row, so `content_hash` alone cannot
+find a deleted belief. The detector also reads the `cli_remember` rows
+of `ingest_log`, which is append-only and records the statement and the
+belief id every `aelf lock` resolved to, and hashes their text.
 
 `arg_sha256` matches `content_hash` because `aelf lock` derives the
 belief through `derivation._content_hash`, a plain sha256 of the
@@ -38,6 +44,7 @@ hook pays nothing for it beyond the file read.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import sqlite3
@@ -61,9 +68,20 @@ doctor and SessionStart path. A test pins the two together.
 """
 
 # `feedback_history.source` values that end a lock on purpose. Literal for
-# the same import-cost reason; pinned to `promotion.SOURCE_LOCK_UNLOCK`
-# and `models.FEEDBACK_SOURCE_LOCK_EXPIRE` by a test.
-_LOCK_ENDED_SOURCES: Final[tuple[str, str]] = ("lock:unlock", "lock:expire")
+# the same import-cost reason; pinned to `promotion.SOURCE_LOCK_UNLOCK`,
+# `models.FEEDBACK_SOURCE_LOCK_EXPIRE` and the `aelf retire` and
+# `aelf delete` sources by a test.
+_LOCK_ENDED_SOURCES: Final[tuple[str, ...]] = (
+    "lock:unlock",
+    "lock:expire",
+    "user_retired",
+    "user_retired_force",
+    "user_deleted",
+    "user_deleted_force",
+)
+# `ingest_log.source_kind` of an `aelf lock`; pinned to
+# `models.INGEST_SOURCE_CLI_REMEMBER` by a test.
+_INGEST_SOURCE_LOCK: Final[str] = "cli_remember"
 _LOCK_LEVEL_USER: Final[str] = "user"
 
 
@@ -167,7 +185,49 @@ def _failed_lock_candidates(
     return out
 
 
-def _is_resolved(conn: sqlite3.Connection, gap: LockGap) -> bool:
+def _statement_belief_ids(
+    conn: sqlite3.Connection, digests: set[str],
+) -> dict[str, set[str]]:
+    """Map each statement hash to every belief id that has carried it.
+
+    Two sources. `beliefs.content_hash` covers a belief that still exists,
+    including a retired one. `ingest_log` covers one `aelf delete`
+    removed: it is append-only and records, for every `aelf lock`, the
+    statement and the belief id the lock resolved to. Its text is hashed
+    here because the log stores no hash. The `source_kind` filter uses
+    the log's index and keeps the scan to `aelf lock` and `aelf remember`
+    rows.
+    """
+    out: dict[str, set[str]] = {d: set() for d in digests}
+    for digest in digests:
+        for (bid,) in conn.execute(
+            "SELECT id FROM beliefs WHERE content_hash = ?", (digest,),
+        ):
+            out[digest].add(str(bid))
+    for raw_text, derived in conn.execute(
+        "SELECT raw_text, derived_belief_ids FROM ingest_log "
+        "WHERE source_kind = ?",
+        (_INGEST_SOURCE_LOCK,),
+    ):
+        if not isinstance(raw_text, str) or not isinstance(derived, str):
+            continue
+        digest = hashlib.sha256(
+            raw_text.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        if digest not in out:
+            continue
+        try:
+            ids = json.loads(derived)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ids, list):
+            out[digest].update(str(i) for i in cast(list[object], ids))
+    return out
+
+
+def _is_resolved(
+    conn: sqlite3.Connection, gap: LockGap, belief_ids: set[str],
+) -> bool:
     """Whether the store shows the request applied or deliberately ended."""
     locked = conn.execute(
         "SELECT 1 FROM beliefs WHERE content_hash = ? AND lock_level = ? "
@@ -176,13 +236,16 @@ def _is_resolved(conn: sqlite3.Connection, gap: LockGap) -> bool:
     ).fetchone()
     if locked is not None:
         return True
-    ended = conn.execute(
-        "SELECT 1 FROM feedback_history f JOIN beliefs b ON b.id = f.belief_id "
-        "WHERE b.content_hash = ? AND f.source IN (?, ?) AND f.created_at >= ? "
-        "LIMIT 1",
-        (gap.arg_sha256, *_LOCK_ENDED_SOURCES, gap.ts),
-    ).fetchone()
-    return ended is not None
+    marks = ", ".join("?" for _ in _LOCK_ENDED_SOURCES)
+    for bid in sorted(belief_ids):
+        ended = conn.execute(
+            f"SELECT 1 FROM feedback_history WHERE belief_id = ? "
+            f"AND source IN ({marks}) AND created_at >= ? LIMIT 1",
+            (bid, *_LOCK_ENDED_SOURCES, gap.ts),
+        ).fetchone()
+        if ended is not None:
+            return True
+    return False
 
 
 def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
@@ -234,7 +297,11 @@ def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
     conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        open_gaps = [g for g in candidates.values() if not _is_resolved(conn, g)]
+        ids = _statement_belief_ids(conn, set(candidates))
+        open_gaps = [
+            g for g in candidates.values()
+            if not _is_resolved(conn, g, ids[g.arg_sha256])
+        ]
     except sqlite3.Error as exc:
         return LockGapReport(
             known=False,

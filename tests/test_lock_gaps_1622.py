@@ -33,6 +33,7 @@ from aelfrice.hook import (
 )
 from aelfrice.hook_audit import command_outcomes_path_for_db
 from aelfrice.lock_gaps import (
+    _INGEST_SOURCE_LOCK,
     _LOCK_ENDED_SOURCES,
     _LOCK_LEVEL_USER,
     GAP_REASONS,
@@ -211,6 +212,63 @@ def test_an_unlock_before_the_failure_does_not_clear_it(
     assert len(_gaps(db).gaps) == 1
 
 
+def _cli_lock(statement: str = STATEMENT) -> str:
+    buf = io.StringIO()
+    assert cli.main(["lock", statement], out=buf) == 0
+    return buf.getvalue().split("locked:", 1)[1].split()[0]
+
+
+@pytest.mark.timeout(120)
+def test_a_forced_retire_after_the_failure_clears_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user removed the lock on purpose. Reporting it as missing would
+    tell them to put back what they just took out."""
+    _fail_lock(tmp_path, monkeypatch)
+    bid = _cli_lock()
+    assert cli.main(["retire", bid, "--force"], out=io.StringIO()) == 0
+    assert _gaps(db).gaps == ()
+
+
+@pytest.mark.timeout(120)
+def test_a_forced_delete_after_the_failure_clears_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`aelf delete` removes the beliefs row, so `content_hash` cannot
+    reach it; the detector finds it through `ingest_log`."""
+    _fail_lock(tmp_path, monkeypatch)
+    bid = _cli_lock()
+    assert cli.main(
+        ["delete", bid, "--force", "--yes"], out=io.StringIO(),
+    ) == 0
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM beliefs WHERE id = ?", (bid,),
+        ).fetchone() == (0,)
+    finally:
+        conn.close()
+    assert _gaps(db).gaps == ()
+
+
+@pytest.mark.timeout(120)
+def test_a_delete_before_the_failure_does_not_clear_it(
+    tmp_path: Path, db: Path,
+) -> None:
+    """The ordering rule holds for a deleted belief too."""
+    bid = _cli_lock()
+    assert cli.main(
+        ["delete", bid, "--force", "--yes"], out=io.StringIO(),
+    ) == 0
+    command_outcomes_path_for_db(db).write_text(json.dumps({
+        "ts": "2099-01-01T00:00:00Z", "hook": "aelf_command",
+        "command": "lock", "reason": "exception",
+        "arg_sha256": _sha(STATEMENT), "arg_len": len(STATEMENT),
+        "statement": STATEMENT,
+    }) + "\n", encoding="utf-8")
+    assert len(_gaps(db).gaps) == 1
+
+
 # --- the record is written where the outcome is known --------------------
 
 
@@ -313,11 +371,18 @@ def test_session_start_prints_one_line_while_a_gap_remains(
 
 
 def test_the_detector_literals_match_their_sources() -> None:
-    from aelfrice.models import FEEDBACK_SOURCE_LOCK_EXPIRE, LOCK_USER
+    from aelfrice.models import (
+        FEEDBACK_SOURCE_LOCK_EXPIRE,
+        INGEST_SOURCE_CLI_REMEMBER,
+        LOCK_USER,
+    )
     from aelfrice.promotion import SOURCE_LOCK_UNLOCK
 
     assert GAP_REASONS == {
         CommandReason.EXCEPTION.value, CommandReason.NONZERO_EXIT.value,
     }
-    assert _LOCK_ENDED_SOURCES == (SOURCE_LOCK_UNLOCK, FEEDBACK_SOURCE_LOCK_EXPIRE)
+    assert _LOCK_ENDED_SOURCES[:2] == (
+        SOURCE_LOCK_UNLOCK, FEEDBACK_SOURCE_LOCK_EXPIRE,
+    )
     assert _LOCK_LEVEL_USER == LOCK_USER
+    assert _INGEST_SOURCE_LOCK == INGEST_SOURCE_CLI_REMEMBER
