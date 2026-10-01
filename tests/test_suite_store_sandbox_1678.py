@@ -8,10 +8,14 @@ under pytest is the contributor's checkout, and the child writes fixture
 beliefs into `<repo>/.git/aelfrice/memory.db`. `test_transcript_round_trip`
 did exactly that.
 
-The fix is the session-scoped `AELFRICE_DB` pin in conftest's
-`_sandbox_real_home`. This guard reproduces the child's view: a fresh
-interpreter that inherits the test environment and runs from the repo
-root. It resolves the store path and opens nothing, so it never writes.
+The fix is the `AELFRICE_DB` pin in conftest. `_restore_sandbox_store_pin`
+sets it before and after every test, and `_sandbox_real_home` sets it once
+per session for session-scoped fixtures. These guards cover the per-test
+pin: removing it fails them. No session-scoped fixture spawns a child
+today, so nothing here fails if only the session line goes. This guard
+reproduces the child's view: a fresh interpreter that inherits the test
+environment and runs from the repo root. It resolves the store path and
+opens nothing, so it never writes.
 
 Nothing here writes outside the sandbox. The real git common dir is only
 read through `git rev-parse`.
