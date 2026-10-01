@@ -2199,13 +2199,25 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
         )
         for g in st.gaps:
             tries = f", {g.attempts} attempts" if g.attempts > 1 else ""
-            lines.append(f"  - {g.ts} ({g.reason}{tries}): {g.statement}")
-            if g.truncated:
+            lines.append(
+                f"  - {g.ts} ({g.reason}{tries}): {g.display_statement}"
+            )
+            fix = g.fix_command
+            if fix is not None:
+                lines.append(f"      fix: {fix}")
+            elif g.truncated:
+                # No runnable command: one built from the prefix would
+                # lock text the user never typed (#1622).
                 lines.append(
                     f"      statement shown is the first {len(g.statement)} "
-                    f"of {g.arg_len} characters; retype it in full"
+                    f"of {g.arg_len} characters; to fix it, run "
+                    f"`aelf lock` with the full statement"
                 )
-            lines.append(f"      fix: {g.fix_command}")
+            else:
+                lines.append(
+                    "      statement is not valid Unicode text and cannot "
+                    "be locked; retype it"
+                )
     lines.append(
         "  only requests typed since this check shipped are recorded; "
         "earlier failures are not listed."

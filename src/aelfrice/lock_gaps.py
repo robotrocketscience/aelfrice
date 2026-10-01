@@ -103,8 +103,37 @@ class LockGap:
         return self.arg_len > len(self.statement)
 
     @property
-    def fix_command(self) -> str:
-        """The CLI command that applies the lock."""
+    def valid_text(self) -> bool:
+        """Whether the statement is text a lock could store."""
+        try:
+            self.statement.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return True
+
+    @property
+    def display_statement(self) -> str:
+        """The statement, printable on a strict UTF-8 stream.
+
+        A lone surrogate is shown as its `\\udXXX` escape. Printed raw,
+        it raises from `print` and takes the whole doctor run with it.
+        """
+        return self.statement.encode(
+            "utf-8", errors="backslashreplace"
+        ).decode("utf-8")
+
+    @property
+    def fix_command(self) -> str | None:
+        """The CLI command that applies the lock, or None.
+
+        None when the row holds only a prefix of the statement. Running
+        a command built from the prefix would lock text the user never
+        typed, at user tier, and the gap would stay open because the
+        hash differs. None also when the statement is not valid text,
+        because no command can store it.
+        """
+        if self.truncated or not self.valid_text:
+            return None
         return f"aelf lock {shlex.quote(self.statement)}"
 
 

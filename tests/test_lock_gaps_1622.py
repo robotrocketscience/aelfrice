@@ -25,6 +25,7 @@ from aelfrice.doctor import (
     DoctorReport,
     _format_lock_gaps_section,
     diagnose_lock_gaps,
+    format_report,
 )
 from aelfrice.hook import (
     CommandReason,
@@ -37,6 +38,7 @@ from aelfrice.lock_gaps import (
     _LOCK_ENDED_SOURCES,
     _LOCK_LEVEL_USER,
     GAP_REASONS,
+    LockGap,
     LockGapReport,
     detect_lock_gaps,
     read_command_outcomes,
@@ -359,6 +361,40 @@ def test_doctor_says_unknown_when_there_is_no_audit(
 @pytest.mark.timeout(60)
 def test_doctor_renders_the_section_with_no_store() -> None:
     assert "unknown: no store was checked" in _section(None)
+
+
+@pytest.mark.timeout(120)
+def test_a_truncated_row_prints_no_runnable_fix(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command built from the prefix would lock text the user never
+    typed, at user tier, and leave the gap open."""
+    long_statement = (
+        "Keep every widget in the blue drawer and " * 14
+    ).strip()
+    assert 500 < len(long_statement) <= 4000
+    _fail_lock(tmp_path, monkeypatch, long_statement)
+    [gap] = _gaps(db).gaps
+    assert gap.truncated and gap.fix_command is None
+    text = _section(_gaps(db))
+    assert "fix: aelf lock" not in text
+    assert f"of {len(long_statement)} characters" in text
+    _cli_lock(long_statement)
+    assert _gaps(db).gaps == ()
+
+
+@pytest.mark.timeout(60)
+def test_a_recorded_lone_surrogate_cannot_break_doctor() -> None:
+    """Defence in depth for a row the input check did not stop: printed
+    raw, it raises on a strict UTF-8 stream and ends the whole run."""
+    gap = LockGap("0" * 64, "Keep \ud800 this", 16, "exception",
+                  "2026-01-01T00:00:00Z", None, 1)
+    report = DoctorReport(lock_gaps=LockGapReport(known=True, gaps=(gap,)))
+    text = format_report(report)
+    text.encode("utf-8")
+    assert "Keep \\ud800 this" in text
+    assert gap.fix_command is None
+    assert "fix: aelf lock" not in text
 
 
 # --- SessionStart -------------------------------------------------------
