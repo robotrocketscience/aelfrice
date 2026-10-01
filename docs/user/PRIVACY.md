@@ -141,11 +141,11 @@ Resolution order:
 - `aelf demote` removes a lock immediately. The belief itself remains, and you can also delete that belief through the store API.
 - Every Bayesian update writes one `feedback_history` audit row. The explicit signals write that row through `apply_feedback`. The manual sweep of deferred retrieval exposure writes that row through its own atomic update and insert. Automatic retrieval *exposure* is audit-only by default since #1086: it writes a `feedback_history` row for the recurrence record, but it doesn't move the posterior, as [the limitations list](LIMITATIONS.md) describes. You can query the provenance in both cases.
 
-## Optional inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up)
+## Inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up, on by default since #1647)
 
-The module with the regex sentiment detector shipped at v2.0, but no live hook reached that module until v3.0 #606. To switch it on, set `[feedback] sentiment_from_prose = true` in `.aelfrice.toml`, or set `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` in the environment. aelfrice then runs each user prompt that the host hook surfaces through a regex bank of 24 patterns ([`src/aelfrice/sentiment_feedback.py`](../../src/aelfrice/sentiment_feedback.py)), takes the first pattern that matches, and applies at most one pattern per prompt. For that pattern, it writes one `feedback_history` row for each belief retrieved in the previous turn.
+The module with the regex sentiment detector shipped at v2.0, and v3.0 #606 wired it into the prompt hook. Since #1647 it runs by default: aelfrice runs each user prompt that the host hook surfaces through a regex bank of 23 patterns ([`src/aelfrice/sentiment_feedback.py`](../../src/aelfrice/sentiment_feedback.py)), takes the first pattern that matches, and applies at most one pattern per prompt. For that pattern, it writes one `feedback_history` row for each belief retrieved in the previous turn.
 
-**Default off.** Existing users see no change in behavior.
+**On by default since #1647, for praise only.** A positive match raises the confidence of the previous turn's beliefs. A negative match is recorded in the hook audit but moves nothing unless you set `[feedback] sentiment_negative = true` or `AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE=1`. To turn the whole lane off, set `[feedback] sentiment_from_prose = false` or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=0`.
 
 This is an *inbound* surface for prose inspection. aelfrice already received the prompt through the host hook to do the retrieval. What is new is the regex matching and the implicit Bayesian updates, not a new data access.
 
@@ -157,7 +157,7 @@ This is an *inbound* surface for prose inspection. aelfrice already received the
 
 **`aelf health` surfaces the state.** When the feature is on, `aelf health` prints `sentiment-from-prose feedback: enabled (<N> matches)`. When the feature is off, `aelf health` prints `disabled`. That way you can see the effect of the feature quickly.
 
-To turn the feature off after you enabled it, remove the configuration line, or set `[feedback] sentiment_from_prose = false`. The feedback rows that aelfrice already applied remain in `feedback_history` as audit history. To delete those rows, you need direct access to the store.
+To turn the feature off, set `[feedback] sentiment_from_prose = false`. The feedback rows that aelfrice already applied remain in `feedback_history` as audit history. To delete those rows, you need direct access to the store.
 
 ## What aelfrice does not control
 

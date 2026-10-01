@@ -2,7 +2,7 @@
 
 Spec for issue [#193](https://github.com/robotrocketscience/aelfrice/issues/193). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
-Status: shipped end-to-end. `src/aelfrice/sentiment_feedback.py` ports the research-line module (detect_sentiment, distribute, is_enabled); the hook wire-up shipped at v3.0 via #606 — the UserPromptSubmit lane calls `detect_sentiment` per prompt and applies the signal to the prior turn's retrieved beliefs. `aelf health` surfaces enabled/disabled state. Posture unchanged: opt-in via `.aelfrice.toml`, off by default.
+Status: shipped end-to-end. `src/aelfrice/sentiment_feedback.py` ports the research-line module (detect_sentiment, distribute, is_enabled); the hook wire-up shipped at v3.0 via #606 — the UserPromptSubmit lane calls `detect_sentiment` per prompt and applies the signal to the prior turn's retrieved beliefs. `aelf health` surfaces enabled/disabled state. Posture changed by #1647: the positive half is on by default (measured 95-98% precise on real prompts); the negative half stays opt-in via `[feedback] sentiment_negative`, because it measured 62-74% precise on held-out prompts.
 
 ## What's being decided
 

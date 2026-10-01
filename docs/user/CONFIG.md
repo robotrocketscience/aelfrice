@@ -33,7 +33,7 @@ This document is the reference for power users. Reach for it when your project h
 - `[rebuilder]` (v1.4+) — the context rebuilder's keys: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `legacy-bm25`). `stack-r1-r3` was the `query_strategy` default from v3.0 until #1501. `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped belief lane and the L1 belief lane, through the keys `[rebuild_floor] session` and `[rebuild_floor] l1`.
 - `[onboard.llm]` (v1.3.0+) — the gate for the onboard classifier that calls the direct API. For the full table, see [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more recognized tables. They hold the feedback-cadence scoring, the deferred feedback for retrieval exposure, and the per-turn hook audit log. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
-- `[feedback]` (v3.0+) — the opt-in keys for the feedback lanes. `sentiment_from_prose` (default `false`) connects the sentiment-feedback detector to `UserPromptSubmit` (#606).
+- `[feedback]` (v3.0+) — the feedback-lane keys. `sentiment_from_prose` (default `true` since #1647) connects the sentiment-feedback detector to `UserPromptSubmit` (#606); with it on, praise raises confidence. `sentiment_negative` (default `false`) lets complaints lower it too.
 - `[belief_categories]` (v4.x+) — the belief categories that a keyword triggers. `enabled` (default `false`) connects the category-injection lane to `UserPromptSubmit` (#1126). Manage the categories with `aelf category`.
 - `AELFRICE_TURN_DIFFERENTIAL` (v4.x+, #1382) — an environment variable with no TOML key. **The default is off.** To turn it on, export `AELFRICE_TURN_DIFFERENTIAL=1`. Once it is on, and once a belief has gone into this session's context **verbatim**, a later turn writes a one-line `seen <id>: "<topic>"` reference in the locks manifest instead of repeating the block. The text is already above in the same window, so the reference points at it.
 
@@ -359,15 +359,21 @@ session = 0.10
 l1 = 0.40
 
 [feedback]
-# v3.0+ (#606). Default `false`, opt-in. When true, the
-# UserPromptSubmit hook runs the regex sentiment detector against
-# each prompt and applies +/- valence feedback against the prior
-# turn's retrieved beliefs (single-session window — cross-session
-# propagation is explicit follow-up work). Fail-soft: any internal
-# error returns 0 and never surfaces into the UPS hook contract.
-# AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1 env var overrides. See
+# v3.0+ (#606). Default `true` since #1647. The UserPromptSubmit hook
+# runs the regex sentiment detector against each prompt and applies
+# positive feedback to the prior turn's retrieved beliefs (single-
+# session window). Fail-soft: any internal error returns 0 and never
+# surfaces into the UPS hook contract. `false` turns the whole lane
+# off. AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=0|1 overrides. See
 # docs/design/v3_sentiment_feedback_hook.md.
-sentiment_from_prose = false
+sentiment_from_prose = true
+# #1647. Default `false`. When true, complaints ("that's wrong") also
+# apply, as negative feedback. Held out of the default because negative
+# matches measured 62-74% precise on held-out prompts, and the bar was
+# 70% on both graders. A negative match with this off still lands in the
+# hook audit, marked `negative_disabled`.
+# AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE=1 overrides.
+sentiment_negative = false
 
 [belief_categories]
 # v4.x+ (#1126). Default `false`, opt-in. When true, the
@@ -601,7 +607,7 @@ These paths move a posterior:
 | `aelf confirm <id>` | up | on. Exempt from the lock floor, so it moves a locked belief too |
 | `aelf feedback <id> used\|harmful` | up or down | on. Takes the lock floor, so `aelf unlock` first to correct a locked belief |
 | propagation of either to related beliefs | up or down | on; set `AELFRICE_VALENCE_PROPAGATION=0` to disable |
-| sentiment read from your prose | up or down | **off**. Enable with `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE` or `[feedback] sentiment_from_prose` |
+| sentiment read from your prose | up (praise); down (complaints) | **up: on** since #1647. **down: off**; enable with `AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE` or `[feedback] sentiment_negative` |
 | `aelf clamp-ghosts --apply` | down | manual sweep; lowers α on beliefs that have no feedback and no corroborations |
 | opening a store with duplicate content | either | automatic. Deduplication merges beliefs that share a content hash and **sums** their `(α, β)`, so a merged belief's mean shifts toward whichever duplicate carried more mass |
 
