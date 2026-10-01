@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 import aelfrice.cli as cli_module
-from aelfrice.cli import default_core_rule
 from aelfrice.doctor import (
     format_filesystem_corroboration_report,
     gc_filesystem_corroboration,
@@ -110,7 +109,7 @@ def test_dry_run_reports_rows_and_core_loss_and_changes_nothing(
     store: MemoryStore,
 ) -> None:
     before = _all_rows(store)
-    report = gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
+    report = gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
     assert report.rows_found == 9
     assert report.beliefs_affected == 6
     assert report.leaving_core == ["EP_LOSS", "FS_ONLY"]
@@ -120,7 +119,7 @@ def test_dry_run_reports_rows_and_core_loss_and_changes_nothing(
 
 def test_apply_deletes_only_filesystem_rows(store: MemoryStore) -> None:
     other_before = [r for r in _all_rows(store) if r[2] != _FS]
-    report = gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=False)
+    report = gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=False)
     assert report.deleted == 9
     assert report.leaving_core == ["EP_LOSS", "FS_ONLY"]
     after = _all_rows(store)
@@ -129,8 +128,8 @@ def test_apply_deletes_only_filesystem_rows(store: MemoryStore) -> None:
 
 
 def test_apply_reports_what_the_dry_run_reported(store: MemoryStore) -> None:
-    dry = gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
-    applied = gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=False)
+    dry = gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
+    applied = gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=False)
     assert applied.leaving_core == dry.leaving_core
     assert applied.rows_found == dry.rows_found
 
@@ -139,15 +138,15 @@ def test_apply_bumps_the_store_generation(store: MemoryStore) -> None:
     """`corr=` is rendered into injected beliefs, so caches keyed on the
     generation must see the delete."""
     gen = store.store_generation()
-    gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
+    gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
     assert store.store_generation() == gen
-    gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=False)
+    gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=False)
     assert store.store_generation() > gen
 
 
 def test_second_apply_is_a_no_op(store: MemoryStore) -> None:
-    gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=False)
-    again = gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=False)
+    gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=False)
+    again = gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=False)
     assert (again.rows_found, again.deleted, again.leaving_core) == (0, 0, [])
 
 
@@ -156,7 +155,7 @@ def test_refuses_inside_an_open_transaction(store: MemoryStore) -> None:
     before = _all_rows(store)
     with store.transaction():
         with pytest.raises(RuntimeError, match="own transaction"):
-            gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
+            gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
     assert _all_rows(store) == before
 
 
@@ -166,7 +165,7 @@ def test_refuses_with_pending_writes(store: MemoryStore) -> None:
         "UPDATE beliefs SET alpha = 5.0 WHERE id = 'TX_ONLY'"
     )
     with pytest.raises(RuntimeError, match="own transaction"):
-        gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
+        gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
     store._conn.commit()  # noqa: SLF001
     b = store.get_belief("TX_ONLY")
     assert b is not None and b.alpha == 5.0
@@ -174,7 +173,7 @@ def test_refuses_with_pending_writes(store: MemoryStore) -> None:
 
 def test_format_names_the_beliefs_leaving_core(store: MemoryStore) -> None:
     text = format_filesystem_corroboration_report(
-        gc_filesystem_corroboration(store, qualifies=default_core_rule, dry_run=True)
+        gc_filesystem_corroboration(store, qualifies=cli_module.default_core_rule, dry_run=True)
     )
     assert "filesystem corroboration rows: 9 on 6 belief(s)" in text
     assert "beliefs leaving `aelf core`: 2" in text
