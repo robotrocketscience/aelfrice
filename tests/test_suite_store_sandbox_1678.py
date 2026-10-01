@@ -111,3 +111,26 @@ def test_the_pin_is_back_for_the_next_test(_sandbox_real_home: Path) -> None:
         "an earlier test's bare os.environ change outlived it, so later "
         "spawns no longer inherit the sandbox store (#1678)"
     )
+
+
+# The same pair for a bare assignment, which `tests/test_meta_beliefs.py`
+# does: without the restore, every later test resolves this test's file.
+
+
+def test_a_bare_assignment_of_the_pin_simulates_a_leaky_test(
+    tmp_path: Path,
+) -> None:
+    """Repoint the pin the way a leaky test does, without restoring it."""
+    os.environ["AELFRICE_DB"] = str(tmp_path / "leaked.db")
+
+
+def test_the_pin_is_restored_after_an_assignment(
+    _sandbox_real_home: Path,
+) -> None:
+    """The test after a leaky assignment still sees the session pin."""
+    assert os.environ.get("AELFRICE_DB") == str(
+        _sandbox_real_home / "memory.db"
+    ), (
+        "an earlier test's bare os.environ assignment outlived it, so later "
+        "spawns resolve that test's store (#1678)"
+    )
