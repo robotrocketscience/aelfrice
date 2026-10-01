@@ -331,6 +331,26 @@ def test_a_delete_before_the_failure_does_not_clear_it(
     assert len(_gaps(db).gaps) == 1
 
 
+@pytest.mark.timeout(120)
+def test_deleting_a_belief_no_lock_created_leaves_the_gap_open(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented limit, pinned so a change to it is deliberate.
+
+    The belief came from another ingest path, so no `cli_remember` row
+    maps the statement to its id, and its id is keyed on a source path
+    the statement does not carry. Once the row is gone, nothing links
+    the delete to the statement, and the gap is reported.
+    """
+    bid = _seed_unlocked(db)
+    _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
+    assert cli.main(["delete", bid, "--yes"], out=io.StringIO()) == 0
+    assert [src for src, _ in _feedback(db, bid)
+            if src.startswith("user_")] == ["user_deleted"]
+    assert len(_gaps(db).gaps) == 1
+
+
 # --- "later" is a strictly later second, whatever the stamp format -------
 
 
