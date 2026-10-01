@@ -565,7 +565,7 @@ def _cmd_onboard_accept_classifications(
 def _cmd_onboard_check(args: argparse.Namespace, out: object) -> int:
     """Read-only pre-scan: print n_already_present / n_new and exit.
 
-    Runs the extractor + id-dedup pipeline against the store without
+    Runs the extractor + present-check pipeline against the store without
     writing an onboard_sessions row or inserting beliefs. Lets the user
     see what a re-onboard would do before paying the classification
     cost (#761). No LLM gates, no network, no consent prompt.

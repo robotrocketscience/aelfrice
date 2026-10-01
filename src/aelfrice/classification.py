@@ -234,8 +234,9 @@ def start_onboard_session(
     force: bool = False,
 ) -> StartOnboardResult:
     """Run the three scanner extractors against `repo_path`, filter out
-    candidates whose deterministic belief id is already in the store
-    (or in the rejection ledger when `force=False`), persist the rest
+    candidates the store already holds, by id or by content and retired
+    beliefs included (see `_already_present`), or that are in the
+    rejection ledger when `force=False`, persist the rest
     as a pending onboard_sessions row, and return the payload the host
     should classify.
 
