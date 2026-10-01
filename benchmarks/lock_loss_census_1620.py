@@ -136,7 +136,12 @@ def parse_instant(text: str) -> datetime | None:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        # e.g. 0001-01-01T00:00:00+01:00 or 9999-12-31T23:59:59-01:00:
+        # valid ISO-8601 whose UTC instant falls outside datetime's range.
+        return None
 
 
 def resolve_now(now: str | None) -> datetime:

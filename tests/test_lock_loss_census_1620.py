@@ -489,3 +489,30 @@ def test_an_unparseable_expiry_is_counted_apart_not_expired(tmp_path: Path) -> N
     }
     result = census.measure(str(path), None, now=_NOW)
     assert result["lock_expiry_unparseable"] == {"count": 2, "ids": ["bad", "naive"]}
+
+
+@pytest.mark.parametrize("text", [
+    "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00",
+])
+def test_an_out_of_range_instant_is_unparseable_not_a_crash(text: str) -> None:
+    assert census.parse_instant(text) is None
+
+
+def test_an_out_of_range_expiry_is_bucketed(tmp_path: Path) -> None:
+    path = _make_store(tmp_path / "range.db")
+    conn = sqlite3.connect(path)
+    with conn:
+        _add(conn, "far", "widgetprompt far", lock_level="user")
+        conn.execute("UPDATE beliefs SET lock_expires_at = ? WHERE id = 'far'",
+                     ("9999-12-31T23:59:59-01:00",))
+    conn.close()
+    result = census.measure(str(path), None, now=_NOW)
+    bucket = cast("dict[str, object]", result["lock_expiry_unparseable"])
+    assert bucket["ids"] == ["far"]
+
+
+def test_main_rejects_an_out_of_range_now(tmp_path: Path) -> None:
+    path = _make_store(tmp_path / "range-now.db")
+    with pytest.raises(SystemExit) as exc:
+        census.main(["--store", str(path), "--now", "0001-01-01T00:00:00+01:00"])
+    assert exc.value.code == 2
