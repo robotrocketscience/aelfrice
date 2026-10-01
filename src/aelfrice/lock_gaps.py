@@ -21,10 +21,14 @@ A gap is resolved from the STORE, not only from a later request:
   `valid_to IS NULL` exists, which covers a lock applied later from the
   CLI (which writes no outcome row), or
 * a belief carrying the statement has a `feedback_history` row strictly
-  after the failed attempt that ends it on purpose. `lock:unlock` and
-  `lock:expire` always count. `aelf retire` and `aelf delete` count only
-  while the belief is still retired or gone: after `aelf restore` the
-  statement is back and unlocked, so the gap is open again, or
+  after the failed attempt that ends it on purpose. `lock:unlock` always
+  counts. `lock:expire` counts only when the belief's `lock_expires_at`
+  is also strictly after the failure: the sweep stamps its row when it
+  runs, so a lock that lapsed before the failure and was swept after it
+  closes nothing, and an expiry with no recorded instant closes nothing.
+  `aelf retire` and `aelf delete` count only while the belief is still
+  retired or gone: after `aelf restore` the statement is back and
+  unlocked, so the gap is open again, or
 * `ingest_log` maps the statement to a belief that no longer exists, and
   that `ingest_log` row is strictly later than the failed attempt. This
   is a lock applied later from the CLI and then deleted. It survives
@@ -37,8 +41,9 @@ A gap is resolved from the STORE, not only from a later request:
 because the outcome row's `ts` is truncated to the second: a removal in
 the same second as the failure may have preceded it, and a tie leaves
 the gap open. Parsing also makes the formats comparable, since
-`lock:expire` stamps an `isoformat()` instant with microseconds and
-`+00:00` where every other writer stamps `%Y-%m-%dT%H:%M:%SZ`.
+`lock:expire` and `lock_expires_at` hold an `isoformat()` instant with
+microseconds and `+00:00` where every other writer stamps
+`%Y-%m-%dT%H:%M:%SZ`.
 
 `aelf delete` removes the `beliefs` row, so `content_hash` alone cannot
 find a deleted belief. The detector also reads the `cli_remember` rows
@@ -87,8 +92,17 @@ doctor and SessionStart path. A test pins the two together.
 # the same import-cost reason; pinned to `promotion.SOURCE_LOCK_UNLOCK`,
 # `models.FEEDBACK_SOURCE_LOCK_EXPIRE` and the literals `aelf retire` and
 # `aelf delete` write in `cli.py` by a test.
-_LOCK_DROPPED_SOURCES: Final[tuple[str, ...]] = ("lock:unlock", "lock:expire")
-"""End the lock and leave the statement in place. Always close a gap."""
+_SOURCE_LOCK_UNLOCK: Final[str] = "lock:unlock"
+_SOURCE_LOCK_EXPIRE: Final[str] = "lock:expire"
+_LOCK_DROPPED_SOURCES: Final[tuple[str, ...]] = (
+    _SOURCE_LOCK_UNLOCK, _SOURCE_LOCK_EXPIRE,
+)
+"""End the lock and leave the statement in place.
+
+An unlock closes a gap when its row is later than the failure. An expiry
+closes one only when the belief's `lock_expires_at` is: the sweep stamps
+its row when it runs, which can be long after the lock lapsed.
+"""
 
 _BELIEF_REMOVED_SOURCES: Final[tuple[str, ...]] = (
     "user_retired",
@@ -337,10 +351,14 @@ def _is_resolved(
     marks = ", ".join("?" for _ in _LOCK_ENDED_SOURCES)
     for bid in sorted(belief_ids):
         row = conn.execute(
-            "SELECT valid_to FROM beliefs WHERE id = ?", (bid,),
+            "SELECT valid_to, lock_expires_at FROM beliefs WHERE id = ?",
+            (bid,),
         ).fetchone()
         exists = row is not None
         removed = not exists or row[0] is not None
+        # The sweep keeps `lock_expires_at` as its audit trace. Unknown
+        # for a deleted belief, and then an expiry closes nothing.
+        lapsed_after = exists and _strictly_after(row[1], failed_at)
         if not exists and any(
             _strictly_after(t, failed_at) for t in belief_ids[bid]
         ):
@@ -354,7 +372,11 @@ def _is_resolved(
         ):
             if not _strictly_after(created_at, failed_at):
                 continue
-            if source in _LOCK_DROPPED_SOURCES or removed:
+            if source == _SOURCE_LOCK_EXPIRE:
+                if lapsed_after:
+                    return True
+                continue
+            if source == _SOURCE_LOCK_UNLOCK or removed:
                 return True
     return False
 

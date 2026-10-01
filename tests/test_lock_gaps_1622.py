@@ -349,35 +349,78 @@ def test_an_unlock_in_the_failures_second_does_not_clear_it(
     assert len(_gaps(db).gaps) == 1
 
 
-def _expire_lock_at(db: Path, now: str) -> None:
+def _expire_lock_at(db: Path, expires_at: str, swept_at: str) -> None:
+    """Give the CLI lock a lapse instant, then sweep it at `swept_at`.
+
+    The sweep keeps `lock_expires_at`, so the belief records when the
+    lock lapsed as well as when the sweep noticed.
+    """
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_expires_at = ? WHERE content_hash = ?",
+            (expires_at, _sha(STATEMENT)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     s = MemoryStore(str(db))
     try:
-        assert s.sweep_expired_locks(now=now) == 1
+        s.sweep_expired_locks(now=swept_at)
     finally:
         s.close()
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert conn.execute(
+            "SELECT lock_level, lock_expires_at FROM beliefs "
+            "WHERE content_hash = ?", (_sha(STATEMENT),),
+        ).fetchone() == (LOCK_NONE, expires_at)
+    finally:
+        conn.close()
 
 
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize(
-    ("expired_at", "open_gaps"),
+    ("expires_at", "open_gaps"),
     [
-        ("2099-01-01T00:00:00.900000+00:00", 1),
-        ("2099-01-01T00:00:01.000001+00:00", 0),
+        ("2025-12-31T00:00:00+00:00", 1),
+        ("2026-01-01T00:00:00.900000+00:00", 1),
+        ("2026-01-01T00:00:01.000001+00:00", 0),
     ],
-    ids=["same-second", "next-second"],
+    ids=["lapsed-before", "same-second", "next-second"],
 )
-def test_an_expiry_stamp_is_compared_as_an_instant(
-    db: Path, expired_at: str, open_gaps: int,
+def test_an_expiry_is_judged_by_when_the_lock_lapsed(
+    db: Path, expires_at: str, open_gaps: int,
 ) -> None:
-    """`lock:expire` stamps `isoformat()` with microseconds and `+00:00`;
-    the failure stamps `%Y-%m-%dT%H:%M:%SZ`. Both are read as instants at
-    whole-second resolution, so 0.9 s into the failure's second is a tie
-    and the next second is later."""
+    """The sweep's own row is stamped when it runs, which can be long after
+    the lock lapsed. A lock that lapsed before the failure was not in force
+    when the user typed it again, so a later sweep closes nothing.
+
+    `lock_expires_at` is `isoformat()` with microseconds and `+00:00`; the
+    failure is `%Y-%m-%dT%H:%M:%SZ`. Both are read as instants at
+    whole-second resolution, so 0.9 s into the failure's second is a tie.
+    """
     assert cli.main(["lock", STATEMENT, "--for", "1d"],
                     out=io.StringIO()) == 0
-    _expire_lock_at(db, expired_at)
-    _write_failure(db, "2099-01-01T00:00:00Z")
+    _expire_lock_at(db, expires_at, "2026-06-01T00:00:00+00:00")
+    _write_failure(db, FAILED_AT)
+    [(_, swept_at)] = [
+        r for r in _feedback(db, _belief_id_for(db)) if r[0] == "lock:expire"
+    ]
+    assert swept_at > FAILED_AT
     assert len(_gaps(db).gaps) == open_gaps
+
+
+def _belief_id_for(db: Path, statement: str = STATEMENT) -> str:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT id FROM beliefs WHERE content_hash = ?",
+            (_sha(statement),),
+        ).fetchone()
+    finally:
+        conn.close()
+    return str(row[0])
 
 
 # --- a retire counts only while the statement stays retired ---------------
