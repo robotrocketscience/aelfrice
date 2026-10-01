@@ -19,7 +19,7 @@ Almost no beliefs carry meaning-based edges. Measured on 2026-09-30 (method and 
 
 So no conversational evidence reaches a belief through an edge, and its confidence stays at its ingest prior.
 
-Promotion counting exists but isn't safe to automate. `store.find_promotable_phantoms` already finds phantoms with at least 3 corroborations from at least 2 sessions and no CONTRADICTS edge, and `phantom_promotion_opportunity` shows them to you as a note. That count accepts every corroboration source type, including `wonder_ingest`, which wonder writes when it creates each phantom, and transcript restatements by the model. Automating promotion on that count would let the model promote its own claims.
+Promotion counting exists but isn't safe to automate. `store.find_promotable_phantoms` already finds phantoms with at least 3 corroborations from at least 2 sessions and no CONTRADICTS edge, and `phantom_promotion_opportunity` shows them to you as a note. That count accepts every corroboration source type, including `wonder_ingest`, which wonder writes when it creates each phantom, and `claude_memory_mirror`, which mirrors text the agent writes into its own memory files. New transcript ingest skips assistant turns (#785), but assistant rows written before that were never purged. Automating promotion on that count would let the model promote its own claims.
 
 This spec defines a deterministic writer for SUPPORTS edges, and the confidence change each edge carries. It adds no model, network call, or embedding.
 
@@ -58,14 +58,18 @@ Rules for the move:
 This reverses part of the #229 rule, which made a corroboration count a non-trigger for promotion. The operator ruled on 2026-09-30 that phantoms need an automatic path, on evidence that the model can't produce itself.
 
 A speculative (phantom) belief is promoted automatically when all of the following hold:
-- it has at least **3 strong supports**, meaning restatements you typed;
+- it has at least **3 strong supports**. A strong support is either a corroboration row whose speaker is you (an exact restatement) or a SUPPORTS edge from a belief whose text you typed (a reworded restatement);
 - those supports come from at least **2 different sessions**;
 - it has no CONTRADICTS edge;
 - it has no `feedback_history` row with negative valence.
 
-The thresholds match `find_promotable_phantoms`' defaults (`_DEFAULT_MIN_CORROBORATIONS=3`, `_DEFAULT_MIN_SESSIONS=2`). The writer reuses that query with one change: it counts only corroborations whose text you typed. `wonder_ingest`, `commit_ingest`, and any row produced by model text never count. Today a `transcript_ingest` row doesn't record who spoke, so the implementation must add the speaker to the corroboration row first. `cli_remember` doesn't count either, because the agent can run the CLI too.
+The thresholds match `find_promotable_phantoms`' defaults (`_DEFAULT_MIN_CORROBORATIONS=3`, `_DEFAULT_MIN_SESSIONS=2`). The writer reuses that query with two changes:
+- **An allowlist, not a denylist.** A corroboration row counts only when its source type is `transcript_ingest` **and** its speaker is the user. Every other source type never counts: `wonder_ingest`, `commit_ingest`, `cli_remember` and `mcp_remember` (the agent can run both), `filesystem_ingest`, `consolidation_migration`, and `claude_memory_mirror`. A source type added later doesn't count until it's added to the allowlist.
+- **A speaker column.** A `transcript_ingest` row doesn't record who spoke today, so the implementation adds it first. A row with no speaker, including every row written before the column exists, never counts.
 
-A promoted belief gets a new origin, `evidence_promoted`. It ranks above a phantom and below `user_validated`, so it never claims that you validated it. `promote()` stamps `user_validated` today, so it needs an origin parameter or a sibling function.
+It also adds the reworded-restatement edges to the count, with each edge's session taken from the supporting belief's ingest session.
+
+A promoted belief gets a new origin, `evidence_promoted`. It's added to `ORIGINS` and gets `ORIGIN_RETRIEVAL_PRIORITY` 3, tying with `user_transcript`: above a phantom (default 2) and below `user_validated` (4), so it never claims that you validated it. The tie fits, because its evidence is your own typed restatements. `promote()` stamps `user_validated` today, so it needs an origin parameter or a sibling function.
 
 On promotion, the next injection of that belief carries a one-line note saying it was promoted automatically, so you can retire it if it's wrong. Promotion writes a `feedback_history` row, so it's audited and can be undone. The #1650 experiment may tune the thresholds.
 
