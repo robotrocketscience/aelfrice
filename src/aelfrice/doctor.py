@@ -2226,10 +2226,17 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                     f"of {g.arg_len} characters; to fix it, run "
                     f"`aelf lock` with the full statement"
                 )
-            else:
+            elif not g.valid_text:
                 lines.append(
                     "      statement contains an unpaired surrogate and "
                     "cannot be locked; retype it"
+                )
+            else:
+                # No runnable command on Windows: no one quoting is safe
+                # in both cmd.exe and PowerShell (#1622).
+                lines.append(
+                    "      to fix it, run `aelf lock` with the statement "
+                    "above, quoted for your shell"
                 )
     lines.append(
         "  only requests typed since this check shipped are recorded; "

@@ -152,26 +152,12 @@ _LOCK_LEVEL_USER: Final[str] = "user"
 
 
 def _on_windows() -> bool:
-    """Whether the fix command is for a Windows shell.
+    """Whether the user's shell is a Windows one.
 
     A function, so a test can choose the branch without patching
     `os.name`, which `pathlib` reads to pick its path class.
     """
     return os.name == "nt"
-
-
-def _quote_argument(text: str) -> str:
-    """Quote `text` as one argument for the platform's shell.
-
-    POSIX shells get `shlex.quote`, whose single quotes `cmd.exe` and
-    PowerShell do not treat as quoting. Windows gets the double-quote
-    rules the C runtime splits a command line by.
-    """
-    if _on_windows():
-        import subprocess  # noqa: PLC0415
-
-        return subprocess.list2cmdline([text])
-    return shlex.quote(text)
 
 
 @dataclass(frozen=True)
@@ -220,10 +206,17 @@ class LockGap:
         typed, at user tier, and the gap would stay open because the
         hash differs. None also when the statement is not valid text,
         because no command can store it.
+
+        None on Windows too. No one quoting is safe in both `cmd.exe`
+        and PowerShell: `cmd.exe` expands `%VAR%` inside double quotes
+        and does not treat single quotes as quoting, and PowerShell
+        expands `$VAR` and `$(...)` inside double quotes. A pasted
+        command could lock different text, or redirect to a file on
+        `a>b`. POSIX `shlex.quote` has no such hole.
         """
-        if self.truncated or not self.valid_text:
+        if self.truncated or not self.valid_text or _on_windows():
             return None
-        return f"aelf lock {_quote_argument(self.statement)}"
+        return f"aelf lock {shlex.quote(self.statement)}"
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import sqlite3
 from pathlib import Path
 
@@ -43,7 +44,6 @@ from aelfrice.lock_gaps import (
     GAP_REASONS,
     LockGap,
     LockGapReport,
-    _quote_argument,
     detect_lock_gaps,
     read_command_outcomes,
 )
@@ -602,7 +602,7 @@ def test_doctor_lists_the_statement_and_the_fix(
     _fail_lock(tmp_path, monkeypatch)
     text = _section(diagnose_lock_gaps(str(db), tmp_path))
     assert STATEMENT in text
-    assert f"fix: aelf lock {_quote_argument(STATEMENT)}" in text
+    assert f"fix: aelf lock {shlex.quote(STATEMENT)}" in text
 
 
 @pytest.mark.timeout(60)
@@ -641,7 +641,7 @@ def test_aelf_doctor_prints_the_section(
     cli.main(["doctor"], out=buf)
     text = buf.getvalue() + capsys.readouterr().out
     assert "typed /aelf:lock requests that did not take effect:" in text
-    assert f"fix: aelf lock {_quote_argument(STATEMENT)}" in text
+    assert f"fix: aelf lock {shlex.quote(STATEMENT)}" in text
 
 
 @pytest.mark.timeout(60)
@@ -658,7 +658,7 @@ def test_both_report_paths_render_the_section(
         settings = tmp_path / "settings.json"
         settings.write_text("{}", encoding="utf-8")
         report.scopes_scanned.append(("user", settings))
-    fix = f"fix: aelf lock {_quote_argument(STATEMENT)}"
+    fix = f"fix: aelf lock {shlex.quote(STATEMENT)}"
     assert fix in format_report(report)
 
 
@@ -820,27 +820,51 @@ def test_doctor_survives_a_lock_gap_check_that_raises(
     assert report.lock_gaps.unknown_reason == "the check failed: RuntimeError"
 
 
-@pytest.mark.timeout(60)
-@pytest.mark.parametrize(
-    ("windows", "expected"),
-    [
-        (False, """aelf lock 'It'"'"'s "fine" here'"""),
-        (True, '''aelf lock "It's \\"fine\\" here"'''),
-    ],
-    ids=["posix", "windows"],
-)
-def test_the_fix_command_is_quoted_for_the_platform_shell(
-    monkeypatch: pytest.MonkeyPatch, windows: bool, expected: str,
-) -> None:
-    """Single quotes are not quoting in `cmd.exe` or PowerShell, so a
-    POSIX-quoted fix would split the statement on Windows."""
+@pytest.fixture(autouse=True)
+def _posix_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the POSIX branch; the Windows tests override it."""
     from aelfrice import lock_gaps
 
-    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: windows)
+    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: False)
+
+
+def test_the_posix_fix_command_quotes_the_statement() -> None:
     statement = 'It\'s "fine" here'
     gap = LockGap(_sha(statement), statement, len(statement), "exception",
                   FAILED_AT, None, 1)
-    assert gap.fix_command == expected
+    assert gap.fix_command == """aelf lock 'It'"'"'s "fine" here'"""
+
+
+@pytest.mark.parametrize("statement", [
+    "a>b", "x|y&&z", "Always quote $VAR here", "Run $(Get-Date) now",
+    "100% of %PATH% here", "plain words",
+])
+def test_windows_gets_no_runnable_fix_command(
+    monkeypatch: pytest.MonkeyPatch, statement: str,
+) -> None:
+    """No quoting is safe in both cmd.exe and PowerShell, so none is printed."""
+    from aelfrice import lock_gaps
+
+    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: True)
+    gap = LockGap(_sha(statement), statement, len(statement), "exception",
+                  FAILED_AT, None, 1)
+    assert gap.fix_command is None
+
+
+def test_doctor_on_windows_says_how_to_fix_without_a_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import lock_gaps
+
+    monkeypatch.setattr(lock_gaps, "_on_windows", lambda: True)
+    gap = LockGap(_sha("a>b"), "a>b", 3, "exception", FAILED_AT, None, 1)
+    report = DoctorReport()
+    report.lock_gaps = LockGapReport(known=True, gaps=(gap,), records_seen=1)
+    lines: list[str] = []
+    _format_lock_gaps_section(report, lines)
+    text = "\n".join(lines)
+    assert "fix: aelf lock" not in text
+    assert "quoted for your shell" in text
 
 
 # --- SessionStart -------------------------------------------------------
