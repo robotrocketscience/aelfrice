@@ -779,3 +779,18 @@ def _sandbox_real_home(
         yield home
     finally:
         mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
+    """Put the session `AELFRICE_DB` pin back after every test (#1678).
+
+    Several tests set `os.environ["AELFRICE_DB"]` directly, and some then
+    `pop` it in a `finally`. A `pop` deletes the session pin outright, so
+    every later test in the run resolves the git-dir store again, and a
+    bare assignment repoints every later test at one test's tmp file.
+    Either way the pin holds only until the first such test. Restoring
+    it here keeps one test's environment from reaching the next.
+    """
+    yield
+    os.environ["AELFRICE_DB"] = str(_sandbox_real_home / "memory.db")
