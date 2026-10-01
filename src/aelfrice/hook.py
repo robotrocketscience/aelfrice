@@ -66,11 +66,9 @@ try:
     from aelfrice.db_paths import active_project_context, db_path
     from aelfrice.hook_audit import (
         AUDIT_ROTATED_SUFFIX,
-        COMMAND_OUTCOME_HOOK,
         HookAuditConfig,
         _append_audit,
         _audit_path_for_db,
-        command_outcomes_path_for_db,
         load_hook_audit_config,
     )
     # Re-exported so existing `from aelfrice.hook import ...` callers keep
@@ -3081,9 +3079,21 @@ def _write_command_outcome_record(
 
     No-op when the hook audit is disabled, for commands other than
     `lock`, and for an in-memory store.
+
+    The audit and path helpers are imported here rather than taken from
+    the module's guarded import block, where a type checker cannot prove
+    them bound. Both modules are already loaded by then, so this costs
+    a dictionary lookup.
     """
     if outcome.command not in _PERSISTED_OUTCOME_COMMANDS:
         return
+    from aelfrice.db_paths import db_path  # noqa: PLC0415
+    from aelfrice.hook_audit import (  # noqa: PLC0415
+        COMMAND_OUTCOME_HOOK,
+        append_command_outcome,
+        load_hook_audit_config,
+    )
+
     cfg = load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
         return
@@ -3091,7 +3101,6 @@ def _write_command_outcome_record(
         p = db_path()
         if str(p) == ":memory:":
             return
-        path = command_outcomes_path_for_db(p)
     except Exception:
         return
     argument = outcome.argument
@@ -3113,7 +3122,7 @@ def _write_command_outcome_record(
     }
     if session_id is not None:
         record["session_id"] = session_id
-    _append_audit(path, record, cfg.max_bytes, stderr=stderr)
+    append_command_outcome(p, record, cfg.max_bytes, stderr=stderr)
 
 
 @config_discovery_scope()
@@ -7211,6 +7220,8 @@ def build_lock_gap_notice(*, stderr: IO[str] | None = None) -> str | None:
     import graph (#1351).
     """
     try:
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
+        from aelfrice.hook_audit import load_hook_audit_config  # noqa: PLC0415
         from aelfrice.lock_gaps import (  # noqa: PLC0415
             detect_lock_gaps,
             session_start_notice,

@@ -199,6 +199,24 @@ def command_outcomes_path_for_db(db_path_val: Path) -> Path:
     return db_path_val.parent / COMMAND_OUTCOMES_FILENAME
 
 
+def append_command_outcome(
+    db_path_val: Path,
+    record: dict[str, object],
+    max_bytes: int,
+    *,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one command-outcome row beside `db_path_val` (#1622).
+
+    `_append_audit` with the outcome log's path, so the hook does not
+    reach into this module's private names.
+    """
+    _append_audit(
+        command_outcomes_path_for_db(db_path_val), record, max_bytes,
+        stderr=stderr,
+    )
+
+
 def _is_int(value: object) -> bool:
     """True for a real int. `bool` is an int subclass and is excluded."""
     return isinstance(value, int) and not isinstance(value, bool)
