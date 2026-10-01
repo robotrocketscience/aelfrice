@@ -24,7 +24,14 @@ A gap is resolved from the STORE, not only from a later request:
   after the failed attempt that ends it on purpose. `lock:unlock` and
   `lock:expire` always count. `aelf retire` and `aelf delete` count only
   while the belief is still retired or gone: after `aelf restore` the
-  statement is back and unlocked, so the gap is open again.
+  statement is back and unlocked, so the gap is open again, or
+* `ingest_log` maps the statement to a belief that no longer exists, and
+  that `ingest_log` row is strictly later than the failed attempt. This
+  is a lock applied later from the CLI and then deleted. It survives
+  `aelf doctor --gc-orphan-feedback --apply`, which removes the delete's
+  own `feedback_history` row. A row at or before the failure may be the
+  failed attempt's own ingest, written before the belief was, so it
+  closes nothing.
 
 "Strictly after" compares parsed instants at whole-second resolution,
 because the outcome row's `ts` is truncated to the second: a removal in
@@ -322,7 +329,14 @@ def _is_resolved(
         row = conn.execute(
             "SELECT valid_to FROM beliefs WHERE id = ?", (bid,),
         ).fetchone()
-        removed = row is None or row[0] is not None
+        exists = row is not None
+        removed = not exists or row[0] is not None
+        if not exists and any(
+            _strictly_after(t, failed_at) for t in belief_ids[bid]
+        ):
+            # Locked from the CLI after the failure, then deleted. The
+            # delete's feedback row may have been orphan-GC'd since.
+            return True
         for source, created_at in conn.execute(
             f"SELECT source, created_at FROM feedback_history "
             f"WHERE belief_id = ? AND source IN ({marks})",

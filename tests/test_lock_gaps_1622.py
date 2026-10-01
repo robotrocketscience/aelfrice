@@ -408,6 +408,57 @@ def test_a_restore_after_the_retire_reopens_the_gap(
     assert len(_gaps(db).gaps) == 1
 
 
+# --- a delete stays visible after the orphan feedback is collected ------
+
+
+@pytest.mark.timeout(120)
+def test_a_delete_still_clears_the_gap_after_orphan_feedback_gc(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--gc-orphan-feedback --apply` removes the delete's own audit row.
+    The later `aelf lock` in `ingest_log` still shows the user applied
+    the lock and then removed it."""
+    _fail_lock(tmp_path, monkeypatch)
+    _backdate_outcomes(db)
+    bid = _cli_lock()
+    assert cli.main(
+        ["delete", bid, "--force", "--yes"], out=io.StringIO(),
+    ) == 0
+    assert cli.main(
+        ["doctor", "--gc-orphan-feedback", "--apply"], out=io.StringIO(),
+    ) == 0
+    assert _feedback(db, bid) == []
+    assert _gaps(db).gaps == ()
+
+
+@pytest.mark.timeout(120)
+def test_the_failed_attempts_own_ingest_does_not_clear_the_gap(
+    tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lock wrote its `ingest_log` row and died before the belief
+    existed. That row maps the statement to a missing belief too, but it
+    is not later than the failure, so it says nothing about a delete."""
+    from aelfrice.models import INGEST_SOURCE_CLI_REMEMBER
+
+    def _ingest_then_die(*_a: object, **_k: object) -> int:
+        s = MemoryStore(str(db))
+        try:
+            s.record_ingest(
+                source_kind=INGEST_SOURCE_CLI_REMEMBER, raw_text=STATEMENT,
+                derived_belief_ids=["0123456789abcdef"], ts=FAILED_AT,
+            )
+        finally:
+            s.close()
+        raise RuntimeError("died after the ingest row")
+
+    monkeypatch.setattr(cli, "main", _ingest_then_die)
+    _fire(f"/aelf:lock {STATEMENT}", tmp_path)
+    monkeypatch.setattr(cli, "main", _REAL_CLI_MAIN)
+    _backdate_outcomes(db, FAILED_AT)
+    [gap] = _gaps(db).gaps
+    assert gap.statement == STATEMENT
+
+
 # --- the record is written where the outcome is known --------------------
 
 
