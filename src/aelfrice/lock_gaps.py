@@ -57,8 +57,8 @@ with the same text stays active and unlocked.
 
 Limits
 ------
-Each limit below errs toward reporting a gap the user already dealt
-with, never toward hiding one.
+The first two limits below can report a gap the user already dealt
+with. The third, and the per-belief rule above, can hide one.
 
 * A deleted belief is found only if an `aelf lock` created it. Ids are
   not derivable from the statement alone: `derivation._belief_id` keys
@@ -207,7 +207,7 @@ class LockGap:
         hash differs. None also when the statement is not valid text,
         because no command can store it.
 
-        None on Windows too. No one quoting is safe in both `cmd.exe`
+        None on Windows too. No single quoting is safe in both `cmd.exe`
         and PowerShell: `cmd.exe` expands `%VAR%` inside double quotes
         and does not treat single quotes as quoting, and PowerShell
         expands `$VAR` and `$(...)` inside double quotes. A pasted
