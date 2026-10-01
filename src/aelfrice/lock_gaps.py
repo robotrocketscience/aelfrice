@@ -51,6 +51,32 @@ find a deleted belief. The detector also reads the `cli_remember` rows
 of `ingest_log`, which is append-only and records the statement and the
 belief id every `aelf lock` resolved to, and hashes their text.
 
+Removals are judged per belief id. Retiring or deleting any one belief
+that carries the statement closes the gap, even while another belief
+with the same text stays active and unlocked.
+
+Limits
+------
+Each limit below errs toward reporting a gap the user already dealt
+with, never toward hiding one.
+
+* A deleted belief is found only if an `aelf lock` created it. Ids are
+  not derivable from the statement alone: `derivation._belief_id` keys
+  a transcript, onboard or other classifier-path belief on its source
+  path as well as its text. So `aelf delete` of a belief with the same
+  `content_hash` that came from any other ingest path leaves the gap
+  open. Retiring that belief does close it, because a retired row keeps
+  its `content_hash`.
+* After `aelf doctor --gc-orphan-feedback --apply` removes a delete's
+  `feedback_history` row, the delete is visible only through a
+  `cli_remember` `ingest_log` row strictly later than the failure. If
+  the only such row is at or before the failure, for example the failed
+  attempt's own ingest, the gap opens again.
+* A hook killed while the lock command runs (a timeout, `SIGKILL`)
+  never reaches the point where it records the outcome, so that attempt
+  writes no row and is not reported. The outcome is recorded as soon as
+  the command returns, so only a kill inside the command loses it.
+
 `arg_sha256` matches `content_hash` because `aelf lock` derives the
 belief through `derivation._content_hash`, a plain sha256 of the
 statement text; `tests/test_lock_gaps_1622.py` pins that.
