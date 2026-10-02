@@ -375,11 +375,13 @@ def rechain_sessions(
     `(created_at, rowid)` order. Returns `(removed, written)`.
 
     For #1660: after `created_at` values change, a session's chain can
-    link pairs out of order. Only spine-shaped edges between two members
-    of the same session are removed, so prose-derived TEMPORAL_NEXT rows
-    survive (#1379). A session with no spine edge at all is left alone:
-    the spine was never built there, or `aelf spine clear` removed it,
-    and a repair must not rebuild what the user cleared.
+    link pairs out of order. Every spine-shaped edge out of a member that
+    isn't in the rebuilt chain is removed, including one into another
+    session, which the writer never makes and a full clear + backfill
+    would drop too. Prose-derived TEMPORAL_NEXT rows survive (#1379). A
+    session with no spine edge at all is left alone: the spine was never
+    built there, or `aelf spine clear` removed it, and a repair must not
+    rebuild what the user cleared.
     """
     wanted = set(session_ids)
     chains: dict[str, list[str]] = {}
@@ -390,11 +392,10 @@ def rechain_sessions(
     written = 0
     for session_id in sorted(chains):
         ids = chains[session_id]
-        members = set(ids)
         desired = {(ids[i], ids[i - 1]) for i in range(1, len(ids))}
         current = [
             e for bid in ids for e in store.edges_from(bid)
-            if _is_spine_edge(e) and e.dst in members
+            if _is_spine_edge(e)
         ]
         if not current:
             continue
