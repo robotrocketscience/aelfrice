@@ -131,3 +131,81 @@ def test_no_pasted_git_line_reaches_the_store(tmp_path: Path) -> None:
     assert any(PROSE in r for r in rows)
     for r in rows:
         assert "On branch" not in r and "git add" not in r and "modified:" not in r
+
+
+@pytest.mark.parametrize("prose", [
+    "jon@corp.com: 50% of tests fail on main.",
+    "Your branch is behind on reviews, please catch up.",
+    "nothing to commit to yet, we are still deciding.",
+    "modified: the plan was changed yesterday",
+    "Ran 3 commands and nothing happened",
+    "2026-10-01 12:00:00 was the outage window",
+    "10:30:00 is when the deploy kicked off, please check",
+    "bash: is the shell we standardise on",
+    "I moved it.  Then I ran tests.  Everything passed, mostly",
+    "and/or",
+    "e.g.",
+    "C++",
+    "x=1",
+])
+def test_prose_that_opens_like_output_is_kept(prose: str) -> None:
+    # Each rule matches its output format whole, not a sentence that only
+    # starts the same way (review, PR #1693).
+    assert _user_speech(_paste(prose)) == prose
+
+
+def test_a_paste_opening_with_an_email_is_not_a_transcript() -> None:
+    body = "jon@corp.com: 50% of tests fail on main.\n" + PROSE
+    speech = _user_speech(_paste(body)) or ""
+    assert PROSE in speech and "jon@corp.com" in speech
+
+
+@pytest.mark.parametrize("line", [
+    "." * 200_000 + " [100%]",
+    ":" * 200_000 + " x",
+    "/" * 200_000 + " x",
+    "a." * 100_000 + " x",
+    "a+" * 100_000 + " x",
+    "/a" * 100_000 + " x",
+])
+def test_a_long_line_is_judged_in_linear_time(
+    line: str, request: pytest.FixtureRequest,
+) -> None:
+    # A wall-clock budget, so it is opt-in (#1473): `pytest --run-perf`.
+    try:
+        run_perf = bool(request.config.getoption("--run-perf", default=False))
+    except (AttributeError, ValueError):
+        run_perf = False
+    if not run_perf:
+        pytest.skip("perf test gated on --run-perf")
+    import time
+    start = time.perf_counter()
+    _user_speech(_paste(line))
+    # A quadratic pattern took over two minutes on a 200,000-character run.
+    assert time.perf_counter() - start < 2.0
+
+
+def test_an_unclosed_paste_is_filtered_to_the_end() -> None:
+    text = "Look at this:\n<pasted_content>\nOn branch main\n" + PROSE
+    speech = _user_speech(text) or ""
+    assert "Look at this:" in speech and PROSE in speech
+    assert "On branch" not in speech and "pasted_content" not in speech
+
+
+def test_a_stray_closing_tag_is_removed() -> None:
+    text = _paste("On branch x") + "\n" + PROSE + "\n</pasted_content>"
+    assert _user_speech(text) == PROSE
+
+
+def test_a_host_glyph_is_judged_by_what_follows_it() -> None:
+    speech = _user_speech(_paste("\n".join([
+        "❯   Ran 1 shell command", "❯ " + PROSE]))) or ""
+    assert "Ran 1 shell command" not in speech
+    assert PROSE in speech
+
+
+def test_words_after_a_closed_transcript_paste_are_kept() -> None:
+    # A closed paste ends at its closing tag; the user's line after it is not
+    # part of the terminal transcript.
+    text = _paste("dev@laptop ~/proj> ls\nsrc  docs  tests") + "\n" + PROSE
+    assert _user_speech(text) == PROSE

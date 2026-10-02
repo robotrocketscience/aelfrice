@@ -596,56 +596,101 @@ _PASTED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     r"<pasted_content\b[^>]*>(.*?)</pasted_content\b[^>]*>",
     re.DOTALL | re.IGNORECASE,
 )
-# An interactive shell prompt followed by a command: `user@host dir> cmd`
-# (fish), `user@host:dir$ cmd` (bash), `user@host dir % cmd` (zsh).
-_SHELL_PROMPT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[\w.-]+@[\w.-]+[ :][^\n]*?[>$#%](?:[ \t]|$)",
+# A paste whose closing tag never came: it runs to the end of the record.
+_UNCLOSED_PASTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"<pasted_content\b[^>]*>(.*)\Z", re.DOTALL | re.IGNORECASE,
 )
-# Fixed-format lines that programs and the host print, never prose: git's
-# status, hint, commit, merge and diffstat lines; the host's tool and timing
-# lines; a shell's error prefix; and a timestamped log line.
+# A paste tag left over after the blocks are filtered (a stray closer).
+_PASTE_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"</?pasted_content\b[^>]*>", re.IGNORECASE,
+)
+# An interactive shell prompt followed by a command. The working directory
+# must look like one (`~` or `/` after a colon, or a bare word after a
+# space), so an email address that opens a sentence is not a prompt:
+#   fish  `user@host ~/dir (branch) [1]> cmd`
+#   bash  `user@host:~/dir$ cmd`
+#   zsh   `user@host dir % cmd`
+_SHELL_PROMPT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\w.-]+@[\w-]+(?:\.[\w-]+)*"
+    r"(?::[~/][^\s>$#%]*| +[~/\w.-][^\s>$#%]*)"
+    r"(?: +\([^()\n]*\))?(?: +\[\d+\])? *[>$#%](?: |$)",
+)
+# Lines that programs and the host print in a fixed form, never prose. Each
+# alternative matches the whole line in that form, so a sentence that only
+# opens like one ("Your branch is behind on reviews") stays.
 _PASTED_OUTPUT_LINE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:"
-    r"On branch \S+"
-    r"|Your branch is .*"
+    r"^(?:"
+    # git status, hints, commit, merge and diffstat.
+    r"On branch [^\s]+"
+    r"|Your branch is (?:up to date with|ahead of|behind) '[^'\n]+'.*"
+    r"|Your branch and '[^'\n]+' have diverged,"
     r"|Changes (?:not staged for commit|to be committed):"
     r"|Untracked files:"
     r"|Unmerged paths:"
     r"|\(use \"git [^\n]*"
-    r"|no changes added to commit\b.*"
-    r"|nothing to commit\b.*"
-    r"|(?:modified|deleted|new file|renamed|typechange|both modified):\s+\S.*"
+    r"|no changes added to commit(?: \(use \"git [^\n]*)?"
+    r"|nothing to commit(?:, working tree clean| \(use \"git [^\n]*)?"
+    r"|nothing added to commit but untracked files present(?: \(use \"git [^\n]*)?"
+    r"|(?:modified|deleted|new file|renamed|typechange|both modified|both added):"
+    r" +[^\s]+(?: -> [^\s]+)?"
     r"|\[[^\]\s]+ [0-9a-f]{7,40}\] .*"
     r"|\d+ files? changed(?:, \d+ insertions?\(\+\))?(?:, \d+ deletions?\(-\))?"
-    r"|\S+\s+\|\s+\d+ ?[+\-]*"
+    r"|[^\s|]+ +\| +\d+ ?[+\-]*"
     r"|Updating [0-9a-f]{7,}\.\.[0-9a-f]{7,}"
     r"|Fast-forward"
-    r"|(?:create|delete) mode \d{6} .*"
-    r"|Ran \d+ (?:shell )?commands?\b.*"
-    r"|[✻✽✶✳✢] \S+ for (?:\d+h )?(?:\d+m )?\d+s\b.*"
-    r"|(?:fish|bash|zsh|sh): .*"
-    r"|\[?\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]?\s.*"
-    r"|\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}.*"
-    r")\s*$",
+    r"|(?:create|delete) mode \d{6} [^\n]*"
+    # The host's tool-count and timing lines.
+    r"|Ran \d+ (?:shell )?commands?"
+    r"|[✻✽✶✳✢] [^\s]+ for (?:\d+h )?(?:\d+m )?\d+s(?: · [^\n]*)?"
+    # A shell's own error line.
+    r"|(?:fish|bash|zsh|sh): (?:[^\n:]+: )?(?:[Cc]ommand not found|[Nn]o such file or directory"
+    r"|[Pp]ermission denied|Unknown command|Unsupported use|[Ss]yntax error)[^\n]*"
+    # A log line: an ISO timestamp, or a clock time followed by a column
+    # gap or a level word. "10:30:00 is when we deploy" stays.
+    r"|\[?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\n]*"
+    r"|\[?\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]?"
+    r"(?:\t| {2,}| +(?:DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL)\b)[^\n]*"
+    r") *$",
 )
-# Two or more column gaps (a tab, or two or more spaces) between words: a
-# file listing or a table row. A line ending in sentence punctuation is
-# prose with double spacing, and stays.
-_COLUMN_GAP_RE: Final[re.Pattern[str]] = re.compile(r"\S(?:\t+| {2,})(?=\S)")
-# One whitespace-free token with path, URL or slug punctuation in it. A dot
-# or colon counts only with text after it, so a one-word sentence ("Thanks.")
-# stays.
-_BARE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^(?:\S*[/+=_]\S*|\S*[.:]\S+)$")
+# A column gap: a tab, or two or more spaces, after a character that does
+# not end a sentence. Prose typed with two spaces after a period has none.
+_COLUMN_GAP_RE: Final[re.Pattern[str]] = re.compile(r"[^\s.?!,;:](?:\t+| {2,})(?=\S)")
+# The host's glyphs in front of a copied transcript line: the prompt marker
+# and the reply bullet. What follows is judged on its own.
+_HOST_GLYPH_RE: Final[re.Pattern[str]] = re.compile(r"^[❯⏺●⎿] +")
+# Bare tokens with no sentence around them. Every pattern is linear: no two
+# unbounded runs can trade characters.
+_URL_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9+.-]*://[^\s]+$")
+_PATH_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[~.]{0,2}/?[\w.+@-]+(?:/[\w.+@-]+)*/?$")
+_FILE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[\w+@-]*(?:\.[\w-]+)*\.[A-Za-z0-9]{1,8}$")
+_SLUG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^\w+(?:\+\w+){2,}$")
+
+
+def _is_bare_token(s: str) -> bool:
+    """A URL, a file path, a file name, or a `+`-joined slug, alone on a line.
+
+    A path needs a sign that it is one: a leading `~`, `.` or `/`, two or
+    more separators, or a trailing `/`. "and/or" has none of them. A file
+    name needs an extension after its last dot, so "e.g." and "Thanks."
+    stay; "C++" and "x=1" are not paths, names or slugs.
+    """
+    if " " in s or "\t" in s:
+        return False
+    if _URL_TOKEN_RE.match(s) or _SLUG_TOKEN_RE.match(s):
+        return True
+    if "/" in s and _PATH_TOKEN_RE.match(s):
+        return s[0] in "~./" or s.count("/") >= 2 or s.endswith("/")
+    return bool(_FILE_TOKEN_RE.match(s)) and not s.endswith(".")
 
 
 def _is_pasted_output_line(line: str) -> bool:
     """True when a pasted line is program or host output, not prose."""
-    s = line.strip()
+    s = _HOST_GLYPH_RE.sub("", line.strip())
     if not s:
         return False
     if _SHELL_PROMPT_RE.match(s) or _PASTED_OUTPUT_LINE_RE.match(s):
         return True
-    if _BARE_TOKEN_RE.match(s):
+    if _is_bare_token(s):
         return True
     return len(_COLUMN_GAP_RE.findall(s)) >= 2 and not s.endswith((".", "?", "!"))
 
@@ -698,7 +743,9 @@ def _user_speech(text: str) -> str | None:
         return None
     rest = _HARNESS_BLOCK_RE.sub("", rest)
     rest = _UNCLOSED_BLOCK_RE.sub("", rest)
-    rest = _PASTED_BLOCK_RE.sub(lambda m: _pasted_prose(m.group(1)), rest).strip()
+    rest = _PASTED_BLOCK_RE.sub(lambda m: _pasted_prose(m.group(1)), rest)
+    rest = _UNCLOSED_PASTE_RE.sub(lambda m: _pasted_prose(m.group(1)), rest)
+    rest = _PASTE_TAG_RE.sub("", rest).strip()
     return rest or None
 
 
