@@ -34,6 +34,7 @@ sys.path.insert(0, str(_REPO / "scripts"))
 from merge_train_gate import (  # noqa: E402
     ADVISORY_NAMES,
     FLOOR_NAMES,
+    NONGATING_WHILE_PENDING,
     SELF_NAMES,
     evaluate,
     latest_per_name,
@@ -231,6 +232,31 @@ def test_a_slow_non_advisory_check_does_hold_the_train() -> None:
     """The other half of the same property — it must not over-narrow."""
     runs = [*_all_required_green(), _run("e2e", None, status="queued")]
     assert evaluate(runs, REQUIRED)["pending"] == ["e2e"]
+
+
+_MUTATION = "mutation (advisory, PR diff)"
+
+
+def test_a_running_mutation_job_does_not_hold_the_train() -> None:
+    """#1633: its 60-minute run outlasted the train's 10-minute wait."""
+    runs = [*_all_required_green(), _run(_MUTATION, None, status="in_progress")]
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["pending"] == []
+    assert verdict["pending_not_gating"] == [_MUTATION]
+
+
+def test_a_failed_mutation_job_still_blocks() -> None:
+    """Only its running state is exempt. A failure conclusion means the
+    job-level `continue-on-error` is gone and the job is meant to gate."""
+    runs = [*_all_required_green(), _run(_MUTATION, "failure")]
+    assert evaluate(runs, REQUIRED)["failing"] == [_MUTATION]
+
+
+def test_nongating_names_match_a_job_in_the_workflows() -> None:
+    """A renamed job would silently be waited on again."""
+    text = (_REPO / ".github" / "workflows" / "mutation.yml").read_text()
+    for name in NONGATING_WHILE_PENDING:
+        assert f"name: {name}\n" in text, name
 
 
 def test_a_slow_required_check_does_hold_the_train() -> None:

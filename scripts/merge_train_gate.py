@@ -101,6 +101,22 @@ SELF_NAMES: frozenset[str] = frozenset({"Attempt merge-train FF", "merge"})
 # kept because it costs nothing and a bot can change surface.
 ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 
+# Checks whose *running* state never gates, though their result still does
+# (#1633). The mutation diff job is advisory through job-level
+# `continue-on-error`, which sets its conclusion only once it finishes. While
+# it runs it read as pending, and its 60-minute cap is six times the train's
+# 10-minute wait, so a PR with every gate green was bounced whenever the job
+# was slow (always, when `cli.py` changes: #1632).
+#
+# This is not ADVISORY_NAMES: a `failure` conclusion still gates. Under
+# `continue-on-error` the job never reports one, so a failure means that line
+# was removed and the job is meant to block.
+# `tests/test_merge_train_gate.py` pins the name against `mutation.yml`, since
+# a rename would silently restore the wait.
+NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
+    "mutation (advisory, PR diff)",
+})
+
 # The presence floor (#1458). Check-run names emitted by every workflow that
 # triggers on `pull_request` and carries **no** `paths:`/`paths-ignore:` filter.
 #
@@ -227,9 +243,10 @@ def evaluate(
         n for n, r in gating.items()
         if r.get("conclusion") in FAILING_CONCLUSIONS
     )
-    pending = sorted(
+    still_running = {
         n for n, r in gating.items() if r.get("status") in PENDING_STATUSES
-    )
+    }
+    pending = sorted(still_running - NONGATING_WHILE_PENDING)
     advisory_failing = sorted(
         n for n, r in latest.items()
         if n in ADVISORY_NAMES and r.get("conclusion") in FAILING_CONCLUSIONS
@@ -240,6 +257,9 @@ def evaluate(
         "failing_required": sorted(n for n in failing if n in required),
         "failing_not_required": sorted(n for n in failing if n not in required),
         "pending": pending,
+        # Running, but not waited on (#1633); reported so the log says why
+        # the train moved while a check was still going.
+        "pending_not_gating": sorted(still_running & NONGATING_WHILE_PENDING),
         "missing": sorted((required | FLOOR_NAMES) - set(latest)),
         "advisory_failing": advisory_failing,
         # Advisory entries that matched nothing on this SHA. A renamed bot
