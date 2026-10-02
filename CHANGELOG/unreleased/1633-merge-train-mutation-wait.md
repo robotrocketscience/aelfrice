@@ -1,0 +1,3 @@
+### CI
+
+- **Merge-train no longer waits for the advisory mutation job to finish ([#1633](https://github.com/robotrocketscience/aelfrice/issues/1633)).** While `mutation (advisory, PR diff)` was running, the train counted it as a pending gate. The job can run for up to 60 minutes, and always does when `cli.py` changes ([#1632](https://github.com/robotrocketscience/aelfrice/issues/1632)). The train waits 10 minutes, so a PR with every gate green was bounced and had to be relabeled several times. Now the job's running state doesn't gate, and the train's log names it as still running. A failure result still blocks, because under the job-level `continue-on-error` the job never reports one unless that line is removed.
