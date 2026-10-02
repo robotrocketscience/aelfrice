@@ -57,16 +57,32 @@ A new entry point `aelfrice.hook_commit_ingest:main` registered as
 a Claude Code `PostToolUse` hook. The hook configuration matches
 on `Bash` tool calls; the hook itself acts when the command mentions
 `git` and `commit` and the call didn't fail. The command text is only a
-prefilter. Since #1698, the commits come from `HEAD`'s reflog in the
-payload `cwd`: every `commit…` entry (`commit:`, `commit (amend):`,
-`commit (initial):`, `commit (merge):`) written in the last
-`REFLOG_WINDOW_S` seconds (120). A chained commit, such as
-`git add x && git commit -q -m "…"`, a quiet commit, and a call that
-makes several commits all work. A call that made no commit, such as a
-`gh pr create --body` that quotes `git commit`, finds no recent entry
-and ingests nothing. A commit made in another terminal inside the
-window is ingested too. `git -C <path> commit` into another repository
-isn't seen, because the reflog is read in `cwd`.
+prefilter. Since #1698, the commits come from `HEAD`'s reflog: every
+entry whose subject starts with `commit` (`commit:`, `commit (amend):`,
+`commit (initial):`, `commit (merge):`, `commit (cherry-pick):`)
+written in the last `REFLOG_WINDOW_S` seconds (120). The reflog is
+read in the directory of a leading `cd <path> &&` step, or else in the
+payload `cwd`.
+
+- A chained commit, such as `git add x && git commit -q -m "…"`, a
+  quiet commit, and a call that makes several commits all work.
+- A commit older than the window is never read, so a call that made no
+  commit long after the last one ingests nothing.
+- Inside the window, a call that made no commit (a `gh pr create
+  --body` that quotes `git commit`) re-reads the recent commits. That
+  re-read writes nothing once every phrase is already logged for the
+  commit's session.
+- A merge or cherry-pick that commits by itself logs `merge …` or
+  `cherry-pick: …` and isn't ingested; one finished by `git commit`
+  is.
+- A commit made in another terminal inside the window is ingested too.
+- Entries are timed by committer date, so a commit made with a past
+  `GIT_COMMITTER_DATE` is missed.
+- `git -C <path> commit` into another repository isn't seen.
+
+A call that passes the prefilter pays one `git log -g`, about 57 ms on
+a development machine, which exceeds the 30 ms median budget below;
+about 2.7% of Bash calls in this project's transcripts pass it.
 
 Configuration lives under the user's `~/.claude/settings.json` (the
 existing hook-config surface). `aelf setup` writes the entry on
@@ -115,9 +131,12 @@ given, the author date, so every version of an amended commit shares
 one session. The store never lets a commit session corroborate a
 belief it created itself, so an amend, a second fire, or a retry after
 a crash adds no corroboration, while an edited amend still adds its new
-phrases. Commits on one branch have different parents, and branches cut
-from the same tip have different author dates, so distinct commits get
-distinct sessions and corroborate each other. Surface-stable across
+phrases. Commits on one branch have different parents, so distinct
+commits get distinct sessions and corroborate each other. Branches cut
+from the same tip share a parent, so two of their commits made in the
+same second share a session. A rebase or cherry-pick changes the
+parent, so the rewritten commit gets a new session and corroborates its
+earlier version; that was accepted by operator ruling on 2026-10-02. Surface-stable across
 machines (the same commit on two clones produces the same id). Before
 #1698, the id was `sha256(branch_name + ":" + commit_hash)[:16]`.
 

@@ -53,10 +53,11 @@ close the original limitation, so you don't have to work against the harness:
 - **`PostToolUse:Bash` commit-ingest** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
   After a Bash call that commits, including a commit chained after `git add`
   or run with `-q`, the hook runs the triple extractor on the body of each
-  commit message that call made. It finds those commits in `HEAD`'s reflog, so
-  a call that only mentions `git commit` ingests nothing. It then inserts the
-  resulting beliefs and edges under a deterministic session id built from the
-  commit's parent and author date, so an amend doesn't count twice.
+  commit message that call made. It finds those commits in `HEAD`'s reflog
+  entries from the last 2 minutes, read in the directory of a leading `cd`, so
+  an older commit is never re-read. It then inserts the resulting beliefs and
+  edges under a deterministic session id built from the commit's parent and
+  author date, so an amend doesn't count twice.
 
 Run `aelf setup`, and aelfrice receives fresh beliefs from normal session
 activity while the auto-memory directive plays no part either way. These three
