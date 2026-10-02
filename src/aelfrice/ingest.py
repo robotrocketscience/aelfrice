@@ -635,8 +635,8 @@ _PASTED_OUTPUT_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"|Ran \d+ (?:shell )?commands?"
     r"|[✻✽✶✳✢] [^\s]+ for (?:\d+h )?(?:\d+m )?\d+s(?: · [^\n]*)?"
     # A shell's own error line.
-    r"|(?:fish|bash|zsh|sh): (?:[^\n:]+: )?(?:[Cc]ommand not found|[Nn]o such file or directory"
-    r"|[Pp]ermission denied|Unknown command|Unsupported use|[Ss]yntax error)[^\n]*"
+    r"|(?:fish|bash|zsh|sh): (?:[^\n:]+: )?(?i:command not found|no such file or directory"
+    r"|permission denied|unknown command|unsupported use|syntax error)[^\n]*"
     # A log line: an ISO timestamp, or a clock time followed by a column
     # gap or a level word. "10:30:00 is when we deploy" stays.
     r"|\[?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\n]*"
