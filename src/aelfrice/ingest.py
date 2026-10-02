@@ -591,6 +591,80 @@ _HOST_MARKER_LINE_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+# #1691: a `<pasted_content>` block, with or without an id on its tags.
+_PASTED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<pasted_content\b[^>]*>(.*?)</pasted_content\b[^>]*>",
+    re.DOTALL | re.IGNORECASE,
+)
+# An interactive shell prompt followed by a command: `user@host dir> cmd`
+# (fish), `user@host:dir$ cmd` (bash), `user@host dir % cmd` (zsh).
+_SHELL_PROMPT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\w.-]+@[\w.-]+[ :][^\n]*?[>$#%](?:[ \t]|$)",
+)
+# Fixed-format lines that programs and the host print, never prose: git's
+# status, hint, commit, merge and diffstat lines; the host's tool and timing
+# lines; a shell's error prefix; and a timestamped log line.
+_PASTED_OUTPUT_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:"
+    r"On branch \S+"
+    r"|Your branch is .*"
+    r"|Changes (?:not staged for commit|to be committed):"
+    r"|Untracked files:"
+    r"|Unmerged paths:"
+    r"|\(use \"git [^\n]*"
+    r"|no changes added to commit\b.*"
+    r"|nothing to commit\b.*"
+    r"|(?:modified|deleted|new file|renamed|typechange|both modified):\s+\S.*"
+    r"|\[[^\]\s]+ [0-9a-f]{7,40}\] .*"
+    r"|\d+ files? changed(?:, \d+ insertions?\(\+\))?(?:, \d+ deletions?\(-\))?"
+    r"|\S+\s+\|\s+\d+ ?[+\-]*"
+    r"|Updating [0-9a-f]{7,}\.\.[0-9a-f]{7,}"
+    r"|Fast-forward"
+    r"|(?:create|delete) mode \d{6} .*"
+    r"|Ran \d+ (?:shell )?commands?\b.*"
+    r"|[✻✽✶✳✢] \S+ for (?:\d+h )?(?:\d+m )?\d+s\b.*"
+    r"|(?:fish|bash|zsh|sh): .*"
+    r"|\[?\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\]?\s.*"
+    r"|\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}.*"
+    r")\s*$",
+)
+# Two or more column gaps (a tab, or two or more spaces) between words: a
+# file listing or a table row. A line ending in sentence punctuation is
+# prose with double spacing, and stays.
+_COLUMN_GAP_RE: Final[re.Pattern[str]] = re.compile(r"\S(?:\t+| {2,})(?=\S)")
+# One whitespace-free token with path, URL or slug punctuation in it. A dot
+# or colon counts only with text after it, so a one-word sentence ("Thanks.")
+# stays.
+_BARE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^(?:\S*[/+=_]\S*|\S*[.:]\S+)$")
+
+
+def _is_pasted_output_line(line: str) -> bool:
+    """True when a pasted line is program or host output, not prose."""
+    s = line.strip()
+    if not s:
+        return False
+    if _SHELL_PROMPT_RE.match(s) or _PASTED_OUTPUT_LINE_RE.match(s):
+        return True
+    if _BARE_TOKEN_RE.match(s):
+        return True
+    return len(_COLUMN_GAP_RE.findall(s)) >= 2 and not s.endswith((".", "?", "!"))
+
+
+def _pasted_prose(body: str) -> str:
+    """The prose in a pasted block, with terminal and tool output removed.
+
+    A block that opens with a shell prompt is a terminal transcript and goes
+    whole: its command and the command's output are both machine text. In
+    any other block, only lines in a fixed output format are dropped, so the
+    prose around them stays (operator ruling, 2026-10-02, #1691).
+    """
+    lines = body.splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    if _SHELL_PROMPT_RE.match(first):
+        return ""
+    return "\n".join(ln for ln in lines if not _is_pasted_output_line(ln))
+
+
 def _user_speech(text: str) -> str | None:
     """The part of a user record the user wrote, or None if there is none.
 
@@ -611,17 +685,20 @@ def _user_speech(text: str) -> str | None:
     drops a pasted tool glyph or shell line on its own sentence, without
     taking the user's other sentences in the record with it.
 
-    Text the user pasted (`<pasted_content>`) is kept on purpose: a paste
+    Prose the user pasted (`<pasted_content>`) is kept on purpose: a paste
     is the user's choice of what to say, even when it quotes another
     session (operator ruling, 2026-09-30). Quoted model prose with no
     wrapper cannot be told from the user's own by any deterministic test.
+    Pasted terminal and tool output is not kept: before #1691 each line of
+    a pasted `git status` became a belief (`_pasted_prose`).
     """
     rest = _HOST_MARKER_LINE_RE.sub("", text)
     rest = _SYSTEM_REMINDER_RE.sub("", rest).strip()
     if not rest or _COMMAND_WRAPPER_RE.match(rest):
         return None
     rest = _HARNESS_BLOCK_RE.sub("", rest)
-    rest = _UNCLOSED_BLOCK_RE.sub("", rest).strip()
+    rest = _UNCLOSED_BLOCK_RE.sub("", rest)
+    rest = _PASTED_BLOCK_RE.sub(lambda m: _pasted_prose(m.group(1)), rest).strip()
     return rest or None
 
 
