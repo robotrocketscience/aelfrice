@@ -49,6 +49,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
     CORROBORATION_SOURCES_NON_ASSERTING,
     CORROBORATION_SOURCES_USER_EXPLICIT,
     EDGE_RELATES_TO,
@@ -1460,6 +1461,18 @@ _NUMERIC_OFFSET_SQL: Final[str] = (
     "({col} GLOB '*[+-][0-9][0-9]:[0-9][0-9]' "
     "OR {col} GLOB '*T*[+-][0-9][0-9][0-9][0-9]')"
 )
+
+
+def _is_commit_self_reread(
+    existing: Belief, source_type: str, session_id: str | None,
+) -> bool:
+    """True when commit ingest hits a belief its own session created
+    (#1698). See `MemoryStore.insert_or_corroborate`."""
+    return (
+        source_type == CORROBORATION_SOURCE_COMMIT_INGEST
+        and session_id is not None
+        and existing.session_id == session_id
+    )
 
 
 class MemoryStore:
@@ -4950,6 +4963,12 @@ class MemoryStore:
         every run, so a row per read counted re-reading as re-assertion.
         New content is still inserted.
 
+        **A commit re-reading itself (#1698).** A commit-ingest hit on a
+        belief that the same commit session created records no row. An
+        amend, a retry after a crash, or a second hook fire on the same
+        commit re-reads that commit's own text, which is not independent
+        evidence. A different commit's session still corroborates.
+
         **Re-assertion of retired content (#1215).** The content-hash
         lookup opts into retired rows because `content_hash` is UNIQUE
         (#219) — a tombstone still owns its hash, so an insert that could
@@ -5014,6 +5033,8 @@ class MemoryStore:
             # #1615: re-reading a file is not a re-assertion.
             if source_type in CORROBORATION_SOURCES_NON_ASSERTING:
                 return (existing.id, False)
+            if _is_commit_self_reread(existing, source_type, session_id):
+                return (existing.id, False)
             self.record_corroboration(
                 existing.id,
                 source_type=source_type,
@@ -5035,6 +5056,8 @@ class MemoryStore:
         existing_by_id = self.get_belief(b.id, include_retired=True)
         if existing_by_id is not None:
             if source_type in CORROBORATION_SOURCES_NON_ASSERTING:
+                return (existing_by_id.id, False)
+            if _is_commit_self_reread(existing_by_id, source_type, session_id):
                 return (existing_by_id.id, False)
             self.record_corroboration(
                 existing_by_id.id,
