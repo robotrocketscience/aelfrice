@@ -42,6 +42,7 @@ import shutil
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Final, Literal, cast
 
@@ -2724,6 +2725,128 @@ def format_filesystem_corroboration_report(
 
 
 # ---------------------------------------------------------------------------
+# repair-utc-created-at pass (issue #1660)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class UtcCreatedAtReport:
+    """Summary of one `repair_utc_created_at` pass.
+
+    `rows_found` counts beliefs whose `created_at` carries a non-zero UTC
+    offset, spread over `sessions_affected` sessions. The spine counts
+    are the TEMPORAL_NEXT edges the re-chain removes and writes. Like the
+    filesystem-corroboration pass, the dry run makes the change inside a
+    transaction and rolls it back, so its counts are measured. `samples`
+    holds up to five `(belief_id, before, after)` rows.
+    """
+
+    rows_found: int = 0
+    sessions_affected: int = 0
+    spine_edges_removed: int = 0
+    spine_edges_written: int = 0
+    rewritten: int = 0
+    dry_run: bool = True
+    samples: list[tuple[str, str, str]] = field(
+        default_factory=list[tuple[str, str, str]],
+    )
+
+
+def utc_z_form(value: str) -> str | None:
+    """`value` rewritten as UTC with a `Z` suffix, or None to leave it.
+
+    None when it doesn't parse, is naive, or is already UTC (`Z` or
+    `+00:00`, the same instant). Fractional seconds are kept, so a value
+    without them gets the `YYYY-MM-DDTHH:MM:SSZ` form the scanner has
+    written since #1611.
+    """
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    offset = dt.utcoffset()
+    if offset is None or offset == timedelta(0):
+        return None
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def repair_utc_created_at(
+    store: "MemoryStore",
+    *,
+    dry_run: bool = True,
+) -> UtcCreatedAtReport:
+    """Rewrite `created_at` values with a non-zero UTC offset as UTC `Z`,
+    then re-chain the spine of each session they're in. Issue #1660.
+
+    Before #1611 the scanner stored git author dates with the author's
+    local offset. Next to `Z` rows, text order then differs from real
+    order, and the spine, ordered by `(created_at, rowid)`, links some
+    pairs backwards in time. A store with no such row is left untouched:
+    the pass returns before it opens a transaction.
+
+    Must own its transaction, for the same reason as
+    `gc_filesystem_corroboration`: it raises `RuntimeError` when one is
+    already open on `store`.
+    """
+    from aelfrice.temporal_spine import rechain_sessions  # noqa: PLC0415
+
+    if store.transaction_open:
+        raise RuntimeError(
+            "repair_utc_created_at needs its own transaction; "
+            "call it outside store.transaction() and with no pending writes"
+        )
+    report = UtcCreatedAtReport(dry_run=dry_run)
+    candidates = store.created_at_with_numeric_offset()
+    if not any(utc_z_form(v) is not None for _, v in candidates):
+        return report
+    try:
+        with store.transaction(immediate=True):
+            changes = [
+                (bid, old, new)
+                for bid, old in store.created_at_with_numeric_offset()
+                if (new := utc_z_form(old)) is not None
+            ]
+            sessions: set[str] = set()
+            for bid, _, new in changes:
+                store.set_belief_created_at(bid, new)
+                b = store.get_belief(bid, include_retired=True)
+                if b is not None and b.session_id is not None:
+                    sessions.add(b.session_id)
+            report.rows_found = len(changes)
+            report.sessions_affected = len(sessions)
+            report.samples = changes[:5]
+            removed, written = rechain_sessions(store, sessions)
+            report.spine_edges_removed = removed
+            report.spine_edges_written = written
+            if dry_run:
+                raise _DryRunRollback
+    except _DryRunRollback:
+        return report
+    report.rewritten = report.rows_found
+    return report
+
+
+def format_utc_created_at_report(report: UtcCreatedAtReport) -> str:
+    """Human-readable rendering of `repair_utc_created_at` output."""
+    lines: list[str] = [
+        f"created_at rows with a non-UTC offset: {report.rows_found} "
+        f"in {report.sessions_affected} session(s)",
+        f"spine edges re-chained: {report.spine_edges_removed} removed, "
+        f"{report.spine_edges_written} written",
+    ]
+    for bid, before, after in report.samples:
+        lines.append(f"  {bid}: {before} -> {after}")
+    if report.dry_run:
+        if report.rows_found == 0:
+            lines.append("nothing to do.")
+        else:
+            lines.append("dry-run; re-run with --apply to rewrite these rows.")
+    else:
+        lines.append(f"rewritten: {report.rewritten}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # promote-retention pass (issue #290 phase-3)
 # ---------------------------------------------------------------------------
 
@@ -2781,7 +2904,6 @@ def promote_retention(
     ``dry_run=True`` returns the candidate count without mutating.
     ``max_n`` caps how many candidates are promoted per run.
     """
-    from datetime import datetime, timezone
 
     report = PromotionRunReport(dry_run=dry_run)
     candidates = store.find_promotable_snapshots(

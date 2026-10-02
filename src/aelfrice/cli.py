@@ -95,10 +95,12 @@ from aelfrice.doctor import (
     format_orphan_report as _format_orphan_report,
     format_promotion_report as _format_promotion_report,
     format_report,
+    format_utc_created_at_report as _format_utc_created_at_report,
     gc_filesystem_corroboration as _gc_filesystem_corroboration,
     gc_orphan_feedback as _gc_orphan_feedback,
     promote_retention as _promote_retention,
     prune_broken_aelf_hooks,
+    repair_utc_created_at as _repair_utc_created_at,
 )
 from aelfrice.llm_classifier import (
     CONSENT_SCOPE_ONBOARD_CANDIDATES as _LLM_SCOPE_ONBOARD,
@@ -6870,15 +6872,23 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
-    if getattr(args, "gc_orphan_feedback", False) and getattr(
-        args, "gc_filesystem_corroboration", False
-    ):
+    passes = [
+        flag for flag, dest in (
+            ("--gc-orphan-feedback", "gc_orphan_feedback"),
+            ("--gc-filesystem-corroboration", "gc_filesystem_corroboration"),
+            ("--repair-utc-created-at", "repair_utc_created_at"),
+        )
+        if getattr(args, dest, False)
+    ]
+    if len(passes) > 1:
         print(
-            "doctor: --gc-orphan-feedback and --gc-filesystem-corroboration "
-            "are separate passes; run them one at a time.",
+            f"doctor: {' and '.join(passes)} are separate passes; "
+            "run them one at a time.",
             file=sys.stderr,
         )
         return 2
+    if getattr(args, "repair_utc_created_at", False):
+        return _cmd_doctor_repair_utc_created_at(args, out)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
     if getattr(args, "gc_filesystem_corroboration", False):
@@ -7589,6 +7599,26 @@ def _cmd_doctor_gc_orphan_feedback(
     finally:
         store.close()
     print(_format_orphan_feedback_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_repair_utc_created_at(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Rewrite offset-form `created_at` values as UTC and re-chain the
+    affected spine sessions (issue #1660).
+
+    Default is dry-run: it reports the rows, the sessions, and the spine
+    edges the re-chain would change. With `--apply`, it writes them.
+    Bypasses the hooks/graph checks.
+    """
+    apply = bool(getattr(args, "apply", False))
+    store = _open_store()
+    try:
+        report = _repair_utc_created_at(store, dry_run=not apply)
+    finally:
+        store.close()
+    print(_format_utc_created_at_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -9682,13 +9712,27 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
+        "--repair-utc-created-at",
+        dest="repair_utc_created_at",
+        action="store_true",
+        default=False,
+        help=(
+            "find beliefs whose created_at carries a non-UTC offset (stored "
+            "by onboard before #1611), and report the rows and the spine "
+            "edges a re-chain would change (issue #1660). Bypasses the "
+            "hooks/graph checks. Combine with --apply to rewrite them as "
+            "UTC; default is dry-run."
+        ),
+    )
+    p_doctor.add_argument(
         "--apply",
         dest="apply",
         action="store_true",
         default=False,
         help=(
             "with --gc-orphan-feedback, --gc-filesystem-corroboration, "
-            "--prune-noise, or --prune-dormant: actually make the change "
+            "--repair-utc-created-at, --prune-noise, or --prune-dormant: "
+            "actually make the change "
             "(default: dry-run)."
         ),
     )
