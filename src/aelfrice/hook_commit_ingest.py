@@ -18,24 +18,32 @@ Hook contract (Claude Code PostToolUse):
   cause a `git commit` to feel broken.
 
 **Which commits a call made (#1698).** The command text is only a
-cheap prefilter. The commits come from `HEAD`'s reflog in the payload
-`cwd`: every `commit…` entry (`commit:`, `commit (amend):`,
-`commit (initial):`, `commit (merge):`) written in the last
-`REFLOG_WINDOW_S` seconds. Before #1698 the hook matched only a
-command that started with `git commit` and read the hash from the
-`[branch hash]` line, which `git commit -q` doesn't print; it ingested
-about 2 of 399 commits in this project's sessions (#1683). Reading the
-reflog also means a chained command, a quiet commit, and a call that
-makes several commits all work, while a call that made no commit (a
-`gh pr create --body` that quotes `git commit`, or a commit step that
-failed inside `… || true`) finds no recent entry and ingests nothing.
+cheap prefilter. The commits come from `HEAD`'s reflog: every entry
+whose subject starts with `commit` (`commit:`, `commit (amend):`,
+`commit (initial):`, `commit (merge):`, `commit (cherry-pick):`)
+written in the last `REFLOG_WINDOW_S` seconds. The reflog is read in
+the directory of a leading `cd <path> &&`, or else in the payload
+`cwd`. Before #1698 the hook matched only a command that started with
+`git commit` and read the hash from the `[branch hash]` line, which
+`git commit -q` doesn't print; it ingested about 2 of 399 commits in
+this project's sessions (#1683). Reading the reflog means a chained
+command, a quiet commit, and a call that makes several commits all
+work. A commit older than the window is never read. A call inside the
+window that made no commit re-reads the recent ones, and that re-read
+is skipped once every phrase is already logged for the commit's
+session. Entries are timed by committer date, so a commit made with a
+past `GIT_COMMITTER_DATE` is missed.
 
 Latency budget per docs/design/commit_ingest_hook.md:
     median <= 30 ms, p95 <= 100 ms
+A call that passes the prefilter pays one `git log -g`, about 57 ms on
+a development machine, so it exceeds the median budget; about 2.7% of
+Bash calls in this project's transcripts pass it (#1698).
 
 Tactics:
 - Lazy imports of triple_extractor and store (cold-start dominates).
-- A Bash call that doesn't mention `git` and `commit` costs one regex.
+- A Bash call that doesn't mention `git` and `commit` costs two
+  linear regex searches.
 - Cap the message body at 4 KB before extraction.
 - One `git log -g` for the reflog, plus one `git log -1` per commit
   found in the window.
@@ -53,9 +61,13 @@ import subprocess
 import sys
 import time
 import traceback
-from typing import IO, Final, cast
+from typing import IO, TYPE_CHECKING, Final, cast
 
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
+
+if TYPE_CHECKING:
+    from aelfrice.store import MemoryStore
+    from aelfrice.triple_extractor import Triple
 
 MESSAGE_BYTE_CAP: Final[int] = 4096
 """Truncate commit messages above this many bytes before extraction.
@@ -68,19 +80,25 @@ the hook past the latency budget."""
 REFLOG_WINDOW_S: Final[int] = 120
 """A reflog `commit…` entry this recent counts as made by the call that
 just finished (#1698). Long enough for a commit chained after a slow
-step, short enough that an old `HEAD` is never re-read. A commit made
-in another terminal inside the window is ingested too; it's a real
-commit in the repository either way."""
+step; an older commit is never read. A commit made in another terminal
+inside the window is ingested too; it's a real commit in the repository
+either way."""
 
 REFLOG_DEPTH: Final[int] = 20
 """How many reflog entries to read. More commits than this in one call
 are rare; the oldest beyond it are skipped."""
 
 # #1698: the cheapest test that a Bash call might have committed. The
-# reflog decides whether it did, so a false match costs one `git log -g`
-# and ingests nothing.
-_MENTIONS_GIT_COMMIT: Final[re.Pattern[str]] = re.compile(
-    r"\bgit\b[\s\S]*\bcommit\b"
+# reflog decides whether it did. Two separate searches, so the cost stays
+# linear in the command's length.
+_GIT_WORD: Final[re.Pattern[str]] = re.compile(r"\bgit\b")
+_COMMIT_WORD: Final[re.Pattern[str]] = re.compile(r"\bcommit\b")
+
+# A leading `cd <path>` step: `cd ../wt && git commit …` commits in that
+# directory, not in the payload's cwd. About a third of commit calls in
+# this project's transcripts start this way (#1698).
+_LEADING_CD: Final[re.Pattern[str]] = re.compile(
+    r"\A\s*cd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)"
 )
 
 # `git log -g --date=unix` renders the reflog selector as `HEAD@{<unix>}`.
@@ -103,6 +121,22 @@ def _read_payload(
     return cast(dict[str, object], parsed)
 
 
+def _mentions_git_commit(cmd: str) -> bool:
+    return bool(_GIT_WORD.search(cmd)) and bool(_COMMIT_WORD.search(cmd))
+
+
+def _repo_dir(cmd: str, cwd: str | None) -> str | None:
+    """The directory the commit ran in: a leading `cd <path>` target,
+    resolved against `cwd`, or `cwd` itself."""
+    m = _LEADING_CD.match(cmd)
+    if m is None:
+        return cwd
+    target = os.path.expanduser(m.group(1).strip("\"'"))
+    if cwd is not None and not os.path.isabs(target):
+        target = os.path.join(cwd, target)
+    return target
+
+
 def _may_have_committed(payload: dict[str, object]) -> bool:
     if payload.get("tool_name") != "Bash":
         return False
@@ -110,7 +144,7 @@ def _may_have_committed(payload: dict[str, object]) -> bool:
     if not isinstance(tool_input, dict):
         return False
     cmd = cast(dict[str, object], tool_input).get("command")
-    if not isinstance(cmd, str) or not _MENTIONS_GIT_COMMIT.search(cmd):
+    if not isinstance(cmd, str) or not _mentions_git_commit(cmd):
         return False
     tool_response = payload.get("tool_response")
     if isinstance(tool_response, dict):
@@ -193,10 +227,11 @@ def _derive_session_id(first_parent: str, author_date: str) -> str:
     date, so every version of an amended commit shares one session, and
     the store never lets a commit session corroborate a belief it
     created itself (`MemoryStore.insert_or_corroborate`). Branches cut
-    from the same tip share a parent but not an author date, so their
-    commits stay distinct. Two commits on one parent in the same second
-    would collide; that needs a scripted commit pair on two branches.
-    Cross-machine stable."""
+    from the same tip share a parent, so their commits stay distinct only
+    if their author dates differ: two commits on one parent in the same
+    second share a session. A rebase or cherry-pick changes the parent,
+    so the rewritten commit gets a new session and corroborates its
+    earlier version (operator ruling, 2026-10-02). Cross-machine stable."""
     raw = f"commit:{first_parent}\x00{author_date}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
@@ -219,8 +254,23 @@ def _do_ingest(payload: dict[str, object]) -> None:
         return
     cwd_obj = payload.get("cwd")
     cwd = cwd_obj if isinstance(cwd_obj, str) else None
-    for commit_hash in _recent_commits(cwd):
-        _ingest_commit(commit_hash, cwd)
+    tool_input = cast(dict[str, object], payload["tool_input"])
+    repo = _repo_dir(cast(str, tool_input["command"]), cwd)
+    for commit_hash in _recent_commits(repo):
+        _ingest_commit(commit_hash, repo)
+
+
+def _already_logged(store: "MemoryStore", session_id: str, triples: list["Triple"]) -> bool:
+    """True when every subject and object phrase of `triples` already has
+    an `ingest_log` row under `session_id`: a re-read of a commit this
+    session ingested (#1698). An edited amend adds a phrase, so it is not
+    skipped."""
+    rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT raw_text FROM ingest_log WHERE session_id = ?", (session_id,),
+    ).fetchall()
+    logged = {str(r[0]) for r in rows}
+    phrases = {p for t in triples for p in (t.subject, t.object) if p}
+    return phrases <= logged
 
 
 def _ingest_commit(commit_hash: str, cwd: str | None) -> None:
@@ -262,6 +312,8 @@ def _ingest_commit(commit_hash: str, cwd: str | None) -> None:
             existing = store.get_session(session_id)
         except Exception:  # pyright: ignore[reportBroadException]
             existing = None
+        if existing is not None and _already_logged(store, session_id, triples):
+            return
         if existing is None:
             store._conn.execute(  # pyright: ignore[reportPrivateUsage]
                 "INSERT OR IGNORE INTO sessions "

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -268,12 +269,12 @@ def test_no_triples_does_not_create_session(
     ],
 )
 def test_commit_commands_pass_the_prefilter(command: str) -> None:
-    assert hk._MENTIONS_GIT_COMMIT.search(command)  # pyright: ignore[reportPrivateUsage]
+    assert hk._mentions_git_commit(command)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("command", ["git status", "ls commits", "make test"])
 def test_other_commands_fail_the_prefilter(command: str) -> None:
-    assert not hk._MENTIONS_GIT_COMMIT.search(command)  # pyright: ignore[reportPrivateUsage]
+    assert not hk._mentions_git_commit(command)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.timeout(30)
@@ -503,5 +504,170 @@ def test_a_commit_session_never_corroborates_its_own_belief(
             "SELECT COUNT(*) FROM belief_corroborations"
         ).fetchone()[0]
         assert n == rows
+    finally:
+        store.close()
+
+
+# --- #1698 round 3 -----------------------------------------------------------
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"command": "git status"},  # fails the prefilter
+        {"command": "git commit -q -m x", "is_error": True},
+        {"command": "git commit -q -m x", "interrupted": True},
+    ],
+)
+def test_a_recent_commit_is_left_alone_by_other_calls(
+    git_repo: Path, per_repo_db: Path, case: dict[str, object],
+) -> None:
+    """A recent commit with triples is in the window, so only the
+    prefilter and the error flags keep these calls from ingesting it."""
+    _make_commit(git_repo, _MSG)
+    _drive(_payload(
+        command=str(case["command"]), stdout="", cwd=str(git_repo),
+        is_error=bool(case.get("is_error", False)),
+        interrupted=bool(case.get("interrupted", False)),
+    ))
+    assert _sessions(per_repo_db) == []
+
+
+def test_session_keys_differ_by_parent_and_by_author_date() -> None:
+    k = hk._derive_session_id  # pyright: ignore[reportPrivateUsage]
+    base = k("p1", "2026-01-01T00:00:00Z")
+    assert base == k("p1", "2026-01-01T00:00:00Z")
+    assert base != k("p2", "2026-01-01T00:00:00Z")
+    assert base != k("p1", "2026-01-01T00:00:01Z")
+
+
+@pytest.mark.timeout(30)
+def test_an_amend_with_a_later_committer_date_keeps_the_session(
+    git_repo: Path, per_repo_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An amend changes the committer date, not the author date."""
+    _make_commit(git_repo, _MSG)
+    _drive(_commit_payload(git_repo))
+    later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 30))
+    monkeypatch.setenv("GIT_COMMITTER_DATE", later)
+    _git(git_repo, "commit", "-q", "--amend", "--no-edit")
+    _drive(_commit_payload(git_repo))
+    assert len(_sessions(per_repo_db)) == 1
+
+
+@pytest.mark.timeout(30)
+def test_the_older_commit_creates_a_shared_phrase(
+    git_repo: Path, per_repo_db: Path,
+) -> None:
+    """Commits are ingested oldest first, so a phrase two commits share
+    belongs to the first one's session."""
+    _make_commit(git_repo, _MSG)
+    first = hk._derive_session_id(  # pyright: ignore[reportPrivateUsage]
+        _git(git_repo, "log", "-1", "--format=%P").split()[0],
+        _git(git_repo, "log", "-1", "--format=%aI").strip(),
+    )
+    _make_commit(git_repo, _MSG + " ")
+    _drive(_commit_payload(git_repo))
+    store = MemoryStore(str(per_repo_db))
+    try:
+        sessions = {str(r[0]) for r in store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT session_id FROM beliefs"
+        ).fetchall()}
+    finally:
+        store.close()
+    assert sessions == {first}
+
+
+@pytest.mark.timeout(30)
+def test_a_merge_commit_is_keyed_on_its_first_parent(
+    git_repo: Path, per_repo_db: Path,
+) -> None:
+    _git(git_repo, "checkout", "-q", "-b", "side")
+    _make_commit(git_repo, "a side note")
+    _git(git_repo, "checkout", "-q", "main")
+    main_tip = _git(git_repo, "rev-parse", "HEAD").strip()
+    # `git commit` finishing a merge logs `commit (merge):`; a merge that
+    # commits by itself logs `merge …` and is out of scope.
+    _git(git_repo, "merge", "-q", "--no-ff", "--no-commit", "side")
+    _git(git_repo, "commit", "-q", "-m", _MSG)
+    author_date = _git(git_repo, "log", "-1", "--format=%aI").strip()
+    _drive(_commit_payload(git_repo, "git merge --no-ff side && git commit -q"))
+    expected = hk._derive_session_id(main_tip, author_date)  # pyright: ignore[reportPrivateUsage]
+    assert _sessions(per_repo_db) == [expected]
+
+
+@pytest.mark.timeout(30)
+def test_a_reread_inside_the_window_writes_no_log_rows(
+    git_repo: Path, per_repo_db: Path,
+) -> None:
+    _make_commit(git_repo, _MSG)
+    _drive(_commit_payload(git_repo))
+
+    def log_rows() -> int:
+        store = MemoryStore(str(per_repo_db))
+        try:
+            return int(store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+                "SELECT COUNT(*) FROM ingest_log"
+            ).fetchone()[0])
+        finally:
+            store.close()
+
+    before = log_rows()
+    _drive(_commit_payload(git_repo, 'gh pr create --body "see git commit"'))
+    assert log_rows() == before
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("relative", [False, True])
+def test_a_leading_cd_reads_that_repository(
+    git_repo: Path, per_repo_db: Path, tmp_path: Path, relative: bool,
+) -> None:
+    _make_commit(git_repo, _MSG)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = os.path.relpath(git_repo, elsewhere) if relative else str(git_repo)
+    _drive(_payload(
+        command=f"cd {target} && git add x && git commit -q -F m",
+        stdout="", cwd=str(elsewhere),
+    ))
+    assert len(_sessions(per_repo_db)) == 1
+
+
+@pytest.mark.parametrize(
+    ("command", "cwd", "expected"),
+    [
+        ("git commit -m x", "/a", "/a"),
+        ("cd /b && git commit -m x", "/a", "/b"),
+        ("cd sub; git commit -m x", "/a", "/a/sub"),
+        ('cd "/with space" && git commit', "/a", "/with space"),
+        ("echo cd /b && git commit", "/a", "/a"),
+    ],
+)
+def test_repo_dir(command: str, cwd: str, expected: str) -> None:
+    assert hk._repo_dir(command, cwd) == expected  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_prefilter_stays_linear() -> None:
+    start = time.perf_counter()
+    hk._mentions_git_commit("git x " * 20_000)  # pyright: ignore[reportPrivateUsage]
+    assert time.perf_counter() - start < 0.5
+
+
+@pytest.mark.parametrize("source", [CORROBORATION_SOURCE_COMMIT_INGEST])
+def test_the_self_rule_also_covers_an_id_collision(
+    tmp_path: Path, source: str,
+) -> None:
+    """Same id, different content hash: the id-collision branch."""
+    store = MemoryStore(str(tmp_path / "s.db"))
+    try:
+        store.insert_belief(_belief("S1"))
+        other = _belief("S1")
+        other.content_hash = "h-other"
+        store.insert_or_corroborate(other, source_type=source, session_id="S1")
+        n = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) FROM belief_corroborations"
+        ).fetchone()[0]
+        assert n == 0
     finally:
         store.close()
