@@ -67,7 +67,9 @@ Two behaviours are inherited deliberately and must not be simplified away:
 * **`pending` is scoped to the same non-advisory set as `failing`**, so a slow
   or silent *advisory* bot no longer holds the train to
   `CHECK_TIMEOUT_SECONDS`. Any other slow check still does, by design — it
-  gates, so waiting for it is the point.
+  gates, so waiting for it is the point. The one narrowing is
+  `NONGATING_WHILE_PENDING` (#1633): its running state is not waited on, and
+  a result it reports after the train moves is not seen.
 
 Usage::
 
@@ -108,9 +110,11 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 # 10-minute wait, so a PR with every gate green was bounced whenever the job
 # was slow (always, when `cli.py` changes: #1632).
 #
-# This is not ADVISORY_NAMES: a `failure` conclusion still gates. Under
-# `continue-on-error` the job never reports one, so a failure means that line
-# was removed and the job is meant to block.
+# This is not ADVISORY_NAMES: a `failure` conclusion still gates, but only if
+# it arrives while the train is polling. Once everything else has settled the
+# train moves, and a later result is never read. That is acceptable only
+# because job-level `continue-on-error` keeps the job's conclusion off
+# `failure`; a test ties every name here to that line in its workflow.
 # `tests/test_merge_train_gate.py` pins the name against `mutation.yml`, since
 # a rename would silently restore the wait.
 NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
@@ -211,6 +215,7 @@ def evaluate(
     """Classify every check-run. Advisory names are excluded from the gate.
 
     `failing` and `pending` cover everything that is not this train's own job
+    (`pending` also leaves out `NONGATING_WHILE_PENDING`, #1633)
     and not advisory — so a red `migration-policy-check` still blocks, exactly
     as before. `required` is used only to annotate which of the failures were
     required contexts; it never narrows the gate.

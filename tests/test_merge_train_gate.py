@@ -237,12 +237,30 @@ def test_a_slow_non_advisory_check_does_hold_the_train() -> None:
 _MUTATION = "mutation (advisory, PR diff)"
 
 
-def test_a_running_mutation_job_does_not_hold_the_train() -> None:
+@pytest.mark.parametrize("status", ["queued", "in_progress", "pending"])
+def test_a_running_mutation_job_does_not_hold_the_train(status: str) -> None:
     """#1633: its 60-minute run outlasted the train's 10-minute wait."""
-    runs = [*_all_required_green(), _run(_MUTATION, None, status="in_progress")]
+    runs = [*_all_required_green(), _run(_MUTATION, None, status=status)]
     verdict = evaluate(runs, REQUIRED)
     assert verdict["pending"] == []
     assert verdict["pending_not_gating"] == [_MUTATION]
+
+
+def test_a_finished_or_absent_mutation_job_is_not_logged_as_running() -> None:
+    finished = [*_all_required_green(), _run(_MUTATION, "success")]
+    assert evaluate(finished, REQUIRED)["pending_not_gating"] == []
+    assert evaluate(_all_required_green(), REQUIRED)["pending_not_gating"] == []
+
+
+@pytest.mark.parametrize(
+    "name", ["migration-policy-check", "mutation", "mutmut"],
+)
+def test_a_running_check_with_a_similar_name_still_holds_the_train(
+    name: str,
+) -> None:
+    """The exemption is one exact name, not a pattern."""
+    runs = [*_all_required_green(), _run(name, None, status="in_progress")]
+    assert evaluate(runs, REQUIRED)["pending"] == [name]
 
 
 def test_a_failed_mutation_job_still_blocks() -> None:
@@ -252,11 +270,51 @@ def test_a_failed_mutation_job_still_blocks() -> None:
     assert evaluate(runs, REQUIRED)["failing"] == [_MUTATION]
 
 
-def test_nongating_names_match_a_job_in_the_workflows() -> None:
-    """A renamed job would silently be waited on again."""
-    text = (_REPO / ".github" / "workflows" / "mutation.yml").read_text()
+def _job_bodies(workflow: Path) -> dict[str, list[str]]:
+    """`{job name: its own key lines}` for every job with a `name:` key.
+
+    A job is a two-space-indented key under `jobs:`; its own keys are the
+    lines indented exactly four spaces, so a step's `continue-on-error`
+    (indented further) never counts, and a commented line never matches.
+    """
+    jobs: dict[str, list[str]] = {}
+    body: list[str] | None = None
+    in_jobs = False
+
+    def flush() -> None:
+        if body:
+            names = [ln[len("    name: "):] for ln in body if ln.startswith("    name: ")]
+            if names:
+                jobs[names[0].strip()] = body
+
+    for line in workflow.read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            flush()
+            body = None
+            in_jobs = line.rstrip() == "jobs:"
+            continue
+        if in_jobs and re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+            flush()
+            body = []
+            continue
+        if body is not None and line.startswith("    ") and line[4] != " ":
+            body.append(line.rstrip())
+    flush()
+    return jobs
+
+
+def test_every_nongating_name_is_a_continue_on_error_job() -> None:
+    """A renamed job would silently be waited on again, and a job without
+    job-level `continue-on-error` could report a failure the train never
+    reads once it has moved on (#1633)."""
+    jobs: dict[str, list[str]] = {}
+    for wf in sorted((_REPO / ".github" / "workflows").glob("*.yml")):
+        jobs.update(_job_bodies(wf))
     for name in NONGATING_WHILE_PENDING:
-        assert f"name: {name}\n" in text, name
+        assert name in jobs, f"no job is named {name!r}"
+        assert "    continue-on-error: true" in jobs[name], name
 
 
 def test_a_slow_required_check_does_hold_the_train() -> None:
