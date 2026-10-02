@@ -55,8 +55,18 @@ production even after the schema migrations land.
 
 A new entry point `aelfrice.hook_commit_ingest:main` registered as
 a Claude Code `PostToolUse` hook. The hook configuration matches
-on `Bash` tool calls whose command starts with `git commit` and
-exited successfully (non-zero exit codes mean no commit happened).
+on `Bash` tool calls; the hook itself acts when the command mentions
+`git` and `commit` and the call didn't fail. The command text is only a
+prefilter. Since #1698, the commits come from `HEAD`'s reflog in the
+payload `cwd`: every `commit…` entry (`commit:`, `commit (amend):`,
+`commit (initial):`, `commit (merge):`) written in the last
+`REFLOG_WINDOW_S` seconds (120). A chained commit, such as
+`git add x && git commit -q -m "…"`, a quiet commit, and a call that
+makes several commits all work. A call that made no commit, such as a
+`gh pr create --body` that quotes `git commit`, finds no recent entry
+and ingests nothing. A commit made in another terminal inside the
+window is ingested too. `git -C <path> commit` into another repository
+isn't seen, because the reflog is read in `cwd`.
 
 Configuration lives under the user's `~/.claude/settings.json` (the
 existing hook-config surface). `aelf setup` writes the entry on
@@ -95,13 +105,21 @@ The hook derives `session_id` from git context rather than asking
 the user or generating a random uuid:
 
 ```
-session_id = sha256(branch_name + ":" + commit_hash)[:16]
+session_id = sha256("commit:" + first_parent + "\0" + author_date)[:16]
 ```
 
-Stable across hook invocations on the same commit (idempotent if
-the hook fires twice). Distinct per commit. Surface-stable across
-machines (the same commit on two clones produces the same id),
-which makes future cross-machine session deduplication easier.
+Stable across hook invocations on the same commit (idempotent if the
+hook fires twice). Stable across amends too (#1698): `git commit
+--amend` keeps the parent and, unless `--reset-author` or `--date` is
+given, the author date, so every version of an amended commit shares
+one session. The store never lets a commit session corroborate a
+belief it created itself, so an amend, a second fire, or a retry after
+a crash adds no corroboration, while an edited amend still adds its new
+phrases. Commits on one branch have different parents, and branches cut
+from the same tip have different author dates, so distinct commits get
+distinct sessions and corroborate each other. Surface-stable across
+machines (the same commit on two clones produces the same id). Before
+#1698, the id was `sha256(branch_name + ":" + commit_hash)[:16]`.
 
 The hook is self-contained: start session, extract, insert, complete
 session, all in one fire.

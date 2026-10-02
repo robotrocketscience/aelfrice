@@ -51,10 +51,12 @@ close the original limitation, so you don't have to work against the harness:
   file rotates, and `aelf ingest-transcript` then turns the rotated file into
   beliefs and edges in the brain graph.
 - **`PostToolUse:Bash` commit-ingest** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
-  After every successful `git commit` call through Bash, the hook runs the
-  triple extractor on the body of the commit message, then inserts the resulting
-  beliefs and edges under a deterministic session id,
-  `sha256(branch + ":" + commit_hash)[:16]`.
+  After a Bash call that commits, including a commit chained after `git add`
+  or run with `-q`, the hook runs the triple extractor on the body of each
+  commit message that call made. It finds those commits in `HEAD`'s reflog, so
+  a call that only mentions `git commit` ingests nothing. It then inserts the
+  resulting beliefs and edges under a deterministic session id built from the
+  commit's parent and author date, so an amend doesn't count twice.
 
 Run `aelf setup`, and aelfrice receives fresh beliefs from normal session
 activity while the auto-memory directive plays no part either way. These three
