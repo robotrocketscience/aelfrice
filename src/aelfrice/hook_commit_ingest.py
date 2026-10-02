@@ -12,22 +12,33 @@ Hook contract (Claude Code PostToolUse):
 - payload includes `tool_name`, `tool_input`, `tool_response`,
   `cwd`, plus the standard event fields. We act only when:
     * tool_name == "Bash"
-    * tool_input.command starts with `git commit`
+    * tool_input.command mentions both `git` and `commit`
     * tool_response is not flagged as an error / interrupted
 - All failure modes return exit 0 silently. The hook may NEVER
   cause a `git commit` to feel broken.
+
+**Which commits a call made (#1698).** The command text is only a
+cheap prefilter. The commits come from `HEAD`'s reflog in the payload
+`cwd`: every `commit…` entry (`commit:`, `commit (amend):`,
+`commit (initial):`, `commit (merge):`) written in the last
+`REFLOG_WINDOW_S` seconds. Before #1698 the hook matched only a
+command that started with `git commit` and read the hash from the
+`[branch hash]` line, which `git commit -q` doesn't print; it ingested
+about 2 of 399 commits in this project's sessions (#1683). Reading the
+reflog also means a chained command, a quiet commit, and a call that
+makes several commits all work, while a call that made no commit (a
+`gh pr create --body` that quotes `git commit`, or a commit step that
+failed inside `… || true`) finds no recent entry and ingests nothing.
 
 Latency budget per docs/design/commit_ingest_hook.md:
     median <= 30 ms, p95 <= 100 ms
 
 Tactics:
 - Lazy imports of triple_extractor and store (cold-start dominates).
-- Skip empty / merge / amend-without-message commits up front.
+- A Bash call that doesn't mention `git` and `commit` costs one regex.
 - Cap the message body at 4 KB before extraction.
-- One git subprocess at most: `git log -1 --format=%B <hash>` to
-  fetch the just-committed message body. The branch and short
-  hash come from the bracketed prefix `[branch hash]` Claude Code
-  already captured in `tool_response.stdout` — no extra git calls.
+- One `git log -g` for the reflog, plus one `git log -1` per commit
+  found in the window.
 
 Local-only: brain-graph writes never cross the git boundary or any
 network boundary.
@@ -40,6 +51,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from typing import IO, Final, cast
 
@@ -53,19 +65,26 @@ GIT_LOG_TIMEOUT_S: Final[float] = 2.0
 """Per-call timeout for `git log` so a hung git binary cannot block
 the hook past the latency budget."""
 
-# Conservative pattern: optional leading whitespace, then `git`, then
-# `commit` as the first sub-token. Catches `git commit -m ...`,
-# `git  commit --amend`, `  git commit -F ...`. Does NOT match
-# `git -c user.email=x commit ...` — rare; if observed, broaden later.
-_GIT_COMMIT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*git\s+commit\b"
+REFLOG_WINDOW_S: Final[int] = 120
+"""A reflog `commit…` entry this recent counts as made by the call that
+just finished (#1698). Long enough for a commit chained after a slow
+step, short enough that an old `HEAD` is never re-read. A commit made
+in another terminal inside the window is ingested too; it's a real
+commit in the repository either way."""
+
+REFLOG_DEPTH: Final[int] = 20
+"""How many reflog entries to read. More commits than this in one call
+are rare; the oldest beyond it are skipped."""
+
+# #1698: the cheapest test that a Bash call might have committed. The
+# reflog decides whether it did, so a false match costs one `git log -g`
+# and ingests nothing.
+_MENTIONS_GIT_COMMIT: Final[re.Pattern[str]] = re.compile(
+    r"\bgit\b[\s\S]*\bcommit\b"
 )
 
-# `git commit` prints `[branch shorthash[ ...]] subject` on success.
-# Capture both groups to derive session_id and look up the full body.
-_COMMIT_BRACKET_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\[([^\s\]]+)\s+(?:\(root-commit\)\s+)?([0-9a-f]{4,40})[\s\]]"
-)
+# `git log -g --date=unix` renders the reflog selector as `HEAD@{<unix>}`.
+_REFLOG_TS_RE: Final[re.Pattern[str]] = re.compile(r"@\{(\d+)\}$")
 
 
 def _read_payload(
@@ -84,14 +103,14 @@ def _read_payload(
     return cast(dict[str, object], parsed)
 
 
-def _is_successful_git_commit(payload: dict[str, object]) -> bool:
+def _may_have_committed(payload: dict[str, object]) -> bool:
     if payload.get("tool_name") != "Bash":
         return False
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return False
     cmd = cast(dict[str, object], tool_input).get("command")
-    if not isinstance(cmd, str) or not _GIT_COMMIT_RE.match(cmd):
+    if not isinstance(cmd, str) or not _MENTIONS_GIT_COMMIT.search(cmd):
         return False
     tool_response = payload.get("tool_response")
     if isinstance(tool_response, dict):
@@ -101,20 +120,11 @@ def _is_successful_git_commit(payload: dict[str, object]) -> bool:
     return True
 
 
-def _branch_and_hash_from_stdout(stdout: str) -> tuple[str, str] | None:
-    for line in stdout.splitlines():
-        m = _COMMIT_BRACKET_RE.match(line)
-        if m:
-            return m.group(1), m.group(2)
-    return None
-
-
-def _read_full_commit_message(commit_hash: str, cwd: str | None) -> str | None:
-    """Run `git log -1 --format=%B <hash>` to fetch the full message
-    body. Returns None on any failure — hook stays silent."""
+def _git(args: list[str], cwd: str | None) -> str | None:
+    """Run one read-only git command; None on any failure."""
     try:
         r = subprocess.run(
-            ["git", "log", "-1", "--format=%B", commit_hash],
+            ["git", *args],
             capture_output=True, text=True, check=False,
             encoding="utf-8", errors="replace",
             timeout=GIT_LOG_TIMEOUT_S, cwd=cwd,
@@ -128,16 +138,66 @@ def _read_full_commit_message(commit_hash: str, cwd: str | None) -> str | None:
         return None
     if r.returncode != 0:
         return None
-    return r.stdout.rstrip("\n")
+    return r.stdout
 
 
-def _derive_session_id(branch: str, commit_hash: str) -> str:
-    """Stable id from sha256(branch + ':' + commit_hash)[:16].
+def _now() -> float:
+    """Clock seam for tests."""
+    return time.time()
 
-    Idempotent: two hook invocations on the same commit produce the
-    same id. Cross-machine stable: the same commit on two clones
-    produces the same id."""
-    raw = f"{branch}:{commit_hash}".encode("utf-8")
+
+def _recent_commits(cwd: str | None) -> list[str]:
+    """Hashes of the `commit…` reflog entries of the last
+    `REFLOG_WINDOW_S` seconds, oldest first, each once."""
+    out = _git(
+        ["log", "-g", f"-n{REFLOG_DEPTH}", "--date=unix",
+         "--format=%H%x00%gd%x00%gs", "HEAD"],
+        cwd,
+    )
+    if out is None:
+        return []
+    cutoff = _now() - REFLOG_WINDOW_S
+    found: list[str] = []
+    for line in out.splitlines():
+        parts = line.split("\x00")
+        if len(parts) != 3:
+            continue
+        commit_hash, selector, subject = parts
+        m = _REFLOG_TS_RE.search(selector)
+        if m is None or int(m.group(1)) < cutoff:
+            continue
+        if not subject.startswith("commit"):
+            continue
+        if commit_hash not in found:
+            found.append(commit_hash)
+    found.reverse()
+    return found
+
+
+def _read_commit(commit_hash: str, cwd: str | None) -> tuple[str, str, str] | None:
+    """`(first_parent, author_date, full_message)`; `first_parent` is
+    empty for a root commit. None on any failure."""
+    out = _git(["log", "-1", "--format=%P%x00%aI%x00%B", commit_hash], cwd)
+    if out is None or out.count("\x00") < 2:
+        return None
+    parents, author_date, message = out.split("\x00", 2)
+    first_parent = parents.split()[0] if parents.split() else ""
+    return first_parent, author_date.strip(), message.rstrip("\n")
+
+
+def _derive_session_id(first_parent: str, author_date: str) -> str:
+    """Stable id from sha256('commit:' + first parent + NUL + author date)[:16].
+
+    #1698: keyed on what an amend keeps. `git commit --amend` keeps the
+    parent and, unless `--reset-author` or `--date` is given, the author
+    date, so every version of an amended commit shares one session, and
+    the store never lets a commit session corroborate a belief it
+    created itself (`MemoryStore.insert_or_corroborate`). Branches cut
+    from the same tip share a parent but not an author date, so their
+    commits stay distinct. Two commits on one parent in the same second
+    would collide; that needs a scripted commit pair on two branches.
+    Cross-machine stable."""
+    raw = f"commit:{first_parent}\x00{author_date}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -148,50 +208,29 @@ def _truncate_for_extraction(message: str) -> str:
     return encoded[:MESSAGE_BYTE_CAP].decode("utf-8", errors="ignore")
 
 
-def _extract_commit_context(
-    payload: dict[str, object], cwd: str | None,
-) -> tuple[str, str, str] | None:
-    """Pull (branch, commit_hash, full_message) for the commit just made.
-
-    Returns None when the prefix line cannot be parsed (unusual
-    commit output) or when git log refuses to read the hash.
-    """
-    tool_response = payload.get("tool_response")
-    stdout = ""
-    if isinstance(tool_response, dict):
-        s = cast(dict[str, object], tool_response).get("stdout")
-        if isinstance(s, str):
-            stdout = s
-    if not stdout:
-        return None
-    parsed = _branch_and_hash_from_stdout(stdout)
-    if parsed is None:
-        return None
-    branch, short_hash = parsed
-    body = _read_full_commit_message(short_hash, cwd)
-    if body is None:
-        return None
-    return branch, short_hash, body
-
-
 def _do_ingest(payload: dict[str, object]) -> None:
     """Core hook body. Returns silently on any non-budget failure.
 
     Lazy imports keep the cold-start path light: the hook does not
     pay for `aelfrice.store` / `aelfrice.triple_extractor` import
-    cost on commits that aren't `git commit` Bash calls.
+    cost unless a recent commit has triples to record.
     """
-    if not _is_successful_git_commit(payload):
+    if not _may_have_committed(payload):
         return
     cwd_obj = payload.get("cwd")
     cwd = cwd_obj if isinstance(cwd_obj, str) else None
-    extracted = _extract_commit_context(payload, cwd)
-    if extracted is None:
+    for commit_hash in _recent_commits(cwd):
+        _ingest_commit(commit_hash, cwd)
+
+
+def _ingest_commit(commit_hash: str, cwd: str | None) -> None:
+    commit = _read_commit(commit_hash, cwd)
+    if commit is None:
         return
-    branch, commit_hash, body = extracted
-    if not body.strip():
+    first_parent, author_date, message = commit
+    if not message.strip():
         return
-    body = _truncate_for_extraction(body)
+    body = _truncate_for_extraction(message)
 
     # Lazy imports: cold-start cost is paid only when we actually ingest.
     from aelfrice.db_paths import db_path  # noqa: PLC0415
@@ -212,13 +251,13 @@ def _do_ingest(payload: dict[str, object]) -> None:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
 
-    session_id = _derive_session_id(branch, commit_hash)
+    session_id = _derive_session_id(first_parent, author_date)
     store = MemoryStore(str(p))
     try:
-        # Persist a session row tagged with the git context. Idempotent
-        # on re-fire because ingest_triples skips duplicate edges and
-        # complete_session updates completed_at without erroring on a
-        # known id.
+        # Persist a session row tagged with the git context. A re-fire on
+        # the same commit, an amend, or a retry after a crash reuses it:
+        # ingest_triples skips duplicate edges, and the store records no
+        # corroboration for a belief this session created (#1698).
         try:
             existing = store.get_session(session_id)
         except Exception:  # pyright: ignore[reportBroadException]
