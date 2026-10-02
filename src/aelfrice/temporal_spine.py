@@ -40,7 +40,7 @@ from aelfrice.config_discovery import discover_config
 from aelfrice.models import EDGE_TEMPORAL_NEXT, Edge
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from aelfrice.models import Belief
     from aelfrice.store import MemoryStore
@@ -357,6 +357,60 @@ def clear_temporal_spine(store: "MemoryStore") -> int:
     return store.delete_spine_edges(
         EDGE_TEMPORAL_NEXT, TEMPORAL_SPINE_EDGE_WEIGHT,
     )
+
+
+def _is_spine_edge(e: Edge) -> bool:
+    """The writer's own shape; see `clear_temporal_spine`."""
+    return (
+        e.type == EDGE_TEMPORAL_NEXT
+        and e.anchor_text is None
+        and e.weight == TEMPORAL_SPINE_EDGE_WEIGHT
+    )
+
+
+def rechain_sessions(
+    store: "MemoryStore", session_ids: "Iterable[str]",
+) -> tuple[int, int]:
+    """Rebuild the spine chain of each named session from the current
+    `(created_at, rowid)` order. Returns `(removed, written)`.
+
+    For #1660: after `created_at` values change, a session's chain can
+    link pairs out of order. Only spine-shaped edges between two members
+    of the same session are removed, so prose-derived TEMPORAL_NEXT rows
+    survive (#1379). A session with no spine edge at all is left alone:
+    the spine was never built there, or `aelf spine clear` removed it,
+    and a repair must not rebuild what the user cleared.
+    """
+    wanted = set(session_ids)
+    chains: dict[str, list[str]] = {}
+    for session_id, belief_id in store.session_belief_ids_ordered():
+        if session_id in wanted:
+            chains.setdefault(session_id, []).append(belief_id)
+    removed = 0
+    written = 0
+    for session_id in sorted(chains):
+        ids = chains[session_id]
+        members = set(ids)
+        desired = {(ids[i], ids[i - 1]) for i in range(1, len(ids))}
+        current = [
+            e for bid in ids for e in store.edges_from(bid)
+            if _is_spine_edge(e) and e.dst in members
+        ]
+        if not current:
+            continue
+        for e in current:
+            if (e.src, e.dst) not in desired:
+                store.delete_edge(e.src, e.dst, e.type)
+                removed += 1
+        for src, dst in sorted(desired):
+            if store.get_edge(src, dst, EDGE_TEMPORAL_NEXT) is not None:
+                continue
+            if store.insert_edge(Edge(
+                src=src, dst=dst, type=EDGE_TEMPORAL_NEXT,
+                weight=TEMPORAL_SPINE_EDGE_WEIGHT,
+            )):
+                written += 1
+    return removed, written
 
 
 # --- Auto-backfill migration (G4) -----------------------------------------
