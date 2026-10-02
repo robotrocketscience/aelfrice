@@ -7052,6 +7052,35 @@ class MemoryStore:
         )
         return [(str(r["session_id"]), str(r["id"])) for r in cur.fetchall()]
 
+    def created_at_with_numeric_offset(self) -> list[tuple[str, str]]:
+        """`(belief_id, created_at)` for every belief, retired included,
+        whose `created_at` ends in a numeric offset (`+HH:MM` / `-HH:MM`).
+
+        #1660: before #1611 the scanner stored git author dates with the
+        author's local offset. Text order on such rows differs from real
+        order next to `Z` rows, and the spine is ordered by that text.
+        `+00:00` rows match too; the caller decides what to rewrite.
+        """
+        cur = self._conn.execute(
+            "SELECT id, created_at FROM beliefs "
+            "WHERE created_at GLOB '*[+-][0-9][0-9]:[0-9][0-9]' "
+            "ORDER BY rowid"
+        )
+        return [(str(r[0]), str(r[1])) for r in cur.fetchall()]
+
+    def set_belief_created_at(self, belief_id: str, created_at: str) -> None:
+        """Overwrite one belief's `created_at` (#1660 repair only).
+
+        The caller passes a value it derived from the stored one. Commits
+        as a mutation, because the spine and every recency consumer read
+        this column.
+        """
+        self._conn.execute(
+            "UPDATE beliefs SET created_at = ? WHERE id = ?",
+            (created_at, belief_id),
+        )
+        self._commit_mutation()
+
 
     def edges_from_in_scope(
         self, src: str, owning_scope: str | None
