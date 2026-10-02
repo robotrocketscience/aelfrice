@@ -80,8 +80,8 @@ def test_each_shell_prompt_form_marks_a_transcript(prompt: str) -> None:
     "412  enabled=True  3.1MB  utf-8",
     "https://example.com/docs/setup",
     "quick+brown+fox",
-    "assets/images/logo",
-    "v1.2.3",
+    "assets/images/logo.png",
+    "README.md",
 ])
 def test_each_output_line_is_dropped_and_the_prose_kept(line: str) -> None:
     speech = _user_speech(_paste("\n".join([PROSE, line, OTHER_PROSE])))
@@ -147,6 +147,15 @@ def test_no_pasted_git_line_reaches_the_store(tmp_path: Path) -> None:
     "e.g.",
     "C++",
     "x=1",
+    "3.14",
+    "read/write/execute",
+    "yes/no/maybe",
+    "modified: yesterday",
+    "Owner | 3 +",
+    "jon@corp.com 100% agree, ship it Friday.",
+    "ops@acme.io wrote > see below",
+    "dev@laptop said hi > ok",
+    "typechange: we moved the types today",
 ])
 def test_prose_that_opens_like_output_is_kept(prose: str) -> None:
     # Each rule matches its output format whole, not a sentence that only
@@ -208,4 +217,35 @@ def test_words_after_a_closed_transcript_paste_are_kept() -> None:
     # A closed paste ends at its closing tag; the user's line after it is not
     # part of the terminal transcript.
     text = _paste("dev@laptop ~/proj> ls\nsrc  docs  tests") + "\n" + PROSE
+    assert _user_speech(text) == PROSE
+
+
+@pytest.mark.parametrize("body", [
+    "jon@corp.com 100% agree, ship it Friday.",
+    "ops@acme.io wrote > see below",
+])
+def test_an_email_line_opening_a_paste_keeps_the_paste(body: str) -> None:
+    speech = _user_speech(_paste(body + "\n" + PROSE)) or ""
+    assert body in speech and PROSE in speech
+
+
+def test_a_flood_of_unclosed_tags_is_scanned_in_linear_time(
+    request: pytest.FixtureRequest,
+) -> None:
+    # A wall-clock budget, so it is opt-in (#1473): `pytest --run-perf`.
+    try:
+        run_perf = bool(request.config.getoption("--run-perf", default=False))
+    except (AttributeError, ValueError):
+        run_perf = False
+    if not run_perf:
+        pytest.skip("perf test gated on --run-perf")
+    import time
+    start = time.perf_counter()
+    _user_speech("<pasted_content>" * 20_000)
+    # A lazy block regex rescanned from every opener: 24 s at this size.
+    assert time.perf_counter() - start < 2.0
+
+
+def test_a_nested_opener_does_not_end_the_paste() -> None:
+    text = _paste("On branch x\n<pasted_content>\nOn branch y") + "\n" + PROSE
     assert _user_speech(text) == PROSE

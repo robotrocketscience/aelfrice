@@ -591,27 +591,19 @@ _HOST_MARKER_LINE_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-# #1691: a `<pasted_content>` block, with or without an id on its tags.
-_PASTED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
-    r"<pasted_content\b[^>]*>(.*?)</pasted_content\b[^>]*>",
-    re.DOTALL | re.IGNORECASE,
-)
-# A paste whose closing tag never came: it runs to the end of the record.
-_UNCLOSED_PASTE_RE: Final[re.Pattern[str]] = re.compile(
-    r"<pasted_content\b[^>]*>(.*)\Z", re.DOTALL | re.IGNORECASE,
-)
-# A paste tag left over after the blocks are filtered (a stray closer).
+# #1691: a `<pasted_content>` opening or closing tag, with or without an id.
+# The attribute run is bounded, so a flood of unterminated tags stays linear.
 _PASTE_TAG_RE: Final[re.Pattern[str]] = re.compile(
-    r"</?pasted_content\b[^>]*>", re.IGNORECASE,
+    r"<(/?)pasted_content\b[^>\n]{0,200}>", re.IGNORECASE,
 )
-# An interactive shell prompt followed by a command. The working directory
-# must look like one (`~` or `/` after a colon, or a bare word after a
-# space), so an email address that opens a sentence is not a prompt:
+# An interactive shell prompt followed by a command. Shells print the short
+# host name, with no dot, so an email address (a dotted domain) that opens a
+# sentence is never a prompt:
 #   fish  `user@host ~/dir (branch) [1]> cmd`
 #   bash  `user@host:~/dir$ cmd`
 #   zsh   `user@host dir % cmd`
 _SHELL_PROMPT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[\w.-]+@[\w-]+(?:\.[\w-]+)*"
+    r"^[\w.-]+@[\w-]+"
     r"(?::[~/][^\s>$#%]*| +[~/\w.-][^\s>$#%]*)"
     r"(?: +\([^()\n]*\))?(?: +\[\d+\])? *[>$#%](?: |$)",
 )
@@ -631,11 +623,11 @@ _PASTED_OUTPUT_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"|no changes added to commit(?: \(use \"git [^\n]*)?"
     r"|nothing to commit(?:, working tree clean| \(use \"git [^\n]*)?"
     r"|nothing added to commit but untracked files present(?: \(use \"git [^\n]*)?"
-    r"|(?:modified|deleted|new file|renamed|typechange|both modified|both added):"
-    r" +[^\s]+(?: -> [^\s]+)?"
+    r"|(?:(?:modified|deleted|new file|renamed|both modified|both added): {2,}"
+    r"|typechange: +)[^\s]+(?: -> [^\s]+)?"
     r"|\[[^\]\s]+ [0-9a-f]{7,40}\] .*"
     r"|\d+ files? changed(?:, \d+ insertions?\(\+\))?(?:, \d+ deletions?\(-\))?"
-    r"|[^\s|]+ +\| +\d+ ?[+\-]*"
+    r"|(?=[^\s|]*[./])[^\s|]+ +\| +\d+ ?[+\-]*"
     r"|Updating [0-9a-f]{7,}\.\.[0-9a-f]{7,}"
     r"|Fast-forward"
     r"|(?:create|delete) mode \d{6} [^\n]*"
@@ -662,24 +654,26 @@ _HOST_GLYPH_RE: Final[re.Pattern[str]] = re.compile(r"^[❯⏺●⎿] +")
 # unbounded runs can trade characters.
 _URL_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9+.-]*://[^\s]+$")
 _PATH_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[~.]{0,2}/?[\w.+@-]+(?:/[\w.+@-]+)*/?$")
-_FILE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[\w+@-]*(?:\.[\w-]+)*\.[A-Za-z0-9]{1,8}$")
+_FILE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^[\w+@-]*(?:\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,7}$")
 _SLUG_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^\w+(?:\+\w+){2,}$")
 
 
 def _is_bare_token(s: str) -> bool:
     """A URL, a file path, a file name, or a `+`-joined slug, alone on a line.
 
-    A path needs a sign that it is one: a leading `~`, `.` or `/`, two or
-    more separators, or a trailing `/`. "and/or" has none of them. A file
-    name needs an extension after its last dot, so "e.g." and "Thanks."
-    stay; "C++" and "x=1" are not paths, names or slugs.
+    A path needs a sign that it is one: a leading `~`, `.` or `/`, a
+    trailing `/`, or a file name as its last part. "and/or" and
+    "read/write/execute" have none of them. A file name needs an extension
+    that starts with a letter, so "e.g.", "Thanks." and "3.14" stay; "C++"
+    and "x=1" are not paths, names or slugs.
     """
     if " " in s or "\t" in s:
         return False
     if _URL_TOKEN_RE.match(s) or _SLUG_TOKEN_RE.match(s):
         return True
     if "/" in s and _PATH_TOKEN_RE.match(s):
-        return s[0] in "~./" or s.count("/") >= 2 or s.endswith("/")
+        last = s.rstrip("/").rsplit("/", 1)[-1]
+        return s[0] in "~./" or s.endswith("/") or bool(_FILE_TOKEN_RE.match(last))
     return bool(_FILE_TOKEN_RE.match(s)) and not s.endswith(".")
 
 
@@ -708,6 +702,38 @@ def _pasted_prose(body: str) -> str:
     if _SHELL_PROMPT_RE.match(first):
         return ""
     return "\n".join(ln for ln in lines if not _is_pasted_output_line(ln))
+
+
+def _filter_pastes(text: str) -> str:
+    """`text` with each pasted block reduced to its prose, in one pass.
+
+    A paste runs from an opening tag to the next closing tag, or to the end
+    of the record when none follows. An opening tag inside a paste and a
+    closing tag outside one are dropped. Every tag is found once, so the
+    scan is linear however many tags there are.
+    """
+    out: list[str] = []
+    pos = 0
+    start: int | None = None
+    for m in _PASTE_TAG_RE.finditer(text):
+        closing = m.group(1) == "/"
+        if start is None:
+            out.append(text[pos:m.start()])
+            if not closing:
+                start = m.end()
+        elif closing:
+            out.append(_pasted_prose(text[start:m.start()]))
+            start = None
+        else:
+            # A nested opener: drop the tag, keep the paste going.
+            out.append(_pasted_prose(text[start:m.start()]))
+            start = m.end()
+        pos = m.end()
+    if start is not None:
+        out.append(_pasted_prose(text[start:]))
+    else:
+        out.append(text[pos:])
+    return "".join(out)
 
 
 def _user_speech(text: str) -> str | None:
@@ -743,9 +769,7 @@ def _user_speech(text: str) -> str | None:
         return None
     rest = _HARNESS_BLOCK_RE.sub("", rest)
     rest = _UNCLOSED_BLOCK_RE.sub("", rest)
-    rest = _PASTED_BLOCK_RE.sub(lambda m: _pasted_prose(m.group(1)), rest)
-    rest = _UNCLOSED_PASTE_RE.sub(lambda m: _pasted_prose(m.group(1)), rest)
-    rest = _PASTE_TAG_RE.sub("", rest).strip()
+    rest = _filter_pastes(rest).strip()
     return rest or None
 
 
