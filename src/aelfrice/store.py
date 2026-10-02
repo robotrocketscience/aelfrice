@@ -1454,6 +1454,14 @@ _CORROBORATION_EPISODES_SQL: Final[str] = f"""
 """
 
 
+# #1660: a timestamp column ending in a numeric UTC offset, with or
+# without the colon (`-08:00`, `-0800`). `{col}` is a trusted column name.
+_NUMERIC_OFFSET_SQL: Final[str] = (
+    "({col} GLOB '*[+-][0-9][0-9]:[0-9][0-9]' "
+    "OR {col} GLOB '*T*[+-][0-9][0-9][0-9][0-9]')"
+)
+
+
 class MemoryStore:
     """SQLite store. Pass `:memory:` for tests, a path otherwise."""
 
@@ -7054,7 +7062,7 @@ class MemoryStore:
 
     def created_at_with_numeric_offset(self) -> list[tuple[str, str]]:
         """`(belief_id, created_at)` for every belief, retired included,
-        whose `created_at` ends in a numeric offset (`+HH:MM` / `-HH:MM`).
+        whose `created_at` ends in a numeric offset (`+HH:MM` or `+HHMM`).
 
         #1660: before #1611 the scanner stored git author dates with the
         author's local offset. Text order on such rows differs from real
@@ -7063,10 +7071,31 @@ class MemoryStore:
         """
         cur = self._conn.execute(
             "SELECT id, created_at FROM beliefs "
-            "WHERE created_at GLOB '*[+-][0-9][0-9]:[0-9][0-9]' "
+            f"WHERE {_NUMERIC_OFFSET_SQL.format(col='created_at')} "
             "ORDER BY rowid"
         )
         return [(str(r[0]), str(r[1])) for r in cur.fetchall()]
+
+    def ingest_log_ts_with_numeric_offset(self) -> list[tuple[str, str]]:
+        """`(log_id, ts)` for every `ingest_log` row whose `ts` ends in a
+        numeric offset. The log-side twin of
+        `created_at_with_numeric_offset`: derivation copies `ts` into
+        `created_at`, so a repair that rewrote only the belief would be
+        undone by a rebuild from the log (#1660, #1283).
+        """
+        cur = self._conn.execute(
+            "SELECT id, ts FROM ingest_log "
+            f"WHERE {_NUMERIC_OFFSET_SQL.format(col='ts')} "
+            "ORDER BY rowid"
+        )
+        return [(str(r[0]), str(r[1])) for r in cur.fetchall()]
+
+    def set_ingest_log_ts(self, log_id: str, ts: str) -> None:
+        """Overwrite one `ingest_log.ts` (#1660 repair only)."""
+        self._conn.execute(
+            "UPDATE ingest_log SET ts = ? WHERE id = ?", (ts, log_id),
+        )
+        self._commit()
 
     def set_belief_created_at(self, belief_id: str, created_at: str) -> None:
         """Overwrite one belief's `created_at` (#1660 repair only).
