@@ -139,9 +139,11 @@ jobs:
   # blocks the merge — which is exactly what "advisory" must not do. This keeps
   # the job's failure off the train while its findings stay visible in the step
   # summary. While the job runs, merge-train doesn't wait for it: the name is
-  # in `merge_train_gate.NONGATING_WHILE_PENDING` (#1633). If mutation is ever
-  # promoted to blocking, this line comes out and the name comes out of that
-  # set, so the train waits for the result.
+  # in `merge_train_gate.NONGATING_WHILE_PENDING` (#1633), which a test ties to
+  # this line. If mutation is ever promoted to blocking, this line comes out
+  # and the name comes out of that set, so the train waits for the result.
+  # Making it advisory by name instead would mean adding it to
+  # `merge_train_gate.ADVISORY_NAMES`, which drops its result from the gate.
   diff:
     name: mutation (advisory, PR diff)
     if: github.event_name == 'pull_request'

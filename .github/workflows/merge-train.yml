@@ -275,7 +275,7 @@ jobs:
                   if [ -n "${advisory}" ]; then
                       echo "advisory check(s) failing, not gating merge: ${advisory}"
                   fi
-                  running=$(echo "${verdict}" | jq -r '.pending_not_gating | join(", ")')
+                  running=$(echo "${verdict}" | jq -r '(.pending_not_gating // []) | join(", ")')
                   if [ -n "${running}" ]; then
                       echo "still running, not waited on (#1633): ${running}"
                   fi
@@ -291,7 +291,7 @@ jobs:
           done
 
           if [ "$(date +%s)" -ge "${deadline}" ]; then
-              fail_and_unlabel "timed out waiting for this branch's gating checks (every check-run except the advisory bots) to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. The job log names which were still running and which required contexts never reported. Retrigger once they have settled."
+              fail_and_unlabel "timed out waiting for this branch's gating checks (every check-run except the advisory bots and the advisory mutation job) to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. The job log names which were still running and which required contexts never reported. Retrigger once they have settled."
           fi
 
           echo "[6/6] FF push..."
