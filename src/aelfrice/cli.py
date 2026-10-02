@@ -9717,11 +9717,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "find beliefs whose created_at carries a non-UTC offset (stored "
-            "by onboard before #1611), and report the rows and the spine "
-            "edges a re-chain would change (issue #1660). Bypasses the "
-            "hooks/graph checks. Combine with --apply to rewrite them as "
-            "UTC; default is dry-run."
+            "find beliefs and ingest_log rows whose timestamp carries a "
+            "non-UTC offset (stored by onboard before #1611), and report "
+            "them and the spine edges a re-chain would change (issue "
+            "#1660). Bypasses the hooks/graph checks, and holds the store's "
+            "write lock while it runs. Combine with --apply to rewrite them "
+            "as UTC; default is dry-run."
         ),
     )
     p_doctor.add_argument(

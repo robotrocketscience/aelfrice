@@ -267,3 +267,104 @@ def test_cli_refuses_two_passes_at_once(
     )
     assert code == 2
     assert "one at a time" in capsys.readouterr().err
+
+
+def test_a_retired_beliefs_session_is_rechained(tmp_path: Path) -> None:
+    s = MemoryStore(str(tmp_path / "r.db"))
+    try:
+        _mk(s, "W1", "2026-01-01T10:00:00-08:00", "W")
+        _mk(s, "W2", "2026-01-01T12:00:00Z", "W")
+        backfill_temporal_spine(s)
+        s.soft_delete_belief("W1")
+        assert _backwards(s) == [("W2", "W1")]
+        repair_utc_created_at(s, dry_run=False)
+        assert _backwards(s) == []
+    finally:
+        s.close()
+
+
+def test_a_rewrite_bumps_the_store_generation(tmp_path: Path) -> None:
+    """No spine change here, so only the rewrite itself can bump it."""
+    s = MemoryStore(str(tmp_path / "g.db"))
+    try:
+        s.insert_belief(Belief(
+            id="N", content="no session", content_hash="h_N", alpha=1.0,
+            beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+            locked_at=None, created_at="2026-01-01T10:00:00-08:00",
+            last_retrieved_at=None,
+        ))
+        gen = s.store_generation()
+        repair_utc_created_at(s, dry_run=False)
+        assert s.store_generation() > gen
+    finally:
+        s.close()
+
+
+def _log_ts(store: MemoryStore) -> dict[str, str]:
+    rows = store._conn.execute(  # noqa: SLF001 - read-only probe
+        "SELECT id, ts FROM ingest_log"
+    ).fetchall()
+    return {str(r[0]): str(r[1]) for r in rows}
+
+
+def test_ingest_log_ts_is_rewritten_with_the_beliefs(tmp_path: Path) -> None:
+    """Derivation copies `ts` into `created_at`, so both must agree."""
+    s = MemoryStore(str(tmp_path / "l.db"))
+    try:
+        off = s.record_ingest(
+            source_kind="filesystem", raw_text="a", ts="2026-01-01T10:00:00-08:00",
+        )
+        utc = s.record_ingest(
+            source_kind="filesystem", raw_text="b", ts="2026-01-01T12:00:00Z",
+        )
+        before = _log_ts(s)
+        dry = repair_utc_created_at(s, dry_run=True)
+        assert dry.log_rows_found == 1
+        assert _log_ts(s) == before
+        repair_utc_created_at(s, dry_run=False)
+        after = _log_ts(s)
+        assert after[off] == "2026-01-01T18:00:00Z"
+        assert after[utc] == before[utc]
+    finally:
+        s.close()
+
+
+def test_an_offset_without_a_colon_is_found(tmp_path: Path) -> None:
+    s = MemoryStore(str(tmp_path / "c.db"))
+    try:
+        _mk(s, "K", "2026-01-01T10:00:00-0800", "S")
+        repair_utc_created_at(s, dry_run=False)
+        assert _created_at(s)["K"] == "2026-01-01T18:00:00Z"
+    finally:
+        s.close()
+
+
+def test_a_value_past_the_date_range_is_skipped(tmp_path: Path) -> None:
+    s = MemoryStore(str(tmp_path / "o.db"))
+    try:
+        _mk(s, "E", "0001-01-01T00:30:00+01:00", "S")
+        _mk(s, "F", "2026-01-01T10:00:00-08:00", "S")
+        report = repair_utc_created_at(s, dry_run=False)
+        assert report.rows_found == 1
+        assert _created_at(s)["E"] == "0001-01-01T00:30:00+01:00"
+    finally:
+        s.close()
+
+
+def test_a_stale_cross_session_spine_edge_is_removed(tmp_path: Path) -> None:
+    """Matches what `aelf spine clear` + `backfill` gives for the session."""
+    s = MemoryStore(str(tmp_path / "x.db"))
+    try:
+        _mk(s, "P1", "2026-01-01T10:00:00-08:00", "P")
+        _mk(s, "P2", "2026-01-01T12:00:00Z", "P")
+        _mk(s, "Q1", "2026-01-01T09:00:00Z", "Q")
+        backfill_temporal_spine(s)
+        # A spine edge into another session, as a session_id change leaves.
+        s.insert_edge(Edge(
+            src="P1", dst="Q1", type=EDGE_TEMPORAL_NEXT,
+            weight=TEMPORAL_SPINE_EDGE_WEIGHT,
+        ))
+        repair_utc_created_at(s, dry_run=False)
+        assert _spine(s) == {("P1", "P2")}
+    finally:
+        s.close()

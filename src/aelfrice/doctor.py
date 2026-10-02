@@ -2734,7 +2734,8 @@ class UtcCreatedAtReport:
     """Summary of one `repair_utc_created_at` pass.
 
     `rows_found` counts beliefs whose `created_at` carries a non-zero UTC
-    offset, spread over `sessions_affected` sessions. The spine counts
+    offset, spread over `sessions_affected` sessions. `log_rows_found`
+    counts the `ingest_log.ts` values rewritten with them. The spine counts
     are the TEMPORAL_NEXT edges the re-chain removes and writes. Like the
     filesystem-corroboration pass, the dry run makes the change inside a
     transaction and rolls it back, so its counts are measured. `samples`
@@ -2742,6 +2743,7 @@ class UtcCreatedAtReport:
     """
 
     rows_found: int = 0
+    log_rows_found: int = 0
     sessions_affected: int = 0
     spine_edges_removed: int = 0
     spine_edges_written: int = 0
@@ -2762,12 +2764,14 @@ def utc_z_form(value: str) -> str | None:
     """
     try:
         dt = datetime.fromisoformat(value)
-    except ValueError:
+        offset = dt.utcoffset()
+        if offset is None or offset == timedelta(0):
+            return None
+        utc = dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        # Unparseable, or an offset that moves it past year 1 or 9999.
         return None
-    offset = dt.utcoffset()
-    if offset is None or offset == timedelta(0):
-        return None
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return utc.isoformat().replace("+00:00", "Z")
 
 
 def repair_utc_created_at(
@@ -2781,8 +2785,13 @@ def repair_utc_created_at(
     Before #1611 the scanner stored git author dates with the author's
     local offset. Next to `Z` rows, text order then differs from real
     order, and the spine, ordered by `(created_at, rowid)`, links some
-    pairs backwards in time. A store with no such row is left untouched:
-    the pass returns before it opens a transaction.
+    pairs backwards in time. The matching `ingest_log.ts` values are
+    rewritten too, because derivation copies them into `created_at` and
+    the log is the source of truth (#1283). A store with no such value
+    is left untouched: the pass returns before it opens a transaction.
+
+    The dry run holds the write lock while it runs, so hook writes wait
+    for it (about 0.3 s at 12k rows).
 
     Must own its transaction, for the same reason as
     `gc_filesystem_corroboration`: it raises `RuntimeError` when one is
@@ -2796,7 +2805,10 @@ def repair_utc_created_at(
             "call it outside store.transaction() and with no pending writes"
         )
     report = UtcCreatedAtReport(dry_run=dry_run)
-    candidates = store.created_at_with_numeric_offset()
+    candidates = (
+        store.created_at_with_numeric_offset()
+        + store.ingest_log_ts_with_numeric_offset()
+    )
     if not any(utc_z_form(v) is not None for _, v in candidates):
         return report
     try:
@@ -2812,7 +2824,15 @@ def repair_utc_created_at(
                 b = store.get_belief(bid, include_retired=True)
                 if b is not None and b.session_id is not None:
                     sessions.add(b.session_id)
+            log_changes = [
+                (log_id, new)
+                for log_id, old in store.ingest_log_ts_with_numeric_offset()
+                if (new := utc_z_form(old)) is not None
+            ]
+            for log_id, new in log_changes:
+                store.set_ingest_log_ts(log_id, new)
             report.rows_found = len(changes)
+            report.log_rows_found = len(log_changes)
             report.sessions_affected = len(sessions)
             report.samples = changes[:5]
             removed, written = rechain_sessions(store, sessions)
@@ -2831,6 +2851,7 @@ def format_utc_created_at_report(report: UtcCreatedAtReport) -> str:
     lines: list[str] = [
         f"created_at rows with a non-UTC offset: {report.rows_found} "
         f"in {report.sessions_affected} session(s)",
+        f"ingest_log rows with a non-UTC offset: {report.log_rows_found}",
         f"spine edges re-chained: {report.spine_edges_removed} removed, "
         f"{report.spine_edges_written} written",
     ]
