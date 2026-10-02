@@ -275,6 +275,10 @@ jobs:
                   if [ -n "${advisory}" ]; then
                       echo "advisory check(s) failing, not gating merge: ${advisory}"
                   fi
+                  running=$(echo "${verdict}" | jq -r '.pending_not_gating | join(", ")')
+                  if [ -n "${running}" ]; then
+                      echo "still running, not waited on (#1633): ${running}"
+                  fi
                   echo "all gating checks settled, and every required context reported."
                   break
               fi

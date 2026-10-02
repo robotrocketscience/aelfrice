@@ -138,8 +138,10 @@ jobs:
   # every non-advisory check-run on the head SHA, so a job that reports failure
   # blocks the merge — which is exactly what "advisory" must not do. This keeps
   # the job's failure off the train while its findings stay visible in the step
-  # summary. If mutation is ever promoted to blocking, this line comes out and
-  # the name goes into `merge_train_gate.ADVISORY_NAMES` instead.
+  # summary. While the job runs, merge-train doesn't wait for it: the name is
+  # in `merge_train_gate.NONGATING_WHILE_PENDING` (#1633). If mutation is ever
+  # promoted to blocking, this line comes out and the name comes out of that
+  # set, so the train waits for the result.
   diff:
     name: mutation (advisory, PR diff)
     if: github.event_name == 'pull_request'
