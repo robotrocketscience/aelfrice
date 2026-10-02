@@ -7746,10 +7746,11 @@ def stop(
                     if candidates:
                         block = _format_stop_prompt(candidates)
                         if block:
-                            # stderr per the Stop-hook contract: any
-                            # prompt-shaped output to the human reading
-                            # the session must go to stderr, not stdout
-                            # (Stop has no additionalContext channel).
+                            # stderr, because this listing is for the
+                            # user. Stop does accept additionalContext,
+                            # but that continues the conversation and
+                            # costs the user a turn, which this hook's
+                            # "never block" contract rules out (#1651).
                             serr.write(block)
             finally:
                 store.close()

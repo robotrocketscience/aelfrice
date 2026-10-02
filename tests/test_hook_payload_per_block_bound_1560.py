@@ -304,8 +304,9 @@ def _stop_fire(
     # Stop fails soft too, so an exception inside it becomes a stderr
     # trace and rc 0 — indistinguishable from a policy that declined.
     assert "Traceback" not in serr.getvalue(), serr.getvalue()
-    # Stop has no `additionalContext` channel; nothing it does belongs on
-    # stdout, and a cache write that leaked there would not be one.
+    # This Stop hook never writes stdout: `additionalContext` there would
+    # continue the conversation (#1651), and a cache write that leaked
+    # there would not be one.
     assert sout.getvalue() == "", sout.getvalue()[:200]
     cache = hook._cadence_resume_cache_path()
     assert cache is not None
