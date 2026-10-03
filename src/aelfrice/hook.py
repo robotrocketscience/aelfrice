@@ -64,8 +64,27 @@ from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
 # and `provenance_render` can share them without importing this module.
 # Bound here under their old names for the call sites below and for
 # existing `from aelfrice.hook import _escape_attr` callers.
-from aelfrice.hook_payload import escape_attr as _escape_attr
-from aelfrice.hook_payload import escape_for_hook_block as _escape_for_hook_block
+from aelfrice.hook_payload import escape_attr, escape_for_hook_block
+
+_escape_attr = escape_attr
+_escape_for_hook_block = escape_for_hook_block
+
+# #1631: the memory-block switch and the UserPromptSubmit telemetry reader
+# moved to the leaf `hook_audit`, so `aelf doctor` reads them without
+# importing this module; that import closed the cycle
+# `hook -> cli -> doctor -> hook`. Re-exported here for the call sites
+# below and for existing `from aelfrice.hook import ...` callers. Outside
+# the `_IMPORTS_OK` guard because `hook_audit` imports only the standard
+# library and `config_discovery`, which is itself imported unguarded above.
+from aelfrice.hook_audit import ENV_MEMORY_BLOCK as ENV_MEMORY_BLOCK
+from aelfrice.hook_audit import (
+    MEMORY_BLOCK_ENABLED_KEY as MEMORY_BLOCK_ENABLED_KEY,
+)
+from aelfrice.hook_audit import MEMORY_BLOCK_SECTION as MEMORY_BLOCK_SECTION
+from aelfrice.hook_audit import memory_block_enabled as memory_block_enabled
+from aelfrice.hook_audit import (
+    read_user_prompt_submit_telemetry as read_user_prompt_submit_telemetry,
+)
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 try:
@@ -81,18 +100,6 @@ try:
     # working after the #968 extraction into aelfrice.hook_audit.
     from aelfrice.hook_audit import AUDIT_DEFAULT_MAX_BYTES  # noqa: F401
     from aelfrice.hook_audit import AUDIT_FILENAME  # noqa: F401
-    # #1631: the memory-block switch and the UserPromptSubmit telemetry
-    # reader moved to `aelfrice.hook_audit`, so `aelf doctor` reads them
-    # without importing this module (that import closed a cycle through
-    # `hook -> cli -> doctor -> hook`). Bound here for the call sites
-    # below and for existing `from aelfrice.hook import ...` callers.
-    from aelfrice.hook_audit import ENV_MEMORY_BLOCK  # noqa: F401
-    from aelfrice.hook_audit import MEMORY_BLOCK_ENABLED_KEY  # noqa: F401
-    from aelfrice.hook_audit import MEMORY_BLOCK_SECTION  # noqa: F401
-    from aelfrice.hook_audit import memory_block_enabled
-    from aelfrice.hook_audit import (
-        read_user_prompt_submit_telemetry,  # noqa: F401
-    )
     # #1527: the rebuilder config, the trigger modes and `RecentTurn` come
     # from `aelfrice.rebuild_log`, the leaf module they were extracted into,
     # NOT from `aelfrice.context_rebuilder`. They are read on the
