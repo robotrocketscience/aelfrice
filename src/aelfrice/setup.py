@@ -1020,11 +1020,13 @@ def uninstall_search_tool_bash_hook(
 ) -> UninstallResult:
     """Strip PreToolUse Bash-matcher entries matching `command` or `command_basename`.
 
-    Pass exactly one of the two. Other PreToolUse entries (Grep|Glob or
-    other matchers) are left alone. Since the Bash and Grep|Glob hooks
-    share the same script name, uninstall_search_tool_bash_hook only
-    removes entries whose matcher field is "Bash" — entries with
-    matcher="Grep|Glob" are unaffected.
+    Pass exactly one of the two. Other PreToolUse entries (the
+    search-tool entry or other matchers) are left alone. Since the Bash
+    and search-tool hooks share the same script name,
+    uninstall_search_tool_bash_hook only removes entries whose matcher
+    field is "Bash" — an entry on `SEARCH_TOOL_MATCHER`, or on any
+    matcher in `SUPERSEDED_SEARCH_TOOL_MATCHERS` that an older install
+    left behind, is unaffected.
     """
     if command is None and command_basename is None:
         raise ValueError("provide command or command_basename")
