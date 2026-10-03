@@ -80,7 +80,7 @@ def test_the_scc_finder_reports_the_pre_1631_component() -> None:
     A synthetic graph, so the finder is checked against a known answer
     rather than against whatever the tree currently says.
     """
-    graph = {
+    graph: dict[str, set[str]] = {
         "aelfrice.hook": {"aelfrice.cli", "aelfrice.provenance_render"},
         "aelfrice.cli": {"aelfrice.doctor"},
         "aelfrice.doctor": {"aelfrice.hook", "aelfrice.hook_search_tool"},
