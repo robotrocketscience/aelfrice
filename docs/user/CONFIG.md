@@ -100,6 +100,10 @@ Rule 1 bounds the directories above your starting point, not the machine. It fir
 
 There is no global configuration and no per-user configuration: every file aelfrice reads is an ancestor of the directory you're working in, and never your own `~/.aelfrice.toml`. If you keep one today, aelfrice no longer reads it. Copy the keys you want into the `.aelfrice.toml` at the root of each project. For most keys that's the only remedy, because only some keys have a matching `AELFRICE_*` environment variable. The `[retrieval]`, `[cadence]`, and `[implicit_feedback]` keys have one, and it outranks the file. `[noise]`, `[dedup]`, and `[rebuilder]` read no environment variable at all, and `[hook_audit]` and `[relationship_detector]` have only an on/off switch — `AELFRICE_HOOK_AUDIT` and `AELFRICE_AUTO_RELATIONSHIPS` — which can't carry `max_bytes`, a budget, or a threshold. Before this change, a project checked out under your home directory inherited your home-level settings and the same project checked out under `/tmp` didn't, so two copies of one repository resolved different configuration and neither file recorded why.
 
+**Aelfrice flags an ignored `~/.aelfrice.toml` (#1652).** If `~/.aelfrice.toml` exists and the project you're working in has no `.aelfrice.toml` of its own, the SessionStart hook adds one line to the agent's context when a session starts, naming the file and the fix, so the agent can tell you. It doesn't repeat after a compaction. Run `aelf doctor` to see it yourself: doctor shows the same thing as a warning, and the warning doesn't change its exit code. Once the project has its own file, both go quiet.
+
+**A linked work tree reads only its own root.** A work tree you create with `git worktree add` has a `.git` file at its root, so rule 3 stops the walk there. It doesn't read the main checkout's `.aelfrice.toml`, even when the work tree sits inside the main checkout. To give a work tree the same settings, put a `.aelfrice.toml` at its root: copy the main checkout's file or link to it.
+
 If the file doesn't exist, the noise filter uses the defaults, which is the recommended state.
 
 ## Schema
