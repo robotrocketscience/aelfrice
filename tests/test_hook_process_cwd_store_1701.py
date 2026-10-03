@@ -6,7 +6,7 @@ was always false and the payload `cwd` was dead. #1630 settled the rule
 for a whole turn: the store resolves from the hook process's cwd, which
 the host sets to the session's directory. These tests pin that rule for
 both hooks with a payload `cwd` that names a different repository, so a
-change that starts honouring the payload `cwd` fails here.
+change that starts honoring the payload `cwd` fails here.
 """
 from __future__ import annotations
 
