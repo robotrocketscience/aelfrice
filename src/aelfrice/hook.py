@@ -81,6 +81,18 @@ try:
     # working after the #968 extraction into aelfrice.hook_audit.
     from aelfrice.hook_audit import AUDIT_DEFAULT_MAX_BYTES  # noqa: F401
     from aelfrice.hook_audit import AUDIT_FILENAME  # noqa: F401
+    # #1631: the memory-block switch and the UserPromptSubmit telemetry
+    # reader moved to `aelfrice.hook_audit`, so `aelf doctor` reads them
+    # without importing this module (that import closed a cycle through
+    # `hook -> cli -> doctor -> hook`). Bound here for the call sites
+    # below and for existing `from aelfrice.hook import ...` callers.
+    from aelfrice.hook_audit import ENV_MEMORY_BLOCK  # noqa: F401
+    from aelfrice.hook_audit import MEMORY_BLOCK_ENABLED_KEY  # noqa: F401
+    from aelfrice.hook_audit import MEMORY_BLOCK_SECTION  # noqa: F401
+    from aelfrice.hook_audit import memory_block_enabled
+    from aelfrice.hook_audit import (
+        read_user_prompt_submit_telemetry,  # noqa: F401
+    )
     # #1527: the rebuilder config, the trigger modes and `RecentTurn` come
     # from `aelfrice.rebuild_log`, the leaf module they were extracted into,
     # NOT from `aelfrice.context_rebuilder`. They are read on the
@@ -2077,102 +2089,6 @@ def load_user_prompt_submit_config(
     return UserPromptSubmitConfig()
 
 
-# ---------------------------------------------------------------------------
-# Memory-block off-switch (#1359)
-# ---------------------------------------------------------------------------
-
-MEMORY_BLOCK_SECTION: Final[str] = "memory_block"
-MEMORY_BLOCK_ENABLED_KEY: Final[str] = "enabled"
-ENV_MEMORY_BLOCK: Final[str] = "AELFRICE_MEMORY_BLOCK"
-"""Off-switch for the per-prompt `<aelfrice-memory>` retrieval block.
-
-Tri-state, matching the `AELFRICE_BFS` / `AELFRICE_BM25F` convention in
-`retrieval.py`: a recognised falsy value forces the block off, a
-recognised truthy value forces it on, and an unset or unrecognised value
-falls through to `[memory_block] enabled` in `.aelfrice.toml`. Default is
-on, so the shipped behaviour is unchanged unless someone opts out.
-
-This suppresses only what `UserPromptSubmit` writes to stdout. Retrieval,
-the sentiment/correction lane, the relevance sweeper, the hook audit log,
-`aelf rebuild`, and the SessionStart `<aelfrice-baseline>` block all keep
-running — the switch is "stop putting this in my prompt", not "stop
-remembering".
-"""
-
-_MEMORY_BLOCK_ENV_FALSY: Final[frozenset[str]] = frozenset(
-    {"0", "false", "no", "off"},
-)
-_MEMORY_BLOCK_ENV_TRUTHY: Final[frozenset[str]] = frozenset(
-    {"1", "true", "yes", "on"},
-)
-
-
-def _env_memory_block_override(env: dict[str, str] | None = None) -> bool | None:
-    """Return the `AELFRICE_MEMORY_BLOCK` override, or None to fall through."""
-    env_map = env if env is not None else dict(os.environ)
-    raw = env_map.get(ENV_MEMORY_BLOCK)
-    if raw is None:
-        return None
-    norm = raw.strip().lower()
-    if norm in _MEMORY_BLOCK_ENV_FALSY:
-        return False
-    if norm in _MEMORY_BLOCK_ENV_TRUTHY:
-        return True
-    return None
-
-
-def memory_block_enabled(
-    start: Path | None = None,
-    *,
-    env: dict[str, str] | None = None,
-    stderr: IO[str] | None = None,
-) -> bool:
-    """Resolve whether the UPS `<aelfrice-memory>` block is emitted.
-
-    Resolution order:
-    1. `AELFRICE_MEMORY_BLOCK` env var, when set to a recognised
-       truthy/falsy value (overrides TOML).
-    2. `[memory_block] enabled` in the nearest `.aelfrice.toml`.
-    3. Default `True`.
-
-    Missing file / missing section / malformed TOML / wrong-typed values
-    all degrade to the default with a stderr trace; never raises.
-    """
-    serr: IO[str] = stderr if stderr is not None else sys.stderr
-    override = _env_memory_block_override(env)
-    if override is not None:
-        return override
-    candidate = discover_config(start)
-    if candidate is None:
-        return True
-    try:
-        raw = candidate.read_bytes()
-    except OSError as exc:
-        print(f"aelfrice hook: cannot read {candidate}: {exc}", file=serr)
-        return True
-    try:
-        parsed: dict[str, Any] = tomllib.loads(
-            raw.decode("utf-8", errors="replace"),
-        )
-    except tomllib.TOMLDecodeError as exc:
-        print(f"aelfrice hook: malformed TOML in {candidate}: {exc}", file=serr)
-        return True
-    section_obj: Any = parsed.get(MEMORY_BLOCK_SECTION, {})
-    if not isinstance(section_obj, dict):
-        return True
-    enabled_obj: Any = cast(dict[str, Any], section_obj).get(
-        MEMORY_BLOCK_ENABLED_KEY, True,
-    )
-    if not isinstance(enabled_obj, bool):
-        print(
-            f"aelfrice hook: ignoring [{MEMORY_BLOCK_SECTION}] "
-            f"{MEMORY_BLOCK_ENABLED_KEY} in {candidate} (expected bool)",
-            file=serr,
-        )
-        return True
-    return enabled_obj
-
-
 def _dedup_by_content_hash(hits: list[Belief]) -> list[Belief]:
     """Return hits with duplicate content hashes removed (first occurrence wins)."""
     seen_hashes: set[str] = set()
@@ -2623,35 +2539,6 @@ def read_hook_audit(path: Path) -> list[dict[str, object]]:
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"audit file {path} line {i + 1} is not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(parsed, dict):
-            continue
-        records.append(cast(dict[str, object], parsed))
-    return records
-
-
-def read_user_prompt_submit_telemetry(
-    path: Path,
-) -> list[dict[str, object]]:
-    """Read the UserPromptSubmit JSONL ring buffer at `path`.
-
-    Returns [] when the file is missing or empty. Raises `ValueError`
-    when the file exists but a line is not valid JSON (corruption).
-    Lines that are valid JSON but not objects are silently skipped.
-    """
-    if not path.exists():
-        return []
-    records: list[dict[str, object]] = []
-    text = path.read_text(encoding="utf-8")
-    for i, line in enumerate(text.splitlines()):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"telemetry file {path} line {i + 1} is not valid JSON: {exc}"
             ) from exc
         if not isinstance(parsed, dict):
             continue

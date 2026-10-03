@@ -11,6 +11,14 @@ The belief-coupled record builders (`_write_hook_audit_record`,
 `_serialize_belief_for_audit`) stay in `hook.py`: they depend on the Belief
 model and are only called from the retrieval hook, which already pays the
 heavy import.
+
+Two `hook.py` readers moved here for a second reason (#1631): the
+`[memory_block]` switch (`memory_block_enabled`) and the UserPromptSubmit
+telemetry reader (`read_user_prompt_submit_telemetry`). `aelf doctor`
+reads both, and importing them from `aelfrice.hook` closed the cycle
+`hook -> cli -> doctor -> hook`. `hook.py` still binds both names, so
+existing callers keep working. Check the cycles with
+`scripts/import_cycles.py`.
 """
 from __future__ import annotations
 
@@ -595,3 +603,133 @@ def _append_audit(
             f"aelfrice: hook audit write failed (non-fatal): {exc}",
             file=serr,
         )
+
+
+# ---------------------------------------------------------------------------
+# Memory-block off-switch (#1359)
+# ---------------------------------------------------------------------------
+
+MEMORY_BLOCK_SECTION: Final[str] = "memory_block"
+MEMORY_BLOCK_ENABLED_KEY: Final[str] = "enabled"
+ENV_MEMORY_BLOCK: Final[str] = "AELFRICE_MEMORY_BLOCK"
+"""Off-switch for the per-prompt `<aelfrice-memory>` retrieval block.
+
+Tri-state, matching the `AELFRICE_BFS` / `AELFRICE_BM25F` convention in
+`retrieval.py`: a recognised falsy value forces the block off, a
+recognised truthy value forces it on, and an unset or unrecognised value
+falls through to `[memory_block] enabled` in `.aelfrice.toml`. Default is
+on, so the shipped behaviour is unchanged unless someone opts out.
+
+This suppresses only what `UserPromptSubmit` writes to stdout. Retrieval,
+the sentiment/correction lane, the relevance sweeper, the hook audit log,
+`aelf rebuild`, and the SessionStart `<aelfrice-baseline>` block all keep
+running — the switch is "stop putting this in my prompt", not "stop
+remembering".
+"""
+
+_MEMORY_BLOCK_ENV_FALSY: Final[frozenset[str]] = frozenset(
+    {"0", "false", "no", "off"},
+)
+_MEMORY_BLOCK_ENV_TRUTHY: Final[frozenset[str]] = frozenset(
+    {"1", "true", "yes", "on"},
+)
+
+
+def _env_memory_block_override(env: dict[str, str] | None = None) -> bool | None:
+    """Return the `AELFRICE_MEMORY_BLOCK` override, or None to fall through."""
+    env_map = env if env is not None else dict(os.environ)
+    raw = env_map.get(ENV_MEMORY_BLOCK)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _MEMORY_BLOCK_ENV_FALSY:
+        return False
+    if norm in _MEMORY_BLOCK_ENV_TRUTHY:
+        return True
+    return None
+
+
+def memory_block_enabled(
+    start: Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Resolve whether the UPS `<aelfrice-memory>` block is emitted.
+
+    Resolution order:
+    1. `AELFRICE_MEMORY_BLOCK` env var, when set to a recognised
+       truthy/falsy value (overrides TOML).
+    2. `[memory_block] enabled` in the nearest `.aelfrice.toml`.
+    3. Default `True`.
+
+    Missing file / missing section / malformed TOML / wrong-typed values
+    all degrade to the default with a stderr trace; never raises.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    override = _env_memory_block_override(env)
+    if override is not None:
+        return override
+    candidate = discover_config(start)
+    if candidate is None:
+        return True
+    try:
+        raw = candidate.read_bytes()
+    except OSError as exc:
+        print(f"aelfrice hook: cannot read {candidate}: {exc}", file=serr)
+        return True
+    try:
+        parsed: dict[str, Any] = tomllib.loads(
+            raw.decode("utf-8", errors="replace"),
+        )
+    except tomllib.TOMLDecodeError as exc:
+        print(f"aelfrice hook: malformed TOML in {candidate}: {exc}", file=serr)
+        return True
+    section_obj: Any = parsed.get(MEMORY_BLOCK_SECTION, {})
+    if not isinstance(section_obj, dict):
+        return True
+    enabled_obj: Any = cast(dict[str, Any], section_obj).get(
+        MEMORY_BLOCK_ENABLED_KEY, True,
+    )
+    if not isinstance(enabled_obj, bool):
+        print(
+            f"aelfrice hook: ignoring [{MEMORY_BLOCK_SECTION}] "
+            f"{MEMORY_BLOCK_ENABLED_KEY} in {candidate} (expected bool)",
+            file=serr,
+        )
+        return True
+    return enabled_obj
+
+
+# ---------------------------------------------------------------------------
+# UserPromptSubmit telemetry reader
+# ---------------------------------------------------------------------------
+
+
+def read_user_prompt_submit_telemetry(
+    path: Path,
+) -> list[dict[str, object]]:
+    """Read the UserPromptSubmit JSONL ring buffer at `path`.
+
+    Returns [] when the file is missing or empty. Raises `ValueError`
+    when the file exists but a line is not valid JSON (corruption).
+    Lines that are valid JSON but not objects are silently skipped.
+    """
+    if not path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    text = path.read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"telemetry file {path} line {i + 1} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            continue
+        records.append(cast(dict[str, object], parsed))
+    return records

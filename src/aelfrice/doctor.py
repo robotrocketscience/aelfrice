@@ -376,7 +376,9 @@ def diagnose_user_prompt_submit_telemetry(
     Returns `None` when the file does not exist or is empty. Raises
     `ValueError` when the file exists but contains malformed JSON.
     """
-    from aelfrice.hook import read_user_prompt_submit_telemetry  # noqa: PLC0415
+    from aelfrice.hook_audit import (  # noqa: PLC0415
+        read_user_prompt_submit_telemetry,
+    )
 
     records = read_user_prompt_submit_telemetry(telemetry_path)
     if not records:
@@ -852,9 +854,10 @@ def diagnose(
 def _diagnose_memory_block(project_root: Path | None) -> bool | None:
     """Resolve the #1359 memory-block switch, or None if unresolvable.
 
-    `aelfrice.hook` is imported lazily — it pulls the retrieval stack,
-    which doctor otherwise never pays for. Same policy as the
-    `read_user_prompt_submit_telemetry` import above.
+    Read from `aelfrice.hook_audit`, not `aelfrice.hook`, which defines
+    nothing of its own here. Importing `aelfrice.hook` from doctor closed
+    an import cycle, `hook -> cli -> doctor -> hook` (#1631); check with
+    `scripts/import_cycles.py --assert-acyclic aelfrice.hook`.
 
     Scope caveat: the env half resolves from *doctor's* process. A user
     who sets `AELFRICE_MEMORY_BLOCK` only in settings.json's `env` block
@@ -863,7 +866,7 @@ def _diagnose_memory_block(project_root: Path | None) -> bool | None:
     `project_root`, the same way the hook reads it.
     """
     try:
-        from aelfrice.hook import memory_block_enabled  # noqa: PLC0415
+        from aelfrice.hook_audit import memory_block_enabled  # noqa: PLC0415
 
         return memory_block_enabled(start=project_root)
     except Exception:

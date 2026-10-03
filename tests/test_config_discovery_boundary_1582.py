@@ -617,7 +617,12 @@ def test_the_scan_reaches_the_subpackages() -> None:
 _ENVLESS_TABLES: dict[str, set[str]] = {
     "noise_filter": set(),
     "dedup": set(),
-    "hook_audit": {"AELFRICE_HOOK_AUDIT"},
+    # `AELFRICE_MEMORY_BLOCK` is the `[memory_block]` switch, not a
+    # `[hook_audit]` key: `memory_block_enabled` moved here from `hook.py`
+    # (#1631) so `aelf doctor` can read it without importing the hook.
+    # CONFIG.md documents it under `[memory_block]`. `[hook_audit]` still
+    # has only its on/off switch.
+    "hook_audit": {"AELFRICE_HOOK_AUDIT", "AELFRICE_MEMORY_BLOCK"},
     "relationship_detector": {"AELFRICE_AUTO_RELATIONSHIPS"},
     # `load_rebuilder_config` lives here (#1527). The one name is the
     # `[rebuild_log]` switch; no `[rebuilder]` budget has an override.
