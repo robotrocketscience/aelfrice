@@ -22,17 +22,14 @@ on:
   # #1695: `pull_request_target`, not `pull_request`. Under `pull_request`
   # the workflow file and every script it runs came from the PR's own
   # merge commit, so a PR could change the gate that judged it, with a
-  # `contents: write` token. Under `pull_request_target` both come from
-  # the base branch, and the PR head is only fetched as git data: this job
-  # never executes a file from it.
-  #
-  # `branches: [main]` is load-bearing. The workflow file is read from the
-  # PR's *base* branch, so without the filter a PR based on a branch its
-  # author controls would run that branch's merge-train.yml. A stacked PR
-  # (#1424) therefore no longer triggers the train at all, instead of
-  # being refused by the base check below.
+  # `contents: write` token. Under `pull_request_target` the workflow file
+  # and the checkout always come from the default branch, whatever the
+  # PR's base (GitHub changelog, 2025-11-07, in effect 2025-12-08), and the
+  # PR head is only fetched as git data: this job never executes a file
+  # from it. There is deliberately no `branches:` filter, so a stacked PR
+  # (#1424) still reaches the base check below and is refused with a
+  # comment instead of sitting labelled with no feedback.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    branches: [main]
     # `labeled` catches the operator's initial ready-to-merge add.
     # `synchronize` catches subsequent pushes (rebases) while the label
     # is already attached — without it, a rebased PR's new head SHA is
@@ -44,12 +41,6 @@ permissions:
   pull-requests: write
   issues: write  # #637: `gh issue close --comment` (#634 auto-close) needs issues:write
   actions: write # #1423: `gh workflow run` for the post-merge dispatch below
-
-# Concurrency-1: this is the whole point. Two labeled events queue
-# rather than race.
-concurrency:
-  group: merge-train
-  cancel-in-progress: false
 
 jobs:
   merge:
@@ -66,6 +57,13 @@ jobs:
         (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
       )
+    # Concurrency-1: this is the whole point. Two labeled events queue
+    # rather than race. Job-level, not workflow-level (#1695): a run whose
+    # `if` skips the job (an unrelated push, a fork PR) never joins the
+    # group, so it can't displace a labelled run waiting for its slot.
+    concurrency:
+      group: merge-train
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -132,7 +130,10 @@ jobs:
           echo "${base_msg}"
 
           echo "[1/6] refreshing refs..."
-          git fetch origin main "${HEAD_REF}" --quiet
+          # Explicit refspec (#1695): a branch name is never parsed as an
+          # option, even one that starts with `-`.
+          git fetch --quiet origin main \
+              "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
 
           # Sanity-check the PR head matches what the event reported. If
           # the author force-pushed between the label-fire and now, the

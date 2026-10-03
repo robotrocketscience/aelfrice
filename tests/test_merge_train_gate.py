@@ -865,35 +865,65 @@ def _on_block(text: str) -> list[str]:
     return [ln for ln in lines[start:end] if ln.strip() and not ln.lstrip().startswith("#")]
 
 
-def test_the_train_triggers_on_pull_request_target_for_main_only() -> None:
+def _job_if(text: str) -> str:
+    """The `if:` block of the merge job, comments stripped."""
+    lines = text.splitlines()
+    i = next(n for n, ln in enumerate(lines) if ln.startswith("    if: |"))
+    body: list[str] = []
+    for ln in lines[i + 1:]:
+        if not ln.startswith("      "):
+            break
+        body.append(ln.split("#")[0].strip())
+    return " ".join(b for b in body if b)
+
+
+def test_the_train_triggers_on_pull_request_target_only() -> None:
     """Under `pull_request` the workflow and its scripts came from the PR
-    itself. `pull_request_target` reads them from the base branch, and
-    `branches: [main]` keeps a PR based on an author-controlled branch from
-    supplying its own workflow file."""
+    itself. Under `pull_request_target` they come from the default branch.
+    No `branches:` filter, so a stacked PR still gets the #1424 refusal."""
     block = _on_block(_WORKFLOW.read_text())
     keys = [ln.split("#")[0].strip() for ln in block if re.match(r"^  \S", ln)]
     assert keys == ["pull_request_target:"], block
-    assert "    branches: [main]" in block, block
+    assert not any(ln.strip().startswith("branches:") for ln in block), block
 
 
-def test_the_train_skips_fork_prs() -> None:
-    """`pull_request_target` gives a fork PR a write token."""
+def test_the_fork_guard_gates_every_event() -> None:
+    """`pull_request_target` gives a fork PR a write token. The guard must
+    be ANDed with the event conditions, in the `if:` itself."""
+    cond = _job_if(_WORKFLOW.read_text())
+    guard = "github.event.pull_request.head.repo.full_name == github.repository"
+    assert cond.startswith(f"{guard} && ("), cond
+    assert cond.endswith(")"), cond
+
+
+def test_the_train_never_checks_out_the_pr_head() -> None:
     text = _WORKFLOW.read_text()
-    assert (
-        "github.event.pull_request.head.repo.full_name == github.repository"
-        in text
-    )
-
-
-def test_the_train_checks_out_main_and_never_the_pr_head() -> None:
-    text = _WORKFLOW.read_text()
+    assert text.count("uses: actions/checkout@") == 1
     checkout = text[text.index("uses: actions/checkout@"):]
     checkout = checkout[: checkout.index("\n      - ")]
     assert re.search(r"^\s+ref: main\s*$", checkout, re.M), checkout
-    assert "pull_request.head.sha }}" not in checkout
-    assert "pull_request.head.ref }}" not in checkout
-    # The head is only ever named through env vars, never interpolated
-    # into a script (template injection).
     run = text[text.index("        run: |"):]
-    assert "${{ github.event.pull_request.head" not in run
+    code = "\n".join(ln.split("#")[0] for ln in run.splitlines())
+    # The head is only ever named through env vars, never interpolated
+    # into a script (template injection) ...
+    assert "${{ github.event.pull_request.head" not in code
+    # ... and never checked out, switched to, or reset onto.
+    assert not re.search(
+        r"git\s+(checkout|switch|reset|worktree\s+add)\b[^\n]*\$\{?HEAD_(SHA|REF)",
+        code,
+    )
+    assert "refs/pull/" not in text
 
+
+def test_concurrency_is_job_level() -> None:
+    """A run whose `if` skips the job must not join the group, or it can
+    displace a labelled run waiting for its slot."""
+    text = _WORKFLOW.read_text()
+    assert not re.search(r"^concurrency:", text, re.M)
+    assert re.search(r"^    concurrency:\n      group: merge-train\n", text, re.M)
+
+
+def test_the_head_ref_is_fetched_by_explicit_refspec() -> None:
+    text = _WORKFLOW.read_text()
+    assert '"+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"' in text
+    assert 'git fetch origin main "${HEAD_REF}"' not in text
