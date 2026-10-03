@@ -889,7 +889,7 @@ def test_the_train_triggers_on_pull_request_target_only() -> None:
 
 def test_the_fork_guard_gates_every_event() -> None:
     """`pull_request_target` gives a fork PR a write token. The guard must
-    be ANDed with the event conditions, in the `if:` itself."""
+    be joined to the event conditions with `&&`, in the `if:` itself."""
     cond = _job_if(_WORKFLOW.read_text())
     guard = "github.event.pull_request.head.repo.full_name == github.repository"
     assert cond.startswith(f"{guard} && ("), cond
