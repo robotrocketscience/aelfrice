@@ -331,13 +331,34 @@ def test_the_query_comes_from_each_tools_own_field(
 
 
 @pytest.mark.timeout(30)
-def test_the_installed_matcher_covers_the_web_tools() -> None:
-    """The hook only fires for tools the matcher names."""
-    from aelfrice.setup import SEARCH_TOOL_MATCHER
+def test_the_installed_matcher_names_exactly_the_tools_the_hook_handles() -> None:
+    """The hook only fires for tools the matcher names (#1628).
 
-    for tool in ("Grep", "Glob", "WebSearch", "WebFetch"):
-        assert tool in SEARCH_TOOL_MATCHER, (
-            f"{tool} is not in the installed matcher {SEARCH_TOOL_MATCHER!r}"
+    The matcher `setup` installs and the set the hook dispatches on must
+    be one fact. This compares the two as each module exposes them,
+    without listing the tools a third time: a tool in one and not the
+    other is either a hook that fires for a call it ignores, or a hook
+    the host never calls for a tool it handles.
+    """
+    import re
+
+    from aelfrice import hook_search_tool, search_tool_names, setup
+
+    assert setup.SEARCH_TOOL_MATCHER.split("|") == list(
+        hook_search_tool.SEARCH_TOOL_NAMES
+    ), (
+        f"installed matcher {setup.SEARCH_TOOL_MATCHER!r} does not name "
+        f"exactly the hook's tools {hook_search_tool.SEARCH_TOOL_NAMES!r}"
+    )
+    # One source: both modules bind the leaf module's objects rather
+    # than keeping a copy of their own.
+    assert setup.SEARCH_TOOL_MATCHER is search_tool_names.SEARCH_TOOL_MATCHER
+    assert hook_search_tool.SEARCH_TOOL_NAMES is search_tool_names.SEARCH_TOOL_NAMES
+    # The join is the whole derivation only while no name is itself a
+    # pattern: the host reads the matcher as a regex alternation.
+    for name in search_tool_names.SEARCH_TOOL_NAMES:
+        assert re.fullmatch(r"[A-Za-z0-9_]+", name), (
+            f"{name!r} would change meaning inside a regex matcher"
         )
 
 
