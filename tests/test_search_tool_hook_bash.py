@@ -205,7 +205,7 @@ def test_no_fall_through_to_arbitrary_bash() -> None:
 
 
 def test_unknown_tool_name_silent_skip() -> None:
-    """Tool other than Grep / Glob / Bash silent-skips."""
+    """A tool that is neither a search tool nor Bash silent-skips."""
     payload = json.dumps({
         "hook_event_name": "PreToolUse",
         "tool_name": "Read",
