@@ -354,11 +354,13 @@ def test_the_installed_matcher_names_exactly_the_tools_the_hook_handles() -> Non
     # than keeping a copy of their own.
     assert setup.SEARCH_TOOL_MATCHER is search_tool_names.SEARCH_TOOL_MATCHER
     assert hook_search_tool.SEARCH_TOOL_NAMES is search_tool_names.SEARCH_TOOL_NAMES
-    # The join is the whole derivation only while no name is itself a
-    # pattern: the host reads the matcher as a regex alternation.
+    # The host reads a matcher made only of letters, digits, `_`, `-`,
+    # spaces, `,` and `|` as a list of exact tool names; any other
+    # character turns it into a regex. Names kept to `[A-Za-z0-9_]`
+    # keep the joined matcher on the exact-name path.
     for name in search_tool_names.SEARCH_TOOL_NAMES:
         assert re.fullmatch(r"[A-Za-z0-9_]+", name), (
-            f"{name!r} would change meaning inside a regex matcher"
+            f"{name!r} would turn the matcher into a regex"
         )
 
 
