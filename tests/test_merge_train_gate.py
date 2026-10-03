@@ -850,3 +850,50 @@ def test_the_floor_excludes_advisory_bots_and_the_trains_own_jobs() -> None:
     """
     assert not (FLOOR_NAMES & ADVISORY_NAMES)
     assert not (FLOOR_NAMES & SELF_NAMES)
+
+
+# --- #1695: the train runs only code from `main` -----------------------------
+
+
+def _on_block(text: str) -> list[str]:
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.rstrip() == "on:") + 1
+    end = next(
+        i for i in range(start, len(lines))
+        if lines[i][:1].strip() and not lines[i].startswith("#")
+    )
+    return [ln for ln in lines[start:end] if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def test_the_train_triggers_on_pull_request_target_for_main_only() -> None:
+    """Under `pull_request` the workflow and its scripts came from the PR
+    itself. `pull_request_target` reads them from the base branch, and
+    `branches: [main]` keeps a PR based on an author-controlled branch from
+    supplying its own workflow file."""
+    block = _on_block(_WORKFLOW.read_text())
+    keys = [ln.split("#")[0].strip() for ln in block if re.match(r"^  \S", ln)]
+    assert keys == ["pull_request_target:"], block
+    assert "    branches: [main]" in block, block
+
+
+def test_the_train_skips_fork_prs() -> None:
+    """`pull_request_target` gives a fork PR a write token."""
+    text = _WORKFLOW.read_text()
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in text
+    )
+
+
+def test_the_train_checks_out_main_and_never_the_pr_head() -> None:
+    text = _WORKFLOW.read_text()
+    checkout = text[text.index("uses: actions/checkout@"):]
+    checkout = checkout[: checkout.index("\n      - ")]
+    assert re.search(r"^\s+ref: main\s*$", checkout, re.M), checkout
+    assert "pull_request.head.sha }}" not in checkout
+    assert "pull_request.head.ref }}" not in checkout
+    # The head is only ever named through env vars, never interpolated
+    # into a script (template injection).
+    run = text[text.index("        run: |"):]
+    assert "${{ github.event.pull_request.head" not in run
+

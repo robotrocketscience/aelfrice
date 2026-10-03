@@ -19,7 +19,20 @@ name: merge-train
 # "no auto-rebase" rationale (#341).
 
 on:
-  pull_request:
+  # #1695: `pull_request_target`, not `pull_request`. Under `pull_request`
+  # the workflow file and every script it runs came from the PR's own
+  # merge commit, so a PR could change the gate that judged it, with a
+  # `contents: write` token. Under `pull_request_target` both come from
+  # the base branch, and the PR head is only fetched as git data: this job
+  # never executes a file from it.
+  #
+  # `branches: [main]` is load-bearing. The workflow file is read from the
+  # PR's *base* branch, so without the filter a PR based on a branch its
+  # author controls would run that branch's merge-train.yml. A stacked PR
+  # (#1424) therefore no longer triggers the train at all, instead of
+  # being refused by the base check below.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    branches: [main]
     # `labeled` catches the operator's initial ready-to-merge add.
     # `synchronize` catches subsequent pushes (rebases) while the label
     # is already attached — without it, a rebased PR's new head SHA is
@@ -44,9 +57,15 @@ jobs:
     # On `synchronize`: only fire when ready-to-merge is *currently* on
     # the PR (i.e. the operator already consented and the rebase is
     # bringing it onto a fresh head SHA). See #646.
+    #
+    # #1695: same-repository PRs only. `pull_request_target` hands a fork
+    # PR a write token, which `pull_request` never did; a fork's head can't
+    # be fast-forwarded onto `main` from here anyway.
     if: |
-      (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -56,6 +75,9 @@ jobs:
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          # #1695: the scripts this job runs come from `main`. Never check
+          # out the PR head here; it is fetched below as data only.
+          ref: main
           fetch-depth: 0
           # Default token is fine for FF pushes — we're advancing main
           # to existing already-signed commits, not adding new ones.
