@@ -3327,6 +3327,12 @@ def user_prompt_submit(
                 payload_cwd = Path(cwd_field)
         except Exception:
             payload_cwd = None
+        # #1630: the store resolves from the PROCESS cwd, not `payload_cwd`,
+        # and so do the executor, the outcome row and the session-state
+        # files above. The host runs this hook in the session's current
+        # directory, so the two cwds agree. Moving only some of these
+        # consumers splits one turn across two stores and breaks a typed
+        # `/aelf:scope-out`. Pinned by tests/test_process_cwd_store_1630.py.
         try:
             p = db_path()
             if str(p) != ":memory:":
