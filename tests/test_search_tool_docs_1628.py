@@ -4,9 +4,10 @@
 pages that state the matcher kept the old value: a docs-only sweep fixes them
 once and rots again on the next widening. These tests read each site that
 states the matcher to a reader -- the architecture hook table, the install
-guide, the `/aelf:setup` command page, the README command table, the CLI help,
-and the hook manifest -- and hold it to `SEARCH_TOOL_MATCHER`, so a change to
-the tool set fails here until the prose follows.
+guide, the command reference, the `/aelf:setup` command page, the README
+command table, the CLI help, and the hook manifest -- and hold it to
+`SEARCH_TOOL_MATCHER`, so a change to the tool set fails here until the prose
+follows.
 
 Each site is located by a stable anchor (a hook name, an option, a manifest
 row), not a line number, and a missing anchor fails rather than skips: a
@@ -66,6 +67,16 @@ def test_architecture_hook_table_states_the_shipped_matcher() -> None:
     assert event_cell == _EVENT_MATCHER, (
         f"ARCHITECTURE.md gives the search-tool event as {event_cell!r}; "
         f"the shipped matcher is {_EVENT_MATCHER!r}"
+    )
+
+
+@pytest.mark.timeout(30)
+def test_commands_reference_setup_row_states_the_shipped_matcher() -> None:
+    row = _only_line(REPO / "docs" / "user" / "COMMANDS.md", "| `setup` |")
+    # The row escapes `|` inside the table cell; unescape before comparing.
+    assert f"search-tool (`{_EVENT_MATCHER}`)" in row.replace("\\|", "|"), (
+        f"COMMANDS.md's setup row does not give the search-tool lane as "
+        f"{_EVENT_MATCHER!r}"
     )
 
 
