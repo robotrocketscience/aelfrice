@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Final, Literal, cast, overload
 
 from aelfrice import launcher
+from aelfrice.search_tool_names import SEARCH_TOOL_MATCHER
 from aelfrice.session_ring import exclusive_file_lock
 
 # #1161. How long a settings mutation waits for another aelfrice writer
@@ -773,9 +774,11 @@ def uninstall_claude_memory_mirror_hook(
 
 
 SEARCH_TOOL_EVENT: Final[str] = "PreToolUse"
-# #1626: the web tools join the local ones. aelfrice must run BEFORE
-# any search, or the ordering that makes this hook valuable is lost.
-SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob|WebSearch|WebFetch"
+# SEARCH_TOOL_MATCHER, imported above, is the installed matcher. #1626
+# added the web tools to the local ones: aelfrice must run BEFORE any
+# search, or the ordering that makes this hook valuable is lost. #1628
+# moved it to `aelfrice.search_tool_names`, where it derives from the
+# same `SEARCH_TOOL_NAMES` tuple the hook dispatches on.
 
 # Matcher strings this hook used to ship under.
 #

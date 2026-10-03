@@ -13,10 +13,11 @@ Hook contract (Claude Code PreToolUse):
 - payload includes `tool_name`, `tool_input`, `cwd`, plus the standard
   event fields. We act only when:
     * tool_name is in `SEARCH_TOOL_NAMES` — the single source for this,
-      so a tool added there needs no edit here. It currently covers the
-      local tools (`Grep`, `Glob`) and the web tools (`WebSearch`,
-      `WebFetch`); `setup.SEARCH_TOOL_MATCHER` is the installed matcher
-      for the same set.
+      in the leaf module `aelfrice.search_tool_names`, so a tool added
+      there needs no edit here. It currently covers the local tools
+      (`Grep`, `Glob`) and the web tools (`WebSearch`, `WebFetch`);
+      `SEARCH_TOOL_MATCHER`, the matcher `aelf setup` installs, is
+      derived from the same tuple.
     * the query field for that tool is a string with at least one
       extractable token. The field differs by tool and is tried in
       order: `pattern` for Grep and Glob, `query` for WebSearch,
@@ -54,6 +55,7 @@ from typing import IO, Final, cast
 
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
 from aelfrice.render_cost import chars_to_tokens
+from aelfrice.search_tool_names import SEARCH_TOOL_NAMES
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 QUERY_TOKEN_LIMIT: Final[int] = 5
@@ -574,21 +576,9 @@ def _read_payload(
     return cast(dict[str, object], parsed)
 
 
-# #1626: every tool that performs a search, not just the local ones.
-#
-# The value of this hook is ORDERING: aelfrice runs first, so the model
-# already holds the relevant brain-graph context before it chooses grep,
-# the web, or anything else. A search the model runs afterwards, or not
-# at all, is worth much less. Covering only Grep and Glob left the web
-# tools reaching out with no brain-graph context at all, and whether
-# that path is taken is exactly the model choice this product exists to
-# remove.
-SEARCH_TOOL_NAMES: Final[tuple[str, ...]] = (
-    "Grep",
-    "Glob",
-    "WebSearch",
-    "WebFetch",
-)
+# `SEARCH_TOOL_NAMES` (imported above): #1626 widened it to the web
+# tools; #1628 moved it to a leaf module so the installed matcher in
+# `setup` derives from the same tuple instead of copying it.
 
 
 def _is_search_tool_call(payload: dict[str, object]) -> bool:
