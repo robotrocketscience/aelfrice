@@ -21,7 +21,7 @@ every member of it is measured:
 * `session_start` — the `<aelfrice-baseline>` block (no shipped budget: the
   production lane passes none, and this module probes it at
   `SESSION_START_PROBE_BUDGET`).
-* `search_tool` / `search_tool_bash` — the PreToolUse Grep|Glob and Bash lanes
+* `search_tool` / `search_tool_bash` — the PreToolUse search-tool and Bash lanes
   (`hook_search_tool.INJECTED_TOKEN_BUDGET` / `BASH_INJECTED_TOKEN_BUDGET`).
 * `agent_context` — the Agent/Task worker-context lane
   (`hook_agent_context.INJECTED_TOKEN_BUDGET`).
@@ -686,7 +686,7 @@ LEGACY_COST_NOT_REBOUND: tuple[tuple[str, str, str], ...] = (
     (
         "hook_search_tool",
         "_belief_line_cost",
-        "Not read off a module global. The Grep|Glob and Bash lanes pass it in "
+        "Not read off a module global. The search-tool and Bash lanes pass it in "
         "as `belief_cost_fn`, and `_render_search_tool`'s before arm passes "
         "None in its place, so a rebind here would reach nothing.",
     ),

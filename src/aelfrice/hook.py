@@ -3908,7 +3908,7 @@ def user_prompt_submit(
                 stderr=serr,
             )
             # #740: record the per-turn injected belief ids in the
-            # session ring so subsequent PreToolUse:Grep|Glob|Bash fires
+            # session ring so subsequent PreToolUse search-tool and Bash fires
             # can dedup against the UPS-fire injection set. Locked ids
             # carry a `locked: true` flag in the ring entry but consumers
             # apply their own locked-set when filtering, so the ring is

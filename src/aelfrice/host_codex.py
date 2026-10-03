@@ -30,9 +30,11 @@ established in #1054/#1052 triage:
   canonicalizes hook tool names to the compatible surface — shell
   commands report ``tool_name == "Bash"`` — so the memory-first shell
   search, pre-issue duplicate guard, and commit-ingest hooks match
-  unchanged. The ``Grep|Glob`` search hook is excluded (no such tools
-  exist on Codex; greps arrive via Bash and are covered by the Bash
-  matcher), as is the host-specific memory mirror.
+  unchanged. The search-tool hook on ``SEARCH_TOOL_MATCHER`` (Grep,
+  Glob, WebSearch, WebFetch) is excluded: Grep and Glob do not exist
+  on Codex, where greps arrive via Bash and are covered by the Bash
+  matcher. The web tool names are excluded with them. The
+  host-specific memory mirror is excluded too.
 """
 from __future__ import annotations
 
@@ -215,8 +217,9 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
             },
         ],
         # #1055: Codex reports shell commands as tool_name "Bash", so the
-        # Bash-matcher hooks are host-portable verbatim. Grep|Glob is
-        # omitted — those tools do not exist on Codex.
+        # Bash-matcher hooks are host-portable verbatim. The search-tool
+        # matcher (Grep|Glob|WebSearch|WebFetch) is omitted — Grep and
+        # Glob do not exist on Codex.
         "PreToolUse": [
             {
                 "matcher": "Bash",

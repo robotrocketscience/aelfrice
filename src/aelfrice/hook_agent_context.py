@@ -32,7 +32,7 @@ Behavior contract:
   only; no new ranking machinery (#605).
 
 Latency: the block is built from one ``retrieve()`` call at a reduced
-auxiliary budget (same convention as the Grep|Glob lane); dispatch
+auxiliary budget (same convention as the search-tool lane); dispatch
 itself — spawning a whole worker session — dwarfs the hook cost.
 
 Local-only: brain-graph reads never cross the git boundary or any
@@ -59,7 +59,7 @@ WORKER_CONTEXT_CLOSE_TAG: Final[str] = "</aelfrice-worker-context>"
 
 INJECTED_TOKEN_BUDGET: Final[int] = 600
 """Token budget for retrieve() — same reduced auxiliary allowance as the
-Grep|Glob search-tool lane. The worker's own task prompt is the primary
+search-tool lane. The worker's own task prompt is the primary
 content; memory context must not crowd it out.
 
 **#1526 did not move this number, and it changed what the number buys.**
@@ -67,12 +67,12 @@ This lane renders through `hook._split_belief_lines`, the same `<belief …>`
 shape the UserPromptSubmit block uses, so it is charged the corrected
 `retrieval._belief_tokens` and the block now fits inside this cap rather
 than overrunning it by the elements around the content. It shares the
-Grep|Glob lane's number but not its cost function: that lane emits
+search-tool lane's number but not its cost function: that lane emits
 `[L0] <prefix>: <content>` capped at 200 characters and passes its own
 `belief_cost_fn`."""
 
 INJECTED_L1_LIMIT: Final[int] = 10
-"""L1 result cap, mirroring the Grep|Glob lane."""
+"""L1 result cap, mirroring the search-tool lane."""
 
 QUERY_CHAR_CAP: Final[int] = 2000
 """Cap on how much of the worker prompt feeds the retrieval query.

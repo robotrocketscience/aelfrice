@@ -798,7 +798,7 @@ SUPERSEDED_SEARCH_TOOL_MATCHERS: Final[tuple[str, ...]] = ("Grep|Glob",)
 SEARCH_TOOL_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
 
 SEARCH_TOOL_BASH_MATCHER: Final[str] = "Bash"
-# The Bash matcher reuses the same entry-point script as the Grep|Glob hook;
+# The Bash matcher reuses the same entry-point script as the search-tool hook;
 # both matchers route into aelfrice.hook_search_tool:main which dispatches
 # on tool_name internally.
 SEARCH_TOOL_BASH_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
@@ -972,7 +972,7 @@ def resolve_search_tool_bash_command(scope: SettingsScope) -> str:
     """Pick the absolute aelf-search-tool-hook path for the Bash matcher.
 
     The Bash-matcher PreToolUse hook reuses the same script as the
-    Grep|Glob hook (aelf-search-tool-hook). Both matchers dispatch
+    search-tool hook (aelf-search-tool-hook). Both matchers dispatch
     internally on tool_name. Resolution rules mirror resolve_search_tool_command.
     """
     return _resolve_script(SEARCH_TOOL_BASH_SCRIPT_NAME, scope)
@@ -984,13 +984,13 @@ def install_search_tool_bash_hook(
     """Add a PreToolUse:matcher=Bash hook entry running `command`.
 
     Idempotent: a second call with the same `command` and a Bash matcher
-    already present is a no-op. Coexists with the Grep|Glob search-tool
+    already present is a no-op. Coexists with the search-tool
     entry — both hooks may share the same command string (the script
     dispatches on tool_name internally) and will be stored as separate
     entries distinguished by their `matcher` field.
 
     The Bash matcher uses a separate hook entry (different matcher field)
-    from the Grep|Glob matcher so they can be installed / removed
+    from the search-tool matcher so they can be installed / removed
     independently per the v1.5.0 spec (§ AC7).
     """
     if not command:
@@ -998,7 +998,7 @@ def install_search_tool_bash_hook(
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
     # _install_or_replace_entry's matcher-aware dedup keeps this entry
-    # distinct from the Grep|Glob-matcher search-tool entry (same script
+    # distinct from the search-tool-matcher entry (same script
     # basename, different matcher → different hook per the v1.5.0 spec).
     if _install_or_replace_entry(
         entries,
@@ -1095,7 +1095,7 @@ def install_agent_context_hook(
     """Add a PreToolUse:matcher=^(Agent|Task)$ hook entry running `command`.
 
     Idempotent against the same `command`. Coexists with other PreToolUse
-    entries (Grep|Glob / Bash matchers) — appending only after confirming
+    entries (search-tool / Bash matchers) — appending only after confirming
     no matching entry already exists for the same command.
     """
     if not command:

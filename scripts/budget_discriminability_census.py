@@ -168,7 +168,7 @@ def _element_render(b: Belief) -> str:
 
 
 def _search_tool_render(b: Belief) -> str:
-    """The `[L0] <prefix>: <content>` line the Grep/Glob/Bash lane emits."""
+    """The `[L0] <prefix>: <content>` line the search-tool and Bash lanes emit."""
     line = hook_search_tool._belief_line(b, frozenset())
     return "" if line is None else line
 

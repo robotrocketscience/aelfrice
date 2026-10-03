@@ -96,7 +96,8 @@ _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 
 # --- v1.5.0 Bash matcher (#155) ------------------------------------------
 
-# Halved budget vs. the v1.2.x Grep|Glob path. Bash extraction is one
+# Halved budget vs. the search-tool lane (the v1.2.x Grep|Glob path,
+# now Grep, Glob, WebSearch, and WebFetch). Bash extraction is one
 # parse hop further from the agent's intent so the auxiliary-context
 # allowance shrinks correspondingly. Spec § Token budget.
 #
@@ -348,8 +349,8 @@ def _extract_bash_query(
     """Return `(fts5_query, command_name, raw_cmd_truncated)` for a
     Bash payload, or `None` to silent-skip.
 
-    Tokenises the lifted query string the same way the Grep|Glob
-    path does (3-char minimum, FTS5 OR-join, 5-token cap), so the
+    Tokenises the lifted query string the same way the search-tool
+    lane does (3-char minimum, FTS5 OR-join, 5-token cap), so the
     Bash matcher's downstream `retrieve()` call sees the same
     shape of query the v1.2.x matcher emits.
     """
@@ -586,7 +587,7 @@ def _is_search_tool_call(payload: dict[str, object]) -> bool:
 
 
 def _extract_query(payload: dict[str, object]) -> str | None:
-    """Lift the search query out of tool_input.pattern.
+    """Lift the search query out of the tool's query field.
 
     Grep and Glob use `pattern`, WebSearch uses `query`, and WebFetch
     uses `prompt`. Strips regex/glob
@@ -883,7 +884,7 @@ def _do_search(
     bash_source: tuple[str, str] | None = None
     session_id: str | None = None
     t0: float | None = None
-    # #740 dedup needs session_id on the Grep|Glob branch too, not just
+    # #740 dedup needs session_id on the search-tool branch too, not just
     # Bash; extract eagerly so both lanes can consult the session ring.
     session_obj = payload.get("session_id")
     session_id = session_obj if isinstance(session_obj, str) else None
@@ -893,8 +894,9 @@ def _do_search(
             return
     elif payload.get("tool_name") == "Bash":
         # v1.5.0 #155 Bash matcher path. Per-turn fire cap applies
-        # only to this lane; Grep|Glob fires once per direct tool
-        # call and is not capped.
+        # only to this lane; the search-tool lane (Grep, Glob,
+        # WebSearch, WebFetch) fires once per direct tool call and is
+        # not capped.
         t0 = time.perf_counter()
         # Extraction first, cap second (#1522). The cap now consults the
         # session ring, and importing `session_ring` pulls `db_paths` ->

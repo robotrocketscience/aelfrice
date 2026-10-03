@@ -2,7 +2,7 @@
 
 Tracks the belief IDs that have already been injected into the agent's
 prompt context during the current session, so subsequent
-``PreToolUse:Grep|Glob|Bash`` hook fires can suppress redundant
+``PreToolUse`` search-tool and Bash hook fires can suppress redundant
 re-injection of beliefs the agent has already seen.
 
 Persistence: a single JSON file at
