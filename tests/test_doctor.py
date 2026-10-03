@@ -154,6 +154,10 @@ def test_diagnose_inspects_script_through_silent_failure_wrapper(
     _write_settings(user_path, {
         "hooks": {
             "PostToolUse": [{
+                # Legacy on purpose (#1628): this models a pre-#113 shell
+                # wrapper install, not the current search-tool entry, so
+                # it keeps the matcher that install used. The doctor's
+                # verdict does not depend on the matcher.
                 "matcher": "Grep|Glob",
                 "hooks": [{
                     "type": "command",

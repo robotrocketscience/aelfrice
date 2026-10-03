@@ -28,6 +28,7 @@ import pytest
 from aelfrice.cli import main
 from aelfrice.doctor import prune_broken_aelf_hooks
 from aelfrice.setup import (
+    SEARCH_TOOL_MATCHER,
     install_search_tool_bash_hook,
     install_user_prompt_submit_hook,
 )
@@ -96,7 +97,7 @@ def test_install_idempotent_same_command_twice(tmp_path: Path) -> None:
 
 
 def test_install_replaces_only_within_matcher_partition(tmp_path: Path) -> None:
-    """Matcher-keyed install (Bash vs Grep|Glob) does not cross partitions.
+    """Matcher-keyed install (Bash vs search-tool) does not cross partitions.
 
     The search-tool hook ships with two PreToolUse entries that share
     `aelf-search-tool-hook` as the basename but live under different
@@ -104,13 +105,14 @@ def test_install_replaces_only_within_matcher_partition(tmp_path: Path) -> None:
     must not collapse them into one.
     """
     settings = tmp_path / "settings.json"
-    # Plant the Grep|Glob matcher entry directly so we can verify the
-    # Bash install does not steamroll it.
+    # Plant the search-tool matcher entry directly so we can verify the
+    # Bash install does not steamroll it. Read from SEARCH_TOOL_MATCHER,
+    # not transcribed, so the fixture is the entry a current install has.
     settings.write_text(json.dumps({
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Grep|Glob",
+                    "matcher": SEARCH_TOOL_MATCHER,
                     "hooks": [{
                         "type": "command",
                         "command": "/usr/local/bin/aelf-search-tool-hook",
@@ -124,7 +126,7 @@ def test_install_replaces_only_within_matcher_partition(tmp_path: Path) -> None:
     )
     entries = _event_list(_read(settings), "PreToolUse")
     matchers = sorted(cast(str, e.get("matcher", "")) for e in entries)
-    assert matchers == ["Bash", "Grep|Glob"]
+    assert matchers == sorted(["Bash", SEARCH_TOOL_MATCHER])
     assert len(entries) == 2
 
 
