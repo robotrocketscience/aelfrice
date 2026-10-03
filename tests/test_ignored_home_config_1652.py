@@ -165,8 +165,6 @@ def test_a_home_path_that_is_not_a_file_reports_nothing(
 def test_a_failing_check_does_not_break_session_start(
     home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import aelfrice.config_discovery as cd
-
     def boom(start: Path | None = None) -> str | None:
         raise RuntimeError("discovery failed")
 
@@ -185,7 +183,7 @@ def test_a_failing_check_does_not_break_session_start(
     finally:
         store.close()
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.setattr(cd, "ignored_home_config_notice", boom)
+    monkeypatch.setattr("aelfrice.config_discovery.ignored_home_config_notice", boom)
     proj = _project(home / "projects" / "app", with_config=False)
     monkeypatch.chdir(proj)
     out = _session_start({"session_id": "s1", "source": "startup", "cwd": str(proj)})
