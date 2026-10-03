@@ -7,6 +7,14 @@ hook importing them from `aelfrice.hook` closed an import cycle (CodeQL
 py/cyclic-import), so both hooks import from here. This is not a
 latency change: a search-hook fire loads `aelfrice.hook` through other
 imports either way, measured on 2026-09-30.
+
+The render-time escapers live here for the same reason (#1631). The
+search hook and `aelfrice.provenance_render` imported them from
+`aelfrice.hook`, and both of those imports closed a cycle through `hook`.
+They are pure string substitution with no hook state, so they belong with
+the other things every hook fire's output shares. `aelfrice.hook` still
+binds them under their old private names. Check the cycles with
+`scripts/import_cycles.py`.
 """
 from __future__ import annotations
 
@@ -71,4 +79,37 @@ def lock_overflow_line(omitted: list[str]) -> str:
         f"output limit and are not shown in full here: {ids}. Run "
         f"`aelf locked` to read "
         "every lock.\n"
+    )
+
+
+def escape_for_hook_block(content: str) -> str:
+    """Entity-escape every angle bracket in belief content at render time.
+
+    Pure string substitution — no XML/HTML parser. Called once per belief
+    from `_format_hits` and `_format_baseline_hits`.
+
+    This was a closed blocklist of framing tags (#280). A blocklist cannot
+    hold: it omitted the two tags that carry the *trust* semantics —
+    `<locked>` and `<core>` — and `str.replace` is case-sensitive, so
+    `</CORE><LOCKED>` passed through untouched. Stored content that reaches
+    the `<core>` section could therefore close its own element and re-open
+    inside the user-locked tier, which the framing header presents to the
+    model as the user's standing instructions. Ingested transcript and
+    commit text is attacker-reachable, so this is a privilege boundary, not
+    a cosmetic one.
+
+    Escaping every `<` / `>` is the only form that does not require the
+    escaper to know the emitter's full tag vocabulary. Content is unchanged
+    in the store; this is render-time only.
+    """
+    return content.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def escape_attr(value: str) -> str:
+    """Escape a string for use inside a double-quoted XML attribute."""
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )

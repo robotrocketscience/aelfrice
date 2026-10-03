@@ -60,6 +60,12 @@ from aelfrice.config_discovery import (
     discover_config,
 )
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
+# #1631: the escapers moved to the leaf `hook_payload`, so the search hook
+# and `provenance_render` can share them without importing this module.
+# Bound here under their old names for the call sites below and for
+# existing `from aelfrice.hook import _escape_attr` callers.
+from aelfrice.hook_payload import escape_attr as _escape_attr
+from aelfrice.hook_payload import escape_for_hook_block as _escape_for_hook_block
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 try:
@@ -1905,38 +1911,6 @@ thing #1469 exists to stop. The measurement is carried in the follow-up
 issue, where it is a claim about work not yet done. It needs a
 retrieval-quality gate to settle, not a byte count."""
 
-
-def _escape_for_hook_block(content: str) -> str:
-    """Entity-escape every angle bracket in belief content at render time.
-
-    Pure string substitution — no XML/HTML parser. Called once per belief
-    from `_format_hits` and `_format_baseline_hits`.
-
-    This was a closed blocklist of framing tags (#280). A blocklist cannot
-    hold: it omitted the two tags that carry the *trust* semantics —
-    `<locked>` and `<core>` — and `str.replace` is case-sensitive, so
-    `</CORE><LOCKED>` passed through untouched. Stored content that reaches
-    the `<core>` section could therefore close its own element and re-open
-    inside the user-locked tier, which the framing header presents to the
-    model as the user's standing instructions. Ingested transcript and
-    commit text is attacker-reachable, so this is a privilege boundary, not
-    a cosmetic one.
-
-    Escaping every `<` / `>` is the only form that does not require the
-    escaper to know the emitter's full tag vocabulary. Content is unchanged
-    in the store; this is render-time only.
-    """
-    return content.replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _escape_attr(value: str) -> str:
-    """Escape a string for use inside a double-quoted XML attribute."""
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
 _PROMPT_KEY: Final[str] = "prompt"
 _TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
 _CWD_KEY: Final[str] = "cwd"

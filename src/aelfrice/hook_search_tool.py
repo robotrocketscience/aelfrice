@@ -53,7 +53,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Final, cast
 
-from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
+from aelfrice.hook_payload import (
+    HOOK_PAYLOAD_CHAR_LIMIT,
+    escape_attr,
+    escape_for_hook_block,
+    lock_overflow_line,
+)
 from aelfrice.render_cost import chars_to_tokens
 from aelfrice.search_tool_names import SEARCH_TOOL_NAMES
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
@@ -631,7 +636,6 @@ def _belief_line(b: object, locked_ids: "set[str] | frozenset[str]") -> str | No
     be a second copy free to drift, and the truncation is not expressible
     as a width at all.
     """
-    from aelfrice.hook import _escape_for_hook_block  # noqa: PLC0415
     from aelfrice.models import (  # noqa: PLC0415
         LOCK_TIER_REFERENCE,
         LOCK_USER,
@@ -656,7 +660,7 @@ def _belief_line(b: object, locked_ids: "set[str] | frozenset[str]") -> str | No
     else:
         tier = "L0" if bid in locked_ids else "L1"
     prefix = bid[:16]
-    line = f"[{tier}] {prefix}: {_escape_for_hook_block(content)}".replace(
+    line = f"[{tier}] {prefix}: {escape_for_hook_block(content)}".replace(
         "\n", " ",
     )
     if len(line) > PER_LINE_CHAR_CAP:
@@ -765,17 +769,15 @@ def _format_results_with_ids(
     # comes from ingested transcript / commit text. Unescaped, any of them
     # can close the attribute or the element and forge a framing tag inside
     # a block the model reads as elevated context. Escape at the boundary.
-    from aelfrice.hook import _escape_attr  # noqa: PLC0415
-
     if bash_source is not None:
         cmd_name, raw_cmd = bash_source
         attrs = (
-            f'query="{_escape_attr(_cap_attr(query))}" '
-            f'source="bash:{_escape_attr(_cap_attr(cmd_name))}" '
-            f'cmd="{_escape_attr(_cap_attr(raw_cmd))}"'
+            f'query="{escape_attr(_cap_attr(query))}" '
+            f'source="bash:{escape_attr(_cap_attr(cmd_name))}" '
+            f'cmd="{escape_attr(_cap_attr(raw_cmd))}"'
         )
     else:
-        attrs = f'query="{_escape_attr(_cap_attr(query))}"'
+        attrs = f'query="{escape_attr(_cap_attr(query))}"'
     lines: list[str] = []
     line_ids: list[tuple[str, bool]] = []
     for b in beliefs:

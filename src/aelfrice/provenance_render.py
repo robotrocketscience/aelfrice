@@ -54,6 +54,7 @@ from typing import IO, TYPE_CHECKING, Any, Final, cast
 
 from aelfrice import config_discovery
 from aelfrice.config_discovery import discover_config
+from aelfrice.hook_payload import escape_attr
 from aelfrice.models import (
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -230,15 +231,13 @@ def evidence_attrs(belief: "Belief") -> str:
     `agent_inferred` from `speculative` inside `<inferred>`; it is a store
     value, so it is attribute-escaped like any other.
     """
-    from aelfrice.hook import _escape_attr  # noqa: PLC0415 - render-time only
-
     alpha = belief.alpha or 0.0
     beta = belief.beta or 0.0
     n = alpha + beta
     mu = (alpha / n) if n else 0.0
     seen = belief.corroboration_count or 0
     return (
-        f' origin="{_escape_attr(str(belief.origin))}"'
+        f' origin="{escape_attr(str(belief.origin))}"'
         f' n="{n:.1f}" mu="{mu:.3f}" seen="{seen}"'
     )
 
