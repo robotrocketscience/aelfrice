@@ -7079,6 +7079,7 @@ def session_start(
     payload_room = HOOK_PAYLOAD_CHAR_LIMIT - (
         len(recap_line) + 1 if recap_line else 0
     ) - (len(lock_gap_line) + 1 if lock_gap_line else 0)
+    home_config_line: str | None = None
     try:
         # Drain stdin so the hook protocol is honored. We read the
         # session_id (audit cross-reference) and, on a post-compaction
@@ -7096,6 +7097,16 @@ def session_start(
         payload = _parse_pre_compact_payload(raw) or {}
         source_obj = payload.get(_SOURCE_KEY)
         source = source_obj if isinstance(source_obj, str) else ""
+        # #1652: a `$HOME/.aelfrice.toml` that #1582 stopped reading. Not on
+        # a post-compaction fire, which would only repeat it; resolved from
+        # the agent's cwd, the project whose config applies. Printed last on
+        # stdout, like the lock notice: a hook's stderr on exit 0 reaches
+        # only the host's debug log. Priced here, before the blocks, so
+        # they leave it room.
+        if source != _SESSION_SOURCE_COMPACT:
+            home_config_line = _ignored_home_config_line(payload.get(_CWD_KEY))
+            if home_config_line:
+                payload_room -= len(home_config_line) + 1
         # #1382: this fire is the epoch boundary — the event after which
         # earlier verbatim text can no longer be assumed present in the window.
         #
@@ -7204,6 +7215,12 @@ def session_start(
         except Exception:
             # never break SessionStart on a notice
             pass
+    if home_config_line:
+        try:
+            print(home_config_line, file=sout)
+        except Exception:
+            # never break SessionStart on a notice
+            pass
     if recap_enabled:
         try:
             if recap_line:
@@ -7214,6 +7231,22 @@ def session_start(
             pass
     _maybe_run_wonder_autogc(serr)
     return 0
+
+
+def _ignored_home_config_line(cwd: object) -> str | None:
+    """The #1652 notice for the project at `cwd`, or None.
+
+    Never raises: a notice must not break SessionStart.
+    """
+    try:
+        from aelfrice.config_discovery import (  # noqa: PLC0415
+            ignored_home_config_notice,
+        )
+
+        start = Path(cwd) if isinstance(cwd, str) and cwd else None
+        return ignored_home_config_notice(start)
+    except Exception:  # noqa: BLE001 - non-blocking hook contract
+        return None
 
 
 def build_lock_gap_notice(*, stderr: IO[str] | None = None) -> str | None:

@@ -656,6 +656,10 @@ class DoctorReport:
     # the report's own `known` flag covers a disabled audit and an
     # unreadable store. Informational: it never changes the exit code.
     lock_gaps: "LockGapReport | None" = None
+    # #1652: `$HOME/.aelfrice.toml` when it exists and the project has no
+    # config of its own, so its settings silently do not apply (#1582).
+    # A warning only: it never changes the exit code.
+    ignored_home_config: Path | None = None
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -806,6 +810,15 @@ def diagnose(
             report.search_tool_telemetry = diagnose_search_tool_telemetry(tel_path)
         except ValueError:
             report.search_tool_telemetry_corrupt = True
+    # #1652: a per-user config the bounded walk no longer reads.
+    try:
+        from aelfrice.config_discovery import ignored_home_config  # noqa: PLC0415
+
+        report.ignored_home_config = ignored_home_config(
+            project_root if project_root is not None else Path.cwd(),
+        )
+    except Exception:  # noqa: BLE001 - fail-soft section
+        report.ignored_home_config = None
     # #218 AC4: populate user_prompt_submit_hook telemetry section.
     ups_tel_path = user_prompt_submit_telemetry_path
     if ups_tel_path is None:
@@ -1568,6 +1581,8 @@ def format_report(report: DoctorReport) -> str:
         _format_memory_block_section(report, lines)
         # #1622: store- and audit-derived, independent of settings.json.
         _format_lock_gaps_section(report, lines)
+        # #1652: config-derived, independent of settings.json.
+        _format_ignored_home_config_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1638,7 +1653,30 @@ def format_report(report: DoctorReport) -> str:
     _format_hrr_section(report, lines)
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
+    _format_ignored_home_config_section(report, lines)
     return "\n".join(lines)
+
+
+def _format_ignored_home_config_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append a warning when `$HOME/.aelfrice.toml` is ignored (#1652).
+
+    Rendered only when there is something to say: most installs have no
+    per-user file.
+    """
+    path = report.ignored_home_config
+    if path is None:
+        return
+    lines.append("")
+    lines.append(f"warning: {path} is ignored")
+    lines.append(
+        "  aelfrice reads only a project .aelfrice.toml (#1582), and this "
+        "project has none."
+    )
+    lines.append(
+        "  fix: copy it to the project's root to keep its settings."
+    )
 
 
 # Last-resort basenames if the bundled manifest cannot be read. Kept

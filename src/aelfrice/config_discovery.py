@@ -225,3 +225,39 @@ def discover_config(start: Path | None = None) -> Path | None:
         if start is None:
             memo[_CWD_KEY] = located
     return located
+
+
+def ignored_home_config(start: Path | None = None) -> Path | None:
+    """`$HOME/.aelfrice.toml` when it exists but no config applies (#1652).
+
+    Rule 1 of `discover_config` means the per-user file is never read.
+    Settings that lived there before #1582 stopped applying with no
+    message. This returns that file when it exists and discovery from
+    `start` found no project config, so a caller can say so. When a
+    project config was found, the home file is not what the user is
+    running on, and this returns None.
+    """
+    home = _home_dir()
+    if home is None:
+        return None
+    candidate = home / CONFIG_FILENAME
+    try:
+        if not candidate.is_file():
+            return None
+    except OSError:
+        return None
+    if discover_config(start) is not None:
+        return None
+    return candidate
+
+
+def ignored_home_config_notice(start: Path | None = None) -> str | None:
+    """One line naming an ignored `$HOME/.aelfrice.toml`, or None (#1652)."""
+    path = ignored_home_config(start)
+    if path is None:
+        return None
+    return (
+        f"aelfrice: {path} is ignored; aelfrice reads only a project "
+        f"{CONFIG_FILENAME} (#1582). Copy it to the project's root to keep "
+        "its settings."
+    )
