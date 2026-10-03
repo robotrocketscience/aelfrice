@@ -170,20 +170,6 @@ def _emit(
     stdout.write(json.dumps(payload))
 
 
-def _db_path_accepts_cwd(db_path_fn: object) -> bool:
-    """Best-effort detection: does db_path() accept a cwd kw?
-
-    Same posture as hook_search_tool: detect either signature without a
-    hard dependency on the later API.
-    """
-    import inspect  # noqa: PLC0415
-
-    try:
-        sig = inspect.signature(db_path_fn)  # pyright: ignore[reportArgumentType]
-    except (TypeError, ValueError):
-        return False
-    return "cwd" in sig.parameters
-
 
 def _do_inject(
     payload: dict[str, object],
@@ -207,8 +193,6 @@ def _do_inject(
         # stack a second block.
         return
 
-    cwd_obj = payload.get("cwd")
-    cwd = cwd_obj if isinstance(cwd_obj, str) else None
     session_obj = payload.get("session_id")
     session_id = session_obj if isinstance(session_obj, str) else None
 
@@ -227,7 +211,10 @@ def _do_inject(
         )
         return
 
-    p = db_path(cwd=cwd) if _db_path_accepts_cwd(db_path) else db_path()
+    # The store resolves from the hook process's cwd, which the host sets to
+    # the session's directory. Every in-turn consumer resolves the same way
+    # (#1630, #1701); the payload `cwd` is not consulted.
+    p = db_path()
     if str(p) != ":memory:" and not p.exists():
         # No store: passthrough. Unlike the search-tool lane there is no
         # value in a "no beliefs" sentinel — the worker cannot skip its

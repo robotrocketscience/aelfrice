@@ -923,8 +923,6 @@ def _do_search(
     else:
         return
 
-    cwd_obj = payload.get("cwd")
-    cwd = cwd_obj if isinstance(cwd_obj, str) else None
 
     # Lazy imports: cold-start cost is paid only when we actually search.
     # Guard against stale installs missing a runtime dep (issue #236).
@@ -941,7 +939,10 @@ def _do_search(
         )
         return
 
-    p = db_path(cwd=cwd) if _db_path_accepts_cwd(db_path) else db_path()
+    # The store resolves from the hook process's cwd, which the host sets to
+    # the session's directory. Every in-turn consumer resolves the same way
+    # (#1630, #1701); the payload `cwd` is not consulted.
+    p = db_path()
     if str(p) != ":memory:" and not p.exists():
         # Empty / not-yet-onboarded store — explicit sentinel so the agent
         # learns the check ran.
@@ -1059,22 +1060,6 @@ def _do_search(
             stderr=stderr,
         )
 
-
-def _db_path_accepts_cwd(db_path_fn: object) -> bool:
-    """Best-effort detection: does aelfrice.db_paths.db_path() accept a cwd kw?
-
-    v1.1.0 db_path() reads cwd from os.getcwd(); a later patch may add a
-    cwd parameter for callers that need to scope to a specific worktree.
-    The hook detects either signature without a hard dependency on the
-    later API.
-    """
-    import inspect  # noqa: PLC0415
-
-    try:
-        sig = inspect.signature(db_path_fn)  # pyright: ignore[reportArgumentType]
-    except (TypeError, ValueError):
-        return False
-    return "cwd" in sig.parameters
 
 
 def main(
