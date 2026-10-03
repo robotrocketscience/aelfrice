@@ -53,7 +53,7 @@
       "default_on": true,
       "since": "3.0.1",
       "timeout": 15,
-      "description": "PreToolUse:Grep|Glob memory-first search before agent's own tool fires (#738)."
+      "description": "PreToolUse:Grep|Glob|WebSearch|WebFetch memory-first search before the agent's own local or web search tool fires (#738, #1626)."
     },
     {
       "name": "search_tool_bash",

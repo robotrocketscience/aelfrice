@@ -10302,7 +10302,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--search-tool", dest="search_tool",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "wire the PreToolUse:Grep|Glob hook so the agent's own search "
+            "wire the PreToolUse:Grep|Glob|WebSearch|WebFetch hook so the "
+            "agent's own local and web search "
             "queries first run against the per-project belief store and the "
             "results are injected as additionalContext. If memory has the "
             "answer the agent can skip / refine the tool call; if not, the "
@@ -10505,7 +10506,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--search-tool", dest="search_tool",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "remove the PreToolUse:Grep|Glob search-tool hook entry. "
+            "remove the PreToolUse:Grep|Glob|WebSearch|WebFetch search-tool "
+            "hook entry. "
             "Default: ON. Pass --no-search-tool to leave it in place."
         ),
     )
