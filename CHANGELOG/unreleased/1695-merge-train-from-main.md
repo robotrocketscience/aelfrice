@@ -1,0 +1,3 @@
+### CI
+
+- **Merge-train now runs only code from `main` ([#1695](https://github.com/robotrocketscience/aelfrice/issues/1695)).** The train triggered on `pull_request`, so its workflow file and the gate scripts it runs came from the pull request being judged, with a `contents: write` token. A pull request could change the gate that decided whether it merged. The train now triggers on `pull_request_target` for pull requests into `main`, checks out `main`, and fetches the pull request's head only as git data. Pull requests from forks never trigger it. A stacked pull request, one based on another branch, no longer triggers the train at all, instead of getting a refusal comment ([#1424](https://github.com/robotrocketscience/aelfrice/issues/1424)).
