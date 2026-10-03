@@ -5,7 +5,7 @@ Contract (same BooleanOptionalAction convention as every default-on hook):
 - `--no-agent-context` skips install AND persists the opt-out so the
   next auto-install reconcile does not re-add the hook.
 - `aelf unsetup` removes the entry by unique basename; other PreToolUse
-  entries (Grep|Glob / Bash matchers) are untouched.
+  entries (search-tool / Bash matchers) are untouched.
 """
 from __future__ import annotations
 

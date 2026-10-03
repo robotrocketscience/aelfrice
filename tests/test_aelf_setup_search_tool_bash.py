@@ -236,7 +236,7 @@ def test_cli_setup_search_tool_bash_independent_of_search_tool(
 def test_cli_setup_no_search_tool_bash_installs_grep_glob_only(
     tmp_path: Path,
 ) -> None:
-    """Bare setup + --no-search-tool-bash wires Grep|Glob but not Bash."""
+    """Bare setup + --no-search-tool-bash wires the search-tool matcher but not Bash."""
     p = tmp_path / "settings.json"
     _run_setup(p, "--no-search-tool-bash")
     data = _settings(p)
@@ -315,7 +315,7 @@ def test_cli_unsetup_bare_removes_both_search_tool_hooks(tmp_path: Path) -> None
 
 
 def test_cli_unsetup_no_search_tool_leaves_grep_glob(tmp_path: Path) -> None:
-    """`aelf unsetup --no-search-tool` leaves the Grep|Glob hook in place."""
+    """`aelf unsetup --no-search-tool` leaves the search-tool hook in place."""
     p = tmp_path / "settings.json"
     _run_setup(p)
     rc, _ = _run_unsetup(p, "--no-search-tool")

@@ -188,7 +188,7 @@ def test_matcher_scoped_duplicates_do_not_collapse_across_matchers(
     """Same program under two matchers is two real hooks, not a duplicate.
 
     `search_tool` and `search_tool_bash` are distinct manifest rows that
-    install `aelf-search-tool-hook` under `Grep|Glob` and `Bash`. Collapsing
+    install `aelf-search-tool-hook` under `SEARCH_TOOL_MATCHER` and `Bash`. Collapsing
     on basename alone would silently delete one of them.
     """
     settings = tmp_path / "settings.json"

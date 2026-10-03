@@ -566,7 +566,7 @@ def test_ups_exposure_writes_omit_the_beliefs_the_ceiling_dropped(
     """The three exposure writes the audit test above does not reach.
 
     The session ring's contract is "already shipped this session", and
-    the next `PreToolUse:Grep|Glob|Bash` fire dedups against it — so an
+    the next `PreToolUse` search-tool or Bash fire dedups against it — so an
     id entered without being shipped suppresses a belief the model never
     saw, which is a silent drop rather than a deduplication. A
     `belief_touches` row is the same claim in the sidecar table, and it

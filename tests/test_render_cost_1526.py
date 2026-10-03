@@ -1019,7 +1019,7 @@ def test_the_effect_is_length_dependent_and_changes_sign(
     * On the `<belief …>` lanes the correction removes a wrapper whose share
       of the line shrinks as content grows, so the deviation shrinks with
       length.
-    * On the Grep|Glob lane it changes sign. Past `PER_LINE_CHAR_CAP` the old
+    * On the search-tool lane it changes sign. Past `PER_LINE_CHAR_CAP` the old
       accounting charged the untruncated content, which is *more* than that
       lane emits, so the corrected cost lets more beliefs through.
     """
