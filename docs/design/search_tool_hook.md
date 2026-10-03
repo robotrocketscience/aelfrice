@@ -1,13 +1,22 @@
 # Search-tool hook
 
 **Status:** shipped; **default-on as of v3.0.1** (#738). Both the
-`PreToolUse:Grep|Glob` surface and the `PreToolUse:Bash` (grep/rg/find/
-fd/ack) extension wire automatically via `aelf setup`. Opt out per-hook
+`PreToolUse:Grep|Glob|WebSearch|WebFetch` surface and the
+`PreToolUse:Bash` (grep/rg/find/fd/ack) extension wire automatically via
+`aelf setup`. Opt out per-hook
 with `aelf setup --no-search-tool` / `--no-search-tool-bash` (opt-out
 persists via `~/.aelfrice/opt-out-hooks.json`). Historical design
 discussion below pre-dates the flip; treat the "default-OFF" / "gated
 on telemetry" notes as the original v1.5.0 framing rather than current
 state.
+
+**Note (2026-10-03):** [#1626](https://github.com/robotrocketscience/aelfrice/issues/1626)
+widened the matcher from `Grep|Glob` to `Grep|Glob|WebSearch|WebFetch`.
+The hook reads `pattern` for Grep and Glob, `query` for WebSearch, and
+`prompt` for WebFetch. The rest of this page describes the v1.2.x and
+v1.5.0 design as it shipped, when the matcher was `Grep|Glob`, and
+isn't rewritten. The shipped matcher is `SEARCH_TOOL_MATCHER` in
+`src/aelfrice/search_tool_names.py`.
 **Dependencies:** stdlib only. Consumes the v1.0 retrieval pipeline
 ([`aelfrice.retrieval.retrieve`](../../src/aelfrice/retrieval.py)) and
 the v1.1.0 per-project DB resolution
