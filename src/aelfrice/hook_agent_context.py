@@ -170,7 +170,6 @@ def _emit(
     stdout.write(json.dumps(payload))
 
 
-
 def _do_inject(
     payload: dict[str, object],
     stdout: IO[str],

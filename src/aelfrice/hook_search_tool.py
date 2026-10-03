@@ -923,7 +923,6 @@ def _do_search(
     else:
         return
 
-
     # Lazy imports: cold-start cost is paid only when we actually search.
     # Guard against stale installs missing a runtime dep (issue #236).
     try:
@@ -1059,7 +1058,6 @@ def _do_search(
             injected_l0=n_l0,
             stderr=stderr,
         )
-
 
 
 def main(
