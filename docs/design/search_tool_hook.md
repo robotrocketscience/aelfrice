@@ -17,6 +17,7 @@ The hook reads `pattern` for Grep and Glob, `query` for WebSearch, and
 v1.5.0 design as it shipped, when the matcher was `Grep|Glob`, and
 isn't rewritten. The shipped matcher is `SEARCH_TOOL_MATCHER` in
 `src/aelfrice/search_tool_names.py`.
+
 **Dependencies:** stdlib only. Consumes the v1.0 retrieval pipeline
 ([`aelfrice.retrieval.retrieve`](../../src/aelfrice/retrieval.py)) and
 the v1.1.0 per-project DB resolution
