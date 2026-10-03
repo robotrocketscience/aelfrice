@@ -256,7 +256,7 @@ Bare `aelf setup` installs the v1.2.0 auto-capture pipeline, together with the r
 | commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
 | session-start | `SessionStart` | **on** | new sessions open with the L0 locked beliefs already injected |
 | stop-lock-prompt | `Stop` | **on** | prompts you to lock this session's correction-class (#582) and directive (#1315) beliefs |
-| search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | checks the belief store before the agent's own Grep or Glob fires |
+| search-tool | `PreToolUse:Grep` / `Glob` / `WebSearch` / `WebFetch` | **on** (v3.0.1+) | checks the belief store before the agent's own Grep, Glob, WebSearch, or WebFetch call runs |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | checks the belief store before a shell grep, rg, find, fd, or ack fires |
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or a shipped commit at 0.5 Jaccard or above (#941) |
 | claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | mirrors the host claude-memory fact-file writes one-way into the belief graph (#985). Either `AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory` enables the hook, and since v4.0 (#1089) so does the per-project consent sentinel, which the one-shot reconcile writes at the first `aelf setup`. A project that's set up therefore mirrors by default. An explicit env `0` or TOML `false` always wins over the sentinel; that's the opt-out |
@@ -270,7 +270,7 @@ aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
 aelf setup --no-commit-ingest          # skip the commit-message ingest hook
 aelf setup --no-session-start          # skip the SessionStart locked-belief injection
 aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
-aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
+aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob|WebSearch|WebFetch hook
 aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
 aelf setup --no-pre-issue-guard        # skip the issue-dup detection guard
 aelf setup --no-claude-memory-mirror   # skip the claude-memory → belief-graph mirror hook

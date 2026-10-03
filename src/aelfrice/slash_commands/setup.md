@@ -17,8 +17,8 @@ the full default-on hook bundle, not just one entry:
 - `PostToolUse:Bash` — commit-ingest (`aelf-commit-ingest`).
 - `SessionStart` — session-warm + `<recent-work>` block (#887).
 - `Stop` — stop-hook cadence dispatch (#749 / #871 / #876).
-- `PreToolUse:Grep|Glob` — `aelf-search-tool-hook` (#134, default-on
-  since v3.0.1 #738).
+- `PreToolUse:Grep|Glob|WebSearch|WebFetch` — `aelf-search-tool-hook`
+  (#134, default-on since v3.0.1 #738; the web tools joined in #1626).
 - `PreToolUse:Bash` — the same `aelf-search-tool-hook` script with a Bash matcher (dispatches internally on tool_name; same wave).
 - `PreToolUse:Bash` — pre-issue duplicate guard (`aelf-pre-issue-hook`): blocks `gh issue create` on Jaccard ≥ 0.5 overlap with existing issues/commits.
 - `PreCompact` — the context rebuilder. Opt-in, not part of the default bundle.
