@@ -11,7 +11,8 @@ delegates store or state-path resolution to:
    process cwd, and it is the only sanctioned resolver.
 2. Nothing redirects resolution to another directory: no `chdir` call
    (the chdir-resolve-chdir-back shape), no `_git_common_dir` call with
-   arguments, and no `--git-common-dir` literal in these modules.
+   arguments, no `--git-common-dir` literal, and no `AELFRICE_DB` literal
+   (setting it would redirect `db_path()`) in these modules.
 3. Every `db_path()` call, every `MemoryStore(...)` construction in
    `hook.py`, and every path join that spells the store layout (`.git`,
    `aelfrice`, `memory.db`, or the `db_paths` layout constants) sits in a
@@ -110,7 +111,8 @@ LAYOUT_JOINS: dict[Site, int] = {
     ("transcript_logger.py", "transcripts_dir"): 1,
     # KNOWN EXCEPTION, not a store: `find_aelfrice_log(cwd)` reads the
     # transcript log under the directory it is given, and
-    # `hook._read_recent_for_pre_compact` gives it the payload cwd. It is
+    # `hook._read_recent_for_pre_compact` and `context_rebuilder`'s own
+    # rebuild entry point give it the payload cwd (#1706 tracks both). It is
     # a read of `turns.jsonl`, not of the store or session state, and
     # predates #1630. Changing it is a behaviour change, out of scope here.
     ("context_rebuilder.py", "<module>"): 1,
@@ -218,6 +220,10 @@ def scan(sources: dict[str, str]) -> Scan:
                 result.layout_joins[site] += 1
             if isinstance(node, ast.Constant) and node.value == "--git-common-dir":
                 result.violations.append(f"{where}: resolves a git dir itself")
+            if isinstance(node, ast.Constant) and node.value == "AELFRICE_DB":
+                result.violations.append(
+                    f"{where}: names AELFRICE_DB, which can redirect db_path()"
+                )
             if not isinstance(node, ast.Call):
                 continue
             name = _call_name(node)
@@ -289,6 +295,15 @@ def test_the_scanner_sees_a_payload_cwd_join() -> None:
         "    return Path(payload_cwd) / '.git' / 'aelfrice' / 'memory.db'\n"
     )
     assert scan({"hook.py": src}).layout_joins == Counter({("hook.py", "consumer"): 1})
+
+
+def test_the_scanner_sees_an_aelfrice_db_redirect() -> None:
+    src = _HEADER + (
+        "def consumer(payload_cwd):\n"
+        "    os.environ['AELFRICE_DB'] = str(Path(payload_cwd))\n"
+        "    return db_path()\n"
+    )
+    assert len(scan({"hook.py": src}).violations) == 1
 
 
 def test_the_scanner_sees_db_path_given_arguments() -> None:
