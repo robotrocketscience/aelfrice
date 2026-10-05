@@ -99,8 +99,6 @@ def test_new_injection_event_turn_id_shape() -> None:
     assert a != b
 
 
-# --- get_active_meta_belief_consumers --------------------------------
-
 # --- _record_injection_events fail-soft -------------------------------
 
 def test_record_skips_when_no_session_id(tmp_path: Path) -> None:

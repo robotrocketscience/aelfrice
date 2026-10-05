@@ -23,7 +23,7 @@ event-kind bitmask. The two tables answer different questions:
 
 | Table | Read shape | Cardinality | Consumer |
 |---|---|---|---|
-| `injection_events` | "did the assistant reference this belief?" | one row per (turn × belief) | #779 sweeper |
+| `injection_events` | "was this belief ever shown?" | one row per (turn × belief) | exploration's never-shown pool (the #779 sweeper was removed in #1655) |
 | `belief_touches` | "was this belief recently in the prompt?" | one row per (belief × session) | (deferred-with-evidence — see #848) |
 
 The intended consumer for `belief_touches` is a posterior-rerank

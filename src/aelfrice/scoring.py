@@ -198,10 +198,10 @@ def gamma_posterior_score(
     Negative temperatures are likewise clamped: the Boltzmann reading
     is undefined for `T <= 0` and the safest fall-back is the floor.
 
-    γ is the load-bearing precursor to #758's adaptive
-    `meta:retrieval.posterior_temperature`. Until that meta-belief is
-    populated and learning, callers pin `T = 1.0` and the bench panel
-    measures the γ vs log-additive surface (#796 R&D campaign verdict).
+    γ was to be the precursor to #758's adaptive temperature, learned
+    from the relevance signal. #1655 removed that signal, so callers pin
+    `T = 1.0` and the bench panel measures the γ vs log-additive surface
+    (#796 R&D campaign verdict).
     """
     t_safe = temperature if temperature > GAMMA_TEMPERATURE_FLOOR else (
         GAMMA_TEMPERATURE_FLOOR
