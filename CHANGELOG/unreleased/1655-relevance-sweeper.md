@@ -5,4 +5,4 @@
   - the #760 expansion-gate token-threshold knob (`AELFRICE_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD`), so the gate uses its fixed threshold of 80, and `should_run_expansion` no longer takes `store` or `now_ts`;
   - the #758 posterior-temperature knob (`AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE`), so the γ rerank uses `T = 1.0`.
 
-  Neither knob was ever enabled, and both learned only from the relevance signal. Retrieval output is byte-identical to before on 84 queries across 5 entry points, with the γ rerank on and off. `injection_events` rows are still recorded, because exploration reads them, now with an empty consumer list. The #756 half-life and #757 anchor-weight knobs keep their own evidence paths.
+  Neither knob was ever enabled, and both learned only from the relevance signal. Retrieval output is byte-identical to before on 84 queries across 5 entry points, with the γ rerank on and off; the method and the measurements are in the #1655 comments. `injection_events` rows are still recorded, because exploration reads them, now with an empty consumer list. The #756 half-life and #757 anchor-weight knobs keep their own evidence paths.
