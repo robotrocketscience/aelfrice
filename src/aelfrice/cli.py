@@ -2490,6 +2490,84 @@ def _cmd_category(args: argparse.Namespace, out: object) -> int:
         store.close()
 
 
+def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
+    """`aelf core-gate accept <batch-id>` (#1638).
+
+    Reads the host model's reply to a core-gate batch prompt from stdin,
+    checks it against the batch with `core_gate.parse_labels`, and caches
+    the labels under the batch's content hashes. The command refuses an
+    unknown batch, a batch already accepted, a batch emitted under another
+    classifier version, and any reply that does not label every snippet
+    exactly once. A refusal exits 1 and writes nothing: the checks that
+    touch the store run again inside the accept transaction.
+    """
+    from aelfrice import core_gate
+    from aelfrice.store import CoreGateAcceptRefused
+
+    w = cast("Any", out)
+    batch_id: str = cast("str", args.batch_id)
+    prefix = "aelf core-gate accept"
+    try:
+        reply = sys.stdin.read()
+    except UnicodeDecodeError:
+        print(f"{prefix}: stdin is not valid UTF-8.", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"{prefix}: cannot read stdin: {exc}", file=sys.stderr)
+        return 1
+    store = _open_store()
+    try:
+        batch = store.get_core_gate_batch(batch_id)
+        if batch is None:
+            print(f"{prefix}: no core-gate batch {batch_id}.", file=sys.stderr)
+            return 1
+        # Checked before the reply is parsed, so a stale or spent batch is
+        # reported as such rather than as whatever is wrong with the reply.
+        if batch.accepted_at is not None:
+            print(
+                f"{prefix}: batch {batch_id} was already accepted at "
+                f"{batch.accepted_at}.",
+                file=sys.stderr,
+            )
+            return 1
+        if batch.classifier_version != core_gate.CLASSIFIER_VERSION:
+            print(
+                f"{prefix}: batch {batch_id} was emitted under "
+                f"{batch.classifier_version}, not the current "
+                f"{core_gate.CLASSIFIER_VERSION}; emit a new batch.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            labels = core_gate.parse_labels(
+                reply, {item.index for item in batch.items},
+            )
+        except ValueError as exc:
+            print(f"{prefix}: reply refused, nothing written: {exc}", file=sys.stderr)
+            return 1
+        try:
+            store.accept_core_gate_batch(
+                batch_id,
+                labels,
+                classifier_version=core_gate.CLASSIFIER_VERSION,
+                accepted_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except CoreGateAcceptRefused as exc:
+            print(f"{prefix}: {exc}.", file=sys.stderr)
+            return 1
+    finally:
+        store.close()
+    counts = {name: 0 for name in ("A", "B", "C")}
+    for label in labels.values():
+        counts[label] += 1
+    print(
+        f"core-gate: accepted batch {batch_id}: {len(labels)} labels "
+        f"(A {counts['A']}, B {counts['B']}, C {counts['C']})",
+        file=w,
+    )
+    return 0
+
+
 def _cmd_context(args: argparse.Namespace, out: object) -> int:
     """#1081: best-effort recover a belief's source-turn context.
 
@@ -9023,6 +9101,35 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_cat_delete.add_argument("name")
     p_category.set_defaults(func=_cmd_category)
+
+    # #1638 core admission gate: the host runs the classifier and hands
+    # the reply back through this verb. Hidden — a handshake entry point
+    # the session-end continuation and `aelf doctor` name in their
+    # instructions, not a workflow verb a user types.
+    p_core_gate = sub.add_parser(
+        "core-gate",
+        help=argparse.SUPPRESS,
+        description=(
+            "Accept the host model's labels for a core admission gate "
+            "batch (#1638)."
+        ),
+    )
+    core_gate_sub = p_core_gate.add_subparsers(dest="action", required=True)
+    p_core_gate_accept = core_gate_sub.add_parser(
+        "accept",
+        help="cache the labels in a classifier reply read from stdin",
+        description=(
+            "Read the classifier's reply, a JSON array of "
+            '{"index": int, "label": "A" | "B" | "C"}, from stdin and '
+            "cache one label per snippet in the batch. Exits 1 and writes "
+            "nothing if the batch is unknown, already accepted, or stale, "
+            "or if the reply does not label every snippet exactly once."
+        ),
+    )
+    p_core_gate_accept.add_argument(
+        "batch_id", help="the batch id printed with the classifier prompt",
+    )
+    p_core_gate.set_defaults(func=_cmd_core_gate)
 
     # v3.5 (#933) — surface beliefs by age + retrieval recency.
     # Pure threshold-based listing over existing created_at +

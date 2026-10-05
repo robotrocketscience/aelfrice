@@ -300,6 +300,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # project at `aelf setup`). Hidden — a migration/maintenance surface
     # (sibling of `spine`), not a daily workflow verb.
     "reconcile-claude-memory",
+    # `core-gate` (#1638) accepts the host model's labels for a core
+    # admission gate batch. Hidden — a handshake entry point that the
+    # batch instructions name, not a workflow verb.
+    "core-gate",
 })
 
 
