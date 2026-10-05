@@ -1,4 +1,4 @@
-"""Core admission gate classifier: rubric, prompt and label parser (#1638).
+"""Core admission gate classifier: rubric, prompt, and label parser (#1638).
 
 `docs/feature-core-admission-gate.md` gates the two non-lock arms of core
 on a content label. A small model labels each core candidate against the
@@ -10,14 +10,17 @@ The definitions and decision rules are the ones the reference raters
 used, word for word. Only the examples differ: the originals quoted
 private sessions, so these are neutral stand-ins of the same shape.
 
-`CLASSIFIER_VERSION` covers the rubric, the prompt and the model family.
-Changing any of them must bump it, so a label made under one classifier
-never applies under another. `CLASSIFIER_DIGEST` pins the rubric and
-prompt text; a test fails when the text changes and the digest does not,
-which forces the version bump to be a decision rather than an accident.
+`CLASSIFIER_VERSION` names one classifier: this rubric, this prompt as
+`build_prompt` assembles it, the batch limit, and the model tier. Changing
+any of them needs a new version, so a label made under one classifier
+never applies under another. `prompt_digest()` hashes all of them, and
+`tests/test_core_gate_rubric_1638.py` pins one digest per version: a text
+change fails that test until someone adds a new version with its digest.
+The model tier is a label, not a model identity; if the host's smallest
+model changes, bump the version by hand.
 
 This module holds no state and does no I/O. Wiring it into core
-selection, the label cache and the session-end batch is separate work.
+selection, the label cache, and the session-end batch is separate work.
 """
 from __future__ import annotations
 
@@ -33,10 +36,10 @@ LABELS: Final[frozenset[str]] = frozenset(
 )
 
 #: The model tier the host is asked to run: its smallest, cheapest model,
-#: as for the onboard classifier. Part of the version.
-CLASSIFIER_MODEL_FAMILY: Final[str] = "smallest"
+#: as for the onboard classifier. A label, not a model identity.
+CLASSIFIER_MODEL_TIER: Final[str] = "smallest"
 
-#: Bump on any change to RUBRIC, PROMPT_HEADER, PROMPT_FOOTER or the model.
+#: Bump on any change to the rubric, the prompt, MAX_BATCH, or the model.
 CLASSIFIER_VERSION: Final[str] = "core-gate-1"
 
 #: Largest batch the host should send in one prompt (llm_classifier.md).
@@ -45,7 +48,7 @@ MAX_BATCH: Final[int] = 50
 RUBRIC: Final[str] = """\
 Assign each snippet exactly one class:
 
-- **A = self-contained truth-apt proposition.** A declarative claim that is true or false on its own, without the surrounding conversation. It may use proper names, file names, issue numbers or project terms, as long as it does not depend on unresolved pronouns or deictic references to the conversation. Example: "The store resolves its path from the repository's git common directory."
+- **A = self-contained truth-apt proposition.** A declarative claim that is true or false on its own, without the surrounding conversation. It may use proper names, file names, issue numbers or project terms, as long as it does not depend on unresolved pronouns or deictic references to the conversation. Example: "Python's json module is part of the standard library."
 - **B = truth-apt only with context.** It is a declarative claim, but its truth depends on unresolved references ("it", "this step", "the cap", "Step 2", "I", "we", "the above") or on the missing surrounding turn. Examples: "It failed on the second run."; "That value is stale."; "The limit is 50, not 100."
 - **C = not truth-apt.** Sentence fragments with no complete claim ("returns nothing.", "in the second column."), commands or instructions ("Run the tests", "Never delete the backup", "Open the next file"), questions, headings or labels ("The general principle:"), and code, shell, tables or markup (including XML-like `<belief ...>` blocks).
 
@@ -70,15 +73,16 @@ Reply with only a JSON array of {"index": int, "label": "A" | "B" | "C"},
 one entry per snippet, in any order, with no other text.
 """
 
-#: sha256 of the exact rubric and prompt text. Update with CLASSIFIER_VERSION.
-CLASSIFIER_DIGEST: Final[str] = (
-    "5dba751bc0beea6e0de243f07fc498de85dbaf58c176f05cbbdb24fc0751ab5e"
-)
+def prompt_digest() -> str:
+    """sha256 of everything a version names.
 
-
-def text_digest() -> str:
-    """sha256 of the rubric and prompt text, the input to `CLASSIFIER_DIGEST`."""
-    blob = "\0".join((PROMPT_HEADER, RUBRIC, PROMPT_FOOTER, CLASSIFIER_MODEL_FAMILY))
+    It hashes the prompt `build_prompt` assembles for a fixed one-snippet
+    batch, so the rubric, the header, the footer, their order, and the
+    payload format all count, plus `MAX_BATCH` and the model tier.
+    """
+    blob = "\0".join((
+        build_prompt([(0, "")]), str(MAX_BATCH), CLASSIFIER_MODEL_TIER,
+    ))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -101,7 +105,7 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
     """Parse a classifier reply into `{index: label}`, strictly.
 
     Raises `ValueError` unless the reply is a JSON array that labels every
-    expected index exactly once with A, B or C and names no other index. A
+    expected index exactly once with A, B, or C and names no other index. A
     partial or malformed reply is rejected whole, so a failed run can never
     look like a set of labels.
     """
@@ -120,7 +124,7 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
         if not isinstance(index, int) or isinstance(index, bool):
             raise ValueError(f"index must be an integer, got {index!r}")
         if not isinstance(label, str) or label not in LABELS:
-            raise ValueError(f"label for {index} must be A, B or C, got {label!r}")
+            raise ValueError(f"label for {index} must be A, B, or C, got {label!r}")
         if index in labels:
             raise ValueError(f"index {index} is labeled twice")
         labels[index] = label
