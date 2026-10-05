@@ -560,9 +560,12 @@ def function_scope(base: str, head: str, *, write: bool) -> Report:
         path = change.path
         before, after = _blob(base, change.base_path), _blob(head, path)
         if not has_mutable_change(before, after):
-            report.skipped_files.append(
-                (path, "comments, docstrings, or formatting only"),
+            reason = (
+                f"renamed from {change.base_path} with no code change"
+                if change.base_path != path
+                else "comments, docstrings, or formatting only"
             )
+            report.skipped_files.append((path, reason))
             continue
         if after is None:
             report.whole_files.append((path, "head version unreadable"))
