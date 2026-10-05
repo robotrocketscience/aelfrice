@@ -300,3 +300,12 @@ def test_lane_telemetry_defaults_preserve_backcompat() -> None:
     tel = LaneTelemetry()
     assert tel.expansion_gate_reason == ""
     assert tel.expansion_gate_skipped_bfs is False
+
+
+def test_the_token_threshold_is_strictly_greater_than_80() -> None:
+    """The gate trips on more than 80 tokens, not 80 (#1655 pinned the
+    threshold at BROAD_PROMPT_TOKEN_THRESHOLD when its knob was removed)."""
+    at = should_run_expansion(" ".join(["word"] * 80))
+    over = should_run_expansion(" ".join(["word"] * 81))
+    assert "long(" not in at.reason
+    assert "long(81>80)" in over.reason
