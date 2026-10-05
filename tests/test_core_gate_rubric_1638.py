@@ -10,7 +10,7 @@ from aelfrice import core_gate as cg
 #: The current classifier's digest. CLASSIFIER_VERSION is derived from the
 #: digest, so changing the classifier already changes the version and old
 #: labels stop applying; this pin only makes such a change deliberate.
-PINNED_DIGEST = "74ef126b3693d4b4d8ab88369b29f5557c149cad7d9c154f440ad5c72bf339ac"
+PINNED_DIGEST = "39e4b58399b7169637a2d3499f39160c6fc72246e3eeed108b01d95205d7da00"
 
 #: The examples that replace the reference raters' private ones. Everything
 #: else in the rubric is the raters' text, word for word.
@@ -69,10 +69,33 @@ def test_the_digest_covers_everything_a_version_names(
         ("PROMPT_FOOTER", cg.PROMPT_FOOTER + " "),
         ("LABEL_SELF_CONTAINED", "B"),
         ("LABELS", frozenset({"A", "B", "C", "D"})),
+        ("RUBRIC", cg.RUBRIC + " "),
+        ("PROMPT_HEADER", cg.PROMPT_HEADER + " "),
     ):
         with monkeypatch.context() as m:
             m.setattr(cg, name, value)
             assert cg.prompt_digest() != base, name
+
+
+@pytest.mark.parametrize("name", ["build_prompt", "parse_labels"])
+def test_a_change_to_either_function_changes_the_version(
+    monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    """The sample covers one input; the source covers every other one.
+
+    Stripping, truncating, or normalizing snippets changes labels for real
+    inputs while the sample's prompt stays identical, and loosening the
+    parser lets replies it rejected become labels. Both must be a new
+    version.
+    """
+    base = cg.prompt_digest()
+    original = getattr(cg, name)
+
+    def changed(*args: object, **kwargs: object) -> object:
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cg, name, changed)
+    assert cg.prompt_digest() != base
 
 
 def test_the_digest_sample_exercises_payload_escaping() -> None:
