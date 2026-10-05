@@ -7,13 +7,10 @@ import pytest
 
 from aelfrice import core_gate as cg
 
-#: One digest per classifier version. APPEND ONLY: never edit an existing
-#: entry. A change to the rubric, the prompt, MAX_BATCH, or the model tier
-#: needs a new CLASSIFIER_VERSION and a new entry here, so a label cached
-#: under one classifier is never reused under another.
-PINNED_DIGESTS: dict[str, str] = {
-    "core-gate-1": "ceb65a5e721cbc6399db5f507c90fc17f990f4e6b88e41de6e6c208b37023506",
-}
+#: The current classifier's digest. CLASSIFIER_VERSION is derived from the
+#: digest, so changing the classifier already changes the version and old
+#: labels stop applying; this pin only makes such a change deliberate.
+PINNED_DIGEST = "74ef126b3693d4b4d8ab88369b29f5557c149cad7d9c154f440ad5c72bf339ac"
 
 #: The examples that replace the reference raters' private ones. Everything
 #: else in the rubric is the raters' text, word for word.
@@ -48,23 +45,21 @@ Decision rules:
 """
 
 
-def test_the_current_version_has_its_pinned_digest() -> None:
-    """If this fails, the classifier changed: add a new version, don't edit.
+def test_the_classifier_digest_is_pinned() -> None:
+    """If this fails, the classifier changed, and so did its version.
 
-    Bump `CLASSIFIER_VERSION` and add `{version: prompt_digest()}` to
-    PINNED_DIGESTS. Editing the existing entry instead would let labels made
-    under the old text be reused under the new one.
+    That is safe: cached labels carry the old version and stop applying.
+    Confirm the change was intended, then update PINNED_DIGEST.
     """
-    assert cg.CLASSIFIER_VERSION in PINNED_DIGESTS
-    assert cg.prompt_digest() == PINNED_DIGESTS[cg.CLASSIFIER_VERSION]
+    assert cg.prompt_digest() == PINNED_DIGEST
 
 
-def test_no_two_versions_share_a_digest() -> None:
-    """A new version that names the same classifier would split one cache."""
-    assert len(set(PINNED_DIGESTS.values())) == len(PINNED_DIGESTS)
+def test_the_version_is_derived_from_the_digest() -> None:
+    """No hand-kept version can lag behind a classifier change."""
+    assert cg.CLASSIFIER_VERSION == f"core-gate-{cg.prompt_digest()[:16]}"
 
 
-def test_the_digest_covers_the_assembly_the_limit_and_the_tier(
+def test_the_digest_covers_everything_a_version_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base = cg.prompt_digest()
@@ -72,10 +67,19 @@ def test_the_digest_covers_the_assembly_the_limit_and_the_tier(
         ("MAX_BATCH", cg.MAX_BATCH + 1),
         ("CLASSIFIER_MODEL_TIER", "other"),
         ("PROMPT_FOOTER", cg.PROMPT_FOOTER + " "),
+        ("LABEL_SELF_CONTAINED", "B"),
+        ("LABELS", frozenset({"A", "B", "C", "D"})),
     ):
         with monkeypatch.context() as m:
             m.setattr(cg, name, value)
             assert cg.prompt_digest() != base, name
+
+
+def test_the_digest_sample_exercises_payload_escaping() -> None:
+    """A non-ASCII, multi-line sample makes `json.dumps` options visible."""
+    prompt = cg.build_prompt(cg._DIGEST_SAMPLE)  # pyright: ignore[reportPrivateUsage]
+    assert "café" in prompt
+    assert "\\n" in prompt
 
 
 def test_the_rubric_is_the_reference_text_except_the_examples() -> None:
@@ -130,6 +134,14 @@ def test_parse_labels_accepts_a_complete_reply() -> None:
 def test_parse_labels_rejects_anything_short_of_a_full_valid_reply(reply: str) -> None:
     with pytest.raises(ValueError):
         cg.parse_labels(reply, {1, 2})
+
+
+@pytest.mark.parametrize("label", ["D", "a", "", None, 1])
+def test_parse_labels_rejects_a_label_outside_the_set_even_when_complete(
+    label: object,
+) -> None:
+    with pytest.raises(ValueError, match="must be A, B, or C"):
+        cg.parse_labels(json.dumps([{"index": 1, "label": label}]), {1})
 
 
 def test_parse_labels_rejects_an_index_labeled_twice_even_when_complete() -> None:
