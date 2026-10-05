@@ -1,4 +1,4 @@
-"""#1638: the core admission gate's rubric, prompt and label parser."""
+"""#1638: the core admission gate's rubric, prompt, and label parser."""
 from __future__ import annotations
 
 import json
@@ -7,27 +7,83 @@ import pytest
 
 from aelfrice import core_gate as cg
 
+#: One digest per classifier version. APPEND ONLY: never edit an existing
+#: entry. A change to the rubric, the prompt, MAX_BATCH, or the model tier
+#: needs a new CLASSIFIER_VERSION and a new entry here, so a label cached
+#: under one classifier is never reused under another.
+PINNED_DIGESTS: dict[str, str] = {
+    "core-gate-1": "ceb65a5e721cbc6399db5f507c90fc17f990f4e6b88e41de6e6c208b37023506",
+}
 
-def test_the_digest_pins_the_rubric_and_prompt_text() -> None:
-    """Editing the rubric or prompt must come with a version bump.
+#: The examples that replace the reference raters' private ones. Everything
+#: else in the rubric is the raters' text, word for word.
+SWAPPED_EXAMPLES = (
+    "Python's json module is part of the standard library.",
+    "It failed on the second run.",
+    "That value is stale.",
+    "The limit is 50, not 100.",
+    "returns nothing.",
+    "in the second column.",
+    "Run the tests",
+    "Never delete the backup",
+    "Open the next file",
+    "The general principle:",
+    "Always sort the list",
+)
 
-    If this fails, the classifier text changed. Bump `CLASSIFIER_VERSION`
-    and set `CLASSIFIER_DIGEST` to the new `text_digest()`, so labels made
-    under the old text are not reused.
+#: The raters' rubric with each swapped example masked as <EX>.
+REFERENCE_RUBRIC_MASKED = """\
+Assign each snippet exactly one class:
+
+- **A = self-contained truth-apt proposition.** A declarative claim that is true or false on its own, without the surrounding conversation. It may use proper names, file names, issue numbers or project terms, as long as it does not depend on unresolved pronouns or deictic references to the conversation. Example: "<EX>"
+- **B = truth-apt only with context.** It is a declarative claim, but its truth depends on unresolved references ("it", "this step", "the cap", "Step 2", "I", "we", "the above") or on the missing surrounding turn. Examples: "<EX>"; "<EX>"; "<EX>"
+- **C = not truth-apt.** Sentence fragments with no complete claim ("<EX>", "<EX>"), commands or instructions ("<EX>", "<EX>", "<EX>"), questions, headings or labels ("<EX>"), and code, shell, tables or markup (including XML-like `<belief ...>` blocks).
+
+Decision rules:
+
+- Imperatives and rules addressed to an agent ("<EX>", "Do not X") are C, even when phrased as policy.
+- A heading or lead-in ending in ":" with no claim is C.
+- A multi-sentence snippet is classed by its main content. If it contains at least one complete self-contained claim and is not mainly code or markup, use A or B for that claim.
+- When torn between A and B, ask: would a stranger with no access to the conversation know what the claim is about? If not, B.
+"""
+
+
+def test_the_current_version_has_its_pinned_digest() -> None:
+    """If this fails, the classifier changed: add a new version, don't edit.
+
+    Bump `CLASSIFIER_VERSION` and add `{version: prompt_digest()}` to
+    PINNED_DIGESTS. Editing the existing entry instead would let labels made
+    under the old text be reused under the new one.
     """
-    assert cg.text_digest() == cg.CLASSIFIER_DIGEST
+    assert cg.CLASSIFIER_VERSION in PINNED_DIGESTS
+    assert cg.prompt_digest() == PINNED_DIGESTS[cg.CLASSIFIER_VERSION]
 
 
-def test_the_rubric_keeps_the_reference_rules() -> None:
-    """The definitions and decision rules stay as the raters had them."""
-    for line in (
-        "- **A = self-contained truth-apt proposition.** A declarative claim that is true or false on its own, without the surrounding conversation.",
-        "- **B = truth-apt only with context.** It is a declarative claim, but its truth depends on unresolved references",
-        "- **C = not truth-apt.** Sentence fragments with no complete claim",
-        "- A heading or lead-in ending in \":\" with no claim is C.",
-        "- When torn between A and B, ask: would a stranger with no access to the conversation know what the claim is about? If not, B.",
+def test_no_two_versions_share_a_digest() -> None:
+    """A new version that names the same classifier would split one cache."""
+    assert len(set(PINNED_DIGESTS.values())) == len(PINNED_DIGESTS)
+
+
+def test_the_digest_covers_the_assembly_the_limit_and_the_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = cg.prompt_digest()
+    for name, value in (
+        ("MAX_BATCH", cg.MAX_BATCH + 1),
+        ("CLASSIFIER_MODEL_TIER", "other"),
+        ("PROMPT_FOOTER", cg.PROMPT_FOOTER + " "),
     ):
-        assert line in cg.RUBRIC
+        with monkeypatch.context() as m:
+            m.setattr(cg, name, value)
+            assert cg.prompt_digest() != base, name
+
+
+def test_the_rubric_is_the_reference_text_except_the_examples() -> None:
+    masked = cg.RUBRIC
+    for example in SWAPPED_EXAMPLES:
+        assert f'"{example}"' in masked, example
+        masked = masked.replace(f'"{example}"', '"<EX>"')
+    assert masked == REFERENCE_RUBRIC_MASKED
 
 
 def test_build_prompt_carries_rubric_and_snippets() -> None:
