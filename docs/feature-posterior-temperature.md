@@ -55,13 +55,7 @@ Resolved at `retrieve()` / `retrieve_with_tiers()` entry, once per call.
 | TOML | `[retrieval] use_gamma_posterior_temperature` | `_read_toml_flag_for(...)` |
 | Default | False | `resolve_use_gamma_posterior_temperature()` |
 
-When the flag resolves True, the temperature is resolved against the meta-belief substrate:
-
-```python
-T = resolve_posterior_temperature_with_meta(store, now_ts=...)
-```
-
-Bounds: `T ∈ [POSTERIOR_TEMPERATURE_FLOOR, POSTERIOR_TEMPERATURE_CEIL] = [0.5, 2.0]`. Log-linear decode from the meta-belief's `[0, 1]` posterior value; geometric mean is exactly 1.0, so the cold-start `static_default = 0.5` decodes to `T = 1.0` and a fresh install with the flag on is byte-identical to `partial_bayesian_score(..., 1.0)`. Adaptive learning of `T` (the evidence-signal loop that moves the meta-belief away from its prior) is out of scope for #796 — that is issue #758.
+When the flag resolves True, the rerank runs with `T = 1.0`, which is byte-identical to `partial_bayesian_score(..., 1.0)`. `T` was meant to be learned from the relevance signal (#758). [#1655](https://github.com/robotrocketscience/aelfrice/issues/1655) removed that signal, along with the meta-belief that held `T`, so `T` is fixed at 1.0.
 
 When the flag is False, `gamma_temperature` is `None` and `_l1_hits` skips the γ branch entirely. The pre-#796 log-additive contract holds byte-for-byte.
 
@@ -109,7 +103,7 @@ The bench-gate / ship-or-defer policy is the same shape as `docs/design/feature-
 
 ## Out of scope (separate issues)
 
-- **Adaptive `T`** — the evidence-signal loop that moves the meta-belief away from its `static_default = 0.5` prior. That shipped as #758 (v3.2.0) behind the default-OFF `AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE` env flag. With the delivery flag off (the default), the meta-belief is never updated; flag-on cold installs decode to `T = 1.0` and stay there.
+- **Adaptive `T`** — shipped as #758 (v3.2.0) behind `AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE`, learning only from the relevance signal. It never learned: the signal had no positives. [#1655](https://github.com/robotrocketscience/aelfrice/issues/1655) removed it and the flag.
 - **ζ follow-up** — shipped as #817 behind a default-OFF flag (see [feature-zeta-posterior-rerank.md](feature-zeta-posterior-rerank.md)). γ and ζ are mutually exclusive: both flags on raises at flag-resolution time via `_assert_gamma_zeta_mutual_exclusion`.
 - **Composition with heat-rerank** — both flags can be on but γ is a no-op on heat-active calls. Composing the two scoring paths is a separate scoping decision.
 - **Composition with `_hash_n_boosted`** — boost interaction is informational, not a code change. R2 / R2b finding.
@@ -119,13 +113,12 @@ The bench-gate / ship-or-defer policy is the same shape as `docs/design/feature-
 ## Refs
 
 - #796 — this issue (operator path-B decision 2026-05-14T16:48Z; γ″ refinement 2026-05-14T18:04Z).
-- #758 — adaptive `T` follow-up; gated on #796 shipping.
+- #758 — adaptive `T` follow-up; removed in #1655.
 - #800 — ζ parametrisation R&D campaign.
 - #605 — PHILOSOPHY (deterministic, narrow surface). γ inherits.
 - #661 — federation read-only; meta-belief is local-only write state.
 - `src/aelfrice/scoring.py:gamma_posterior_score` — entry point.
 - `src/aelfrice/retrieval.py:resolve_use_gamma_posterior_temperature` — flag resolver.
-- `src/aelfrice/retrieval.py:resolve_posterior_temperature_with_meta` — decoder.
 - `src/aelfrice/retrieval.py:_l1_hits` — call site.
 - `src/aelfrice/calibration_metrics.py:ordered_top_k_overlap`, `rank_biased_overlap` — bench primitives.
 - `src/aelfrice/eval_harness.py:compare_ranking_panel` — bench-panel aggregator.

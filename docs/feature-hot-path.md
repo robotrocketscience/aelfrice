@@ -16,7 +16,8 @@ evaporates at production correlation levels.
 
 `belief_touches` is a SQLite sidecar table next to `injection_events`
 (#779). Where `injection_events` records every (turn × belief) inject
-row for the close-the-loop relevance sweeper, `belief_touches` keeps
+row (exploration reads it as its never-shown pool; the relevance
+sweeper that once scored it was removed in #1655), `belief_touches` keeps
 only the *last* touch per (belief, session) with a touch count and an
 event-kind bitmask. The two tables answer different questions:
 

@@ -7,7 +7,7 @@
 - `belief_corroborations`, which records a session id per corroboration;
 - the #1647 sentiment lane;
 - the #1649 ingest gate;
-- the relevance detector (`relevance_detection.score_references`), whose matcher must be fixed first (#1655).
+- a way to tell which injected beliefs an answer used. The relevance detector was removed in #1655 because it couldn't tell (0 of 1,684); agent-reported ids (#1236) are the remaining option.
 
 ---
 
@@ -96,7 +96,7 @@ Until it passes, a source stays behind its own opt-in flag. Edges it would have 
 
 ## Dependencies to resolve first
 
-1. **Praise targeting needs the relevance detector to work.** It has marked 0 of 1,384 injections as referenced (measurement in #1655). Until #1655 is fixed, praise writes no SUPPORTS edges: the fallback is nothing, not every injected belief.
+1. **Praise targeting needs to know which beliefs the answer used.** The relevance detector that was to provide this was removed in #1655: it marked 0 of 1,684 injections as referenced, and looser matchers measured topicality. Until something like agent-reported ids (#1236) exists, praise writes no SUPPORTS edges: the fallback is nothing, not every injected belief.
 2. **Check results need a capture point.** Since #1649, tool output is never ingested as user text. The writer needs a narrow hook on test and CI results that produces evidence beliefs only.
 
 ## Left to the implementation

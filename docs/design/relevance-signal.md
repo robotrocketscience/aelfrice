@@ -1,5 +1,7 @@
 # Relevance signal — close-the-loop infrastructure
 
+> **Removed in [#1655](https://github.com/robotrocketscience/aelfrice/issues/1655).** This page records the design as it shipped. The detector marked 0 of 1,684 scored injections as referenced, because it required the whole belief verbatim in the reply. Looser word-overlap matchers scored only 1.3 to 1.4 times a random-session null, so they measured topicality, not use. Nothing consumed the signal, and the sweeper cost a 40 to 50 ms transcript scan on every prompt. The sweeper, the detector, and the two consumers that learned only from relevance (#758 posterior temperature and #760 expansion-gate threshold) are gone. `injection_events` rows are still recorded, because exploration reads them, with an empty `active_consumers` list. The #756 half-life and #757 anchor-weight consumers keep their own evidence. The only reference signal a null control can't absorb is the agent naming the ids it used ([#1236](https://github.com/robotrocketscience/aelfrice/issues/1236)).
+
 **Issue:** [#779](https://github.com/robotrocketscience/aelfrice/issues/779).
 **Umbrella:** [#480](https://github.com/robotrocketscience/aelfrice/issues/480) (adaptive meta-belief layer).
 **Substrate prereq:** [#755](https://github.com/robotrocketscience/aelfrice/issues/755) (meta-belief tables + `update_meta_belief` API).
