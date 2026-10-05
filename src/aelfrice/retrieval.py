@@ -360,9 +360,9 @@ ENV_MAX_COVERAGE_PACK: Final[str] = "AELFRICE_MAX_COVERAGE_PACK"
 # exists and the bench panel (PR@5 + ρ + ordered_top_k_overlap +
 # rank_biased_overlap) demonstrates uplift over log-additive. When ON,
 # `_l1_hits` routes its rerank through `gamma_posterior_score(...)` with
-# `T = resolve_posterior_temperature_with_meta(...)` (defaults to 1.0
-# when the meta-belief is absent — byte-identical to
-# `partial_bayesian_score` at `posterior_weight = 1.0`).
+# `T = 1.0`, which is byte-identical to `partial_bayesian_score` at
+# `posterior_weight = 1.0`. `T` was to be learned from the relevance
+# signal (#758); #1655 removed that signal, so it stays at 1.0.
 USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG: Final[str] = (
     "use_gamma_posterior_temperature"
 )
@@ -556,73 +556,6 @@ META_BFS_DEPTH_BUDGET_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
 ENV_META_BELIEF_BFS_DEPTH_BUDGET: Final[str] = (
     "AELFRICE_META_BELIEF_BFS_DEPTH_BUDGET"
 )
-# ---------------------------------------------------------------------------
-# #760 expansion-gate token-threshold meta-belief consumer (sub-task F of #480)
-# ---------------------------------------------------------------------------
-# `should_run_expansion` tests `len(tokens) > threshold`. Bounds `[20, 320]`
-# give a factor-of-4 band around the v1 default of 80; the geometric mean
-# of 20 and 320 is exactly 80 (`sqrt(20*320) = sqrt(6400) = 80`), so the
-# cold-start decode at `static_default=0.5` is byte-identical to the
-# hardcoded `BROAD_PROMPT_TOKEN_THRESHOLD` value. The `relevance` signal
-# (close-the-loop #779) is the sole subscribed class: an injected belief
-# that is referenced by the assistant in a subsequent turn is evidence that
-# the expansion-gate threshold should let more broad prompts through
-# (higher threshold = fewer gates). The direction is correct because
-# expansion gate outcomes directly feed retrieval quality, not latency.
-EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR: Final[int] = 20
-EXPANSION_GATE_TOKEN_THRESHOLD_CEIL: Final[int] = 320
-META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY: Final[str] = (
-    "meta:retrieval.expansion_gate.token_threshold"
-)
-# Static-default `value` for the meta-belief. decode(0.5) == 80 exactly
-# (geometric mean of floor and ceil), matching `BROAD_PROMPT_TOKEN_THRESHOLD`
-# so a cold-start install with the meta-belief flag on is byte-identical.
-META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT: Final[float] = 0.5
-# Sub-posterior decay — 30d, matching #756/#757/#759 so all #480 sub-tasks
-# are comparable on the same evidence time-scale.
-META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS: Final[int] = (
-    30 * 24 * 3600
-)
-# Default-OFF feature flag. Setting this env var truthy switches
-# `resolve_expansion_gate_token_threshold_with_meta` to read the meta-belief
-# first, replacing the hardcoded `BROAD_PROMPT_TOKEN_THRESHOLD` in
-# `should_run_expansion`. Same default-OFF / bench-gate posture as
-# #756/#757/#759.
-ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD: Final[str] = (
-    "AELFRICE_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD"
-)
-# ---------------------------------------------------------------------------
-# #796 γ-rerank posterior-temperature meta-belief consumer
-# ---------------------------------------------------------------------------
-# Boltzmann temperature `T` on the posterior log term, consumed by
-# `scoring.gamma_posterior_score`. Bounds `[0.5, 2.0]`; geometric mean
-# is exactly 1.0, so the cold-start decode at `static_default=0.5` is
-# `T = 1.0` — byte-identical to `partial_bayesian_score` with
-# `posterior_weight = 1.0`. Adaptive learning of `T` (the #758 follow-
-# up) is out of scope for #796: this issue ships the surface and the
-# default-OFF flag, and the bench panel records γ vs log-additive
-# under a hardcoded `T = 1.0`. The meta-belief substrate is installed
-# here so the #758 wiring can drop in without a second config flip.
-META_POSTERIOR_TEMPERATURE_KEY: Final[str] = (
-    "meta:retrieval.posterior_temperature"
-)
-POSTERIOR_TEMPERATURE_FLOOR: Final[float] = 0.5
-POSTERIOR_TEMPERATURE_CEIL: Final[float] = 2.0
-# Mid-range so cold-start decodes to `T = 1.0` exactly.
-META_POSTERIOR_TEMPERATURE_STATIC_DEFAULT: Final[float] = 0.5
-# Sub-posterior decay — 30d, matching the rest of the #480 family.
-META_POSTERIOR_TEMPERATURE_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
-# Default-OFF feature flag for #758 adaptive-learning delivery.
-# Distinct from :data:`ENV_USE_GAMMA_POSTERIOR_TEMPERATURE` (#796): that
-# flag gates whether the γ-rerank uses ``T`` at all; this flag gates
-# whether the sweeper delivers relevance evidence to the meta-belief so
-# ``T`` can learn. The two axes are independent — running with only the
-# gamma flag on gives a fixed ``T=1.0`` cold-start; running with both on
-# lets ``T`` adapt based on which top-K beliefs the assistant references.
-ENV_META_BELIEF_POSTERIOR_TEMPERATURE: Final[str] = (
-    "AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE"
-)
-
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
@@ -2223,102 +2156,6 @@ def is_meta_belief_bfs_depth_budget_enabled() -> bool:
     return norm in _ENV_TRUTHY or norm == "enabled"
 
 
-def decode_expansion_gate_token_threshold(value: float) -> int:
-    """Decode a `[0, 1]` meta-belief value into an integer token threshold
-    via log-linear interpolation between
-    :data:`EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR` (20) and
-    :data:`EXPANSION_GATE_TOKEN_THRESHOLD_CEIL` (320).
-
-    `v=0.0` → 20, `v=1.0` → 320, `v=0.5` → 80 exactly.
-
-    The `v=0.5` decode equals 80 because the geometric mean of 20 and
-    320 is ``sqrt(20 * 320) = sqrt(6400) = 80`` — a precise integer.
-    Cold-start with the meta-belief on is therefore byte-identical to
-    the pre-#760 hardcoded :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`.
-
-    Values outside `[0, 1]` are clamped — the substrate's
-    ``posterior_mean`` is mathematically bounded to `[0, 1]` but
-    ``value`` may be the static_default fallback on a misconfigured
-    row. The result is rounded to the nearest int because
-    ``should_run_expansion`` compares ``len(tokens) > threshold``
-    against a whole number.
-
-    Per the 2026-05-13 #756 ratification: encoding lives in the
-    consumer, substrate stays pattern-uniform across #480 B–F.
-    """
-    v = max(0.0, min(1.0, value))
-    ln_floor = math.log(EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR)
-    ln_ceil = math.log(EXPANSION_GATE_TOKEN_THRESHOLD_CEIL)
-    return int(round(math.exp(ln_floor + v * (ln_ceil - ln_floor))))
-
-
-def is_meta_belief_expansion_gate_token_threshold_enabled() -> bool:
-    """Return True iff :data:`ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD`
-    is set to a recognised truthy value.
-
-    Ships default-OFF per the #760 bench-gate clause: until #437 A/B
-    corpus evidence clears, ``should_run_expansion`` still uses the
-    hardcoded :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`
-    (80). Operators flip this on per-shell to opt into the adaptive
-    token threshold. The ``=enabled`` spelling is honoured alongside the
-    codebase-standard truthy tokens (``1``, ``true``, ``yes``, ``on``),
-    mirroring :func:`is_meta_belief_half_life_enabled`.
-    """
-    raw = os.environ.get(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD)
-    if raw is None:
-        return False
-    norm = raw.strip().lower()
-    return norm in _ENV_TRUTHY or norm == "enabled"
-
-def is_meta_belief_posterior_temperature_enabled() -> bool:
-    """Return True iff :data:`ENV_META_BELIEF_POSTERIOR_TEMPERATURE`
-    is set to a recognised truthy value.
-
-    Ships default-OFF per the #758 adaptive-delivery gate: until relevance
-    evidence accumulates in a bench corpus, the gamma-rerank temperature stays
-    at its cold-start value of T = 1.0. Operators flip this on per-shell
-    to opt into the adaptive learning signal. The ``=enabled`` spelling is
-    honoured alongside the codebase-standard truthy tokens (``1``, ``true``,
-    ``yes``, ``on``), mirroring :func:`is_meta_belief_half_life_enabled`.
-
-    Note: this flag controls only the sweeper delivery path. The gamma-rerank
-    itself is separately gated by :func:`resolve_use_gamma_posterior_temperature`
-    and :data:`ENV_USE_GAMMA_POSTERIOR_TEMPERATURE`.
-    """
-    raw = os.environ.get(ENV_META_BELIEF_POSTERIOR_TEMPERATURE)
-    if raw is None:
-        return False
-    norm = raw.strip().lower()
-    return norm in _ENV_TRUTHY or norm == "enabled"
-
-
-def get_active_meta_belief_consumers() -> list[str]:
-    """Return the canonical-sorted list of meta-belief keys whose
-    retrieval consumer is currently env-gated ON.
-
-    Used by the #779 UPS-hook write-path to populate
-    ``injection_events.active_consumers`` per turn. The sweeper later
-    iterates this list when scoring `referenced` evidence so each
-    enabled consumer's `relevance` sub-posterior gets updated.
-
-    Sort order is alphabetical so a determinism-replay test that pins
-    env state sees the same column-bytes across runs. #756 half-life,
-    #757 bm25f_anchor_weight, #758 posterior_temperature, #760
-    expansion_gate subscribe to signals covered by the sweeper. #759
-    bfs_depth_budget uses latency-only and is not swept for relevance.
-    """
-    active: list[str] = []
-    if is_meta_belief_half_life_enabled():
-        active.append(META_HALF_LIFE_KEY)
-    if is_meta_belief_bm25f_anchor_weight_enabled():
-        active.append(META_BM25F_ANCHOR_WEIGHT_KEY)
-    if is_meta_belief_expansion_gate_token_threshold_enabled():
-        active.append(META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY)
-    if is_meta_belief_posterior_temperature_enabled():
-        active.append(META_POSTERIOR_TEMPERATURE_KEY)
-    return sorted(active)
-
-
 def resolve_temporal_half_life(
     explicit: float | None = None,
     *,
@@ -2557,77 +2394,6 @@ def resolve_bfs_depth_budget_with_meta(
         if meta_value is not None:
             return decode_bfs_depth_budget(meta_value)
     return BFS_DEFAULT_MAX_DEPTH
-
-
-def install_expansion_gate_token_threshold_meta_belief(
-    store: MemoryStore,
-    *,
-    now_ts: int,
-) -> bool:
-    """Idempotent install of the #760 meta-belief on ``store``.
-
-    Returns True on first install, False if the row already exists.
-    Mirrors :func:`install_bfs_depth_budget_meta_belief`'s contract —
-    existing rows are not overwritten because the surfaced threshold
-    would silently shift under the expansion gate.
-
-    The install signature pins the v3.x ratified defaults: relevance
-    signal only (the close-the-loop #779 layer is the right signal for
-    expansion quality — a referenced injected belief is evidence that
-    expansion was useful, so raising the threshold gate is warranted),
-    30d posterior decay, cold-start ``value`` = 0.5 which decodes to 80
-    via :func:`decode_expansion_gate_token_threshold`, matching
-    :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD` exactly.
-    """
-    from aelfrice.meta_beliefs import SIGNAL_RELEVANCE
-    return store.install_meta_belief(
-        META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY,
-        static_default=META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT,
-        half_life_seconds=META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS,
-        signal_weights={SIGNAL_RELEVANCE: 1.0},
-        now_ts=now_ts,
-    )
-
-
-def resolve_expansion_gate_token_threshold_with_meta(
-    store: MemoryStore | None,
-    *,
-    now_ts: int,
-    explicit: int | None = None,
-) -> int:
-    """Resolve the expansion-gate token-threshold knob with meta-belief
-    consultation.
-
-    Returns an ``int`` because ``should_run_expansion`` compares
-    ``len(tokens) > threshold`` against a whole number.
-
-    Precedence (first decisive wins):
-      1. Explicit ``explicit`` kwarg from the caller (positive int) —
-         for test and bench harness overrides.
-      2. **Meta-belief** (#760) — only when
-         :data:`ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD` resolves
-         truthy AND ``store`` has the meta-belief installed. Decodes the
-         substrate's `[0, 1]` value through
-         :func:`decode_expansion_gate_token_threshold` into the `[20, 320]`
-         band, rounded to int.
-      3. Default: :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`
-         (80).
-
-    No env-var or TOML override layer — the expansion-gate token threshold
-    has never had a user-facing config knob outside the gate itself, so we
-    do not synthesize one. Operators override via explicit kwarg or the
-    meta-belief. ``None`` ``store`` collapses to the static default.
-    """
-    if explicit is not None and explicit > 0:
-        return int(explicit)
-    if store is not None and is_meta_belief_expansion_gate_token_threshold_enabled():
-        meta_value = store.read_meta_belief_value(
-            META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY, now_ts=now_ts,
-        )
-        if meta_value is not None:
-            return decode_expansion_gate_token_threshold(meta_value)
-    from aelfrice.expansion_gate import BROAD_PROMPT_TOKEN_THRESHOLD
-    return BROAD_PROMPT_TOKEN_THRESHOLD
 
 
 def _belief_age_seconds(b: Belief, now: datetime) -> float:
@@ -3228,87 +2994,6 @@ def resolve_use_gamma_posterior_temperature(
     if toml_value is not None:
         return toml_value
     return False
-
-
-def install_posterior_temperature_meta_belief(
-    store: MemoryStore,
-    *,
-    now_ts: int,
-) -> bool:
-    """Idempotent install of the #758 meta-belief on ``store``.
-
-    Returns True on first install, False if the row already exists.
-    Mirrors :func:`install_expansion_gate_token_threshold_meta_belief`'s
-    contract — existing rows are not overwritten because the surfaced
-    temperature would silently shift under the gamma-rerank consumer.
-
-    Ships with relevance signal only. Single-signal subscription is
-    intentional: temperature changes the rerank distribution shape; the
-    only natural feedback is whether the top-K beliefs surfaced by the
-    rerank were actually used. Latency does not characterise distribution
-    quality — a fast but poorly-ranked result set is not evidence that
-    T should change. 30d posterior decay, matching the rest of the #480
-    family. Cold-start ``static_default = 0.5`` decodes via
-    :func:`resolve_posterior_temperature_with_meta` to ``T = 1.0`` (the
-    geometric mean of FLOOR=0.5 and CEIL=2.0 in log space), which is
-    byte-identical to the log-additive partial_bayesian_score baseline.
-    """
-    from aelfrice.meta_beliefs import SIGNAL_RELEVANCE
-    return store.install_meta_belief(
-        META_POSTERIOR_TEMPERATURE_KEY,
-        static_default=META_POSTERIOR_TEMPERATURE_STATIC_DEFAULT,
-        half_life_seconds=META_POSTERIOR_TEMPERATURE_POSTERIOR_DECAY_SECONDS,
-        signal_weights={SIGNAL_RELEVANCE: 1.0},
-        now_ts=now_ts,
-    )
-
-
-def resolve_posterior_temperature_with_meta(
-    store: "MemoryStore | None",
-    *,
-    now_ts: int,
-) -> float:
-    """Resolve the γ-rerank Boltzmann temperature `T` (#796).
-
-    Reads `meta:retrieval.posterior_temperature` from the store via
-    `read_meta_belief_value`. Returns:
-
-      * `T = 1.0` when `store` is None or the meta-belief is not
-        installed — the byte-identical-to-log-additive case (γ at
-        `T = 1.0` equals `partial_bayesian_score(..., 1.0)`).
-      * Log-linear decode of the meta-belief value to
-        `[POSTERIOR_TEMPERATURE_FLOOR, POSTERIOR_TEMPERATURE_CEIL]`
-        otherwise. With the static_default of 0.5 the decode lands
-        at the geometric mean 1.0 exactly, so a cold-start install
-        is still byte-identical until evidence accumulates.
-
-    Adaptive learning of `T` is #758's scope; #796 ships the surface
-    and the decoder only. The store read is best-effort — any error
-    falls back to `T = 1.0` rather than raising.
-    """
-    if store is None:
-        return 1.0
-    try:
-        raw = store.read_meta_belief_value(
-            META_POSTERIOR_TEMPERATURE_KEY, now_ts=now_ts,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            "aelfrice retrieval: posterior-temperature meta-belief "
-            f"read failed: {exc}",
-            file=sys.stderr,
-        )
-        return 1.0
-    if raw is None:
-        return 1.0
-    # Clamp the [0, 1] posterior surface value to its valid band before
-    # the log-linear decode. The store contract should already keep it
-    # in-range; the clamp is defensive against future code paths that
-    # write raw values.
-    v = max(0.0, min(1.0, float(raw)))
-    log_floor = math.log(POSTERIOR_TEMPERATURE_FLOOR)
-    log_ceil = math.log(POSTERIOR_TEMPERATURE_CEIL)
-    return math.exp(log_floor + v * (log_ceil - log_floor))
 
 
 def resolve_use_zeta_posterior_rerank(
@@ -4733,12 +4418,9 @@ def retrieve_with_tiers(
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # #796 γ rerank — same resolution as `retrieve()`.
     gamma_on = resolve_use_gamma_posterior_temperature()
-    gamma_t = (
-        resolve_posterior_temperature_with_meta(
-            store, now_ts=effective_now_ts,
-        )
-        if gamma_on else None
-    )
+    # `T` was meant to be learned from the relevance signal (#758), which
+    # #1655 removed; it has always been the cold-start 1.0.
+    gamma_t = 1.0 if gamma_on else None
     # #817 ζ rerank — same resolution as `retrieve()`.
     zeta_on = resolve_use_zeta_posterior_rerank()
     _assert_gamma_zeta_mutual_exclusion(gamma_on, zeta_on)
@@ -4748,12 +4430,8 @@ def retrieve_with_tiers(
     )
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
-    # #760: pass store + now_ts for the meta-belief token-threshold
-    # resolver; same fallback posture as retrieve().
     from aelfrice.expansion_gate import should_run_expansion
-    gate_decision = should_run_expansion(
-        query, store=store, now_ts=effective_now_ts,
-    )
+    gate_decision = should_run_expansion(query)
     gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
     bfs_on = bfs_on and gate_decision.run_bfs
     compress_on = resolve_use_type_aware_compression(

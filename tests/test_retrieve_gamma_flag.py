@@ -5,30 +5,23 @@ Properties under test:
 1. **Flag-off byte-identity.** With ``AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE``
    unset (the default), retrieve()'s output is unchanged compared to a
    pre-#796 baseline — the existing log-additive contract holds.
-2. **Flag-on, meta-belief absent.** The resolver returns T=1.0
-   (byte-identical to ``partial_bayesian_score(.., 1.0)``), so γ runs
-   the rerank loop but its score is anchored to the known log-additive
-   reference. Output is deterministic given the same store + query.
+2. **Flag-on.** ``T`` is 1.0 (byte-identical to
+   ``partial_bayesian_score(.., 1.0)``), so γ runs the rerank loop but
+   its score is anchored to the known log-additive reference. Output is
+   deterministic given the same store + query. ``T`` was to be learned
+   from the relevance signal (#758), which #1655 removed.
 3. **Resolver precedence.** env > kwarg > TOML > False. Verified by
    the resolver-only tests (no store touch needed for the precedence
    chain).
-4. **Temperature decoder bounds.** ``resolve_posterior_temperature_with_meta``
-   returns 1.0 on a None store, decodes log-linearly into
-   ``[POSTERIOR_TEMPERATURE_FLOOR, POSTERIOR_TEMPERATURE_CEIL]``, and
-   hits exactly 1.0 at the static-default mid-value of 0.5.
 """
 from __future__ import annotations
 
-import math
 import uuid
 
 import pytest
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, RETENTION_FACT, Belief
 from aelfrice.retrieval import (
-    POSTERIOR_TEMPERATURE_CEIL,
-    POSTERIOR_TEMPERATURE_FLOOR,
-    resolve_posterior_temperature_with_meta,
     resolve_use_gamma_posterior_temperature,
     retrieve,
 )
@@ -109,21 +102,6 @@ def test_resolver_unrecognised_env_falls_through(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # Temperature decoder
 # ---------------------------------------------------------------------------
-
-def test_temperature_decoder_none_store_returns_one() -> None:
-    assert resolve_posterior_temperature_with_meta(None, now_ts=0) == 1.0
-
-
-def test_temperature_decoder_static_default_geometric_mean() -> None:
-    """Manually verify the log-linear decode at v=0.5 lands at T=1.0
-    (the documented byte-identical contract). This guards against
-    accidental bound changes that would break the cold-start
-    invariant."""
-    log_floor = math.log(POSTERIOR_TEMPERATURE_FLOOR)
-    log_ceil = math.log(POSTERIOR_TEMPERATURE_CEIL)
-    decoded = math.exp(log_floor + 0.5 * (log_ceil - log_floor))
-    assert math.isclose(decoded, 1.0, abs_tol=1e-12)
-
 
 # ---------------------------------------------------------------------------
 # Flag-off byte-identity + flag-on determinism

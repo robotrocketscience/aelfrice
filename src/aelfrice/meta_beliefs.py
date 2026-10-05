@@ -42,6 +42,9 @@ audit row is written (audit machinery is deferred to a later #480 sub-task).
 
 - ``SIGNAL_RELEVANCE`` — close-the-loop relevance signal (#365). Did
   the consumer reference / contradict / confirm the surfaced beliefs?
+  Nothing writes it since #1655 removed the sweeper, and no consumer
+  subscribes to it. It stays a valid class so a stored subscription
+  that names it still parses.
 - ``SIGNAL_LATENCY`` — retrieval wall-time per query.
 - ``SIGNAL_BFS_DEPTH`` — observed BFS depth distribution.
 - ``SIGNAL_BM25_L0_RATIO`` — BM25F-vs-L0 hit-ratio per query.

@@ -18,9 +18,6 @@ from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.retrieval import (
     ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT,
     ENV_META_BELIEF_HALF_LIFE,
-    META_BM25F_ANCHOR_WEIGHT_KEY,
-    META_HALF_LIFE_KEY,
-    get_active_meta_belief_consumers,
 )
 from aelfrice.store import MemoryStore
 
@@ -103,33 +100,6 @@ def test_new_injection_event_turn_id_shape() -> None:
 
 
 # --- get_active_meta_belief_consumers --------------------------------
-
-def test_get_active_consumers_empty_when_env_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv(ENV_META_BELIEF_HALF_LIFE, raising=False)
-    monkeypatch.delenv(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT, raising=False)
-    assert get_active_meta_belief_consumers() == []
-
-
-def test_get_active_consumers_half_life_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(ENV_META_BELIEF_HALF_LIFE, "1")
-    monkeypatch.delenv(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT, raising=False)
-    assert get_active_meta_belief_consumers() == [META_HALF_LIFE_KEY]
-
-
-def test_get_active_consumers_sorted_when_both_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(ENV_META_BELIEF_HALF_LIFE, "enabled")
-    monkeypatch.setenv(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT, "enabled")
-    out = get_active_meta_belief_consumers()
-    assert out == sorted(out)
-    assert META_HALF_LIFE_KEY in out
-    assert META_BM25F_ANCHOR_WEIGHT_KEY in out
-
 
 # --- _record_injection_events fail-soft -------------------------------
 

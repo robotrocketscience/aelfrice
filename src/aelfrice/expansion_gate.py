@@ -43,10 +43,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
-
-if TYPE_CHECKING:
-    from aelfrice.store import MemoryStore
+from typing import Final
 
 from aelfrice.config_discovery import (
     CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
@@ -231,8 +228,6 @@ def should_run_expansion(
     query: str,
     *,
     start: Path | None = None,
-    store: MemoryStore | None = None,
-    now_ts: int | None = None,
 ) -> ExpansionDecision:
     """Decide whether to run BFS / HRR-structural expansion for ``query``.
 
@@ -247,16 +242,6 @@ def should_run_expansion(
     start:
         Optional directory to start the ``.aelfrice.toml`` walk from.
         Defaults to ``Path.cwd()``.
-    store:
-        Optional :class:`~aelfrice.store.MemoryStore` for the #760
-        meta-belief token-threshold resolver. When ``None``, the
-        heuristic falls back to the static
-        :data:`BROAD_PROMPT_TOKEN_THRESHOLD` (80) regardless of the
-        meta-belief env flag.
-    now_ts:
-        UTC epoch seconds for the meta-belief resolver's decay
-        calculation. When ``None`` and ``store`` is provided,
-        defaults to ``int(time.time())``.
 
     Returns
     -------
@@ -296,21 +281,7 @@ def should_run_expansion(
         )
 
     # Gate evaluation. Any "broad" signal trips it.
-    # #760: resolve the token threshold through the meta-belief when the
-    # env flag is on and a store was supplied; fall back to the static
-    # BROAD_PROMPT_TOKEN_THRESHOLD (80) otherwise so behaviour is
-    # byte-identical to pre-#760 on cold-start or flag-off installs.
-    if store is not None:
-        import time as _time  # noqa: PLC0415
-        from aelfrice.retrieval import (  # noqa: PLC0415
-            resolve_expansion_gate_token_threshold_with_meta,
-        )
-        _effective_ts = now_ts if now_ts is not None else int(_time.time())
-        token_threshold = resolve_expansion_gate_token_threshold_with_meta(
-            store, now_ts=_effective_ts,
-        )
-    else:
-        token_threshold = BROAD_PROMPT_TOKEN_THRESHOLD
+    token_threshold = BROAD_PROMPT_TOKEN_THRESHOLD
     tokens = text.split()
     long_prompt = len(tokens) > token_threshold
     has_markers = _has_structural_markers(text)
