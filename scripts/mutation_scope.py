@@ -1,24 +1,60 @@
 #!/usr/bin/env python3
-"""#1605 — which changed files a mutation run should actually mutate.
+"""#1605, #1632 — what a per-PR mutation run should actually mutate.
 
 `.github/workflows/mutation.yml` scopes mutmut with `only_mutate`, whose
 entries are FILE paths. So touching one line of a file puts the whole file
-in the mutant set. A comment-only edit to a large module therefore costs
-the same as rewriting it, and on `cli.py` — 11k lines — that exceeded the
-job's 60-minute budget and was cancelled with no report (#1605).
+in the mutant set. On `cli.py` — 11k lines — that exceeded the job's
+60-minute budget and was cancelled with no report. The scope is narrowed in
+two passes.
 
-The fix is to drop files whose diff cannot produce a mutant. This decides
-that by **comparing ASTs with docstrings stripped**, not by classifying
-lines. A line heuristic has to answer "is this line inside a docstring",
-which needs a parser anyway, and it still says nothing about a change that
-only moves code around. Two files whose stripped ASTs are equal differ by
-comments, docstrings, blank lines, or formatting — none of which mutmut can
-mutate — so the diff between them introduces no mutant.
+## Pass 1: files (#1605)
 
-Failing open is deliberate. A file that will not parse on either side, or
-that cannot be read out of the base commit, is reported as mutable: the
-cost of mutating a file needlessly is runner time, and the cost of skipping
-one wrongly is an unmeasured mutant, so the asymmetry decides it.
+Drop files whose diff cannot produce a mutant. This decides that by
+**comparing ASTs with docstrings stripped**, not by classifying lines. A
+line heuristic has to answer "is this line inside a docstring", which needs
+a parser anyway, and it still says nothing about a change that only moves
+code around. Two files whose stripped ASTs are equal differ by comments,
+docstrings, blank lines, or formatting — none of which mutmut can mutate —
+so the diff between them introduces no mutant.
+
+## Pass 2: functions (#1632)
+
+A real change to one function of `cli.py` still put the whole file in scope,
+and the cost is in mutant *generation*, not only in running them: mutmut
+3.8.0 writes every mutant of a function as a full copy of that function, so
+generating `cli.py` alone yields 16,102 mutants in a 16-million-line file.
+Filtering mutant names after generation (`mutmut run <glob>`) leaves that
+cost in place, and the mutants it filters out are reported as `not checked`.
+
+So the restriction happens before generation. mutmut mutates only two kinds
+of function: a module-level `def`, and a `def` directly in the body of a
+module-level class. Everything nested inside one of those is mutated as part
+of it, and nothing else is mutated at all. Those are the *units* here. A unit
+is in scope when its line span (decorators included) intersects the PR's
+diff hunks **and** its docstring-stripped AST differs from the same-named
+unit on the base side. The second condition is pass 1 applied per function:
+a function that only moved, or only had a comment edited, carries no new
+mutant.
+
+Every out-of-scope unit then gets mutmut's documented
+`# pragma: no mutate block` on its header line, in the CI checkout only. A
+comment changes no line number and no AST, and the rewritten file is
+re-parsed and compared to the original to prove it. Each annotated function
+is skipped whole by mutmut's mutation visitor, so it costs no generation
+time.
+
+Changed lines outside every unit — module-level statements, class bodies,
+and methods of nested classes — carry no mutant under mutmut, so they are
+reported in the summary rather than mutated. Nothing is dropped silently:
+`--summary` writes every in-scope function and every skipped file, function,
+and line range with the reason.
+
+## Failing open
+
+Failing open is deliberate throughout. A file that will not parse, that
+cannot be read out of the base commit, or whose rewrite does not round-trip
+is mutated whole: the cost of mutating code needlessly is runner time, and
+the cost of skipping it wrongly is an unmeasured mutant.
 
 This lives in a script rather than in the workflow's inline Python because
 the workflow cannot be tested in CI — PyYAML is not importable there
@@ -26,13 +62,16 @@ the workflow cannot be tested in CI — PyYAML is not importable there
 
 ## Usage
 
-    scripts/mutation_scope.py --base <sha> --head <sha>
     scripts/mutation_scope.py --base <sha> --head <sha> --dry-run
+    scripts/mutation_scope.py --base <sha> --head <sha> \\
+        --write-pragmas --summary scope.md
 
-Prints one path per line on stdout: the changed files under
-`src/aelfrice/` that carry a mutable change. Prints nothing when none do,
-which the caller reads as "skip the run". `--dry-run` adds a per-file
-verdict on stderr and changes no output on stdout.
+Prints one path per line on stdout: the changed files under `src/aelfrice/`
+that hold at least one in-scope function. Prints nothing when none do,
+which the caller reads as "skip the run". `--dry-run` prints the per-file
+and per-function verdicts on stderr and writes nothing. `--write-pragmas`
+annotates the out-of-scope functions in the working tree, and is meant for a
+throwaway CI checkout. `--summary PATH` writes the Markdown report.
 
 Exits 0 when the scope was computed, 2 on a git failure. An empty scope is
 a result, not a failure.
@@ -41,12 +80,39 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
+import copy
+import io
+import re
 import subprocess
 import sys
+import tokenize
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Final
 
 #: Only these are mutated; matches the workflow's own pathspec.
 PATHSPEC: Final[str] = "src/aelfrice/*.py"
+
+#: mutmut's documented pragma for skipping a whole compound statement.
+PRAGMA_BLOCK: Final[str] = "# pragma: no mutate block"
+
+#: mutmut's documented pragma for skipping one line.
+PRAGMA_LINE: Final[str] = "# pragma: no mutate"
+
+#: The one decorator form mutmut still mutates (mutmut 3.8.0,
+#: `MutationVisitor._skip_node_and_children`); any other decorator, or
+#: more than one, makes it skip the function entirely.
+MUTATED_DECORATORS: Final[frozenset[str]] = frozenset(
+    {"staticmethod", "classmethod"},
+)
+
+#: `mutmut`'s separator between class and method in a mangled name.
+CLASS_SEPARATOR: Final[str] = "ǁ"
+
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+_FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 class _StripDocstrings(ast.NodeTransformer):
@@ -109,6 +175,236 @@ def has_mutable_change(before: str | None, after: str | None) -> bool:
     return a != b
 
 
+# --- pass 2: functions (#1632) ----------------------------------------------
+
+
+@dataclass(frozen=True)
+class Unit:
+    """One function mutmut mutates as a whole, with its nested code."""
+
+    qualname: str
+    start: int
+    end: int
+    skipped_by_mutmut: bool
+    node: _FunctionNode = field(compare=False, repr=False)
+
+    @property
+    def key(self) -> str:
+        """The mangled name mutmut gives this unit's mutants.
+
+        `x_name` for a module-level function and `xǁClassǁname` for a
+        method, followed in the mutant name by `__mutmut_<n>`.
+        """
+        cls, _, name = self.qualname.rpartition(".")
+        if cls:
+            return f"x{CLASS_SEPARATOR}{cls}{CLASS_SEPARATOR}{name}"
+        return f"x_{name}"
+
+
+def _skipped_by_mutmut(node: _FunctionNode) -> bool:
+    """mutmut never mutates a decorated function, with one exception."""
+    decorators = node.decorator_list
+    if not decorators:
+        return False
+    if len(decorators) == 1:
+        only = decorators[0]
+        if isinstance(only, ast.Name) and only.id in MUTATED_DECORATORS:
+            return False
+    return True
+
+
+def _unit(node: _FunctionNode, qualname: str) -> Unit:
+    first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+    end = node.end_lineno
+    assert end is not None, "ast.parse always sets end_lineno"
+    return Unit(qualname, first, end, _skipped_by_mutmut(node), node)
+
+
+def mutation_units(tree: ast.Module) -> list[Unit]:
+    """Every function mutmut can mutate as a unit, in source order.
+
+    Module-level functions, and methods directly in a module-level class.
+    A function nested in either is part of its parent unit; a method of a
+    nested class is no unit at all, because mutmut does not mutate it.
+    """
+    units: list[Unit] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            units.append(_unit(node, node.name))
+        elif isinstance(node, ast.ClassDef):
+            for member in node.body:
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    units.append(_unit(member, f"{node.name}.{member.name}"))
+    return units
+
+
+def touched_lines(diff_text: str) -> set[int]:
+    """Head-side line numbers a `git diff -U0` touches.
+
+    An added or modified line is touched itself. A pure deletion has no
+    head-side line, so the two lines it fell between are both touched:
+    which of the two functions lost the code is not knowable from the
+    hunk alone, and over-including one costs only runner time.
+    """
+    touched: set[int] = set()
+    for line in diff_text.splitlines():
+        match = _HUNK.match(line)
+        if match is None:
+            continue
+        start = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) is not None else 1
+        if count == 0:
+            touched.update((start, start + 1))
+        else:
+            touched.update(range(start, start + count))
+    return touched
+
+
+def _unit_dump(node: _FunctionNode) -> str:
+    stripped = _StripDocstrings().visit(copy.deepcopy(node))
+    return ast.dump(stripped)
+
+
+@dataclass
+class FileScope:
+    """The per-function verdict for one changed file."""
+
+    path: str
+    in_scope: list[Unit] = field(default_factory=lambda: [])
+    #: Touched, but the same as on the base side once docstrings,
+    #: comments, and position are set aside: moved or reworded only.
+    unchanged: list[Unit] = field(default_factory=lambda: [])
+    #: Changed code-bearing lines that lie in no unit.
+    outside: list[int] = field(default_factory=lambda: [])
+
+    @property
+    def mutated(self) -> list[Unit]:
+        """In-scope units mutmut actually generates mutants for."""
+        return [u for u in self.in_scope if not u.skipped_by_mutmut]
+
+
+def _code_bearing(line: str) -> bool:
+    text = line.strip()
+    return bool(text) and not text.startswith("#")
+
+
+def classify(
+    path: str, before: str | None, after: str, touched: set[int],
+) -> FileScope | None:
+    """Which functions of `after` the diff changed.
+
+    Returns None when `after` will not parse, which the caller reads as
+    "mutate the whole file". A `before` that is missing or unparseable
+    leaves every touched unit in scope.
+    """
+    try:
+        head_tree = ast.parse(after)
+    except SyntaxError:
+        return None
+    base_dumps: dict[str, set[str]] = {}
+    if before is not None:
+        try:
+            base_tree = ast.parse(before)
+        except SyntaxError:
+            base_tree = None
+        if base_tree is not None:
+            for unit in mutation_units(base_tree):
+                base_dumps.setdefault(unit.qualname, set()).add(
+                    _unit_dump(unit.node),
+                )
+
+    result = FileScope(path)
+    covered: set[int] = set()
+    for unit in mutation_units(head_tree):
+        span = range(unit.start, unit.end + 1)
+        covered.update(span)
+        if touched.isdisjoint(span):
+            continue
+        if _unit_dump(unit.node) in base_dumps.get(unit.qualname, set()):
+            result.unchanged.append(unit)
+        else:
+            result.in_scope.append(unit)
+
+    lines = after.splitlines()
+    result.outside = sorted(
+        n for n in touched - covered
+        if 1 <= n <= len(lines) and _code_bearing(lines[n - 1])
+    )
+    return result
+
+
+def _header_colon(
+    tokens: list[tokenize.TokenInfo],
+    starts: list[tuple[int, int]],
+    node: _FunctionNode,
+) -> tuple[int, int] | None:
+    """(row, col) just past the `:` that ends `node`'s header.
+
+    Only a comment, a newline, and an indent can sit between the header
+    colon and the first body statement, so it is the first `:` found
+    walking back from the body. `starts` is sorted, so the walk begins at
+    the body rather than at the top of the file: on an 11k-line module, a
+    linear scan per function is quadratic in practice.
+    """
+    begin = (node.lineno, node.col_offset)
+    body = (node.body[0].lineno, node.body[0].col_offset)
+    index = bisect.bisect_left(starts, body) - 1
+    while index >= 0 and tokens[index].start >= begin:
+        tok = tokens[index]
+        if tok.type == tokenize.OP and tok.string == ":":
+            return tok.end
+        index -= 1
+    return None
+
+
+def exclude_units(source: str, keep: set[str]) -> tuple[str, list[str]]:
+    """Annotate every unit not in `keep` so mutmut skips it.
+
+    Returns the rewritten source and the qualnames that could not be
+    annotated. Units mutmut already skips are left alone. Raises
+    ValueError when the rewrite does not round-trip to the same AST,
+    which the caller treats as "mutate the whole file".
+    """
+    tree = ast.parse(source)
+    tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    starts = [tok.start for tok in tokens]
+    lines = source.splitlines(keepends=True)
+    edits: list[tuple[int, int, str]] = []
+    failed: list[str] = []
+    for unit in mutation_units(tree):
+        if unit.qualname in keep or unit.skipped_by_mutmut:
+            continue
+        colon = _header_colon(tokens, starts, unit.node)
+        if colon is None:
+            failed.append(unit.qualname)
+            continue
+        row, col = colon
+        if unit.node.body[0].lineno > row:
+            # An indented body: the comment after the colon is the
+            # block's header comment, which is where mutmut reads
+            # `no mutate block`. Inserting it before any existing
+            # comment keeps it the first `no mutate` mutmut parses.
+            edits.append((row, col, f"  {PRAGMA_BLOCK}"))
+        elif unit.start == row == unit.end:
+            # `def f(): return x` on one line. mutmut reads a trailing
+            # comment on a one-line suite as a line pragma for the line
+            # the `def` starts on, which here is the whole function.
+            end = len(lines[row - 1].rstrip("\r\n"))
+            edits.append((row, end, f"  {PRAGMA_LINE}"))
+        else:
+            failed.append(unit.qualname)
+    for row, col, text in sorted(edits, reverse=True):
+        line = lines[row - 1]
+        lines[row - 1] = line[:col] + text + line[col:]
+    rewritten = "".join(lines)
+    if ast.dump(ast.parse(rewritten)) != ast.dump(tree):
+        raise ValueError("annotated source does not round-trip")
+    return rewritten, failed
+
+
+# --- git --------------------------------------------------------------------
+
+
 def _git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args], capture_output=True, text=True, check=False,
@@ -139,8 +435,12 @@ def changed_files(base: str, head: str) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def _file_diff(base: str, head: str, path: str) -> str:
+    return _git("diff", "-U0", "--no-color", f"{base}...{head}", "--", path)
+
+
 def scope(base: str, head: str, *, explain: bool = False) -> list[str]:
-    """The subset of changed files that carry a mutable change."""
+    """Pass 1 alone: the changed files that carry a mutable change."""
     keep: list[str] = []
     for path in changed_files(base, head):
         mutable = has_mutable_change(_blob(base, path), _blob(head, path))
@@ -152,27 +452,176 @@ def scope(base: str, head: str, *, explain: bool = False) -> list[str]:
     return keep
 
 
+# --- both passes, and the report --------------------------------------------
+
+
+@dataclass
+class Report:
+    """Everything the run decided, for stdout and the step summary."""
+
+    #: Files to put in `only_mutate`, in diff order.
+    files: list[str] = field(default_factory=lambda: [])
+    scopes: list[FileScope] = field(default_factory=lambda: [])
+    #: (path, reason) for each changed file left out of `only_mutate`.
+    skipped_files: list[tuple[str, str]] = field(default_factory=lambda: [])
+    #: (path, reason) for each file mutated whole.
+    whole_files: list[tuple[str, str]] = field(default_factory=lambda: [])
+    #: (path, qualname) for out-of-scope units that are mutated anyway.
+    not_excluded: list[tuple[str, str]] = field(default_factory=lambda: [])
+
+
+def function_scope(base: str, head: str, *, write: bool) -> Report:
+    """Run both passes over the PR's diff.
+
+    With `write`, annotate the working tree. Units are matched by name,
+    not line, because a pull-request checkout is the merge commit, whose
+    line numbers can differ from the head commit the diff was taken on.
+    """
+    report = Report()
+    for path in changed_files(base, head):
+        before, after = _blob(base, path), _blob(head, path)
+        if not has_mutable_change(before, after):
+            report.skipped_files.append(
+                (path, "comments, docstrings, or formatting only"),
+            )
+            continue
+        if after is None:
+            report.whole_files.append((path, "head version unreadable"))
+            report.files.append(path)
+            continue
+        verdict = classify(
+            path, before, after, touched_lines(_file_diff(base, head, path)),
+        )
+        if verdict is None:
+            report.whole_files.append((path, "head version does not parse"))
+            report.files.append(path)
+            continue
+        report.scopes.append(verdict)
+        if not verdict.mutated:
+            report.skipped_files.append(
+                (path, "no changed function that mutmut mutates"),
+            )
+            continue
+        report.files.append(path)
+        if not write:
+            continue
+        target = Path(path)
+        try:
+            rewritten, failed = exclude_units(
+                target.read_text(encoding="utf-8"),
+                {u.qualname for u in verdict.in_scope},
+            )
+        except (OSError, SyntaxError, ValueError) as exc:
+            report.whole_files.append((path, f"could not annotate: {exc}"))
+            continue
+        target.write_text(rewritten, encoding="utf-8")
+        report.not_excluded.extend((path, name) for name in failed)
+    return report
+
+
+def _ranges(numbers: list[int]) -> str:
+    """`[3, 4, 5, 9]` as `3-5, 9`."""
+    spans: list[str] = []
+    start = prev = None
+    for n in [*numbers, None]:
+        if n is not None and prev is not None and n == prev + 1:
+            prev = n
+            continue
+        if start is not None:
+            spans.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = n
+    return ", ".join(spans)
+
+
+def render_summary(report: Report) -> str:
+    """The Markdown step summary. Every exclusion carries its reason."""
+    out = ["### Mutation scope", ""]
+    out.append(
+        "Only the functions this PR changed are mutated. mutmut mutates "
+        "module-level functions and methods of module-level classes, "
+        "including any code nested inside them.",
+    )
+    out.append("")
+    mutated = [(s.path, u) for s in report.scopes for u in s.mutated]
+    if mutated:
+        out += ["| file | function | mutant names |", "| --- | --- | --- |"]
+        out += [
+            f"| `{p}` | `{u.qualname}` | `{u.key}__mutmut_*` |"
+            for p, u in mutated
+        ]
+    else:
+        out.append("No changed function is mutated.")
+    out.append("")
+    notes: list[str] = []
+    for path, reason in report.whole_files:
+        notes.append(f"- `{path}`: mutated whole: {reason}.")
+    for path, reason in report.skipped_files:
+        notes.append(f"- `{path}`: not mutated: {reason}.")
+    for scope_ in report.scopes:
+        for u in scope_.in_scope:
+            if u.skipped_by_mutmut:
+                notes.append(
+                    f"- `{scope_.path}` `{u.qualname}`: changed, but mutmut "
+                    "does not mutate decorated functions.",
+                )
+        for u in scope_.unchanged:
+            notes.append(
+                f"- `{scope_.path}` `{u.qualname}`: not mutated: only "
+                "moved, or only comments or docstrings changed.",
+            )
+        if scope_.outside:
+            notes.append(
+                f"- `{scope_.path}` lines {_ranges(scope_.outside)}: not "
+                "mutated: outside every function mutmut mutates (module "
+                "level, class body, or a nested class).",
+            )
+    for path, name in report.not_excluded:
+        notes.append(
+            f"- `{path}` `{name}`: mutated although unchanged: its header "
+            "could not be annotated.",
+        )
+    if notes:
+        out += ["Left out or widened, with the reason:", "", *notes, ""]
+    return "\n".join(out)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--base", required=True, help="base commit SHA")
     parser.add_argument("--head", required=True, help="head commit SHA")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--dry-run", action="store_true",
-        help="also print a per-file verdict on stderr",
+        help="print per-file and per-function verdicts on stderr; write nothing",
+    )
+    mode.add_argument(
+        "--write-pragmas", action="store_true",
+        help="annotate out-of-scope functions in the working tree",
+    )
+    parser.add_argument(
+        "--summary", type=Path, default=None,
+        help="write the Markdown scope report to this path",
     )
     args = parser.parse_args(argv)
 
     try:
-        paths = scope(args.base, args.head, explain=args.dry_run)
+        report = function_scope(args.base, args.head, write=args.write_pragmas)
     except RuntimeError as exc:
         print(f"mutation_scope: {exc}", file=sys.stderr)
         return 2
 
-    for path in paths:
+    summary = render_summary(report)
+    if args.dry_run:
+        print(summary, file=sys.stderr)
+    if args.summary is not None:
+        args.summary.write_text(summary + "\n", encoding="utf-8")
+    for path in report.files:
         print(path)
-    if not paths:
+    if not report.files:
         print(
-            "mutation_scope: no changed file carries a mutable change",
+            "mutation_scope: no changed function carries a mutable change",
             file=sys.stderr,
         )
     return 0
