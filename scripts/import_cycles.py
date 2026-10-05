@@ -29,6 +29,10 @@ How an import becomes an edge:
   package's `__init__` before its submodules) is not drawn. Drawing it would
   report a cycle for every package whose `__init__` imports a submodule, which
   is how packages are built, not a defect.
+* Dynamic imports are not drawn. `importlib.import_module(...)` takes a value
+  this script cannot resolve statically, so an edge built that way, such as the
+  lazy loader `aelfrice.hook._lazy` uses for its deferred retrieval names, is
+  invisible here. A cycle that runs only through such an edge goes unreported.
 
 Options:
 
