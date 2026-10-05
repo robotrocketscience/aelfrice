@@ -341,6 +341,8 @@ def classify(
         try:
             base_units = mutation_units(ast.parse(before))
         except SyntaxError:
+            # An unparseable base leaves base_units empty, so every touched
+            # unit stays in scope (see docstring).
             pass
     head_units = mutation_units(head_tree)
     # A name defined more than once on either side cannot be paired with
