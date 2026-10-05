@@ -655,6 +655,20 @@ def _clear_ambient_layout_env() -> Iterator[None]:
         mp.undo()
 
 
+#: Git's location variables, cleared for the whole suite by
+#: `_sandbox_real_home` (#1707). `tests/test_git_env_scrub_1707.py` keeps
+#: its own copy of this list on purpose, so dropping a name here fails it.
+GIT_LOCATION_VARS: tuple[str, ...] = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+
 # ---------------------------------------------------------------------------
 # #1320 — keep the suite out of the contributor's real home directory.
 # ---------------------------------------------------------------------------
@@ -669,17 +683,6 @@ def _clear_ambient_layout_env() -> Iterator[None]:
 # attribute at call time. `tests/test_home_path_isolation_1320.py` asserts
 # that property directly, so a future function that re-binds a home path as
 # a parameter default fails there rather than silently escaping this fixture.
-#: Git's location variables. Cleared for the whole suite (#1707).
-GIT_LOCATION_VARS: tuple[str, ...] = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-)
-
 REAL_HOME: Path = Path.home()
 """The contributor's actual home, captured before `_sandbox_real_home` runs.
 
