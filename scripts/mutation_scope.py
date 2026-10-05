@@ -421,34 +421,67 @@ def _blob(sha: str, path: str) -> str | None:
         return None
 
 
-def changed_files(base: str, head: str) -> list[str]:
+@dataclass(frozen=True)
+class Change:
+    """One changed file: its head path, and its path on the base side.
+
+    `base_path` differs from `path` when git paired the file with one it
+    renamed; it is the path the base blob is read from.
+    """
+
+    path: str
+    base_path: str
+
+
+def changed_files(base: str, head: str) -> list[Change]:
     """Changed, non-deleted files under the pathspec, in the PR's own diff.
 
     Three dots, not two, for the reason the workflow already documents:
     `A..B` is the difference between two trees and would include commits
     merged into the base since the branch point.
+
+    Renames are detected (`-M`), so a moved file is compared with its old
+    self. Without that, the base blob is looked up at the new path, is
+    missing, and every function of a merely renamed file looks new.
     """
     out = _git(
-        "diff", "--name-only", "--diff-filter=d", f"{base}...{head}",
+        "diff", "--name-status", "-M", "--diff-filter=d", f"{base}...{head}",
         "--", PATHSPEC,
     )
-    return [line for line in out.splitlines() if line.strip()]
+    changes: list[Change] = []
+    for line in out.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[0].startswith(("R", "C")):
+            changes.append(Change(fields[2], fields[1]))
+        elif len(fields) == 2:
+            changes.append(Change(fields[1], fields[1]))
+    return changes
 
 
-def _file_diff(base: str, head: str, path: str) -> str:
-    return _git("diff", "-U0", "--no-color", f"{base}...{head}", "--", path)
+def _file_diff(base: str, head: str, change: Change) -> str:
+    """The `-U0` diff of one file, old path against new across a rename.
+
+    Naming both paths, with rename detection on, makes git diff the
+    renamed file against its old content rather than against nothing.
+    """
+    paths = dict.fromkeys((change.base_path, change.path))
+    return _git(
+        "diff", "-U0", "-M", "--no-color", f"{base}...{head}", "--", *paths,
+    )
 
 
 def scope(base: str, head: str, *, explain: bool = False) -> list[str]:
     """Pass 1 alone: the changed files that carry a mutable change."""
     keep: list[str] = []
-    for path in changed_files(base, head):
-        mutable = has_mutable_change(_blob(base, path), _blob(head, path))
+    for change in changed_files(base, head):
+        mutable = has_mutable_change(
+            _blob(base, change.base_path), _blob(head, change.path),
+        )
         if explain:
             verdict = "mutable" if mutable else "comments/docstrings only"
-            print(f"  {path}: {verdict}", file=sys.stderr)
+            print(f"  {change.path}: {verdict}", file=sys.stderr)
         if mutable:
-            keep.append(path)
+            keep.append(change.path)
     return keep
 
 
@@ -478,8 +511,9 @@ def function_scope(base: str, head: str, *, write: bool) -> Report:
     line numbers can differ from the head commit the diff was taken on.
     """
     report = Report()
-    for path in changed_files(base, head):
-        before, after = _blob(base, path), _blob(head, path)
+    for change in changed_files(base, head):
+        path = change.path
+        before, after = _blob(base, change.base_path), _blob(head, path)
         if not has_mutable_change(before, after):
             report.skipped_files.append(
                 (path, "comments, docstrings, or formatting only"),
@@ -490,7 +524,7 @@ def function_scope(base: str, head: str, *, write: bool) -> Report:
             report.files.append(path)
             continue
         verdict = classify(
-            path, before, after, touched_lines(_file_diff(base, head, path)),
+            path, before, after, touched_lines(_file_diff(base, head, change)),
         )
         if verdict is None:
             report.whole_files.append((path, "head version does not parse"))

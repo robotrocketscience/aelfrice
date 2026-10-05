@@ -550,6 +550,56 @@ def test_the_summary_is_written_even_when_nothing_is_in_scope(
     assert "No changed function is mutated." in summary.read_text(encoding="utf-8")
 
 
+def _renamed_repo(root: Path, after: str) -> tuple[str, str]:
+    """Commit `_BASE` as `b.py`, then move it to `d.py` holding `after`."""
+    pkg = root / "src" / "aelfrice"
+    pkg.mkdir(parents=True)
+    (pkg / "b.py").write_text(_BASE, encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "base")
+    base = _git(root, "rev-parse", "HEAD")
+    _git(root, "mv", "src/aelfrice/b.py", "src/aelfrice/d.py")
+    (pkg / "d.py").write_text(after, encoding="utf-8")
+    _git(root, "commit", "-q", "-am", "head")
+    return base, _git(root, "rev-parse", "HEAD")
+
+
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_a_pure_rename_puts_nothing_in_scope(
+    ms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The base blob is read from the old path, so nothing looks new."""
+    base, head = _renamed_repo(tmp_path, _BASE)
+    monkeypatch.chdir(tmp_path)
+    report = ms.function_scope(base, head, write=False)
+    assert report.files == []
+    assert report.scopes == []
+    assert report.skipped_files == [
+        ("src/aelfrice/d.py", "comments, docstrings, or formatting only"),
+    ]
+
+
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_a_rename_with_one_changed_function_scopes_that_function(
+    ms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the real change is in scope; a comment edit is compared
+    against the old path's code and stays out."""
+    after = _BASE.replace("total = a + b", "total = a * b").replace(
+        "return x * 2", "return x * 2  # Same.",
+    )
+    base, head = _renamed_repo(tmp_path, after)
+    monkeypatch.chdir(tmp_path)
+    report = ms.function_scope(base, head, write=False)
+    assert report.files == ["src/aelfrice/d.py"]
+    (scope_,) = report.scopes
+    assert _names(scope_.in_scope) == ["second"]
+    assert _names(scope_.unchanged) == ["first"]
+    # The untouched decorated function is not reported as changed.
+    assert "`cached`" not in ms.render_summary(report)
+
+
 def test_dry_run_and_write_cannot_be_combined(ms: Any) -> None:
     with pytest.raises(SystemExit):
         ms.main(["--base", "a", "--head", "b", "--dry-run", "--write-pragmas"])

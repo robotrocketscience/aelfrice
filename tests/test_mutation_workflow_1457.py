@@ -349,7 +349,7 @@ def test_the_pr_job_is_scoped_to_the_diff() -> None:
     assert '--head "${HEAD_SHA}"' in scope
 
     script = (_REPO / "scripts" / "mutation_scope.py").read_text(encoding="utf-8")
-    assert '"diff", "--name-only"' in script
+    assert '"diff", "--name-status"' in script
     assert 'PATHSPEC: Final[str] = "src/aelfrice/*.py"' in script
 
 
