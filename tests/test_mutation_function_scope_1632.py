@@ -1,7 +1,8 @@
 """#1632 — the per-PR mutation job mutates changed functions, not files.
 
 A real change to one function of `cli.py` put the whole 11k-line file in
-`only_mutate`, and mutmut spent the job's 60 minutes generating its mutants.
+`only_mutate`, and the job's log stayed at "Generating mutants" until its
+60-minute limit.
 `scripts/mutation_scope.py` now maps the PR's diff hunks to the functions
 they touch, and marks every other function with mutmut's
 `# pragma: no mutate block` so mutmut never generates their mutants.
@@ -319,6 +320,15 @@ def test_a_name_duplicated_only_on_the_head_side_stays_in_scope(ms: Any) -> None
     result = ms.classify("mod.py", before, after, {5, 6})
     assert result is not None
     assert [(u.qualname, u.start) for u in result.in_scope] == [("dup", 5)]
+    assert result.unchanged == []
+
+
+def test_a_name_duplicated_only_on_the_base_side_stays_in_scope(ms: Any) -> None:
+    """Dropping one of two base `dup` defs leaves the survivor ambiguous."""
+    after = _DUP_BASE[_DUP_BASE.index("def dup", 1):]
+    result = ms.classify("mod.py", _DUP_BASE, after, {1, 2})
+    assert result is not None
+    assert [u.qualname for u in result.in_scope] == ["dup"]
     assert result.unchanged == []
 
 
@@ -688,8 +698,27 @@ def test_a_pure_rename_puts_nothing_in_scope(
     assert report.files == []
     assert report.scopes == []
     assert report.skipped_files == [
-        ("src/aelfrice/d.py", "comments, docstrings, or formatting only"),
+        ("src/aelfrice/d.py", "renamed from src/aelfrice/b.py with no code change"),
     ]
+
+
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_rename_detection_does_not_depend_on_git_config(
+    ms: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`diff.renames=false` on a runner must not bring back whole-file scope.
+
+    Git's default turns rename detection on, so only the explicit `-M`
+    keeps it on under a config that turns it off.
+    """
+    base, head = _renamed_repo(tmp_path, _BASE)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "diff.renames")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    report = ms.function_scope(base, head, write=False)
+    assert report.files == []
+    assert report.scopes == []
 
 
 @pytest.mark.timeout(60)  # spawns git (#1307)
