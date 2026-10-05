@@ -67,6 +67,8 @@ from aelfrice.models import (
     RETENTION_CLASSES,
     RETENTION_UNKNOWN,
     Belief,
+    CoreGateBatch,
+    CoreGateBatchItem,
     Edge,
     FeedbackEvent,
     OnboardSession,
@@ -133,6 +135,16 @@ class WriteLogAuthorityViolation(RuntimeError):
     instead of calling `insert_belief` directly. Or, if the caller is a
     legitimate fixture/migration site, add it to `INSERT_BELIEF_ALLOWLIST`
     after design review.
+    """
+
+
+class CoreGateAcceptRefused(ValueError):
+    """`MemoryStore.accept_core_gate_batch` refused a batch (#1638).
+
+    Raised for an unknown batch, a batch already accepted, a batch
+    emitted under another classifier version, or labels that do not
+    cover exactly the batch's indexes. The refusal is raised inside the
+    accept transaction, so nothing the call would have written lands.
     """
 
 
@@ -780,6 +792,42 @@ _SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_belief_categories_category "
     "ON belief_categories(category_name)",
+    # #1638 core admission gate. Two additive tables, in _SCHEMA for the
+    # same reason as the category pair: every fresh store has them, and
+    # an older store gains them on its next open. `core_gate_labels` is
+    # the label cache, keyed by the belief's `content_hash` column and the
+    # classifier version, so a label never outlives either the content
+    # it judged or the classifier that judged it. NO FK into `beliefs`:
+    # the key is content, not a row, and a belief re-inserted with the
+    # same content reuses its label.
+    """
+    CREATE TABLE IF NOT EXISTS core_gate_labels (
+        content_hash       TEXT NOT NULL,
+        classifier_version TEXT NOT NULL,
+        label              TEXT NOT NULL CHECK (label IN ('A', 'B', 'C')),
+        labeled_at         TEXT NOT NULL,
+        batch_id           TEXT,
+        PRIMARY KEY (content_hash, classifier_version)
+    )
+    """,
+    # One row per emitted classifier batch. `items_json` holds the
+    # `[{index, belief_id, content_hash}]` list the prompt was built
+    # from, as a read-once blob (the `onboard_sessions.candidates_json`
+    # pattern): it is read whole at accept time and never queried by
+    # field. `accepted_at` is NULL until the host's labels are accepted,
+    # and a batch is accepted at most once.
+    """
+    CREATE TABLE IF NOT EXISTS core_gate_batches (
+        batch_id           TEXT PRIMARY KEY,
+        classifier_version TEXT NOT NULL,
+        origin             TEXT NOT NULL
+                           CHECK (origin IN ('session_end', 'doctor')),
+        session_id         TEXT,
+        items_json         TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        accepted_at        TEXT
+    )
+    """,
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -1403,6 +1451,66 @@ def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
         candidates_json=row["candidates_json"],
         created_at=row["created_at"],
         completed_at=row["completed_at"],
+    )
+
+
+#: Hex characters of the sha256 digest that form a core-gate batch id.
+CORE_GATE_BATCH_ID_LEN: Final[int] = 16
+
+#: Most content hashes bound into one `IN (...)` label lookup. Far under
+#: SQLite's host-parameter limit on every supported build.
+_CORE_GATE_LOOKUP_CHUNK: Final[int] = 500
+
+
+def core_gate_batch_id(
+    classifier_version: str, content_hashes: Iterable[str], created_at: str,
+) -> str:
+    """The deterministic id of a core-gate batch (#1638).
+
+    The first `CORE_GATE_BATCH_ID_LEN` hex characters of the sha256 of
+    the classifier version, the creation timestamp, and the batch's
+    content hashes in sorted order, NUL-separated. The same inputs give
+    the same id in any process and in any item order.
+    """
+    parts = [classifier_version, created_at, *sorted(content_hashes)]
+    digest = hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+    return digest[:CORE_GATE_BATCH_ID_LEN]
+
+
+def _core_gate_items_json(items: Sequence[CoreGateBatchItem]) -> str:
+    """Canonical `items_json`: ordered by index, compact, sorted keys."""
+    return json.dumps(
+        [
+            {
+                "index": item.index,
+                "belief_id": item.belief_id,
+                "content_hash": item.content_hash,
+            }
+            for item in sorted(items, key=lambda i: i.index)
+        ],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _row_to_core_gate_batch(row: sqlite3.Row) -> CoreGateBatch:
+    raw: list[dict[str, object]] = json.loads(row["items_json"])
+    items = tuple(
+        CoreGateBatchItem(
+            index=int(str(d["index"])),
+            belief_id=str(d["belief_id"]),
+            content_hash=str(d["content_hash"]),
+        )
+        for d in raw
+    )
+    return CoreGateBatch(
+        batch_id=row["batch_id"],
+        classifier_version=row["classifier_version"],
+        origin=row["origin"],
+        session_id=row["session_id"],
+        items=items,
+        created_at=row["created_at"],
+        accepted_at=row["accepted_at"],
     )
 
 
@@ -7637,6 +7745,231 @@ class MemoryStore:
             (ONBOARD_STATE_PENDING,),
         )
         return [_row_to_onboard_session(r) for r in cur.fetchall()]
+
+    # --- Core admission gate (#1638) ------------------------------------
+    #
+    # The label cache and the classifier batches. Labels are keyed by
+    # (content_hash, classifier_version); nothing here touches a belief
+    # row or its posterior. Writes commit at once outside `transaction()`
+    # and ride the outer commit inside it.
+
+    def create_core_gate_batch(
+        self,
+        items: Sequence[CoreGateBatchItem],
+        *,
+        classifier_version: str,
+        origin: str,
+        session_id: str | None,
+        created_at: str,
+    ) -> str:
+        """Record one classifier batch and return its id.
+
+        The id is `core_gate_batch_id(...)`, so it is deterministic.
+        Re-creating an identical batch returns the existing id and writes
+        nothing. A different batch that derives the same id raises
+        `ValueError` rather than overwrite the first.
+
+        Raises `ValueError` for an empty batch, one over
+        `core_gate.MAX_BATCH`, repeated indexes or content hashes, or an
+        origin outside `CORE_GATE_ORIGINS`. A repeated content hash is
+        refused because both items would share one cache key, and the
+        model could label them differently.
+        """
+        from aelfrice.core_gate import MAX_BATCH
+        from aelfrice.models import CORE_GATE_ORIGINS
+
+        if not items:
+            raise ValueError("a core-gate batch needs at least one item")
+        if len(items) > MAX_BATCH:
+            raise ValueError(
+                f"a core-gate batch holds at most {MAX_BATCH} items, "
+                f"got {len(items)}"
+            )
+        indexes = [item.index for item in items]
+        if len(set(indexes)) != len(indexes):
+            raise ValueError("core-gate batch indexes must be unique")
+        hashes = [item.content_hash for item in items]
+        if len(set(hashes)) != len(hashes):
+            raise ValueError("core-gate batch content hashes must be unique")
+        if origin not in CORE_GATE_ORIGINS:
+            raise ValueError(
+                f"core-gate batch origin must be one of "
+                f"{sorted(CORE_GATE_ORIGINS)}, got {origin!r}"
+            )
+        batch_id = core_gate_batch_id(classifier_version, hashes, created_at)
+        items_json = _core_gate_items_json(items)
+        cur = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO core_gate_batches (
+                batch_id, classifier_version, origin, session_id,
+                items_json, created_at, accepted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                batch_id, classifier_version, origin, session_id,
+                items_json, created_at,
+            ),
+        )
+        if cur.rowcount == 0:
+            row = self._conn.execute(
+                "SELECT classifier_version, origin, session_id, items_json "
+                "FROM core_gate_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+            same = row is not None and (
+                row["classifier_version"], row["origin"],
+                row["session_id"], row["items_json"],
+            ) == (classifier_version, origin, session_id, items_json)
+            if not same:
+                raise ValueError(
+                    f"core-gate batch id {batch_id} already names a "
+                    f"different batch"
+                )
+        self._commit()
+        return batch_id
+
+    def get_core_gate_batch(self, batch_id: str) -> CoreGateBatch | None:
+        """Return one batch by id, or None if no batch has that id."""
+        row = self._conn.execute(
+            "SELECT * FROM core_gate_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        return _row_to_core_gate_batch(row) if row is not None else None
+
+    def core_gate_labels_for(
+        self, content_hashes: Iterable[str], classifier_version: str,
+    ) -> dict[str, str]:
+        """Map each content hash labeled under `classifier_version` to its
+        label. Hashes with no label under that version are absent.
+
+        One `IN (...)` query per `_CORE_GATE_LOOKUP_CHUNK` hashes, so a
+        caller looks up a whole selection at once, never per belief.
+        """
+        unique = sorted(set(content_hashes))
+        out: dict[str, str] = {}
+        for start in range(0, len(unique), _CORE_GATE_LOOKUP_CHUNK):
+            chunk = unique[start:start + _CORE_GATE_LOOKUP_CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows = self._conn.execute(
+                "SELECT content_hash, label FROM core_gate_labels "
+                f"WHERE classifier_version = ? AND content_hash IN ({marks})",
+                (classifier_version, *chunk),
+            ).fetchall()
+            for row in rows:
+                out[str(row["content_hash"])] = str(row["label"])
+        return out
+
+    def put_core_gate_labels(
+        self,
+        labels: dict[str, str],
+        *,
+        classifier_version: str,
+        batch_id: str | None,
+        labeled_at: str,
+    ) -> int:
+        """Upsert `{content_hash: label}` under `classifier_version`.
+
+        A hash already labeled under that version takes the new label,
+        timestamp, and batch: the latest accepted label wins. The table's
+        CHECK refuses a label outside A, B, and C. Returns the number of
+        rows written.
+        """
+        self._conn.executemany(
+            """
+            INSERT INTO core_gate_labels (
+                content_hash, classifier_version, label, labeled_at, batch_id
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(content_hash, classifier_version) DO UPDATE SET
+                label = excluded.label,
+                labeled_at = excluded.labeled_at,
+                batch_id = excluded.batch_id
+            """,
+            [
+                (h, classifier_version, label, labeled_at, batch_id)
+                for h, label in sorted(labels.items())
+            ],
+        )
+        self._commit()
+        return len(labels)
+
+    def mark_core_gate_batch_accepted(
+        self, batch_id: str, accepted_at: str,
+    ) -> bool:
+        """Stamp `accepted_at` on a batch not yet accepted.
+
+        Returns False, and changes nothing, when no batch has that id or
+        the batch was already accepted, so a batch is accepted once.
+        """
+        cur = self._conn.execute(
+            "UPDATE core_gate_batches SET accepted_at = ? "
+            "WHERE batch_id = ? AND accepted_at IS NULL",
+            (accepted_at, batch_id),
+        )
+        self._commit()
+        return cur.rowcount > 0
+
+    def accept_core_gate_batch(
+        self,
+        batch_id: str,
+        labels_by_index: dict[int, str],
+        *,
+        classifier_version: str,
+        accepted_at: str,
+    ) -> CoreGateBatch:
+        """Cache a batch's labels and mark it accepted, atomically.
+
+        Runs in one `BEGIN IMMEDIATE` transaction that re-reads the batch
+        under the write lock, so two concurrent accepts of one batch
+        cannot both succeed. Raises `CoreGateAcceptRefused`, writing
+        nothing, when the batch is unknown, already accepted, or was
+        emitted under a classifier version other than
+        `classifier_version`, or when `labels_by_index` does not label
+        exactly the batch's indexes with A, B, or C. Returns the batch as
+        it was before acceptance.
+        """
+        with self.transaction(immediate=True):
+            batch = self.get_core_gate_batch(batch_id)
+            if batch is None:
+                raise CoreGateAcceptRefused(f"no core-gate batch {batch_id}")
+            if batch.accepted_at is not None:
+                raise CoreGateAcceptRefused(
+                    f"batch {batch_id} was already accepted at "
+                    f"{batch.accepted_at}"
+                )
+            if batch.classifier_version != classifier_version:
+                raise CoreGateAcceptRefused(
+                    f"batch {batch_id} was emitted under "
+                    f"{batch.classifier_version}, not the current "
+                    f"{classifier_version}; emit a new batch"
+                )
+            by_index = {item.index: item for item in batch.items}
+            if set(labels_by_index) != set(by_index):
+                raise CoreGateAcceptRefused(
+                    f"labels do not cover exactly the indexes of batch "
+                    f"{batch_id}"
+                )
+            bad = sorted(
+                i for i, label in labels_by_index.items()
+                if label not in ("A", "B", "C")
+            )
+            if bad:
+                raise CoreGateAcceptRefused(
+                    f"labels for indexes {bad} are not A, B, or C"
+                )
+            if not self.mark_core_gate_batch_accepted(batch_id, accepted_at):
+                raise CoreGateAcceptRefused(
+                    f"batch {batch_id} was accepted concurrently"
+                )
+            self.put_core_gate_labels(
+                {
+                    by_index[i].content_hash: label
+                    for i, label in labels_by_index.items()
+                },
+                classifier_version=classifier_version,
+                batch_id=batch_id,
+                labeled_at=accepted_at,
+            )
+        return batch
 
     def create_session(
         self,

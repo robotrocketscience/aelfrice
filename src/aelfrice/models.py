@@ -382,6 +382,19 @@ ONBOARD_STATES: Final[frozenset[str]] = frozenset({
 })
 
 
+# --- Core admission gate batches (#1638) ---
+# Where a classifier batch was emitted: the session-end Stop continuation
+# or the `aelf doctor` backlog drain. `core_gate_batches.origin` holds a
+# CHECK over exactly this set.
+CORE_GATE_ORIGIN_SESSION_END: Final[str] = "session_end"
+CORE_GATE_ORIGIN_DOCTOR: Final[str] = "doctor"
+
+CORE_GATE_ORIGINS: Final[frozenset[str]] = frozenset({
+    CORE_GATE_ORIGIN_SESSION_END,
+    CORE_GATE_ORIGIN_DOCTOR,
+})
+
+
 # --- Belief scope (visibility category, v3.0 #688) ---
 # Scope controls which peer DBs may read a belief through the federation
 # overlay. Distinct from scope_id (#204), which tags provenance (which
@@ -553,6 +566,38 @@ class OnboardSession:
     candidates_json: str
     created_at: str
     completed_at: str | None
+
+
+@dataclass(frozen=True)
+class CoreGateBatchItem:
+    """One snippet of a core-gate classifier batch (#1638).
+
+    `index` is the number the prompt shows the model, and the number its
+    reply labels. `content_hash` is the belief's `beliefs.content_hash`
+    column at emit time: the label is cached under that hash, so a belief
+    whose content changes afterwards is unlabeled under its new hash.
+    """
+
+    index: int
+    belief_id: str
+    content_hash: str
+
+
+@dataclass(frozen=True)
+class CoreGateBatch:
+    """One `core_gate_batches` row (#1638).
+
+    A batch is emitted once, labeled by the host's model, and accepted at
+    most once. `accepted_at` is None until then.
+    """
+
+    batch_id: str
+    classifier_version: str
+    origin: str
+    session_id: str | None
+    items: tuple[CoreGateBatchItem, ...]
+    created_at: str
+    accepted_at: str | None
 
 
 @dataclass
