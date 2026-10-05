@@ -188,16 +188,15 @@ def test_flag_on_scores_with_temperature_one(populated_store, monkeypatch) -> No
     """With the flag on, every γ score uses `T = 1.0`. `T` was to be learned
     from the relevance signal (#758); #1655 removed it, so 1.0 is the
     contract the docs and CHANGELOG state as byte-identical."""
-    import aelfrice.retrieval as retrieval_mod
+    from aelfrice.scoring import gamma_posterior_score as real
 
     seen: list[float] = []
-    real = retrieval_mod.gamma_posterior_score
 
     def spy(bm25_raw: float, alpha: float, beta: float, temperature: float) -> float:
         seen.append(temperature)
         return real(bm25_raw, alpha, beta, temperature)
 
-    monkeypatch.setattr(retrieval_mod, "gamma_posterior_score", spy)
+    monkeypatch.setattr("aelfrice.retrieval.gamma_posterior_score", spy)
     monkeypatch.setenv(_ENV_FLAG, "1")
     retrieve(populated_store, "letter alphabet")
     assert seen, "the gamma rerank did not run"
