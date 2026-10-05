@@ -669,6 +669,17 @@ def _clear_ambient_layout_env() -> Iterator[None]:
 # attribute at call time. `tests/test_home_path_isolation_1320.py` asserts
 # that property directly, so a future function that re-binds a home path as
 # a parameter default fails there rather than silently escaping this fixture.
+#: Git's location variables. Cleared for the whole suite (#1707).
+GIT_LOCATION_VARS: tuple[str, ...] = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
 REAL_HOME: Path = Path.home()
 """The contributor's actual home, captured before `_sandbox_real_home` runs.
 
@@ -770,6 +781,14 @@ def _sandbox_real_home(
         # A test that exercises git-dir resolution deletes this with a
         # function-scoped `monkeypatch.delenv`.
         mp.setenv("AELFRICE_DB", str(home / "memory.db"))
+        # #1707: git hooks export `GIT_DIR` and its siblings, so a suite run
+        # from inside one (or any shell that sets them) points every
+        # `git init` in a tmp dir, and every git-dir store lookup, at the
+        # outer repository. Measured: 129 tests failed and an `aelfrice/`
+        # store appeared in the outer `.git`. A test that needs one of these
+        # sets it with its own function-scoped `monkeypatch`.
+        for var in GIT_LOCATION_VARS:
+            mp.delenv(var, raising=False)
         for mod_name, attr, relpath in _HOME_PINS:
             target = home / relpath
             if attr in _PRECREATED_SENTINELS:
