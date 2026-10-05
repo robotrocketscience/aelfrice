@@ -253,6 +253,33 @@ def test_a_function_named_like_a_method_is_not_matched_to_it(ms: Any) -> None:
     assert result.unchanged == []
 
 
+_DUP_BASE = "def dup() -> int:\n    return 1\n\n\ndef dup() -> int:\n    return 2\n"
+#  1 def dup   2 return 1   5 def dup   6 return 2
+
+
+def test_a_duplicated_name_is_never_called_unchanged(ms: Any) -> None:
+    """Changing the second `dup` to equal the first is a real change.
+
+    Matching by name against any base body would pair it with the first
+    `dup` and report it unchanged, dropping a behavioural change.
+    """
+    after = _DUP_BASE.replace("return 2", "return 1")
+    result = ms.classify("mod.py", _DUP_BASE, after, {6})
+    assert result is not None
+    assert [(u.qualname, u.start) for u in result.in_scope] == [("dup", 5)]
+    assert result.unchanged == []
+
+
+def test_a_name_duplicated_only_on_the_head_side_stays_in_scope(ms: Any) -> None:
+    """Adding a second `dup` identical to the base one is still new code."""
+    before = "def dup() -> int:\n    return 1\n"
+    after = before + "\n\n" + before
+    result = ms.classify("mod.py", before, after, {5, 6})
+    assert result is not None
+    assert [(u.qualname, u.start) for u in result.in_scope] == [("dup", 5)]
+    assert result.unchanged == []
+
+
 def test_a_comment_edit_inside_a_function_is_unchanged(ms: Any) -> None:
     after = _BASE.replace("    total = a + b\n", "    total = a + b  # Sum.\n")
     result = _scope(ms, after, {19})

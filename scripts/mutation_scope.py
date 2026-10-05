@@ -34,7 +34,8 @@ is in scope when its line span (decorators included) intersects the PR's
 diff hunks **and** its docstring-stripped AST differs from the same-named
 unit on the base side. The second condition is pass 1 applied per function:
 a function that only moved, or only had a comment edited, carries no new
-mutant.
+mutant. A name defined more than once in the file, on either side, cannot
+be paired with its base version, so it is never called unchanged.
 
 Every out-of-scope unit then gets mutmut's documented
 `# pragma: no mutate block` on its header line, in the CI checkout only. A
@@ -87,6 +88,7 @@ import re
 import subprocess
 import sys
 import tokenize
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -301,26 +303,36 @@ def classify(
         head_tree = ast.parse(after)
     except SyntaxError:
         return None
-    base_dumps: dict[str, set[str]] = {}
+    base_units: list[Unit] = []
     if before is not None:
         try:
-            base_tree = ast.parse(before)
+            base_units = mutation_units(ast.parse(before))
         except SyntaxError:
-            base_tree = None
-        if base_tree is not None:
-            for unit in mutation_units(base_tree):
-                base_dumps.setdefault(unit.qualname, set()).add(
-                    _unit_dump(unit.node),
-                )
+            pass
+    head_units = mutation_units(head_tree)
+    # A name defined more than once on either side cannot be paired with
+    # its base version: with two `dup`s, a change that makes the second
+    # equal the first would match the first and read as unchanged. Such
+    # a unit is never called unchanged, so it stays in scope if touched.
+    ambiguous = {
+        name
+        for units in (base_units, head_units)
+        for name, count in Counter(u.qualname for u in units).items()
+        if count > 1
+    }
+    base_dumps = {
+        u.qualname: _unit_dump(u.node)
+        for u in base_units if u.qualname not in ambiguous
+    }
 
     result = FileScope(path)
     covered: set[int] = set()
-    for unit in mutation_units(head_tree):
+    for unit in head_units:
         span = range(unit.start, unit.end + 1)
         covered.update(span)
         if touched.isdisjoint(span):
             continue
-        if _unit_dump(unit.node) in base_dumps.get(unit.qualname, set()):
+        if base_dumps.get(unit.qualname) == _unit_dump(unit.node):
             result.unchanged.append(unit)
         else:
             result.in_scope.append(unit)
