@@ -72,10 +72,12 @@ that hold at least one in-scope function. Prints nothing when none do,
 which the caller reads as "skip the run". `--dry-run` prints the per-file
 and per-function verdicts on stderr and writes nothing. `--write-pragmas`
 annotates the out-of-scope functions in the working tree, and is meant for a
-throwaway CI checkout. `--summary PATH` writes the Markdown report.
+throwaway CI checkout: it refuses to run unless the `CI` environment
+variable is `true`, which GitHub Actions sets, or `--allow-src-rewrite` is
+passed. `--summary PATH` writes the Markdown report.
 
-Exits 0 when the scope was computed, 2 on a git failure. An empty scope is
-a result, not a failure.
+Exits 0 when the scope was computed, 2 on a git failure, and 3 when
+`--write-pragmas` is refused. An empty scope is a result, not a failure.
 """
 from __future__ import annotations
 
@@ -84,6 +86,7 @@ import ast
 import bisect
 import copy
 import io
+import os
 import re
 import subprocess
 import sys
@@ -678,10 +681,27 @@ def main(argv: list[str] | None = None) -> int:
         help="annotate out-of-scope functions in the working tree",
     )
     parser.add_argument(
+        "--allow-src-rewrite", action="store_true",
+        help="let --write-pragmas edit src/ outside CI (CI=true allows it)",
+    )
+    parser.add_argument(
         "--summary", type=Path, default=None,
         help="write the Markdown scope report to this path",
     )
     args = parser.parse_args(argv)
+
+    if (
+        args.write_pragmas
+        and os.environ.get("CI") != "true"
+        and not args.allow_src_rewrite
+    ):
+        print(
+            "mutation_scope: --write-pragmas edits files under src/ in place "
+            "and is meant for a throwaway CI checkout. Refusing: CI is not "
+            "\"true\". Pass --allow-src-rewrite to run it here anyway.",
+            file=sys.stderr,
+        )
+        return 3
 
     try:
         report = function_scope(args.base, args.head, write=args.write_pragmas)

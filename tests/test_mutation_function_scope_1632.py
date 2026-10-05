@@ -651,8 +651,10 @@ def test_dry_run_writes_nothing_and_prints_the_scope(
 @pytest.mark.timeout(60)  # spawns git (#1307)
 def test_the_summary_is_written_even_when_nothing_is_in_scope(
     ms: Any, pr_repo: tuple[str, str], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base, _ = pr_repo
+    monkeypatch.setenv("CI", "true")
     summary = Path("scope.md")
     args = ["--base", base, "--head", base, "--write-pragmas", "--summary", str(summary)]
     assert ms.main(args) == 0
@@ -708,6 +710,60 @@ def test_a_rename_with_one_changed_function_scopes_that_function(
     assert _names(scope_.unchanged) == ["first"]
     # The untouched decorated function is not reported as changed.
     assert "`cached`" not in ms.render_summary(report)
+
+
+_PRAGMA_HEADER = "def first(a: int) -> int:  # pragma: no mutate block\n"
+
+
+@pytest.mark.parametrize("ci", [None, "false", "1", ""])
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_write_is_refused_outside_ci(
+    ms: Any, pr_repo: tuple[str, str], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, ci: str | None,
+) -> None:
+    """Rewriting src/ in place is for a throwaway checkout only."""
+    if ci is None:
+        monkeypatch.delenv("CI", raising=False)
+    else:
+        monkeypatch.setenv("CI", ci)
+    base, head = pr_repo
+    before = Path("src/aelfrice/mod.py").read_text(encoding="utf-8")
+    assert ms.main(["--base", base, "--head", head, "--write-pragmas"]) == 3
+    captured = capsys.readouterr()
+    assert "--allow-src-rewrite" in captured.err
+    assert captured.out == ""
+    assert Path("src/aelfrice/mod.py").read_text(encoding="utf-8") == before
+
+
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_write_runs_when_ci_is_true(
+    ms: Any, pr_repo: tuple[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CI", "true")
+    base, head = pr_repo
+    assert ms.main(["--base", base, "--head", head, "--write-pragmas"]) == 0
+    assert _PRAGMA_HEADER in Path("src/aelfrice/mod.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.timeout(60)  # spawns git (#1307)
+def test_write_runs_outside_ci_with_the_override(
+    ms: Any, pr_repo: tuple[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    base, head = pr_repo
+    args = ["--base", base, "--head", head, "--write-pragmas", "--allow-src-rewrite"]
+    assert ms.main(args) == 0
+    assert _PRAGMA_HEADER in Path("src/aelfrice/mod.py").read_text(encoding="utf-8")
+
+
+def test_the_workflow_runs_the_writer_where_ci_is_set() -> None:
+    """The workflow relies on Actions setting CI=true, not on the override."""
+    workflow = (
+        Path(__file__).resolve().parent.parent
+        / ".github" / "workflows" / "mutation.yml"
+    ).read_text(encoding="utf-8")
+    assert "--allow-src-rewrite" not in workflow
+    assert "runs-on: ubuntu" in workflow
 
 
 def test_dry_run_and_write_cannot_be_combined(ms: Any) -> None:

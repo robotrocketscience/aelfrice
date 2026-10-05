@@ -205,7 +205,8 @@ jobs:
           # throwaway checkout only, so mutmut never generates their
           # mutants. Filtering mutant names after generation would not help:
           # generation is the cost. The summary lists every function in
-          # scope and everything left out, with the reason.
+          # scope and everything left out, with the reason. The script
+          # refuses `--write-pragmas` unless CI=true, which Actions sets.
           changed=$(uv run python scripts/mutation_scope.py \
               --base "${BASE_SHA}" --head "${HEAD_SHA}" \
               --write-pragmas --summary mutation-scope.md)
