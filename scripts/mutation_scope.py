@@ -302,6 +302,9 @@ class FileScope:
     unchanged: list[Unit] = field(default_factory=lambda: [])
     #: Changed code-bearing lines that lie in no unit.
     outside: list[int] = field(default_factory=lambda: [])
+    #: No base version was compared, so every in-scope unit is new code
+    #: rather than a change to existing code.
+    added: bool = False
 
     @property
     def mutated(self) -> list[Unit]:
@@ -349,7 +352,7 @@ def classify(
         for u in base_units if u.qualname not in ambiguous
     }
 
-    result = FileScope(path)
+    result = FileScope(path, added=before is None)
     covered: set[int] = set()
     for unit in head_units:
         span = range(unit.start, unit.end + 1)
@@ -628,10 +631,14 @@ def render_summary(report: Report) -> str:
     for path, reason in report.skipped_files:
         notes.append(f"- `{path}`: not mutated: {reason}.")
     for scope_ in report.scopes:
+        # Only a unit whose own span the diff touched is in `in_scope`,
+        # so an untouched decorated function is never listed here. In an
+        # added file every unit is new, and is called added, not changed.
+        verb = "added" if scope_.added else "changed"
         for u in scope_.in_scope:
             if u.skip_reason is not None:
                 notes.append(
-                    f"- `{scope_.path}` `{u.qualname}`: changed, but not "
+                    f"- `{scope_.path}` `{u.qualname}`: {verb}, but not "
                     f"mutated: {u.skip_reason}.",
                 )
         for u in scope_.unchanged:

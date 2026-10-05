@@ -469,6 +469,26 @@ def test_the_summary_names_every_scope_decision_and_its_reason(ms: Any) -> None:
     assert "| `src/aelfrice/mod.py` | `first`" not in text
 
 
+def test_an_untouched_decorated_function_is_not_in_the_summary(ms: Any) -> None:
+    """Only a function whose own span the diff touched is reported."""
+    after = _BASE.replace("total = a + b", "total = a * b")
+    verdict = ms.classify("src/aelfrice/mod.py", _BASE, after, {19})
+    text = ms.render_summary(ms.Report(scopes=[verdict]))
+    assert "`second`" in text
+    assert "`cached`" not in text
+
+
+def test_a_decorated_function_in_an_added_file_is_called_added(ms: Any) -> None:
+    """In a new file nothing was changed; every function is new."""
+    verdict = ms.classify("src/aelfrice/mod.py", None, _BASE, set(range(1, 40)))
+    text = ms.render_summary(ms.Report(scopes=[verdict]))
+    assert (
+        "`src/aelfrice/mod.py` `cached`: added, but not mutated: mutmut "
+        "does not mutate decorated functions." in text
+    )
+    assert "changed, but" not in text
+
+
 def test_an_empty_scope_says_so(ms: Any) -> None:
     assert "No changed function is mutated." in ms.render_summary(ms.Report())
 
