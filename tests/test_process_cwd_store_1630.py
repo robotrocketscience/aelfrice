@@ -9,10 +9,11 @@ session-state files that `/aelf:scope-out` keys on.
 
 The decision recorded in #1630 is to keep the process cwd. The host
 runs a hook in the session's current directory, and the payload `cwd`
-follows it, so the two agree; a measured 2,026 matched turns showed no
-genuine divergence. Moving some consumers to the payload cwd and not
-others splits one turn across two stores, and a typed
-`/aelf:scope-out` then fails because its session state stays behind.
+follows it, so the two agree. The measurement behind that decision is
+https://github.com/robotrocketscience/aelfrice/issues/1630#issuecomment-5974623437.
+Moving some consumers to the payload cwd and not others splits one
+turn across two stores, and a typed `/aelf:scope-out` then fails
+because its session state stays behind.
 
 These tests pin that decision. Each arm sets the process cwd to repo A
 and the payload `cwd` to a different repo B, runs the real hook entry
