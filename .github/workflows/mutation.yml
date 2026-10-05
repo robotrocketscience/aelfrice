@@ -203,7 +203,9 @@ jobs:
           # no report. `mutation_scope.py` drops files whose diff cannot
           # carry a mutant, by comparing ASTs with docstrings stripped.
           # It lives in a script because the workflow cannot be tested in
-          # CI (#1436) and `tests/test_mutation_scope.py` tests it.
+          # CI (#1436): `tests/test_mutation_scope.py` tests the file pass
+          # and `tests/test_mutation_function_scope_1632.py` the function
+          # pass.
           # #1632: a real change to one function of `cli.py` still put all
           # of it in scope, and generating its mutants alone outlasted the
           # job. `--write-pragmas` marks every function this PR did not

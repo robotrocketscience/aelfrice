@@ -59,7 +59,9 @@ the cost of skipping it wrongly is an unmeasured mutant.
 
 This lives in a script rather than in the workflow's inline Python because
 the workflow cannot be tested in CI — PyYAML is not importable there
-(#1436) — while a script can be, and `tests/test_mutation_scope.py` does.
+(#1436) — while a script can be. `tests/test_mutation_scope.py` tests the
+file pass, and `tests/test_mutation_function_scope_1632.py` tests the
+function pass.
 
 ## Usage
 
