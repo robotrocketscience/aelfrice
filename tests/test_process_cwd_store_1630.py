@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -47,11 +48,26 @@ SCOPED_STATEMENT = "widgetprompt gammaword marker statement."
 RETRIEVAL_PROMPT = "what is the widgetprompt marker statement"
 
 
+# Each of these redirects `git rev-parse` away from the cwd it runs in.
+# An exported `GIT_DIR` would resolve both repos to the outer repository
+# and write a store into it, so the fixture clears all of them.
+_GIT_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+
 def _git_repo(path: Path) -> Path:
     path.mkdir()
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_LOCATION_ENV}
     subprocess.run(
         ["git", "init", "-q", str(path)], check=True, timeout=30,
-        capture_output=True,
+        capture_output=True, env=env,
     )
     return path.resolve()
 
@@ -116,10 +132,14 @@ def repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     `AELFRICE_DB` is cleared so the git-dir branch of resolution is
     live; conftest restores the suite-wide pin after the test. The
     home-dir store points into `tmp_path` too, so a regression that
-    falls through to the non-git branch cannot reach a real store.
+    falls through to the non-git branch cannot reach a real store. The
+    git location variables are cleared first, so an exported `GIT_DIR`
+    cannot point both repos at an outer repository.
     """
     from aelfrice import db_paths
 
+    for name in _GIT_LOCATION_ENV:
+        monkeypatch.delenv(name, raising=False)
     a = _git_repo(tmp_path / "repo_a")
     b = _git_repo(tmp_path / "repo_b")
     monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", tmp_path / "home_store")
