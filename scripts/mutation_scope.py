@@ -109,6 +109,18 @@ MUTATED_DECORATORS: Final[frozenset[str]] = frozenset(
     {"staticmethod", "classmethod"},
 )
 
+#: Function names mutmut never mutates, whatever their decorators or
+#: position. mutmut 3.8.0, `mutmut/mutation/file_mutation.py:37`
+#: (`NEVER_MUTATE_FUNCTION_NAMES`), checked by
+#: `MutationVisitor._skip_node_and_children` at line 307.
+MUTMUT_SKIPPED_NAMES: Final[frozenset[str]] = frozenset(
+    {"__getattribute__", "__setattr__", "__new__"},
+)
+
+#: The summary's reason for each kind of unit mutmut skips.
+SKIP_NAMED: Final[str] = "mutmut skips this method"
+SKIP_DECORATED: Final[str] = "mutmut does not mutate decorated functions"
+
 #: `mutmut`'s separator between class and method in a mangled name.
 CLASS_SEPARATOR: Final[str] = "ǁ"
 
@@ -187,8 +199,14 @@ class Unit:
     qualname: str
     start: int
     end: int
-    skipped_by_mutmut: bool
+    #: Why mutmut never mutates this unit, or None when it does.
+    skip_reason: str | None
     node: _FunctionNode = field(compare=False, repr=False)
+
+    @property
+    def skipped_by_mutmut(self) -> bool:
+        """True when mutmut generates no mutant for this unit at all."""
+        return self.skip_reason is not None
 
     @property
     def key(self) -> str:
@@ -203,23 +221,29 @@ class Unit:
         return f"x_{name}"
 
 
-def _skipped_by_mutmut(node: _FunctionNode) -> bool:
-    """mutmut never mutates a decorated function, with one exception."""
+def _skip_reason(node: _FunctionNode) -> str | None:
+    """Why mutmut never mutates `node`, or None when it does.
+
+    mutmut skips a function by name before it looks at decorators, and
+    never mutates a decorated function, with one exception.
+    """
+    if node.name in MUTMUT_SKIPPED_NAMES:
+        return SKIP_NAMED
     decorators = node.decorator_list
     if not decorators:
-        return False
+        return None
     if len(decorators) == 1:
         only = decorators[0]
         if isinstance(only, ast.Name) and only.id in MUTATED_DECORATORS:
-            return False
-    return True
+            return None
+    return SKIP_DECORATED
 
 
 def _unit(node: _FunctionNode, qualname: str) -> Unit:
     first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
     end = node.end_lineno
     assert end is not None, "ast.parse always sets end_lineno"
-    return Unit(qualname, first, end, _skipped_by_mutmut(node), node)
+    return Unit(qualname, first, end, _skip_reason(node), node)
 
 
 def mutation_units(tree: ast.Module) -> list[Unit]:
@@ -605,10 +629,10 @@ def render_summary(report: Report) -> str:
         notes.append(f"- `{path}`: not mutated: {reason}.")
     for scope_ in report.scopes:
         for u in scope_.in_scope:
-            if u.skipped_by_mutmut:
+            if u.skip_reason is not None:
                 notes.append(
-                    f"- `{scope_.path}` `{u.qualname}`: changed, but mutmut "
-                    "does not mutate decorated functions.",
+                    f"- `{scope_.path}` `{u.qualname}`: changed, but not "
+                    f"mutated: {u.skip_reason}.",
                 )
         for u in scope_.unchanged:
             notes.append(

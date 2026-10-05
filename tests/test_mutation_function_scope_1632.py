@@ -205,6 +205,48 @@ def test_a_lone_staticmethod_is_still_mutated(ms: Any) -> None:
     assert _names(result.mutated) == ["Box.shrink"]
 
 
+_DUNDER = '''\
+class Box:
+    def __new__(cls) -> "Box":
+        return super().__new__(cls)
+
+    def __setattr__(self, name: str, value: int) -> None:
+        super().__setattr__(name, value + 1)
+
+    def __getattribute__(self, name: str) -> int:
+        return 1
+
+    def size(self) -> int:
+        return 2
+'''
+#  2 __new__   3 return   5 __setattr__   6 super   8 __getattribute__
+#  9 return   11 size   12 return
+
+
+def test_a_method_mutmut_skips_by_name_is_reported_not_mutated(ms: Any) -> None:
+    """mutmut 3.8.0 never mutates these three, so no mutant name exists."""
+    after = (
+        _DUNDER.replace("value + 1", "value + 2")
+        .replace("return super().__new__(cls)", "return object.__new__(cls)")
+        .replace("        return 1\n", "        return 3\n")
+        .replace("return 2", "return 4")
+    )
+    result = ms.classify("src/aelfrice/m.py", _DUNDER, after, {3, 6, 9, 12})
+    assert result is not None
+    assert _names(result.in_scope) == [
+        "Box.__new__", "Box.__setattr__", "Box.__getattribute__", "Box.size",
+    ]
+    assert _names(result.mutated) == ["Box.size"]
+    text = ms.render_summary(ms.Report(scopes=[result]))
+    for name in ("__new__", "__setattr__", "__getattribute__"):
+        assert (
+            f"`Box.{name}`: changed, but not mutated: mutmut skips this "
+            "method." in text
+        )
+        assert f"xǁBoxǁ{name}" not in text
+    assert "`xǁBoxǁsize__mutmut_*`" in text
+
+
 def test_a_module_level_edit_is_outside_every_unit(ms: Any) -> None:
     after = _BASE.replace("LIMIT = 3", "LIMIT = 4")
     result = _scope(ms, after, {4})
@@ -416,7 +458,10 @@ def test_the_summary_names_every_scope_decision_and_its_reason(ms: Any) -> None:
     text = ms.render_summary(report)
     assert "| `src/aelfrice/mod.py` | `second` | `x_second__mutmut_*` |" in text
     assert "`src/aelfrice/mod.py` `first`: not mutated: only moved" in text
-    assert "`src/aelfrice/mod.py` `cached`: changed, but mutmut" in text
+    assert (
+        "`src/aelfrice/mod.py` `cached`: changed, but not mutated: mutmut "
+        "does not mutate decorated functions." in text
+    )
     assert "`src/aelfrice/mod.py` lines 4: not mutated" in text
     assert "`src/aelfrice/doc.py`: not mutated: comments only." in text
     assert "`src/aelfrice/bad.py`: mutated whole: head version does not parse." in text
@@ -454,6 +499,24 @@ def test_mutmut_generates_mutants_only_for_kept_units(
     mutated = file_mutation.mutate_file_contents("src/m.py", out)
     keys = {name.partition("__mutmut_")[0] for name in mutated.mutant_names}
     assert keys == {"x_kept", "xǁBoxǁwait"}
+    configuration.reset_config()
+
+
+def test_mutmut_generates_no_mutant_for_the_named_methods(
+    ms: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`MUTMUT_SKIPPED_NAMES` matches what the generator really skips."""
+    file_mutation = pytest.importorskip("mutmut.mutation.file_mutation")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.mutmut]\nsource_paths = ["src"]\n', encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    configuration = pytest.importorskip("mutmut.configuration")
+    configuration.reset_config()
+    mutated = file_mutation.mutate_file_contents("src/m.py", _DUNDER)
+    keys = {name.partition("__mutmut_")[0] for name in mutated.mutant_names}
+    assert keys == {"xǁBoxǁsize"}
+    assert ms.MUTMUT_SKIPPED_NAMES == file_mutation.NEVER_MUTATE_FUNCTION_NAMES
     configuration.reset_config()
 
 
