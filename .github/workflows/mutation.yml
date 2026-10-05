@@ -178,7 +178,13 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
       - name: Install mutmut
-        run: uv pip install 'mutmut>=3,<4'
+        # Pinned exactly, not to the major. `mutation_scope.py` relies on
+        # how this version reads `# pragma: no mutate block` and which
+        # functions it skips, verified only on 3.8.0; the contract tests in
+        # tests/test_mutation_function_scope_1632.py skip where mutmut is
+        # not installed, so a silent bump would go unchecked. Bumping this
+        # requires re-running those tests locally with the new version.
+        run: uv pip install 'mutmut==3.8.0'
       - name: Scope mutmut to the PR's changed files
         id: scope
         env:

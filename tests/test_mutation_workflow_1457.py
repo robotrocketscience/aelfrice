@@ -193,7 +193,11 @@ def test_mutmut_is_pinned_to_the_major_this_workflow_targets() -> None:
     ]
     assert len(installs) == 2, "both jobs install mutmut; both must be pinned"
     for line in installs:
-        assert "mutmut>=3,<4" in line, f"unpinned mutmut install: {line}"
+        # The per-PR job pins an exact 3.x release (#1632), which is
+        # stricter than the major pin and satisfies it.
+        assert "mutmut>=3,<4" in line or "mutmut==3." in line, (
+            f"unpinned mutmut install: {line}"
+        )
 
 
 def _command_lines() -> list[str]:

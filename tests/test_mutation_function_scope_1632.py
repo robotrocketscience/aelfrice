@@ -756,6 +756,27 @@ def test_write_runs_outside_ci_with_the_override(
     assert _PRAGMA_HEADER in Path("src/aelfrice/mod.py").read_text(encoding="utf-8")
 
 
+def test_the_per_pr_job_pins_mutmut_exactly() -> None:
+    """The pragma contract is verified on one mutmut version only.
+
+    The contract tests above skip in CI, where mutmut is not in the test
+    environment, so nothing would notice a new mutmut reading the pragma
+    differently. Bumping this pin requires re-running those tests locally
+    against the new version first.
+    """
+    workflow = (
+        Path(__file__).resolve().parent.parent
+        / ".github" / "workflows" / "mutation.yml"
+    ).read_text(encoding="utf-8")
+    job = workflow[workflow.index("\n  diff:\n"):]
+    installs = [
+        line.strip() for line in job.splitlines()
+        if "pip install" in line and "mutmut" in line
+        and not line.lstrip().startswith("#")
+    ]
+    assert installs == ["run: uv pip install 'mutmut==3.8.0'"]
+
+
 def test_the_workflow_runs_the_writer_where_ci_is_set() -> None:
     """The workflow relies on Actions setting CI=true, not on the override."""
     workflow = (
