@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from aelfrice.hook import _escape_attr, _escape_for_hook_block
+from aelfrice.hook import _escape_for_hook_block
+from aelfrice.hook_payload import escape_attr as _escape_attr
 
 TRUST_TAGS = [
     "locked", "core", "aelfrice-memory", "aelfrice-baseline",

@@ -62,11 +62,11 @@ from aelfrice.config_discovery import (
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT, lock_overflow_line
 # #1631: the escapers moved to the leaf `hook_payload`, so the search hook
 # and `provenance_render` can share them without importing this module.
-# Bound here under their old names for the call sites below and for
-# existing `from aelfrice.hook import _escape_attr` callers.
-from aelfrice.hook_payload import escape_attr, escape_for_hook_block
+# `_escape_for_hook_block` is bound under its old name for the call sites
+# below. `_escape_attr` has no caller here, so it is not re-exported:
+# import `escape_attr` from `aelfrice.hook_payload`.
+from aelfrice.hook_payload import escape_for_hook_block
 
-_escape_attr = escape_attr
 _escape_for_hook_block = escape_for_hook_block
 
 # #1631: the memory-block switch and the UserPromptSubmit telemetry reader
