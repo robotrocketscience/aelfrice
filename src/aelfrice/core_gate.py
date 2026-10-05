@@ -25,6 +25,7 @@ selection, the label cache, and the session-end batch is separate work.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from typing import Final
 
@@ -81,6 +82,11 @@ def prompt_digest() -> str:
     It hashes the prompt `build_prompt` assembles for a fixed sample batch,
     so the rubric, the header, the footer, their order, and the payload
     format all count, plus the label set, `MAX_BATCH`, and the model tier.
+    A sample covers only the inputs it holds, so it also hashes the source
+    of `build_prompt` and `parse_labels`: any change to how snippets reach
+    the model, or to which replies become labels, is a new version. An
+    edit that changes only formatting in those functions also counts, which
+    discards cached labels needlessly but never reuses them wrongly.
     """
     labels = ",".join(
         f"{name}={value}" for name, value in (
@@ -91,6 +97,7 @@ def prompt_digest() -> str:
     blob = "\0".join((
         build_prompt(_DIGEST_SAMPLE), labels, str(MAX_BATCH),
         CLASSIFIER_MODEL_TIER,
+        inspect.getsource(build_prompt), inspect.getsource(parse_labels),
     ))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
