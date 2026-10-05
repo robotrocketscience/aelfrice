@@ -603,10 +603,10 @@ def test_ups_exposure_writes_omit_the_beliefs_the_ceiling_dropped(
         touched = store.read_touch_set_in_window(
             session_id, current_fire_idx=0, window_k=1
         )
-        # Every row of this session: the sweeper has not run, so all of
-        # them are still `referenced IS NULL`.
         injected = [
-            row[2] for row in store.list_pending_injection_events(session_id)
+            str(r[0]) for r in store._conn.execute(  # noqa: SLF001
+                "SELECT belief_id FROM injection_events WHERE session_id = ? "
+                "ORDER BY id", (session_id,)).fetchall()
         ]
     finally:
         store.close()
@@ -753,7 +753,9 @@ def test_the_exploration_ledger_is_pre_ceiling_and_the_exposure_tables_are_not(
             )
         ]
         injected = {
-            row[2] for row in store.list_pending_injection_events(session_id)
+            str(r[0]) for r in store._conn.execute(  # noqa: SLF001
+                "SELECT belief_id FROM injection_events WHERE session_id = ?",
+                (session_id,)).fetchall()
         }
     finally:
         store.close()

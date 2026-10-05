@@ -289,33 +289,26 @@ def test_no_config_and_no_env_is_enabled(tmp_path: Path) -> None:
 # Suppression is narrow: other lanes keep firing
 # ---------------------------------------------------------------------------
 
-def test_suppression_keeps_correction_and_sweeper_lanes_firing(
+def test_suppression_keeps_the_correction_lane_firing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The switch silences stdout, not the rest of the turn.
 
-    `apply_sentiment_feedback` is the correction lane; `_sweep_relevance_signal`
-    reads the prior turn's transcript to push relevance evidence. Both run
-    before retrieval and must be unaffected by the off-switch.
+    `apply_sentiment_feedback` is the correction lane. It runs before
+    retrieval and must be unaffected by the off-switch.
     """
     calls: list[str] = []
     real_sentiment = hook_mod.apply_sentiment_feedback
-    real_sweep = hook_mod._sweep_relevance_signal
 
     def spy_sentiment(*a: object, **kw: object) -> int:
         calls.append("sentiment")
         return real_sentiment(*a, **kw)  # type: ignore[arg-type]
 
-    def spy_sweep(*a: object, **kw: object) -> object:
-        calls.append("sweep")
-        return real_sweep(*a, **kw)  # type: ignore[arg-type]
-
     monkeypatch.setattr(hook_mod, "apply_sentiment_feedback", spy_sentiment)
-    monkeypatch.setattr(hook_mod, "_sweep_relevance_signal", spy_sweep)
     monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
     out = _run(tmp_path, monkeypatch)
     assert out == ""
-    assert calls == ["sentiment", "sweep"]
+    assert calls == ["sentiment"]
 
 
 def test_suppression_leaves_rebuild_untouched(

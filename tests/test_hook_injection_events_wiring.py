@@ -210,9 +210,12 @@ def test_ups_fire_records_one_event_per_hit(
     assert by_belief["HIT01"]["referenced"] is None
 
 
-def test_ups_fire_threads_active_consumer_when_env_on(
+def test_ups_fire_records_no_consumer_even_with_a_flag_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """#1655 removed the relevance sweeper, the only reader of
+    `active_consumers`, so the hook records none even when a meta-belief
+    flag is on."""
     db = tmp_path / "m.db"
     _seed(db, [_mk("HIT02", "the document references the cellar storage capacity")])
     monkeypatch.setenv("AELFRICE_DB", str(db))
@@ -221,10 +224,8 @@ def test_ups_fire_threads_active_consumer_when_env_on(
     _fire("show the document about cellar storage capacity")
     events = _read_events(db)
     assert events
-    # Each event's active_consumers must contain the half-life key.
     for e in events:
-        decoded = json.loads(e["active_consumers"])
-        assert META_HALF_LIFE_KEY in decoded
+        assert json.loads(e["active_consumers"]) == []
 
 
 def test_ups_fire_shares_turn_id_across_batch(
