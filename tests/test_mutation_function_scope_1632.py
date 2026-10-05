@@ -474,6 +474,7 @@ def pr_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
     return base, head
 
 
+@pytest.mark.timeout(60)  # spawns git (#1307)
 def test_function_scope_keeps_only_files_with_a_changed_function(
     ms: Any, pr_repo: tuple[str, str],
 ) -> None:
@@ -490,6 +491,7 @@ def test_function_scope_keeps_only_files_with_a_changed_function(
     assert consts.outside == [1]
 
 
+@pytest.mark.timeout(60)  # spawns git (#1307)
 def test_a_change_merged_into_the_base_is_not_this_prs_scope(
     ms: Any, pr_repo: tuple[str, str],
 ) -> None:
@@ -506,6 +508,7 @@ def test_a_change_merged_into_the_base_is_not_this_prs_scope(
     assert _names(scope_.in_scope) == ["second"]
 
 
+@pytest.mark.timeout(60)  # spawns git (#1307)
 def test_write_annotates_every_other_function_in_the_working_tree(
     ms: Any, pr_repo: tuple[str, str],
 ) -> None:
@@ -522,6 +525,7 @@ def test_write_annotates_every_other_function_in_the_working_tree(
     assert "pragma" not in consts
 
 
+@pytest.mark.timeout(60)  # spawns git (#1307)
 def test_dry_run_writes_nothing_and_prints_the_scope(
     ms: Any, pr_repo: tuple[str, str], capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -534,6 +538,7 @@ def test_dry_run_writes_nothing_and_prints_the_scope(
     assert Path("src/aelfrice/mod.py").read_text(encoding="utf-8") == before
 
 
+@pytest.mark.timeout(60)  # spawns git (#1307)
 def test_the_summary_is_written_even_when_nothing_is_in_scope(
     ms: Any, pr_repo: tuple[str, str], capsys: pytest.CaptureFixture[str],
 ) -> None:
