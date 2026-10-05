@@ -3332,7 +3332,9 @@ def user_prompt_submit(
         # files above. The host runs this hook in the session's current
         # directory, so the two cwds agree. Moving only some of these
         # consumers splits one turn across two stores and breaks a typed
-        # `/aelf:scope-out`. Pinned by tests/test_process_cwd_store_1630.py.
+        # `/aelf:scope-out`. Pinned by tests/test_process_cwd_store_1630.py
+        # and, for every other db_path() consumer, by
+        # tests/test_process_cwd_store_1630_structure.py.
         try:
             p = db_path()
             if str(p) != ":memory:":

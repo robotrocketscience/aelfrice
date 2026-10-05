@@ -18,7 +18,9 @@ because its session state stays behind.
 These tests pin that decision. Each arm sets the process cwd to repo A
 and the payload `cwd` to a different repo B, runs the real hook entry
 point, and reads both repositories back. Every arm fails if its one
-consumer moves to the payload cwd.
+consumer moves to the payload cwd. Consumers that a default-config turn
+does not reach are held structurally instead, by
+`tests/test_process_cwd_store_1630_structure.py`.
 """
 
 from __future__ import annotations
