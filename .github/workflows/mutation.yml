@@ -207,8 +207,8 @@ jobs:
           # and `tests/test_mutation_function_scope_1632.py` the function
           # pass.
           # #1632: a real change to one function of `cli.py` still put all
-          # of it in scope, and generating its mutants alone outlasted the
-          # job. `--write-pragmas` marks every function this PR did not
+          # of it in scope, and the job's log stayed at "Generating mutants"
+          # until its 60-minute limit. `--write-pragmas` marks every function this PR did not
           # change with mutmut's `# pragma: no mutate block`, in this
           # throwaway checkout only, so mutmut never generates their
           # mutants. Filtering mutant names after generation would not help:
