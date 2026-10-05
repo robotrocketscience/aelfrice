@@ -22,7 +22,8 @@ so the diff between them introduces no mutant.
 A real change to one function of `cli.py` still put the whole file in scope,
 and the cost is in mutant *generation*, not only in running them: mutmut
 3.8.0 writes every mutant of a function as a full copy of that function, so
-generating `cli.py` alone yields 16,102 mutants in a 16-million-line file.
+generating a whole large file such as `cli.py` takes minutes and produces
+tens of thousands of mutants. With one function in scope it takes seconds.
 Filtering mutant names after generation (`mutmut run <glob>`) leaves that
 cost in place, and the mutants it filters out are reported as `not checked`.
 
