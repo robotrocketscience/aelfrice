@@ -11,13 +11,13 @@ used, word for word. Only the examples differ: the originals quoted
 private sessions, so these are neutral stand-ins of the same shape.
 
 `CLASSIFIER_VERSION` names one classifier: this rubric, this prompt as
-`build_prompt` assembles it, the batch limit, and the model tier. Changing
-any of them needs a new version, so a label made under one classifier
-never applies under another. `prompt_digest()` hashes all of them, and
-`tests/test_core_gate_rubric_1638.py` pins one digest per version: a text
-change fails that test until someone adds a new version with its digest.
-The model tier is a label, not a model identity; if the host's smallest
-model changes, bump the version by hand.
+`build_prompt` assembles it, the label set, the batch limit, and the model
+tier. It is derived from `prompt_digest()`, which hashes all of them, so
+any change to them is a new version and a label made under one classifier
+never applies under another. Nothing has to be bumped by hand.
+`tests/test_core_gate_rubric_1638.py` pins the current digest so a change
+is deliberate. The model tier is a label, not a model identity; if the
+host's smallest model changes, change `CLASSIFIER_MODEL_TIER` too.
 
 This module holds no state and does no I/O. Wiring it into core
 selection, the label cache, and the session-end batch is separate work.
@@ -38,9 +38,6 @@ LABELS: Final[frozenset[str]] = frozenset(
 #: The model tier the host is asked to run: its smallest, cheapest model,
 #: as for the onboard classifier. A label, not a model identity.
 CLASSIFIER_MODEL_TIER: Final[str] = "smallest"
-
-#: Bump on any change to the rubric, the prompt, MAX_BATCH, or the model.
-CLASSIFIER_VERSION: Final[str] = "core-gate-1"
 
 #: Largest batch the host should send in one prompt (llm_classifier.md).
 MAX_BATCH: Final[int] = 50
@@ -73,15 +70,27 @@ Reply with only a JSON array of {"index": int, "label": "A" | "B" | "C"},
 one entry per snippet, in any order, with no other text.
 """
 
+#: A sample batch for the digest. The non-ASCII and newline text makes the
+#: payload's escaping part of what the digest sees.
+_DIGEST_SAMPLE: Final[list[tuple[int, str]]] = [(0, "café\nend")]
+
+
 def prompt_digest() -> str:
     """sha256 of everything a version names.
 
-    It hashes the prompt `build_prompt` assembles for a fixed one-snippet
-    batch, so the rubric, the header, the footer, their order, and the
-    payload format all count, plus `MAX_BATCH` and the model tier.
+    It hashes the prompt `build_prompt` assembles for a fixed sample batch,
+    so the rubric, the header, the footer, their order, and the payload
+    format all count, plus the label set, `MAX_BATCH`, and the model tier.
     """
+    labels = ",".join(
+        f"{name}={value}" for name, value in (
+            ("A", LABEL_SELF_CONTAINED), ("B", LABEL_NEEDS_CONTEXT),
+            ("C", LABEL_NOT_A_CLAIM), ("set", "".join(sorted(LABELS))),
+        )
+    )
     blob = "\0".join((
-        build_prompt([(0, "")]), str(MAX_BATCH), CLASSIFIER_MODEL_TIER,
+        build_prompt(_DIGEST_SAMPLE), labels, str(MAX_BATCH),
+        CLASSIFIER_MODEL_TIER,
     ))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -133,3 +142,8 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
         extra = sorted(set(labels) - expected)
         raise ValueError(f"labels do not match the batch: missing {missing}, extra {extra}")
     return labels
+
+
+#: The cache key's classifier half. Derived from the digest, so any change
+#: to what the classifier is makes a new version without a manual bump.
+CLASSIFIER_VERSION: Final[str] = f"core-gate-{prompt_digest()[:16]}"
