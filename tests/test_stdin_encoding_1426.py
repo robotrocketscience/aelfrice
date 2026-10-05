@@ -735,6 +735,9 @@ def test_the_cli_has_no_unexpected_locale_stdin_read() -> None:
     } - CLI_EXEMPT_FUNCTIONS - {
         "_cmd_onboard_accept_classifications",
         "_read_password",
+        # #1638: the classifier reply. Reached only through `main()`,
+        # whose entry-point pin covers it like the onboard pipe above.
+        "_cmd_core_gate",
     }
 
     assert not unexpected, (
