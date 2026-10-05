@@ -19,8 +19,8 @@ name: mutation
 #
 # The per-PR job is advisory by ratified design (2026-08-09): a surviving mutant
 # is reported, never blocking, until the equivalent-mutant rate has data behind
-# it. It is scoped to the PR's changed files, because mutmut across the whole
-# tree is a multi-hour job and nothing that slow belongs on a PR.
+# it. It is scoped to the functions the PR changed, because mutmut across the
+# whole tree is a multi-hour job and nothing that slow belongs on a PR.
 #
 # The asymmetry is deliberate. "Advisory" is what makes a step that cannot fail
 # acceptable here, and it is only acceptable because the weekly job does fail on
@@ -133,7 +133,7 @@ jobs:
           path: mutation-report.txt
           retention-days: 30
 
-  # --- per PR, changed files only, advisory ------------------------------
+  # --- per PR, changed functions only, advisory --------------------------
   # `continue-on-error` is load-bearing, not decoration. merge-train gates on
   # every non-advisory check-run on the head SHA, so a job that reports failure
   # blocks the merge — which is exactly what "advisory" must not do. This keeps
@@ -198,10 +198,21 @@ jobs:
           # carry a mutant, by comparing ASTs with docstrings stripped.
           # It lives in a script because the workflow cannot be tested in
           # CI (#1436) and `tests/test_mutation_scope.py` tests it.
+          # #1632: a real change to one function of `cli.py` still put all
+          # of it in scope, and generating its mutants alone outlasted the
+          # job. `--write-pragmas` marks every function this PR did not
+          # change with mutmut's `# pragma: no mutate block`, in this
+          # throwaway checkout only, so mutmut never generates their
+          # mutants. Filtering mutant names after generation would not help:
+          # generation is the cost. The summary lists every function in
+          # scope and everything left out, with the reason.
           changed=$(uv run python scripts/mutation_scope.py \
-              --base "${BASE_SHA}" --head "${HEAD_SHA}" --dry-run)
+              --base "${BASE_SHA}" --head "${HEAD_SHA}" \
+              --write-pragmas --summary mutation-scope.md)
+          cat mutation-scope.md
+          cat mutation-scope.md >> "${GITHUB_STEP_SUMMARY}"
           if [ -z "${changed}" ]; then
-            echo "no changed source file carries a mutable change — nothing to mutate"
+            echo "no changed function carries a mutable change — nothing to mutate"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -250,7 +261,8 @@ jobs:
           {
             echo "## Mutation (advisory)"
             echo
-            echo "Scoped to this PR's changed files under \`src/aelfrice/\`."
+            echo "Scoped to the functions this PR changed under \`src/aelfrice/\`;"
+            echo "the scope table above lists them."
             echo "**This job never fails the PR.** A green tick here means the"
             echo "job ran, not that every mutant was killed — read the list."
             echo
