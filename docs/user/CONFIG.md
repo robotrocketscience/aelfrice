@@ -83,9 +83,10 @@ This document is the reference for power users. Reach for it when your project h
   A 70-day-old belief that retrieval returned yesterday under a suppressed block reads `70d cold`, not `1d cold`. With the block off permanently, the checkpoint therefore opens with exactly the beliefs that retrieval still finds, and the remove box is one keystroke away. Confirm each entry before you tick it, or leave the block on.
 
   Flipping the switch *in the middle of a session* has one more consequence. `is_session_first_prompt` runs before aelfrice resolves the switch, so a suppressed fire consumes the session's first-prompt slot. That is deliberate, because `aelf scope-out` resolves against the `session_id` key of the same file. Flipping back to on part-way through a session therefore does not restore the #578 session-start sub-block for that session; start a new session to get it.
+- `[core_gate]` (#1638) — the session-end batch of the core admission gate. `session_end` (default `true`) lets the Stop hook ask the agent to label the session's new core candidates after each transcript ingest flush. Set it to `false`, or export `AELFRICE_CORE_GATE_SESSION_END=0`, to turn the batch off. See [`[core_gate]`](#core_gate-1638) below.
 - `[user_prompt_submit_hook]` (v3.0+) — the UPS hook's keys. `prompt_shape_gate_enabled` (default `true`) controls the short-circuits for a trivial prompt and for a system envelope, which run before BM25 retrieval (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query, so a follow-up that uses a paraphrase, a pronoun, or a numeric reference still surfaces the thread that carries the answer. Two keys tune this behavior: `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
-This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, and `[hook_audit]`.
+This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`, and `[core_gate]`.
 
 `scan_repo` walks up from the scan root looking for `.aelfrice.toml`, and the first file it finds is the one that applies. Every other reader — the hooks, retrieval, the noise filter, and `aelf onboard` — uses the same walk.
 
@@ -419,6 +420,18 @@ enabled = false
 # this key. Every emitted <aelfrice-memory> block carries a one-line
 # pointer to `aelf tail` and to this switch.
 enabled = true
+
+[core_gate]
+# #1638. Default `true`. When a Stop finds core candidates that this
+# session created and that have no content label and no open batch, the
+# Stop hook records one classifier batch and continues the conversation
+# once, so the agent labels them and runs `aelf core-gate accept`. That
+# happens at most once per transcript ingest flush. Set to false to turn
+# the batch off; unlabeled beliefs then keep today's core rule. The
+# AELFRICE_CORE_GATE_SESSION_END env var overrides this key in both
+# directions (=0/false/no/off forces off, =1/true/yes/on forces on); any
+# other value falls through to this key.
+session_end = true
 
 [user_prompt_submit_hook]
 # v3.0+ (#674). Default `true`. Short-circuits BM25 retrieval on two
@@ -1283,6 +1296,20 @@ When the resolved value is off, the hook returns after three cheap checks — th
 ### `mirror_claude_memory`
 
 Boolean. Precedence (the first decisive tier applies): environment variable `AELFRICE_MIRROR_CLAUDE_MEMORY` > explicit caller kwarg > TOML `[memory] mirror_claude_memory` > the #1089 per-project consent sentinel > default `false`. aelfrice normalizes the truthy and falsy values of that environment variable, and a present sentinel means `true`. **Opt-out:** the environment and TOML tiers outrank the sentinel, so an explicit `AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `mirror_claude_memory = false` disables the mirror even after a consent. The sentinel lives beside the belief store, so an uninstall or a rebuild removes it with the store, and a fresh store asks for consent again at its next `aelf setup`. When the mirror is enabled, a `metadata.type` of `user` or `feedback` ingests as `origin=user_validated` with an undeflated prior, while a `metadata.type` of `project` or `reference`, or an absent `metadata.type`, ingests as `origin=agent_inferred` with a deflated prior. The belief ids come from the content, so a byte-identical rewrite corroborates a belief rather than duplicating it.
+
+## `[core_gate]` (#1638)
+
+This table controls the session-end batch of the core admission gate. For the gate itself, see [the core admission gate spec](../feature-core-admission-gate.md).
+
+The transcript logger folds a session's turns into beliefs every 12 turn lines by default (`AELFRICE_INGEST_STOP_FLUSH_TURNS`), and at a compaction. On each Stop, the Stop hook looks for the session's core candidates: active, unlocked beliefs that the session created, that meet the core rule, that have no label under the current classifier version, and that no open batch already holds. If it finds any, it records one batch of the newest ones that fit, up to 50 beliefs and 9,500 characters, and asks the host to continue the conversation once. The agent gets the classifier prompt and the `aelf core-gate accept <batch-id>` command that takes its reply. aelfrice itself calls no model. A Stop with no new candidates runs one query and writes nothing, so in practice the batch fires once after each ingest flush.
+
+The hook doesn't ask while the host reports that a Stop hook is already continuing the conversation (`stop_hook_active`), in a headless session (#1634), or on the Codex host, which doesn't document the output field the hook uses.
+
+### `session_end`
+
+Boolean, default `true`. Precedence (the first decisive tier applies): environment variable `AELFRICE_CORE_GATE_SESSION_END` > TOML `[core_gate] session_end` > default `true`. `0`, `false`, `no`, and `off` turn the batch off, and `1`, `true`, `yes`, and `on` turn it on; any other value falls through to the TOML key. With the batch off, unlabeled beliefs keep today's core rule, so nothing leaves core. To label them later, run `aelf doctor core-gate --emit`.
+
+Both the variable and the key apply from the next Stop.
 
 ## When changes apply
 

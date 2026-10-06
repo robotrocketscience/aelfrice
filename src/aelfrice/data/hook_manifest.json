@@ -44,7 +44,7 @@
       "default_on": true,
       "since": "2.1.0",
       "timeout": 30,
-      "description": "Prompt to lock session corrections at turn end (#582)."
+      "description": "Prompt to lock session corrections and directives at turn end (#582, #1315); after each transcript ingest flush, ask the agent to label the session's new core candidates (#1638); disable that with AELFRICE_CORE_GATE_SESSION_END=0."
     },
     {
       "name": "search_tool",
