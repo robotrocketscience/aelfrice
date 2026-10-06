@@ -982,3 +982,83 @@ def test_rerun_with_emit_limit_or_another_scope_exits_2(
     code, _ = _run(*argv)
     assert code == 2
     assert _batches(db) == []
+
+
+# --- subset re-runs and the self-check ----------------------------------
+
+
+def _run_of(db: Path, n_batches: int) -> list[str]:
+    """`n_batches` doctor batches of four core beliefs, one emit run."""
+    _store(db, 4 * n_batches)
+    return _run_batches(db, [4] * n_batches)
+
+
+def test_accepting_a_subset_rerun_skips_the_check(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A partial re-run of a batch is not checked when it is accepted, even
+    when it is all C against all-A siblings.
+
+    Killed by: dropping the `batch_id in subset_reruns` skip in
+    `_cmd_core_gate`, or making `core_gate_subset_reruns` return an empty
+    set.
+    """
+    ids = _run_of(db, 5)
+    for bid in ids:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    _retire(db, 16)
+    code, report = _rerun(ids[4])
+    assert code == 0
+    [subset] = report["batches"]  # type: ignore[misc]
+    assert subset["size"] == 3
+    capsys.readouterr()
+    assert _accept(monkeypatch, str(subset["batch_id"]), ["C"] * 3) == 0
+    err = capsys.readouterr().err
+    assert _FLAG.findall(err) == []
+    assert f"batch {subset['batch_id']} re-ran part of a batch" in err
+
+
+def test_a_subset_rerun_is_not_a_sibling(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """After an all-C subset re-run is accepted, the next accept in the run
+    checks only the full batches: nothing is flagged.
+
+    Killed by: dropping `bid not in subset_reruns` from the shares in
+    `_cmd_core_gate` (the subset re-run's 1.0 share is then flagged).
+    """
+    ids = _run_of(db, 6)
+    for bid in ids[:5]:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    _retire(db, 16)
+    _, report = _rerun(ids[4])
+    [subset] = report["batches"]  # type: ignore[misc]
+    _accept(monkeypatch, str(subset["batch_id"]), ["C"] * 3)
+    capsys.readouterr()
+    assert _accept(monkeypatch, ids[5], ["A"] * 4) == 0
+    err = capsys.readouterr().err
+    assert _FLAG.findall(err) == []
+    assert "self-check skipped" not in err
+
+
+def test_a_whole_batch_rerun_is_still_checked(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A whole-batch re-run reopens the original, keeps its size, and is
+    checked like any batch: re-accepted all C against all-A siblings, it is
+    flagged.
+
+    Killed by: treating every batch of the run as a subset re-run (the
+    `any(...)` test in `core_gate_subset_reruns` made always true).
+    """
+    ids = _run_of(db, 4)
+    for bid in ids:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    _, report = _rerun(ids[3])
+    assert [b["size"] for b in report["batches"]] == [4]  # type: ignore[index, union-attr]
+    capsys.readouterr()
+    assert _accept(monkeypatch, ids[3], ["C"] * 4) == 0
+    assert _FLAG.findall(capsys.readouterr().err) == [(ids[3], "1.00")]
