@@ -317,8 +317,8 @@ capture_print_mode = false
 [relationship_detector]
 # #988 / #1299. Deterministic contradiction detector. `auto_detect` is
 # default-OFF: when false, ingest writes no CONTRADICTS edges and the
-# section only affects the read-only `aelf doctor --relationships` /
-# `--detect-stale` audits. AELFRICE_AUTO_RELATIONSHIPS env var overrides
+# section only affects `aelf doctor --relationships`, a read-only audit,
+# and `aelf doctor --detect-stale`, which writes POTENTIALLY_STALE edges. AELFRICE_AUTO_RELATIONSHIPS env var overrides
 # `auto_detect`; the three thresholds have no env override.
 auto_detect = false
 # Minimum token Jaccard for a belief pair to enter the classifier.
@@ -676,7 +676,7 @@ Precedence (the first decisive tier applies): environment variable `AELFRICE_ENT
 
 Boolean, default `false` ([#1187](https://github.com/robotrocketscience/aelfrice/issues/1187)). This key enables the **supersession lane**. A `SUPERSEDES` edge points *at* a belief, and that belief is the claim you retired; the lane pushes it down the ranking, or drops it from the candidate set.
 
-Without this lane, retrieval has no concept of supersession. Consider this sequence: you correct "deploy target is heroku" to "fly.io", contradiction resolution records the supersession, and the next prompt still injects the heroku belief **ahead of** the fly.io belief. `aelf resolve` writes the edge, and so does the triple extractor's "X supersedes Y" rule. Since the #1005 revert, the auto-relationship detector writes CONTRADICTS edges and nothing else, so this lane affects the explicit paths.
+Without this lane, retrieval has no concept of supersession. Consider this sequence: you correct "deploy target is heroku" to "fly.io", contradiction resolution records the supersession, and the next prompt still injects the heroku belief **ahead of** the fly.io belief. Two narrow paths write the edge. `aelf resolve` writes it only for a pair that a `CONTRADICTS` edge already joins, and the detector that writes those at ingest is off by default (`[relationship_detector] auto_detect`). The commit hook's triple extractor writes it for "X supersedes Y" in a commit message. Since the #1005 revert, the auto-relationship detector writes CONTRADICTS edges and nothing else, so on a default install the lane acts only on the edges those two paths wrote.
 
 Two arms, selected by `supersession_treatment`:
 
