@@ -2573,7 +2573,7 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         # are already cached and the exit code stays 0.
         run_counts = store.core_gate_run_label_counts(batch_id)
         # Ruling on #1638, 2026-10-05: a subset re-run is neither checked
-        # nor a sibling; its few snippets would skew the medians.
+        # nor a sibling: it isn't comparable with full-size siblings.
         subset_reruns = store.core_gate_subset_reruns(batch_id)
     finally:
         store.close()
