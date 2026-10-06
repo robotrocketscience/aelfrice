@@ -1,6 +1,8 @@
 # Classifier-gated core admission
 
-**Status:** proposal. Nothing in this document is implemented.
+**Status:** partly implemented. The label cache, `aelf core-gate accept`, and
+the gate in core selection are implemented. Nothing emits a classifier batch
+yet, so every belief is unlabeled and core follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
 This spec proposes a content gate for core admission. Two consumers select

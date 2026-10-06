@@ -29,6 +29,18 @@ A belief is **core** if **any** of the following hold:
 
 Where `posterior_mean = alpha / (alpha + beta)`.
 
+Later changes to this definition:
+
+- [#1635](https://github.com/robotrocketscience/aelfrice/issues/1635): the
+  corroboration arm counts only when the belief's sightings span at least two
+  episodes an hour or more apart.
+- [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638): a
+  belief that meets arm 2 or arm 3 also has to pass the core admission gate.
+  With no label under the current classifier version, it passes. With label A,
+  it passes. With label B, it passes only with fewer than two episode-qualified
+  corroborations. With label C, it never passes. Locked beliefs aren't gated.
+  For the design, see [the core admission gate](../feature-core-admission-gate.md).
+
 ### Why these three signals
 
 | Signal | What it captures | Why it's load-bearing |
@@ -145,6 +157,12 @@ no core beliefs
 `signals` is a sorted list drawn from `{"lock", "corroboration", "posterior"}`
 — exactly the signals that put this belief in the result. Always non-empty
 for any returned row.
+
+Since [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638), a
+row for an unlocked belief with a core admission gate label also carries
+`"core_gate_label"` (`"A"` or `"B"`; a C-labeled belief isn't listed). A row
+without a label has no such field, so the output for a store without labels is
+unchanged.
 
 ---
 
