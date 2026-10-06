@@ -215,7 +215,9 @@ def test_doctor_batch_older_than_the_session_is_not_read(
     old batch then claims the belief and nothing fires).
     """
     _seed(db, [_belief("w1")])  # created 2026-10-01T00:00:00Z
-    _doctor_batch(db, "w1", created_at="2026-09-30T23:59:59.999999+00:00")
+    # A whole second earlier: julianday() resolves milliseconds at best,
+    # and SQLite builds differ on rounding below that.
+    _doctor_batch(db, "w1", created_at="2026-09-30T23:59:59+00:00")
     out, _ = _stop(tmp_path)
     assert _context(out)
     assert _batch_ids(db)[-1] == ["w1"]
