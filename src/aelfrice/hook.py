@@ -7674,12 +7674,22 @@ def _fit_core_gate_batch(
 ) -> tuple[list["Belief"], str]:
     """The largest newest-first batch whose context fits the char budget.
 
-    Walks the candidates in order and keeps each one whose addition still
-    fits `CORE_GATE_SESSION_END_CHAR_BUDGET` and `core_gate.MAX_BATCH`,
-    skipping, not stopping at, one that doesn't fit, so one long belief
-    can't hold back the shorter ones after it. The batch id is in the
-    text, so each trial renders with the id its batch would get. Returns
-    the batch and its context; an empty batch when nothing fits.
+    First tries the newest `core_gate.MAX_BATCH` candidates whole. When
+    they fit, that is the batch. Otherwise walks the candidates in order
+    and keeps each one whose addition still fits
+    `CORE_GATE_SESSION_END_CHAR_BUDGET`, skipping, not stopping at, one
+    that doesn't fit, so one long belief can't hold back the shorter ones
+    after it.
+
+    The whole-set try comes first because the context is not monotone in
+    the batch: a batch that leaves candidates out carries a line counting
+    them, and a set that fits whole can have a head that doesn't fit with
+    that line. The walk alone would skip such a head and batch the rest.
+
+    Each render uses the batch id the batch would get, since the id is in
+    the text, and the left-out count the batch would have, so the last
+    accepted render is the context. Returns the batch and its context; an
+    empty batch when nothing fits.
     """
     from aelfrice.core_gate import MAX_BATCH, build_prompt  # noqa: PLC0415
 
@@ -7690,6 +7700,11 @@ def _fit_core_gate_batch(
             len(candidates) - len(batch),
         )
 
+    head = candidates[:MAX_BATCH]
+    if head:
+        text = render(head)
+        if len(text) <= CORE_GATE_SESSION_END_CHAR_BUDGET:
+            return head, text
     chosen: list[Belief] = []
     context = ""
     for b in candidates:
@@ -7699,10 +7714,6 @@ def _fit_core_gate_batch(
         text = render(trial)
         if len(text) <= CORE_GATE_SESSION_END_CHAR_BUDGET:
             chosen, context = trial, text
-    if chosen:
-        # `left` counts every candidate not chosen, so re-render once the
-        # batch is final: an earlier trial counted a later skip as chosen.
-        context = render(chosen)
     return chosen, context
 
 
