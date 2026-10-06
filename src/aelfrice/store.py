@@ -8092,6 +8092,41 @@ class MemoryStore:
         self._commit()
         return cur.rowcount > 0
 
+    def core_gate_subset_reruns(self, batch_id: str) -> set[str]:
+        """The subset re-run batches in `batch_id`'s doctor emit run.
+
+        A subset re-run is the batch `aelf doctor core-gate --rerun`
+        creates when some of the re-run batch's beliefs dropped out: it
+        carries the run's `created_at` and holds a strict subset of the
+        original batch's content hashes. The batches an emit creates are
+        disjoint, and a whole-batch re-run reopens the original row, so a
+        batch whose hashes are a strict subset of another batch's in the
+        same run is exactly a subset re-run. Derived from `items_json`, so
+        no column records it. Empty for an unknown or non-doctor batch.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT b.batch_id AS batch_id, b.items_json AS items_json
+            FROM core_gate_batches AS run
+            JOIN core_gate_batches AS b
+              ON b.origin = run.origin
+             AND b.classifier_version = run.classifier_version
+             AND b.created_at = run.created_at
+            WHERE run.batch_id = ? AND run.origin = ?
+            """,
+            (batch_id, CORE_GATE_ORIGIN_DOCTOR),
+        ).fetchall()
+        hashes = {
+            str(r["batch_id"]): frozenset(
+                str(d["content_hash"]) for d in json.loads(r["items_json"])
+            )
+            for r in rows
+        }
+        return {
+            bid for bid, hs in hashes.items()
+            if any(hs < other for o, other in hashes.items() if o != bid)
+        }
+
     def core_gate_run_label_counts(
         self, batch_id: str,
     ) -> dict[str, tuple[int, int]]:
