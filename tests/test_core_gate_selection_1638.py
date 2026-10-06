@@ -413,10 +413,9 @@ def test_read_only_store_without_the_label_table_passes_through(
         }
         assert ro.core_gate_labels_for([_hash(POST_ARM)], CLASSIFIER_VERSION) == {}
         assert _core_section_ids(_subblock(ro, tmp_path)) == UNLOCKED_CORE
-        from aelfrice.cli import default_core_rule
         from aelfrice.doctor import _core_members  # pyright: ignore[reportPrivateUsage]
 
-        assert _core_members(ro, list(ALL_IDS), default_core_rule) == UNLOCKED_CORE
+        assert _core_members(ro, list(ALL_IDS), cli.default_core_rule) == UNLOCKED_CORE
     finally:
         ro.close()
 
