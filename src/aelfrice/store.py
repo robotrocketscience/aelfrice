@@ -8045,6 +8045,53 @@ class MemoryStore:
         ).fetchall()
         return [_row_to_core_gate_batch(r) for r in rows]
 
+    def core_gate_label_hashes_of_batch(
+        self, batch_id: str, classifier_version: str,
+    ) -> set[str]:
+        """The content hashes whose label under `classifier_version` that
+        batch still owns (`core_gate_labels.batch_id`).
+
+        A hash a later batch relabeled belongs to the later batch, so it is
+        absent here.
+        """
+        rows = self._conn.execute(
+            "SELECT content_hash FROM core_gate_labels "
+            "WHERE batch_id = ? AND classifier_version = ?",
+            (batch_id, classifier_version),
+        ).fetchall()
+        return {str(r["content_hash"]) for r in rows}
+
+    def delete_core_gate_labels_of_batch(
+        self, batch_id: str, classifier_version: str,
+    ) -> int:
+        """Delete the labels under `classifier_version` that batch still
+        owns, and return how many rows went.
+
+        Only rows still carrying `batch_id` are deleted: a label a later
+        batch wrote for the same hash is that batch's verdict and stays.
+        Commits at once outside `transaction()` and rides the outer commit
+        inside it.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM core_gate_labels "
+            "WHERE batch_id = ? AND classifier_version = ?",
+            (batch_id, classifier_version),
+        )
+        self._commit()
+        return cur.rowcount
+
+    def reopen_core_gate_batch(self, batch_id: str) -> bool:
+        """Clear `accepted_at` on an accepted batch so it can be accepted
+        again. Returns False, and changes nothing, for an unknown batch or
+        one not accepted."""
+        cur = self._conn.execute(
+            "UPDATE core_gate_batches SET accepted_at = NULL "
+            "WHERE batch_id = ? AND accepted_at IS NOT NULL",
+            (batch_id,),
+        )
+        self._commit()
+        return cur.rowcount > 0
+
     def core_gate_run_label_counts(
         self, batch_id: str,
     ) -> dict[str, tuple[int, int]]:
