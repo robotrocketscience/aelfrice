@@ -906,6 +906,63 @@ def test_rerun_text_output_prints_the_batch_and_accept_command(
     assert f"\naccept: aelf core-gate accept {bid}\n" in out
 
 
+def test_rerun_text_says_the_beliefs_follow_todays_rule_meanwhile(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the labels puts the beliefs, C-labeled ones included, back
+    under today's rule until the new batch is accepted; the output says
+    so.
+
+    Killed by: dropping that line from `_cmd_doctor_core_gate_rerun`.
+    """
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 2, label="C")
+    _, out = _run("doctor", "core-gate", "--rerun", bid)
+    assert (
+        "Until this batch is accepted, these beliefs have no label and "
+        "follow today's core rule, including the ones labeled C before."
+    ) in out
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["whole", "partial"])
+def test_rerun_text_says_whether_the_self_check_covers_the_batch(
+    db: Path, monkeypatch: pytest.MonkeyPatch, partial: bool,
+) -> None:
+    """A whole-batch re-run stays in the self-check; a partial one is left
+    out, and the output says which.
+
+    Killed by: inverting the `report.reopened` branch in
+    `_cmd_doctor_core_gate_rerun`.
+    """
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 3)
+    if partial:
+        _retire(db, 1)
+    _, out = _run("doctor", "core-gate", "--rerun", bid)
+    if partial:
+        assert "so the self-check leaves it out." in out
+        assert "compares it with the same batches" not in out
+    else:
+        assert "compares it with the same batches." in out
+        assert "self-check leaves it out" not in out
+
+
+def test_limit_advice_keeps_the_self_check(db: Path) -> None:
+    """With candidates left by `--limit`, the advice says how to keep the
+    self-check rather than to emit again after each accept.
+
+    Killed by: restoring the old "run the command again after accepting
+    these batches" advice.
+    """
+    _store(db, MAX_BATCH + 3)
+    code, out = _run("doctor", "core-gate", "--emit", "--limit", "1")
+    assert code == 0
+    assert (
+        "not batched here: 26 candidates (--limit). Each emit is its own "
+        "run for the self-check, which needs at least 4 accepted batches in "
+        "a run; to keep the self-check, use a --limit of at least 4 and "
+        "accept all batches of one emit before emitting again."
+    ) in out
+
+
 def _refusal_case(db: Path, case: str) -> tuple[str, str]:
     """Build the batch for one refusal case; return its id and reason."""
     items = [
