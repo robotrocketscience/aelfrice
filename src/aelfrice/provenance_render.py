@@ -60,6 +60,7 @@ from aelfrice.models import (
     ORIGIN_AGENT_INFERRED,
     ORIGIN_AGENT_REMEMBERED,
     ORIGIN_DOCUMENT_RECENT,
+    ORIGIN_EVIDENCE_PROMOTED,
     ORIGIN_SPECULATIVE,
     ORIGIN_UNKNOWN,
     ORIGIN_USER_CORRECTED,
@@ -106,6 +107,10 @@ SECTION_BY_ORIGIN: Final[dict[str, str]] = {
     ORIGIN_AGENT_INFERRED: SECTION_INFERRED,
     ORIGIN_AGENT_REMEMBERED: SECTION_INFERRED,
     ORIGIN_SPECULATIVE: SECTION_INFERRED,
+    # #1650: a phantom promoted on the user's typed restatements. The
+    # words are still the agent's, so it stays with the inferred tier
+    # here even though retrieval ranks it with user_transcript.
+    ORIGIN_EVIDENCE_PROMOTED: SECTION_INFERRED,
     # 14.3% of the live store. Named explicitly rather than left to the
     # fallback so the census above stays checkable against this table.
     ORIGIN_UNKNOWN: SECTION_INFERRED,

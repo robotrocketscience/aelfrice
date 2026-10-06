@@ -47,6 +47,7 @@ from aelfrice.models import (
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    ORIGIN_EVIDENCE_PROMOTED,
     ORIGIN_SPECULATIVE,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
@@ -58,6 +59,9 @@ SOURCE_REVERT_TO_AGENT_INFERRED: Final[str] = (
     "promotion:revert_to_agent_inferred"
 )
 SOURCE_LOCK_UNLOCK: Final[str] = "lock:unlock"
+# #1650: automatic promotion of a phantom on the user's evidence, and its undo.
+SOURCE_PROMOTE_EVIDENCE: Final[str] = "promotion:evidence"
+SOURCE_REVERT_EVIDENCE: Final[str] = "promotion:revert_evidence"
 # Surface B audit label — written when `aelf lock <text>` matches a
 # phantom by content_hash exact-match or Jaccard ≥ 0.9.
 SOURCE_PROMOTE_PHANTOM_LOCK_MATCH: Final[str] = "promotion:phantom_lock_match"
@@ -274,6 +278,100 @@ def promote(
         belief_id=belief_id,
         prior_origin=prior,
         new_origin=ORIGIN_USER_VALIDATED,
+        audit_event_id=audit_id,
+        already_validated=False,
+    )
+
+
+def promote_on_evidence(
+    store: MemoryStore,
+    belief_id: str,
+    *,
+    now: str | None = None,
+) -> PromotionResult:
+    """Promote a phantom to origin=evidence_promoted (#1650).
+
+    The automatic path. Only a ``speculative`` belief is accepted: the
+    evidence rule exists to lift phantoms, and anything else already has
+    an origin a user or a producer chose. The new origin ranks with
+    ``user_transcript``, below ``user_validated``, because no person
+    validated it. Provenance flip only, with one audit row, so
+    :func:`revert_evidence_promotion` can undo it. Idempotent: a belief
+    already ``evidence_promoted`` returns ``already_validated=True``.
+
+    Raises ValueError when the belief is missing, locked, or not a
+    phantom.
+    """
+    store.assert_local_ownership(belief_id)
+    belief = store.get_belief(belief_id)
+    if belief is None:
+        raise ValueError(f"belief not found: {belief_id}")
+    if belief.lock_level == LOCK_USER:
+        raise ValueError(f"cannot evidence-promote locked belief: {belief_id}")
+    if belief.origin == ORIGIN_EVIDENCE_PROMOTED:
+        return PromotionResult(
+            belief_id=belief_id,
+            prior_origin=ORIGIN_EVIDENCE_PROMOTED,
+            new_origin=ORIGIN_EVIDENCE_PROMOTED,
+            audit_event_id=None,
+            already_validated=True,
+        )
+    if belief.origin != ORIGIN_SPECULATIVE:
+        raise ValueError(
+            f"only a speculative belief can be evidence-promoted: {belief_id} "
+            f"(origin={belief.origin})"
+        )
+    belief.origin = ORIGIN_EVIDENCE_PROMOTED
+    store.update_belief(belief)
+    audit_id = store.insert_feedback_event(
+        belief_id=belief_id,
+        valence=0.0,
+        source=SOURCE_PROMOTE_EVIDENCE,
+        created_at=now if now is not None else _utc_now_iso(),
+    )
+    return PromotionResult(
+        belief_id=belief_id,
+        prior_origin=ORIGIN_SPECULATIVE,
+        new_origin=ORIGIN_EVIDENCE_PROMOTED,
+        audit_event_id=audit_id,
+        already_validated=False,
+    )
+
+
+def revert_evidence_promotion(
+    store: MemoryStore,
+    belief_id: str,
+    *,
+    now: str | None = None,
+) -> PromotionResult:
+    """Undo :func:`promote_on_evidence`: evidence_promoted -> speculative.
+
+    Called by ``aelf demote``. Writes a ``promotion:revert_evidence``
+    audit row. Raises ValueError when the belief is missing, locked, or
+    not ``evidence_promoted``.
+    """
+    store.assert_local_ownership(belief_id)
+    belief = store.get_belief(belief_id)
+    if belief is None:
+        raise ValueError(f"belief not found: {belief_id}")
+    if belief.lock_level == LOCK_USER:
+        raise ValueError(f"cannot revert locked belief: {belief_id}")
+    if belief.origin != ORIGIN_EVIDENCE_PROMOTED:
+        raise ValueError(
+            f"belief is not evidence_promoted: {belief_id} (origin={belief.origin})"
+        )
+    belief.origin = ORIGIN_SPECULATIVE
+    store.update_belief(belief)
+    audit_id = store.insert_feedback_event(
+        belief_id=belief_id,
+        valence=0.0,
+        source=SOURCE_REVERT_EVIDENCE,
+        created_at=now if now is not None else _utc_now_iso(),
+    )
+    return PromotionResult(
+        belief_id=belief_id,
+        prior_origin=ORIGIN_EVIDENCE_PROMOTED,
+        new_origin=ORIGIN_SPECULATIVE,
         audit_event_id=audit_id,
         already_validated=False,
     )

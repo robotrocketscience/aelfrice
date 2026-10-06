@@ -140,6 +140,18 @@ MANIFEST: dict[str, tuple[str, str]] = {
         MOVES,
         "promotion rewrites origin/lock and carries alpha/beta through",
     ),
+    "promotion.py::promote_on_evidence::update_belief": (
+        MOVES,
+        "flips origin speculative -> evidence_promoted (#1650) and writes "
+        "the whole row back. Audits at valence 0.0, which apply_feedback "
+        "rejects, so the posterior is carried unchanged rather than moved",
+    ),
+    "promotion.py::revert_evidence_promotion::update_belief": (
+        MOVES,
+        "flips origin evidence_promoted -> speculative (#1650 undo) and "
+        "writes the whole row back; audits at valence 0.0, so the "
+        "posterior is carried unchanged",
+    ),
     "promotion.py::devalidate::update_belief": (
         MOVES,
         "flips origin user_validated -> agent_inferred and writes the "

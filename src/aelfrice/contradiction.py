@@ -74,6 +74,7 @@ from aelfrice.models import (
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_CORRECTED,
     ORIGIN_USER_STATED,
+    ORIGIN_EVIDENCE_PROMOTED,
     ORIGIN_USER_TRANSCRIPT,
     ORIGIN_USER_VALIDATED,
     Belief,
@@ -169,7 +170,7 @@ def precedence_class(belief: Belief) -> int:
         return PRECEDENCE_USER_CORRECTED
     if belief.origin == ORIGIN_USER_VALIDATED:
         return PRECEDENCE_USER_VALIDATED
-    if belief.origin == ORIGIN_USER_TRANSCRIPT:
+    if belief.origin in (ORIGIN_USER_TRANSCRIPT, ORIGIN_EVIDENCE_PROMOTED):
         return PRECEDENCE_USER_TRANSCRIPT
     if belief.origin == ORIGIN_AGENT_INFERRED:
         return PRECEDENCE_AGENT_INFERRED

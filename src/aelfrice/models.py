@@ -204,6 +204,10 @@ ORIGIN_UNKNOWN: Final[str] = "unknown"
 # promotion-trigger lane). Constant lands now so the integration
 # sub-issue has the wire-format string to wire into.
 ORIGIN_SPECULATIVE: Final[str] = "speculative"
+# #1650: a phantom promoted automatically on evidence the user produced
+# (restatements they typed, from two or more sessions). Ranks with
+# user_transcript, below user_validated: nobody validated it by hand.
+ORIGIN_EVIDENCE_PROMOTED: Final[str] = "evidence_promoted"
 
 ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_USER_STATED,
@@ -214,6 +218,7 @@ ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_AGENT_REMEMBERED,
     ORIGIN_DOCUMENT_RECENT,
     ORIGIN_UNKNOWN,
+    ORIGIN_EVIDENCE_PROMOTED,
 })
 
 # #1089 axis-2 retrieval tie-break priority (higher = more trusted).
@@ -231,6 +236,7 @@ ORIGIN_RETRIEVAL_PRIORITY: Final[dict[str, int]] = {
     ORIGIN_USER_CORRECTED: 5,
     ORIGIN_USER_VALIDATED: 4,
     ORIGIN_USER_TRANSCRIPT: 3,
+    ORIGIN_EVIDENCE_PROMOTED: 3,
     ORIGIN_AGENT_INFERRED: 1,
 }
 ORIGIN_RETRIEVAL_PRIORITY_DEFAULT: Final[int] = 2

@@ -56,6 +56,7 @@ from aelfrice.models import (
     ORIGIN_AGENT_INFERRED,
     ORIGIN_SPECULATIVE,
     ORIGIN_USER_STATED,
+    ORIGIN_EVIDENCE_PROMOTED,
     ORIGIN_USER_VALIDATED,
     CORE_GATE_ORIGIN_DOCTOR,
     Belief,
@@ -3404,6 +3405,12 @@ def _cmd_demote(args: argparse.Namespace, out: object) -> int:
             from aelfrice.promotion import devalidate
             devalidate(store, args.belief_id)
             print(f"devalidated: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            return 0
+        if belief.origin == ORIGIN_EVIDENCE_PROMOTED:
+            # #1650: undo an automatic promotion back to a phantom.
+            from aelfrice.promotion import revert_evidence_promotion
+            revert_evidence_promotion(store, args.belief_id)
+            print(f"reverted to speculative: {args.belief_id}", file=out)  # type: ignore[arg-type]
             return 0
         print(f"belief is not locked: {args.belief_id}", file=out)  # type: ignore[arg-type]
     finally:
