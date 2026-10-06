@@ -95,7 +95,7 @@ def test_accept_caches_the_labels_and_prints_the_counts(
     assert batches[0][1] is not None
 
 
-def test_a_stale_batch_is_refused_before_the_reply_is_read(
+def test_a_stale_batch_is_refused_ahead_of_a_parse_error(
     db: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -219,3 +219,56 @@ def test_core_gate_accept_is_a_registered_action(
         main(["core-gate", "accept", "--help"])
     assert exc.value.code == 0
     assert "batch_id" in capsys.readouterr().out
+
+
+_RACE_SCRIPT = """
+import sys, time
+from aelfrice.cli import main
+start = float(sys.argv[2])
+while time.time() < start:
+    time.sleep(0.001)
+sys.exit(main(["core-gate", "accept", sys.argv[1]]))
+"""
+
+
+@pytest.mark.timeout(120)
+def test_two_concurrent_accepts_of_one_batch_have_exactly_one_winner(
+    db: Path,
+) -> None:
+    """Two processes race on one batch: one writes its labels, one is refused.
+
+    Three guards each stop a second accept: the CLI's pre-check, the
+    re-check under `BEGIN IMMEDIATE`, and the `accepted_at IS NULL` update.
+    Killed by: removing all three (both processes then win). Any one alone
+    keeps this green, which is the point of having three.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    bid = _make_batch(db, n=3)
+    start = str(time.time() + 2.0)
+    replies = (
+        {0: "A", 1: "B", 2: "C"},
+        {0: "C", 1: "C", 2: "C"},
+    )
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _RACE_SCRIPT, bid, start],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={**os.environ}, text=True, encoding="utf-8",
+        )
+        for _ in replies
+    ]
+    codes: list[int] = []
+    for proc, reply in zip(procs, replies, strict=True):
+        proc.communicate(_reply(reply), timeout=60)
+        codes.append(proc.returncode)
+    assert sorted(codes) == [0, 1], codes
+    labels, batches = _state(db)
+    winner = replies[codes.index(0)]
+    assert labels == [
+        (f"hash{i}", CLASSIFIER_VERSION, winner[i]) for i in range(3)
+    ]
+    assert len(batches) == 1 and batches[0][1] is not None
