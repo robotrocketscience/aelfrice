@@ -10,7 +10,7 @@ from aelfrice import core_gate as cg
 #: The current classifier's digest. CLASSIFIER_VERSION is derived from the
 #: digest, so changing the classifier already changes the version and old
 #: labels stop applying; this pin only makes such a change deliberate.
-PINNED_DIGEST = "39e4b58399b7169637a2d3499f39160c6fc72246e3eeed108b01d95205d7da00"
+PINNED_DIGEST = "35688308d8f69ffb2df87e274772963a643dd01c2272c4034aa628d3a8b881b7"
 
 #: The examples that replace the reference raters' private ones. Everything
 #: else in the rubric is the raters' text, word for word.
@@ -165,6 +165,12 @@ def test_parse_labels_rejects_a_label_outside_the_set_even_when_complete(
 ) -> None:
     with pytest.raises(ValueError, match="must be A, B, or C"):
         cg.parse_labels(json.dumps([{"index": 1, "label": label}]), {1})
+
+
+def test_parse_labels_rejects_a_reply_too_deeply_nested_to_decode() -> None:
+    """`json.loads` raises RecursionError, not JSONDecodeError, on deep nesting."""
+    with pytest.raises(ValueError, match="not JSON"):
+        cg.parse_labels("[" * 200_000, {1})
 
 
 def test_parse_labels_rejects_an_index_labeled_twice_even_when_complete() -> None:

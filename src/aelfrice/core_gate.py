@@ -127,7 +127,7 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
     """
     try:
         rows = json.loads(reply)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"reply is not JSON: {exc}") from exc
     if not isinstance(rows, list):
         raise ValueError("reply must be a JSON array")
