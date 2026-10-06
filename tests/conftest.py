@@ -668,6 +668,18 @@ GIT_LOCATION_VARS: tuple[str, ...] = (
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
+#: Git's config and template variables, cleared for the whole suite by
+#: `_sandbox_real_home` (#1714). `GIT_CONFIG_SYSTEM` is also switched off by
+#: `GIT_CONFIG_NOSYSTEM`; clearing it keeps a child that drops that switch
+#: from reading the contributor's file. `tests/test_git_config_sandbox_1714.py`
+#: keeps its own copy of this list.
+GIT_CONFIG_CLEARED_VARS: tuple[str, ...] = (
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_TEMPLATE_DIR",
+)
+
 
 # ---------------------------------------------------------------------------
 # #1320 — keep the suite out of the contributor's real home directory.
@@ -791,6 +803,24 @@ def _sandbox_real_home(
         # store appeared in the outer `.git`. A test that needs one of these
         # sets it with its own function-scoped `monkeypatch`.
         for var in GIT_LOCATION_VARS:
+            mp.delenv(var, raising=False)
+        # #1714: `HOME` hides the contributor's `~/.gitconfig`, but other
+        # variables reach git's config without it. `GIT_CONFIG_GLOBAL` and
+        # `GIT_CONFIG_SYSTEM` name config files directly, `GIT_CONFIG_COUNT`
+        # and `GIT_CONFIG_PARAMETERS` carry settings in the environment, and
+        # `GIT_TEMPLATE_DIR` names the hooks every `git init` copies.
+        # Measured on 33 git-using test files with an external
+        # `core.hooksPath`: exporting `GIT_CONFIG_GLOBAL` failed 20 tests,
+        # errored 6, and ran the external hooks 596 times. The global config
+        # is pinned to `.gitconfig` in the sandbox home, which also stops git
+        # reading `$XDG_CONFIG_HOME/git/config`; a test that sets its own
+        # `HOME` no longer moves it, so such a test sets `GIT_CONFIG_GLOBAL`
+        # too. A test that needs any of these sets it with its own
+        # function-scoped `monkeypatch`.
+        global_config = home / ".gitconfig"
+        mp.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        mp.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for var in GIT_CONFIG_CLEARED_VARS:
             mp.delenv(var, raising=False)
         # #1698: `aelf setup` installs a git `post-commit` hook into the
         # repository of its cwd, and the suite runs from inside the
