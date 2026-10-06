@@ -361,6 +361,45 @@ def test_an_open_batch_with_a_labeled_item_is_set_aside(db: Path) -> None:
     assert _batched_ids(db)[3:] == [_bid(0), _bid(2)]
 
 
+def _set_lock(db: Path, i: int, locked: bool) -> None:
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "UPDATE beliefs SET lock_level = ?, locked_at = ? WHERE id = ?",
+            (
+                LOCK_USER if locked else LOCK_NONE,
+                "2026-10-05T00:00:00+00:00" if locked else None,
+                _bid(i),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_two_open_batches_never_print_one_belief_twice(db: Path) -> None:
+    """Emit 10, lock one (the first batch is set aside and a 9-belief
+    batch is made), unlock it, emit again: both open batches are wholly
+    backlog again, but only the older one is printed, so the backlog of
+    10 prints 10 snippets.
+
+    Killed by: dropping `item.content_hash not in claimed` from the
+    open-batch reuse test (both are printed: 19 snippets).
+    """
+    _store(db, 10)
+    first = _emit()
+    _set_lock(db, 4, True)
+    second = _emit()
+    assert [b["size"] for b in second["batches"]] == [9]  # type: ignore[index, union-attr]
+    _set_lock(db, 4, False)
+    third = _emit()
+    assert third["backlog"] == 10
+    assert [(b["batch_id"], b["size"]) for b in third["batches"]] == [  # type: ignore[index, union-attr]
+        (first["batches"][0]["batch_id"], 10),  # type: ignore[index]
+    ]
+    assert len(_batches(db)) == 2
+
+
 def test_limit_caps_the_printed_batches_and_creates_none_past_it(db: Path) -> None:
     """`--limit` counts batches over the even split: 53 candidates split
     27/26, `--limit 1` creates only the first, and a second `--limit 1`
