@@ -626,7 +626,8 @@ def test_self_check_compares_only_batches_of_the_same_run(
     assert _accept(monkeypatch, c, ["C"] * 4) == 0
     err = capsys.readouterr().err
     assert _FLAG.findall(err) == []
-    assert "has 1 accepted batches" in err
+    # Singular for one batch. Killed by: always writing "batches".
+    assert "has 1 accepted batch, and the check needs at least 4." in err
 
 
 def test_self_check_accepts_print_nothing_for_session_end_batches(

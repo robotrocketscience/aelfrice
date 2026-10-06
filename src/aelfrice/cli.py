@@ -2601,7 +2601,8 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
     if len(shares) < core_gate.SELF_CHECK_MIN_BATCHES:
         print(
             f"core-gate: self-check skipped: the emit run of batch "
-            f"{batch_id} has {len(shares)} accepted batches, and the check "
+            f"{batch_id} has {len(shares)} accepted "
+            f"{'batch' if len(shares) == 1 else 'batches'}, and the check "
             f"needs at least {core_gate.SELF_CHECK_MIN_BATCHES}. With fewer, "
             "one failed batch can flag the healthy ones too.",
             file=sys.stderr,
