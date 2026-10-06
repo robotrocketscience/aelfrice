@@ -1,0 +1,3 @@
+### Fixed
+
+- **A pre-issue-create hook test no longer fails depending on test order ([#1715](https://github.com/robotrocketscience/aelfrice/issues/1715)).** `test_claude_dir_refused` built its path from the session's sandbox home, but the module under test captures its config directory at import, before the sandbox replaces `HOME`. Once an earlier test wrote `settings.json` into the sandbox home, the refusal no longer matched and the file was read. The test now points the module's config directory at a temporary directory and creates the file there, so the result doesn't depend on earlier tests. Because the file now exists, the test also fails if the refusal is removed, which it didn't before when the file was missing.

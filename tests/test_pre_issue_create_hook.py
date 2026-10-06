@@ -6,6 +6,7 @@ implementation session appear here.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -220,13 +221,22 @@ class TestSafeReadBodyFile:
     def test_empty_string(self) -> None:
         assert _safe_read_body_file("") == ""
 
-    def test_claude_dir_refused(self) -> None:
-        # Path under ~/.claude/ must be refused even if the file exists
-        from pathlib import Path
-        claude_path = Path.home() / ".claude" / "settings.json"
-        # We do not require the file to exist; the safety check fires first.
-        result = _safe_read_body_file(str(claude_path))
-        assert result == ""
+    def test_claude_dir_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A readable file under the config dir must still be refused. The
+        # module captures the dir at import, so point it at tmp_path rather
+        # than the session's shared home, which earlier tests write (#1715).
+        # HOME moves too, so the test holds if the dir is read at call time.
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        claude_path = claude_dir / "settings.json"
+        claude_path.write_text("secret")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "aelfrice.pre_issue_create_hook._CLAUDE_DIR", claude_dir
+        )
+        assert _safe_read_body_file(str(claude_path)) == ""
 
 
 # ---------------------------------------------------------------------------
