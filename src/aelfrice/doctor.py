@@ -44,7 +44,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Final, Literal, cast
+from typing import TYPE_CHECKING, Callable, Final, Literal, TypeVar, cast
 
 from aelfrice import launcher
 from aelfrice import setup as _setup
@@ -2822,6 +2822,31 @@ class CoreGateEmitReport:
     left: int = 0
 
 
+_T = TypeVar("_T")
+
+
+def balanced_chunks(items: list[_T], max_size: int) -> list[list[_T]]:
+    """Split `items`, in order, into ceil(len / max_size) consecutive
+    chunks whose sizes differ by at most one, the larger ones first.
+
+    151 items at a maximum of 50 give 38, 38, 38, 37, not 50, 50, 50, 1.
+    The self-check compares each batch's share of C labels with its
+    siblings', and a remainder batch of one or a few snippets can only
+    score a share near 0 or 1, so it would be flagged on healthy runs.
+    """
+    if not items:
+        return []
+    n = -(-len(items) // max_size)
+    size, extra = divmod(len(items), n)
+    chunks: list[list[_T]] = []
+    start = 0
+    for k in range(n):
+        end = start + size + (1 if k < extra else 0)
+        chunks.append(items[start:end])
+        start = end
+    return chunks
+
+
 def emit_core_gate_batches(
     store: "MemoryStore",
     qualifies: Callable[["Belief", int], bool],
@@ -2843,8 +2868,9 @@ def emit_core_gate_batches(
     longer meets the rule, is set aside: it's left as it is, and its
     remaining backlog beliefs go into new batches.
 
-    New batches hold up to `core_gate.MAX_BATCH` beliefs each, in backlog
-    order. They're created with origin `doctor`, no session, and the one
+    New batches split the rest of the backlog evenly (`balanced_chunks`):
+    as few batches as `core_gate.MAX_BATCH` allows, whose sizes differ by
+    at most one, in backlog order. They're created with origin `doctor`, no session, and the one
     `created_at` this call is given, which marks them as one emit run for
     the accept-time self-check. All of them are written in one
     transaction; nothing else is written.
@@ -2896,10 +2922,7 @@ def emit_core_gate_batches(
         ))
 
     fresh = [b for b in backlog if b.content_hash not in claimed]
-    chunks = [
-        fresh[start:start + MAX_BATCH]
-        for start in range(0, len(fresh), MAX_BATCH)
-    ]
+    chunks = balanced_chunks(fresh, MAX_BATCH)
     if limit is not None:
         reused = reused[:limit]
         chunks = chunks[:max(0, limit - len(reused))]
