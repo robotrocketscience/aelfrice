@@ -87,6 +87,7 @@ from aelfrice.derivation_worker import run_worker
 from aelfrice.doctor import (
     DORMANT_IDLE_DAYS_DEFAULT,
     CoreGateEmitBatch as _CoreGateEmitBatch,
+    CoreGateRerunRefused as _CoreGateRerunRefused,
     DormantDB,
     HookPruneResult,
     _check_dormant_dbs,
@@ -106,6 +107,7 @@ from aelfrice.doctor import (
     promote_retention as _promote_retention,
     prune_broken_aelf_hooks,
     repair_utc_created_at as _repair_utc_created_at,
+    rerun_core_gate_batch as _rerun_core_gate_batch,
 )
 from aelfrice.llm_classifier import (
     CONSENT_SCOPE_ONBOARD_CANDIDATES as _LLM_SCOPE_ONBOARD,
@@ -7071,11 +7073,12 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_core_gate(args, out)
     if (
         getattr(args, "emit", False)
+        or getattr(args, "core_gate_rerun", None) is not None
         or getattr(args, "core_gate_limit", None) is not None
         or getattr(args, "core_gate_out", None) is not None
     ):
         print(
-            "doctor: --emit, --limit, and --out apply only to "
+            "doctor: --emit, --rerun, --limit, and --out apply only to "
             "`aelf doctor core-gate`.",
             file=sys.stderr,
         )
@@ -7845,16 +7848,32 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
     command that takes the model's reply. The batch rows are the only
     writes. A batch from an earlier emit that isn't accepted yet is
     printed again instead of batching its beliefs twice.
+
+    With `--rerun <batch-id>`, re-runs one accepted doctor batch
+    (`doctor.rerun_core_gate_batch`) and prints the fresh batch the same
+    way. Exits 1 when the re-run is refused, and 2 when `--rerun` is
+    combined with `--emit` or `--limit`.
     """
     w = cast("Any", out)
     emit = bool(getattr(args, "emit", False))
     limit: int | None = getattr(args, "core_gate_limit", None)
     out_dir_arg: str | None = getattr(args, "core_gate_out", None)
     use_json = bool(getattr(args, "json_output", False))
+    rerun: str | None = getattr(args, "core_gate_rerun", None)
+    if rerun is not None:
+        if emit or limit is not None:
+            print(
+                "doctor core-gate: --rerun can't be combined with --emit "
+                "or --limit.",
+                file=sys.stderr,
+            )
+            return 2
+        return _cmd_doctor_core_gate_rerun(rerun, out_dir_arg, use_json, w)
     if not emit:
         if limit is not None or out_dir_arg is not None:
             print(
-                "doctor core-gate: --limit and --out apply only with --emit.",
+                "doctor core-gate: --limit applies only with --emit, and "
+                "--out only with --emit or --rerun.",
                 file=sys.stderr,
             )
             return 2
@@ -7871,17 +7890,9 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
     if limit is not None and limit < 1:
         print("doctor core-gate: --limit must be at least 1.", file=sys.stderr)
         return 2
-    out_dir: Path | None = None
-    if out_dir_arg is not None:
-        out_dir = Path(out_dir_arg)
-        try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            print(
-                f"doctor core-gate: cannot create {out_dir}: {exc}",
-                file=sys.stderr,
-            )
-            return 1
+    ok, out_dir = _make_core_gate_out_dir(out_dir_arg)
+    if not ok:
+        return 1
     store = _open_store()
     try:
         report = _emit_core_gate_batches(
@@ -7924,6 +7935,76 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
             file=w,
         )
     _print_core_gate_batches(report.batches, paths, w)
+    return 0
+
+
+def _make_core_gate_out_dir(out_dir_arg: str | None) -> tuple[bool, Path | None]:
+    """Create `--out DIR` if given. Returns (ok, dir); not ok after an
+    error printed on stderr."""
+    if out_dir_arg is None:
+        return True, None
+    out_dir = Path(out_dir_arg)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"doctor core-gate: cannot create {out_dir}: {exc}", file=sys.stderr)
+        return False, None
+    return True, out_dir
+
+
+def _cmd_doctor_core_gate_rerun(
+    batch_id: str, out_dir_arg: str | None, use_json: bool, w: Any,
+) -> int:
+    """`aelf doctor core-gate --rerun <batch-id> [--out DIR] [--json]` (#1638)."""
+    ok, out_dir = _make_core_gate_out_dir(out_dir_arg)
+    if not ok:
+        return 1
+    store = _open_store()
+    try:
+        report = _rerun_core_gate_batch(store, default_core_rule, batch_id)
+    except _CoreGateRerunRefused as exc:
+        print(
+            f"doctor core-gate: re-run refused, nothing written: {exc}.",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        store.close()
+    batches = [report.batch] if report.batch is not None else []
+    paths = _write_core_gate_prompts(batches, out_dir)
+    if paths is None:
+        return 1
+    if use_json:
+        print(json.dumps({
+            "classifier_version": report.classifier_version,
+            "rerun_of": report.rerun_of,
+            "labels_dropped": report.labels_dropped,
+            "kept": report.kept,
+            "reopened": report.reopened,
+            "batches": [_core_gate_batch_json(b, paths) for b in batches],
+        }), file=w)
+        return 0
+    print(
+        f"core-gate re-run of batch {report.rerun_of}: dropped "
+        f"{report.labels_dropped} labels; {report.kept} of its beliefs are "
+        "still in core and unchanged.",
+        file=w,
+    )
+    if report.batch is None:
+        print("nothing to emit.", file=w)
+        return 0
+    print(
+        "The batch is reopened under its own id."
+        if report.reopened else
+        "A new batch holds the beliefs still in core.",
+        file=w,
+    )
+    print(
+        "It stays in the original emit run, so the self-check compares it "
+        "with the same batches.",
+        file=w,
+    )
+    _print_core_gate_batches(batches, paths, w)
     return 0
 
 
@@ -10036,6 +10117,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "`aelf core-gate accept` command. A batch from an earlier "
             "emit that isn't accepted yet is printed again, not "
             "duplicated (#1638)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--rerun",
+        dest="core_gate_rerun",
+        default=None,
+        metavar="BATCH_ID",
+        help=(
+            "with core-gate: drop the labels an accepted doctor batch "
+            "still owns and print one fresh batch, in the same emit run, "
+            "for its beliefs that are still in core and unchanged. For a "
+            "batch the accept self-check flagged (#1638)."
         ),
     )
     p_doctor.add_argument(
