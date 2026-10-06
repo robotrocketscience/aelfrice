@@ -1,8 +1,10 @@
 # Classifier-gated core admission
 
-**Status:** partly implemented. The label cache, `aelf core-gate accept`, and
-the gate in core selection are implemented. Nothing emits a classifier batch
-yet, so every belief is unlabeled and core follows today's rule.
+**Status:** partly implemented. The label cache, `aelf core-gate accept`, the
+gate in core selection, the `aelf doctor core-gate` backlog drain, and the
+self-check are implemented. The session-end batch isn't implemented yet, so
+labels come only from batches you emit with `aelf doctor core-gate --emit`.
+Until a belief has a label, it follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
 This spec proposes a content gate for core admission. Three consumers select
@@ -93,6 +95,31 @@ failure, shuffle the batches and check each run against its siblings:
 On the evaluation data, this check flagged the failed run and no healthy run.
 The 0.25 threshold was chosen after the failure was seen, so validate it again
 on new data.
+
+#### Implementation
+
+The backlog drain and the self-check work as follows:
+
+- `aelf doctor core-gate --emit` batches the backlog: the active, unlocked
+  beliefs that meet today's rule and have no label under the current
+  classifier version. It records each batch of up to 50 beliefs, and prints
+  the batch's prompt and the `aelf core-gate accept` command that takes the
+  reply. All the batches of one emit share one creation time, which marks
+  them as one emit run.
+- An emit doesn't batch a belief twice. If a batch from an earlier emit isn't
+  accepted yet, and all of its beliefs are still unlabeled and unchanged,
+  the next emit prints that batch again. Otherwise the emit sets the batch
+  aside and puts its unlabeled beliefs in a new batch.
+- When `aelf core-gate accept` accepts a doctor batch, it runs step 1 of the
+  check over the accepted batches of the same emit run, and names each
+  flagged batch on stderr. It doesn't refuse the labels or change the exit
+  code. Step 2, the re-run, isn't automated: a flagged batch's beliefs are
+  labeled, so no later emit includes them.
+- The emit forms batches in belief id order and doesn't shuffle them. Belief
+  ids are hashes, so that order is unrelated to what a belief says or when
+  it was created.
+- Plain `aelf doctor` counts the core candidates with and without a label
+  under the current version. The counts are informational.
 
 ### Expected effect
 
