@@ -6305,6 +6305,10 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     --json: emit a single JSON object with keys "audit" and "features".
     "features.edges_by_type" carries the per-edge-type count dict.
     Exit code unchanged: 1 on auditor failure, 0 otherwise.
+
+    Both forms report the core admission gate's label coverage (#1638):
+    the "core admission gate" block, and the "core_gate" key. It's
+    informational and never changes the exit code.
     """
     use_json = getattr(args, "json", False)
     corpus_min = _resolve_corpus_min()
@@ -6331,6 +6335,8 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
         features = compute_features(store)
         peer_snapshot = store.peer_health()
         scope_counts = store.count_beliefs_by_scope()
+        # #1638: informational; never moves the exit code.
+        core_gate = _core_gate_coverage(store, default_core_rule)
     finally:
         store.close()
 
@@ -6360,6 +6366,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
                 "config_error": peer_config_error,
                 "beliefs_by_scope": scope_counts,
             },
+            "core_gate": core_gate.as_dict(),
         }
         print(json.dumps(payload), file=out)  # type: ignore[arg-type]
         return 1 if report.failed else 0
@@ -6411,6 +6418,11 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             "temporal spine: absent (run `aelf spine backfill` to build)",
             file=out,  # type: ignore[arg-type]
         )
+    print("", file=out)  # type: ignore[arg-type]
+    print(
+        "\n".join(_format_core_gate_coverage(core_gate)),
+        file=out,  # type: ignore[arg-type]
+    )
     print("", file=out)  # type: ignore[arg-type]
     # #1089 claude-memory mirror row: whether the write-through mirror is
     # on for this store (post-consent / flag) and whether the one-shot
