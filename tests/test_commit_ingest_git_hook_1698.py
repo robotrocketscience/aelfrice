@@ -558,12 +558,10 @@ def test_uninstall_deletes_a_hook_aelfrice_created(repo: Path) -> None:
 def test_setup_installs_the_git_hook_and_drops_old_entries_in_both_scopes(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import aelfrice.setup as setup_module
-
     monkeypatch.delenv("AELF_NO_GIT_HOOK_INSTALL", raising=False)
     monkeypatch.chdir(repo)
     user = tmp_path / "user-settings.json"
-    monkeypatch.setattr(setup_module, "USER_SETTINGS_PATH", user)
+    monkeypatch.setattr("aelfrice.setup.USER_SETTINGS_PATH", user)
     project = repo / ".claude" / "settings.json"
     install_commit_ingest_hook(user, command="/old/aelf-commit-ingest")
     install_commit_ingest_hook(project, command="/old/aelf-commit-ingest")
