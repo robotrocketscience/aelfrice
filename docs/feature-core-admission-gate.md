@@ -132,9 +132,9 @@ ingest flush, not once per session (operator ruling on #1638,
   (`CLASSIFIER_MODEL_TIER`). That's a request, not a guarantee (operator
   ruling on #1638, 2026-10-05). If a larger model labels the batch, the
   labels are kept under the same classifier version, and nothing checks
-  them automatically: the self-check runs on doctor batches only.
-  `aelf doctor core-gate --rerun` refuses a session-end batch, so no
-  command relabels one yet.
+  them automatically: the self-check runs on doctor batches only. To
+  relabel an accepted session-end batch, run `aelf doctor core-gate
+  --rerun <batch-id>` (see the re-run below).
 - An unanswered session-end batch stays open, and its beliefs stay
   unlabeled. The backlog drain doesn't read session-end batches, so
   `aelf doctor core-gate --emit` batches those beliefs again.
@@ -203,6 +203,18 @@ The backlog drain and the self-check work as follows:
   original batch instead of creating a second one. Until the new batch is
   accepted, the re-run beliefs have no label, so they follow today's rule,
   including the ones the batch had labeled C.
+- `--rerun` also takes an accepted session-end batch (operator ruling on
+  #1638, 2026-10-06), for example one a larger model labeled. It runs the
+  same transaction and deletes only the labels that still carry the
+  batch's id, but it always puts the beliefs it keeps in a new doctor
+  batch, stamped with the time of the re-run. That batch starts an emit
+  run of its own. A session-end batch belongs to no emit run, so joining
+  one would compare the new batch with batches it was never emitted with,
+  and reusing the session-end batch's creation time would derive that
+  batch's own id whenever every belief is kept. A run of one batch is
+  below the self-check's minimum of four, so the self-check doesn't cover
+  the new batch, and the command says so. The session-end batch itself
+  stays as it was, accepted and owning no labels.
 - A subset re-run, which holds fewer beliefs than the batch it re-ran, is
   left out of the self-check: it isn't checked, and it isn't a sibling
   for other batches. It isn't comparable with its full-size siblings, and
