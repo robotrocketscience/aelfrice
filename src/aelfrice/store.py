@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
+    CORE_GATE_ORIGIN_SESSION_END,
     CORROBORATION_EPISODE_GAP_SECONDS,
     CORROBORATION_MIN_EPISODES,
     DEFAULT_LOCK_TIER,
@@ -7951,6 +7952,71 @@ class MemoryStore:
             (batch_id,),
         ).fetchone()
         return _row_to_core_gate_batch(row) if row is not None else None
+
+    def list_core_gate_session_candidates(
+        self, session_id: str, classifier_version: str,
+    ) -> list[Belief]:
+        """`session_id`'s beliefs the session-end batch may still ask about,
+        newest first, in one query (#1638).
+
+        The SQL half of the Stop hook's candidate rule: the belief's
+        `beliefs.session_id` is `session_id`, it is active and not
+        user-locked, its content hash has no label under
+        `classifier_version`, and the hash is not claimed by an open batch.
+        The core rule itself needs the whole `Belief`, so the caller applies
+        it to what this returns.
+
+        **Claimed** means the hash is in a batch under `classifier_version`
+        that is not accepted yet and is either this session's own
+        `session_end` batch or a `doctor` batch. An accepted batch needs no
+        check, because accepting it wrote a label for every hash it held,
+        and the label already excludes the hash. Another session's
+        `session_end` batch can't hold this session's beliefs, since a
+        belief has one `session_id`, so it is not read. A batch under
+        another classifier version can't be accepted, so it claims nothing.
+        An open batch counts as claimed whether or not anyone answered it,
+        so a Stop never asks about a hash a previous Stop already asked
+        about. An unanswered batch's beliefs stay unlabeled, and the
+        `aelf doctor` drain batches them again.
+
+        `rowid DESC` for the reason `list_lock_candidate_ids` gives;
+        `idx_beliefs_session` serves the session conjunct. The rows come
+        back whole, with `corroboration_count` as `get_belief` computes it,
+        because the Stop hook runs this on every Stop and a `get_belief`
+        per row doubled its cost.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.session_id = ?
+              AND b.valid_to IS NULL
+              AND b.lock_level != ?
+              AND NOT EXISTS (
+                SELECT 1 FROM core_gate_labels l
+                WHERE l.content_hash = b.content_hash
+                  AND l.classifier_version = ?
+              )
+              AND b.content_hash NOT IN (
+                SELECT json_extract(je.value, '$.content_hash')
+                FROM core_gate_batches cb, json_each(cb.items_json) je
+                WHERE cb.classifier_version = ?
+                  AND cb.accepted_at IS NULL
+                  AND (
+                    (cb.origin = ? AND cb.session_id = ?)
+                    OR cb.origin = ?
+                  )
+              )
+            ORDER BY b.rowid DESC
+            """,
+            (
+                session_id, LOCK_USER, classifier_version, classifier_version,
+                CORE_GATE_ORIGIN_SESSION_END, session_id, CORE_GATE_ORIGIN_DOCTOR,
+            ),
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
 
     def core_gate_labels_for(
         self, content_hashes: Iterable[str], classifier_version: str,
