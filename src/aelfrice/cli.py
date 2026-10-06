@@ -2504,6 +2504,11 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
     classifier version, and any reply that does not label every snippet
     exactly once. A refusal exits 1 and writes nothing: the checks that
     touch the store run again inside the accept transaction.
+
+    After a doctor batch is accepted, the spec's self-check compares the
+    share of C labels across the accepted batches of its emit run
+    (`core_gate.c_share_outliers`) and names each outlier on stderr. It
+    never changes the exit code.
     """
     from aelfrice import core_gate
     from aelfrice.store import CoreGateAcceptRefused
@@ -2559,6 +2564,10 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         except CoreGateAcceptRefused as exc:
             print(f"{prefix}: {exc}.", file=sys.stderr)
             return 1
+        # The spec's self-check, over the accepted batches of this batch's
+        # `aelf doctor` emit run. It reports and never refuses: the labels
+        # are already cached and the exit code stays 0.
+        run_counts = store.core_gate_run_label_counts(batch_id)
     finally:
         store.close()
     counts = {name: 0 for name in ("A", "B", "C")}
@@ -2569,6 +2578,16 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         f"(A {counts['A']}, B {counts['B']}, C {counts['C']})",
         file=w,
     )
+    shares = {bid: c / n for bid, (c, n) in run_counts.items() if n > 0}
+    for flagged, share, median in core_gate.c_share_outliers(shares):
+        print(
+            f"core-gate: self-check: batch {flagged} labeled {share:.2f} "
+            f"of its snippets C, against a median of {median:.2f} over "
+            f"the other {len(shares) - 1} accepted batches of its emit "
+            f"run. A gap over {core_gate.SELF_CHECK_MAX_C_SHARE_GAP} can "
+            f"mean the classifier run failed; review that batch's labels.",
+            file=sys.stderr,
+        )
     return 0
 
 
