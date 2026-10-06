@@ -1,11 +1,9 @@
 # Classifier-gated core admission
 
-**Status:** partly implemented. The label cache, `aelf core-gate accept`, the
-gate in core selection, the `aelf doctor core-gate` backlog drain, the
-self-check, and the re-run of a flagged batch are implemented. The
-session-end batch isn't implemented yet, so labels come only from batches
-you emit with `aelf doctor core-gate --emit`. Until a belief has a label, it
-follows today's rule.
+**Status:** implemented. The label cache, `aelf core-gate accept`, the gate
+in core selection, the `aelf doctor core-gate` backlog drain, the
+self-check, the re-run of a flagged batch, and the session-end batch are
+implemented. Until a belief has a label, it follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
 This spec proposes a content gate for core admission. Three consumers select
@@ -82,6 +80,65 @@ arms only if a classifier has labeled it as one of the following:
   rejects any other type. This gate needs its own accepted schema that
   carries the A, B, or C label and the classifier version.
 
+#### Session-end batch
+
+The Stop hook runs the session-end batch. The host's `SessionEnd` event
+can't hand work to the model, so the hook continues the conversation from
+a Stop instead. "Session end" means "after the session's beliefs are
+ingested": the transcript logger folds a session's turns into beliefs only
+when 12 turn lines (about six exchanges, by default;
+`AELFRICE_INGEST_STOP_FLUSH_TURNS` sets it) have built up since the last
+flush, or at a compaction. So the batch fires on the first Stop after each
+ingest flush, not once per session (operator ruling on #1638,
+2026-10-06):
+
+- On every Stop, the hook runs one indexed query for this session's
+  candidates. A candidate is an active, unlocked belief that this session
+  created (its `beliefs.session_id`), that meets today's non-lock core
+  rule, that has no label under the current classifier version, and whose
+  content hash no open batch claims. A belief that an earlier session
+  created and that reaches core during this one isn't a candidate; the
+  backlog drain labels it (operator ruling on #1638, 2026-10-05).
+- An open batch claims a hash when it is under the current classifier
+  version and is either this session's own session-end batch or a doctor
+  batch. A Stop therefore never asks about a belief that an earlier Stop
+  already asked about, whether or not that batch was answered. An
+  accepted batch claims nothing, because its labels already exclude its
+  beliefs. A batch under an earlier classifier version can't be accepted,
+  so it claims nothing either.
+- With at least one candidate, the hook records one batch with origin
+  `session_end` and the session's id, and writes
+  `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext":
+  ...}}` to stdout. The host continues the conversation with the context,
+  which holds the classifier prompt and the `aelf core-gate accept
+  <batch-id>` command to run with the reply on stdin. The host documents
+  `additionalContext` on Stop as non-error feedback that continues the
+  conversation; `decision: "block"` reads as an error the model must fix.
+- The batch holds the newest candidates that fit, up to 50, within 9,500
+  characters of context. The host inlines at most 10,000 characters of a
+  hook's output and replaces a longer string with a file the model isn't
+  asked to read. Snippets are never cut, because the label is cached under
+  the hash of the whole content. A candidate that doesn't fit stays
+  unclaimed for the next Stop or the backlog drain.
+- The query, the batch record, and the context are one `BEGIN IMMEDIATE`
+  transaction, so two Stops at once can't batch the same belief, and a
+  failure leaves no batch behind.
+- The hook doesn't continue the conversation while the host sets
+  `stop_hook_active`, in a headless session (#1634), on the Codex host, or
+  when you opt out with `AELFRICE_CORE_GATE_SESSION_END=0` or
+  `[core_gate] session_end = false`. Codex documents `decision` for Stop
+  but not `additionalContext`, so the hook writes nothing there.
+- The context asks the host to run the prompt on its smallest model
+  (`CLASSIFIER_MODEL_TIER`). That's a request, not a guarantee (operator
+  ruling on #1638, 2026-10-05). If a larger model labels the batch, the
+  labels are kept under the same classifier version, and nothing checks
+  them automatically: the self-check runs on doctor batches only.
+  `aelf doctor core-gate --rerun` refuses a session-end batch, so no
+  command relabels one yet.
+- An unanswered session-end batch stays open, and its beliefs stay
+  unlabeled. The backlog drain doesn't read session-end batches, so
+  `aelf doctor core-gate --emit` batches those beliefs again.
+
 ### Self-verification
 
 Self-verification is required. In evaluation, one of four identical batch
@@ -125,7 +182,7 @@ The backlog drain and the self-check work as follows:
   next emit prints them again.
 - When `aelf core-gate accept` accepts a doctor batch, it runs step 1 of the
   check over the accepted batches of the same emit run, and names each
-  flagged batch on stderr. It doesn't refuse the labels or change the exit
+  flagged batch on stderr. It doesn't check a session-end batch. It doesn't refuse the labels or change the exit
   code. The check runs only when the run has at least four accepted
   batches. With three, each batch's median of the others is the mean of two
   shares, so one failed batch also flags the healthy ones. Below four, the
