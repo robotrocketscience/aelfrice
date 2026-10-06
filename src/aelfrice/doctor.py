@@ -2553,14 +2553,23 @@ class FilesystemCorroborationReport:
     `rows_found` is the number of corroboration rows from non-asserting
     sources, spread over `beliefs_affected` beliefs. `leaving_core` lists
     the active, unlocked beliefs that meet the `aelf core` rule now and
-    don't once those rows are gone. It's computed by running the delete
-    and reading core back, so a dry run reports the same ids an apply
-    would. `deleted` is zero on a dry run.
+    don't once those rows are gone. `entering_core` lists the ones that
+    don't now and do once the rows are gone. Both are computed by running
+    the delete and reading core back, so a dry run reports the same ids an
+    apply would. `deleted` is zero on a dry run.
+
+    Core here includes the #1638 admission gate, which is not monotone in
+    corroboration: a B-labeled belief is admitted only with fewer than two
+    episode-qualified corroborations, so deleting rows can move it into
+    core. Removing a sighting can also merge two short gaps into one long
+    enough to start a new episode, so the episode rule alone can admit a
+    belief too.
     """
 
     rows_found: int = 0
     beliefs_affected: int = 0
     leaving_core: list[str] = field(default_factory=list[str])
+    entering_core: list[str] = field(default_factory=list[str])
     deleted: int = 0
     dry_run: bool = True
 
@@ -2574,7 +2583,9 @@ def _core_members(
     belief_ids: list[str],
     qualifies: Callable[["Belief", int], bool],
 ) -> set[str]:
-    """The subset of `belief_ids` that `qualifies` admits to core.
+    """The subset of `belief_ids` in core: admitted by `qualifies` and
+    then by the #1638 admission gate (`MemoryStore.gate_core_candidates`),
+    as `aelf core` selects them.
 
     Locked beliefs are left out: they're in core through the lock arm,
     which corroboration rows never affect.
@@ -2582,14 +2593,15 @@ def _core_members(
     from aelfrice.models import LOCK_NONE  # noqa: PLC0415
 
     episodes = store.corroboration_episodes()
-    members: set[str] = set()
+    qualifying: list["Belief"] = []
     for bid in belief_ids:
         b = store.get_belief(bid)
         if b is None or b.lock_level != LOCK_NONE:
             continue
         if qualifies(b, episodes.get(bid, 0)):
-            members.add(bid)
-    return members
+            qualifying.append(b)
+    admitted, _ = store.gate_core_candidates(qualifying, episodes)
+    return {b.id for b in admitted}
 
 
 def gc_filesystem_corroboration(
@@ -2641,6 +2653,7 @@ def gc_filesystem_corroboration(
             deleted = store.delete_corroborations_by_source(sources)
             after = _core_members(store, affected, qualifies)
             report.leaving_core = sorted(before - after)
+            report.entering_core = sorted(after - before)
             if dry_run:
                 raise _DryRunRollback
     except _DryRunRollback:
@@ -2662,6 +2675,14 @@ def format_filesystem_corroboration_report(
         lines.append(f"  {bid}")
     if len(report.leaving_core) > 15:
         lines.append(f"  ... and {len(report.leaving_core) - 15} more")
+    # #1638: printed only when non-empty, so a report with nothing entering
+    # core reads as it did before the gate.
+    if report.entering_core:
+        lines.append(f"beliefs entering `aelf core`: {len(report.entering_core)}")
+        for bid in report.entering_core[:15]:
+            lines.append(f"  {bid}")
+        if len(report.entering_core) > 15:
+            lines.append(f"  ... and {len(report.entering_core) - 15} more")
     if report.dry_run:
         if report.rows_found == 0:
             lines.append("nothing to do.")
