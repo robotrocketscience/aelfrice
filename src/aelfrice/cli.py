@@ -8020,16 +8020,24 @@ def _cmd_doctor_core_gate_rerun(
         print("nothing to emit.", file=w)
         return 0
     print(
-        "The batch is reopened under its own id."
-        if report.reopened else
-        "A new batch holds the beliefs still in core.",
+        "Until this batch is accepted, these beliefs have no label and "
+        "follow today's core rule, including the ones labeled C before.",
         file=w,
     )
-    print(
-        "It stays in the original emit run, so the self-check compares it "
-        "with the same batches.",
-        file=w,
-    )
+    if report.reopened:
+        print(
+            "The batch is reopened under its own id. It stays in the "
+            "original emit run, so the self-check compares it with the "
+            "same batches.",
+            file=w,
+        )
+    else:
+        print(
+            "A new batch holds the beliefs still in core. It holds fewer "
+            "beliefs than the batch it re-runs, so the self-check leaves "
+            "it out.",
+            file=w,
+        )
     _print_core_gate_batches(batches, paths, w)
     return 0
 
