@@ -1410,6 +1410,30 @@ def crossing(chars: int, max_locks: int, step: int) -> dict[str, object]:
     return {"lock_chars": chars, "locks": None, "tokens": None}
 
 
+@contextlib.contextmanager
+def _hermetic_home() -> Iterator[Path]:
+    """Point ``HOME`` (and ``USERPROFILE``) at a fresh empty directory (#1716).
+
+    The hook reads per-user state: a ``~/.aelfrice.toml`` makes SessionStart
+    add the #1652 ignored-config line, which put about 40 tokens on the
+    ``session_start`` figures on one machine and none on CI. Measuring under
+    an empty home makes every figure the same wherever the producer runs.
+    Restored on exit, so a caller in the same process keeps its own home.
+    """
+    saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+    home = Path(tempfile.mkdtemp(prefix="aelf-ceiling-home-"))
+    os.environ["HOME"] = str(home)
+    os.environ["USERPROFILE"] = str(home)
+    try:
+        yield home
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -1464,7 +1488,11 @@ def main(argv: list[str] | None = None) -> int:
              "scripts/check_derived_figures.py",
     )
     args = ap.parse_args(argv)
+    with _hermetic_home():
+        return _run(args)
 
+
+def _run(args: argparse.Namespace) -> int:
     if args.payload and not args.dry_run:
         row = payload_bound()
         if args.json:
