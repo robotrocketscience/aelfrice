@@ -85,12 +85,16 @@ arms only if a classifier has labeled it as one of the following:
 The Stop hook runs the session-end batch. The host's `SessionEnd` event
 can't hand work to the model, so the hook continues the conversation from
 a Stop instead. "Session end" means "after the session's beliefs are
-ingested": the transcript logger folds a session's turns into beliefs only
-when 12 turn lines (about six exchanges, by default;
+ingested". On a Stop, the transcript logger starts an ingest in the
+background once 12 turn lines (about six exchanges, by default;
 `AELFRICE_INGEST_STOP_FLUSH_TURNS` sets it) have built up since the last
-flush, or at a compaction. So the batch fires on the first Stop after each
-ingest flush, not once per session (operator ruling on #1638,
-2026-10-06):
+one. The Stop hook runs on every Stop and fires on the first Stop that
+finds the ingested beliefs, so at most once per ingest, not once per
+session (operator ruling on #1638, 2026-10-06). The host runs a Stop's
+hooks in parallel, so the ingest usually lands after that Stop's hook
+has already looked, and the batch fires one turn later. A session's last
+ingest may land after its last Stop, and then nothing asks about those
+beliefs; the backlog drain covers them.
 
 - On every Stop, the hook runs one indexed query for this session's
   candidates. A candidate is an active, unlocked belief that this session
@@ -122,7 +126,12 @@ ingest flush, not once per session (operator ruling on #1638,
   unclaimed for the next Stop or the backlog drain.
 - The query, the batch record, and the context are one `BEGIN IMMEDIATE`
   transaction, so two Stops at once can't batch the same belief, and a
-  failure leaves no batch behind.
+  failure before the commit leaves no batch behind. The hook writes the
+  context after the commit, so it never asks about a batch that doesn't
+  exist. A failure between the two, such as the host closing the pipe or
+  timing the hook out, leaves an open batch that nobody was asked about.
+  Its beliefs stay unlabeled and claimed, so later Stops don't ask about
+  them either.
 - The hook doesn't continue the conversation while the host sets
   `stop_hook_active`, in a headless session (#1634), on the Codex host, or
   when you opt out with `AELFRICE_CORE_GATE_SESSION_END=0` or
@@ -136,8 +145,21 @@ ingest flush, not once per session (operator ruling on #1638,
   relabel an accepted session-end batch, run `aelf doctor core-gate
   --rerun <batch-id>` (see the re-run below).
 - An unanswered session-end batch stays open, and its beliefs stay
-  unlabeled. The backlog drain doesn't read session-end batches, so
-  `aelf doctor core-gate --emit` batches those beliefs again.
+  unlabeled. That covers a batch the model declined, a batch whose
+  context never reached the model, and beliefs whose ingest landed after
+  the session's last Stop. The hook doesn't ask about them again. The
+  backlog drain doesn't read session-end batches, so `aelf doctor
+  core-gate --emit` batches those beliefs again, and that is the one
+  recovery path. A Stop-side retry after some window would need a window
+  constant and a rule for a model that declines on purpose, and would
+  ask a later session's model about another session's text; the drain
+  already handles all three cases, and unlabeled beliefs follow today's
+  rule meanwhile.
+- The claim query reads only doctor batches created at or after the
+  session's earliest belief, compared as instants with `julianday()`. A
+  batch holds beliefs that existed when it was emitted, so an older batch
+  can't hold the session's beliefs. Every open doctor batch's items were
+  otherwise parsed on every Stop.
 
 ### Self-verification
 
@@ -182,7 +204,8 @@ The backlog drain and the self-check work as follows:
   next emit prints them again.
 - When `aelf core-gate accept` accepts a doctor batch, it runs step 1 of the
   check over the accepted batches of the same emit run, and names each
-  flagged batch on stderr. It doesn't check a session-end batch. It doesn't refuse the labels or change the exit
+  flagged batch on stderr. It doesn't check a session-end batch. It
+  doesn't refuse the labels or change the exit
   code. The check runs only when the run has at least four accepted
   batches. With three, each batch's median of the others is the mean of two
   shares, so one failed batch also flags the healthy ones. Below four, the
