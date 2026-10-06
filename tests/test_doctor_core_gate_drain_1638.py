@@ -157,22 +157,74 @@ def test_emit_skips_locked_retired_and_non_core_beliefs(db: Path) -> None:
     assert _batched_ids(db) == [_bid(0)]
 
 
-def test_emit_chunks_the_backlog_in_id_order_at_max_batch(db: Path) -> None:
-    """53 candidates make two batches, 50 then 3, each indexed from 0 in
-    ascending belief id order.
+def test_emit_splits_the_backlog_evenly_in_id_order(db: Path) -> None:
+    """53 candidates make two batches of 27 and 26, not 50 and 3, each
+    indexed from 0 in ascending belief id order.
 
-    Killed by: chunking at `MAX_BATCH - 1`, or reversing the backlog.
+    Killed by: chunking at a fixed `MAX_BATCH` (sizes 50 and 3), or
+    reversing the backlog.
     """
     _store(db, MAX_BATCH + 3)
     report = _emit()
     sizes = [b["size"] for b in report["batches"]]  # type: ignore[index]
-    assert sizes == [MAX_BATCH, 3]
+    assert sizes == [27, 26]
     rows = _batches(db)
     flat = [(int(str(i["index"])), str(i["belief_id"])) for r in rows for i in r[4]]
     assert flat == (
-        [(k, _bid(k)) for k in range(MAX_BATCH)]
-        + [(k, _bid(MAX_BATCH + k)) for k in range(3)]
+        [(k, _bid(k)) for k in range(27)]
+        + [(k, _bid(27 + k)) for k in range(26)]
     )
+
+
+@pytest.mark.parametrize(
+    ("n", "sizes"),
+    [
+        (0, []),
+        (1, [1]),
+        (MAX_BATCH, [MAX_BATCH]),
+        (MAX_BATCH + 1, [26, 25]),
+        (151, [38, 38, 38, 37]),
+        (200, [50, 50, 50, 50]),
+    ],
+)
+def test_balanced_chunks_sizes(n: int, sizes: list[int]) -> None:
+    """ceil(n / MAX_BATCH) chunks, sizes within one of each other, larger
+    first, items in order.
+
+    Killed by: putting the extra item in the last chunks instead of the
+    first, or using one chunk too many (`n // MAX_BATCH + 1`).
+    """
+    from aelfrice.doctor import balanced_chunks
+
+    chunks = balanced_chunks(list(range(n)), MAX_BATCH)
+    assert [len(c) for c in chunks] == sizes
+    assert [x for c in chunks for x in c] == list(range(n))
+
+
+def test_a_healthy_run_with_a_would_be_remainder_is_not_flagged(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """151 beliefs labeled with the same C share (every fifth snippet C)
+    across one emit run: no batch is flagged. A fixed 50/50/50/1 split
+    would leave a one-snippet batch whose share is 1.0.
+
+    Killed by: chunking at a fixed `MAX_BATCH` in `emit_core_gate_batches`.
+    """
+    _store(db, 151)
+    report = _emit()
+    batches = list(report["batches"])  # type: ignore[arg-type]
+    assert len(batches) == 4
+    err = ""
+    for b in batches:
+        capsys.readouterr()
+        size = int(b["size"])
+        labels = ["C" if i % 5 == 0 else "A" for i in range(size)]
+        assert _accept(monkeypatch, str(b["batch_id"]), labels) == 0
+        err = capsys.readouterr().err
+        assert _FLAG.findall(err) == []
+    # The last accept ran the check (four accepted batches), not a skip.
+    assert "self-check skipped" not in err
 
 
 def test_emitted_batches_are_doctor_batches_of_one_run(db: Path) -> None:
@@ -265,8 +317,10 @@ def test_an_open_batch_with_a_labeled_item_is_set_aside(db: Path) -> None:
 
 
 def test_limit_caps_the_printed_batches_and_creates_none_past_it(db: Path) -> None:
-    """With an open batch, `--limit 1` prints only it and creates nothing;
-    the candidates outside it are counted as left.
+    """`--limit` counts batches over the even split: 53 candidates split
+    27/26, `--limit 1` creates only the first, and a second `--limit 1`
+    prints only that open batch, creates nothing, and counts the other 26
+    as left.
 
     Killed by: dropping the truncation of the new chunks under `limit`.
     """
@@ -275,7 +329,7 @@ def test_limit_caps_the_printed_batches_and_creates_none_past_it(db: Path) -> No
     assert len(_batches(db)) == 1
     report = _emit("--limit", "1")
     assert [b["reused"] for b in report["batches"]] == [True]  # type: ignore[index]
-    assert report["left"] == 3
+    assert report["left"] == 26
     assert len(_batches(db)) == 1
 
 
@@ -651,6 +705,8 @@ def test_rerun_of_a_whole_batch_reopens_it_in_its_run(
     assert code == 0
     assert (report["labels_dropped"], report["kept"], report["reopened"]) == (3, 3, True)
     assert [b["batch_id"] for b in report["batches"]] == [bid]  # type: ignore[index, union-attr]
+    # The re-run is never re-split: it keeps the original batch's size.
+    assert [b["size"] for b in report["batches"]] == [3]  # type: ignore[index, union-attr]
     assert _labels(db) == []
     assert _batch_column(db, bid, "accepted_at") is None
     assert _accept(monkeypatch, bid, ["A"] * 3) == 0
