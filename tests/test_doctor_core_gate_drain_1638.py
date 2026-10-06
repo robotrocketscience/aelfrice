@@ -1,0 +1,536 @@
+"""`aelf doctor core-gate`: the core admission gate backlog drain (#1638).
+
+The backlog is the active, unlocked beliefs that meet today's non-lock
+core rule and have no label under the current classifier version.
+`--emit` batches it for the host's classifier; a second emit prints a
+still-open batch again instead of batching its beliefs twice. Plain
+`aelf doctor` reports label coverage, and `aelf core-gate accept` runs the
+spec's C-share self-check over the accepted batches of one emit run.
+
+Each test names the mutation that kills it. The fixture text is neutral
+and synthetic; every store lives under `tmp_path` through `AELFRICE_DB`.
+"""
+from __future__ import annotations
+
+import io
+import json
+import re
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from aelfrice import core_gate
+from aelfrice.cli import main
+from aelfrice.core_gate import CLASSIFIER_VERSION, MAX_BATCH, build_prompt
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    Belief,
+    CoreGateBatchItem,
+)
+from aelfrice.store import MemoryStore
+
+OLD_VERSION = "core-gate-0000000000000000"
+
+
+@pytest.fixture
+def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(path))
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("AELFRICE_NO_AUTO_INSTALL", "1")
+    return path
+
+
+def _bid(i: int) -> str:
+    return f"widget{i:010d}"
+
+
+def _hash(i: int) -> str:
+    return f"h_widget{i:010d}"
+
+
+def _add(store: MemoryStore, i: int, *, core: bool = True,
+         locked: bool = False) -> None:
+    """A belief in core through the posterior arm (alpha 9, beta 1), or
+    in no arm (alpha 1, beta 1)."""
+    store.insert_belief(Belief(
+        id=_bid(i), content=f"the widgetprompt part {i} is blue",
+        content_hash=_hash(i), alpha=9.0 if core else 1.0, beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_USER if locked else LOCK_NONE,
+        locked_at="2026-08-01T09:00:00+00:00" if locked else None,
+        created_at="2026-08-01T09:00:00+00:00", last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+    ))
+
+
+def _store(db: Path, n: int) -> None:
+    """`n` unlabeled core candidates, ids 0..n-1."""
+    store = MemoryStore(str(db))
+    try:
+        for i in range(n):
+            _add(store, i)
+    finally:
+        store.close()
+
+
+def _label(db: Path, labels: dict[int, str], version: str = CLASSIFIER_VERSION) -> None:
+    store = MemoryStore(str(db))
+    try:
+        store.put_core_gate_labels(
+            {_hash(i): v for i, v in labels.items()},
+            classifier_version=version, batch_id=None,
+            labeled_at="2026-10-05T00:00:00+00:00",
+        )
+    finally:
+        store.close()
+
+
+def _run(*argv: str) -> tuple[int, str]:
+    buf = io.StringIO()
+    code = main(list(argv), out=buf)
+    return code, buf.getvalue()
+
+
+def _emit(*extra: str) -> dict[str, object]:
+    code, out = _run("doctor", "core-gate", "--emit", "--json", *extra)
+    assert code == 0
+    return json.loads(out)
+
+
+def _batches(db: Path) -> list[tuple[str, str, str | None, str, list[dict[str, object]]]]:
+    conn = sqlite3.connect(str(db))
+    try:
+        return [
+            (str(r[0]), str(r[1]), r[2], str(r[3]), json.loads(r[4]))
+            for r in conn.execute(
+                "SELECT batch_id, origin, session_id, classifier_version, "
+                "items_json FROM core_gate_batches ORDER BY rowid"
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _batched_ids(db: Path) -> list[str]:
+    return [
+        str(item["belief_id"])
+        for _, _, _, _, items in _batches(db) for item in items
+    ]
+
+
+# --- the backlog --------------------------------------------------------
+
+
+def test_emit_batches_only_unlabeled_candidates(db: Path) -> None:
+    """A candidate with a label under the current version is not batched;
+    one labeled only under an older version is.
+
+    Killed by: dropping the `content_hash not in labels` filter in
+    `emit_core_gate_batches`.
+    """
+    _store(db, 4)
+    _label(db, {0: "A", 1: "C"})
+    _label(db, {2: "A"}, version=OLD_VERSION)
+    report = _emit()
+    assert report["backlog"] == 2
+    assert _batched_ids(db) == [_bid(2), _bid(3)]
+
+
+def test_emit_skips_locked_retired_and_non_core_beliefs(db: Path) -> None:
+    """Killed by: dropping the `lock_level != LOCK_NONE` skip in
+    `core_gate_candidates`, or the `qualifies` test there."""
+    store = MemoryStore(str(db))
+    try:
+        _add(store, 0)
+        _add(store, 1, locked=True)
+        _add(store, 2, core=False)
+        _add(store, 3)
+        store.soft_delete_belief(_bid(3))
+    finally:
+        store.close()
+    _emit()
+    assert _batched_ids(db) == [_bid(0)]
+
+
+def test_emit_chunks_the_backlog_in_id_order_at_max_batch(db: Path) -> None:
+    """53 candidates make two batches, 50 then 3, each indexed from 0 in
+    ascending belief id order.
+
+    Killed by: chunking at `MAX_BATCH - 1`, or reversing the backlog.
+    """
+    _store(db, MAX_BATCH + 3)
+    report = _emit()
+    sizes = [b["size"] for b in report["batches"]]  # type: ignore[index]
+    assert sizes == [MAX_BATCH, 3]
+    rows = _batches(db)
+    flat = [(int(str(i["index"])), str(i["belief_id"])) for r in rows for i in r[4]]
+    assert flat == (
+        [(k, _bid(k)) for k in range(MAX_BATCH)]
+        + [(k, _bid(MAX_BATCH + k)) for k in range(3)]
+    )
+
+
+def test_emitted_batches_are_doctor_batches_of_one_run(db: Path) -> None:
+    """Every new batch is origin `doctor`, has no session, carries the
+    current classifier version, and shares the run's one `created_at`.
+
+    Killed by: stamping each batch with its own timestamp (moving the
+    `datetime.now` call into the batch loop), or origin `session_end`.
+    """
+    _store(db, MAX_BATCH + 1)
+    _emit()
+    rows = _batches(db)
+    assert [r[1:4] for r in rows] == [("doctor", None, CLASSIFIER_VERSION)] * 2
+    conn = sqlite3.connect(str(db))
+    try:
+        stamps = {
+            str(r[0]) for r in conn.execute(
+                "SELECT created_at FROM core_gate_batches"
+            )
+        }
+    finally:
+        conn.close()
+    assert len(stamps) == 1
+
+
+def test_emit_writes_only_batch_rows(db: Path) -> None:
+    """Killed by: any write emit makes outside `core_gate_batches`, for
+    example caching a placeholder label for each emitted belief."""
+    _store(db, 3)
+
+    def dump() -> dict[str, list[tuple[object, ...]]]:
+        conn = sqlite3.connect(str(db))
+        try:
+            names = [
+                str(r[0]) for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%fts%' "
+                    "AND name != 'core_gate_batches' ORDER BY name"
+                )
+            ]
+            return {
+                n: sorted(conn.execute(f'SELECT * FROM "{n}"').fetchall(), key=repr)
+                for n in names
+            }
+        finally:
+            conn.close()
+
+    _run("status")  # settle any open-time one-shots before the snapshot
+    before = dump()
+    _emit()
+    assert dump() == before
+    assert len(_batches(db)) == 1
+
+
+# --- re-emit ------------------------------------------------------------
+
+
+def test_a_second_emit_prints_the_open_batch_again(db: Path) -> None:
+    """An open batch whose items are all still backlog is printed again,
+    with the same id and prompt, and no new batch is created.
+
+    Killed by: skipping the open-batch loop in `emit_core_gate_batches`
+    (the beliefs are then batched a second time).
+    """
+    _store(db, 3)
+    first = _emit()
+    second = _emit()
+    assert len(_batches(db)) == 1
+    [a] = first["batches"]  # type: ignore[misc]
+    [b] = second["batches"]  # type: ignore[misc]
+    assert (b["batch_id"], b["prompt"], b["reused"]) == (a["batch_id"], a["prompt"], True)
+    assert a["reused"] is False
+
+
+def test_an_open_batch_with_a_labeled_item_is_set_aside(db: Path) -> None:
+    """When one item of an open batch has been labeled since, the batch is
+    not printed again; its remaining backlog goes into a new batch.
+
+    Killed by: reusing an open batch when any item is still backlog
+    (`all(` to `any(`), which would print it with a labeled item.
+    """
+    _store(db, 3)
+    first = _emit()
+    _label(db, {1: "A"})
+    second = _emit()
+    [b] = second["batches"]  # type: ignore[misc]
+    assert b["reused"] is False
+    assert b["batch_id"] != first["batches"][0]["batch_id"]  # type: ignore[index]
+    assert _batched_ids(db)[3:] == [_bid(0), _bid(2)]
+
+
+def test_limit_caps_the_printed_batches_and_creates_none_past_it(db: Path) -> None:
+    """With an open batch, `--limit 1` prints only it and creates nothing;
+    the candidates outside it are counted as left.
+
+    Killed by: dropping the truncation of the new chunks under `limit`.
+    """
+    _store(db, MAX_BATCH + 3)
+    _emit("--limit", "1")
+    assert len(_batches(db)) == 1
+    report = _emit("--limit", "1")
+    assert [b["reused"] for b in report["batches"]] == [True]  # type: ignore[index]
+    assert report["left"] == 3
+    assert len(_batches(db)) == 1
+
+
+# --- output -------------------------------------------------------------
+
+
+def test_text_output_prints_each_prompt_and_accept_command(db: Path) -> None:
+    """Killed by: dropping the prompt print or the `accept:` line."""
+    _store(db, 2)
+    code, out = _run("doctor", "core-gate", "--emit")
+    assert code == 0
+    [(bid, _, _, _, items)] = _batches(db)
+    prompt = build_prompt([
+        (int(str(i["index"])), f"the widgetprompt part {k} is blue")
+        for k, i in enumerate(items)
+    ])
+    assert f"----- prompt -----\n{prompt}----- end of prompt -----\n" in out
+    assert f"\naccept: aelf core-gate accept {bid}\n" in out
+
+
+def test_out_writes_one_prompt_file_per_batch(db: Path, tmp_path: Path) -> None:
+    """With `--out`, each prompt goes to `core-gate-<id>.txt` and stdout
+    names the file instead of printing the prompt.
+
+    Killed by: skipping the file write (the path is printed, no file).
+    """
+    _store(db, MAX_BATCH + 1)
+    out_dir = tmp_path / "prompts"
+    code, out = _run("doctor", "core-gate", "--emit", "--out", str(out_dir))
+    assert code == 0
+    assert "----- prompt -----" not in out
+    ids = [r[0] for r in _batches(db)]
+    assert sorted(p.name for p in out_dir.iterdir()) == sorted(
+        f"core-gate-{i}.txt" for i in ids
+    )
+    for bid in ids:
+        text = (out_dir / f"core-gate-{bid}.txt").read_text(encoding="utf-8")
+        assert text.startswith(core_gate.PROMPT_HEADER)
+        assert f"prompt: {out_dir / f'core-gate-{bid}.txt'}" in out
+
+
+def test_an_empty_backlog_emits_nothing(db: Path) -> None:
+    """Killed by: creating a batch with no items (the store refuses an
+    empty batch, so the command raises)."""
+    _store(db, 1)
+    _label(db, {0: "A"})
+    code, out = _run("doctor", "core-gate", "--emit")
+    assert code == 0
+    assert "nothing to emit." in out
+    assert _batches(db) == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("doctor", "--emit"),
+        ("doctor", "graph", "--limit", "2"),
+        ("doctor", "core-gate", "--limit", "2"),
+        ("doctor", "core-gate", "--out", "widgetdir"),
+        ("doctor", "core-gate", "--emit", "--limit", "0"),
+    ],
+    ids=["emit-without-scope", "limit-other-scope", "limit-without-emit",
+         "out-without-emit", "limit-zero"],
+)
+def test_misplaced_flags_exit_2_and_write_nothing(
+    db: Path, argv: tuple[str, ...],
+) -> None:
+    """Killed by: removing the flag checks in `_cmd_doctor` and
+    `_cmd_doctor_core_gate` (the command then runs and exits 0)."""
+    _store(db, 1)
+    code, _ = _run(*argv)
+    assert code == 2
+    assert _batches(db) == []
+
+
+# --- coverage report ----------------------------------------------------
+
+
+def _coverage_store(db: Path) -> None:
+    store = MemoryStore(str(db))
+    try:
+        for i in range(5):
+            _add(store, i)
+        _add(store, 5, locked=True)
+        _add(store, 6, core=False)
+    finally:
+        store.close()
+    _label(db, {0: "A", 1: "B", 2: "C", 5: "C", 6: "A"})
+    _label(db, {3: "A"}, version=OLD_VERSION)
+
+
+EXPECTED_COVERAGE = {
+    "classifier_version": CLASSIFIER_VERSION,
+    "candidates": 5,
+    "labeled": {"A": 1, "B": 1, "C": 1},
+    "unlabeled": 2,
+}
+
+
+def test_core_gate_report_counts_labeled_and_unlabeled_candidates(db: Path) -> None:
+    """Locked and non-core beliefs are not counted, whatever their label;
+    a label under an older version counts as unlabeled. The report writes
+    no batch.
+
+    Killed by: counting a labeled candidate as unlabeled (dropping the
+    `labeled[label] += 1` branch), or counting locked beliefs.
+    """
+    _coverage_store(db)
+    code, out = _run("doctor", "core-gate", "--json")
+    assert code == 0
+    assert json.loads(out) == EXPECTED_COVERAGE
+    assert _batches(db) == []
+
+
+def test_health_reports_core_gate_coverage_in_text_and_json(db: Path) -> None:
+    """The graph report (`aelf doctor graph`, `aelf health --json`)
+    carries the coverage block and the `core_gate` key, and the unlabeled
+    backlog does not change the exit code.
+
+    Killed by: dropping the coverage block from `_cmd_health`'s text or
+    JSON output.
+    """
+    _coverage_store(db)
+    code, out = _run("doctor", "graph")
+    assert code == 0
+    assert (
+        f"core admission gate ({CLASSIFIER_VERSION}):\n"
+        "  5 unlocked core candidates: 3 labeled (A 1, B 1, C 1), 2 unlabeled\n"
+    ) in out
+    code, out = _run("health", "--json")
+    assert code == 0
+    assert json.loads(out)["core_gate"] == EXPECTED_COVERAGE
+
+
+# --- accept-time self-check ---------------------------------------------
+
+
+RUN_AT = "2026-10-05T01:00:00+00:00"
+
+
+def _run_batches(db: Path, sizes: list[int], *, created_at: str = RUN_AT,
+                 origin: str = "doctor", start: int = 0) -> list[str]:
+    store = MemoryStore(str(db))
+    ids: list[str] = []
+    k = start
+    try:
+        for size in sizes:
+            ids.append(store.create_core_gate_batch(
+                [
+                    CoreGateBatchItem(index=i, belief_id=_bid(k + i), content_hash=_hash(k + i))
+                    for i in range(size)
+                ],
+                classifier_version=CLASSIFIER_VERSION, origin=origin,
+                session_id=None if origin == "doctor" else "widgetsession",
+                created_at=created_at,
+            ))
+            k += size
+    finally:
+        store.close()
+    return ids
+
+
+def _accept(
+    monkeypatch: pytest.MonkeyPatch, batch_id: str, labels: list[str],
+) -> int:
+    reply = json.dumps([{"index": i, "label": v} for i, v in enumerate(labels)])
+    monkeypatch.setattr("sys.stdin", io.StringIO(reply))
+    return main(["core-gate", "accept", batch_id], out=io.StringIO())
+
+
+_FLAG = re.compile(r"core-gate: self-check: batch (\w+) labeled ([\d.]+)")
+
+
+def test_self_check_flags_the_outlier_batch_of_a_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Four batches of one run: three with no C label, one all C. The
+    accept of the last flags only it and still exits 0.
+
+    Killed by: never flagging (raising `SELF_CHECK_MAX_C_SHARE_GAP`
+    above 1, or dropping the outlier print).
+    """
+    a, b, c, d = _run_batches(db, [4, 4, 4, 4])
+    assert _accept(monkeypatch, a, ["A"] * 4) == 0
+    assert _accept(monkeypatch, b, ["A", "B", "A", "A"]) == 0
+    assert _accept(monkeypatch, c, ["B"] * 4) == 0
+    capsys.readouterr()
+    assert _accept(monkeypatch, d, ["C"] * 4) == 0
+    assert _FLAG.findall(capsys.readouterr().err) == [(d, "1.00")]
+
+
+def test_self_check_compares_only_batches_of_the_same_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Batches from another emit run (another `created_at`) are not
+    siblings, so a lone batch in its run is never flagged.
+
+    Killed by: dropping `b.created_at = run.created_at` from
+    `core_gate_run_label_counts`.
+    """
+    a, b = _run_batches(db, [4, 4])
+    [c] = _run_batches(db, [4], created_at="2026-10-05T02:00:00+00:00", start=8)
+    _accept(monkeypatch, a, ["A"] * 4)
+    _accept(monkeypatch, b, ["A"] * 4)
+    capsys.readouterr()
+    assert _accept(monkeypatch, c, ["C"] * 4) == 0
+    assert "self-check" not in capsys.readouterr().err
+
+
+def test_self_check_skips_session_end_batches(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Session-end batches have no emit run, so their accepts run no
+    self-check even when they share a timestamp.
+
+    Killed by: dropping the `run.origin = ?` condition from
+    `core_gate_run_label_counts`.
+    """
+    ids = _run_batches(db, [4, 4, 4], origin="session_end")
+    _accept(monkeypatch, ids[0], ["A"] * 4)
+    _accept(monkeypatch, ids[1], ["A"] * 4)
+    capsys.readouterr()
+    assert _accept(monkeypatch, ids[2], ["C"] * 4) == 0
+    assert "self-check" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("shares", "flagged"),
+    [
+        ({"x": 0.9}, []),
+        ({"x": 0.0, "y": 0.0, "z": 0.25}, []),
+        ({"x": 0.0, "y": 0.0, "z": 0.26}, [("z", 0.26, 0.0)]),
+        ({"w": 0.1, "x": 0.2, "y": 0.3, "z": 0.9}, [("z", 0.9, 0.2)]),
+        (
+            {"x": 0.8, "y": 0.4, "z": 0.6},
+            [("x", 0.8, 0.5), ("y", 0.4, 0.7)],
+        ),
+    ],
+    ids=["single", "at-threshold", "over-threshold", "odd-median",
+         "even-median"],
+)
+def test_c_share_outliers_uses_the_median_of_the_other_batches(
+    shares: dict[str, float], flagged: list[tuple[str, float, float]],
+) -> None:
+    """A gap of exactly 0.25 is not flagged, the median is over the other
+    batches only, and an even count takes the mean of the middle two.
+
+    Killed by: `>` to `>=` in the gap test, or taking the median over all
+    batches including the one tested.
+    """
+    got = [
+        (b, round(s, 6), round(m, 6))
+        for b, s, m in core_gate.c_share_outliers(shares)
+    ]
+    assert got == flagged
