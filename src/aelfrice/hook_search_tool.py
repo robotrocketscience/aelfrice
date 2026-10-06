@@ -1,13 +1,16 @@
 """PreToolUse hook that runs `aelf search` against the per-project belief
-store before a search tool call fires, and emits the results as
-`additionalContext` so the agent sees them and can decide to skip / refine
-the tool call or use the tool to fill in gaps.
+store before a search tool call runs, and emits the results as
+`additionalContext`.
 
-Ordering is the whole value. aelfrice runs FIRST, so the model already
-holds the relevant brain-graph context before it chooses grep, the web,
-or anything else. A search the model runs afterwards, or not at all, is
-worth much less — and whether it ran one was exactly the model choice
-aelfrice exists to remove.
+When the model sees them (#1646): the host shows a PreToolUse hook's
+`additionalContext` next to the tool's result (hooks reference,
+https://code.claude.com/docs/en/hooks). By then the model has already
+chosen the tool and its query, so the results can't change the search
+that fired the hook. They arrive beside its output and shape the model's
+next step: whether to search again, refine, or stop. The value is that
+every search comes back with the relevant brain-graph context attached,
+with no separate choice by the model to consult memory, which is the
+choice aelfrice exists to remove.
 
 Hook contract (Claude Code PreToolUse):
 - payload includes `tool_name`, `tool_input`, `cwd`, plus the standard

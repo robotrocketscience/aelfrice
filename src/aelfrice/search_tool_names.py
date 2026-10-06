@@ -19,12 +19,13 @@ from typing import Final
 
 # #1626: every tool that performs a search, not just the local ones.
 #
-# The value of the hook is ORDERING: aelfrice runs first, so the model
-# already holds the relevant brain-graph context before it chooses grep,
-# the web, or anything else. A search the model runs afterwards, or not
-# at all, is worth much less. Covering only Grep and Glob left the web
-# tools reaching out with no brain-graph context at all, and whether
-# that path is taken is exactly the model choice this product exists to
+# The hook attaches the relevant brain-graph context to every search the
+# model makes. The host shows it next to the tool's result, after the
+# model has chosen the tool and its query (#1646; hooks reference,
+# https://code.claude.com/docs/en/hooks), so it shapes the next step
+# rather than this search. Covering only Grep and Glob left the web
+# tools returning with no brain-graph context at all, and whether memory
+# gets consulted is exactly the model choice this product exists to
 # remove.
 SEARCH_TOOL_NAMES: Final[tuple[str, ...]] = (
     "Grep",

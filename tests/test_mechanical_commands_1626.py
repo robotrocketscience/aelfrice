@@ -290,12 +290,12 @@ def test_a_failing_command_does_not_cost_the_prompt_its_injection(
 def test_every_search_tool_triggers_the_memory_lane(
     tool: str, tool_input: dict[str, str]
 ) -> None:
-    """The value of this hook is ORDERING.
+    """Every search the model makes comes back with brain-graph context.
 
-    aelfrice runs first, so the model already holds the relevant
-    brain-graph context before it chooses grep, the web, or anything
-    else. Covering only Grep and Glob left the web tools reaching out
-    with no brain-graph context at all.
+    The host shows it next to the tool's result, after the model has
+    chosen the search (#1646), so it shapes the next step. Covering only
+    Grep and Glob left the web tools returning with no brain-graph
+    context at all.
     """
     from aelfrice.hook_search_tool import _is_search_tool_call
 

@@ -10884,9 +10884,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "wire the PreToolUse:Grep|Glob|WebSearch|WebFetch hook so the "
             "agent's own local and web search "
             "queries first run against the per-project belief store and the "
-            "results are injected as additionalContext. If memory has the "
-            "answer the agent can skip / refine the tool call; if not, the "
-            "tool result fills the gap. Default: ON. Pass --no-search-tool to "
+            "results are injected as additionalContext, which the agent "
+            "reads beside the tool's result and uses for its next step "
+            "(#1646). Default: ON. Pass --no-search-tool to "
             "skip. See docs/design/search_tool_hook.md."
         ),
     )

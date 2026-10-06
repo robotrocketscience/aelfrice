@@ -31,10 +31,13 @@ the hook as making search "feel slow."
 A Claude Code `PreToolUse` hook that fires before a `Grep` or `Glob`
 tool call, lifts the agent's search query out of the tool input,
 runs the same query against the per-project belief store, and emits
-the results back as `additionalContext` so the agent sees them
-*before* the tool runs. If memory already has the answer the agent
-can skip or refine the tool call; if not, the agent uses the tool to
-fill in gaps the memory does not cover.
+the results back as `additionalContext`. The hook runs before the
+tool, but the host shows `additionalContext` next to the tool's
+result ([hooks reference](https://code.claude.com/docs/en/hooks)), so
+the agent reads memory's answer beside the search's own output, after
+it has already chosen the tool and its query (#1646). If memory
+already has the answer, the agent can stop searching or refine its
+next search; if not, the tool's result fills the gap.
 
 ```
 Claude wants to Grep "directive-gate" in the project
@@ -62,11 +65,12 @@ retrieval intent.
 When Claude reaches for `Grep` in the middle of a multi-tool turn,
 the search query is a precise, agent-formulated probe. Two payoffs:
 
-1. **Skip-or-pivot.** If the project's belief store already
+1. **Stop-or-pivot.** If the project's belief store already
    contains the answer (a prior decision, a locked correction, a
-   relevant past finding), the agent sees it before the
-   filesystem-walking Grep returns. The agent can then skip the
-   Grep entirely, or use it for follow-up rather than discovery.
+   relevant past finding), the agent sees it beside the Grep's
+   result. The Grep has already run (#1646), but the agent can stop
+   searching there, or use the result for follow-up rather than
+   discovery.
 2. **Fill-the-gap.** When the store has nothing relevant, the
    hook surfaces "no matching beliefs" explicitly, distinguishing
    *consulted-and-empty* from *not-consulted*. This signals that
@@ -76,7 +80,7 @@ the search query is a precise, agent-formulated probe. Two payoffs:
 
 This hook is the inverse of the v1.2.0 commit-ingest hook. That one
 *writes* the graph after the agent acts. This one *reads* the graph
-before the agent acts. Together they close the loop: information
+at the moment the agent acts. Together they close the loop: information
 generated during normal session activity becomes context for the
 next session's tool-decision points.
 

@@ -1,0 +1,3 @@
+### Documentation
+
+- **The search hook's docs no longer say the model sees memory before it chooses a search ([#1646](https://github.com/robotrocketscience/aelfrice/issues/1646)).** The hook runs before the search tool, but the host shows its results next to the tool's own output ([hooks reference](https://code.claude.com/docs/en/hooks)). By then the model has already chosen the tool and its query. The results shape the model's next step, not the search that fired the hook, and they don't let it skip that search. The module docstring, the search-tool comment, the `aelf setup --search-tool` help text, the design note, and a test docstring now say so. Behavior is unchanged.
