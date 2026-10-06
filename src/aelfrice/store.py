@@ -66,6 +66,7 @@ from aelfrice.models import (
     ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
     RETENTION_CLASSES,
     RETENTION_UNKNOWN,
+    CORE_GATE_ORIGIN_DOCTOR,
     Belief,
     CoreGateBatch,
     CoreGateBatchItem,
@@ -8024,6 +8025,67 @@ class MemoryStore:
                 labeled_at=accepted_at,
             )
         return batch
+
+    def list_open_core_gate_batches(
+        self, *, origin: str, classifier_version: str,
+    ) -> list[CoreGateBatch]:
+        """The batches of `origin` emitted under `classifier_version` that
+        are not accepted yet, oldest first (`created_at`, then `batch_id`).
+
+        `aelf doctor core-gate --emit` reads these so that a second emit
+        prints a still-open batch again rather than batching its beliefs a
+        second time.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM core_gate_batches "
+            "WHERE origin = ? AND classifier_version = ? "
+            "AND accepted_at IS NULL "
+            "ORDER BY created_at ASC, batch_id ASC",
+            (origin, classifier_version),
+        ).fetchall()
+        return [_row_to_core_gate_batch(r) for r in rows]
+
+    def core_gate_run_label_counts(
+        self, batch_id: str,
+    ) -> dict[str, tuple[int, int]]:
+        """C labels and all labels per accepted batch in `batch_id`'s emit run.
+
+        An emit run is one `aelf doctor core-gate --emit` call. Every batch
+        it creates carries the run's single `created_at`, which is also
+        part of each batch id, so the run is the doctor batches that share
+        `batch_id`'s `created_at` and classifier version. Session-end
+        batches have no run, so a batch that is unknown or isn't a doctor
+        batch maps to `{}`.
+
+        Returns `{batch_id: (c_labels, labels)}` for the run's batches
+        that own label rows (`core_gate_labels.batch_id`). Only an accept
+        writes label rows, so a batch not accepted yet is absent. A label
+        that a later batch replaced counts for the later batch. One
+        grouped read.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT b.batch_id AS batch_id,
+                   SUM(CASE WHEN l.label = 'C' THEN 1 ELSE 0 END) AS c_labels,
+                   COUNT(l.content_hash) AS labels
+            FROM core_gate_batches AS run
+            JOIN core_gate_batches AS b
+              ON b.origin = run.origin
+             AND b.classifier_version = run.classifier_version
+             AND b.created_at = run.created_at
+            JOIN core_gate_labels AS l
+              ON l.batch_id = b.batch_id
+             AND l.classifier_version = b.classifier_version
+            WHERE run.batch_id = ? AND run.origin = ?
+            GROUP BY b.batch_id
+            ORDER BY b.batch_id
+            """,
+            (batch_id, CORE_GATE_ORIGIN_DOCTOR),
+        ).fetchall()
+        return {
+            str(r["batch_id"]): (int(r["c_labels"]), int(r["labels"]))
+            for r in rows
+        }
 
     def create_session(
         self,
