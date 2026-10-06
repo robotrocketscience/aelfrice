@@ -1228,7 +1228,7 @@ aelfrice skips the trigger on a turn that the prompt-shape gate stopped (#674). 
 
 ## `[phantom_promotion]` (v4.x+)
 
-Opt-in, trigger-driven detection of a **promotion opportunity** for a phantom (#1132). This table is the promotion-side mirror of `[phantom_generation]`. On each `UserPromptSubmit` turn, aelfrice checks deterministically whether a phantom (`origin='speculative'`) has collected enough cross-session corroboration to be worth confirming, and when one has, it appends a short `<aelfrice-phantom-promotion-opportunity>` note naming the candidates and their `aelf validate <id>` / `aelf lock` surface. Promoting an origin stays exactly where the ratified #229 rule put it: it is an explicit act by you. A corroboration count is a **non-trigger** for that write, and this lane decides only *when to prompt* you. It never promotes a phantom on its own. The default is off, and the lane is inert until you enable it.
+Opt-in, trigger-driven detection of a **promotion opportunity** for a phantom (#1132). This table is the promotion-side mirror of `[phantom_generation]`. On each `UserPromptSubmit` turn, aelfrice checks deterministically whether a phantom (`origin='speculative'`) has collected enough cross-session corroboration to be worth confirming, and when one has, it appends a short `<aelfrice-phantom-promotion-opportunity>` note naming the candidates and their `aelf validate <id>` / `aelf lock` surface. Promoting an origin stays exactly where the ratified #229 rule put it: it is an explicit act by you. A corroboration count is a **non-trigger** for that write, and the `enabled` lane decides only *when to prompt* you. It never promotes a phantom on its own. The default is off, and the lane is inert until you enable it. The separate [`auto_promote`](#auto_promote) switch, also off by default, is the one path that promotes a phantom without you, under a stricter rule (#1650).
 
 The detector answers a finding of the #1125 census, which found that phantoms are essentially never promoted, with 0 promotions across seven real stores. The cause is not a broken promotion path; it is that nothing surfaces a corroborated phantom for the explicit act #229 requires.
 
@@ -1245,6 +1245,20 @@ Integer ≥ 1, default `3`. This key caps the promotion-opportunity notes for ea
 Integers ≥ 1, defaults `3` / `2`. aelfrice surfaces a phantom only when three conditions hold together: the phantom has at least `min_corroborations` corroborations; those corroborations come from at least `min_sessions` distinct sessions, excluding the NULL sessions; and the phantom has no inbound CONTRADICTS edge. These thresholds have the same shape as those in the retention-promotion rule (`belief_retention_class.md` §4). To surface fewer candidates at a higher confidence, raise the two keys. Both are TOML-only.
 
 aelfrice skips the trigger on a turn that the prompt-shape gate stopped. The trigger is fail-soft end to end: any error produces no note, and no error breaks the hook. For the full specification, see [the phantom-generation sources design note](../design/phantom_generation_sources.md) §6 (issue #1132).
+
+### `auto_promote`
+
+Boolean, default `false`. When it's on, each `UserPromptSubmit` turn promotes up to five phantoms to `origin=evidence_promoted` and adds an `<aelfrice-phantom-auto-promoted>` notice that names each one and the undo command, `aelf demote <id>`. Precedence (the first decisive tier applies): environment variable `AELFRICE_PHANTOM_AUTO_PROMOTE=1`/`0` > TOML `[phantom_promotion] auto_promote` > default `false`. It's independent of `enabled`.
+
+A phantom is promoted only when all of these hold (#1650, [the SUPPORTS writer spec](../design/feature-supports-writer.md)):
+
+- It has at least `min_corroborations` complete restatements that came from turns you typed. aelfrice stores what you type one sentence at a time, and a phantom is usually a paragraph, so the phantom is split into the sentences ingest would store as yours. A session holds a complete restatement when you typed every one of those sentences there; a session yields as many as its least-restated sentence. A sentence counts as typed when it's stored as your own belief (`user_transcript`, with the same exact text; a case difference makes a different sentence), or when a corroboration with a recorded speaker of `user` lands on any belief with that text. A belief with that text that has negative feedback or an inbound CONTRADICTS edge supplies nothing. Nothing else counts: not the model's own text, not wonder's creation row, and not a corroboration with no recorded speaker.
+- Those supports come from at least `min_sessions` distinct sessions, each was recorded after the phantom was created, and none comes from the session that created it.
+- The phantom is live and unlocked, has no inbound CONTRADICTS edge, and has no negative feedback.
+- You haven't undone an automatic promotion of it before. `aelf demote` is a veto, so the rule never promotes that phantom again.
+- Nothing in the phantom's text lies outside those sentences except whitespace and these ASCII structure marks: `- * # . , ; : ( ) [ ] ' " ` | _`. Promotion keeps the whole text, so a phantom that also holds a question, a command, a tag, a heading, a symbol such as ❌ or ≠, or any other text ingest wouldn't store as yours is never promoted automatically.
+
+`evidence_promoted` ranks with `user_transcript` in retrieval and in contradiction precedence, below `user_validated`, because no person validated it. If a notice doesn't fit in the hook's remaining room, aelfrice drops the notice but keeps the promotion, which its audit row records.
 
 ## `[belief_categories]` (v4.x+)
 
