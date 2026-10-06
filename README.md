@@ -14,7 +14,7 @@
 
 - **Problem.** An agent forgets your corrections between sessions, so you repeat them.
 - **Method.** Before the model reads each prompt, a hook adds every rule you locked and the beliefs that best match the prompt, from an entity index and BM25 full-text search over a local SQLite store.
-- **Provenance.** Every belief records where it came from and carries a Bayesian confidence that your feedback moves; a lock pins it as ground truth.
+- **Provenance.** Every belief records where it came from and carries a Bayesian confidence that moves when you confirm it with `/aelf:confirm` or praise an answer it informed; a lock pins it as ground truth.
 - **Scope.** aelfrice captures your turns and commits as you work, and retrieval runs on your machine with no account, telemetry, embeddings, or LLM. By default it also checks PyPI for updates, and `/aelf:onboard` classifies with your agent's model ([privacy](docs/user/PRIVACY.md)).
 
 **How a conversation becomes beliefs.** A belief is one statement stored with its source, a type, and a confidence score. Every 12 turns, aelfrice splits your prompts into sentences, drops noise and questions, and stores the rest as facts, corrections, preferences, or requirements. The model's replies to you are skipped. When a later prompt matches stored beliefs, the best matches are ranked and added to it. They're beliefs, not facts: `/aelf:confirm` and `aelf feedback` move each one's confidence, and so does a short reply such as "perfect". A complaint such as "that's wrong" counts only if you turn on [negative sentiment feedback](docs/user/CONFIG.md). Only a lock makes a belief ground truth.
