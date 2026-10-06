@@ -86,6 +86,7 @@ from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import run_worker
 from aelfrice.doctor import (
     DORMANT_IDLE_DAYS_DEFAULT,
+    CoreGateEmitBatch as _CoreGateEmitBatch,
     DormantDB,
     HookPruneResult,
     _check_dormant_dbs,
@@ -7889,39 +7890,16 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
         )
     finally:
         store.close()
-    paths: dict[str, Path] = {}
-    if out_dir is not None:
-        for batch in report.batches:
-            path = out_dir / f"core-gate-{batch.batch_id}.txt"
-            try:
-                path.write_text(batch.prompt, encoding="utf-8")
-            except OSError as exc:
-                print(
-                    f"doctor core-gate: cannot write {path}: {exc}. The "
-                    "batches are recorded; run the same command again to "
-                    "print them.",
-                    file=sys.stderr,
-                )
-                return 1
-            paths[batch.batch_id] = path
+    paths = _write_core_gate_prompts(report.batches, out_dir)
+    if paths is None:
+        return 1
     if use_json:
         print(json.dumps({
             "classifier_version": report.classifier_version,
             "backlog": report.backlog,
             "left": report.left,
             "batches": [
-                {
-                    "batch_id": b.batch_id,
-                    "size": b.size,
-                    "created_at": b.created_at,
-                    "reused": b.reused,
-                    "accept_command": f"aelf core-gate accept {b.batch_id}",
-                    **(
-                        {"prompt_file": str(paths[b.batch_id])}
-                        if b.batch_id in paths else {"prompt": b.prompt}
-                    ),
-                }
-                for b in report.batches
+                _core_gate_batch_json(b, paths) for b in report.batches
             ],
         }), file=w)
         return 0
@@ -7945,19 +7923,72 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
             "the command again after accepting these batches.",
             file=w,
         )
+    _print_core_gate_batches(report.batches, paths, w)
+    return 0
+
+
+def _write_core_gate_prompts(
+    batches: "list[_CoreGateEmitBatch]", out_dir: Path | None,
+) -> dict[str, Path] | None:
+    """Write each batch's prompt to `out_dir/core-gate-<id>.txt` (#1638).
+
+    Returns the paths by batch id, `{}` when `out_dir` is None, or None
+    after reporting a write error on stderr.
+    """
+    paths: dict[str, Path] = {}
+    if out_dir is None:
+        return paths
+    for batch in batches:
+        path = out_dir / f"core-gate-{batch.batch_id}.txt"
+        try:
+            path.write_text(batch.prompt, encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"doctor core-gate: cannot write {path}: {exc}. The "
+                "batches are recorded; run `aelf doctor core-gate --emit` "
+                "to print them again.",
+                file=sys.stderr,
+            )
+            return None
+        paths[batch.batch_id] = path
+    return paths
+
+
+def _core_gate_batch_json(
+    b: "_CoreGateEmitBatch", paths: dict[str, Path],
+) -> dict[str, object]:
+    """One printed core-gate batch as a JSON object (#1638)."""
+    return {
+        "batch_id": b.batch_id,
+        "size": b.size,
+        "created_at": b.created_at,
+        "reused": b.reused,
+        "accept_command": f"aelf core-gate accept {b.batch_id}",
+        **(
+            {"prompt_file": str(paths[b.batch_id])}
+            if b.batch_id in paths else {"prompt": b.prompt}
+        ),
+    }
+
+
+def _print_core_gate_batches(
+    batches: "list[_CoreGateEmitBatch]", paths: dict[str, Path], w: Any,
+) -> None:
+    """Print the instructions, then each batch's id, prompt (or prompt
+    file), and accept command (#1638)."""
     print(
         "For each batch, run the prompt on your host's smallest model, then "
         "pipe the model's reply, unchanged, to the accept command.",
         file=w,
     )
-    for k, batch in enumerate(report.batches, start=1):
+    for k, batch in enumerate(batches, start=1):
         origin = (
             f"from the emit at {batch.created_at}, not accepted yet"
             if batch.reused else "new"
         )
         print("", file=w)
         print(
-            f"batch {k} of {len(report.batches)}: {batch.batch_id} "
+            f"batch {k} of {len(batches)}: {batch.batch_id} "
             f"({batch.size} snippets, {origin})",
             file=w,
         )
@@ -7968,7 +7999,6 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
             print(batch.prompt, end="", file=w)
             print("----- end of prompt -----", file=w)
         print(f"accept: aelf core-gate accept {batch.batch_id}", file=w)
-    return 0
 
 
 def _cmd_doctor_gc_filesystem_corroboration(
