@@ -102,14 +102,26 @@ The backlog drain and the self-check work as follows:
 
 - `aelf doctor core-gate --emit` batches the backlog: the active, unlocked
   beliefs that meet today's rule and have no label under the current
-  classifier version. It records each batch of up to 50 beliefs, and prints
-  the batch's prompt and the `aelf core-gate accept` command that takes the
-  reply. All the batches of one emit share one creation time, which marks
-  them as one emit run.
+  classifier version. It splits the backlog evenly into as few batches of up
+  to 50 beliefs as it can, with sizes that differ by at most one, so no small
+  remainder batch skews the self-check. A batch of one snippet can only score
+  a C share of 0 or 1. It records each batch, and prints the batch's prompt
+  and the `aelf core-gate accept` command that takes the reply. All the
+  batches of one emit share one creation time, which marks them as one emit
+  run. The emit's reads and writes run under one write lock, so two emits at
+  once can't batch the same beliefs.
 - An emit doesn't batch a belief twice. If a batch from an earlier emit isn't
   accepted yet, and all of its beliefs are still unlabeled and unchanged,
   the next emit prints that batch again. Otherwise the emit sets the batch
   aside and puts its unlabeled beliefs in a new batch.
+- A set-aside batch stays open rather than being closed, because its
+  beliefs can return to the backlog (for example, when a lock is lifted)
+  and a later emit then prints it again. Accepting it is harmless: each
+  label is keyed to the content hash the model judged. It does replace a
+  label that a newer batch wrote for the same belief, and that label row
+  then counts toward the set-aside batch's emit run in the self-check.
+- If `--out` can't write a prompt file, the batches stay recorded, and the
+  next emit prints them again.
 - When `aelf core-gate accept` accepts a doctor batch, it runs step 1 of the
   check over the accepted batches of the same emit run, and names each
   flagged batch on stderr. It doesn't refuse the labels or change the exit
@@ -132,7 +144,12 @@ The backlog drain and the self-check work as follows:
   ids are hashes, so that order is unrelated to what a belief says or when
   it was created.
 - Plain `aelf doctor` counts the core candidates with and without a label
-  under the current version. The counts are informational.
+  under the current version. The counts are informational. The count walks
+  every belief. No read in the graph report can be reused: the auditor
+  reads counts and the α and β pairs, not the lock level, content hash, or
+  corroboration count that the core rule needs. On one machine, on a synthetic
+  20,000-belief store, the walk took 0.24 seconds, and `aelf health` took
+  0.51 seconds instead of 0.25.
 
 ### Expected effect
 
