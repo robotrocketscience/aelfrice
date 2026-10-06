@@ -707,3 +707,21 @@ that would also drop a belief re-asserted in one sitting days after it
 was first said.
 """
 
+
+def episode_qualified_corroborations(corroboration_count: int, episodes: int) -> int:
+    """A belief's corroboration count as the corroboration arm counts it.
+
+    The arm counts a belief's corroboration rows only when they span
+    `CORROBORATION_MIN_EPISODES` or more episodes (#1635). Below that, the
+    rows are one burst and count as none, so this returns 0. Otherwise it
+    returns `corroboration_count` unchanged.
+
+    `episodes` is the belief's entry in `MemoryStore.corroboration_episodes`
+    (0 when absent). The #1638 core admission gate compares this count, not
+    the raw row count or the episode count, against its B threshold, so
+    core has one definition of corroboration.
+    """
+    if episodes < CORROBORATION_MIN_EPISODES:
+        return 0
+    return corroboration_count
+

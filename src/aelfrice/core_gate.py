@@ -19,8 +19,9 @@ never applies under another. Nothing has to be bumped by hand.
 is deliberate. The model tier is a label, not a model identity; if the
 host's smallest model changes, change `CLASSIFIER_MODEL_TIER` too.
 
-This module holds no state and does no I/O. Wiring it into core
-selection, the label cache, and the session-end batch is separate work.
+This module holds no state and does no I/O. `admit` is the gate's one
+admission rule; `MemoryStore.gate_core_candidates` reads the label cache
+and applies it for every core consumer.
 """
 from __future__ import annotations
 
@@ -149,6 +150,41 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
         extra = sorted(set(labels) - expected)
         raise ValueError(f"labels do not match the batch: missing {missing}, extra {extra}")
     return labels
+
+
+#: A B-labeled belief is admitted only with fewer than this many
+#: episode-qualified corroborations (`models.episode_qualified_corroborations`).
+#: Source: the spec's 1x configuration, "admit A, or admit B with fewer than
+#: 2 corroborations" (`docs/feature-core-admission-gate.md`, Precision
+#: options), ruled for the gate on #1638 on 2026-09-30, with the episode
+#: count ruled on 2026-10-05.
+B_CORROBORATION_LIMIT: Final[int] = 2
+
+
+def admit(label: str | None, qualified_corroborations: int) -> bool:
+    """Whether the gate admits an unlocked belief that already meets
+    today's non-lock core rule.
+
+    `label` is the belief's label under `CLASSIFIER_VERSION`, or None when
+    it has none. `qualified_corroborations` is
+    `models.episode_qualified_corroborations` for the belief.
+
+    - No label: admitted. A belief follows today's rule until it is
+      classified, so nothing leaves core before its first label.
+    - A: admitted.
+    - B: admitted only with fewer than `B_CORROBORATION_LIMIT`
+      episode-qualified corroborations.
+    - C: never admitted.
+
+    Locked beliefs never reach this: the gate applies only to the two
+    non-lock arms. A label outside `LABELS` cannot be stored (the cache
+    table checks it) and is treated as no label.
+    """
+    if label == LABEL_NOT_A_CLAIM:
+        return False
+    if label == LABEL_NEEDS_CONTEXT:
+        return qualified_corroborations < B_CORROBORATION_LIMIT
+    return True
 
 
 #: The cache key's classifier half. Derived from the digest, so any change
