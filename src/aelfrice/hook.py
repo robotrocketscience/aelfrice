@@ -6068,7 +6068,9 @@ def _build_session_start_subblock(
       <locked>      — all user-locked beliefs (L0), same order as
                       list_locked_beliefs() (locked_at DESC).
       <core>        — load-bearing unlocked beliefs: corroboration>=2 OR
-                      posterior_mean>=2/3 with alpha+beta>=4. Excludes
+                      posterior_mean>=2/3 with alpha+beta>=4, then the
+                      #1638 core admission gate
+                      (`MemoryStore.gate_core_candidates`). Excludes
                       beliefs already in <locked>. Sorted by
                       posterior_mean DESC.
       <recent-work> — branch / upstream / last N commits / linked
@@ -6097,6 +6099,11 @@ def _build_session_start_subblock(
             continue
         if _belief_qualifies_core(b, episodes.get(b.id, 0)):
             core_candidates.append(b)
+    # #1638: the content gate on the two non-lock arms, the same rule
+    # `aelf core` applies, with one label lookup for the selection. A
+    # belief with no label passes on today's rule; with no candidates the
+    # call returns before importing `core_gate`.
+    core_candidates, _ = store.gate_core_candidates(core_candidates, episodes)
 
     # Sort core candidates by posterior_mean DESC, then id ASC for stability.
     def _posterior_key(b: "Belief") -> tuple[float, str]:
