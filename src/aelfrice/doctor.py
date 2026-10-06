@@ -2905,7 +2905,6 @@ def emit_core_gate_batches(
         if not all(
             item.content_hash in by_hash
             and item.content_hash not in claimed
-            and by_hash[item.content_hash].id == item.belief_id
             for item in items
         ):
             continue
