@@ -473,36 +473,78 @@ def test_self_check_compares_only_batches_of_the_same_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Batches from another emit run (another `created_at`) are not
-    siblings, so a lone batch in its run is never flagged.
+    siblings: a lone C batch after a run of four all-A batches is in a
+    run of one, so the check is skipped and nothing is flagged.
 
     Killed by: dropping `b.created_at = run.created_at` from
-    `core_gate_run_label_counts`.
+    `core_gate_run_label_counts` (the five batches then form one run and
+    the C batch is flagged).
     """
-    a, b = _run_batches(db, [4, 4])
-    [c] = _run_batches(db, [4], created_at="2026-10-05T02:00:00+00:00", start=8)
+    run = _run_batches(db, [4, 4, 4, 4])
+    [c] = _run_batches(db, [4], created_at="2026-10-05T02:00:00+00:00", start=16)
+    for bid in run:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    capsys.readouterr()
+    assert _accept(monkeypatch, c, ["C"] * 4) == 0
+    err = capsys.readouterr().err
+    assert _FLAG.findall(err) == []
+    assert "has 1 accepted batches" in err
+
+
+def test_self_check_accepts_print_nothing_for_session_end_batches(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Session-end batches have no emit run, so their accepts print no
+    self-check line, not even the skip line.
+
+    Killed by: dropping the `batch.origin != CORE_GATE_ORIGIN_DOCTOR`
+    return in `_cmd_core_gate` (the skip line then prints).
+    """
+    ids = _run_batches(db, [4, 4, 4, 4], origin="session_end")
+    for bid in ids[:3]:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    capsys.readouterr()
+    assert _accept(monkeypatch, ids[3], ["C"] * 4) == 0
+    assert "self-check" not in capsys.readouterr().err
+
+
+def test_run_label_counts_are_empty_for_a_session_end_batch(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: dropping the `run.origin = ?` condition from
+    `core_gate_run_label_counts`."""
+    ids = _run_batches(db, [4, 4], origin="session_end")
+    for bid in ids:
+        _accept(monkeypatch, bid, ["A"] * 4)
+    store = MemoryStore(str(db))
+    try:
+        assert store.core_gate_run_label_counts(ids[0]) == {}
+    finally:
+        store.close()
+
+
+def test_self_check_is_skipped_below_four_accepted_batches(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Three accepted batches, one all C: nothing is flagged, and one
+    stderr line says the check was skipped and why.
+
+    Killed by: lowering `SELF_CHECK_MIN_BATCHES` to 3 (all three are then
+    flagged), or dropping the skip line.
+    """
+    a, b, c = _run_batches(db, [4, 4, 4])
     _accept(monkeypatch, a, ["A"] * 4)
     _accept(monkeypatch, b, ["A"] * 4)
     capsys.readouterr()
     assert _accept(monkeypatch, c, ["C"] * 4) == 0
-    assert "self-check" not in capsys.readouterr().err
-
-
-def test_self_check_skips_session_end_batches(
-    db: Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Session-end batches have no emit run, so their accepts run no
-    self-check even when they share a timestamp.
-
-    Killed by: dropping the `run.origin = ?` condition from
-    `core_gate_run_label_counts`.
-    """
-    ids = _run_batches(db, [4, 4, 4], origin="session_end")
-    _accept(monkeypatch, ids[0], ["A"] * 4)
-    _accept(monkeypatch, ids[1], ["A"] * 4)
-    capsys.readouterr()
-    assert _accept(monkeypatch, ids[2], ["C"] * 4) == 0
-    assert "self-check" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert _FLAG.findall(err) == []
+    assert (
+        f"core-gate: self-check skipped: the emit run of batch {c} has 3 "
+        "accepted batches, and the check needs at least 4."
+    ) in err
 
 
 @pytest.mark.parametrize(
@@ -534,3 +576,269 @@ def test_c_share_outliers_uses_the_median_of_the_other_batches(
         for b, s, m in core_gate.c_share_outliers(shares)
     ]
     assert got == flagged
+
+
+# --- re-run of one accepted batch ---------------------------------------
+
+
+def _emitted_and_accepted(
+    db: Path, monkeypatch: pytest.MonkeyPatch, n: int, label: str = "C",
+) -> tuple[str, str]:
+    """`n` core beliefs, one emitted batch, accepted with all `label`.
+    Returns the batch id and its `created_at`."""
+    _store(db, n)
+    [batch] = _emit()["batches"]  # type: ignore[misc]
+    assert _accept(monkeypatch, str(batch["batch_id"]), [label] * n) == 0
+    return str(batch["batch_id"]), str(batch["created_at"])
+
+
+def _labels(db: Path) -> list[tuple[str, str | None]]:
+    conn = sqlite3.connect(str(db))
+    try:
+        return [
+            (str(r[0]), r[1]) for r in conn.execute(
+                "SELECT content_hash, batch_id FROM core_gate_labels "
+                "ORDER BY content_hash"
+            )
+        ]
+    finally:
+        conn.close()
+
+
+def _batch_column(db: Path, batch_id: str, column: str) -> object:
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            f"SELECT {column} FROM core_gate_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else row[0]
+
+
+def _rerun(*extra: str) -> tuple[int, dict[str, object]]:
+    code, out = _run("doctor", "core-gate", "--json", "--rerun", *extra)
+    return code, (json.loads(out) if code == 0 else {})
+
+
+def _retire(db: Path, *ids: int) -> None:
+    store = MemoryStore(str(db))
+    try:
+        for i in ids:
+            store.soft_delete_belief(_bid(i))
+    finally:
+        store.close()
+
+
+def _items_of(db: Path, batch_id: str) -> list[str]:
+    rows = {r[0]: r for r in _batches(db)}
+    return [str(i["belief_id"]) for i in rows[batch_id][4]]
+
+
+def test_rerun_of_a_whole_batch_reopens_it_in_its_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With every belief still current, the re-run drops the batch's
+    labels and reopens the same batch (its id derives from the run's
+    `created_at` and the same hashes), which can then be accepted again.
+
+    Killed by: skipping `reopen_core_gate_batch` (the second accept is
+    refused as already accepted).
+    """
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 3)
+    code, report = _rerun(bid)
+    assert code == 0
+    assert (report["labels_dropped"], report["kept"], report["reopened"]) == (3, 3, True)
+    assert [b["batch_id"] for b in report["batches"]] == [bid]  # type: ignore[index, union-attr]
+    assert _labels(db) == []
+    assert _batch_column(db, bid, "accepted_at") is None
+    assert _accept(monkeypatch, bid, ["A"] * 3) == 0
+    assert [owner for _, owner in _labels(db)] == [bid] * 3
+
+
+def test_rerun_of_a_partly_current_batch_makes_a_new_batch_in_the_same_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retired belief drops out; the others go into a new batch that
+    carries the original `created_at`, so it joins the original emit run.
+
+    Killed by: creating the new batch with a fresh timestamp instead of
+    the original batch's `created_at`.
+    """
+    bid, created_at = _emitted_and_accepted(db, monkeypatch, 3)
+    _retire(db, 1)
+    code, report = _rerun(bid)
+    assert code == 0
+    [fresh] = report["batches"]  # type: ignore[misc]
+    fresh_id = str(fresh["batch_id"])
+    assert fresh_id != bid
+    assert _items_of(db, fresh_id) == [_bid(0), _bid(2)]
+    assert _batch_column(db, fresh_id, "created_at") == created_at
+    assert _labels(db) == []
+
+
+def test_rerun_drops_only_labels_the_batch_still_owns(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A label a later batch wrote for one of the hashes stays, and that
+    belief is not re-batched.
+
+    Killed by: deleting the labels without the `batch_id` condition, or
+    dropping the `content_hash not in owned` skip (the relabeled belief is
+    then re-batched).
+    """
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 3)
+    store = MemoryStore(str(db))
+    try:
+        store.put_core_gate_labels(
+            {_hash(0): "A"}, classifier_version=CLASSIFIER_VERSION,
+            batch_id="widgetlater00000", labeled_at="2026-10-05T03:00:00+00:00",
+        )
+    finally:
+        store.close()
+    code, report = _rerun(bid)
+    assert code == 0
+    assert report["labels_dropped"] == 2
+    assert _labels(db) == [(_hash(0), "widgetlater00000")]
+    [fresh] = report["batches"]  # type: ignore[misc]
+    assert _items_of(db, str(fresh["batch_id"])) == [_bid(1), _bid(2)]
+
+
+def test_rerun_with_no_belief_still_current_drops_labels_and_emits_nothing(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: dropping the `if not kept: return report` early return
+    (an empty batch is refused, so the command exits 1)."""
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 2)
+    _retire(db, 0, 1)
+    code, report = _rerun(bid)
+    assert code == 0
+    assert (report["labels_dropped"], report["kept"], report["batches"]) == (2, 0, [])
+    assert len(_batches(db)) == 1
+
+
+def test_rerun_is_one_transaction(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When creating the fresh batch fails, the dropped labels come back.
+
+    Killed by: running the re-run outside `store.transaction(...)` (the
+    delete is then committed before the failure).
+    """
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 3)
+    _retire(db, 2)
+    before = _labels(db)
+
+    def refuse(*_a: object, **_k: object) -> str:
+        raise ValueError("widgetprompt refusal")
+
+    monkeypatch.setattr(MemoryStore, "create_core_gate_batch", refuse)
+    code, _ = _rerun(bid)
+    assert code == 1
+    assert _labels(db) == before
+
+
+def test_rerun_writes_the_prompt_file_with_out(
+    db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Killed by: not passing `--out` through to the prompt writer in
+    `_cmd_doctor_core_gate_rerun`."""
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 2)
+    out_dir = tmp_path / "rerun"
+    code, report = _rerun(bid, "--out", str(out_dir))
+    assert code == 0
+    [b] = report["batches"]  # type: ignore[misc]
+    path = out_dir / f"core-gate-{bid}.txt"
+    assert b["prompt_file"] == str(path)
+    assert path.read_text(encoding="utf-8").startswith(core_gate.PROMPT_HEADER)
+
+
+def test_rerun_text_output_prints_the_batch_and_accept_command(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: dropping the `_print_core_gate_batches` call from the
+    re-run's text output."""
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 2)
+    code, out = _run("doctor", "core-gate", "--rerun", bid)
+    assert code == 0
+    assert "----- prompt -----" in out
+    assert f"\naccept: aelf core-gate accept {bid}\n" in out
+
+
+def _refusal_case(db: Path, case: str) -> tuple[str, str]:
+    """Build the batch for one refusal case; return its id and reason."""
+    items = [
+        CoreGateBatchItem(index=i, belief_id=_bid(i), content_hash=_hash(i))
+        for i in range(2)
+    ]
+    if case == "unknown":
+        return "widget0000000000", "no core-gate batch"
+    version = OLD_VERSION if case == "other-version" else CLASSIFIER_VERSION
+    origin = "session_end" if case == "session-end" else "doctor"
+    store = MemoryStore(str(db))
+    try:
+        bid = store.create_core_gate_batch(
+            items, classifier_version=version, origin=origin,
+            session_id="widgetsession" if origin == "session_end" else None,
+            created_at=RUN_AT,
+        )
+        if case != "not-accepted":
+            store.accept_core_gate_batch(
+                bid, {0: "C", 1: "C"}, classifier_version=version,
+                accepted_at=RUN_AT,
+            )
+        if case == "no-labels":
+            store.delete_core_gate_labels_of_batch(bid, version)
+    finally:
+        store.close()
+    return bid, {
+        "not-accepted": "never accepted",
+        "other-version": "emitted under",
+        "session-end": "session_end batch",
+        "no-labels": "owns no labels",
+    }[case]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["unknown", "not-accepted", "other-version", "session-end", "no-labels"],
+)
+def test_rerun_refusals_exit_1_and_write_nothing(
+    db: Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    """Each refusal names its reason and leaves the store unchanged.
+
+    Killed by: removing any one of the five checks in
+    `rerun_core_gate_batch` (a check another one masks is caught by its
+    reason).
+    """
+    _store(db, 2)
+    bid, reason = _refusal_case(db, case)
+    before = (_labels(db), _batches(db), _batch_column(db, bid, "accepted_at"))
+    capsys.readouterr()
+    code, _ = _run("doctor", "core-gate", "--rerun", bid)
+    assert code == 1
+    assert reason in capsys.readouterr().err
+    assert (_labels(db), _batches(db), _batch_column(db, bid, "accepted_at")) == before
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("doctor", "core-gate", "--rerun", "widget0000000000", "--emit"),
+        ("doctor", "core-gate", "--rerun", "widget0000000000", "--limit", "1"),
+        ("doctor", "graph", "--rerun", "widget0000000000"),
+    ],
+    ids=["with-emit", "with-limit", "other-scope"],
+)
+def test_rerun_with_emit_limit_or_another_scope_exits_2(
+    db: Path, argv: tuple[str, ...],
+) -> None:
+    """Killed by: removing the `--rerun` combination check in
+    `_cmd_doctor_core_gate`, or `--rerun` from `_cmd_doctor`'s scope
+    check."""
+    _store(db, 1)
+    code, _ = _run(*argv)
+    assert code == 2
+    assert _batches(db) == []
