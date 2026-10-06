@@ -1,8 +1,8 @@
 # Classifier-gated core admission
 
 **Status:** partly implemented. The label cache, `aelf core-gate accept`, the
-gate in core selection, the `aelf doctor core-gate` backlog drain, and the
-self-check are implemented. The session-end batch isn't implemented yet, so
+gate in core selection, the `aelf doctor core-gate` backlog drain, the
+self-check, and the re-run of a flagged batch are implemented. The session-end batch isn't implemented yet, so
 labels come only from batches you emit with `aelf doctor core-gate --emit`.
 Until a belief has a label, it follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
@@ -113,8 +113,21 @@ The backlog drain and the self-check work as follows:
 - When `aelf core-gate accept` accepts a doctor batch, it runs step 1 of the
   check over the accepted batches of the same emit run, and names each
   flagged batch on stderr. It doesn't refuse the labels or change the exit
-  code. Step 2, the re-run, isn't automated: a flagged batch's beliefs are
-  labeled, so no later emit includes them.
+  code. The check runs only when the run has at least four accepted
+  batches. With three, each batch's median of the others is the mean of two
+  shares, so one failed batch also flags the healthy ones. Below four, the
+  command says on stderr that it skipped the check.
+- Step 2, the re-run, is `aelf doctor core-gate --rerun <batch-id>`. In one
+  transaction, it deletes the labels the batch still owns, and batches again
+  the beliefs whose labels it deleted and that are still in core and
+  unchanged. A label that a later batch wrote for the same content hash
+  stays. The new batch joins the original emit run: it carries the
+  original creation time, so the self-check compares it with the same
+  siblings, and the original batch, which now owns no labels, drops out of
+  the comparison. A batch id is derived from the classifier version, the
+  creation time, and the content hashes. So when every belief is kept, the
+  new batch would have the original's id, and the command reopens the
+  original batch instead of creating a second one.
 - The emit forms batches in belief id order and doesn't shuffle them. Belief
   ids are hashes, so that order is unrelated to what a belief says or when
   it was created.
