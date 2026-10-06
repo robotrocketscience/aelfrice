@@ -2878,7 +2878,26 @@ def emit_core_gate_batches(
     `limit` caps the number of batches printed, the reused ones first
     (oldest first) and then the new ones; a new batch past the cap isn't
     created. None means no cap.
+
+    The backlog read, the open-batch read, and the batch writes all run in
+    one `BEGIN IMMEDIATE` transaction, so a concurrent emit waits for this
+    one and then sees its batches, instead of batching the same beliefs a
+    second time.
     """
+    with store.transaction(immediate=True):
+        return _emit_core_gate_batches_locked(
+            store, qualifies, limit=limit, created_at=created_at,
+        )
+
+
+def _emit_core_gate_batches_locked(
+    store: "MemoryStore",
+    qualifies: Callable[["Belief", int], bool],
+    *,
+    limit: int | None,
+    created_at: str,
+) -> CoreGateEmitReport:
+    """`emit_core_gate_batches`'s body, run under its write lock."""
     from aelfrice.core_gate import (  # noqa: PLC0415
         CLASSIFIER_VERSION,
         MAX_BATCH,
@@ -2927,27 +2946,26 @@ def emit_core_gate_batches(
         chunks = chunks[:max(0, limit - len(reused))]
 
     created: list[CoreGateEmitBatch] = []
-    with store.transaction():
-        for chunk in chunks:
-            batch_id = store.create_core_gate_batch(
-                [
-                    CoreGateBatchItem(
-                        index=i, belief_id=b.id, content_hash=b.content_hash,
-                    )
-                    for i, b in enumerate(chunk)
-                ],
-                classifier_version=CLASSIFIER_VERSION,
-                origin=CORE_GATE_ORIGIN_DOCTOR,
-                session_id=None,
-                created_at=created_at,
-            )
-            created.append(CoreGateEmitBatch(
-                batch_id=batch_id,
-                prompt=build_prompt([(i, b.content) for i, b in enumerate(chunk)]),
-                size=len(chunk),
-                created_at=created_at,
-                reused=False,
-            ))
+    for chunk in chunks:
+        batch_id = store.create_core_gate_batch(
+            [
+                CoreGateBatchItem(
+                    index=i, belief_id=b.id, content_hash=b.content_hash,
+                )
+                for i, b in enumerate(chunk)
+            ],
+            classifier_version=CLASSIFIER_VERSION,
+            origin=CORE_GATE_ORIGIN_DOCTOR,
+            session_id=None,
+            created_at=created_at,
+        )
+        created.append(CoreGateEmitBatch(
+            batch_id=batch_id,
+            prompt=build_prompt([(i, b.content) for i, b in enumerate(chunk)]),
+            size=len(chunk),
+            created_at=created_at,
+            reused=False,
+        ))
     report.batches = reused + created
     report.left = report.backlog - sum(b.size for b in report.batches)
     return report
