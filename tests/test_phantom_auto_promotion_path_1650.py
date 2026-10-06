@@ -32,6 +32,7 @@ from aelfrice.phantom_promotion_opportunity import (
     format_auto_promotion_notice,
 )
 from aelfrice.promotion import SOURCE_REVERT_EVIDENCE, revert_evidence_promotion
+from aelfrice.phantom_promotion_opportunity import find_evidence_promotable_phantoms
 from aelfrice.store import MemoryStore
 
 T0 = "2026-10-01T00:00:00Z"
@@ -68,7 +69,7 @@ def store(tmp_path: Path):  # noqa: ANN201
 
 
 def _ids(store: MemoryStore) -> list[str]:
-    return [b.id for b in store.find_evidence_promotable_phantoms()]
+    return [b.id for b in find_evidence_promotable_phantoms(store)]
 
 
 def test_restating_a_phantom_in_your_own_turns_promotes_it(
@@ -303,6 +304,6 @@ def test_the_lookup_stays_fast_on_a_large_store(
         for i in range(100):
             store.insert_belief(_phantom(f"p{i}", text=f"Phantom claim number {i}."))
     start = time.perf_counter()
-    store.find_evidence_promotable_phantoms(max_n=5)
+    find_evidence_promotable_phantoms(store, max_n=5)
     # A scan joined on lower(trim(content)) took about 100 ms at this size.
     assert time.perf_counter() - start < 0.05

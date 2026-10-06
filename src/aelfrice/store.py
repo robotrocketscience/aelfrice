@@ -18,7 +18,6 @@ import os
 import re
 import secrets
 import sqlite3
-from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import (
@@ -1598,32 +1597,6 @@ def _is_commit_self_reread(
 # here as a literal because `promotion` imports `store`; a test pins the two
 # together.
 _SOURCE_REVERT_EVIDENCE: Final[str] = "promotion:revert_evidence"
-
-
-# #1650: the only non-space characters a phantom may hold outside the
-# sentences a restatement covers: list markers, rules, heading hashes,
-# brackets, quotes, and sentence punctuation. Anything else, including
-# letters, digits, symbols such as "❌" or "≠", and logic-like marks such as
-# "!", "?", "=", "<", ">" and "~", keeps the phantom from automatic promotion.
-_PHANTOM_RESIDUE_ALLOWED: Final[frozenset[str]] = frozenset("-*#.,;:()[]'\"`|_")
-
-
-def _parse_instant(ts: str | None) -> datetime | None:
-    """An ISO-8601 stamp as an aware UTC instant, or None if it won't parse.
-
-    `Z` and `+00:00` forms compare as instants, and a naive stamp is taken
-    as UTC, the convention every writer here follows. #1650 uses None to
-    fail closed: an unparseable stamp is never "after" anything.
-    """
-    if not ts:
-        return None
-    try:
-        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
 
 
 class MemoryStore:
@@ -6576,59 +6549,16 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
-    def find_evidence_promotable_phantoms(
-        self, *, min_supports: int = 3, min_sessions: int = 2,
-        max_n: int | None = None,
-    ) -> list[Belief]:
-        """Phantoms the user's own evidence qualifies for automatic promotion (#1650).
+    def evidence_promotion_candidates(self) -> list[Belief]:
+        """Phantoms that could be promoted on evidence (#1650): live,
+        unlocked, with no inbound CONTRADICTS edge, no negative-valence
+        feedback, and no earlier ``aelf demote`` of an automatic promotion
+        (that undo is a veto). Ordered by ``created_at`` then ``id``.
 
-        Stricter than :meth:`find_promotable_phantoms`, which only surfaces a
-        note. A **support** is one of these user-produced events:
-
-          * a user-spoken transcript corroboration on the phantom itself;
-          * the creation of a **twin** you typed: a live ``user_transcript``
-            belief with the exact text of one of the phantom's sentences. When you restate a
-            phantom, ingest stores your sentence as its own belief, because
-            a phantom's identity comes from wonder's inputs rather than its
-            text, so the restatement reaches the phantom through its twin;
-          * a user-spoken transcript corroboration on any live belief with
-            that exact text, whoever created it. If the memory mirror or a
-            commit stored the sentence first, your later typed restatements
-            corroborate that belief, and they still count; that belief's
-            own creation does not.
-
-        Ingest stores what you type one sentence at a time, and a phantom is
-        usually a paragraph. So the phantom is split the same way
-        (:func:`aelfrice.ingest.stored_sentences`, keeping only sentences
-        ``classify_sentence`` would store as yours), and a session holds a
-        **complete restatement** only when you typed every one of those
-        sentences there; it yields as many as its least-restated sentence.
-        A phantom none of whose sentences you could store never qualifies.
-
-        A twin is found through the indexed ``content_hash`` (the SHA-256 of
-        the exact text, as ingest computes it), so matching is exact apart
-        from surrounding whitespace, and each sentence costs a few indexed
-        lookups rather than a scan of every belief. A twin with negative
-        feedback or an inbound CONTRADICTS edge supplies nothing.
-
-        Only user evidence is admitted: other corroboration sources and a
-        NULL speaker never count, so model text and wonder's own creation
-        row can't. A support counts only when it carries a session id, was
-        recorded after the phantom was created (compared as instants, so
-        `Z` and `+00:00` agree; a malformed stamp fails closed), and isn't
-        from the session that created the phantom.
-
-        A phantom qualifies with at least ``min_supports`` supports from at
-        least ``min_sessions`` distinct sessions, no inbound CONTRADICTS
-        edge, no negative-valence feedback, no user lock, and no earlier
-        ``aelf demote`` of an automatic promotion: that undo is a veto, so
-        the rule never re-promotes what the user took back.
-
-        SUPPORTS edges from reworded restatements also count in the spec;
-        no writer for them exists yet. Read-only. Ordered by ``created_at``
-        then ``id``; stops after ``max_n`` qualifying phantoms.
+        The evidence rule itself is
+        :func:`aelfrice.phantom_promotion_opportunity.find_evidence_promotable_phantoms`.
         """
-        phantoms = [_row_to_belief(r) for r in self._conn.execute(
+        return [_row_to_belief(r) for r in self._conn.execute(
             """
             SELECT b.* FROM beliefs b
             WHERE b.origin = ? AND b.valid_to IS NULL AND b.lock_level != ?
@@ -6645,73 +6575,8 @@ class MemoryStore:
             """,
             (ORIGIN_SPECULATIVE, LOCK_USER, _SOURCE_REVERT_EVIDENCE),
         ).fetchall()]
-        from aelfrice.classification_core import (  # noqa: PLC0415
-            USER_SOURCE,
-            classify_sentence,
-        )
-        from aelfrice.ingest import stored_sentences  # noqa: PLC0415
 
-        out: list[Belief] = []
-        for ph in phantoms:
-            born = _parse_instant(ph.created_at)
-            if born is None:
-                continue
-            # The sentences typing this phantom would store as your beliefs.
-            # With none, only direct corroborations on the phantom can count.
-            sentences = [
-                text for text in stored_sentences(ph.content)
-                if classify_sentence(text, USER_SOURCE).persist
-            ]
-            # Fail closed on anything a restatement can't cover. Promotion
-            # keeps the phantom's whole text, so a question, a command in a
-            # code fence, a tag, a trailing "Never.", or a symbol such as
-            # "❌" or "≠" that ingest would not store as yours would gain
-            # trust nobody restated. Only whitespace and a short allowlist
-            # of ASCII structure marks may lie outside those sentences.
-            residue = ph.content
-            for text in sentences:
-                residue = residue.replace(text, " ", 1)
-            if any(
-                not ch.isspace() and ch not in _PHANTOM_RESIDUE_ALLOWED
-                for ch in residue
-            ):
-                continue
-
-            def admitted(
-                events: list[tuple[str | None, str]], start: datetime,
-            ) -> Counter[str]:
-                counts: Counter[str] = Counter()
-                for sid, ts in events:
-                    when = _parse_instant(ts)
-                    if sid is None or when is None or when <= start:
-                        continue
-                    if ph.session_id is not None and sid == ph.session_id:
-                        continue
-                    counts[sid] += 1
-                return counts
-
-            # A complete restatement in a session needs every sentence there,
-            # so a session yields as many as its least-restated sentence.
-            per_sentence = [
-                admitted(self._restatement_events(text, exclude_id=ph.id), born)
-                for text in sentences
-            ]
-            complete: Counter[str] = admitted(self._direct_user_corroborations(ph.id), born)
-            sessions: set[str] = set()
-            for counts in per_sentence:
-                sessions.update(counts)
-            for sid in sessions:
-                restated = min(c[sid] for c in per_sentence)
-                if restated:
-                    complete[sid] += restated
-            n = sum(complete.values())
-            if n >= int(min_supports) and len(complete) >= int(min_sessions):
-                out.append(ph)
-                if max_n is not None and len(out) >= int(max_n):
-                    break
-        return out
-
-    def _direct_user_corroborations(
+    def user_corroborations(
         self, belief_id: str,
     ) -> list[tuple[str | None, str]]:
         """User-spoken transcript corroborations on one belief (#1650)."""
@@ -6724,7 +6589,7 @@ class MemoryStore:
             ).fetchall()
         ]
 
-    def _restatement_events(
+    def restatement_events(
         self, text: str, *, exclude_id: str,
     ) -> list[tuple[str | None, str]]:
         """``(session_id, timestamp)`` for each time you typed ``text`` (#1650).
@@ -6756,7 +6621,7 @@ class MemoryStore:
         for tid, origin, sid, created in twins:
             if origin == ORIGIN_USER_TRANSCRIPT:
                 events.append((sid, str(created)))
-            events.extend(self._direct_user_corroborations(str(tid)))
+            events.extend(self.user_corroborations(str(tid)))
         return events
 
     def set_retention_class(self, belief_id: str, retention_class: str) -> None:

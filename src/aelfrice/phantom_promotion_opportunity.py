@@ -37,7 +37,9 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from collections import Counter
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import IO, TYPE_CHECKING, Any, Final
 
 from aelfrice.config_discovery import discover_config
@@ -48,6 +50,7 @@ from aelfrice.session_ring import (
 )
 
 if TYPE_CHECKING:
+    from aelfrice.models import Belief
     from aelfrice.store import MemoryStore
 
 # ---------------------------------------------------------------------------
@@ -376,6 +379,149 @@ def evaluate_promotion_opportunities(
     return fired
 
 
+# #1650: the only non-space characters a phantom may hold outside the
+# sentences a restatement covers: list markers, rules, heading hashes,
+# brackets, quotes, and sentence punctuation. Anything else, including
+# letters, digits, symbols such as "❌" or "≠", and logic-like marks such as
+# "!", "?", "=", "<", ">" and "~", keeps the phantom from automatic promotion.
+_PHANTOM_RESIDUE_ALLOWED: Final[frozenset[str]] = frozenset("-*#.,;:()[]'\"`|_")
+
+
+def _parse_instant(ts: str | None) -> datetime | None:
+    """An ISO-8601 stamp as an aware UTC instant, or None if it won't parse.
+
+    `Z` and `+00:00` forms compare as instants, and a naive stamp is taken
+    as UTC, the convention every writer here follows. #1650 uses None to
+    fail closed: an unparseable stamp is never "after" anything.
+    """
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def find_evidence_promotable_phantoms(
+    store: "MemoryStore", *, min_supports: int = 3, min_sessions: int = 2,
+    max_n: int | None = None,
+) -> list["Belief"]:
+    """Phantoms the user's own evidence qualifies for automatic promotion (#1650).
+
+    Stricter than :meth:`MemoryStore.find_promotable_phantoms`, which only surfaces a
+    note. A **support** is one of these user-produced events:
+
+      * a user-spoken transcript corroboration on the phantom itself;
+      * the creation of a **twin** you typed: a live ``user_transcript``
+        belief with the exact text of one of the phantom's sentences. When you restate a
+        phantom, ingest stores your sentence as its own belief, because
+        a phantom's identity comes from wonder's inputs rather than its
+        text, so the restatement reaches the phantom through its twin;
+      * a user-spoken transcript corroboration on any live belief with
+        that exact text, whoever created it. If the memory mirror or a
+        commit stored the sentence first, your later typed restatements
+        corroborate that belief, and they still count; that belief's
+        own creation does not.
+
+    Ingest stores what you type one sentence at a time, and a phantom is
+    usually a paragraph. So the phantom is split the same way
+    (:func:`aelfrice.ingest.stored_sentences`), and a session holds a
+    **complete restatement** only when you typed every one of those
+    sentences there; it yields as many as its least-restated sentence.
+    Anything outside those sentences other than whitespace and a few ASCII
+    structure marks keeps the phantom out, since promotion keeps the whole
+    text.
+
+    A twin is found through the indexed ``content_hash`` (the SHA-256 of
+    the exact text, as ingest computes it), so matching is exact apart
+    from surrounding whitespace, and each sentence costs a few indexed
+    lookups rather than a scan of every belief. A twin with negative
+    feedback or an inbound CONTRADICTS edge supplies nothing.
+
+    Only user evidence is admitted: other corroboration sources and a
+    NULL speaker never count, so model text and wonder's own creation
+    row can't. A support counts only when it carries a session id, was
+    recorded after the phantom was created (compared as instants, so
+    `Z` and `+00:00` agree; a malformed stamp fails closed), and isn't
+    from the session that created the phantom.
+
+    A phantom qualifies with at least ``min_supports`` supports from at
+    least ``min_sessions`` distinct sessions, no inbound CONTRADICTS
+    edge, no negative-valence feedback, no user lock, and no earlier
+    ``aelf demote`` of an automatic promotion: that undo is a veto, so
+    the rule never re-promotes what the user took back.
+
+    SUPPORTS edges from reworded restatements also count in the spec;
+    no writer for them exists yet. Read-only. Ordered by ``created_at``
+    then ``id``; stops after ``max_n`` qualifying phantoms.
+    """
+    phantoms = store.evidence_promotion_candidates()
+    from aelfrice.ingest import stored_sentences  # noqa: PLC0415
+
+    out: list[Belief] = []
+    for ph in phantoms:
+        born = _parse_instant(ph.created_at)
+        if born is None:
+            continue
+        # The sentences typing this phantom would store as your beliefs.
+        # A sentence ingest stores but would never keep as yours (a question,
+        # say) can't be restated, so a phantom holding one never qualifies:
+        # nothing separate is needed to exclude it.
+        sentences = stored_sentences(ph.content)
+        # Fail closed on anything a restatement can't cover. Promotion
+        # keeps the phantom's whole text, so a question, a command in a
+        # code fence, a tag, a trailing "Never.", or a symbol such as
+        # "❌" or "≠" that ingest would not store as yours would gain
+        # trust nobody restated. Only whitespace and a short allowlist
+        # of ASCII structure marks may lie outside those sentences.
+        residue = ph.content
+        for text in sentences:
+            residue = residue.replace(text, " ", 1)
+        if any(
+            not ch.isspace() and ch not in _PHANTOM_RESIDUE_ALLOWED
+            for ch in residue
+        ):
+            continue
+
+        def admitted(
+            events: list[tuple[str | None, str]], start: datetime,
+        ) -> Counter[str]:
+            counts: Counter[str] = Counter()
+            for sid, ts in events:
+                when = _parse_instant(ts)
+                if sid is None or when is None or when <= start:
+                    continue
+                if ph.session_id is not None and sid == ph.session_id:
+                    continue
+                counts[sid] += 1
+            return counts
+
+        # A complete restatement in a session needs every sentence there,
+        # so a session yields as many as its least-restated sentence.
+        per_sentence = [
+            admitted(store.restatement_events(text, exclude_id=ph.id), born)
+            for text in sentences
+        ]
+        complete: Counter[str] = admitted(store.user_corroborations(ph.id), born)
+        sessions: set[str] = set()
+        for counts in per_sentence:
+            sessions.update(counts)
+        for sid in sessions:
+            restated = min(c[sid] for c in per_sentence)
+            if restated:
+                complete[sid] += restated
+        n = sum(complete.values())
+        if n >= int(min_supports) and len(complete) >= int(min_sessions):
+            out.append(ph)
+            if max_n is not None and len(out) >= int(max_n):
+                break
+    return out
+
+
+
 def auto_promote_phantoms(
     *,
     store: "MemoryStore",
@@ -384,7 +530,7 @@ def auto_promote_phantoms(
 ) -> list[tuple[str, str]]:
     """Promote phantoms the user's evidence qualifies (#1650); default off.
 
-    Uses :meth:`MemoryStore.find_evidence_promotable_phantoms` with the
+    Uses :func:`find_evidence_promotable_phantoms` with the
     config's ``min_corroborations`` / ``min_sessions`` (3 and 2 by default,
     the spec's starting rule) and promotes each through
     :func:`aelfrice.promotion.promote_on_evidence`, which audits and can be
@@ -396,7 +542,8 @@ def auto_promote_phantoms(
     from aelfrice.promotion import promote_on_evidence  # noqa: PLC0415
 
     promoted: list[tuple[str, str]] = []
-    for belief in store.find_evidence_promotable_phantoms(
+    for belief in find_evidence_promotable_phantoms(
+        store,
         min_supports=config.min_corroborations,
         min_sessions=config.min_sessions,
         max_n=_AUTO_PROMOTE_MAX_PER_TURN,

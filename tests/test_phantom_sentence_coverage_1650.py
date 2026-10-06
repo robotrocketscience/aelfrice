@@ -15,6 +15,7 @@ import pytest
 
 from aelfrice.ingest import ingest_jsonl, stored_sentences
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, ORIGIN_SPECULATIVE, Belief
+from aelfrice.phantom_promotion_opportunity import find_evidence_promotable_phantoms
 from aelfrice.store import MemoryStore
 
 T0 = "2026-10-01T00:00:00Z"
@@ -48,7 +49,7 @@ def store(tmp_path: Path):  # noqa: ANN201
 
 
 def _ids(store: MemoryStore) -> list[str]:
-    return [b.id for b in store.find_evidence_promotable_phantoms()]
+    return [b.id for b in find_evidence_promotable_phantoms(store)]
 
 
 def test_stored_sentences_matches_what_ingest_stores() -> None:
