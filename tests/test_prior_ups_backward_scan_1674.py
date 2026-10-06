@@ -147,3 +147,31 @@ def test_the_scan_stops_at_the_first_match(audit: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(hook, "_parse_audit_line", counting)
     assert hook._load_prior_ups_belief_ids("S") == ["a"]  # pyright: ignore[reportPrivateUsage]
     assert len([p for p in parsed if p.strip()]) == 1
+
+
+@pytest.mark.parametrize("chunk", [5, 65_536])
+def test_crlf_and_whitespace_only_lines(
+    audit: Path, monkeypatch: pytest.MonkeyPatch, chunk: int,
+) -> None:
+    """Whitespace-only lines are blank, as in the whole-file read."""
+    monkeypatch.setattr(hook, "_AUDIT_BACKWARD_CHUNK", chunk)
+    good = json.dumps({"hook": "user_prompt_submit", "session_id": "S", "beliefs": [{"id": "a"}]})
+    audit.write_bytes((good + "\r\n \r\n\t\n\r\n").encode())
+    assert hook._load_prior_ups_belief_ids("S") == ["a"] == _whole_file(audit, "S")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_line_many_chunks_long(audit: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook, "_AUDIT_BACKWARD_CHUNK", 16)
+    long_row = json.dumps({
+        "hook": "user_prompt_submit", "session_id": "S",
+        "beliefs": [{"id": f"b{i}", "pad": "x" * 50} for i in range(200)],
+    })
+    other = json.dumps({"hook": "user_prompt_submit", "session_id": "T", "beliefs": []})
+    audit.write_text(long_row + "\n" + other + "\n", encoding="utf-8")
+    assert hook._load_prior_ups_belief_ids("S") == [f"b{i}" for i in range(200)]  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_file_gone_before_it_is_opened_yields_nothing(tmp_path: Path) -> None:
+    """A rotation can remove the file between the existence check and
+    the open; the lookup stays fail-soft per file."""
+    assert list(hook._read_audit_records_backward(tmp_path / "missing.jsonl")) == []  # pyright: ignore[reportPrivateUsage]

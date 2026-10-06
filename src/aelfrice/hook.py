@@ -5431,24 +5431,38 @@ def _read_audit_records_backward(path: Path) -> Iterator[dict[str, object]]:
 
     Same parse rules as `read_hook_audit`: blank lines are skipped, a line
     that isn't JSON (or isn't UTF-8) raises `ValueError`, and JSON that
-    isn't an object is skipped. Lines are split on `\\n` only; the writer
-    never emits another line break outside a JSON string. #1674.
+    isn't an object is skipped. Lines are split on `\\n` only: the writer
+    emits ASCII-only JSON (`json.dumps` defaults), so a record never holds
+    a raw line break of any kind. #1674.
+
+    A line longer than one chunk is kept as a list of pieces and joined
+    once, so reading it stays linear in its length. A file removed before
+    it can be opened (a rotation in progress) yields nothing, as
+    `read_hook_audit` did for a missing file.
     """
-    with open(path, "rb") as fh:
+    try:
+        fh = open(path, "rb")
+    except FileNotFoundError:
+        return
+    with fh:
         fh.seek(0, os.SEEK_END)
         pos = fh.tell()
-        tail = b""
+        pending: list[bytes] = []  # the current line's pieces, last piece first
         while pos > 0:
             size = min(_AUDIT_BACKWARD_CHUNK, pos)
             pos -= size
             fh.seek(pos)
-            parts = (fh.read(size) + tail).split(b"\n")
-            tail = parts[0]
-            for raw in reversed(parts[1:]):
+            parts = fh.read(size).split(b"\n")
+            if len(parts) == 1:
+                pending.append(parts[0])
+                continue
+            complete = [parts[-1], *reversed(pending)]
+            for raw in (b"".join(complete), *reversed(parts[1:-1])):
                 record = _parse_audit_line(raw, path)
                 if record is not None:
                     yield record
-        record = _parse_audit_line(tail, path)
+            pending = [parts[0]]
+        record = _parse_audit_line(b"".join(reversed(pending)), path)
         if record is not None:
             yield record
 
