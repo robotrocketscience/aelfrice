@@ -1,0 +1,9 @@
+### Added
+
+- **`aelf doctor core-gate` drains the core admission gate's backlog ([#1638](https://github.com/robotrocketscience/aelfrice/issues/1638)).** The backlog is the active, unlocked beliefs that meet the core rule without the gate and have no label under the current classifier version. `aelf doctor core-gate` counts the core candidates with each label and with none, and writes no batch or label. With `--emit`, it records the backlog as batches of up to 50 beliefs, in belief id order, and prints each batch's id, its full classifier prompt, and the `aelf core-gate accept <batch-id>` command that takes the model's reply. `--out DIR` writes each prompt to a file instead, `--limit N` prints at most N batches, and `--json` prints the result as one object. The batch records are the only writes.
+
+  An emit doesn't batch a belief twice. If a batch from an earlier emit isn't accepted yet, and all of its beliefs are still unlabeled, unchanged, and in core, the next emit prints that batch again, with the same id and prompt. Otherwise the emit sets the batch aside and puts its unlabeled beliefs in a new batch.
+
+  `aelf core-gate accept` now runs the spec's self-check after it accepts a batch from `aelf doctor core-gate --emit`. Over the accepted batches of the same emit run, it names on stderr each batch whose share of C labels differs by more than 0.25 from the median share of the other batches. The check reports only: the labels stay cached, and the exit code is unchanged. All the batches of one emit share one creation time, which identifies the run, so the check needs no new column.
+
+  The graph report of `aelf doctor`, and `aelf health`, now include a `core admission gate` block with the same counts as `aelf doctor core-gate`, and `aelf health --json` adds them under a `core_gate` key. The counts never change the exit code.
