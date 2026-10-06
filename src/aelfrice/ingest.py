@@ -202,6 +202,39 @@ class TurnIngest:
         return None
 
 
+def _partition_sentences(text: str) -> tuple[list[str], list[list[str]]]:
+    """The sentences a turn stores as beliefs, and the clauses between them.
+
+    #809: sentences are split, transcript noise is dropped, and sub-floor
+    clauses are separated from full-length belief candidates.
+    `subfloor_between[i]` holds the sub-floor clauses (in original order)
+    that preceded `full_sentences[i]`; clauses before the first full
+    sentence and after the last are unanchored and dropped.
+    """
+    sentences = [s for s in extract_sentences(text) if not is_transcript_noise(s)]
+    full_sentences: list[str] = []
+    subfloor_between: list[list[str]] = []
+    pending_subfloor: list[str] = []
+    for sentence in sentences:
+        if _looks_like_subfloor_noise(sentence):
+            pending_subfloor.append(sentence)
+        else:
+            full_sentences.append(sentence)
+            subfloor_between.append(pending_subfloor)
+            pending_subfloor = []
+    return full_sentences, subfloor_between
+
+
+def stored_sentences(text: str) -> list[str]:
+    """The sentences ingest would store as beliefs from ``text`` (#1650).
+
+    The same split and filters a turn goes through, so a caller can ask
+    which beliefs typing ``text`` would produce. ``derive()`` can still
+    decline one (``classify_sentence(...).persist``).
+    """
+    return _partition_sentences(text)[0]
+
+
 def _ingest_turn_ids(
     store: MemoryStore,
     text: str,
@@ -257,29 +290,7 @@ def _ingest_turn(
     DERIVED_FROM edge between the surrounding beliefs; unanchored
     sub-floor sentences are silently dropped.
     """
-    sentences = extract_sentences(text)
-    sentences = [s for s in sentences if not is_transcript_noise(s)]
-    if not sentences:
-        return TurnIngest(inserted=[], resolved=[])
-
-    # #809: partition sentences into full-length belief candidates and
-    # sub-floor clauses pending demotion to edge anchor_text. The
-    # `subfloor_between[i]` list holds sub-floor clauses (in original
-    # order) that preceded `full_sentences[i]`; entries before the
-    # first full sentence and after the last full sentence are
-    # unanchored and silently dropped.
-    full_sentences: list[str] = []
-    subfloor_between: list[list[str]] = []
-    pending_subfloor: list[str] = []
-    for sentence in sentences:
-        if _looks_like_subfloor_noise(sentence):
-            pending_subfloor.append(sentence)
-        else:
-            full_sentences.append(sentence)
-            subfloor_between.append(pending_subfloor)
-            pending_subfloor = []
-    # Anything left in pending_subfloor has no following full sentence —
-    # unanchored, silently dropped.
+    full_sentences, subfloor_between = _partition_sentences(text)
     if not full_sentences:
         return TurnIngest(inserted=[], resolved=[])
 
