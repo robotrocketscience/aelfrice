@@ -563,6 +563,10 @@ class DoctorReport:
     # config of its own, so its settings silently do not apply (#1582).
     # A warning only: it never changes the exit code.
     ignored_home_config: Path | None = None
+    # #1657: the claude-memory mirror hook is installed and the project has
+    # memory to mirror, but nothing has turned the mirror on (no env, no
+    # TOML, no consent sentinel), so it never writes. A warning only.
+    mirror_consent_missing: bool = False
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -720,6 +724,28 @@ def diagnose(
         )
     except Exception:  # noqa: BLE001 - fail-soft section
         report.ignored_home_config = None
+    # #1657: an installed mirror hook that consent never switched on. The
+    # sentinel sits beside the store doctor opens (`db_path()`, from the cwd),
+    # like every other store check here; `project_root` picks the memory
+    # directory and the TOML.
+    try:
+        from aelfrice.claude_memory import (  # noqa: PLC0415
+            derive_memory_dir,
+            mirror_consent_missing,
+        )
+        from aelfrice.setup import CLAUDE_MEMORY_MIRROR_SCRIPT_NAME  # noqa: PLC0415
+
+        root = project_root if project_root is not None else Path.cwd()
+        hook_installed = any(
+            CLAUDE_MEMORY_MIRROR_SCRIPT_NAME in f.command for f in report.findings
+        )
+        report.mirror_consent_missing = (
+            hook_installed
+            and derive_memory_dir(root).is_dir()
+            and mirror_consent_missing(start=root)
+        )
+    except Exception:  # noqa: BLE001 - fail-soft section
+        report.mirror_consent_missing = False
     # #218 AC4: populate user_prompt_submit_hook telemetry section.
     ups_tel_path = user_prompt_submit_telemetry_path
     if ups_tel_path is None:
@@ -1553,7 +1579,24 @@ def format_report(report: DoctorReport) -> str:
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
     _format_ignored_home_config_section(report, lines)
+    _format_mirror_consent_section(report, lines)
     return "\n".join(lines)
+
+
+def _format_mirror_consent_section(report: DoctorReport, lines: list[str]) -> None:
+    """Warn when the mirror hook is installed but never switched on (#1657)."""
+    if not report.mirror_consent_missing:
+        return
+    lines.append("")
+    lines.append("warning: the claude-memory mirror hook is installed but the mirror is off")
+    lines.append(
+        "  consent was never recorded for this project, so memory you write is "
+        "not mirrored into aelfrice."
+    )
+    lines.append(
+        "  fix: run `aelf reconcile-claude-memory` from this project, or set "
+        "[memory] mirror_claude_memory in .aelfrice.toml to decide either way."
+    )
 
 
 def _format_ignored_home_config_section(

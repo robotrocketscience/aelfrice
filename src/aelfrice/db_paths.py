@@ -75,6 +75,44 @@ def _git_common_dir() -> Path | None:
     return Path(raw).resolve()
 
 
+def main_checkout_path(path: Path) -> Path:
+    """``path`` with a linked worktree's root swapped for its main checkout.
+
+    The host keeps a worktree session's memory under the main checkout's
+    project directory: on one machine 17 worktree project directories
+    existed and none had a ``memory/`` folder (#1657). So the memory for
+    ``<main>/.claude/worktrees/N/sub`` lives under ``<main>/sub``'s
+    encoding. A plain checkout, a submodule (whose ``.git`` file has no
+    ``commondir``), and a path outside any repo come back unchanged.
+
+    Reads the ``.git`` file and the worktree's ``commondir`` rather than
+    running ``git``, so it costs a few ``stat`` calls. Never raises. The
+    common dir is resolved, so a main checkout whose ``.git`` is itself a
+    symlink maps to the symlink's target project.
+    """
+    try:
+        for root in (path, *path.parents):
+            dot_git = root / ".git"
+            if dot_git.is_dir():
+                return path
+            if not dot_git.is_file():
+                continue
+            text = dot_git.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return path
+            gitdir = (root / text[len("gitdir:"):].strip()).resolve()
+            commondir_file = gitdir / "commondir"
+            if not commondir_file.is_file():
+                return path
+            common = (gitdir / commondir_file.read_text(encoding="utf-8").strip()).resolve()
+            if common.name != ".git":
+                return path
+            return common.parent / path.relative_to(root)
+    except (OSError, ValueError):
+        return path
+    return path
+
+
 def db_path() -> Path:
     """Resolve the DB path.
 

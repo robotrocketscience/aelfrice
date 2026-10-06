@@ -190,12 +190,15 @@ def encode_project_path(abs_path: str) -> str:
 def derive_memory_dir(project_path: str | Path) -> Path:
     """Return the claude-memory directory for ``project_path``.
 
-    Resolves ``project_path`` to an absolute native path, encodes it with
-    :func:`encode_project_path`, and joins it under
-    ``~/.claude/projects/<encoded>/memory/``. Touches no filesystem beyond
-    the resolution itself.
+    Resolves ``project_path`` to an absolute native path, maps a linked
+    worktree to its main checkout (:func:`aelfrice.db_paths.main_checkout_path`), encodes
+    it with :func:`encode_project_path`, and joins it under
+    ``~/.claude/projects/<encoded>/memory/``. Reads only the ``.git``
+    metadata needed for the worktree mapping.
     """
-    abs_path = str(Path(project_path).resolve())
+    from aelfrice.db_paths import main_checkout_path  # noqa: PLC0415
+
+    abs_path = str(main_checkout_path(Path(project_path).resolve()))
     return (
         Path.home()
         / ".claude"
@@ -338,6 +341,20 @@ def is_mirror_enabled(
     if _consent_sentinel_present():
         return True
     return False
+
+
+def mirror_consent_missing(*, start: Path | None = None) -> bool:
+    """True when nothing decides the mirror: no env, no TOML, no consent.
+
+    That is the state #1657 found, where the mirror is off only because
+    the one-shot consent never ran. An explicit env or TOML value, either
+    way, is a decision, so it returns False then.
+    """
+    if _env_mirror_override() is not None:
+        return False
+    if _read_mirror_toml(start) is not None:
+        return False
+    return not _consent_sentinel_present()
 
 
 # ---------------------------------------------------------------------------
