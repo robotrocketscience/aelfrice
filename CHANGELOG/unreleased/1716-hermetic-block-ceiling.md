@@ -1,0 +1,3 @@
+### Fixed
+
+- **`scripts/measure_block_ceiling.py` now measures the same figures on every machine ([#1716](https://github.com/robotrocketscience/aelfrice/issues/1716)).** On a machine with a `~/.aelfrice.toml` and no project config, the SessionStart hook adds the #1652 notice that the file is ignored. That added about 40 tokens to the producer's `session_start` figures, so `check_derived_figures.py` reported 8 stale figures there: 7700 against the published 7660, and 272 against 233. CI's home has no such file, which is why nothing caught it. The published figures were correct. The producer now runs its measurements under an empty `HOME`, and restores the caller's `HOME` afterward.
