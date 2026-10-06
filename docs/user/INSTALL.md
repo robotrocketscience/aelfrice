@@ -252,7 +252,7 @@ Bare `aelf setup` installs the v1.2.0 auto-capture pipeline, together with the r
 | Hook | Event(s) | Default | What it does |
 |---|---|---|---|
 | UserPromptSubmit retrieval | `UserPromptSubmit` | always | injects the matched beliefs as an `<aelfrice-memory>` block |
-| transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL file. PreCompact rotates that file, then ingests it into beliefs and edges |
+| transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL file. Every 12 turns, `Stop` ingests the new turns into beliefs and edges (`AELFRICE_INGEST_STOP_FLUSH_TURNS` changes the count). PreCompact rotates the file, then ingests it too |
 | commit-ingest | git `post-commit` in the current repository | **on** | after each commit, the triple extractor runs on its message in the background. Commits replayed by `git rebase`, and `git revert` commits, are skipped. Since #1698 this is a git hook, not a `PostToolUse:Bash` entry, so run `aelf setup` inside each repository whose commits you want recorded. Setup won't edit a `post-commit` it can't restore exactly, or one in a shared or tracked `core.hooksPath`; it prints the lines to add instead. Removing aelfrice takes the block out of the current repository only, so remove it from other repositories by hand |
 | session-start | `SessionStart` | **on** | new sessions open with the L0 locked beliefs already injected |
 | stop-lock-prompt | `Stop` | **on** | prompts you to lock this session's correction-class (#582) and directive (#1315) beliefs. Once the session's turns are ingested, at most once per ingest, it also asks the agent to label the session's new core candidates for the core admission gate (#1638); see [`[core_gate]`](CONFIG.md#core_gate-1638) to turn that off |
@@ -318,7 +318,7 @@ aelf setup --no-stop-hook           # disable one hook; persists across upgrades
 
 `aelf doctor` doesn't reconcile settings.json against the manifest. That's why `aelf doctor` doesn't flag the newer manifest hooks, search-tool and pre-issue-guard, when they're absent. The auto-installer is the reconciliation path.
 
-> **Privacy note.** transcript-ingest is on by default, so every turn that you type goes into the per-project SQLite DB at the `PreCompact` rotation. The DB is local-only: it uses no network and sends no telemetry. See § "What you get for free" in the README and [the privacy documentation](PRIVACY.md).
+> **Privacy note.** transcript-ingest is on by default, so every turn that you type goes into the per-project SQLite DB, every 12 turns at `Stop` and at the `PreCompact` rotation. The DB is local-only: it uses no network and sends no telemetry. See § "What you get for free" in the README and [the privacy documentation](PRIVACY.md).
 >
 > The JSONL file has no PII scrubber. If you paste secrets, customer data, or anything else that you don't want indexed in the chat, opt out with `--no-transcript-ingest`. Then use `aelf lock` or `aelf onboard` for explicit ingestion only.
 
