@@ -2,9 +2,10 @@
 
 **Status:** partly implemented. The label cache, `aelf core-gate accept`, the
 gate in core selection, the `aelf doctor core-gate` backlog drain, the
-self-check, and the re-run of a flagged batch are implemented. The session-end batch isn't implemented yet, so
-labels come only from batches you emit with `aelf doctor core-gate --emit`.
-Until a belief has a label, it follows today's rule.
+self-check, and the re-run of a flagged batch are implemented. The
+session-end batch isn't implemented yet, so labels come only from batches
+you emit with `aelf doctor core-gate --emit`. Until a belief has a label, it
+follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
 This spec proposes a content gate for core admission. Three consumers select
