@@ -22,7 +22,9 @@ import pytest
 
 from aelfrice import core_gate
 from aelfrice.cli import main
+from aelfrice.cli import default_core_rule
 from aelfrice.core_gate import CLASSIFIER_VERSION, MAX_BATCH, build_prompt
+from aelfrice.doctor import CoreGateRerunReport, rerun_core_gate_batch
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
@@ -946,6 +948,158 @@ def test_rerun_text_says_whether_the_self_check_covers_the_batch(
         assert "self-check leaves it out" not in out
 
 
+SESSION_END_RERUN_AT = "2026-10-06T12:00:00+00:00"
+
+
+def _session_end_accepted(
+    db: Path, monkeypatch: pytest.MonkeyPatch, n: int, label: str = "C",
+) -> str:
+    """`n` core beliefs in one accepted session-end batch, all `label`."""
+    _store(db, n)
+    [bid] = _run_batches(db, [n], origin="session_end")
+    assert _accept(monkeypatch, bid, [label] * n) == 0
+    return bid
+
+
+def _rerun_direct(db: Path, batch_id: str) -> CoreGateRerunReport:
+
+    store = MemoryStore(str(db))
+    try:
+        return rerun_core_gate_batch(
+            store, default_core_rule, batch_id, created_at=SESSION_END_RERUN_AT,
+        )
+    finally:
+        store.close()
+
+
+def test_rerun_of_a_session_end_batch_makes_a_doctor_batch_in_a_new_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session-end batch is re-run into a new doctor batch at the
+    caller's time, a run of its own, even when every belief is kept; the
+    session-end row stays as it was.
+
+    Killed by: refusing a session-end batch again, reopening it like a
+    whole doctor batch (`and not from_session_end` dropped), creating the
+    new batch at the session-end batch's `created_at` (its id is then the
+    session-end batch's own, which the store refuses), or ignoring the
+    `created_at` argument.
+    """
+    bid = _session_end_accepted(db, monkeypatch, 3)
+    report = _rerun_direct(db, bid)
+    assert (report.labels_dropped, report.kept, report.reopened, report.new_run) == (
+        3, 3, False, True,
+    )
+    assert report.batch is not None
+    fresh = report.batch.batch_id
+    assert fresh != bid
+    rows = {r[0]: r for r in _batches(db)}
+    assert rows[fresh][1:3] == ("doctor", None)
+    assert _items_of(db, fresh) == [_bid(0), _bid(1), _bid(2)]
+    assert _batch_column(db, fresh, "created_at") == SESSION_END_RERUN_AT
+    assert report.batch.created_at == SESSION_END_RERUN_AT
+    assert rows[bid][1:3] == ("session_end", "widgetsession")
+    assert _batch_column(db, bid, "accepted_at") is not None
+    assert _labels(db) == []
+
+
+def test_rerun_of_a_session_end_batch_is_accepted_outside_the_self_check(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The new doctor batch accepts and owns its labels; as a run of one
+    batch, its accept says the self-check was skipped.
+
+    Killed by: creating the new batch with origin `session_end` (the
+    accept then prints no self-check line at all).
+    """
+    bid = _session_end_accepted(db, monkeypatch, 2)
+    code, report = _rerun(bid)
+    assert code == 0
+    [fresh] = report["batches"]  # type: ignore[misc]
+    fresh_id = str(fresh["batch_id"])
+    capsys.readouterr()
+    assert _accept(monkeypatch, fresh_id, ["A", "B"]) == 0
+    assert [owner for _, owner in _labels(db)] == [fresh_id, fresh_id]
+    err = capsys.readouterr().err
+    assert f"self-check skipped: the emit run of batch {fresh_id} has 1 accepted batch" in err
+
+
+def test_rerun_of_a_partly_current_session_end_batch(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retired belief drops out of the new doctor batch, and the
+    labels the session-end batch owned are dropped.
+
+    Killed by: keeping the retired belief, or not dropping the labels.
+    """
+    bid = _session_end_accepted(db, monkeypatch, 3)
+    _retire(db, 1)
+    report = _rerun_direct(db, bid)
+    assert report.batch is not None and report.new_run
+    assert _items_of(db, report.batch.batch_id) == [_bid(0), _bid(2)]
+    assert report.labels_dropped == 3
+    assert _labels(db) == []
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["whole", "partial"])
+def test_rerun_text_of_a_session_end_batch_says_it_starts_a_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch, partial: bool,
+) -> None:
+    """The output says the new batch starts a run of its own that the
+    self-check doesn't cover, whether or not a belief dropped out.
+
+    Killed by: checking `report.reopened` before `report.new_run` in
+    `_cmd_doctor_core_gate_rerun`, or dropping the `new_run` branch.
+    """
+    bid = _session_end_accepted(db, monkeypatch, 3)
+    if partial:
+        _retire(db, 1)
+    code, out = _run("doctor", "core-gate", "--rerun", bid)
+    assert code == 0
+    assert "It starts an emit run of its own" in out
+    assert "doesn't cover it." in out
+    assert "self-check leaves it out" not in out
+    assert "compares it with the same batches" not in out
+
+
+def test_rerun_json_reports_a_new_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: dropping `new_run` from the `--json` output."""
+    bid = _session_end_accepted(db, monkeypatch, 2)
+    code, report = _rerun(bid)
+    assert code == 0
+    assert report["new_run"] is True
+
+
+def test_rerun_of_a_doctor_batch_is_not_a_new_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: setting `new_run` for every re-run."""
+    bid, _ = _emitted_and_accepted(db, monkeypatch, 2)
+    code, report = _rerun(bid)
+    assert code == 0
+    assert report["new_run"] is False
+
+
+def test_rerun_of_an_unaccepted_session_end_batch_is_refused(
+    db: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The other refusals still apply to a session-end batch.
+
+    Killed by: skipping the `accepted_at` check for session-end batches.
+    """
+    _store(db, 2)
+    [bid] = _run_batches(db, [2], origin="session_end")
+    before = _batches(db)
+    capsys.readouterr()
+    code, _ = _run("doctor", "core-gate", "--rerun", bid)
+    assert code == 1
+    assert "never accepted" in capsys.readouterr().err
+    assert _batches(db) == before
+
+
 def test_limit_advice_keeps_the_self_check(db: Path) -> None:
     """With candidates left by `--limit`, the advice says how to keep the
     self-check rather than to emit again after each accept.
@@ -973,13 +1127,11 @@ def _refusal_case(db: Path, case: str) -> tuple[str, str]:
     if case == "unknown":
         return "widget0000000000", "no core-gate batch"
     version = OLD_VERSION if case == "other-version" else CLASSIFIER_VERSION
-    origin = "session_end" if case == "session-end" else "doctor"
     store = MemoryStore(str(db))
     try:
         bid = store.create_core_gate_batch(
-            items, classifier_version=version, origin=origin,
-            session_id="widgetsession" if origin == "session_end" else None,
-            created_at=RUN_AT,
+            items, classifier_version=version, origin="doctor",
+            session_id=None, created_at=RUN_AT,
         )
         if case != "not-accepted":
             store.accept_core_gate_batch(
@@ -993,21 +1145,22 @@ def _refusal_case(db: Path, case: str) -> tuple[str, str]:
     return bid, {
         "not-accepted": "never accepted",
         "other-version": "emitted under",
-        "session-end": "session_end batch",
         "no-labels": "owns no labels",
     }[case]
 
 
 @pytest.mark.parametrize(
     "case",
-    ["unknown", "not-accepted", "other-version", "session-end", "no-labels"],
+    ["unknown", "not-accepted", "other-version", "no-labels"],
 )
 def test_rerun_refusals_exit_1_and_write_nothing(
     db: Path, capsys: pytest.CaptureFixture[str], case: str,
 ) -> None:
-    """Each refusal names its reason and leaves the store unchanged.
+    """Each refusal names its reason and leaves the store unchanged. A
+    session-end batch is no longer refused (operator ruling, 2026-10-06);
+    `test_rerun_of_a_session_end_batch_*` covers it.
 
-    Killed by: removing any one of the five checks in
+    Killed by: removing any one of the four checks in
     `rerun_core_gate_batch` (a check another one masks is caught by its
     reason).
     """
