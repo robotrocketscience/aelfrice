@@ -10189,7 +10189,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help=(
-            "with core-gate --emit: write each batch's prompt to "
+            "with core-gate --emit or --rerun: write each batch's prompt to "
             "DIR/core-gate-<batch-id>.txt instead of printing it."
         ),
     )
