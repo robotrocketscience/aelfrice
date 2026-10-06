@@ -2572,6 +2572,9 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         # `aelf doctor` emit run. It reports and never refuses: the labels
         # are already cached and the exit code stays 0.
         run_counts = store.core_gate_run_label_counts(batch_id)
+        # Ruling on #1638, 2026-10-05: a subset re-run is neither checked
+        # nor a sibling; its few snippets would skew the medians.
+        subset_reruns = store.core_gate_subset_reruns(batch_id)
     finally:
         store.close()
     counts = {name: 0 for name in ("A", "B", "C")}
@@ -2584,7 +2587,17 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
     )
     if batch.origin != CORE_GATE_ORIGIN_DOCTOR:
         return 0
-    shares = {bid: c / n for bid, (c, n) in run_counts.items() if n > 0}
+    if batch_id in subset_reruns:
+        print(
+            f"core-gate: self-check skipped: batch {batch_id} re-ran part of "
+            "a batch, and a partial re-run is neither checked nor compared.",
+            file=sys.stderr,
+        )
+        return 0
+    shares = {
+        bid: c / n for bid, (c, n) in run_counts.items()
+        if n > 0 and bid not in subset_reruns
+    }
     if len(shares) < core_gate.SELF_CHECK_MIN_BATCHES:
         print(
             f"core-gate: self-check skipped: the emit run of batch "
