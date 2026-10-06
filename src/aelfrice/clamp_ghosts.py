@@ -51,7 +51,7 @@ reaches a clampable origin with an inflated α, and they miss it for
 different reasons — worth stating, because the safety here rests on the
 producers, not on the branch:
 
-- `llm_classifier` (`aelf onboard --llm-classify`, default off) is
+- `llm_classifier` (`aelf onboard`, default on since v1.5) is
   restricted to `{agent_inferred, document_recent}` by
   `_PERMITTED_ORIGINS`, and takes its α from `get_source_adjusted_prior`
   on the candidate's `doc:`/`ast:`/`git:` source label — so it is

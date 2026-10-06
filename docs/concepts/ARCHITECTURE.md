@@ -183,14 +183,14 @@ The specification documents are [the entity-index spec](../design/entity_index.m
 
 Classification uses the priors, with a regex fallback, and the scan is idempotent on `content_hash`.
 
-**The LLM onboard classifier (v1.3+, default-OFF).** `aelf onboard --llm-classify` routes each candidate through the vendor's small model instead of through the regex path. Four consent gates enforce the privacy boundary:
+**The LLM onboard classifier (v1.3+, default-on since v1.5).** `aelf onboard` routes each candidate through the vendor's small model instead of through the regex path. Four consent gates enforce the privacy boundary:
 
 - the `[onboard-llm]` extra is installed;
 - `ANTHROPIC_API_KEY` is present;
-- the `--llm-classify` flag is set, or the `[onboard.llm].enabled` TOML key is set;
+- the classifier isn't turned off: `[onboard.llm].enabled` defaults to `true`, and `--llm-classify=false` or `enabled = false` turns it off;
 - a one-time interactive consent prompt is answered, and a sentinel file records the answer.
 
-`--dry-run` previews the candidates and calls no API. The specification is [the LLM-classifier spec](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [the onboard-time outbound call in the privacy document](../user/PRIVACY.md#onboard-time-outbound-call).
+When the classifier is on only by default and a gate fails, onboard falls back to the regex path without an error; `--llm-classify` turns a failed gate into an error. `--dry-run` previews the candidates and calls no API. The specification is [the LLM-classifier spec](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [the onboard-time outbound call in the privacy document](../user/PRIVACY.md#onboard-time-outbound-call).
 
 ## Claude Code hook
 

@@ -464,11 +464,12 @@ conversation_aware_turn_window = 4
 conversation_aware_prompt_weight = 3
 
 [onboard.llm]
-# v1.3.0+; default flipped to true in v1.5.1 (#238). Host-driven
-# classification routes through the host model's Task tool — no API
-# key required for the default path. The direct-API path (when the
-# host has no Task tool reachable) requires the [onboard-llm] extra
-# and the ANTHROPIC_API_KEY env var. To opt out entirely, set this
+# v1.3.0+; default flipped to true in v1.5.1 (#238). Gates the
+# direct-API classifier that `aelf onboard` uses. It also needs the
+# [onboard-llm] extra, the ANTHROPIC_API_KEY env var, and one-time
+# consent; without them, onboard falls back to the regex classifier.
+# The /aelf:onboard command classifies through the host model's Task
+# tool instead and needs no API key. To opt out entirely, set this
 # to false or pass --llm-classify=false. See docs/design/llm_classifier.md
 # and docs/user/PRIVACY.md § Optional outbound calls.
 enabled = true
@@ -523,7 +524,7 @@ There is a trade-off against `exclude_words`: a phrase match is a literal substr
 
 ### `[onboard.llm]` (v1.3.0+)
 
-The host-driven large language model (LLM) classifier for onboard ingest. It replaces the default regex path `classify_sentence` with the host model's Task tool, which needs no API key; the `[onboard-llm]` extra gates the fallback to the direct API. The default at v1.5.1+ (#238) is on (`enabled = true`). When no host Task tool is reachable, the classifier falls back softly to the regex classifier. For the boundary policy, see [`docs/design/llm_classifier.md`](../design/llm_classifier.md); for privacy, see [`docs/user/PRIVACY.md § Onboard-time outbound call`](PRIVACY.md#onboard-time-outbound-call).
+The direct-API large language model (LLM) classifier that `aelf onboard` uses in place of the regex path `classify_sentence`. The default at v1.5.1+ (#238) is on (`enabled = true`), but the classifier also needs the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and a one-time consent. When any of those is missing, onboard falls back softly to the regex classifier. The host-driven classifier, which uses the host model's Task tool and needs no API key, runs only through `/aelf:onboard`. For the boundary policy, see [`docs/design/llm_classifier.md`](../design/llm_classifier.md); for privacy, see [`docs/user/PRIVACY.md § Onboard-time outbound call`](PRIVACY.md#onboard-time-outbound-call).
 
 | Key | Type | Default | Effect |
 |---|---|---|---|

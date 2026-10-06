@@ -50,7 +50,7 @@ Classification on the CLI path uses regex-based priors by default. Three paths g
 
 - **`/aelf:onboard <path>`** (v1.5.x, default-on) — a host-driven flow that drives the four-class classifier through the host model's Task tool. This path needs no API key. If the host's Task tool isn't available, the flow falls back to the regex classifier. See [the LLM classifier design](../design/llm_classifier.md).
 - **`/aelf:onboard`** — the polymorphic flow, which routes through the host LLM.
-- **`aelf onboard --llm-classify`** (v1.3+, default-off) — routes through Claude Haiku directly. Requires `ANTHROPIC_API_KEY`. Four consent gates enforce the privacy boundary. See [the LLM classifier design](../design/llm_classifier.md).
+- **`aelf onboard`** (v1.3+, default-on since v1.5) — routes through the vendor's small model directly, through its SDK. It needs the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and a one-time consent; without them, it falls back to the regex classifier. Four consent gates enforce the privacy boundary. See [the LLM classifier design](../design/llm_classifier.md).
 
 ## BFS multi-hop temporal coherence
 
