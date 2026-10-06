@@ -819,10 +819,12 @@ _SCHEMA: tuple[str, ...] = (
     """,
     # One row per emitted classifier batch. `items_json` holds the
     # `[{index, belief_id, content_hash}]` list the prompt was built
-    # from, as a read-once blob (the `onboard_sessions.candidates_json`
-    # pattern): it is read whole at accept time and never queried by
-    # field. `accepted_at` is NULL until the host's labels are accepted,
-    # and a batch is accepted at most once.
+    # from, as a blob (the `onboard_sessions.candidates_json` pattern):
+    # it is read whole at accept time, and the Stop hook's candidate query
+    # (`list_core_gate_session_candidates`) reads its `content_hash`
+    # fields with `json_each` to find hashes an open batch claims.
+    # `accepted_at` is NULL until the host's labels are accepted; a batch
+    # is accepted once, unless `aelf doctor core-gate --rerun` reopens it.
     """
     CREATE TABLE IF NOT EXISTS core_gate_batches (
         batch_id           TEXT PRIMARY KEY,
@@ -7968,9 +7970,11 @@ class MemoryStore:
 
         **Claimed** means the hash is in a batch under `classifier_version`
         that is not accepted yet and is either this session's own
-        `session_end` batch or a `doctor` batch. An accepted batch needs no
-        check, because accepting it wrote a label for every hash it held,
-        and the label already excludes the hash. Another session's
+        `session_end` batch or a `doctor` batch. An accepted batch claims
+        nothing. Accepting it labeled its hashes, and the label excludes
+        them; when `aelf doctor core-gate --rerun` later deletes those
+        labels, the hashes are unlabeled again and must be askable, unless
+        the re-run's own open batch claims them. Another session's
         `session_end` batch can't hold this session's beliefs, since a
         belief has one `session_id`, so it is not read. A batch under
         another classifier version can't be accepted, so it claims nothing.
@@ -7978,6 +7982,17 @@ class MemoryStore:
         so a Stop never asks about a hash a previous Stop already asked
         about. An unanswered batch's beliefs stay unlabeled, and the
         `aelf doctor` drain batches them again.
+
+        Only doctor batches created at or after this session's earliest
+        belief are read: a batch holds beliefs that existed when it was
+        emitted, so an older one can't hold this session's. A `--rerun`
+        batch keeps its emit's `created_at`, but it holds only beliefs
+        from that emit, so the bound still holds for it. Without the
+        bound, every open doctor batch's items were parsed on every Stop:
+        about 5 ms per 100 open batches of 50 items. `julianday()` compares
+        the two timestamp forms (`...Z` from the hook, `...+00:00` with
+        microseconds from `--emit` and ingest) as instants; a string
+        comparison would order `12:00:00Z` after `12:00:00.5+00:00`.
 
         `rowid DESC` for the reason `list_lock_candidate_ids` gives;
         `idx_beliefs_session` serves the session conjunct. The rows come
@@ -8006,7 +8021,13 @@ class MemoryStore:
                   AND cb.accepted_at IS NULL
                   AND (
                     (cb.origin = ? AND cb.session_id = ?)
-                    OR cb.origin = ?
+                    OR (
+                      cb.origin = ?
+                      AND julianday(cb.created_at) >= (
+                        SELECT MIN(julianday(s.created_at)) FROM beliefs s
+                        WHERE s.session_id = ?
+                      )
+                    )
                   )
               )
             ORDER BY b.rowid DESC
@@ -8014,6 +8035,7 @@ class MemoryStore:
             (
                 session_id, LOCK_USER, classifier_version, classifier_version,
                 CORE_GATE_ORIGIN_SESSION_END, session_id, CORE_GATE_ORIGIN_DOCTOR,
+                session_id,
             ),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
