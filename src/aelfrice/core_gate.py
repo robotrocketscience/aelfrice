@@ -194,6 +194,12 @@ def admit(label: str | None, qualified_corroborations: int) -> bool:
 #: one failed run in four and asks for it to be validated on new data.
 SELF_CHECK_MAX_C_SHARE_GAP: Final[float] = 0.25
 
+#: The fewest accepted batches an emit run needs before the self-check
+#: runs. With three, each batch's "median of the others" is the mean of
+#: two shares, so one failed batch also flags the healthy ones. Source: the
+#: operator ruling on #1638 of 2026-10-05.
+SELF_CHECK_MIN_BATCHES: Final[int] = 4
+
 
 def _median(values: list[float]) -> float:
     ordered = sorted(values)

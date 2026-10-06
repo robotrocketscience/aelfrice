@@ -57,6 +57,7 @@ from aelfrice.models import (
     ORIGIN_SPECULATIVE,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
+    CORE_GATE_ORIGIN_DOCTOR,
     Belief,
     Phantom,
 )
@@ -2581,14 +2582,26 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         f"(A {counts['A']}, B {counts['B']}, C {counts['C']})",
         file=w,
     )
+    if batch.origin != CORE_GATE_ORIGIN_DOCTOR:
+        return 0
     shares = {bid: c / n for bid, (c, n) in run_counts.items() if n > 0}
+    if len(shares) < core_gate.SELF_CHECK_MIN_BATCHES:
+        print(
+            f"core-gate: self-check skipped: the emit run of batch "
+            f"{batch_id} has {len(shares)} accepted batches, and the check "
+            f"needs at least {core_gate.SELF_CHECK_MIN_BATCHES}. With fewer, "
+            "one failed batch can flag the healthy ones too.",
+            file=sys.stderr,
+        )
+        return 0
     for flagged, share, median in core_gate.c_share_outliers(shares):
         print(
             f"core-gate: self-check: batch {flagged} labeled {share:.2f} "
             f"of its snippets C, against a median of {median:.2f} over "
             f"the other {len(shares) - 1} accepted batches of its emit "
             f"run. A gap over {core_gate.SELF_CHECK_MAX_C_SHARE_GAP} can "
-            f"mean the classifier run failed; review that batch's labels.",
+            f"mean the classifier run failed; to re-run it, run "
+            f"`aelf doctor core-gate --rerun {flagged}`.",
             file=sys.stderr,
         )
     return 0
