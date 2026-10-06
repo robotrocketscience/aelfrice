@@ -2931,6 +2931,158 @@ def emit_core_gate_batches(
     return report
 
 
+class CoreGateRerunRefused(ValueError):
+    """`rerun_core_gate_batch` refused a batch; nothing was written."""
+
+
+@dataclass
+class CoreGateRerunReport:
+    """The result of `aelf doctor core-gate --rerun <batch-id>` (#1638).
+
+    `labels_dropped` counts the label rows the batch still owned and that
+    were deleted. `kept` counts the batch's beliefs re-batched: still
+    active, unlocked, in core under today's rule, unchanged, and still
+    labeled by this batch. `batch` is the batch to print, or None when no
+    belief was kept. `reopened` is True when `batch` is the original batch
+    itself, reopened, and False when it is a new batch.
+    """
+
+    rerun_of: str
+    classifier_version: str
+    labels_dropped: int = 0
+    kept: int = 0
+    batch: CoreGateEmitBatch | None = None
+    reopened: bool = False
+
+
+def rerun_core_gate_batch(
+    store: "MemoryStore",
+    qualifies: Callable[["Belief", int], bool],
+    batch_id: str,
+) -> CoreGateRerunReport:
+    """Re-run one accepted doctor batch, for the spec's self-check step 2.
+
+    In one `BEGIN IMMEDIATE` transaction: drop the labels the batch still
+    owns (`core_gate_labels.batch_id`; a hash a later batch relabeled is
+    left alone), and batch again the beliefs whose labels were dropped and
+    that are still active, unlocked, in core under `qualifies`, and under
+    the same content hash.
+
+    The fresh batch joins the original emit run, so the self-check
+    compares it with the same siblings: it carries the original
+    `created_at`. A batch id is derived from the classifier version, the
+    `created_at`, and the content hashes, so when every belief is kept the
+    fresh batch's id is the original's. That case reopens the original
+    row (clears `accepted_at`) instead of inserting a duplicate. When
+    some beliefs drop out, the smaller set derives a new id, and a new
+    batch at the original `created_at` is created. Either way the original
+    batch then owns no labels, so the self-check doesn't count it.
+
+    Raises `CoreGateRerunRefused`, writing nothing, for an unknown batch,
+    a batch not accepted, a batch from another classifier version, a
+    session-end batch, or a batch that owns no labels any more (already
+    re-run, or every label replaced by a later batch).
+    """
+    from aelfrice.core_gate import CLASSIFIER_VERSION, build_prompt  # noqa: PLC0415
+    from aelfrice.models import (  # noqa: PLC0415
+        CORE_GATE_ORIGIN_DOCTOR,
+        LOCK_NONE,
+        CoreGateBatchItem,
+    )
+
+    with store.transaction(immediate=True):
+        batch = store.get_core_gate_batch(batch_id)
+        if batch is None:
+            raise CoreGateRerunRefused(f"no core-gate batch {batch_id}")
+        if batch.origin != CORE_GATE_ORIGIN_DOCTOR:
+            raise CoreGateRerunRefused(
+                f"batch {batch_id} is a {batch.origin} batch; only a batch "
+                "from `aelf doctor core-gate --emit` can be re-run"
+            )
+        if batch.accepted_at is None:
+            raise CoreGateRerunRefused(
+                f"batch {batch_id} was never accepted; accept it, or print "
+                "it again with `aelf doctor core-gate --emit`"
+            )
+        if batch.classifier_version != CLASSIFIER_VERSION:
+            raise CoreGateRerunRefused(
+                f"batch {batch_id} was emitted under "
+                f"{batch.classifier_version}, not the current "
+                f"{CLASSIFIER_VERSION}; its labels no longer apply"
+            )
+        owned = store.core_gate_label_hashes_of_batch(
+            batch_id, CLASSIFIER_VERSION,
+        )
+        if not owned:
+            raise CoreGateRerunRefused(
+                f"batch {batch_id} owns no labels: it was already re-run, "
+                "or later batches relabeled all of its beliefs"
+            )
+        episodes = store.corroboration_episodes()
+        items = sorted(batch.items, key=lambda i: i.index)
+        kept: list[tuple["CoreGateBatchItem", "Belief"]] = []
+        for item in items:
+            if item.content_hash not in owned:
+                continue
+            b = store.get_belief(item.belief_id)
+            if (
+                b is None
+                or b.lock_level != LOCK_NONE
+                or b.content_hash != item.content_hash
+                or not qualifies(b, episodes.get(b.id, 0))
+            ):
+                continue
+            kept.append((item, b))
+        report = CoreGateRerunReport(
+            rerun_of=batch_id, classifier_version=CLASSIFIER_VERSION,
+        )
+        report.labels_dropped = store.delete_core_gate_labels_of_batch(
+            batch_id, CLASSIFIER_VERSION,
+        )
+        report.kept = len(kept)
+        if not kept:
+            return report
+        if len(kept) == len(items):
+            store.reopen_core_gate_batch(batch_id)
+            report.reopened = True
+            new_id = batch_id
+            snippets = [(item.index, b.content) for item, b in kept]
+        else:
+            try:
+                new_id = store.create_core_gate_batch(
+                    [
+                        CoreGateBatchItem(
+                            index=i, belief_id=b.id,
+                            content_hash=b.content_hash,
+                        )
+                        for i, (_, b) in enumerate(kept)
+                    ],
+                    classifier_version=CLASSIFIER_VERSION,
+                    origin=CORE_GATE_ORIGIN_DOCTOR,
+                    session_id=None,
+                    created_at=batch.created_at,
+                )
+            except ValueError as exc:
+                raise CoreGateRerunRefused(str(exc)) from exc
+            existing = store.get_core_gate_batch(new_id)
+            if existing is not None and existing.accepted_at is not None:
+                # An identical batch already exists and was accepted: the
+                # store returned its id instead of a new row.
+                raise CoreGateRerunRefused(
+                    f"the re-run batch would be {new_id}, which is already "
+                    "accepted"
+                )
+            snippets = [(i, b.content) for i, (_, b) in enumerate(kept)]
+        report.batch = CoreGateEmitBatch(
+            batch_id=new_id,
+            prompt=build_prompt(snippets),
+            size=len(kept),
+            created_at=batch.created_at,
+            reused=False,
+        )
+    return report
+
+
 # ---------------------------------------------------------------------------
 # repair-utc-created-at pass (issue #1660)
 # ---------------------------------------------------------------------------
