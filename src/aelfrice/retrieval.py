@@ -402,7 +402,8 @@ ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # #981 HRR expansion-lane env override. Tri-state like ENV_BM25F; default-OFF.
 ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
-# #1096 entity-persistence demotion env override. Tri-state; default-OFF.
+# #1096 entity-persistence demotion env override. Tri-state; the lane is
+# default-ON (is_entity_persist_demote_enabled).
 ENV_ENTITY_PERSIST_DEMOTE: Final[str] = "AELFRICE_ENTITY_PERSIST_DEMOTE"
 # #1089 axis-2 origin-priority tie-break env override. Tri-state; default-OFF.
 ENV_ORIGIN_TIEBREAK: Final[str] = "AELFRICE_ORIGIN_TIEBREAK"

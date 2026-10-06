@@ -39,11 +39,13 @@ tie-breaker behaviour for un-tagged content.
 ## When this fires
 
 The function `resolve_contradiction(store, a, b)` runs on demand;
-the v1.0.1 integration is a CLI command (`aelf resolve`) and direct
-library use. v1.0 has no automatic write path that creates
-CONTRADICTS edges, so there is no existing trigger to integrate with.
-Hooks into `scan_repo`, retrieval, and the relationship-detector
-land in v1.x once the corresponding write paths exist.
+the integration is a CLI command (`aelf resolve`) and direct library
+use. Two paths write CONTRADICTS edges automatically: the ingest-time
+relationship detector (`relationship_detector.write_semantic_edges`,
+behind `[relationship_detector] auto_detect`, default off) and the
+commit hook's triple extractor ("contradicts", "disagrees with").
+Neither triggers a resolution; `aelf resolve` reads whatever
+CONTRADICTS edges exist.
 
 ## Audit
 
