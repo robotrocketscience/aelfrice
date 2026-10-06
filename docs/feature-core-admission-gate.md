@@ -140,6 +140,13 @@ The backlog drain and the self-check work as follows:
   creation time, and the content hashes. So when every belief is kept, the
   new batch would have the original's id, and the command reopens the
   original batch instead of creating a second one.
+- A subset re-run, which holds fewer beliefs than the batch it re-ran, is
+  left out of the self-check: it isn't checked, and it isn't a sibling
+  for other batches (operator ruling, 2026-10-05). A small batch's C share
+  sits near 0 or 1, so it would skew the comparison. A whole-batch re-run
+  keeps its size and is checked. No column marks a subset re-run: the
+  batches one emit creates are disjoint, so a batch whose content hashes
+  are a strict subset of another batch's in the same run can only be one.
 - The emit forms batches in belief id order and doesn't shuffle them. Belief
   ids are hashes, so that order is unrelated to what a belief says or when
   it was created.
