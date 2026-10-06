@@ -7844,20 +7844,74 @@ class MemoryStore:
 
         One `IN (...)` query per `_CORE_GATE_LOOKUP_CHUNK` hashes, so a
         caller looks up a whole selection at once, never per belief.
+
+        A store without the `core_gate_labels` table has no labels, so this
+        returns an empty map rather than raising. That is a store written
+        before the table existed and opened `read_only=True`, which runs no
+        migration (`db_paths.open_store_for_read` falls back to such a
+        handle). Every other `OperationalError` propagates.
         """
         unique = sorted(set(content_hashes))
         out: dict[str, str] = {}
         for start in range(0, len(unique), _CORE_GATE_LOOKUP_CHUNK):
             chunk = unique[start:start + _CORE_GATE_LOOKUP_CHUNK]
             marks = ",".join("?" * len(chunk))
-            rows = self._conn.execute(
-                "SELECT content_hash, label FROM core_gate_labels "
-                f"WHERE classifier_version = ? AND content_hash IN ({marks})",
-                (classifier_version, *chunk),
-            ).fetchall()
+            try:
+                rows = self._conn.execute(
+                    "SELECT content_hash, label FROM core_gate_labels "
+                    f"WHERE classifier_version = ? AND content_hash IN ({marks})",
+                    (classifier_version, *chunk),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "no such table: core_gate_labels" in str(exc):
+                    return {}
+                raise
             for row in rows:
                 out[str(row["content_hash"])] = str(row["label"])
         return out
+
+    def gate_core_candidates(
+        self, candidates: Sequence[Belief], episodes: dict[str, int],
+    ) -> tuple[list[Belief], dict[str, str]]:
+        """Apply the #1638 core admission gate to a core selection.
+
+        `candidates` are unlocked beliefs that already meet today's
+        non-lock core rule; `episodes` is `corroboration_episodes()`.
+        Returns the admitted candidates, in their given order, and the
+        labels the lookup found, keyed by content hash.
+
+        The labels are read in one lookup for the whole selection
+        (`core_gate_labels_for`), keyed by each belief's
+        `beliefs.content_hash` and the current `CLASSIFIER_VERSION`, so a
+        label made under another classifier is not seen. The rule itself is
+        `core_gate.admit`: a belief with no label passes through. Every core
+        consumer (`aelf core`, the SessionStart `<core>` lane, and the
+        `aelf doctor --gc-filesystem-corroboration` report) calls this, so
+        none can drift from the others.
+
+        With no candidates it returns at once, without importing
+        `core_gate` or querying the store.
+        """
+        if not candidates:
+            return [], {}
+        from aelfrice.core_gate import CLASSIFIER_VERSION, admit  # noqa: PLC0415
+        from aelfrice.models import (  # noqa: PLC0415
+            episode_qualified_corroborations,
+        )
+
+        labels = self.core_gate_labels_for(
+            (b.content_hash for b in candidates), CLASSIFIER_VERSION,
+        )
+        admitted = [
+            b for b in candidates
+            if admit(
+                labels.get(b.content_hash),
+                episode_qualified_corroborations(
+                    b.corroboration_count, episodes.get(b.id, 0),
+                ),
+            )
+        ]
+        return admitted, labels
 
     def put_core_gate_labels(
         self,
