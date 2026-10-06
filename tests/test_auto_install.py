@@ -48,8 +48,10 @@ def test_load_manifest_returns_known_defaults() -> None:
     assert "commit_ingest" in names
     assert "session_start" in names
     assert "stop_lock_prompt" in names
-    # All bundled hooks ship default-on.
-    assert all(h.default_on for h in m.hooks)
+    # Every bundled hook ships default-on except commit_ingest, whose
+    # PostToolUse entry the per-repository git hook replaced (#1698).
+    assert all(h.default_on for h in m.hooks if h.name != "commit_ingest")
+    assert not next(h for h in m.hooks if h.name == "commit_ingest").default_on
 
 
 def test_load_manifest_owned_basenames_covers_setup_surface() -> None:
@@ -137,10 +139,10 @@ def test_first_run_creates_stamp_and_writes_all_hooks(tmp_path: Path) -> None:
     assert set(result.installed) >= {
         "user_prompt_submit_retrieval",
         "transcript_ingest",
-        "commit_ingest",
         "session_start",
         "stop_lock_prompt",
     }
+    assert "commit_ingest" not in result.installed  # #1698
     assert read_stamp(stamp) == "2.2.0"
     # The first-run message mentions "installed default hooks".
     assert "installed default hooks" in result.message
@@ -202,7 +204,7 @@ def test_upgrade_delta_message(tmp_path: Path) -> None:
     assert result.new_version == "2.2.0"
     # All hooks already present from the prior merge -> no fresh installs.
     assert result.installed == ()
-    assert set(result.already) >= {"transcript_ingest", "commit_ingest"}
+    assert set(result.already) >= {"transcript_ingest", "session_start"}
     # No "added" line when nothing was actually added.
     assert result.message == ""
     # But the stamp bumps anyway so the next invocation is a fast no-op.
@@ -249,7 +251,7 @@ def test_upgrade_with_new_hook_writes_only_the_delta(tmp_path: Path) -> None:
 
 def test_opt_out_skips_named_hook_across_upgrade(tmp_path: Path) -> None:
     settings, stamp, opt_out = _settings_setup(tmp_path)
-    add_opt_out("commit_ingest", opt_out)
+    add_opt_out("claude_memory_mirror", opt_out)
     result = maybe_install_manifest(
         installed_version="2.2.0",
         settings_path=settings,
@@ -257,13 +259,13 @@ def test_opt_out_skips_named_hook_across_upgrade(tmp_path: Path) -> None:
         opt_out_path=opt_out,
     )
     assert result.ran is True
-    assert "commit_ingest" in result.opted_out
-    assert "commit_ingest" not in result.installed
-    # settings.json must not have the commit-ingest PostToolUse entry.
+    assert "claude_memory_mirror" in result.opted_out
+    assert "claude_memory_mirror" not in result.installed
+    # settings.json must not have the mirror's PostToolUse entry.
     data = json.loads(settings.read_text(encoding="utf-8"))
     post_tool_use = data["hooks"].get("PostToolUse", [])
     assert not any(
-        "aelf-commit-ingest" in str(entry) for entry in post_tool_use
+        "aelf-claude-memory-mirror" in str(entry) for entry in post_tool_use
     )
 
 

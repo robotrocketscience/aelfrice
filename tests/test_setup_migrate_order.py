@@ -73,7 +73,7 @@ def test_migration_runs_before_hook_install(
         cli_mod, "install_stop_hook", lambda *a, **k: _Result(),
     )
     monkeypatch.setattr(
-        cli_mod, "install_commit_ingest_hook", lambda *a, **k: _Result(),
+        cli_mod, "_setup_commit_ingest_git_hook", lambda *a, **k: None,
     )
     monkeypatch.setattr(
         cli_mod, "install_pre_compact_hook", lambda *a, **k: _Result(),

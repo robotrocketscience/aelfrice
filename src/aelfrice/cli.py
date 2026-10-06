@@ -154,7 +154,8 @@ from aelfrice.setup import (
     detect_default_scope,
     install_agent_context_hook,
     install_claude_memory_mirror_hook,
-    install_commit_ingest_hook,
+    git_hook_command_line,
+    install_commit_ingest_git_hook,
     install_pre_compact_hook,
     install_pre_issue_guard_hook,
     install_search_tool_bash_hook,
@@ -187,6 +188,7 @@ from aelfrice.setup import (
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     uninstall_agent_context_hook,
     uninstall_claude_memory_mirror_hook,
+    uninstall_commit_ingest_git_hook,
     uninstall_commit_ingest_hook,
     uninstall_pre_compact_hook,
     uninstall_pre_issue_guard_hook,
@@ -4306,6 +4308,81 @@ def _maybe_reconcile_claude_memory_at_setup() -> None:
         )
 
 
+def _setup_commit_ingest_git_hook(
+    scope: SettingsScope, settings_path: Path, out: object,
+) -> None:
+    """Install commit ingest as this repository's git `post-commit` hook,
+    and drop the PostToolUse entry it replaces (#1698).
+
+    The old entry is removed from both the user and the project settings
+    file, not just this run's scope: one left in the other scope would
+    keep firing beside the git hook under a different session key.
+    """
+    settings_paths = {settings_path, default_settings_path("user"),
+                      default_settings_path("project")}
+    for sp in sorted(settings_paths):
+        old = uninstall_commit_ingest_hook(
+            sp, command_basename=COMMIT_INGEST_SCRIPT_NAME,
+        )
+        if old.removed:
+            print(
+                f"removed the old commit-ingest PostToolUse entry from {old.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if os.environ.get("AELF_NO_GIT_HOOK_INSTALL") == "1":
+        # The test suite runs inside a real checkout whose hooks directory
+        # every worktree shares; it sets this so setup can't write there.
+        print(
+            "commit-ingest git hook not installed (AELF_NO_GIT_HOOK_INSTALL=1)",
+            file=out,  # type: ignore[arg-type]
+        )
+        return
+    command = resolve_commit_ingest_command(scope)
+    gh = install_commit_ingest_git_hook(Path.cwd(), command=command)
+    messages = {
+        "installed": f"installed the commit-ingest git hook in {gh.path}",
+        "already_present": f"commit-ingest git hook already installed in {gh.path}",
+        "not_a_repo": (
+            "commit ingest not installed: this directory is not in a git "
+            "repository. Run `aelf setup` inside a repository to record "
+            "its commits."
+        ),
+        "foreign_hook": (
+            f"commit ingest not installed: aelfrice edits {gh.path} only when "
+            "it is an executable, LF-only sh or bash script it can restore "
+            "exactly. To add commit ingest yourself, put these lines in it:\n"
+            + git_hook_command_line(command)
+        ),
+        "shared_hooks_dir": (
+            "commit ingest not installed: core.hooksPath is set outside this "
+            f"repository's own config, so {gh.path} would run for other "
+            "repositories too. Set core.hooksPath in this repository's "
+            "config, or add the hook yourself."
+        ),
+        "tracked_hooks_dir": (
+            f"commit ingest not installed: {gh.path} is inside the work tree, "
+            "so the hook, with this machine's paths, would be committed."
+        ),
+    }
+    print(messages[gh.status], file=out)  # type: ignore[arg-type]
+
+
+def _unsetup_commit_ingest_git_hook(out: object) -> bool:
+    """Remove this repository's commit-ingest block (#1698). Returns
+    whether one was removed. Skipped under AELF_NO_GIT_HOOK_INSTALL=1,
+    like the install."""
+    if os.environ.get("AELF_NO_GIT_HOOK_INSTALL") == "1":
+        return False
+    gh = uninstall_commit_ingest_git_hook(Path.cwd())
+    if gh.status != "removed":
+        return False
+    print(
+        f"removed the commit-ingest block from {gh.path}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return True
+
+
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     """Install the hooks, reporting a contended or foreign-written
     settings.json instead of failing with a traceback (#1161)."""
@@ -4550,9 +4627,9 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                 )
         if getattr(args, "rebuilder", False):
             pc_command = resolve_pre_compact_hook_command(scope)
-            # No manifest budget for this one: `--rebuilder` is opt-in and the
-            # bundled manifest ships only default-on hooks (pinned by
-            # test_load_manifest_hooks_are_all_default_on). It therefore keeps
+            # No manifest budget for this one: `--rebuilder` is opt-in, and
+            # the bundled manifest ships default-on hooks plus commit_ingest,
+            # which is default-off since #1698. It therefore keeps
             # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
             # all. Adding a row here would silently widen the auto-install
             # surface to a hook the operator opted into explicitly.
@@ -4575,22 +4652,7 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                     file=out,  # type: ignore[arg-type]
                 )
         if getattr(args, "commit_ingest", True):
-            ci_command = resolve_commit_ingest_command(scope)
-            ci_result = install_commit_ingest_hook(
-                path, command=ci_command, timeout=_timeout_for("commit_ingest"),
-            )
-            if ci_result.already_present:
-                print(
-                    f"commit-ingest hook already installed in {ci_result.path} "
-                    f"(command={ci_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
-                print(
-                    f"installed commit-ingest PostToolUse hook in {ci_result.path} "
-                    f"(command={ci_command!r})",
-                    file=out,  # type: ignore[arg-type]
-                )
+            _setup_commit_ingest_git_hook(scope, path, out)
         if getattr(args, "search_tool", True):
             st_command = resolve_search_tool_command(scope)
             st_result = install_search_tool_hook(
@@ -5269,17 +5331,15 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
             ci_result = uninstall_commit_ingest_hook(
                 path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
             )
-            if ci_result.removed == 0:
-                print(
-                    f"no commit-ingest hook in {ci_result.path}",
-                    file=out,  # type: ignore[arg-type]
-                )
-            else:
+            if ci_result.removed:
                 print(
                     f"removed {ci_result.removed} commit-ingest entr"
                     f"{'y' if ci_result.removed == 1 else 'ies'} from {ci_result.path}",
                     file=out,  # type: ignore[arg-type]
                 )
+            removed_block = _unsetup_commit_ingest_git_hook(out)
+            if not removed_block and not ci_result.removed:
+                print("no commit-ingest hook to remove", file=out)  # type: ignore[arg-type]
         if getattr(args, "claude_memory_mirror", True):
             cmm_result = uninstall_claude_memory_mirror_hook(
                 path, command_basename=CLAUDE_MEMORY_MIRROR_SCRIPT_NAME,
@@ -10244,10 +10304,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--commit-ingest", dest="commit_ingest",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "wire the PostToolUse:Bash hook so each "
-            "successful `git commit` runs the triple extractor on its "
-            "commit message and persists the resulting beliefs and "
-            "edges under a session derived from git context. Default: ON. "
+            "install this repository's git post-commit hook so each "
+            "commit's message runs through the triple extractor and its "
+            "beliefs and edges are recorded, in the background (#1698). "
+            "Replaces the older PostToolUse:Bash entry. Default: ON. "
             "Pass --no-commit-ingest to skip."
         ),
     )
@@ -10474,8 +10534,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--commit-ingest", dest="commit_ingest",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "remove the PostToolUse:Bash commit-ingest entry. "
-            "Default: ON. Pass --no-commit-ingest to leave it in place."
+            "remove this repository's commit-ingest git hook block and any "
+            "older PostToolUse:Bash commit-ingest entry. "
+            "Default: ON. Pass --no-commit-ingest to leave them in place."
         ),
     )
     p_unsetup.add_argument(

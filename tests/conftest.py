@@ -792,6 +792,13 @@ def _sandbox_real_home(
         # sets it with its own function-scoped `monkeypatch`.
         for var in GIT_LOCATION_VARS:
             mp.delenv(var, raising=False)
+        # #1698: `aelf setup` installs a git `post-commit` hook into the
+        # repository of its cwd, and the suite runs from inside the
+        # contributor's checkout, whose hooks directory every worktree
+        # shares. Unpinned, one test run installed a hook that every sister
+        # session's commits then ran. The installer tests use their own
+        # temporary repositories and delete this with `monkeypatch.delenv`.
+        mp.setenv("AELF_NO_GIT_HOOK_INSTALL", "1")
         for mod_name, attr, relpath in _HOME_PINS:
             target = home / relpath
             if attr in _PRECREATED_SENTINELS:

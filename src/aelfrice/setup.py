@@ -687,6 +687,248 @@ def uninstall_commit_ingest_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Commit-ingest git hook (#1698) -------------------------------------
+#
+# Commit ingest runs from git's own `post-commit` hook rather than an
+# agent-host PostToolUse hook: git knows exactly which commit it made, in
+# which repository. The hook is per repository. It goes into the directory
+# git reads hooks from (`git rev-parse --git-path hooks`, shared by every
+# worktree), as a marked block right after the shebang. An existing
+# `post-commit` keeps its content byte for byte; the block goes first so an
+# `exit` later in that script can't skip it. The block resolves `HEAD` and
+# checks for a rebase synchronously, then hands the hash to a background
+# process, so a commit never waits on the ingest.
+#
+# The installer only edits what it can restore exactly: an executable,
+# LF-only, UTF-8 file that starts with a plain `sh` or `bash` shebang line.
+# It accepts a hooks directory only inside this repository's git directory:
+# anywhere else it may be shared with other repositories, or tracked in the
+# work tree with your local paths.
+
+GIT_HOOK_NAME: Final[str] = "post-commit"
+GIT_HOOK_BEGIN: Final[str] = "# >>> aelfrice commit-ingest (#1698) >>>"
+GIT_HOOK_END: Final[str] = "# <<< aelfrice commit-ingest <<<"
+GIT_HOOK_CREATED: Final[str] = "# aelfrice created this file."
+_SHELL_SHEBANGS: Final[tuple[str, ...]] = (
+    "#!/bin/sh", "#!/bin/bash", "#!/usr/bin/env sh", "#!/usr/bin/env bash",
+)
+
+
+@dataclass(frozen=True)
+class GitHookResult:
+    """Outcome of installing or removing the commit-ingest git hook.
+
+    `status` is one of:
+
+    - `installed`, `already_present`, `removed`, `absent`
+    - `not_a_repo`: the directory is not in a git repository.
+    - `foreign_hook`: an existing `post-commit` that aelfrice can't edit
+      and restore exactly (not executable, a symlink, not UTF-8, CRLF line
+      endings, or no plain `sh`/`bash` shebang line).
+    - `shared_hooks_dir`: the hooks directory is outside this repository's
+      git directory, so other repositories may use it too.
+    - `tracked_hooks_dir`: the hooks directory is inside the work tree, so
+      the hook file would be committed.
+    """
+
+    path: Path | None
+    status: str
+
+
+def _git_text(args: list[str], repo: Path) -> str | None:
+    import subprocess  # noqa: PLC0415
+
+    try:
+        r = subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False, timeout=10,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _git_hooks_dir(repo: Path) -> Path | None:
+    out = _git_text(["rev-parse", "--git-path", "hooks"], repo)
+    if out is None or not out.strip():
+        return None
+    hooks = Path(out.strip())
+    return Path(os.path.normpath(hooks if hooks.is_absolute() else (repo / hooks)))
+
+
+def _hooks_dir_problem(repo: Path, hooks: Path) -> str | None:
+    """`not_a_repo`, `shared_hooks_dir`, `tracked_hooks_dir`, or None.
+
+    The hooks directory is accepted only inside this repository's own git
+    directory, which is where git keeps hooks by default and where this
+    project's `core.hooksPath` points. Anywhere else, it may be shared with
+    other repositories (a global `core.hooksPath`, or one directory named
+    in several repositories' config), or tracked in the work tree.
+    """
+    inside = _git_text(["rev-parse", "--is-inside-work-tree"], repo)
+    if inside is None or inside.strip() != "true":
+        return "not_a_repo"  # bare, or inside .git: the hook would never run
+    # A core.hooksPath that doesn't come from this repository's own config
+    # (global, system, or environment) applies to other repositories too,
+    # even when it names this repository's .git/hooks.
+    effective = _git_text(["config", "--get", "core.hooksPath"], repo)
+    local = _git_text(["config", "--local", "--get", "core.hooksPath"], repo)
+    if effective is not None and effective != local:
+        return "shared_hooks_dir"
+    common = _git_text(["rev-parse", "--path-format=absolute", "--git-common-dir"], repo)
+    if common is None:
+        return "not_a_repo"
+    h = hooks.resolve()
+    try:
+        h.relative_to(Path(common.strip()).resolve())
+        return None
+    except ValueError:
+        pass
+    top = _git_text(["rev-parse", "--show-toplevel"], repo)
+    if top:
+        try:
+            h.relative_to(Path(top.strip()).resolve())
+            return "tracked_hooks_dir"
+        except ValueError:
+            pass
+    return "shared_hooks_dir"
+
+
+def git_hook_command_line(command: str) -> str:
+    """The shell lines the block runs; also what setup prints when it
+    can't edit a hook itself.
+
+    One `git rev-parse` yields this worktree's git directory, where a
+    rebase keeps its state, and the commit just made. The rebase check
+    and the hash are settled here, synchronously, so the background
+    process ingests exactly this commit.
+    """
+    quoted = "'" + command.replace("'", "'\\''") + "'"
+    return (
+        "_aelf_out=$(git rev-parse --absolute-git-dir HEAD 2>/dev/null) &&\n"
+        "_aelf_dir=${_aelf_out%%\n*} && _aelf_rev=${_aelf_out##*\n} &&\n"
+        '[ ! -d "$_aelf_dir/rebase-merge" ] && [ ! -d "$_aelf_dir/rebase-apply" ] &&\n'
+        f'( {quoted} --git-hook "$_aelf_rev" </dev/null >/dev/null 2>&1 & )\n'
+    )
+
+
+def _git_hook_block(command: str, *, created: bool) -> str:
+    return (
+        f"{GIT_HOOK_BEGIN}\n"
+        + (f"{GIT_HOOK_CREATED}\n" if created else "")
+        + "# Records this commit's message in aelfrice memory, in the\n"
+        "# background, so the commit doesn't wait. Skips commits that a\n"
+        "# rebase replays. Delete this block to stop it.\n"
+        + git_hook_command_line(command)
+        + f"{GIT_HOOK_END}\n"
+    )
+
+
+def _split_git_hook_block(text: str) -> tuple[str, str | None]:
+    """`(text without the block, the block or None)`."""
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    block: list[str] = []
+    inside = False
+    for ln in lines:
+        if ln.rstrip("\n") == GIT_HOOK_BEGIN:
+            inside = True
+            block.append(ln)
+            continue
+        if inside:
+            block.append(ln)
+            if ln.rstrip("\n") == GIT_HOOK_END:
+                inside = False
+            continue
+        out.append(ln)
+    return "".join(out), ("".join(block) if block else None)
+
+
+def _write_lf(path: Path, text: str) -> None:
+    """Write `text` as UTF-8 bytes. `write_text` would turn every `\\n`
+    into `\\r\\n` on Windows, which `sh` can't run and this installer
+    then refuses to edit."""
+    path.write_bytes(text.encode("utf-8"))
+
+
+def _editable_hook_text(path: Path) -> str | None:
+    """The hook's text if aelfrice can edit and restore it exactly."""
+    if path.is_symlink() or not os.access(path, os.X_OK):
+        return None
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if "\r" in text:
+        return None
+    first, sep, _ = text.partition("\n")
+    if not sep or first not in _SHELL_SHEBANGS:
+        return None
+    return text
+
+
+def install_commit_ingest_git_hook(repo: Path, *, command: str) -> GitHookResult:
+    """Add the commit-ingest block to `repo`'s `post-commit` hook.
+
+    Idempotent: a block for the same command is left alone, and a block
+    for a different command is replaced. An existing hook keeps every
+    byte it had, and its mode. See `GitHookResult` for the refusals.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    hooks = _git_hooks_dir(repo)
+    if hooks is None:
+        return GitHookResult(path=None, status="not_a_repo")
+    problem = _hooks_dir_problem(repo, hooks)
+    if problem == "not_a_repo":
+        return GitHookResult(path=None, status=problem)
+    if problem is not None:
+        return GitHookResult(path=hooks / GIT_HOOK_NAME, status=problem)
+    path = hooks / GIT_HOOK_NAME
+    if path.exists() or path.is_symlink():
+        text = _editable_hook_text(path)
+        if text is None:
+            return GitHookResult(path=path, status="foreign_hook")
+        rest, old_block = _split_git_hook_block(text)
+        created = old_block is not None and GIT_HOOK_CREATED in old_block
+        block = _git_hook_block(command, created=created)
+        if old_block == block:
+            return GitHookResult(path=path, status="already_present")
+        shebang, _, body = rest.partition("\n")
+        _write_lf(path, shebang + "\n" + block + body)
+    else:
+        hooks.mkdir(parents=True, exist_ok=True)
+        _write_lf(path, "#!/bin/sh\n" + _git_hook_block(command, created=True))
+        path.chmod(0o755)
+    return GitHookResult(path=path, status="installed")
+
+
+def uninstall_commit_ingest_git_hook(repo: Path) -> GitHookResult:
+    """Remove the commit-ingest block from `repo`'s `post-commit` hook.
+
+    The rest of the hook is restored exactly. A hook aelfrice created is
+    deleted.
+    """
+    hooks = _git_hooks_dir(repo)
+    if hooks is None:
+        return GitHookResult(path=None, status="not_a_repo")
+    path = hooks / GIT_HOOK_NAME
+    if not path.exists() or path.is_symlink():
+        return GitHookResult(path=path, status="absent")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return GitHookResult(path=path, status="absent")
+    rest, block = _split_git_hook_block(text)
+    if block is None:
+        return GitHookResult(path=path, status="absent")
+    if GIT_HOOK_CREATED in block and not rest.partition("\n")[2].strip():
+        path.unlink()
+    else:
+        _write_lf(path, rest)
+    return GitHookResult(path=path, status="removed")
+
+
 # --- Claude-memory mirror wiring (#985) -------------------------------
 
 

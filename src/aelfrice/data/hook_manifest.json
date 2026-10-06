@@ -23,10 +23,10 @@
       "name": "commit_ingest",
       "basename": "aelf-commit-ingest",
       "installer": "commit_ingest",
-      "default_on": true,
+      "default_on": false,
       "since": "1.2.0",
       "timeout": 30,
-      "description": "Capture git commit messages as beliefs (PostToolUse:Bash)."
+      "description": "Superseded by the post-commit hook that `aelf setup` installs per repository (#1698). The PostToolUse:Bash entry is no longer installed by default."
     },
     {
       "name": "session_start",

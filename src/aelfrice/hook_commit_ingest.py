@@ -189,9 +189,19 @@ def _do_ingest(payload: dict[str, object]) -> None:
     if extracted is None:
         return
     branch, commit_hash, body = extracted
-    if not body.strip():
+    _ingest_message(
+        body,
+        session_id=_derive_session_id(branch, commit_hash),
+        project_context=cwd or os.getcwd(),
+    )
+
+
+def _ingest_message(message: str, *, session_id: str, project_context: str) -> None:
+    """Extract triples from one commit message and record them under
+    `session_id`. Shared by the PostToolUse path and the git hook."""
+    if not message.strip():
         return
-    body = _truncate_for_extraction(body)
+    body = _truncate_for_extraction(message)
 
     # Lazy imports: cold-start cost is paid only when we actually ingest.
     from aelfrice.db_paths import db_path  # noqa: PLC0415
@@ -212,7 +222,6 @@ def _do_ingest(payload: dict[str, object]) -> None:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
 
-    session_id = _derive_session_id(branch, commit_hash)
     store = MemoryStore(str(p))
     try:
         # Persist a session row tagged with the git context. Idempotent
@@ -232,7 +241,7 @@ def _do_ingest(payload: dict[str, object]) -> None:
                     session_id,
                     _iso_now(),
                     "commit-ingest",
-                    cwd or os.getcwd(),
+                    project_context,
                 ),
             )
             store._conn.commit()  # pyright: ignore[reportPrivateUsage]
@@ -240,6 +249,107 @@ def _do_ingest(payload: dict[str, object]) -> None:
         store.complete_session(session_id)
     finally:
         store.close()
+
+
+# --- git post-commit hook (#1698) ------------------------------------------
+#
+# The PostToolUse path above guesses which commit a Bash call made from the
+# command text and stdout; in this project's sessions it saw about 2 of 399
+# commits (#1683). Git runs `post-commit` itself, inside the repository, after
+# every commit it makes, so the commit (`HEAD`), the repository, and the store
+# (resolved from the working directory) are all exact. `aelf setup` installs a
+# `post-commit` block that, synchronously, skips a rebase replay and resolves
+# `HEAD`, then runs `aelf-commit-ingest --git-hook <hash>` in the background,
+# so a commit never waits on the ingest. Commits that `git rebase` replays
+# were ingested when first made (operator ruling, 2026-10-05). The rebase
+# check also skips a commit made by hand while a rebase is paused.
+
+GIT_HOOK_FLAG: Final[str] = "--git-hook"
+
+GIT_HOOK_LOG_NAME: Final[str] = "commit-ingest.log"
+"""Errors from the detached git-hook run go here, next to the store, because
+the hook's own stderr is discarded."""
+
+
+def _git_out(args: list[str], cwd: str | None) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
+            timeout=GIT_LOG_TIMEOUT_S, cwd=cwd,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _read_commit(rev: str, cwd: str | None) -> tuple[str, str, str] | None:
+    """`(first_parent, author_date, full_message)` for `rev`.
+    `first_parent` is empty for a root commit."""
+    out = _git_out(["log", "-1", "--format=%P%x00%aI%x00%B", rev, "--"], cwd)
+    if out is None or out.count("\x00") < 2:
+        return None
+    parents, author_date, message = out.split("\x00", 2)
+    first = parents.split()
+    return (first[0] if first else ""), author_date.strip(), message.rstrip("\n")
+
+
+def _commit_session_id(first_parent: str, author_date: str) -> str:
+    """sha256('commit:' + first parent + NUL + author date)[:16] (#1698).
+
+    Keyed on what `git commit --amend` keeps: the parent and, unless
+    `--reset-author` or `--date` is given, the author date. Every version
+    of an amended commit shares one session, and the store never lets a
+    commit session corroborate a belief it created itself
+    (`MemoryStore.insert_or_corroborate`), so an amend adds only its new
+    phrases. Commits on one branch have different parents. Two commits
+    on one parent in the same second share a session."""
+    raw = f"commit:{first_parent}\x00{author_date}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _is_revert(message: str) -> bool:
+    """A `git revert` message quotes the subject it undoes, so ingesting
+    it would corroborate the claim being reverted."""
+    return message.startswith('Revert "') and "This reverts commit " in message
+
+
+def git_hook_ingest(rev: str, cwd: str | None = None) -> None:
+    """Ingest commit `rev` in `cwd` (the repository root, when git runs
+    the hook).
+
+    The hook block resolves `rev` from `HEAD` and checks for a rebase
+    before it starts this process in the background. Reading `HEAD` here
+    instead lost commits made in quick succession, and a rebase was over
+    before a check here could see it (#1698 review).
+    """
+    commit = _read_commit(rev, cwd)
+    if commit is None:
+        return
+    first_parent, author_date, message = commit
+    if _is_revert(message):
+        return
+    _ingest_message(
+        message,
+        session_id=_commit_session_id(first_parent, author_date),
+        project_context=cwd or os.getcwd(),
+    )
+
+
+def _log_git_hook_failure() -> None:
+    """Append the current traceback to the log next to the store."""
+    try:
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
+
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p.parent / GIT_HOOK_LOG_NAME, "a", encoding="utf-8") as fh:
+            fh.write(f"--- {_iso_now()}\n")
+            traceback.print_exc(file=fh)
+    except Exception:  # pyright: ignore[reportBroadException]
+        pass
 
 
 def _iso_now() -> str:
@@ -251,8 +361,22 @@ def main(
     *,
     stdin: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    argv: list[str] | None = None,
 ) -> int:
-    """Hook entry point. Always returns 0 (non-blocking contract)."""
+    """Hook entry point. Always returns 0 (non-blocking contract).
+
+    With `--git-hook`, runs as the git `post-commit` hook (#1698) and
+    ingests the named commit; otherwise reads a PostToolUse payload.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    if GIT_HOOK_FLAG in args:
+        i = args.index(GIT_HOOK_FLAG)
+        rev = args[i + 1] if i + 1 < len(args) else "HEAD"
+        try:
+            git_hook_ingest(rev)
+        except Exception:  # non-blocking: log, never raise
+            _log_git_hook_failure()
+        return 0
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
     ensure_utf8_streams((serr,))
