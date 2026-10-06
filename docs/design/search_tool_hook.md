@@ -40,7 +40,7 @@ already has the answer, the agent can stop searching or refine its
 next search; if not, the tool's result fills the gap.
 
 ```
-Claude wants to Grep "directive-gate" in the project
+the agent chooses Grep "directive-gate" in the project
         ↓
   PreToolUse hook fires (tool_name in {Grep, Glob})
         ↓
@@ -50,7 +50,10 @@ Claude wants to Grep "directive-gate" in the project
         ↓
   emit additionalContext = "<aelfrice-search query=...>{results}</aelfrice-search>"
         ↓
-  Claude reads context AND runs Grep
+  Grep runs
+        ↓
+  the agent reads the Grep result with the aelfrice context beside it,
+  and decides its next step: search again, refine, or stop
 ```
 
 ## Motivation

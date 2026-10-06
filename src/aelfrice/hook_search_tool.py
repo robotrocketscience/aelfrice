@@ -819,8 +819,11 @@ def _format_results_with_ids(
             f'<aelfrice-search {attrs}>aelf search ran on this query before '
             f"the tool fires; results:\n" + "\n".join(kept)
             + f"{trailer}{note}\n"
-            f"If this answers the question, you may skip the tool call. "
-            f"Otherwise use the tool to fill gaps.</aelfrice-search>"
+            # #1646: this arrives beside the tool's result, after the call
+            # ran, so it can only guide the next step.
+            f"If this answers the question, there is no need to search "
+            f"further. Otherwise use the tool's result to fill the gaps."
+            f"</aelfrice-search>"
         )
 
     # #1639: the host inlines at most 10,000 characters of a hook's
