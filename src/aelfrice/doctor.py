@@ -2984,7 +2984,9 @@ class CoreGateRerunReport:
     active, unlocked, in core under today's rule, unchanged, and still
     labeled by this batch. `batch` is the batch to print, or None when no
     belief was kept. `reopened` is True when `batch` is the original batch
-    itself, reopened, and False when it is a new batch.
+    itself, reopened, and False when it is a new batch. `new_run` is True
+    when the re-run batch is a session-end batch's: the new doctor batch
+    starts an emit run of its own rather than joining one.
     """
 
     rerun_of: str
@@ -2993,14 +2995,18 @@ class CoreGateRerunReport:
     kept: int = 0
     batch: CoreGateEmitBatch | None = None
     reopened: bool = False
+    new_run: bool = False
 
 
 def rerun_core_gate_batch(
     store: "MemoryStore",
     qualifies: Callable[["Belief", int], bool],
     batch_id: str,
+    *,
+    created_at: str | None = None,
 ) -> CoreGateRerunReport:
-    """Re-run one accepted doctor batch, for the spec's self-check step 2.
+    """Re-run one accepted batch, for the spec's self-check step 2, or to
+    relabel a session-end batch.
 
     In one `BEGIN IMMEDIATE` transaction: drop the labels the batch still
     owns (`core_gate_labels.batch_id`; a hash a later batch relabeled is
@@ -3018,14 +3024,26 @@ def rerun_core_gate_batch(
     batch at the original `created_at` is created. Either way the original
     batch then owns no labels, so the self-check doesn't count it.
 
+    A session-end batch (operator ruling on #1638, 2026-10-06) is re-run
+    the same way, except that the beliefs it keeps always go to a new
+    doctor batch at `created_at` (the caller's clock, the same ISO form
+    `--emit` stamps), never back into the session-end row. A session-end
+    batch belongs to no emit run, so the new batch starts a run of its
+    own: joining an existing run would compare it with batches it was
+    never emitted with, and reusing the session-end batch's timestamp
+    would derive that batch's own id when every belief is kept. A run of
+    one batch is below `SELF_CHECK_MIN_BATCHES`, so the self-check doesn't
+    cover it, as it doesn't cover the session-end batch either.
+
     Raises `CoreGateRerunRefused`, writing nothing, for an unknown batch,
-    a batch not accepted, a batch from another classifier version, a
-    session-end batch, or a batch that owns no labels any more (already
-    re-run, or every label replaced by a later batch).
+    a batch not accepted, a batch from another classifier version, or a
+    batch that owns no labels any more (already re-run, or every label
+    replaced by a later batch).
     """
     from aelfrice.core_gate import CLASSIFIER_VERSION, build_prompt  # noqa: PLC0415
     from aelfrice.models import (  # noqa: PLC0415
         CORE_GATE_ORIGIN_DOCTOR,
+        CORE_GATE_ORIGIN_SESSION_END,
         LOCK_NONE,
         CoreGateBatchItem,
     )
@@ -3034,11 +3052,6 @@ def rerun_core_gate_batch(
         batch = store.get_core_gate_batch(batch_id)
         if batch is None:
             raise CoreGateRerunRefused(f"no core-gate batch {batch_id}")
-        if batch.origin != CORE_GATE_ORIGIN_DOCTOR:
-            raise CoreGateRerunRefused(
-                f"batch {batch_id} is a {batch.origin} batch; only a batch "
-                "from `aelf doctor core-gate --emit` can be re-run"
-            )
         if batch.accepted_at is None:
             raise CoreGateRerunRefused(
                 f"batch {batch_id} was never accepted; accept it, or print "
@@ -3082,7 +3095,15 @@ def rerun_core_gate_batch(
         report.kept = len(kept)
         if not kept:
             return report
-        if len(kept) == len(items):
+        from_session_end = batch.origin == CORE_GATE_ORIGIN_SESSION_END
+        new_created_at = batch.created_at
+        if from_session_end:
+            report.new_run = True
+            new_created_at = (
+                created_at if created_at is not None
+                else datetime.now(timezone.utc).isoformat()
+            )
+        if len(kept) == len(items) and not from_session_end:
             store.reopen_core_gate_batch(batch_id)
             report.reopened = True
             new_id = batch_id
@@ -3100,7 +3121,7 @@ def rerun_core_gate_batch(
                     classifier_version=CLASSIFIER_VERSION,
                     origin=CORE_GATE_ORIGIN_DOCTOR,
                     session_id=None,
-                    created_at=batch.created_at,
+                    created_at=new_created_at,
                 )
             except ValueError as exc:
                 raise CoreGateRerunRefused(str(exc)) from exc
@@ -3117,7 +3138,7 @@ def rerun_core_gate_batch(
             batch_id=new_id,
             prompt=build_prompt(snippets),
             size=len(kept),
-            created_at=batch.created_at,
+            created_at=new_created_at,
             reused=False,
         )
     return report

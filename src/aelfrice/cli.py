@@ -7883,9 +7883,9 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
     writes. A batch from an earlier emit that isn't accepted yet is
     printed again instead of batching its beliefs twice.
 
-    With `--rerun <batch-id>`, re-runs one accepted doctor batch
-    (`doctor.rerun_core_gate_batch`) and prints the fresh batch the same
-    way. Exits 1 when the re-run is refused, and 2 when `--rerun` is
+    With `--rerun <batch-id>`, re-runs one accepted doctor or session-end
+    batch (`doctor.rerun_core_gate_batch`) and prints the fresh batch the
+    same way. Exits 1 when the re-run is refused, and 2 when `--rerun` is
     combined with `--emit` or `--limit`.
     """
     w = cast("Any", out)
@@ -8001,7 +8001,10 @@ def _cmd_doctor_core_gate_rerun(
         return 1
     store = _open_store()
     try:
-        report = _rerun_core_gate_batch(store, default_core_rule, batch_id)
+        report = _rerun_core_gate_batch(
+            store, default_core_rule, batch_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
     except _CoreGateRerunRefused as exc:
         print(
             f"doctor core-gate: re-run refused, nothing written: {exc}.",
@@ -8021,6 +8024,7 @@ def _cmd_doctor_core_gate_rerun(
             "labels_dropped": report.labels_dropped,
             "kept": report.kept,
             "reopened": report.reopened,
+            "new_run": report.new_run,
             "batches": [_core_gate_batch_json(b, paths) for b in batches],
         }), file=w)
         return 0
@@ -8038,7 +8042,18 @@ def _cmd_doctor_core_gate_rerun(
         "follow today's core rule, including the ones labeled C before.",
         file=w,
     )
-    if report.reopened:
+    if report.new_run:
+        from aelfrice.core_gate import SELF_CHECK_MIN_BATCHES  # noqa: PLC0415
+
+        print(
+            "The re-run batch was a session-end batch, so a new doctor "
+            "batch holds the beliefs still in core. It starts an emit run "
+            "of its own, and the self-check, which needs at least "
+            f"{SELF_CHECK_MIN_BATCHES} accepted batches in a run, doesn't "
+            "cover it.",
+            file=w,
+        )
+    elif report.reopened:
         print(
             "The batch is reopened under its own id. It stays in the "
             "original emit run, so the self-check compares it with the "
@@ -10173,10 +10188,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         metavar="BATCH_ID",
         help=(
-            "with core-gate: drop the labels an accepted doctor batch "
-            "still owns and print one fresh batch, in the same emit run, "
-            "for its beliefs that are still in core and unchanged. For a "
-            "batch the accept self-check flagged (#1638)."
+            "with core-gate: drop the labels an accepted batch still "
+            "owns and print one fresh batch for its beliefs that are "
+            "still in core and unchanged: in the same emit run for a "
+            "doctor batch the accept self-check flagged, or in a new run "
+            "of its own for a session-end batch (#1638)."
         ),
     )
     p_doctor.add_argument(
