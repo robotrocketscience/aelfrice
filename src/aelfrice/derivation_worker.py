@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, cast
 
 from aelfrice.derivation import (
     DerivationInput,
@@ -64,6 +64,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCES_NON_ASSERTING,
+    CORROBORATION_SPEAKERS,
     INGEST_SOURCE_CLAUDE_MEMORY,
     INGEST_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_FILESYSTEM,
@@ -356,6 +357,16 @@ def _write_derived_row(
         sph = raw_meta.get(_META_SOURCE_PATH_HASH)
         if isinstance(sph, str) and sph:
             source_path_hash = sph
+    # #1650: a transcript row records who spoke in `raw_meta["role"]`; the
+    # corroboration keeps it so promotion can count only the user's words.
+    speaker: str | None = None
+    if (
+        corroboration_source == CORROBORATION_SOURCE_TRANSCRIPT_INGEST
+        and isinstance(raw_meta, dict)
+    ):
+        role = cast("dict[str, object]", raw_meta).get("role")
+        if isinstance(role, str) and role in CORROBORATION_SPEAKERS:
+            speaker = role
 
     # `ts=inp.ts` (#1373, #1157 §7): the log row's own timestamp is the
     # time of this ingest event, so the corroboration row carries it
@@ -367,6 +378,7 @@ def _write_derived_row(
         session_id=inp.session_id,
         source_path_hash=source_path_hash,
         ts=inp.ts or None,
+        speaker=speaker,
     )
 
     # #265 PR-B: relocate scanner's post-insert audit row into the

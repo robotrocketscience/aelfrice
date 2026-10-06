@@ -48,6 +48,8 @@ from aelfrice.models import (
     LOCK_USER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
+    CORROBORATION_SPEAKER_USER,
+    CORROBORATION_SPEAKERS,
     CORROBORATION_SOURCE_WONDER_INGEST,
     CORROBORATION_SOURCE_COMMIT_INGEST,
     CORROBORATION_SOURCES_NON_ASSERTING,
@@ -459,7 +461,8 @@ _SCHEMA: tuple[str, ...] = (
         ingested_at       TEXT    NOT NULL,
         source_type       TEXT    NOT NULL,
         session_id        TEXT,
-        source_path_hash  TEXT
+        source_path_hash  TEXT,
+        speaker           TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_belief_corroborations_belief_id "
@@ -982,6 +985,10 @@ _MIGRATIONS: tuple[str, ...] = (
     # non-NULL = GC'd by `wonder_gc`. Existing rows default to NULL
     # (active) which is correct — only speculative phantoms are GC'd.
     "ALTER TABLE beliefs ADD COLUMN valid_to TEXT",
+    # #1650: who said a transcript corroboration's text. NULL on every
+    # earlier row and on every non-transcript source; NULL never counts as
+    # the user's. Not part of the #1020 unique key (see record_corroboration).
+    "ALTER TABLE belief_corroborations ADD COLUMN speaker TEXT",
     # v3.0 #688 federation scope visibility. Default 'project' keeps
     # existing rows local — identical to pre-#688 behaviour. Peers only
     # surface rows where scope='global' or scope='shared:<name>'.
@@ -2533,7 +2540,8 @@ class MemoryStore:
                         ingested_at       TEXT    NOT NULL,
                         source_type       TEXT    NOT NULL,
                         session_id        TEXT,
-                        source_path_hash  TEXT
+                        source_path_hash  TEXT,
+                        speaker           TEXT
                     )
                     """
                 )
@@ -5054,6 +5062,7 @@ class MemoryStore:
         session_id: str | None = None,
         source_path_hash: str | None = None,
         ts: str | None = None,
+        speaker: str | None = None,
     ) -> tuple[str, bool]:
         """Insert belief or corroborate existing one with same content_hash.
 
@@ -5150,6 +5159,7 @@ class MemoryStore:
                 session_id=session_id,
                 source_path_hash=source_path_hash,
                 ts=ts,
+                speaker=speaker,
             )
             return (existing.id, False)
         # Race / migration guard (#264): same id may already exist under
@@ -5174,6 +5184,7 @@ class MemoryStore:
                 session_id=session_id,
                 source_path_hash=source_path_hash,
                 ts=ts,
+                speaker=speaker,
             )
             return (existing_by_id.id, False)
         self.insert_belief(b)
@@ -5187,6 +5198,7 @@ class MemoryStore:
         session_id: str | None = None,
         source_path_hash: str | None = None,
         ts: str | None = None,
+        speaker: str | None = None,
     ) -> None:
         """Record one corroboration row for an already-existing belief.
 
@@ -5217,16 +5229,36 @@ class MemoryStore:
                 f"Unknown source_type {source_type!r}. "
                 f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
             )
+        if speaker is not None and speaker not in CORROBORATION_SPEAKERS:
+            raise ValueError(
+                f"Unknown speaker {speaker!r}. "
+                f"Must be one of {sorted(CORROBORATION_SPEAKERS)} or None"
+            )
         if ts is None:
             ts = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             """
             INSERT OR IGNORE INTO belief_corroborations
-                (belief_id, ingested_at, source_type, session_id, source_path_hash)
-            VALUES (?, ?, ?, ?, ?)
+                (belief_id, ingested_at, source_type, session_id,
+                 source_path_hash, speaker)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (belief_id, ts, source_type, session_id, source_path_hash),
+            (belief_id, ts, source_type, session_id, source_path_hash, speaker),
         )
+        # #1650: speaker is not in the #1020 unique key, so a second write
+        # for the same source lands on the existing row. A user turn wins:
+        # the row becomes the user's if either write came from one.
+        if speaker == CORROBORATION_SPEAKER_USER:
+            self._conn.execute(
+                """
+                UPDATE belief_corroborations SET speaker = ?
+                 WHERE belief_id = ? AND source_type = ?
+                   AND session_id IS ? AND source_path_hash IS ?
+                   AND speaker IS NOT ?
+                """,
+                (speaker, belief_id, source_type, session_id,
+                 source_path_hash, speaker),
+            )
         self._commit()
 
     def corroboration_episodes(self) -> dict[str, int]:

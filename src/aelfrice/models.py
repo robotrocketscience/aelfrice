@@ -241,6 +241,14 @@ ORIGIN_RETRIEVAL_PRIORITY_DEFAULT: Final[int] = 2
 # for grace-window cross-checking.
 CORROBORATION_SOURCE_COMMIT_INGEST: Final[str] = "commit_ingest"
 CORROBORATION_SOURCE_TRANSCRIPT_INGEST: Final[str] = "transcript_ingest"
+# #1650: who said the text behind a transcript corroboration. Only
+# transcript rows carry one; every other source leaves it NULL, and a
+# NULL speaker never counts as the user's (feature-supports-writer.md).
+CORROBORATION_SPEAKER_USER: Final[str] = "user"
+CORROBORATION_SPEAKER_ASSISTANT: Final[str] = "assistant"
+CORROBORATION_SPEAKERS: Final[frozenset[str]] = frozenset(
+    {CORROBORATION_SPEAKER_USER, CORROBORATION_SPEAKER_ASSISTANT}
+)
 CORROBORATION_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
 # filesystem_ingest: scanner / onboard paths that read local files
 # (not git history). Distinct from transcript_ingest (conversation
