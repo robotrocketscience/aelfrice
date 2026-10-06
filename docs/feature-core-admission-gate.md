@@ -112,8 +112,8 @@ The backlog drain and the self-check work as follows:
   run. The emit's reads and writes run under one write lock, so two emits at
   once can't batch the same beliefs.
 - An emit doesn't batch a belief twice. If a batch from an earlier emit isn't
-  accepted yet, and all of its beliefs are still unlabeled and unchanged,
-  the next emit prints that batch again. Otherwise the emit sets the batch
+  accepted yet, and all of its beliefs are still unlabeled, unchanged, and
+  in core, the next emit prints that batch again. Otherwise the emit sets the batch
   aside and puts its unlabeled beliefs in a new batch.
 - A set-aside batch stays open rather than being closed, because its
   beliefs can return to the backlog (for example, when a lock is lifted)
@@ -129,22 +129,27 @@ The backlog drain and the self-check work as follows:
   code. The check runs only when the run has at least four accepted
   batches. With three, each batch's median of the others is the mean of two
   shares, so one failed batch also flags the healthy ones. Below four, the
-  command says on stderr that it skipped the check.
+  command says on stderr that it skipped the check. Each emit is its own
+  run, so emitting with a small `--limit` and accepting between emits gives
+  runs of fewer than four batches, and the check never runs for them. To
+  keep the self-check, accept all batches of one emit before emitting
+  again.
 - Step 2, the re-run, is `aelf doctor core-gate --rerun <batch-id>`. In one
   transaction, it deletes the labels the batch still owns, and batches again
   the beliefs whose labels it deleted and that are still in core and
   unchanged. A label that a later batch wrote for the same content hash
   stays. The new batch joins the original emit run: it carries the
-  original creation time, so the self-check compares it with the same
-  siblings, and the original batch, which now owns no labels, drops out of
-  the comparison. A batch id is derived from the classifier version, the
+  original creation time, and the original batch, which now owns no
+  labels, drops out of the comparison. A batch id is derived from the classifier version, the
   creation time, and the content hashes. So when every belief is kept, the
   new batch would have the original's id, and the command reopens the
-  original batch instead of creating a second one.
+  original batch instead of creating a second one. Until the new batch is
+  accepted, the re-run beliefs have no label, so they follow today's rule,
+  including the ones the batch had labeled C.
 - A subset re-run, which holds fewer beliefs than the batch it re-ran, is
   left out of the self-check: it isn't checked, and it isn't a sibling
-  for other batches (operator ruling, 2026-10-05). A small batch's C share
-  sits near 0 or 1, so it would skew the comparison. A whole-batch re-run
+  for other batches. It isn't comparable with its full-size siblings, and
+  the operator ruled it out on 2026-10-05. A whole-batch re-run
   keeps its size and is checked. No column marks a subset re-run: the
   batches one emit creates are disjoint, so a batch whose content hashes
   are a strict subset of another batch's in the same run can only be one.
