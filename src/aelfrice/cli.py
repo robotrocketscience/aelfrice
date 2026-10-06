@@ -57,6 +57,7 @@ from aelfrice.models import (
     ORIGIN_SPECULATIVE,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
+    Belief,
     Phantom,
 )
 from aelfrice.bfs_multihop import expand_bfs
@@ -3793,10 +3794,16 @@ def _emit_core(
     args: argparse.Namespace,
     out: object,
     episodes: dict[str, int] | None = None,
+    gate_labels: dict[str, str] | None = None,
 ) -> None:
     # #1635: the labels use the same corroboration rule as the gate, so a
     # burst is never shown as corroboration evidence.
     ep: dict[str, int] = episodes or {}
+    # #1638: core-gate labels by content hash, looked up for the unlocked
+    # candidates only (`beliefs.content_hash` is UNIQUE, so no locked row
+    # can match one). The JSON row carries `core_gate_label` only when the
+    # belief has a label, so output on a store with no labels is unchanged.
+    gl: dict[str, str] = gate_labels or {}
     seen: set[str] = {b.id for b in locked}  # type: ignore[attr-defined]
     unlocked = [b for b in candidates if b.id not in seen]  # type: ignore[attr-defined]
 
@@ -3829,7 +3836,7 @@ def _emit_core(
             ab = alpha + beta
             if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
                 signals.append("posterior")
-            rows.append({
+            row: dict[str, object] = {
                 "id": b.id,  # type: ignore[attr-defined]
                 "content": b.content,  # type: ignore[attr-defined]
                 "lock_level": b.lock_level,  # type: ignore[attr-defined]
@@ -3838,7 +3845,11 @@ def _emit_core(
                 "posterior_mean": round(alpha / ab, 3) if ab else 0.0,
                 "corroboration_count": b.corroboration_count,  # type: ignore[attr-defined]
                 "signals": sorted(set(signals)),
-            })
+            }
+            label = gl.get(b.content_hash)  # type: ignore[attr-defined]
+            if label is not None:
+                row["core_gate_label"] = label
+            rows.append(row)
         print(json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
         return
 
@@ -3878,16 +3889,24 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
         # #1635: read once; the gate and the labels both use it, and the
         # labels cover the locked beliefs too.
         episodes = store.corroboration_episodes()
+        gate_labels: dict[str, str] = {}
         if not args.locked_only:
+            qualifying: list[Belief] = []
             for bid in store.list_belief_ids():
                 b = store.get_belief(bid)
                 if b is None or b.lock_level != LOCK_NONE:
                     continue
                 if _qualifies_core(b, args, episodes.get(b.id, 0)):
-                    candidates.append(b)
+                    qualifying.append(b)
+            # #1638: the content gate on the two non-lock arms, one label
+            # lookup for the whole selection. Unlabeled beliefs pass.
+            admitted, gate_labels = store.gate_core_candidates(
+                qualifying, episodes,
+            )
+            candidates.extend(admitted)
     finally:
         store.close()
-    _emit_core(locked, candidates, args, out, episodes)
+    _emit_core(locked, candidates, args, out, episodes, gate_labels)
     return 0
 
 
