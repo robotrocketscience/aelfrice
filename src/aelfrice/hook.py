@@ -4140,13 +4140,15 @@ def _maybe_phantom_promotion_block(
     serr = stderr if stderr is not None else sys.stderr
     try:
         from aelfrice.phantom_promotion_opportunity import (  # noqa: PLC0415
+            auto_promote_phantoms,
             evaluate_promotion_opportunities,
+            format_auto_promotion_notice,
             format_promotion_note,
             load_phantom_promotion_config,
         )
 
         config = load_phantom_promotion_config(start=cwd)
-        if not config.enabled:
+        if not config.enabled and not config.auto_promote:
             return ""
         p = db_path()
         if str(p) == ":memory:":
@@ -4155,17 +4157,33 @@ def _maybe_phantom_promotion_block(
 
         store = MemoryStore(str(p))
         try:
+            # #1650: promote first, so a phantom promoted now is no longer a
+            # candidate for the note below. The notice counts against the
+            # same room; if it doesn't fit, the promotion still stands (it is
+            # audited) and only the notice is dropped.
+            notice = format_auto_promotion_notice(
+                auto_promote_phantoms(store=store, config=config),
+                min_sessions=config.min_sessions,
+            )
+            if room_chars is not None and len(notice) > room_chars:
+                notice = ""
+            note_room = (
+                None if room_chars is None
+                else room_chars - (len(notice) + 1 if notice else 0)
+            )
             opportunities = evaluate_promotion_opportunities(
                 store=store,
                 session_id=session_id,
                 config=config,
                 stderr=serr,
-                room_chars=room_chars,
+                room_chars=note_room,
                 commits=commits,
             )
         finally:
             store.close()
-        return format_promotion_note(opportunities)
+        return "\n".join(
+            part for part in (notice, format_promotion_note(opportunities)) if part
+        )
     except Exception as exc:  # fail-soft: never break the hook
         print(
             f"aelfrice: phantom promotion trigger failed (non-fatal): {exc}",

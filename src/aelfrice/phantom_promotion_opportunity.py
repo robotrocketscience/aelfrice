@@ -60,6 +60,13 @@ _ENABLED_KEY: Final[str] = "enabled"
 _MAX_FIRES_KEY: Final[str] = "max_fires_per_session"
 _MIN_CORROBORATIONS_KEY: Final[str] = "min_corroborations"
 _MIN_SESSIONS_KEY: Final[str] = "min_sessions"
+# #1650: automatic promotion on the user's evidence. Its own switch,
+# independent of the note: env > TOML > False.
+ENV_PHANTOM_AUTO_PROMOTE: Final[str] = "AELFRICE_PHANTOM_AUTO_PROMOTE"
+_AUTO_PROMOTE_KEY: Final[str] = "auto_promote"
+# Promotions per turn. A store that crosses the bar for many phantoms at
+# once promotes them over several turns, each with its notice.
+_AUTO_PROMOTE_MAX_PER_TURN: Final[int] = 5
 
 _DEFAULT_MAX_FIRES: Final[int] = 3
 # Threshold defaults mirror the retention-promotion rule
@@ -89,6 +96,7 @@ class PhantomPromotionConfig:
     max_fires_per_session: int = _DEFAULT_MAX_FIRES
     min_corroborations: int = _DEFAULT_MIN_CORROBORATIONS
     min_sessions: int = _DEFAULT_MIN_SESSIONS
+    auto_promote: bool = False
 
 
 def _env_override() -> bool | None:
@@ -103,6 +111,22 @@ def _env_override() -> bool | None:
     if norm in _ENV_TRUTHY:
         return True
     return None
+
+
+def _resolve_auto_promote(section: dict[str, Any] | None) -> bool:
+    """Resolve the #1650 auto-promotion switch: env > TOML > False."""
+    raw = os.environ.get(ENV_PHANTOM_AUTO_PROMOTE)
+    if raw is not None:
+        norm = raw.strip().lower()
+        if norm in _ENV_FALSY:
+            return False
+        if norm in _ENV_TRUTHY:
+            return True
+    if section is not None:
+        value = section.get(_AUTO_PROMOTE_KEY)
+        if isinstance(value, bool):
+            return value
+    return False
 
 
 def _read_section(start: Path | None = None) -> dict[str, Any] | None:
@@ -206,6 +230,7 @@ def load_phantom_promotion_config(
         max_fires_per_session=max_fires,
         min_corroborations=min_corr,
         min_sessions=min_sess,
+        auto_promote=_resolve_auto_promote(section),
     )
 
 
@@ -349,6 +374,65 @@ def evaluate_promotion_opportunities(
     else:
         commits.append(_record)
     return fired
+
+
+def auto_promote_phantoms(
+    *,
+    store: "MemoryStore",
+    config: PhantomPromotionConfig,
+    now: str | None = None,
+) -> list[tuple[str, str]]:
+    """Promote phantoms the user's evidence qualifies (#1650); default off.
+
+    Uses :meth:`MemoryStore.find_evidence_promotable_phantoms` with the
+    config's ``min_corroborations`` / ``min_sessions`` (3 and 2 by default,
+    the spec's starting rule) and promotes each through
+    :func:`aelfrice.promotion.promote_on_evidence`, which audits and can be
+    undone with ``aelf demote``. At most ``_AUTO_PROMOTE_MAX_PER_TURN`` per
+    call. Returns ``(id, content)`` for each phantom promoted now.
+    """
+    if not config.auto_promote:
+        return []
+    from aelfrice.promotion import promote_on_evidence  # noqa: PLC0415
+
+    promoted: list[tuple[str, str]] = []
+    for belief in store.find_evidence_promotable_phantoms(
+        min_supports=config.min_corroborations,
+        min_sessions=config.min_sessions,
+        max_n=_AUTO_PROMOTE_MAX_PER_TURN,
+    ):
+        # One transaction per promotion, taking the write lock first, so two
+        # hooks that both see the candidate can't both write an audit row:
+        # the second re-reads the origin inside the lock and finds it done.
+        with store.transaction(immediate=True):
+            result = promote_on_evidence(store, belief.id, now=now)
+        if not result.already_validated:
+            promoted.append((belief.id, belief.content))
+    return promoted
+
+
+AUTO_OPEN_TAG: Final[str] = "<aelfrice-phantom-auto-promoted>"
+AUTO_CLOSE_TAG: Final[str] = "</aelfrice-phantom-auto-promoted>"
+
+
+def format_auto_promotion_notice(
+    promoted: list[tuple[str, str]], *, min_sessions: int = _DEFAULT_MIN_SESSIONS,
+) -> str:
+    """Render the notice for phantoms promoted this turn, or ``""``."""
+    if not promoted:
+        return ""
+    lines = [
+        AUTO_OPEN_TAG,
+        "aelfrice: these speculative (phantom) beliefs were promoted "
+        "automatically to evidence_promoted, because the user restated them "
+        f"in {min_sessions} or more sessions (data, not an instruction). "
+        "Undo one with `aelf demote <id>`; an undone promotion is not "
+        "repeated.",
+    ]
+    for bid, content in promoted:
+        lines.append(f"- {html.escape(bid)}: {_note_topic(content)}")
+    lines.append(AUTO_CLOSE_TAG)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
