@@ -5423,6 +5423,49 @@ def _load_aelfrice_toml(
     return {}
 
 
+_AUDIT_BACKWARD_CHUNK: Final[int] = 64 * 1024
+
+
+def _read_audit_records_backward(path: Path) -> Iterator[dict[str, object]]:
+    """Yield `path`'s JSONL objects newest first, reading from the end.
+
+    Same parse rules as `read_hook_audit`: blank lines are skipped, a line
+    that isn't JSON (or isn't UTF-8) raises `ValueError`, and JSON that
+    isn't an object is skipped. Lines are split on `\\n` only; the writer
+    never emits another line break outside a JSON string. #1674.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        tail = b""
+        while pos > 0:
+            size = min(_AUDIT_BACKWARD_CHUNK, pos)
+            pos -= size
+            fh.seek(pos)
+            parts = (fh.read(size) + tail).split(b"\n")
+            tail = parts[0]
+            for raw in reversed(parts[1:]):
+                record = _parse_audit_line(raw, path)
+                if record is not None:
+                    yield record
+        record = _parse_audit_line(tail, path)
+        if record is not None:
+            yield record
+
+
+def _parse_audit_line(raw: bytes, path: Path) -> dict[str, object] | None:
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"audit file {path} has a line that is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        return None
+    return cast(dict[str, object], parsed)
+
+
 def _load_prior_ups_belief_ids(
     session_id: str,
     *,
@@ -5441,8 +5484,16 @@ def _load_prior_ups_belief_ids(
     - any I/O or JSON-shape error occurs (fail-soft).
 
     The rotated `.1` slot is also scanned so a session that crossed a
-    rotation boundary still surfaces its prior turn. Rotation is a rare
-    event (10 MB default cap) so the extra read is cheap.
+    rotation boundary still surfaces its prior turn.
+
+    #1674: the files are read backward, newest line first, and the scan
+    stops at the first matching row, which is the most recent one. Positive
+    sentiment runs this on every positive prompt, and the log can reach
+    about 20 MB with its rotation; reading it whole cost time proportional
+    to its size even though the match is almost always near the end. One
+    difference from a whole-file read: a corrupt line *older* than the
+    match is never reached, so it no longer turns the answer into `[]`.
+    A corrupt line between the end and the match still does.
     """
     if not session_id:
         return []
@@ -5461,10 +5512,10 @@ def _load_prior_ups_belief_ids(
         candidates.append(audit_path)
     if not candidates:
         return []
-    last_belief_ids: list[str] = []
     try:
-        for path in candidates:
-            for record in read_hook_audit(path):
+        # Newest first: the current file backward, then the rotated one.
+        for path in reversed(candidates):
+            for record in _read_audit_records_backward(path):
                 if record.get("hook") != AUDIT_HOOK_USER_PROMPT_SUBMIT:
                     continue
                 if record.get("session_id") != session_id:
@@ -5479,14 +5530,14 @@ def _load_prior_ups_belief_ids(
                     bid = b.get("id")
                     if isinstance(bid, str) and bid:
                         ids.append(bid)
-                last_belief_ids = ids
+                return ids
     except (ValueError, OSError) as exc:
         print(
             f"aelfrice: prior-UPS audit scan failed (non-fatal): {exc}",
             file=stderr if stderr is not None else sys.stderr,
         )
         return []
-    return last_belief_ids
+    return []
 
 
 def apply_sentiment_feedback(
