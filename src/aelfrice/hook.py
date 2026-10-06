@@ -7729,10 +7729,12 @@ def _maybe_core_gate_session_end(
     """Emit the core-gate batch for this session's unclaimed candidates.
 
     Runs on every Stop and fires on any Stop that finds candidates no
-    label or open batch covers. The transcript logger ingests a session's
-    turns into beliefs only every few turns (`STOP_FLUSH_TURNS`) or at
-    PreCompact, so in practice this fires at most once per ingest flush.
-    Returns True when it wrote the continuation to `stdout`. In order:
+    label or open batch covers. The transcript logger starts a background
+    ingest of the session's turns only every few turns
+    (`STOP_FLUSH_TURNS`), so this fires at most once per ingest. The host
+    runs a Stop's hooks in parallel, so the ingest usually lands after
+    this hook has looked, and the batch fires on the next Stop. Returns
+    True when it wrote the continuation to `stdout`. In order:
 
     1. `stop_hook_active` set: return. The host sets it while a Stop hook
        is already continuing the conversation, so this never continues
@@ -7753,6 +7755,13 @@ def _maybe_core_gate_session_end(
        in the block rolls the batch back.
     8. Write `{"hookSpecificOutput": {"hookEventName": "Stop",
        "additionalContext": ...}}` to stdout; the caller returns exit 0.
+       The write comes after the commit, so the context never names a
+       batch that doesn't exist. A failure between the two (a closed
+       pipe, a host timeout) leaves an open batch nobody was asked about;
+       it claims its beliefs, so no later Stop asks either, and
+       `aelf doctor core-gate --emit` batches them again. There is no
+       Stop-side retry: it would re-ask a model that declined on purpose,
+       and the drain covers every unanswered batch.
 
     `additionalContext` rather than `decision: "block"`: the host's
     "Stop decision control" section documents it as non-error feedback
