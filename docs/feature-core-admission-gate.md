@@ -5,10 +5,11 @@ the gate in core selection are implemented. Nothing emits a classifier batch
 yet, so every belief is unlabeled and core follows today's rule.
 Tracking issue: [#1638](https://github.com/robotrocketscience/aelfrice/issues/1638).
 
-This spec proposes a content gate for core admission. Two consumers select
-core independently: `aelf core` (`cli._qualifies_core`) and the SessionStart
-`<core>` lane (`hook._belief_qualifies_core`). Neither reads the other's
-output, so the gate must apply in both. A belief qualifies through the
+This spec proposes a content gate for core admission. Three consumers select
+core independently: `aelf core` (`cli._qualifies_core`), the SessionStart
+`<core>` lane (`hook._belief_qualifies_core`), and the core membership that
+`aelf doctor` reports. None reads another's output, so the gate must apply in
+all three. A belief qualifies through the
 non-lock arms only if an offline classifier has judged it truth-apt. Locked
 beliefs aren't affected.
 
@@ -134,8 +135,9 @@ single-run gate that admits A or B scores 0.48 / 0.77.
 - A stricter wording of the rubric was also tested. It's dominated by the
   configurations in the table.
 
-The corroboration counts in this table were measured before #1635. Re-measure
-the B condition against the episode rule before you implement it.
+The corroboration counts in this table were measured before #1635. The B
+condition was re-measured against the episode rule in #1638 and gave the same
+result with either count.
 
 ## Optional layer: explicit confirmation
 
@@ -154,9 +156,14 @@ not as the admission route.
   injected, and detecting use from lexical overlap is too crude. Revisit this
   route only with instrumentation, such as the model citing belief IDs.
 
-## Open questions
+## Decisions
 
-1. Where does the batch run: at session end, from `aelf doctor`, or from a
-   dedicated command? What is its cost ceiling?
-2. What happens to a belief that isn't classified yet? It can be kept out of
-   core until it's classified, or it can follow today's rule until then.
+These questions were open in earlier versions of this spec. They're ruled in
+#1638.
+
+1. **Where the batch runs:** at session end, over that session's new core
+   candidates. `aelf doctor` drains the backlog of older candidates.
+2. **Beliefs that aren't classified yet:** they follow today's rule until
+   they're classified, so nothing leaves core before its first label.
+3. **Cost ceiling:** the 1× configuration, a single classifier run that admits
+   A, or B with fewer than two corroborations.
