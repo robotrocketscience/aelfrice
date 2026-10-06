@@ -22,12 +22,6 @@ import pytest
 import aelfrice.hook as hook
 from aelfrice.cli import main as cli_main
 from aelfrice.core_gate import CLASSIFIER_VERSION, MAX_BATCH, build_prompt
-from aelfrice.hook import (
-    CORE_GATE_SESSION_END_CHAR_BUDGET,
-    CORE_GATE_SESSION_END_ENV,
-    CORE_GATE_SESSION_END_N_MIN,
-    stop,
-)
 from aelfrice.hook_payload import HOOK_PAYLOAD_CHAR_LIMIT
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -52,7 +46,7 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("AELFRICE_DB", str(path))
     monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
     monkeypatch.setenv("AELFRICE_NO_AUTO_INSTALL", "1")
-    monkeypatch.delenv(CORE_GATE_SESSION_END_ENV, raising=False)
+    monkeypatch.delenv(hook.CORE_GATE_SESSION_END_ENV, raising=False)
     return path
 
 
@@ -101,7 +95,7 @@ def _stop(
     payload: dict[str, object] = {"session_id": session, "cwd": str(tmp_path)}
     payload.update(extra or {})
     out, err = io.StringIO(), io.StringIO()
-    assert stop(
+    assert hook.stop(
         stdin=io.StringIO(json.dumps(payload)), stdout=out, stderr=err,
         env=env if env is not None else {},
     ) == 0
@@ -155,14 +149,14 @@ def _doctor_batch(
 
 def test_n_min_is_one() -> None:
     """Pins the stated floor. Killed by: changing
-    `CORE_GATE_SESSION_END_N_MIN` to anything but 1."""
-    assert CORE_GATE_SESSION_END_N_MIN == 1
+    `hook.CORE_GATE_SESSION_END_N_MIN` to anything but 1."""
+    assert hook.CORE_GATE_SESSION_END_N_MIN == 1
 
 
 def test_char_budget_is_the_payload_limit() -> None:
     """Killed by: a budget above the host's inline limit."""
-    assert CORE_GATE_SESSION_END_CHAR_BUDGET == HOOK_PAYLOAD_CHAR_LIMIT
-    assert CORE_GATE_SESSION_END_CHAR_BUDGET <= 10_000
+    assert hook.CORE_GATE_SESSION_END_CHAR_BUDGET == HOOK_PAYLOAD_CHAR_LIMIT
+    assert hook.CORE_GATE_SESSION_END_CHAR_BUDGET <= 10_000
 
 
 def test_fires_with_candidates(db: Path, tmp_path: Path) -> None:
@@ -362,7 +356,7 @@ def test_env_opt_out_does_not_continue(
 ) -> None:
     """Killed by: deleting the env-var opt-out check."""
     _seed(db, [_belief("w1")])
-    out, _ = _stop(tmp_path, env={CORE_GATE_SESSION_END_ENV: value})
+    out, _ = _stop(tmp_path, env={hook.CORE_GATE_SESSION_END_ENV: value})
     assert out == ""
     assert _batches(db) == []
 
@@ -370,7 +364,7 @@ def test_env_opt_out_does_not_continue(
 def test_unrecognised_env_value_falls_through(db: Path, tmp_path: Path) -> None:
     """Killed by: reading any value other than an on-value as off."""
     _seed(db, [_belief("w1")])
-    out, _ = _stop(tmp_path, env={CORE_GATE_SESSION_END_ENV: "widgetjunk"})
+    out, _ = _stop(tmp_path, env={hook.CORE_GATE_SESSION_END_ENV: "widgetjunk"})
     assert _context(out)
 
 
@@ -392,7 +386,7 @@ def test_env_on_overrides_toml_opt_out(db: Path, tmp_path: Path) -> None:
         "[core_gate]\nsession_end = false\n", encoding="utf-8",
     )
     _seed(db, [_belief("w1")])
-    out, _ = _stop(tmp_path, env={CORE_GATE_SESSION_END_ENV: "1"})
+    out, _ = _stop(tmp_path, env={hook.CORE_GATE_SESSION_END_ENV: "1"})
     assert _context(out)
 
 
@@ -515,14 +509,14 @@ def test_walk_budget_boundary_is_exact(
     small = "Widget small holds."
     filler = "Widget big " + "z" * 1000
     base = _context_length([filler, small], 1)
-    big = filler + "z" * (CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
-    assert _context_length([big, small], 1) == CORE_GATE_SESSION_END_CHAR_BUDGET + over
-    huge = _belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET)
+    big = filler + "z" * (hook.CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
+    assert _context_length([big, small], 1) == hook.CORE_GATE_SESSION_END_CHAR_BUDGET + over
+    huge = _belief("w-huge", content="Widget " + "y" * hook.CORE_GATE_SESSION_END_CHAR_BUDGET)
     _seed(db, [
         _belief("w-small", content=small), _belief("w-big", content=big), huge,
     ])
     out, _ = _stop(tmp_path)
-    assert len(_context(out)) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    assert len(_context(out)) <= hook.CORE_GATE_SESSION_END_CHAR_BUDGET
     expected = [["w-big", "w-small"]] if over == 0 else [["w-big"]]
     assert _batch_ids(db) == expected
 
@@ -535,7 +529,7 @@ def test_walk_is_capped_at_max_batch(db: Path, tmp_path: Path) -> None:
     `_fit_core_gate_batch`.
     """
     ids = [f"w{i:03d}" for i in range(MAX_BATCH + 2)]
-    huge = _belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET)
+    huge = _belief("w-huge", content="Widget " + "y" * hook.CORE_GATE_SESSION_END_CHAR_BUDGET)
     _seed(db, [_belief(i, content=f"Widget {i} holds.") for i in ids] + [huge])
     out, _ = _stop(tmp_path)
     assert _context(out)
@@ -550,7 +544,7 @@ def test_batch_fits_the_char_budget(db: Path, tmp_path: Path) -> None:
     _seed(db, [_belief(i, content=f"Widget {i} " + "x" * 1500 + ".") for i in ids])
     out, _ = _stop(tmp_path)
     context = _context(out)
-    assert len(context) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    assert len(context) <= hook.CORE_GATE_SESSION_END_CHAR_BUDGET
     [first] = _batch_ids(db)
     assert 0 < len(first) < len(ids)
     store = MemoryStore(str(db))
@@ -589,18 +583,18 @@ def test_char_budget_boundary_is_exact(
     small = "Widget small holds."
     filler = "Widget big " + "z" * 1000
     base = _context_length([filler, small], 0)
-    big = filler + "z" * (CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
-    assert _context_length([big, small], 0) == CORE_GATE_SESSION_END_CHAR_BUDGET + over
+    big = filler + "z" * (hook.CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
+    assert _context_length([big, small], 0) == hook.CORE_GATE_SESSION_END_CHAR_BUDGET + over
     _seed(db, [_belief("w-small", content=small), _belief("w-big", content=big)])
     out, _ = _stop(tmp_path)
     context = _context(out)
-    assert len(context) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    assert len(context) <= hook.CORE_GATE_SESSION_END_CHAR_BUDGET
     if over == 0:
         assert _batch_ids(db) == [["w-big", "w-small"]]
         return
     assert _batch_ids(db) == [["w-small"]]
     again, _ = _stop(tmp_path)
-    assert len(_context(again)) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    assert len(_context(again)) <= hook.CORE_GATE_SESSION_END_CHAR_BUDGET
     assert _batch_ids(db) == [["w-small"], ["w-big"]]
 
 
@@ -611,7 +605,7 @@ def test_an_oversized_belief_is_skipped_not_blocking(
     newest belief is too long for any batch; the older one still goes."""
     _seed(db, [
         _belief("w-small"),
-        _belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET),
+        _belief("w-huge", content="Widget " + "y" * hook.CORE_GATE_SESSION_END_CHAR_BUDGET),
     ])
     out, _ = _stop(tmp_path)
     assert _context(out)
@@ -622,7 +616,7 @@ def test_nothing_fits_means_no_batch(db: Path, tmp_path: Path) -> None:
     """Killed by: trying to record a batch when no candidate fits (the
     store refuses an empty batch, and the hook would log that failure on
     every Stop)."""
-    _seed(db, [_belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET)])
+    _seed(db, [_belief("w-huge", content="Widget " + "y" * hook.CORE_GATE_SESSION_END_CHAR_BUDGET)])
     out, err = _stop(tmp_path)
     assert out == ""
     assert "core-gate" not in err
@@ -725,7 +719,7 @@ def test_exceptions_are_swallowed(
     db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Killed by: removing the try/except around the session-end call in
-    `stop()`. The failure is logged to stderr, nothing reaches stdout, and
+    `hook.stop()`. The failure is logged to stderr, nothing reaches stdout, and
     the hook still returns 0."""
     _seed(db, [_belief("w1")])
 
