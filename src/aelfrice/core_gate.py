@@ -187,6 +187,46 @@ def admit(label: str | None, qualified_corroborations: int) -> bool:
     return True
 
 
+#: The self-check's threshold: a batch whose share of C labels differs by
+#: more than this from the median of its siblings' shares is flagged.
+#: Source: the spec's Self-verification section
+#: (`docs/feature-core-admission-gate.md`), which chose 0.25 after seeing
+#: one failed run in four and asks for it to be validated on new data.
+SELF_CHECK_MAX_C_SHARE_GAP: Final[float] = 0.25
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def c_share_outliers(
+    shares: dict[str, float],
+) -> list[tuple[str, float, float]]:
+    """The batches the spec's self-check flags, as `(batch_id, share,
+    median)`.
+
+    `shares` maps each batch of one emit run to its share of C labels.
+    A batch is flagged when its share differs by more than
+    `SELF_CHECK_MAX_C_SHARE_GAP` from the median share of the other
+    batches; `median` is that median. With fewer than two batches there
+    is nothing to compare, so nothing is flagged. The result is sorted by
+    batch id. The check reports; it never refuses a label.
+    """
+    flagged: list[tuple[str, float, float]] = []
+    for batch_id in sorted(shares):
+        others = [s for b, s in shares.items() if b != batch_id]
+        if not others:
+            continue
+        median = _median(others)
+        if abs(shares[batch_id] - median) > SELF_CHECK_MAX_C_SHARE_GAP:
+            flagged.append((batch_id, shares[batch_id], median))
+    return flagged
+
+
 #: The cache key's classifier half. Derived from the digest, so any change
 #: to what the classifier is makes a new version without a manual bump.
 CLASSIFIER_VERSION: Final[str] = f"core-gate-{prompt_digest()[:16]}"
