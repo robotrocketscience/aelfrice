@@ -2694,6 +2694,244 @@ def format_filesystem_corroboration_report(
 
 
 # ---------------------------------------------------------------------------
+# core admission gate backlog (issue #1638)
+# ---------------------------------------------------------------------------
+
+
+def core_gate_candidates(
+    store: "MemoryStore",
+    qualifies: Callable[["Belief", int], bool],
+) -> tuple[list["Belief"], dict[str, str]]:
+    """The beliefs the core admission gate judges, with their labels.
+
+    Returns the active, unlocked beliefs that `qualifies` admits to core
+    (today's non-lock rule, before the gate), in ascending id order, and
+    their labels under the current `CLASSIFIER_VERSION`, keyed by content
+    hash, read in one lookup. A candidate without an entry is unlabeled.
+    Locked beliefs are left out: the gate doesn't apply to them.
+    """
+    from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
+    from aelfrice.models import LOCK_NONE  # noqa: PLC0415
+
+    episodes = store.corroboration_episodes()
+    candidates: list["Belief"] = []
+    for bid in store.list_belief_ids():
+        b = store.get_belief(bid)
+        if b is None or b.lock_level != LOCK_NONE:
+            continue
+        if qualifies(b, episodes.get(bid, 0)):
+            candidates.append(b)
+    labels = store.core_gate_labels_for(
+        (b.content_hash for b in candidates), CLASSIFIER_VERSION,
+    )
+    return candidates, labels
+
+
+@dataclass
+class CoreGateCoverage:
+    """How much of core's gated membership has a label (#1638).
+
+    `candidates` counts the active, unlocked beliefs that meet today's
+    non-lock core rule. `labeled` counts those with a label under
+    `classifier_version`, per label; `unlabeled` counts the rest, which
+    is the backlog `aelf doctor core-gate --emit` batches. Informational:
+    it never changes doctor's exit code.
+    """
+
+    classifier_version: str
+    candidates: int = 0
+    labeled: dict[str, int] = field(
+        default_factory=lambda: {"A": 0, "B": 0, "C": 0},
+    )
+    unlabeled: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "classifier_version": self.classifier_version,
+            "candidates": self.candidates,
+            "labeled": dict(self.labeled),
+            "unlabeled": self.unlabeled,
+        }
+
+
+def core_gate_coverage(
+    store: "MemoryStore",
+    qualifies: Callable[["Belief", int], bool],
+) -> CoreGateCoverage:
+    """Count labeled and unlabeled core candidates (#1638). Read-only."""
+    from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
+
+    candidates, labels = core_gate_candidates(store, qualifies)
+    report = CoreGateCoverage(classifier_version=CLASSIFIER_VERSION)
+    report.candidates = len(candidates)
+    for b in candidates:
+        label = labels.get(b.content_hash)
+        if label is None:
+            report.unlabeled += 1
+        else:
+            report.labeled[label] = report.labeled.get(label, 0) + 1
+    return report
+
+
+def format_core_gate_coverage(report: CoreGateCoverage) -> list[str]:
+    """The core-gate coverage block, as lines."""
+    a, b, c = (report.labeled.get(k, 0) for k in ("A", "B", "C"))
+    lines = [
+        f"core admission gate ({report.classifier_version}):",
+        f"  {report.candidates} unlocked core candidates: "
+        f"{a + b + c} labeled (A {a}, B {b}, C {c}), "
+        f"{report.unlabeled} unlabeled",
+    ]
+    if report.unlabeled:
+        lines.append(
+            "  unlabeled candidates follow today's rule; run "
+            "`aelf doctor core-gate --emit` to batch them for the classifier."
+        )
+    return lines
+
+
+@dataclass(frozen=True)
+class CoreGateEmitBatch:
+    """One batch `aelf doctor core-gate --emit` prints (#1638).
+
+    `reused` is True for a batch an earlier emit created that isn't
+    accepted yet, printed again rather than batched a second time.
+    """
+
+    batch_id: str
+    prompt: str
+    size: int
+    created_at: str
+    reused: bool
+
+
+@dataclass
+class CoreGateEmitReport:
+    """The result of one `aelf doctor core-gate --emit` call (#1638).
+
+    `backlog` counts the unlabeled core candidates. `batches` are the
+    batches to print, the reused ones first. `left` counts the backlog
+    beliefs in no printed batch, because `--limit` stopped the run.
+    """
+
+    classifier_version: str
+    backlog: int = 0
+    batches: list[CoreGateEmitBatch] = field(
+        default_factory=list[CoreGateEmitBatch],
+    )
+    left: int = 0
+
+
+def emit_core_gate_batches(
+    store: "MemoryStore",
+    qualifies: Callable[["Belief", int], bool],
+    *,
+    limit: int | None,
+    created_at: str,
+) -> CoreGateEmitReport:
+    """Batch the core-gate backlog for the host's classifier (#1638).
+
+    The backlog is the active, unlocked beliefs that meet today's non-lock
+    core rule (`qualifies`) and have no label under the current
+    `CLASSIFIER_VERSION`, in ascending id order.
+
+    A second emit doesn't batch a belief twice. A doctor batch from an
+    earlier emit that isn't accepted yet is printed again, unchanged, when
+    every one of its items is still in the backlog under the same content
+    hash; its beliefs go into no new batch. An open batch with any item
+    that has since been labeled, retired, locked, or changed, or that no
+    longer meets the rule, is set aside: it's left as it is, and its
+    remaining backlog beliefs go into new batches.
+
+    New batches hold up to `core_gate.MAX_BATCH` beliefs each, in backlog
+    order. They're created with origin `doctor`, no session, and the one
+    `created_at` this call is given, which marks them as one emit run for
+    the accept-time self-check. All of them are written in one
+    transaction; nothing else is written.
+
+    `limit` caps the number of batches printed, the reused ones first
+    (oldest first) and then the new ones; a new batch past the cap isn't
+    created. None means no cap.
+    """
+    from aelfrice.core_gate import (  # noqa: PLC0415
+        CLASSIFIER_VERSION,
+        MAX_BATCH,
+        build_prompt,
+    )
+    from aelfrice.models import (  # noqa: PLC0415
+        CORE_GATE_ORIGIN_DOCTOR,
+        CoreGateBatchItem,
+    )
+
+    candidates, labels = core_gate_candidates(store, qualifies)
+    backlog = [b for b in candidates if b.content_hash not in labels]
+    by_hash = {b.content_hash: b for b in backlog}
+    report = CoreGateEmitReport(
+        classifier_version=CLASSIFIER_VERSION, backlog=len(backlog),
+    )
+
+    claimed: set[str] = set()
+    reused: list[CoreGateEmitBatch] = []
+    for batch in store.list_open_core_gate_batches(
+        origin=CORE_GATE_ORIGIN_DOCTOR, classifier_version=CLASSIFIER_VERSION,
+    ):
+        items = sorted(batch.items, key=lambda i: i.index)
+        if not all(
+            item.content_hash in by_hash
+            and item.content_hash not in claimed
+            and by_hash[item.content_hash].id == item.belief_id
+            for item in items
+        ):
+            continue
+        claimed.update(item.content_hash for item in items)
+        reused.append(CoreGateEmitBatch(
+            batch_id=batch.batch_id,
+            prompt=build_prompt([
+                (item.index, by_hash[item.content_hash].content)
+                for item in items
+            ]),
+            size=len(items),
+            created_at=batch.created_at,
+            reused=True,
+        ))
+
+    fresh = [b for b in backlog if b.content_hash not in claimed]
+    chunks = [
+        fresh[start:start + MAX_BATCH]
+        for start in range(0, len(fresh), MAX_BATCH)
+    ]
+    if limit is not None:
+        reused = reused[:limit]
+        chunks = chunks[:max(0, limit - len(reused))]
+
+    created: list[CoreGateEmitBatch] = []
+    with store.transaction():
+        for chunk in chunks:
+            batch_id = store.create_core_gate_batch(
+                [
+                    CoreGateBatchItem(
+                        index=i, belief_id=b.id, content_hash=b.content_hash,
+                    )
+                    for i, b in enumerate(chunk)
+                ],
+                classifier_version=CLASSIFIER_VERSION,
+                origin=CORE_GATE_ORIGIN_DOCTOR,
+                session_id=None,
+                created_at=created_at,
+            )
+            created.append(CoreGateEmitBatch(
+                batch_id=batch_id,
+                prompt=build_prompt([(i, b.content) for i, b in enumerate(chunk)]),
+                size=len(chunk),
+                created_at=created_at,
+                reused=False,
+            ))
+    report.batches = reused + created
+    report.left = report.backlog - sum(b.size for b in report.batches)
+    return report
+
+
+# ---------------------------------------------------------------------------
 # repair-utc-created-at pass (issue #1660)
 # ---------------------------------------------------------------------------
 
