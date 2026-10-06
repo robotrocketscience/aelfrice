@@ -253,7 +253,7 @@ Bare `aelf setup` installs the v1.2.0 auto-capture pipeline, together with the r
 |---|---|---|---|
 | UserPromptSubmit retrieval | `UserPromptSubmit` | always | injects the matched beliefs as an `<aelfrice-memory>` block |
 | transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL file. PreCompact rotates that file, then ingests it into beliefs and edges |
-| commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
+| commit-ingest | git `post-commit` in the current repository | **on** | after each commit, the triple extractor runs on its message in the background. Commits replayed by `git rebase`, and `git revert` commits, are skipped. Since #1698 this is a git hook, not a `PostToolUse:Bash` entry, so run `aelf setup` inside each repository whose commits you want recorded. Setup won't edit a `post-commit` it can't restore exactly, or one in a shared or tracked `core.hooksPath`; it prints the lines to add instead. Removing aelfrice takes the block out of the current repository only, so remove it from other repositories by hand |
 | session-start | `SessionStart` | **on** | new sessions open with the L0 locked beliefs already injected |
 | stop-lock-prompt | `Stop` | **on** | prompts you to lock this session's correction-class (#582) and directive (#1315) beliefs |
 | search-tool | `PreToolUse:Grep` / `Glob` / `WebSearch` / `WebFetch` | **on** (v3.0.1+) | checks the belief store before the agent's own Grep, Glob, WebSearch, or WebFetch call runs |
@@ -267,7 +267,7 @@ To opt out of one hook, use the matching option. The opt-out persists across upg
 
 ```bash
 aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
-aelf setup --no-commit-ingest          # skip the commit-message ingest hook
+aelf setup --no-commit-ingest          # skip the commit-message git hook
 aelf setup --no-session-start          # skip the SessionStart locked-belief injection
 aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
 aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob|WebSearch|WebFetch hook
@@ -314,7 +314,7 @@ export AELFRICE_NO_AUTO_INSTALL=1   # power user: I manage settings.json by hand
 aelf setup --no-stop-hook           # disable one hook; persists across upgrades
 ```
 
-`aelf doctor` flags a hook command that is broken or that doesn't resolve. `aelf doctor` also reports when one of the four v2.1 auto-capture hooks is missing: transcript-ingest, commit-ingest, session-start, and stop-hook.
+`aelf doctor` flags a hook command that is broken or that doesn't resolve. `aelf doctor` also reports when one of the v2.1 auto-capture hooks is missing from settings.json: transcript-ingest, session-start, and stop-hook. It doesn't check the commit-ingest git hook; look for the `aelfrice commit-ingest` block in the repository's `post-commit` hook.
 
 `aelf doctor` doesn't reconcile settings.json against the manifest. That's why `aelf doctor` doesn't flag the newer manifest hooks, search-tool and pre-issue-guard, when they're absent. The auto-installer is the reconciliation path.
 

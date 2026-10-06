@@ -1,0 +1,10 @@
+### Changed
+
+- **Commit ingest now runs from a git `post-commit` hook, so it sees your commits ([#1698](https://github.com/robotrocketscience/aelfrice/issues/1698)).**
+  - **Before:** commit ingest was a `PostToolUse:Bash` hook. It acted only on a command that started with `git commit`, and it read the commit hash from the `[branch hash]` line that `git commit -q` doesn't print. In this project's sessions it ingested about 2 of 399 commits ([#1683](https://github.com/robotrocketscience/aelfrice/issues/1683)).
+  - **Now:** `aelf setup` adds a marked block to the current repository's `post-commit` hook, shared by every worktree. It removes the old `PostToolUse` entry from both the user and the project settings. Git runs the block after `git commit`, `cherry-pick`, and `revert`, so quiet, chained, scripted, worktree, and `-C` commits are each recorded, in that repository's store. A merge that commits by itself and `git am` don't run it.
+  - **Never blocks a commit:** the block names the exact commit, then runs the ingest in the background. It adds about 70 ms per commit. Errors go to `commit-ingest.log` next to the store.
+  - **Skipped commits:** commits that `git rebase` replays are skipped, since each was ingested when first made. So is a commit you make while a rebase is paused, and a `git revert` commit.
+  - **Session key:** a commit's session is keyed on its parent and author date, which an amend keeps. A commit session never corroborates a belief it created itself, so an amend adds only its new phrases.
+  - **Existing hooks:** setup edits an existing `post-commit` only when it can restore it byte for byte. It installs only into a hooks directory inside the repository's own git directory, refusing a shared or tracked `core.hooksPath`, and prints the lines to add by hand instead.
+  - **To record a repository's commits:** run `aelf setup` inside it. The upgrade-time auto-installer no longer adds the `PostToolUse` entry. `aelf setup --host codex` is unchanged. Removing aelfrice takes the block out of the current repository only.

@@ -980,7 +980,7 @@ session's label and be captured. An interactive session started from an SDK proc
 matches what you want.
 
 This covers those two capture paths only. The memory-mirror hook and the
-commit-ingest hook do not check the entrypoint.
+commit-ingest git hook do not check the entrypoint.
 
 If you drive aelfrice through the host's SDK on purpose, set this key to
 `true`, or set `AELFRICE_CAPTURE_PRINT_MODE=1`. The environment variable

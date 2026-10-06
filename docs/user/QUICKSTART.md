@@ -54,7 +54,7 @@ installed UserPromptSubmit hook in <project>/.claude/settings.json (project scop
 installed transcript-ingest hooks in <project>/.claude/settings.json
 installed SessionStart hook in <project>/.claude/settings.json
 installed Stop hook in <project>/.claude/settings.json
-installed commit-ingest PostToolUse hook in <project>/.claude/settings.json
+installed the commit-ingest git hook in <project>/.git/hooks/post-commit
 installed statusline in <project>/.claude/settings.json
 ...
 ```

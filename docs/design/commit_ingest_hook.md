@@ -53,14 +53,77 @@ production even after the schema migrations land.
 
 ### Hook registration
 
-A new entry point `aelfrice.hook_commit_ingest:main` registered as
-a Claude Code `PostToolUse` hook. The hook configuration matches
-on `Bash` tool calls whose command starts with `git commit` and
-exited successfully (non-zero exit codes mean no commit happened).
+Since #1698, commit ingest runs from git's own `post-commit` hook.
+Git runs that hook inside the repository after `git commit`,
+`cherry-pick`, `revert`, and each commit the default rebase backend
+replays, so the
+repository and the store, which resolves from the working directory,
+are exact. That covers a quiet commit, a commit chained
+after `git add`, a commit from a script or another terminal, a worktree
+commit, and `git -C <path> commit`.
 
-Configuration lives under the user's `~/.claude/settings.json` (the
-existing hook-config surface). `aelf setup` writes the entry on
-install if the user opts in.
+`aelf setup` installs it per repository: it adds a marked block to the
+`post-commit` file in the directory git reads hooks from
+(`git rev-parse --git-path hooks`), which every worktree shares. The
+block goes right after the shebang, so an `exit` later in an existing
+hook can't skip it. The block makes one synchronous `git rev-parse`
+call for the worktree's git directory and `HEAD`, checks for a rebase,
+then runs `aelf-commit-ingest --git-hook <hash>` in the background. A
+burst of quick commits records each one, and a commit never waits on
+the ingest itself. The block adds about 70 ms per commit on a
+development machine, measured as the median over 15 commits. Errors go to `commit-ingest.log` next to the store. `aelf setup`
+run outside a repository installs nothing.
+
+The installer edits an existing `post-commit` only when it can restore
+it byte for byte: an executable, LF-only, UTF-8 file whose first line
+is exactly `#!/bin/sh`, `#!/bin/bash`, `#!/usr/bin/env sh`, or
+`#!/usr/bin/env bash`. It keeps the file's mode, and removing the block
+restores the original. Otherwise it leaves the hook alone and prints
+the lines to add by hand. It writes LF line endings on every platform.
+
+It accepts a hooks directory only inside this repository's git
+directory, which is git's default and where this project's
+`core.hooksPath` points, and only when any `core.hooksPath` comes from
+this repository's own config:
+
+- A hooks directory outside it may be shared with other repositories,
+  through a global `core.hooksPath` or one directory named in several
+  repositories' config. Setup refuses it.
+- A hooks directory inside the work tree, as with husky, would be
+  committed with this machine's paths. Setup refuses it.
+- A bare repository has no commits to record, so setup installs
+  nothing there.
+
+`aelf setup` removes the old `PostToolUse` entry from both the user and
+the project settings file. `aelf setup --host codex` still installs the
+Codex `PostToolUse` entry; the git hook covers the default host. A
+repository with both can ingest a commit twice under different session
+keys, so its phrases corroborate each other.
+Removing aelfrice takes the block out of the current repository only.
+
+Scope:
+
+- A merge that commits by itself doesn't run `post-commit`, so it isn't
+  ingested. A merge finished by `git commit` is, keyed on its first
+  parent.
+- `git rebase` runs `post-commit` for each commit it replays. The block
+  skips those while the rebase's state directory (`rebase-merge` or
+  `rebase-apply`) exists, because each replayed commit was ingested
+  when it was first made. That also skips a commit you make by hand
+  while a rebase is paused.
+- A `git revert` commit is skipped: its message quotes the subject it
+  undoes, so ingesting it would corroborate the reverted claim.
+- `git cherry-pick` runs `post-commit`. A picked commit has a new
+  parent, so it counts as a new commit. `git am` doesn't run
+  `post-commit`.
+
+Before #1698, commit ingest was a `PostToolUse:Bash` hook in the agent
+host's settings.
+It acted only on a command that started with `git commit`, and read the
+hash from the `[branch hash]` line that `git commit -q` doesn't print,
+so it saw about 2 of 399 commits in this project's sessions (#1683).
+`aelf setup` now removes that entry. The PostToolUse code path still
+runs for settings that weren't updated.
 
 ### Hook body
 
@@ -95,13 +158,23 @@ The hook derives `session_id` from git context rather than asking
 the user or generating a random uuid:
 
 ```
-session_id = sha256(branch_name + ":" + commit_hash)[:16]
+session_id = sha256("commit:" + first_parent + "\0" + author_date)[:16]
 ```
 
-Stable across hook invocations on the same commit (idempotent if
-the hook fires twice). Distinct per commit. Surface-stable across
-machines (the same commit on two clones produces the same id),
-which makes future cross-machine session deduplication easier.
+Stable across hook invocations on the same commit (idempotent if the
+hook fires twice). Stable across amends too (#1698): `git commit
+--amend` keeps the parent and, unless `--reset-author` or `--date` is
+given, the author date, so every version of an amended commit shares
+one session. The store never lets a commit session corroborate a belief
+it created itself, so an amend adds only its new phrases and no
+corroboration. Commits on one branch have different parents, so
+distinct commits get distinct sessions and a recurring phrase still
+corroborates. Two commits on one parent in the same second share a
+session, which is likely when parallel worktrees branch from one tip
+and commit at once; their shared phrases then don't corroborate each
+other. Surface-stable across machines (the same commit on two clones
+produces the same id). The PostToolUse path keeps the older
+`sha256(branch_name + ":" + commit_hash)[:16]`.
 
 The hook is self-contained: start session, extract, insert, complete
 session, all in one fire.

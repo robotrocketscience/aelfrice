@@ -17,7 +17,7 @@ code should treat the value as opaque.
 |---|---|---|
 | `ingest_turn()` (library) | explicit kwarg → `$AELF_SESSION_ID` → NULL+warn | caller-defined |
 | `aelf-transcript-logger` JSONL → replay | `sessionId` field on the JSONL turn | caller-defined |
-| `hook_commit_ingest` | `sha256(branch + commit_hash)[:16]` | 16-hex |
+| `hook_commit_ingest` | git hook: `sha256("commit:" + first_parent + NUL + author_date)[:16]` (#1698); PostToolUse: `sha256(branch + commit_hash)[:16]` | 16-hex |
 | `scanner.scan_repo` (filesystem onboard) | `sha256(scan:<root>:<ts>)[:16]` | 16-hex |
 | `classification.accept_classifications` (onboard accept) | active `OnboardSession.id` | UUID-ish |
 | `aelf lock` CLI | `--id` arg → `$AELF_SESSION_ID` → NULL+warn | caller-defined |
@@ -54,7 +54,7 @@ Resolution order:
 These do **not** call the helper because they have a deterministic
 session source already:
 
-* **`hook_commit_ingest`** — the commit hash + branch is the session.
+* **`hook_commit_ingest`** — the commit is the session: its first parent and author date from the git hook (#1698), or its branch and hash from the older PostToolUse path.
 * **`scanner.scan_repo`** — `_derive_scan_session_id(root, ts)`
   produces a synthetic per-scan id; reproducible from the same root
   and timestamp.

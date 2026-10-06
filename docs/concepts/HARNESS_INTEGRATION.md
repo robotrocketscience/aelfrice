@@ -50,11 +50,14 @@ close the original limitation, so you don't have to work against the harness:
   `<git-common-dir>/aelfrice/transcripts/turns.jsonl`. On compaction the JSONL
   file rotates, and `aelf ingest-transcript` then turns the rotated file into
   beliefs and edges in the brain graph.
-- **`PostToolUse:Bash` commit-ingest** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
-  After every successful `git commit` call through Bash, the hook runs the
-  triple extractor on the body of the commit message, then inserts the resulting
-  beliefs and edges under a deterministic session id,
-  `sha256(branch + ":" + commit_hash)[:16]`.
+- **Commit ingest, a git `post-commit` hook** ([the commit-ingest hook design note](../design/commit_ingest_hook.md)).
+  `aelf setup` installs it in the current repository. After each `git commit`,
+  `cherry-pick`, or `revert`, git runs it, and it runs the triple extractor on
+  the commit message in the background, then inserts the resulting beliefs and edges under a
+  deterministic session id built from the commit's parent and author date.
+  Commits replayed by `git rebase`, and `git revert` commits, are skipped.
+  Before #1698 this was a `PostToolUse:Bash` hook, which missed most
+  commits.
 
 Run `aelf setup`, and aelfrice receives fresh beliefs from normal session
 activity while the auto-memory directive plays no part either way. These three
