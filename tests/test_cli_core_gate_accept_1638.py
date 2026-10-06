@@ -246,6 +246,7 @@ def test_two_concurrent_accepts_of_one_batch_have_exactly_one_winner(
     import subprocess
     import sys
     import time
+    from concurrent.futures import ThreadPoolExecutor
 
     bid = _make_batch(db, n=3)
     start = str(time.time() + 2.0)
@@ -253,18 +254,16 @@ def test_two_concurrent_accepts_of_one_batch_have_exactly_one_winner(
         {0: "A", 1: "B", 2: "C"},
         {0: "C", 1: "C", 2: "C"},
     )
-    procs = [
-        subprocess.Popen(
+
+    def accept(reply: dict[int, str]) -> int:
+        return subprocess.run(
             [sys.executable, "-c", _RACE_SCRIPT, bid, start],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={**os.environ}, text=True, encoding="utf-8",
-        )
-        for _ in replies
-    ]
-    codes: list[int] = []
-    for proc, reply in zip(procs, replies, strict=True):
-        proc.communicate(_reply(reply), timeout=60)
-        codes.append(proc.returncode)
+            input=_reply(reply), capture_output=True, text=True,
+            encoding="utf-8", env={**os.environ}, timeout=60, check=False,
+        ).returncode
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(accept, replies))
     assert sorted(codes) == [0, 1], codes
     labels, batches = _state(db)
     winner = replies[codes.index(0)]
