@@ -32,7 +32,7 @@ This document is the reference for power users. Reach for it when your project h
   aelfrice also recognizes two placeholder flags: `use_signed_laplacian` and `use_posterior_ranking`. Setting either one emits a deprecation warning, and neither lane has shipped yet.
 - `[rebuilder]` (v1.4+) — the context rebuilder's keys: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `legacy-bm25`). `stack-r1-r3` was the `query_strategy` default from v3.0 until #1501. `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped belief lane and the L1 belief lane, through the keys `[rebuild_floor] session` and `[rebuild_floor] l1`.
 - `[onboard.llm]` (v1.3.0+) — the gate for the onboard classifier that calls the direct API. For the full table, see [Keys § `[onboard.llm]`](#onboardllm-v130) below.
-- `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more recognized tables. They hold the feedback-cadence scoring, the deferred feedback for retrieval exposure, and the per-turn hook audit log. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
+- `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — three more recognized tables. They hold the `Stop`-hook checkpoint cadence, which periodically fires the context rebuilder and is off by default, the deferred feedback for retrieval exposure, and the per-turn hook audit log. Their module docstrings document them (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — the feedback-lane keys. `sentiment_from_prose` (default `true` since #1647) connects the sentiment-feedback detector to `UserPromptSubmit` (#606); with it on, praise raises confidence. `sentiment_negative` (default `false`) lets complaints lower it too.
 - `[belief_categories]` (v4.x+) — the belief categories that a keyword triggers. `enabled` (default `false`) connects the category-injection lane to `UserPromptSubmit` (#1126). Manage the categories with `aelf category`.
 - `AELFRICE_TURN_DIFFERENTIAL` (v4.x+, #1382) — an environment variable with no TOML key. **The default is off.** To turn it on, export `AELFRICE_TURN_DIFFERENTIAL=1`. Once it is on, and once a belief has gone into this session's context **verbatim**, a later turn writes a one-line `seen <id>: "<topic>"` reference in the locks manifest instead of repeating the block. The text is already above in the same window, so the reference points at it.
@@ -405,7 +405,8 @@ enabled = false
 # n_returned intact), the per-turn rebuild_logs/<session-id>.jsonl
 # row, `aelf rebuild` and the SessionStart <aelfrice-baseline> block
 # all keep working, and the session ring's next_fire_idx keeps
-# advancing so the cadence policies that read it still fire; a
+# advancing so the cadence policies that read it (off by default)
+# still fire when enabled; a
 # suppressed fire records no injection_events / belief_touches /
 # injected-id ring entry / exploration_events row and no
 # source='hook' feedback_history row, since the model never saw
