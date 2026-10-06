@@ -279,6 +279,51 @@ def test_emit_writes_only_batch_rows(db: Path) -> None:
     assert len(_batches(db)) == 1
 
 
+def test_a_concurrent_emit_cannot_batch_the_same_beliefs(db: Path) -> None:
+    """A second handle's emit, run while the first emit is between its
+    reads and its first batch write, is refused by the write lock, and no
+    belief ends up in two open batches.
+
+    Killed by: running the emit outside `store.transaction(immediate=True)`
+    (the second emit then batches every belief, and the first batches them
+    again: 2 open batches holding each belief twice).
+    """
+    from aelfrice.cli import default_core_rule
+    from aelfrice.doctor import emit_core_gate_batches
+
+    _store(db, 3)
+    a = MemoryStore(str(db))
+    b = MemoryStore(str(db))
+    b._conn.execute("PRAGMA busy_timeout=0")  # pyright: ignore[reportPrivateUsage]
+    outcome: list[str] = []
+    real_create = a.create_core_gate_batch
+
+    def create_after_b(*args: object, **kwargs: object) -> str:
+        if not outcome:
+            try:
+                emit_core_gate_batches(
+                    b, default_core_rule, limit=None,
+                    created_at="2026-10-05T05:00:00+00:00",
+                )
+                outcome.append("b emitted")
+            except sqlite3.OperationalError:
+                outcome.append("b locked out")
+        return real_create(*args, **kwargs)  # type: ignore[arg-type]
+
+    a.create_core_gate_batch = create_after_b  # type: ignore[method-assign]
+    try:
+        emit_core_gate_batches(
+            a, default_core_rule, limit=None,
+            created_at="2026-10-05T04:00:00+00:00",
+        )
+    finally:
+        a.close()
+        b.close()
+    assert outcome == ["b locked out"]
+    ids = _batched_ids(db)
+    assert sorted(ids) == sorted(set(ids)) == [_bid(i) for i in range(3)]
+
+
 # --- re-emit ------------------------------------------------------------
 
 
