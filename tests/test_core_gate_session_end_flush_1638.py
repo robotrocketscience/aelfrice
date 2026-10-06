@@ -6,8 +6,11 @@ Drives the installed entry points the host runs, in the host's order:
 session's turns into beliefs only when `STOP_FLUSH_TURNS` turn lines have
 built up, by spawning `aelf ingest-transcript` in the background, so the
 session has no beliefs until the first flush. The batch must fire on the
-first Stop after that flush, stay quiet until the next one, and then fire
-again with only the new beliefs.
+first Stop that finds the flushed beliefs, stay quiet until the next
+flush, and then fire again with only the new beliefs. The test waits for
+each ingest to land before it runs the Stop hook, so the fire is on the
+flushing turn; the host runs a Stop's hooks in parallel, so there it is
+usually the turn after.
 
 A once-per-session trigger fails this: it is spent on the first Stop,
 before any belief exists (the defect the 2026-10-06 ruling on #1638

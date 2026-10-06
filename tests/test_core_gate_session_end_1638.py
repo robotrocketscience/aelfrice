@@ -138,13 +138,16 @@ def _batch_ids(db: Path) -> list[list[str]]:
     return [ids for *_, ids in _batches(db)]
 
 
-def _doctor_batch(db: Path, bid: str, *, version: str = CLASSIFIER_VERSION) -> None:
+def _doctor_batch(
+    db: Path, bid: str, *, version: str = CLASSIFIER_VERSION,
+    created_at: str = "2026-10-01T00:00:00Z",
+) -> None:
     store = MemoryStore(str(db))
     try:
         store.create_core_gate_batch(
             [CoreGateBatchItem(index=0, belief_id=bid, content_hash=f"hash-{bid}")],
             classifier_version=version, origin="doctor", session_id=None,
-            created_at="2026-10-01T00:00:00Z",
+            created_at=created_at,
         )
     finally:
         store.close()
@@ -204,6 +207,80 @@ def test_open_doctor_batch_claims_a_belief(db: Path, tmp_path: Path) -> None:
     _doctor_batch(db, "w1")
     _stop(tmp_path)
     assert _batch_ids(db)[-1] == ["w2"]
+
+
+def test_doctor_batch_older_than_the_session_is_not_read(
+    db: Path, tmp_path: Path,
+) -> None:
+    """Only doctor batches created at or after this session's earliest
+    belief are read. A batch emitted before the belief existed can't hold
+    it in practice; this one is built to hold it anyway, so the test can
+    see that the bound is applied.
+
+    Killed by: dropping the `julianday(cb.created_at) >= ...` bound (the
+    old batch then claims the belief and nothing fires).
+    """
+    _seed(db, [_belief("w1")])  # created 2026-10-01T00:00:00Z
+    _doctor_batch(db, "w1", created_at="2026-09-30T23:59:59.999999+00:00")
+    out, _ = _stop(tmp_path)
+    assert _context(out)
+    assert _batch_ids(db)[-1] == ["w1"]
+
+
+def test_doctor_batch_bound_compares_instants_not_strings(
+    db: Path, tmp_path: Path,
+) -> None:
+    """A doctor batch stamped at the same instant as the belief, in the
+    `+00:00` form `--emit` writes, is read and claims the belief.
+
+    Killed by: comparing the timestamps as strings (`+` sorts before `Z`,
+    so the batch reads as older), or `>=` changed to `>`.
+    """
+    _seed(db, [_belief("w1")])  # created 2026-10-01T00:00:00Z
+    _doctor_batch(db, "w1", created_at="2026-10-01T00:00:00+00:00")
+    out, _ = _stop(tmp_path)
+    assert out == ""
+    assert len(_batches(db)) == 1
+
+
+def test_accepted_batch_that_owns_no_labels_claims_nothing(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session-end batch accepted, then re-run by `aelf doctor core-gate
+    --rerun` while its belief was locked (so nothing was re-batched),
+    owns no labels. Once the belief is unlocked it is unlabeled, and the
+    accepted batch must not claim it.
+
+    Killed by: dropping `accepted_at IS NULL` from the claim query (the
+    accepted batch then claims the belief forever).
+    """
+    _seed(db, [_belief("w1")])
+    assert _context(_stop(tmp_path)[0])
+    [(batch_id, *_)] = _batches(db)
+    monkeypatch.setattr("sys.stdin", io.StringIO('[{"index": 0, "label": "A"}]'))
+    assert cli_main(["core-gate", "accept", batch_id], out=io.StringIO()) == 0
+    _set_lock(db, "w1", LOCK_USER)
+    rerun_out = io.StringIO()
+    assert cli_main(
+        ["doctor", "core-gate", "--json", "--rerun", batch_id], out=rerun_out,
+    ) == 0
+    assert json.loads(rerun_out.getvalue())["kept"] == 0
+    _set_lock(db, "w1", LOCK_NONE)
+    out, _ = _stop(tmp_path)
+    assert _context(out)
+    assert _batch_ids(db)[-1] == ["w1"]
+
+
+def _set_lock(db: Path, bid: str, level: str) -> None:
+    store = MemoryStore(str(db))
+    try:
+        b = store.get_belief(bid)
+        assert b is not None
+        b.lock_level = level
+        b.locked_at = "2026-10-02T00:00:00Z" if level == LOCK_USER else None
+        store.update_belief(b)
+    finally:
+        store.close()
 
 
 def test_stale_version_batch_claims_nothing(db: Path, tmp_path: Path) -> None:
@@ -409,9 +486,13 @@ def test_episodes_are_not_read_without_a_corroboration_candidate(
 
 
 def test_batch_is_capped_at_max_batch(db: Path, tmp_path: Path) -> None:
-    """Killed by: dropping the `MAX_BATCH` stop (the store refuses an
-    oversized batch, so nothing would fire), or omitting the left-over
-    count. The newest MAX_BATCH beliefs are the batch."""
+    """The newest MAX_BATCH beliefs are the batch, whether the whole-set
+    try takes them or, past a belief too long to fit, the walk does.
+
+    Killed by: dropping the `MAX_BATCH` slice of the whole-set try or the
+    `MAX_BATCH` stop in the walk (the store refuses an oversized batch,
+    so nothing would fire), or omitting the left-over count.
+    """
     extra = 3
     ids = [f"w{i:03d}" for i in range(MAX_BATCH + extra)]
     _seed(db, [_belief(i, content=f"Widget {i} holds.") for i in ids])
@@ -419,6 +500,46 @@ def test_batch_is_capped_at_max_batch(db: Path, tmp_path: Path) -> None:
     context = _context(out)
     assert _batch_ids(db) == [list(reversed(ids))[:MAX_BATCH]]
     assert f"{extra} more from this session" in context
+
+
+@pytest.mark.parametrize("over", [0, 1], ids=["exactly-the-budget", "one-over"])
+def test_walk_budget_boundary_is_exact(
+    db: Path, tmp_path: Path, over: int,
+) -> None:
+    """Past a belief too long for any batch, the walk takes a trial whose
+    context is exactly the budget, and not one character more.
+
+    Killed by: any slack in the walk's budget check (`<=` to `<`, or the
+    budget plus a margin).
+    """
+    small = "Widget small holds."
+    filler = "Widget big " + "z" * 1000
+    base = _context_length([filler, small], 1)
+    big = filler + "z" * (CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
+    assert _context_length([big, small], 1) == CORE_GATE_SESSION_END_CHAR_BUDGET + over
+    huge = _belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET)
+    _seed(db, [
+        _belief("w-small", content=small), _belief("w-big", content=big), huge,
+    ])
+    out, _ = _stop(tmp_path)
+    assert len(_context(out)) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    expected = [["w-big", "w-small"]] if over == 0 else [["w-big"]]
+    assert _batch_ids(db) == expected
+
+
+def test_walk_is_capped_at_max_batch(db: Path, tmp_path: Path) -> None:
+    """With the newest belief too long for any batch, the walk skips it
+    and takes the next MAX_BATCH, not all of them.
+
+    Killed by: dropping the `MAX_BATCH` stop in the walk of
+    `_fit_core_gate_batch`.
+    """
+    ids = [f"w{i:03d}" for i in range(MAX_BATCH + 2)]
+    huge = _belief("w-huge", content="Widget " + "y" * CORE_GATE_SESSION_END_CHAR_BUDGET)
+    _seed(db, [_belief(i, content=f"Widget {i} holds.") for i in ids] + [huge])
+    out, _ = _stop(tmp_path)
+    assert _context(out)
+    assert _batch_ids(db) == [list(reversed(ids))[:MAX_BATCH]]
 
 
 def test_batch_fits_the_char_budget(db: Path, tmp_path: Path) -> None:
@@ -442,6 +563,45 @@ def test_batch_fits_the_char_budget(db: Path, tmp_path: Path) -> None:
     again, _ = _stop(tmp_path)
     assert _context(again)
     assert set(_batch_ids(db)[1]).isdisjoint(first)
+
+
+def _context_length(texts: list[str], left: int) -> int:
+    """Length of the context `_fit_core_gate_batch` would render for
+    `texts` in index order; the batch id is a fixed 16 characters."""
+    return len(hook._format_core_gate_context(
+        "0" * 16, build_prompt(list(enumerate(texts))), len(texts), left,
+    ))
+
+
+@pytest.mark.parametrize("over", [0, 1], ids=["exactly-the-budget", "one-over"])
+def test_char_budget_boundary_is_exact(
+    db: Path, tmp_path: Path, over: int,
+) -> None:
+    """A two-belief context of exactly the budget is batched whole. One
+    character more doesn't fit, and the newer, larger belief doesn't fit
+    alone beside the line counting the one left out, so the smaller one
+    goes first and the larger one gets the next Stop to itself.
+
+    Killed by: any slack in the budget check (`<=` to `<`, or the budget
+    plus a margin), or dropping the whole-set try in `_fit_core_gate_batch`
+    (the walk alone skips the larger belief even when both fit).
+    """
+    small = "Widget small holds."
+    filler = "Widget big " + "z" * 1000
+    base = _context_length([filler, small], 0)
+    big = filler + "z" * (CORE_GATE_SESSION_END_CHAR_BUDGET - base + over)
+    assert _context_length([big, small], 0) == CORE_GATE_SESSION_END_CHAR_BUDGET + over
+    _seed(db, [_belief("w-small", content=small), _belief("w-big", content=big)])
+    out, _ = _stop(tmp_path)
+    context = _context(out)
+    assert len(context) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    if over == 0:
+        assert _batch_ids(db) == [["w-big", "w-small"]]
+        return
+    assert _batch_ids(db) == [["w-small"]]
+    again, _ = _stop(tmp_path)
+    assert len(_context(again)) <= CORE_GATE_SESSION_END_CHAR_BUDGET
+    assert _batch_ids(db) == [["w-small"], ["w-big"]]
 
 
 def test_an_oversized_belief_is_skipped_not_blocking(
