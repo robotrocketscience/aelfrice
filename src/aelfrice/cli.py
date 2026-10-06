@@ -7955,9 +7955,15 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
         file=w,
     )
     if report.left:
+        from aelfrice.core_gate import SELF_CHECK_MIN_BATCHES  # noqa: PLC0415
+
         print(
-            f"not batched here: {report.left} candidates (--limit); run "
-            "the command again after accepting these batches.",
+            f"not batched here: {report.left} candidates (--limit). Each "
+            "emit is its own run for the self-check, which needs at least "
+            f"{SELF_CHECK_MIN_BATCHES} accepted batches in a run; to keep "
+            f"the self-check, use a --limit of at least "
+            f"{SELF_CHECK_MIN_BATCHES} and accept all batches of one emit "
+            "before emitting again.",
             file=w,
         )
     _print_core_gate_batches(report.batches, paths, w)
