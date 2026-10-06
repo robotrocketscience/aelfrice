@@ -1086,9 +1086,12 @@ def test_rerun_of_a_doctor_batch_is_not_a_new_run(
 def test_rerun_of_an_unaccepted_session_end_batch_is_refused(
     db: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The other refusals still apply to a session-end batch.
+    """The other refusals still apply to a session-end batch, and the
+    advice fits one: `--emit` never prints a session-end batch, so the
+    refusal points at `aelf core-gate accept` instead.
 
-    Killed by: skipping the `accepted_at` check for session-end batches.
+    Killed by: skipping the `accepted_at` check for session-end batches,
+    or dropping the session-end branch of its message.
     """
     _store(db, 2)
     [bid] = _run_batches(db, [2], origin="session_end")
@@ -1096,7 +1099,10 @@ def test_rerun_of_an_unaccepted_session_end_batch_is_refused(
     capsys.readouterr()
     code, _ = _run("doctor", "core-gate", "--rerun", bid)
     assert code == 1
-    assert "never accepted" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "never accepted" in err
+    assert f"accept it with `aelf core-gate accept {bid}`" in err
+    assert "print it again" not in err
     assert _batches(db) == before
 
 

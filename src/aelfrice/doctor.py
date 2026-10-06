@@ -3053,6 +3053,15 @@ def rerun_core_gate_batch(
         if batch is None:
             raise CoreGateRerunRefused(f"no core-gate batch {batch_id}")
         if batch.accepted_at is None:
+            if batch.origin == CORE_GATE_ORIGIN_SESSION_END:
+                # `--emit` never prints a session-end batch, so the doctor
+                # advice below would be unreachable for one.
+                raise CoreGateRerunRefused(
+                    f"batch {batch_id} is a session-end batch that was "
+                    "never accepted; accept it with `aelf core-gate accept "
+                    f"{batch_id}`, or batch its beliefs again with "
+                    "`aelf doctor core-gate --emit`"
+                )
             raise CoreGateRerunRefused(
                 f"batch {batch_id} was never accepted; accept it, or print "
                 "it again with `aelf doctor core-gate --emit`"
