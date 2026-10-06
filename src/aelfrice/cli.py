@@ -90,7 +90,10 @@ from aelfrice.doctor import (
     HookPruneResult,
     _check_dormant_dbs,
     classify_orphans as _classify_orphans,
+    core_gate_coverage as _core_gate_coverage,
     diagnose,
+    emit_core_gate_batches as _emit_core_gate_batches,
+    format_core_gate_coverage as _format_core_gate_coverage,
     format_filesystem_corroboration_report as _format_fs_corroboration_report,
     format_orphan_feedback_report as _format_orphan_feedback_report,
     format_orphan_report as _format_orphan_report,
@@ -7007,7 +7010,10 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
       - `hooks`  → settings.json hook validation only.
       - `graph`  → structural audit only (orphan threads, FTS5 sync,
                    locked contradictions).
-      - None     → run both (default).
+      - `core-gate` → core admission gate label coverage, or with
+                   `--emit` the backlog drain (#1638); see
+                   `_cmd_doctor_core_gate`.
+      - None     → run hooks and graph (default).
 
     `--classify-orphans` routes to the targeted reclassification pass
     (issue #206); it bypasses the hooks/graph checks entirely and exits
@@ -7029,6 +7035,19 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
+    if getattr(args, "scope", None) == "core-gate":
+        return _cmd_doctor_core_gate(args, out)
+    if (
+        getattr(args, "emit", False)
+        or getattr(args, "core_gate_limit", None) is not None
+        or getattr(args, "core_gate_out", None) is not None
+    ):
+        print(
+            "doctor: --emit, --limit, and --out apply only to "
+            "`aelf doctor core-gate`.",
+            file=sys.stderr,
+        )
+        return 2
     passes = [
         flag for flag, dest in (
             ("--gc-orphan-feedback", "gc_orphan_feedback"),
@@ -7776,6 +7795,148 @@ def _cmd_doctor_repair_utc_created_at(
     finally:
         store.close()
     print(_format_utc_created_at_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
+    """`aelf doctor core-gate [--emit [--limit N] [--out DIR]] [--json]` (#1638).
+
+    Without `--emit`, prints how many unlocked core candidates have a core
+    admission gate label under the current classifier version. It writes
+    no batch or label. It opens the store as the other doctor passes do,
+    not through `open_store_for_read()`, which is reserved for the
+    commands the #1416 ruling names.
+
+    With `--emit`, batches the backlog (`doctor.emit_core_gate_batches`)
+    and prints, for each batch, its id, the full classifier prompt (or the
+    file under `--out` that holds it), and the `aelf core-gate accept`
+    command that takes the model's reply. The batch rows are the only
+    writes. A batch from an earlier emit that isn't accepted yet is
+    printed again instead of batching its beliefs twice.
+    """
+    w = cast("Any", out)
+    emit = bool(getattr(args, "emit", False))
+    limit: int | None = getattr(args, "core_gate_limit", None)
+    out_dir_arg: str | None = getattr(args, "core_gate_out", None)
+    use_json = bool(getattr(args, "json_output", False))
+    if not emit:
+        if limit is not None or out_dir_arg is not None:
+            print(
+                "doctor core-gate: --limit and --out apply only with --emit.",
+                file=sys.stderr,
+            )
+            return 2
+        store = _open_store()
+        try:
+            coverage = _core_gate_coverage(store, default_core_rule)
+        finally:
+            store.close()
+        if use_json:
+            print(json.dumps(coverage.as_dict()), file=w)
+        else:
+            print("\n".join(_format_core_gate_coverage(coverage)), file=w)
+        return 0
+    if limit is not None and limit < 1:
+        print("doctor core-gate: --limit must be at least 1.", file=sys.stderr)
+        return 2
+    out_dir: Path | None = None
+    if out_dir_arg is not None:
+        out_dir = Path(out_dir_arg)
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(
+                f"doctor core-gate: cannot create {out_dir}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+    store = _open_store()
+    try:
+        report = _emit_core_gate_batches(
+            store, default_core_rule, limit=limit,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        store.close()
+    paths: dict[str, Path] = {}
+    if out_dir is not None:
+        for batch in report.batches:
+            path = out_dir / f"core-gate-{batch.batch_id}.txt"
+            try:
+                path.write_text(batch.prompt, encoding="utf-8")
+            except OSError as exc:
+                print(
+                    f"doctor core-gate: cannot write {path}: {exc}. The "
+                    "batches are recorded; run the same command again to "
+                    "print them.",
+                    file=sys.stderr,
+                )
+                return 1
+            paths[batch.batch_id] = path
+    if use_json:
+        print(json.dumps({
+            "classifier_version": report.classifier_version,
+            "backlog": report.backlog,
+            "left": report.left,
+            "batches": [
+                {
+                    "batch_id": b.batch_id,
+                    "size": b.size,
+                    "created_at": b.created_at,
+                    "reused": b.reused,
+                    "accept_command": f"aelf core-gate accept {b.batch_id}",
+                    **(
+                        {"prompt_file": str(paths[b.batch_id])}
+                        if b.batch_id in paths else {"prompt": b.prompt}
+                    ),
+                }
+                for b in report.batches
+            ],
+        }), file=w)
+        return 0
+    print(
+        f"core-gate backlog: {report.backlog} unlabeled core candidates "
+        f"under {report.classifier_version}.",
+        file=w,
+    )
+    if not report.batches:
+        print("nothing to emit.", file=w)
+        return 0
+    n_reused = sum(1 for b in report.batches if b.reused)
+    print(
+        f"batches: {len(report.batches)} ({len(report.batches) - n_reused} "
+        f"new, {n_reused} printed again from an earlier emit).",
+        file=w,
+    )
+    if report.left:
+        print(
+            f"not batched here: {report.left} candidates (--limit); run "
+            "the command again after accepting these batches.",
+            file=w,
+        )
+    print(
+        "For each batch, run the prompt on your host's smallest model, then "
+        "pipe the model's reply, unchanged, to the accept command.",
+        file=w,
+    )
+    for k, batch in enumerate(report.batches, start=1):
+        origin = (
+            f"from the emit at {batch.created_at}, not accepted yet"
+            if batch.reused else "new"
+        )
+        print("", file=w)
+        print(
+            f"batch {k} of {len(report.batches)}: {batch.batch_id} "
+            f"({batch.size} snippets, {origin})",
+            file=w,
+        )
+        if batch.batch_id in paths:
+            print(f"prompt: {paths[batch.batch_id]}", file=w)
+        else:
+            print("----- prompt -----", file=w)
+            print(batch.prompt, end="", file=w)
+            print("----- end of prompt -----", file=w)
+        print(f"accept: aelf core-gate accept {batch.batch_id}", file=w)
     return 0
 
 
@@ -9793,12 +9954,48 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
-        "scope", nargs="?", choices=("hooks", "graph"), default=None,
+        "scope", nargs="?", choices=("hooks", "graph", "core-gate"),
+        default=None,
         help=(
             "limit doctor to one check. 'hooks' validates settings.json "
             "hook commands resolve; 'graph' runs the structural auditor "
             "(orphan threads, FTS5 sync, locked contradictions). "
-            "Omit to run both."
+            "'core-gate' reports core admission gate label coverage, and "
+            "with --emit batches the unlabeled core candidates for the "
+            "classifier (#1638). Omit to run hooks and graph."
+        ),
+    )
+    p_doctor.add_argument(
+        "--emit",
+        action="store_true",
+        default=False,
+        help=(
+            "with core-gate: record classifier batches of the unlabeled "
+            "core candidates and print each batch's id, prompt, and "
+            "`aelf core-gate accept` command. A batch from an earlier "
+            "emit that isn't accepted yet is printed again, not "
+            "duplicated (#1638)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--limit",
+        dest="core_gate_limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with core-gate --emit: print at most N batches, the "
+            "earlier open ones first. Default: no cap."
+        ),
+    )
+    p_doctor.add_argument(
+        "--out",
+        dest="core_gate_out",
+        default=None,
+        metavar="DIR",
+        help=(
+            "with core-gate --emit: write each batch's prompt to "
+            "DIR/core-gate-<batch-id>.txt instead of printing it."
         ),
     )
     p_doctor.add_argument(
@@ -10254,8 +10451,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "with --meta-beliefs: emit JSON instead of a human-readable "
-            "table. No effect on other doctor sub-modes today."
+            "with --meta-beliefs or core-gate: emit JSON instead of "
+            "human-readable output. No effect on other doctor sub-modes "
+            "today."
         ),
     )
     p_doctor.add_argument(
