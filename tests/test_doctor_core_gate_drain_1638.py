@@ -1043,6 +1043,33 @@ def test_a_subset_rerun_is_not_a_sibling(
     assert "self-check skipped" not in err
 
 
+def test_a_replacement_batch_from_a_later_emit_is_not_a_subset_rerun(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Emit 3, lock one, emit again: the set-aside batch and its
+    replacement are a strict-subset pair, but in two emit runs. The
+    replacement is not a subset re-run, so its accept is not skipped as
+    one.
+
+    Killed by: dropping `b.created_at = run.created_at` from
+    `core_gate_subset_reruns`.
+    """
+    _store(db, 3)
+    _emit()
+    _set_lock(db, 1, True)
+    [replacement] = _emit()["batches"]  # type: ignore[misc]
+    assert replacement["size"] == 2
+    store = MemoryStore(str(db))
+    try:
+        assert store.core_gate_subset_reruns(str(replacement["batch_id"])) == set()
+    finally:
+        store.close()
+    capsys.readouterr()
+    assert _accept(monkeypatch, str(replacement["batch_id"]), ["A"] * 2) == 0
+    assert "re-ran part of a batch" not in capsys.readouterr().err
+
+
 def test_a_whole_batch_rerun_is_still_checked(
     db: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
