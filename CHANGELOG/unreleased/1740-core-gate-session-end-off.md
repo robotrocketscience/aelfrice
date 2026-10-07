@@ -1,0 +1,3 @@
+### Changed
+
+- **The Stop hook no longer asks the agent to label core candidates by default ([#1740](https://github.com/robotrocketscience/aelfrice/issues/1740)).** In 5.1.0, after each transcript ingest, the Stop hook added a turn to your conversation with a classifier prompt and an `aelf core-gate accept` command ([#1638](https://github.com/robotrocketscience/aelfrice/issues/1638)). That batch is now off unless you set `[core_gate] session_end = true` or export `AELFRICE_CORE_GATE_SESSION_END=1`. With it off, unlabeled beliefs stay in core, as they did before 5.1.0, and `aelf doctor core-gate --emit` still labels the backlog when you ask. Labeling without a conversation turn is tracked in [#1741](https://github.com/robotrocketscience/aelfrice/issues/1741).
