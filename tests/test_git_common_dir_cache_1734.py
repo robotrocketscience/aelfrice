@@ -91,6 +91,32 @@ def test_a_git_dir_variable_is_part_of_the_key(
     assert len(lookups) == 2
 
 
+@pytest.mark.parametrize("name", [
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+])
+@pytest.mark.usefixtures("no_git_env")
+def test_each_discovery_variable_is_part_of_the_key(
+    name: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str | None] = []
+
+    def recording() -> Path | None:
+        seen.append(db_paths.os.environ.get(name))
+        return None
+
+    monkeypatch.setattr(db_paths, "_lookup_git_common_dir", recording)
+    db_paths._git_common_dir()
+    monkeypatch.setenv(name, "")
+    db_paths._git_common_dir()
+    monkeypatch.setenv(name, "x")
+    db_paths._git_common_dir()
+    assert seen == [None, "", "x"]
+
+
 @pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_clearing_the_cache_sees_a_new_repository(

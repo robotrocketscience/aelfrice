@@ -84,11 +84,16 @@ def test_git_common_dir_none_on_undecodable_output(
     appends to whatever this returns and `_open_store()` mkdirs it, so
     anything other than None would create a second store on disk.
     """
+    raised: list[bool] = []
+
     def _boom(*_args: object, **_kwargs: object) -> object:
+        raised.append(True)
         raise UnicodeDecodeError("utf-8", b"\xe6", 0, 1, "bad")
 
     monkeypatch.setattr(db_paths.subprocess, "run", _boom)
     assert db_paths._git_common_dir() is None
+    # A cached None (#1734) would pass the line above without git running.
+    assert raised == [True]
 
 
 def test_git_common_dir_decodes_strict(monkeypatch: pytest.MonkeyPatch) -> None:
