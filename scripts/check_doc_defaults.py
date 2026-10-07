@@ -46,7 +46,9 @@ MARKERS: dict[tuple[str, str], str] = {
 #: (section, key) -> ("module:resolver", positional args). Each resolver
 #: returns the default when no override applies; most read an env var and
 #: then `.aelfrice.toml`, and some read only the env var or the dict passed
-#: in. The args are what production passes when no config file exists.
+#: in. The args mirror a call with no config file; `retrieve()` passes a
+#: literal `False` for `use_origin_tiebreak`, which the env tier still
+#: overrides.
 CONFIG_RESOLVERS: dict[tuple[str, str], tuple[str, tuple[object, ...]]] = {
     ("retrieval", "entity_index_enabled"): ("retrieval:is_entity_index_enabled", ()),
     ("retrieval", "use_entity_persist_demote"): ("retrieval:is_entity_persist_demote_enabled", ()),
@@ -116,7 +118,7 @@ def main(argv: list[str]) -> int:
     root = Path(argv[1] if len(argv) > 1 else Path(__file__).parents[1]).resolve()
     for name in [k for k in os.environ if k.startswith("AELFRICE_")]:
         del os.environ[name]
-    origin = os.getcwd()
+    origin, home = os.getcwd(), os.environ.get("HOME")
     with tempfile.TemporaryDirectory(prefix="aelf-doc-defaults-") as empty:
         os.environ["HOME"] = empty
         os.chdir(empty)
@@ -124,6 +126,10 @@ def main(argv: list[str]) -> int:
             bad, advisory, checked = check(root)
         finally:
             os.chdir(origin)
+            if home is None:
+                del os.environ["HOME"]
+            else:
+                os.environ["HOME"] = home
     for line in advisory:
         print(f"advisory: {line}")
     for line in bad:
