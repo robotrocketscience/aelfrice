@@ -34,10 +34,11 @@ DEFAULT_DB_FILENAME: Final[str] = "memory.db"
 
 
 # #1734: one prompt-hook fire asked for the git-common-dir 5 times, and
-# each `git rev-parse` fork cost about 44 ms. The answer depends only on
-# the cwd and on the environment variables git reads during repository
-# discovery, so those form the cache key. A process that changes its cwd
-# (`project_warm` does) gets a fresh lookup for the new directory.
+# each `git rev-parse` fork cost about 44 ms. The key is the cwd plus the
+# environment variables that choose which repository git discovers. A
+# process that changes its cwd (`project_warm` does) gets a fresh lookup.
+# Other inputs, such as `PATH` or git's config variables, are left out:
+# aelfrice never changes them mid-process.
 _GIT_DISCOVERY_ENV: Final[tuple[str, ...]] = (
     "GIT_DIR",
     "GIT_COMMON_DIR",
