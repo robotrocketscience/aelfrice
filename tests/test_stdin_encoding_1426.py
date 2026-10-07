@@ -160,8 +160,12 @@ def _payload(event: str = "UserPromptSubmit") -> bytes:
 
 
 @pytest.fixture()
-def repo(tmp_path: Path) -> Path:
-    """A throwaway git repo — `transcript_logger` writes under `.git/`."""
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A throwaway git repo — `transcript_logger` writes under `.git/`.
+
+    The suite pins `AELFRICE_TRANSCRIPTS_DIR` (#1706); this test reads the
+    log the logger resolves from the git dir, so it drops the pin."""
+    monkeypatch.delenv("AELFRICE_TRANSCRIPTS_DIR", raising=False)
     subprocess.run(
         ["git", "init", "-q"],
         cwd=str(tmp_path),

@@ -301,7 +301,9 @@ def test_e2e_hook_surfaces_thread_with_recent_turns(
     db = tmp_path / "memory.db"
     _seed(db)
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    # cwd has no .git, so the reader falls through to transcript_path.
+    # No turn log exists where the logger writes (the suite pins that to an
+    # empty sandbox dir, #1706), so the reader falls through to
+    # transcript_path.
     nogit = tmp_path / "work"
     nogit.mkdir()
     transcript = _transcript(tmp_path, ("user", _DOMAIN_TURN))

@@ -829,6 +829,13 @@ def _sandbox_real_home(
         # session's commits then ran. The installer tests use their own
         # temporary repositories and delete this with `monkeypatch.delenv`.
         mp.setenv("AELF_NO_GIT_HOOK_INSTALL", "1")
+        # #1706, the same lever as AELFRICE_DB: the rebuilder now reads the
+        # turn log where the logger writes it, from the process cwd, which is
+        # the contributor's checkout. Unpinned, six tests read the real
+        # `<repo>/.git/aelfrice/transcripts/turns.jsonl` into their retrieval
+        # queries. A test that exercises git-dir resolution deletes this with
+        # a function-scoped `monkeypatch.delenv`.
+        mp.setenv("AELFRICE_TRANSCRIPTS_DIR", str(home / "transcripts"))
         for mod_name, attr, relpath in _HOME_PINS:
             target = home / relpath
             if attr in _PRECREATED_SENTINELS:
@@ -854,6 +861,9 @@ def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
     session-scoped fixtures, which run before this one.
     """
     pin = str(_sandbox_real_home / "memory.db")
+    transcripts = str(_sandbox_real_home / "transcripts")  # #1706
     os.environ["AELFRICE_DB"] = pin
+    os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
     yield
     os.environ["AELFRICE_DB"] = pin
+    os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
