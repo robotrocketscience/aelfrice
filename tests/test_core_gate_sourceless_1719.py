@@ -344,3 +344,58 @@ def test_gc_filesystem_corroboration_refuses(
     assert "#1719" in capsys.readouterr().err
     assert out.getvalue() == ""
     assert _fs_rows(store) == before
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+def test_gc_filesystem_corroboration_refuses_before_opening_a_store(
+    sourceless: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], apply: bool,
+) -> None:
+    """Opening a store creates and migrates it, so a refusal must come
+    first. Mutation: check the version after `_open_store()`."""
+    from aelfrice.cli import main
+
+    db = tmp_path / "never-opened.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    argv = ["doctor", "--gc-filesystem-corroboration"] + (["--apply"] if apply else [])
+    assert main(argv=argv, out=io.StringIO()) == 1
+    assert "#1719" in capsys.readouterr().err
+    assert not db.exists()
+
+
+def test_doctor_emit_refuses_before_creating_out(
+    sourceless: ModuleType, store: MemoryStore, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mutation: check the version after `--out` is created."""
+    from aelfrice.cli import main
+
+    out_dir = tmp_path / "prompts"
+    argv = ["doctor", "core-gate", "--emit", "--out", str(out_dir)]
+    assert main(argv=argv, out=io.StringIO()) == 1
+    assert "#1719" in capsys.readouterr().err
+    assert not out_dir.exists()
+
+
+class _UntouchableStore:
+    """Any attribute read fails: the pass must refuse before it looks at
+    the store at all."""
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"store.{name} was read before the refusal")
+
+
+def test_gc_filesystem_corroboration_library_refuses_before_reading(
+    sourceless: ModuleType,
+) -> None:
+    """The library check runs before any read, write, or transaction, not
+    inside the transaction where a rollback would hide a late check.
+    Mutation: move the check after `delete_corroborations_by_source`."""
+    from aelfrice.cli import default_core_rule
+    from aelfrice.doctor import gc_filesystem_corroboration
+
+    with pytest.raises(sourceless.ClassifierUnavailable):
+        gc_filesystem_corroboration(
+            _UntouchableStore(),  # pyright: ignore[reportArgumentType]
+            qualifies=default_core_rule, dry_run=False,
+        )
