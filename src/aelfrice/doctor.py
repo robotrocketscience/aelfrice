@@ -2631,9 +2631,17 @@ def gc_filesystem_corroboration(
     reads. The pass must own that transaction: it raises `RuntimeError`
     when one is already open on `store`, where the rollback would either
     not happen or discard the caller's writes.
+
+    Raises `core_gate.ClassifierUnavailable`, reading and writing nothing,
+    when the classifier has no version (#1719). The gate then admits no
+    unlocked belief, so both membership reads would be empty: the report
+    would show nothing leaving core, and `--apply` would delete rows that
+    keep beliefs in core once the classifier is back.
     """
+    from aelfrice.core_gate import current_classifier_version  # noqa: PLC0415
     from aelfrice.models import CORROBORATION_SOURCES_NON_ASSERTING  # noqa: PLC0415
 
+    current_classifier_version()
     if store.transaction_open:
         raise RuntimeError(
             "gc_filesystem_corroboration needs its own transaction; "
