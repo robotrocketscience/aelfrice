@@ -455,9 +455,9 @@ def _ingest_turn(
 
             # #1064: optionally chain this turn's new beliefs into the
             # per-session temporal spine (TEMPORAL_NEXT, src = successor,
-            # dst = predecessor). Default-ON since v4.0
-            # (is_temporal_spine_write_enabled); when a user turns it off,
-            # this branch is never entered. Gated on `inserted` so
+            # dst = predecessor). Default-ON
+            # (is_temporal_spine_write_enabled) since v4.0; when a user turns
+            # it off, this branch is never entered. Gated on `inserted` so
             # corroboration-only turns skip the predecessor lookups.
             from aelfrice.temporal_spine import (
                 is_temporal_spine_write_enabled,
