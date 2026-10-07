@@ -326,8 +326,9 @@ def test_gc_filesystem_corroboration_refuses(
 ) -> None:
     """With no classifier version, core membership reads empty, so the
     pass would report nothing leaving core and delete the rows anyway.
-    It refuses instead, dry run and apply alike, and writes nothing.
-    Mutation: drop the version check in `gc_filesystem_corroboration`."""
+    The command refuses instead, dry run and apply alike, and writes
+    nothing. Mutation: drop the command's version check, leaving only the
+    library's, which raises out of `main`."""
     from aelfrice.cli import main
     from aelfrice.models import CORROBORATION_SOURCE_FILESYSTEM_INGEST
 
@@ -378,11 +379,16 @@ def test_doctor_emit_refuses_before_creating_out(
 
 
 class _UntouchableStore:
-    """Any attribute read fails: the pass must refuse before it looks at
-    the store at all."""
+    """Records every attribute read and fails it: the pass must refuse
+    before it looks at the store at all. The list catches a read that a
+    `getattr` default or `hasattr` would otherwise swallow."""
+
+    def __init__(self) -> None:
+        self.reads: list[str] = []
 
     def __getattr__(self, name: str) -> object:
-        raise AssertionError(f"store.{name} was read before the refusal")
+        self.reads.append(name)
+        raise AttributeError(f"store.{name} was read before the refusal")
 
 
 def test_gc_filesystem_corroboration_library_refuses_before_reading(
@@ -394,8 +400,10 @@ def test_gc_filesystem_corroboration_library_refuses_before_reading(
     from aelfrice.cli import default_core_rule
     from aelfrice.doctor import gc_filesystem_corroboration
 
+    stub = _UntouchableStore()
     with pytest.raises(sourceless.ClassifierUnavailable):
         gc_filesystem_corroboration(
-            _UntouchableStore(),  # pyright: ignore[reportArgumentType]
+            stub,  # pyright: ignore[reportArgumentType]
             qualifies=default_core_rule, dry_run=False,
         )
+    assert stub.reads == []
