@@ -96,7 +96,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 |---|---|---|
 | Update notifier — a TTL-gated GET to `https://pypi.org/pypi/aelfrice/json`. To disable it, set `AELF_NO_UPDATE_CHECK=1`. | **on** | nothing; the notifier only reads |
 | Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create`. To disable it, set `AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass it once, set `ALLOW_DUP_ISSUE=1`. To never install it, run `aelf setup --no-pre-issue-guard`. | **on** since v3.4.0 | **yes** — the tokens come from the issue title you typed |
-| `aelf onboard --llm-classify` | opt-in, consent-gated | candidate sentences the onboard scanner extracts |
+| `aelf onboard` (direct-API classifier) | on by default since v1.5.0, but runs only with the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and recorded consent | candidate sentences the onboard scanner extracts |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
 | `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
 | `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; an explicit command | nothing beyond the package request |

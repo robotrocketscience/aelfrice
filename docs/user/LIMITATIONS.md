@@ -46,7 +46,7 @@ The research line shipped a larger set of extractors:
 
 These extractors stay deferred from the scope. The directive-detection path has consequences for the architecture. If that path lands, it lands together with the violation-detection tier of [what aelfrice can and can't guarantee, in the philosophy doc](../concepts/PHILOSOPHY.md#what-we-can-and-cant-guarantee).
 
-Classification on the CLI path uses regex-based priors by default. Three paths give classification of higher quality:
+Classification on the CLI path uses the regex-based priors unless the direct-API classifier's requirements are met. Three paths give classification of higher quality:
 
 - **`/aelf:onboard <path>`** (v1.5.x, default-on) — a host-driven flow that drives the four-class classifier through the host model's Task tool. This path needs no API key. If the host's Task tool isn't available, the flow falls back to the regex classifier. See [the LLM classifier design](../design/llm_classifier.md).
 - **`/aelf:onboard`** — the polymorphic flow, which routes through the host LLM.

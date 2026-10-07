@@ -190,7 +190,7 @@ Classification uses the priors, with a regex fallback, and the scan is idempoten
 - the classifier isn't turned off: `[onboard.llm].enabled` defaults to `true`, and `--llm-classify=false` or `enabled = false` turns it off;
 - a one-time interactive consent prompt is answered, and a sentinel file records the answer.
 
-When the classifier is on only by default and a gate fails, onboard falls back to the regex path without an error; `--llm-classify` turns a failed gate into an error. `--dry-run` previews the candidates and calls no API. The specification is [the LLM-classifier spec](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [the onboard-time outbound call in the privacy document](../user/PRIVACY.md#onboard-time-outbound-call).
+Unless you pass `--llm-classify` or `--dry-run`, a failed gate makes onboard fall back to the regex path without an error, whether the classifier is on by default or through `enabled = true`; with either flag, a failed gate is an error. `--dry-run` previews the candidates and calls no API. The specification is [the LLM-classifier spec](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound. See [the onboard-time outbound call in the privacy document](../user/PRIVACY.md#onboard-time-outbound-call).
 
 ## Claude Code hook
 
