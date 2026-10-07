@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import tokenize
 from typing import Final
 
 LABEL_SELF_CONTAINED: Final[str] = "A"
@@ -236,17 +237,20 @@ def c_share_outliers(
 def _classifier_version() -> str | None:
     """`CLASSIFIER_VERSION`, or None when the digest can't be computed.
 
-    `prompt_digest` reads the source of `build_prompt` and `parse_labels`,
-    which an install that ships only bytecode doesn't have, so
-    `inspect.getsource` raises `OSError` (#1719). Failing the import would
-    take down every importer, including the SessionStart hook, which then
-    drops `<locked>` along with `<core>`. None instead names no classifier:
-    the core gate admits no unlocked belief, no stored label matches it,
-    and nothing writes a batch or a label under it.
+    `prompt_digest` reads the source of `build_prompt` and `parse_labels`
+    (#1719). An install that ships only bytecode has none, so
+    `inspect.getsource` raises `OSError`; one whose `.pyc` was compiled
+    from a different `.py` can make `inspect` raise `SyntaxError` or
+    `tokenize.TokenError` while it reads the wrong file, and `TypeError`
+    covers an object `inspect` can't place. Failing the import would take
+    down every importer, including the UserPromptSubmit hook, whose
+    first-prompt `<session-start>` block then came back empty. None
+    instead names no classifier: the core gate admits no unlocked belief,
+    no stored label matches it, and nothing writes a batch or a label.
     """
     try:
         return f"core-gate-{prompt_digest()[:16]}"
-    except OSError:
+    except (OSError, TypeError, SyntaxError, tokenize.TokenError):
         return None
 
 
