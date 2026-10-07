@@ -8045,8 +8045,9 @@ class MemoryStore:
     ) -> dict[str, str]:
         """Map each content hash labeled under `classifier_version` to its
         label. Hashes with no label under that version are absent. A None
-        version (the classifier's source is missing, #1719) names no
-        classifier, so it matches no label.
+        version (the classifier's source is missing, #1719) matches no
+        label: `classifier_version` is `NOT NULL` and the query compares
+        with `=`, which is never true against NULL.
 
         One `IN (...)` query per `_CORE_GATE_LOOKUP_CHUNK` hashes, so a
         caller looks up a whole selection at once, never per belief.
@@ -8057,8 +8058,6 @@ class MemoryStore:
         migration (`db_paths.open_store_for_read` falls back to such a
         handle). Every other `OperationalError` propagates.
         """
-        if classifier_version is None:
-            return {}
         unique = sorted(set(content_hashes))
         out: dict[str, str] = {}
         for start in range(0, len(unique), _CORE_GATE_LOOKUP_CHUNK):
