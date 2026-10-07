@@ -2521,6 +2521,12 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
     w = cast("Any", out)
     batch_id: str = cast("str", args.batch_id)
     prefix = "aelf core-gate accept"
+    # Before stdin is read, so an interactive run refuses at once rather
+    # than waiting for EOF first (#1719).
+    classifier_version = core_gate.CLASSIFIER_VERSION
+    if classifier_version is None:
+        print(f"{prefix}: {core_gate.CLASSIFIER_UNAVAILABLE}.", file=sys.stderr)
+        return 1
     try:
         reply = sys.stdin.read()
     except UnicodeDecodeError:
@@ -2528,10 +2534,6 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
         return 1
     except OSError as exc:
         print(f"{prefix}: cannot read stdin: {exc}", file=sys.stderr)
-        return 1
-    classifier_version = core_gate.CLASSIFIER_VERSION
-    if classifier_version is None:
-        print(f"{prefix}: {core_gate.CLASSIFIER_UNAVAILABLE}.", file=sys.stderr)
         return 1
     store = _open_store()
     try:
@@ -8008,6 +8010,15 @@ def _cmd_doctor_core_gate_rerun(
     batch_id: str, out_dir_arg: str | None, use_json: bool, w: Any,
 ) -> int:
     """`aelf doctor core-gate --rerun <batch-id> [--out DIR] [--json]` (#1638)."""
+    from aelfrice.core_gate import (  # noqa: PLC0415
+        CLASSIFIER_UNAVAILABLE,
+        CLASSIFIER_VERSION,
+    )
+
+    # Before `--out` is created, so a refusal writes nothing (#1719).
+    if CLASSIFIER_VERSION is None:
+        print(f"doctor core-gate: {CLASSIFIER_UNAVAILABLE}.", file=sys.stderr)
+        return 1
     ok, out_dir = _make_core_gate_out_dir(out_dir_arg)
     if not ok:
         return 1
@@ -8167,12 +8178,17 @@ def _cmd_doctor_gc_filesystem_corroboration(
     leave `aelf core`. With `--apply`, it deletes the rows. Bypasses the
     hooks/graph checks.
     """
+    from aelfrice.core_gate import ClassifierUnavailable  # noqa: PLC0415
+
     apply = bool(getattr(args, "apply", False))
     store = _open_store()
     try:
         report = _gc_filesystem_corroboration(
             store, qualifies=default_core_rule, dry_run=not apply,
         )
+    except ClassifierUnavailable as exc:
+        print(f"doctor --gc-filesystem-corroboration: {exc}.", file=sys.stderr)
+        return 1
     finally:
         store.close()
     print(_format_fs_corroboration_report(report), file=out)  # type: ignore[arg-type]

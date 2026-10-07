@@ -175,14 +175,22 @@ def test_writers_get_no_version(sourceless: ModuleType) -> None:
         sourceless.current_classifier_version()
 
 
+class _UnreadableStdin(io.StringIO):
+    """A terminal nobody types into: reading it is the failure under test."""
+
+    def read(self, size: int | None = -1) -> str:
+        raise AssertionError("stdin was read before the refusal")
+
+
 def test_core_gate_accept_refuses(
     sourceless: ModuleType, store: MemoryStore,
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Mutation: drop the version check in `aelf core-gate accept`."""
+    """It refuses before reading stdin, so an interactive run doesn't wait
+    for EOF. Mutations: drop the version check; check after the read."""
     from aelfrice.cli import main
 
-    monkeypatch.setattr(sys, "stdin", io.StringIO("0: A\n"))
+    monkeypatch.setattr(sys, "stdin", _UnreadableStdin())
     assert main(argv=["core-gate", "accept", "nobatch"], out=io.StringIO()) == 1
     err = capsys.readouterr().err
     assert "#1719" in err
@@ -287,3 +295,52 @@ def test_session_end_writes_no_batch_without_a_version(
     assert store.list_open_core_gate_batches(
         origin="session_end", classifier_version=str(real_core_gate.CLASSIFIER_VERSION),
     ) == []
+
+
+def test_doctor_rerun_cli_refuses_before_creating_out(
+    sourceless: ModuleType, store: MemoryStore, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mutation: check the version after `--out` is created."""
+    from aelfrice.cli import main
+
+    out_dir = tmp_path / "prompts"
+    argv = ["doctor", "core-gate", "--rerun", "nobatch", "--out", str(out_dir)]
+    assert main(argv=argv, out=io.StringIO()) == 1
+    assert "#1719" in capsys.readouterr().err
+    assert not out_dir.exists()
+
+
+def _fs_rows(store: MemoryStore) -> int:
+    from aelfrice.models import CORROBORATION_SOURCES_NON_ASSERTING
+
+    return sum(store.count_corroborations_by_source(
+        CORROBORATION_SOURCES_NON_ASSERTING,
+    ).values())
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["dry-run", "apply"])
+def test_gc_filesystem_corroboration_refuses(
+    sourceless: ModuleType, store: MemoryStore,
+    capsys: pytest.CaptureFixture[str], apply: bool,
+) -> None:
+    """With no classifier version, core membership reads empty, so the
+    pass would report nothing leaving core and delete the rows anyway.
+    It refuses instead, dry run and apply alike, and writes nothing.
+    Mutation: drop the version check in `gc_filesystem_corroboration`."""
+    from aelfrice.cli import main
+    from aelfrice.models import CORROBORATION_SOURCE_FILESYSTEM_INGEST
+
+    for i, day in enumerate((2, 5)):
+        store.record_corroboration(
+            CORE, source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+            session_id=f"scan-{i}", ts=f"2026-08-{day:02d}T09:00:00+00:00",
+        )
+    before = _fs_rows(store)
+    assert before == 2
+    argv = ["doctor", "--gc-filesystem-corroboration"] + (["--apply"] if apply else [])
+    out = io.StringIO()
+    assert main(argv=argv, out=out) == 1
+    assert "#1719" in capsys.readouterr().err
+    assert out.getvalue() == ""
+    assert _fs_rows(store) == before
