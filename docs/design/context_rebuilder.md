@@ -68,6 +68,7 @@ PreCompact hook fires
         ↓
 context_rebuilder.rebuild():
   1. Read last N turns of <project>/.git/aelfrice/transcripts/turns.jsonl
+     that belong to the hook payload's session (#1744)
   2. Extract entities + intents from those turns (triple extractor)
   3. Query aelfrice with those entities:
        L0 locked beliefs (always in)
@@ -368,8 +369,10 @@ def rebuild_v14(
 > **Delivery channel (updated by #1031):** the rebuild block now ships on the **SessionStart** hook with `source=="compact"` — the harness rejects `additionalContext` emitted from a PreCompact hook, so `pre_compact()` no longer injects. The mechanism described below is the original PreCompact design, retained for context; the block content and the `rebuild_v14` code path are unchanged.
 
 The `pre_compact()` hook in `aelfrice.hook` reads the JSON payload
-from stdin, locates a transcript (canonical `turns.jsonl` first,
-the harness's transcript_path as fallback), drives `rebuild_v14`,
+from stdin, locates a transcript (canonical `turns.jsonl` first, read
+for the payload's `session_id` only, #1744; the harness's
+transcript_path as fallback when the log has no turns for the session
+or the payload carries no `session_id`), drives `rebuild_v14`,
 and writes the result through `emit_pre_compact_envelope()` —
 which wraps the block in
 `{"hookSpecificOutput": {"hookEventName": "PreCompact",
