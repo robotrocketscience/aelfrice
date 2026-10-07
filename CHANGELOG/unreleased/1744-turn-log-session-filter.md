@@ -1,0 +1,6 @@
+### Fixed
+
+- **The context rebuilder reads only the current session's turns from the shared turn log ([#1744](https://github.com/robotrocketscience/aelfrice/issues/1744)).** Every session and linked worktree of a repository appends to one `turns.jsonl`, and the readers took its last turns whatever session wrote them. When two sessions ran at once, each one's compaction rebuild, cadence rebuild, and conversation-aware query could read the other's turns and pull in its session-scoped beliefs. Sessions in the main checkout had this since the turn log shipped; [#1706](https://github.com/robotrocketscience/aelfrice/issues/1706) extended it to linked worktrees.
+  - **The fix:** the hook readers keep only the turns of the hook payload's `session_id`. When the log holds none for that session, or the payload has no `session_id`, they read the host's per-session transcript instead.
+  - **After compaction:** the transcript logger archives the turn log when the conversation compacts, so the rebuild after compaction now usually reads the host's transcript. Before, it read whatever another session had logged since.
+  - **`aelf rebuild`:** without `--transcript`, it reads the turns of the session that wrote the log's last line carrying a session ID. If another session writes in between, that's the session it reads; pass `--transcript` to choose one.
