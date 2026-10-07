@@ -8041,10 +8041,12 @@ class MemoryStore:
         return [_row_to_belief(r) for r in cur.fetchall()]
 
     def core_gate_labels_for(
-        self, content_hashes: Iterable[str], classifier_version: str,
+        self, content_hashes: Iterable[str], classifier_version: str | None,
     ) -> dict[str, str]:
         """Map each content hash labeled under `classifier_version` to its
-        label. Hashes with no label under that version are absent.
+        label. Hashes with no label under that version are absent. A None
+        version (the classifier's source is missing, #1719) names no
+        classifier, so it matches no label.
 
         One `IN (...)` query per `_CORE_GATE_LOOKUP_CHUNK` hashes, so a
         caller looks up a whole selection at once, never per belief.
@@ -8055,6 +8057,8 @@ class MemoryStore:
         migration (`db_paths.open_store_for_read` falls back to such a
         handle). Every other `OperationalError` propagates.
         """
+        if classifier_version is None:
+            return {}
         unique = sorted(set(content_hashes))
         out: dict[str, str] = {}
         for start in range(0, len(unique), _CORE_GATE_LOOKUP_CHUNK):
@@ -8094,11 +8098,17 @@ class MemoryStore:
         none can drift from the others.
 
         With no candidates it returns at once, without importing
-        `core_gate` or querying the store.
+        `core_gate` or querying the store. When `CLASSIFIER_VERSION` is None
+        (the classifier's source is missing, #1719) it admits none: the
+        gate can't tell which beliefs its labels keep out, so it fails
+        closed rather than letting them back into core.
         """
         if not candidates:
             return [], {}
         from aelfrice.core_gate import CLASSIFIER_VERSION, admit  # noqa: PLC0415
+
+        if CLASSIFIER_VERSION is None:
+            return [], {}
         from aelfrice.models import (  # noqa: PLC0415
             episode_qualified_corroborations,
         )

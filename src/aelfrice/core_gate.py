@@ -233,6 +233,43 @@ def c_share_outliers(
     return flagged
 
 
+def _classifier_version() -> str | None:
+    """`CLASSIFIER_VERSION`, or None when the digest can't be computed.
+
+    `prompt_digest` reads the source of `build_prompt` and `parse_labels`,
+    which an install that ships only bytecode doesn't have, so
+    `inspect.getsource` raises `OSError` (#1719). Failing the import would
+    take down every importer, including the SessionStart hook, which then
+    drops `<locked>` along with `<core>`. None instead names no classifier:
+    the core gate admits no unlocked belief, no stored label matches it,
+    and nothing writes a batch or a label under it.
+    """
+    try:
+        return f"core-gate-{prompt_digest()[:16]}"
+    except OSError:
+        return None
+
+
 #: The cache key's classifier half. Derived from the digest, so any change
 #: to what the classifier is makes a new version without a manual bump.
-CLASSIFIER_VERSION: Final[str] = f"core-gate-{prompt_digest()[:16]}"
+#: None when the classifier's source is missing (`_classifier_version`).
+CLASSIFIER_VERSION: Final[str | None] = _classifier_version()
+
+#: Why a core-gate writer refuses when `CLASSIFIER_VERSION` is None.
+CLASSIFIER_UNAVAILABLE: Final[str] = (
+    "the core gate's classifier has no version on this install, because "
+    "the source of `aelfrice.core_gate` is missing (#1719); the gate "
+    "admits no unlocked belief to core and writes no batch or label"
+)
+
+
+class ClassifierUnavailable(RuntimeError):
+    """A core-gate writer was called with no classifier version (#1719)."""
+
+
+def current_classifier_version() -> str:
+    """`CLASSIFIER_VERSION` for a writer: a batch or label is always keyed
+    by a real version. Raises `ClassifierUnavailable` when it is None."""
+    if CLASSIFIER_VERSION is None:
+        raise ClassifierUnavailable(CLASSIFIER_UNAVAILABLE)
+    return CLASSIFIER_VERSION

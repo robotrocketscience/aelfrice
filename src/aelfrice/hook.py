@@ -7606,6 +7606,9 @@ def _collect_core_gate_session_candidates(
     """
     from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
 
+    if CLASSIFIER_VERSION is None:
+        # No classifier version, so no batch can be keyed (#1719).
+        return []
     episodes: dict[str, int] | None = None
     out: list[Belief] = []
     for b in store.list_core_gate_session_candidates(
@@ -7801,18 +7804,20 @@ def _maybe_core_gate_session_end(
         if not _core_gate_session_end_toml_enabled(start, stderr):
             return False
 
-    from aelfrice.core_gate import CLASSIFIER_VERSION  # noqa: PLC0415
+    from aelfrice.core_gate import current_classifier_version  # noqa: PLC0415
     from aelfrice.models import (  # noqa: PLC0415
         CORE_GATE_ORIGIN_SESSION_END,
         CoreGateBatchItem,
     )
     from aelfrice.store import core_gate_batch_id  # noqa: PLC0415
 
+    # The candidate check above already returned when the version is None.
+    classifier_version = current_classifier_version()
     created_at = _utc_now_iso()
 
     def batch_id_for(batch: list[Belief]) -> str:
         return core_gate_batch_id(
-            CLASSIFIER_VERSION, [b.content_hash for b in batch], created_at,
+            classifier_version, [b.content_hash for b in batch], created_at,
         )
 
     with store.transaction(immediate=True):
@@ -7827,7 +7832,7 @@ def _maybe_core_gate_session_end(
                 CoreGateBatchItem(index=i, belief_id=b.id, content_hash=b.content_hash)
                 for i, b in enumerate(batch)
             ],
-            classifier_version=CLASSIFIER_VERSION,
+            classifier_version=classifier_version,
             origin=CORE_GATE_ORIGIN_SESSION_END,
             session_id=session_id,
             created_at=created_at,

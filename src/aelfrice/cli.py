@@ -2529,6 +2529,10 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
     except OSError as exc:
         print(f"{prefix}: cannot read stdin: {exc}", file=sys.stderr)
         return 1
+    classifier_version = core_gate.CLASSIFIER_VERSION
+    if classifier_version is None:
+        print(f"{prefix}: {core_gate.CLASSIFIER_UNAVAILABLE}.", file=sys.stderr)
+        return 1
     store = _open_store()
     try:
         batch = store.get_core_gate_batch(batch_id)
@@ -2544,11 +2548,11 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
                 file=sys.stderr,
             )
             return 1
-        if batch.classifier_version != core_gate.CLASSIFIER_VERSION:
+        if batch.classifier_version != classifier_version:
             print(
                 f"{prefix}: batch {batch_id} was emitted under "
                 f"{batch.classifier_version}, not the current "
-                f"{core_gate.CLASSIFIER_VERSION}; emit a new batch.",
+                f"{classifier_version}; emit a new batch.",
                 file=sys.stderr,
             )
             return 1
@@ -2563,7 +2567,7 @@ def _cmd_core_gate(args: argparse.Namespace, out: object) -> int:
             store.accept_core_gate_batch(
                 batch_id,
                 labels,
-                classifier_version=core_gate.CLASSIFIER_VERSION,
+                classifier_version=classifier_version,
                 accepted_at=datetime.now(timezone.utc).isoformat(),
             )
         except CoreGateAcceptRefused as exc:
@@ -7924,6 +7928,14 @@ def _cmd_doctor_core_gate(args: argparse.Namespace, out: object) -> int:
     if limit is not None and limit < 1:
         print("doctor core-gate: --limit must be at least 1.", file=sys.stderr)
         return 2
+    from aelfrice.core_gate import (  # noqa: PLC0415
+        CLASSIFIER_UNAVAILABLE,
+        CLASSIFIER_VERSION,
+    )
+
+    if CLASSIFIER_VERSION is None:
+        print(f"doctor core-gate: {CLASSIFIER_UNAVAILABLE}.", file=sys.stderr)
+        return 1
     ok, out_dir = _make_core_gate_out_dir(out_dir_arg)
     if not ok:
         return 1

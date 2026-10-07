@@ -2738,7 +2738,7 @@ class CoreGateCoverage:
     it never changes doctor's exit code.
     """
 
-    classifier_version: str
+    classifier_version: str | None
     candidates: int = 0
     labeled: dict[str, int] = field(
         default_factory=lambda: {"A": 0, "B": 0, "C": 0},
@@ -2776,6 +2776,14 @@ def core_gate_coverage(
 def format_core_gate_coverage(report: CoreGateCoverage) -> list[str]:
     """The core-gate coverage block, as lines."""
     a, b, c = (report.labeled.get(k, 0) for k in ("A", "B", "C"))
+    if report.classifier_version is None:
+        from aelfrice.core_gate import CLASSIFIER_UNAVAILABLE  # noqa: PLC0415
+
+        return [
+            "core admission gate (no classifier version):",
+            f"  {report.candidates} unlocked core candidates, none admitted: "
+            f"{CLASSIFIER_UNAVAILABLE}.",
+        ]
     lines = [
         f"core admission gate ({report.classifier_version}):",
         f"  {report.candidates} unlocked core candidates: "
@@ -2899,26 +2907,28 @@ def _emit_core_gate_batches_locked(
 ) -> CoreGateEmitReport:
     """`emit_core_gate_batches`'s body, run under its write lock."""
     from aelfrice.core_gate import (  # noqa: PLC0415
-        CLASSIFIER_VERSION,
         MAX_BATCH,
         build_prompt,
+        current_classifier_version,
     )
     from aelfrice.models import (  # noqa: PLC0415
         CORE_GATE_ORIGIN_DOCTOR,
         CoreGateBatchItem,
     )
 
+    # Raises `ClassifierUnavailable` before anything is read or written.
+    classifier_version = current_classifier_version()
     candidates, labels = core_gate_candidates(store, qualifies)
     backlog = [b for b in candidates if b.content_hash not in labels]
     by_hash = {b.content_hash: b for b in backlog}
     report = CoreGateEmitReport(
-        classifier_version=CLASSIFIER_VERSION, backlog=len(backlog),
+        classifier_version=classifier_version, backlog=len(backlog),
     )
 
     claimed: set[str] = set()
     reused: list[CoreGateEmitBatch] = []
     for batch in store.list_open_core_gate_batches(
-        origin=CORE_GATE_ORIGIN_DOCTOR, classifier_version=CLASSIFIER_VERSION,
+        origin=CORE_GATE_ORIGIN_DOCTOR, classifier_version=classifier_version,
     ):
         items = sorted(batch.items, key=lambda i: i.index)
         if not all(
@@ -2954,7 +2964,7 @@ def _emit_core_gate_batches_locked(
                 )
                 for i, b in enumerate(chunk)
             ],
-            classifier_version=CLASSIFIER_VERSION,
+            classifier_version=classifier_version,
             origin=CORE_GATE_ORIGIN_DOCTOR,
             session_id=None,
             created_at=created_at,
@@ -3036,11 +3046,16 @@ def rerun_core_gate_batch(
     cover it, as it doesn't cover the session-end batch either.
 
     Raises `CoreGateRerunRefused`, writing nothing, for an unknown batch,
-    a batch not accepted, a batch from another classifier version, or a
+    a batch not accepted, a batch from another classifier version, a
     batch that owns no labels any more (already re-run, or every label
-    replaced by a later batch).
+    replaced by a later batch), or when there is no classifier version
+    (#1719).
     """
-    from aelfrice.core_gate import CLASSIFIER_VERSION, build_prompt  # noqa: PLC0415
+    from aelfrice.core_gate import (  # noqa: PLC0415
+        CLASSIFIER_UNAVAILABLE,
+        CLASSIFIER_VERSION,
+        build_prompt,
+    )
     from aelfrice.models import (  # noqa: PLC0415
         CORE_GATE_ORIGIN_DOCTOR,
         CORE_GATE_ORIGIN_SESSION_END,
@@ -3048,6 +3063,9 @@ def rerun_core_gate_batch(
         CoreGateBatchItem,
     )
 
+    if CLASSIFIER_VERSION is None:
+        raise CoreGateRerunRefused(CLASSIFIER_UNAVAILABLE)
+    classifier_version: str = CLASSIFIER_VERSION
     with store.transaction(immediate=True):
         batch = store.get_core_gate_batch(batch_id)
         if batch is None:
@@ -3066,14 +3084,14 @@ def rerun_core_gate_batch(
                 f"batch {batch_id} was never accepted; accept it, or print "
                 "it again with `aelf doctor core-gate --emit`"
             )
-        if batch.classifier_version != CLASSIFIER_VERSION:
+        if batch.classifier_version != classifier_version:
             raise CoreGateRerunRefused(
                 f"batch {batch_id} was emitted under "
                 f"{batch.classifier_version}, not the current "
-                f"{CLASSIFIER_VERSION}; its labels no longer apply"
+                f"{classifier_version}; its labels no longer apply"
             )
         owned = store.core_gate_label_hashes_of_batch(
-            batch_id, CLASSIFIER_VERSION,
+            batch_id, classifier_version,
         )
         if not owned:
             raise CoreGateRerunRefused(
@@ -3096,10 +3114,10 @@ def rerun_core_gate_batch(
                 continue
             kept.append((item, b))
         report = CoreGateRerunReport(
-            rerun_of=batch_id, classifier_version=CLASSIFIER_VERSION,
+            rerun_of=batch_id, classifier_version=classifier_version,
         )
         report.labels_dropped = store.delete_core_gate_labels_of_batch(
-            batch_id, CLASSIFIER_VERSION,
+            batch_id, classifier_version,
         )
         report.kept = len(kept)
         if not kept:
@@ -3127,7 +3145,7 @@ def rerun_core_gate_batch(
                         )
                         for i, (_, b) in enumerate(kept)
                     ],
-                    classifier_version=CLASSIFIER_VERSION,
+                    classifier_version=classifier_version,
                     origin=CORE_GATE_ORIGIN_DOCTOR,
                     session_id=None,
                     created_at=new_created_at,
