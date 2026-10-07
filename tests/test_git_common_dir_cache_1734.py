@@ -10,7 +10,7 @@ from aelfrice import db_paths
 
 
 def _git_init(path: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, timeout=30)
 
 
 @pytest.fixture
@@ -33,6 +33,7 @@ def no_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_repeated_calls_in_one_cwd_run_git_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookups: list[str],
@@ -46,6 +47,7 @@ def test_repeated_calls_in_one_cwd_run_git_once(
     assert len(lookups) == 1
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_a_none_result_is_cached_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookups: list[str],
@@ -57,6 +59,7 @@ def test_a_none_result_is_cached_too(
     assert len(lookups) == 1
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_two_cwds_do_not_share_a_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookups: list[str],
@@ -73,6 +76,7 @@ def test_two_cwds_do_not_share_a_result(
     assert len(lookups) == 2
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_a_git_dir_variable_is_part_of_the_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookups: list[str],
@@ -87,6 +91,7 @@ def test_a_git_dir_variable_is_part_of_the_key(
     assert len(lookups) == 2
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.usefixtures("no_git_env")
 def test_clearing_the_cache_sees_a_new_repository(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lookups: list[str],
