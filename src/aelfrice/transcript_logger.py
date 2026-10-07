@@ -712,6 +712,10 @@ def _handle_pre_compact(payload: dict[str, object]) -> None:
         })
         archived = archive_dir / f"turns-{_utc_compact_ts()}.jsonl"
         os.rename(src, archived)
+        # The new turns.jsonl starts empty, so the Stop flush counts from
+        # 0 (#1726). Left alone, the cursor would make the next flush wait
+        # until the new file passed the old count plus the threshold.
+        _write_flush_cursor(tdir, 0)
         _spawn_background_ingest(archived)
 
 
@@ -814,8 +818,9 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     statements not yet in the store — never inflating it — while leaving
     the rebuilder / UPS recent-turns window (which reads the live
     turns.jsonl) intact. The cursor records the turn count at the last
-    flush; a count below the cursor means turns.jsonl was rotated
-    (PreCompact) or reset, so the cursor is treated as 0.
+    flush. PreCompact resets it to 0 when it rotates turns.jsonl (#1726).
+    A count below the cursor means the file was reset some other way, so
+    the cursor is treated as 0.
     """
     threshold = _stop_flush_threshold()
     if threshold <= 0:

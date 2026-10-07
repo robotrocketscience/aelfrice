@@ -1159,6 +1159,26 @@ def test_stop_flush_resets_cursor_after_rotation(
     assert captured_ingest == [tdir / "turns.jsonl"]
 
 
+def test_stop_flush_fires_at_threshold_after_a_rotation(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1726: PreCompact rotates turns.jsonl, so the next flush is due once
+    the new file reaches the threshold. With the cursor left at the
+    threshold, the new file's count never fell below it and the flush
+    waited for twice the threshold.
+
+    Killed by: not resetting the cursor in `_handle_pre_compact`.
+    """
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 3)
+    tl._write_flush_cursor(tdir, 3)  # flushed at 3, then compacted
+    assert _run_main({"hook_event_name": "PreCompact"}) == 0
+    captured_ingest.clear()  # the rotation's own archive ingest
+    _write_turns(tdir, 2)
+    assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 3
+    assert captured_ingest == [tdir / "turns.jsonl"]
+
+
 def test_stop_flush_failed_spawn_does_not_advance_cursor(
     tdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
