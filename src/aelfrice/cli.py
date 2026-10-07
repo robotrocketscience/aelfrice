@@ -8178,17 +8178,25 @@ def _cmd_doctor_gc_filesystem_corroboration(
     leave `aelf core`. With `--apply`, it deletes the rows. Bypasses the
     hooks/graph checks.
     """
-    from aelfrice.core_gate import ClassifierUnavailable  # noqa: PLC0415
+    from aelfrice.core_gate import (  # noqa: PLC0415
+        CLASSIFIER_UNAVAILABLE,
+        CLASSIFIER_VERSION,
+    )
 
+    # Before the store is opened, because opening one writes (#1719). The
+    # library call checks again for callers other than this command.
+    if CLASSIFIER_VERSION is None:
+        print(
+            f"doctor --gc-filesystem-corroboration: {CLASSIFIER_UNAVAILABLE}.",
+            file=sys.stderr,
+        )
+        return 1
     apply = bool(getattr(args, "apply", False))
     store = _open_store()
     try:
         report = _gc_filesystem_corroboration(
             store, qualifies=default_core_rule, dry_run=not apply,
         )
-    except ClassifierUnavailable as exc:
-        print(f"doctor --gc-filesystem-corroboration: {exc}.", file=sys.stderr)
-        return 1
     finally:
         store.close()
     print(_format_fs_corroboration_report(report), file=out)  # type: ignore[arg-type]
