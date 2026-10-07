@@ -7755,8 +7755,9 @@ def _maybe_core_gate_session_end(
     5. Collect candidates with one indexed query on this session's rows.
        None: return. This is the non-firing path every Stop takes once a
        flush's candidates are batched.
-    6. `[core_gate] session_end` not `true` (the default, #1740):
-       return. Read only when there are candidates, so the config walk stays off the non-firing path.
+    6. Env var unset and `[core_gate] session_end` not `true` (the
+       default, #1740): return. Read only when there are candidates, so
+       the config walk stays off the non-firing path.
     7. In one `BEGIN IMMEDIATE` transaction: collect again, so a
        concurrent Stop that batched first leaves nothing, fit a batch to
        the char budget, build its context, and record the batch
@@ -7881,11 +7882,11 @@ def stop(
     `hookSpecificOutput.additionalContext` to stdout, and the host
     continues the conversation so its model can label them and run
     `aelf core-gate accept`. That happens at most once per transcript
-    ingest flush, and never while `stop_hook_active` is set, in a
-    headless session, on the Codex host, or unless opted in
-    (`AELFRICE_CORE_GATE_SESSION_END=1`, `[core_gate] session_end =
-    true`); it is off by default (#1740). Before #1638 this hook never wrote stdout; the lock listing
-    below still goes to stderr.
+    ingest flush, only when opted in (`AELFRICE_CORE_GATE_SESSION_END=1`
+    or `[core_gate] session_end = true`; off by default, #1740), and
+    never while `stop_hook_active` is set, in a headless session, or on
+    the Codex host. Before #1638 this hook never wrote stdout; the lock
+    listing below still goes to stderr.
 
     The Stop event fires once per assistant-turn end (harness-defined).
     The hook is therefore on the post-turn fan-out path and must stay

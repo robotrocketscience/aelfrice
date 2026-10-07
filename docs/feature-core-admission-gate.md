@@ -145,8 +145,9 @@ beliefs; the backlog drain covers them.
   `stop_hook_active`, in a headless session (#1634), on the Codex host, or
   while the batch is off. It's off by default since #1740, because each
   batch adds a turn to the user's conversation; turn it on with
-  `AELFRICE_CORE_GATE_SESSION_END=1` or `[core_gate] session_end = true`. Codex documents `decision` for Stop
-  but not `additionalContext`, so the hook writes nothing there.
+  `AELFRICE_CORE_GATE_SESSION_END=1` or `[core_gate] session_end = true`.
+  Codex documents `decision` for Stop but not `additionalContext`, so the
+  hook writes nothing there.
 - The context asks the host to run the prompt on its smallest model
   (`CLASSIFIER_MODEL_TIER`). That's a request, not a guarantee (operator
   ruling on #1638, 2026-10-05). If a larger model labels the batch, the
