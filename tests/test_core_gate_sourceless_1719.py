@@ -2,10 +2,12 @@
 
 `CLASSIFIER_VERSION` hashes the source of `build_prompt` and
 `parse_labels`, so on an install with only bytecode `inspect.getsource`
-raises `OSError`. The import used to fail with it, and because the
-SessionStart hook imports `core_gate` whenever there are core candidates,
-the hook's fail-soft wrapper dropped the whole session-start block,
-`<locked>` included.
+raises `OSError`, and a `.pyc` that doesn't match its `.py` can raise
+`SyntaxError` or `tokenize.TokenError`. The import used to fail with it.
+The UserPromptSubmit hook imports `core_gate` while it builds the first
+prompt's `<session-start>` block whenever there are core candidates, so
+its fail-soft wrapper returned that block empty, `<locked>` section
+included.
 
 Now the version is None when the source is missing, and the failure stays
 inside the core lane: the gate admits no unlocked belief, no label applies,
@@ -22,14 +24,15 @@ import importlib
 import inspect
 import io
 import re
+import sqlite3
 import sys
+import tokenize
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-import aelfrice
 import aelfrice.core_gate as real_core_gate
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.store import MemoryStore
@@ -75,21 +78,34 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[MemorySto
         s.close()
 
 
-@pytest.fixture
-def sourceless(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+#: What `inspect` raises for a function whose source it can't read: no
+#: `.py` at all, or a `.py` that doesn't match the `.pyc` it was compiled to.
+_SOURCE_ERRORS: list[Exception] = [
+    OSError("could not get source code"),
+    TypeError("module, class, method, function, traceback, frame, or code object was expected"),
+    SyntaxError("invalid syntax"),
+    tokenize.TokenError("EOF in multi-line statement", (1, 0)),
+]
+
+
+@pytest.fixture(params=_SOURCE_ERRORS, ids=lambda e: type(e).__name__)
+def sourceless(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[ModuleType]:
     """Import `core_gate` fresh with its source unavailable, and yield it.
     Every lazy `from aelfrice.core_gate import ...` and
     `from aelfrice import core_gate` then resolves to it. The real module
     comes back in `sys.modules` and on the package afterwards."""
     real_getsource = inspect.getsource
+    error: Exception = request.param
 
     def getsource(obj: object) -> str:
         if getattr(obj, "__module__", None) == "aelfrice.core_gate":
-            raise OSError("could not get source code")
+            raise error
         return real_getsource(obj)  # pyright: ignore[reportArgumentType]
 
     monkeypatch.setattr(inspect, "getsource", getsource)
-    monkeypatch.setattr(aelfrice, "core_gate", real_core_gate)
+    monkeypatch.setattr(sys.modules["aelfrice"], "core_gate", real_core_gate)
     monkeypatch.delitem(sys.modules, "aelfrice.core_gate")
     yield importlib.import_module("aelfrice.core_gate")
 
@@ -132,10 +148,22 @@ def test_no_label_applies_without_a_version(
     assert labels == {}
 
 
+def test_a_label_always_has_a_version(store: MemoryStore) -> None:
+    """AC2 rests on the schema: `classifier_version` is `NOT NULL`, so no
+    stored label has a NULL version for a None lookup to match.
+    Mutation: drop `NOT NULL` from the column."""
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+        store.put_core_gate_labels(
+            {_hash(CORE): "A"}, classifier_version=None,  # pyright: ignore[reportArgumentType]
+            batch_id=None, labeled_at="2026-10-05T00:00:00+00:00",
+        )
+
+
 def test_a_none_version_matches_no_stored_label(store: MemoryStore) -> None:
-    """A label is keyed by a version string; None is never one of them.
-    Mutation: match a None version against every stored version."""
-    assert store.core_gate_labels_for([_hash(CORE)], None) == {}
+    """The lookup compares with `=`, never true against NULL. The fixture
+    stores labels for both beliefs, so the lookup has rows to find.
+    Mutation: compare with `IS NOT` instead of `=`."""
+    assert store.core_gate_labels_for([_hash(CORE), _hash(LOCKED)], None) == {}
 
 
 # --- nothing writes a batch or a label without a version -----------------
@@ -220,11 +248,14 @@ SESSION = "session-1719"
 
 
 def _session_end(store: MemoryStore, tmp_path: Path) -> bool:
-    from aelfrice import hook
+    from aelfrice.hook import (
+        CORE_GATE_SESSION_END_ENV,
+        _maybe_core_gate_session_end,  # pyright: ignore[reportPrivateUsage]
+    )
 
-    return hook._maybe_core_gate_session_end(  # pyright: ignore[reportPrivateUsage]
+    return _maybe_core_gate_session_end(
         store, {"cwd": str(tmp_path)}, SESSION,
-        env={hook.CORE_GATE_SESSION_END_ENV: "1"},
+        env={CORE_GATE_SESSION_END_ENV: "1"},
         stdout=io.StringIO(), stderr=io.StringIO(),
     )
 

@@ -74,8 +74,8 @@ arms only if a classifier has labeled it as one of the following:
 - When the version can't be computed, because the install has no source for
   `aelfrice.core_gate` ([#1719](https://github.com/robotrocketscience/aelfrice/issues/1719)),
   the gate fails closed: it admits no unlocked belief to core, no label
-  applies, and no batch or label is written. `<locked>` and the rest of the
-  session-start block are unaffected.
+  applies, and no batch or label is written. The rest of the first prompt's
+  `<session-start>` block, `<locked>` included, is unaffected.
 - The host-driven onboard classifier is the precedent for the call path. The
   CLI emits the candidates, the host dispatches its cheapest model, and the
   CLI accepts the labels. The aelfrice CLI makes no outbound call. For that
