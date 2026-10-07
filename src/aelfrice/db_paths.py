@@ -33,8 +33,52 @@ DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
 
 
+# #1734: one prompt-hook fire asked for the git-common-dir 5 times, and
+# each `git rev-parse` fork cost about 44 ms. The answer depends only on
+# the cwd and on the environment variables git reads during repository
+# discovery, so those form the cache key. A process that changes its cwd
+# (`project_warm` does) gets a fresh lookup for the new directory.
+_GIT_DISCOVERY_ENV: Final[tuple[str, ...]] = (
+    "GIT_DIR",
+    "GIT_COMMON_DIR",
+    "GIT_WORK_TREE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+_git_common_dir_cache: dict[tuple[str | None, ...], Path | None] = {}
+
+
+def clear_git_common_dir_cache() -> None:
+    """Forget every cached git-common-dir lookup.
+
+    For callers that change what git would discover without changing the
+    cwd or the environment, such as `git init` in a directory that was
+    already looked up. The test suite calls it before each test.
+    """
+    _git_common_dir_cache.clear()
+
+
 def _git_common_dir() -> Path | None:
     """Absolute path of cwd's git-common-dir, or None when not in a repo.
+
+    Cached per process, keyed on the cwd and git's discovery environment
+    variables (#1734). A `None` result is cached too, so the fallback is
+    the same on every call. When the cwd itself can't be read, nothing is
+    cached and the lookup runs as before.
+    """
+    try:
+        key = (os.getcwd(), *(os.environ.get(k) for k in _GIT_DISCOVERY_ENV))
+    except OSError:
+        return _lookup_git_common_dir()
+    if key in _git_common_dir_cache:
+        return _git_common_dir_cache[key]
+    found = _lookup_git_common_dir()
+    _git_common_dir_cache[key] = found
+    return found
+
+
+def _lookup_git_common_dir() -> Path | None:
+    """Run `git rev-parse --git-common-dir` for the cwd; None on any failure.
 
     Two worktrees of one repo share a --git-common-dir, so resolving
     against this gives them a single shared DB. Returns None when cwd

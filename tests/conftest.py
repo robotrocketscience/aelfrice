@@ -864,6 +864,11 @@ def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
     transcripts = str(_sandbox_real_home / "transcripts")  # #1706
     os.environ["AELFRICE_DB"] = pin
     os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
+    # #1734: the git-common-dir cache is keyed on cwd, and tests reuse
+    # cwds across repositories they create and delete.
+    from aelfrice.db_paths import clear_git_common_dir_cache  # noqa: PLC0415
+
+    clear_git_common_dir_cache()
     yield
     os.environ["AELFRICE_DB"] = pin
     os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
