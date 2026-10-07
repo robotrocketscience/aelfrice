@@ -1,0 +1,3 @@
+### Fixed
+
+- **After a compaction, the Stop-time transcript ingest runs on its usual schedule again ([#1726](https://github.com/robotrocketscience/aelfrice/issues/1726)).** Compaction moves `turns.jsonl` to the archive and starts a new, empty file. Before this fix, the counter that tracks how many turns were last ingested kept its old value. The next Stop-time ingest then waited until the new file grew past that old value plus the threshold: 24 turn lines instead of 12 at the default. Compaction now resets the counter to 0, so the next ingest runs once the new file reaches the threshold. The Stop-time ingest is controlled by `AELFRICE_INGEST_STOP_FLUSH_TURNS`.
