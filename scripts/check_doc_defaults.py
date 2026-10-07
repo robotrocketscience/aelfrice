@@ -64,6 +64,10 @@ CONFIG_RESOLVERS: dict[tuple[str, str], tuple[str, tuple[object, ...]]] = {
     ("implicit_feedback", "enqueue_on_retrieve"): ("deferred_feedback:is_enqueue_on_retrieve_enabled", ()),
     # hook.py passes the loaded TOML, which is {} when no file exists.
     ("belief_categories", "enabled"): ("category:is_enabled", ({},)),
+    # The TOML tier only; the Stop hook reads the env var first (#1740).
+    ("core_gate", "session_end"): (
+        "hook:_core_gate_session_end_toml_enabled", (None, sys.stderr),
+    ),
 }
 
 
