@@ -47,6 +47,11 @@ def db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
     monkeypatch.setenv("AELFRICE_NO_AUTO_INSTALL", "1")
     monkeypatch.delenv(hook.CORE_GATE_SESSION_END_ENV, raising=False)
+    # The batch is opt-in (#1740), so the tests of its behavior turn it on
+    # where the hook reads its config; the default-off tests remove this.
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[core_gate]\nsession_end = true\n", encoding="utf-8",
+    )
     return path
 
 
@@ -367,6 +372,53 @@ def test_unrecognised_env_value_falls_through(db: Path, tmp_path: Path) -> None:
     """Killed by: reading any value other than an on-value as off."""
     _seed(db, [_belief("w1")])
     out, _ = _stop(tmp_path, env={hook.CORE_GATE_SESSION_END_ENV: "widgetjunk"})
+    assert _context(out)
+
+
+def test_default_is_off(db: Path, tmp_path: Path) -> None:
+    """Killed by: any default of True in the TOML reader (#1740). With no
+    env var and no `[core_gate] session_end` key, a Stop that finds a
+    candidate adds no turn and records no batch."""
+    (tmp_path / ".aelfrice.toml").unlink()
+    _seed(db, [_belief("w1")])
+    out, err = _stop(tmp_path)
+    assert out == ""
+    assert "core-gate" not in err
+    assert _batches(db) == []
+
+
+@pytest.mark.parametrize("body", [
+    "[core_gate]\n",
+    "core_gate = 1\n",
+    "[core_gate]\nsession_end = \"yes\"\n",
+])
+def test_missing_or_malformed_key_reads_as_off(
+    db: Path, tmp_path: Path, body: str,
+) -> None:
+    """Killed by: a default of True on the missing-key, non-table-section,
+    or non-bool branch of the TOML reader (#1740)."""
+    (tmp_path / ".aelfrice.toml").write_text(body, encoding="utf-8")
+    _seed(db, [_belief("w1")])
+    out, _ = _stop(tmp_path)
+    assert out == ""
+    assert _batches(db) == []
+
+
+def test_toml_opt_in_continues(db: Path, tmp_path: Path) -> None:
+    """Killed by: ignoring `session_end = true` (#1740: the batch is opt-in)."""
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[core_gate]\nsession_end = true\n", encoding="utf-8",
+    )
+    _seed(db, [_belief("w1")])
+    out, _ = _stop(tmp_path)
+    assert _context(out)
+
+
+def test_env_opt_in_continues(db: Path, tmp_path: Path) -> None:
+    """Killed by: ignoring `AELFRICE_CORE_GATE_SESSION_END=1` with no TOML."""
+    (tmp_path / ".aelfrice.toml").unlink()
+    _seed(db, [_belief("w1")])
+    out, _ = _stop(tmp_path, env={hook.CORE_GATE_SESSION_END_ENV: "1"})
     assert _context(out)
 
 

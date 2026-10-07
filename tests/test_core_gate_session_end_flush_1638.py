@@ -115,6 +115,8 @@ def test_batch_fires_after_each_ingest_flush(tmp_path: Path) -> None:
         "AELFRICE_TRANSCRIPTS_DIR": str(tmp_path / "transcripts"),
         "AELF_NO_UPDATE_CHECK": "1",
         "AELFRICE_NO_AUTO_INSTALL": "1",
+        # The batch is opt-in (#1740); this test is about its cadence.
+        "AELFRICE_CORE_GATE_SESSION_END": "1",
         "PATH": f"{BIN}{os.pathsep}{env.get('PATH', '')}",
     })
     flush_every = DEFAULT_STOP_FLUSH_TURNS // 2  # a turn writes two lines

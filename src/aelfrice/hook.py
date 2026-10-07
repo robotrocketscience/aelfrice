@@ -7496,13 +7496,15 @@ def _utc_now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 CORE_GATE_SESSION_END_ENV: Final[str] = "AELFRICE_CORE_GATE_SESSION_END"
-"""Opt-out for the session-end classifier batch. `0`/`false`/`no`/`off`
+"""Override for the session-end classifier batch, which is off by default
+(#1740). `0`/`false`/`no`/`off`
 turns it off and `1`/`true`/`yes`/`on` turns it on, overriding the TOML
 key in both directions; any other value falls through to the key."""
 
 CORE_GATE_CONFIG_SECTION: Final[str] = "core_gate"
 CORE_GATE_SESSION_END_KEY: Final[str] = "session_end"
-"""`[core_gate] session_end` in `.aelfrice.toml`. Default `true`."""
+"""`[core_gate] session_end` in `.aelfrice.toml`. Default `false` (#1740):
+the batch adds a turn to the user's conversation, so it is opt-in."""
 
 CORE_GATE_SESSION_END_N_MIN: Final[int] = 1
 """Fewest candidates that make the session-end batch fire.
@@ -7564,22 +7566,22 @@ def _core_gate_session_end_toml_enabled(
 ) -> bool:
     """`[core_gate] session_end` from the nearest `.aelfrice.toml`.
 
-    Default True. A missing file, section, or key, malformed TOML, and a
-    non-bool value all read as the default, with a stderr trace for the
-    last two; never raises.
+    Default False (#1740). A missing file, section, or key, malformed
+    TOML, and a non-bool value all read as the default, with a stderr
+    trace for the last two; never raises.
     """
     parsed = _load_aelfrice_toml(start, stderr=serr)
     section: Any = parsed.get(CORE_GATE_CONFIG_SECTION, {})
     if not isinstance(section, dict):
-        return True
-    val: Any = cast(dict[str, Any], section).get(CORE_GATE_SESSION_END_KEY, True)
+        return False
+    val: Any = cast(dict[str, Any], section).get(CORE_GATE_SESSION_END_KEY, False)
     if not isinstance(val, bool):
         print(
             f"aelfrice hook: ignoring [{CORE_GATE_CONFIG_SECTION}] "
             f"{CORE_GATE_SESSION_END_KEY} (expected bool)",
             file=serr,
         )
-        return True
+        return False
     return val
 
 
@@ -7734,8 +7736,9 @@ def _maybe_core_gate_session_end(
 ) -> bool:
     """Emit the core-gate batch for this session's unclaimed candidates.
 
-    Runs on every Stop and fires on any Stop that finds candidates no
-    label or open batch covers. The transcript logger starts a background
+    Runs on every Stop. When opted in (step 6; off by default, #1740), it
+    fires on any Stop that finds candidates no label or open batch
+    covers. The transcript logger starts a background
     ingest of the session's turns only every few turns
     (`STOP_FLUSH_TURNS`), so this fires at most once per ingest. The host
     runs a Stop's hooks in parallel, so the ingest usually lands after
@@ -7752,8 +7755,8 @@ def _maybe_core_gate_session_end(
     5. Collect candidates with one indexed query on this session's rows.
        None: return. This is the non-firing path every Stop takes once a
        flush's candidates are batched.
-    6. `[core_gate] session_end = false`: return. Read only when there are
-       candidates, so the config walk stays off the non-firing path.
+    6. `[core_gate] session_end` not `true` (the default, #1740):
+       return. Read only when there are candidates, so the config walk stays off the non-firing path.
     7. In one `BEGIN IMMEDIATE` transaction: collect again, so a
        concurrent Stop that batched first leaves nothing, fit a batch to
        the char budget, build its context, and record the batch
@@ -7879,9 +7882,9 @@ def stop(
     continues the conversation so its model can label them and run
     `aelf core-gate accept`. That happens at most once per transcript
     ingest flush, and never while `stop_hook_active` is set, in a
-    headless session, on the Codex host, or when opted out
-    (`AELFRICE_CORE_GATE_SESSION_END=0`, `[core_gate] session_end =
-    false`). Before #1638 this hook never wrote stdout; the lock listing
+    headless session, on the Codex host, or unless opted in
+    (`AELFRICE_CORE_GATE_SESSION_END=1`, `[core_gate] session_end =
+    true`); it is off by default (#1740). Before #1638 this hook never wrote stdout; the lock listing
     below still goes to stderr.
 
     The Stop event fires once per assistant-turn end (harness-defined).
