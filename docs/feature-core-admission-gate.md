@@ -87,6 +87,10 @@ arms only if a classifier has labeled it as one of the following:
 
 #### Session-end batch
 
+The session-end batch is off by default since #1740, because each batch
+adds a turn to the user's conversation. It runs only when
+`[core_gate] session_end = true` or `AELFRICE_CORE_GATE_SESSION_END=1`.
+
 The Stop hook runs the session-end batch. The host's `SessionEnd` event
 can't hand work to the model, so the hook continues the conversation from
 a Stop instead. "Session end" means "after the session's beliefs are
@@ -139,8 +143,9 @@ beliefs; the backlog drain covers them.
   them either.
 - The hook doesn't continue the conversation while the host sets
   `stop_hook_active`, in a headless session (#1634), on the Codex host, or
-  when you opt out with `AELFRICE_CORE_GATE_SESSION_END=0` or
-  `[core_gate] session_end = false`. Codex documents `decision` for Stop
+  while the batch is off. It's off by default since #1740, because each
+  batch adds a turn to the user's conversation; turn it on with
+  `AELFRICE_CORE_GATE_SESSION_END=1` or `[core_gate] session_end = true`. Codex documents `decision` for Stop
   but not `additionalContext`, so the hook writes nothing there.
 - The context asks the host to run the prompt on its smallest model
   (`CLASSIFIER_MODEL_TIER`). That's a request, not a guarantee (operator
