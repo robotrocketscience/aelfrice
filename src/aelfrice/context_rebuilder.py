@@ -902,7 +902,9 @@ def _xml_attr_value(s: str) -> str:
 # --- Transcript adapters --------------------------------------------------
 
 
-def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
+def read_recent_turns_aelfrice(
+    path: Path, n: int, *, session_id: str | None = None,
+) -> list[RecentTurn]:
     """Read tail of an aelfrice turns.jsonl into RecentTurn records.
 
     Schema per docs/design/transcript_ingest.md: each line is a JSON object
@@ -912,8 +914,47 @@ def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
     scoped retrieval and v1.5's working-state projector (#587) have
     per-turn signals. Other fields (turn_id, context) are ignored.
 
+    #1744: every session and linked worktree of a repository appends to
+    one log. With `session_id`, only that session's lines are kept,
+    before the tail is taken; a line with no `session_id` can't be
+    attributed and is dropped. Without it, every line is read.
+
     Robust: malformed lines are skipped, missing files return empty.
     """
+    turns = _parse_aelfrice_turns(path)
+    if session_id is not None:
+        turns = [t for t in turns if t.session_id == session_id]
+    return turns[-n:] if n > 0 else []
+
+
+def read_recent_turns_latest_session(path: Path, n: int) -> list[RecentTurn]:
+    """The tail of the log's most recent session (#1744).
+
+    For a reader with no hook payload, such as `aelf rebuild`: keeps the
+    session of the last line that carries a `session_id`. A log with no
+    attributed line, written before the logger recorded sessions, is
+    read whole.
+    """
+    turns = _parse_aelfrice_turns(path)
+    latest = _latest_session_id(turns)
+    if latest is not None:
+        turns = [t for t in turns if t.session_id == latest]
+    return turns[-n:] if n > 0 else []
+
+
+def payload_session_id(payload: dict[str, object]) -> str | None:
+    """The hook payload's `session_id`, or None when absent or blank.
+
+    With None, the hook readers skip the shared turn log, since none of
+    its lines can be attributed to this session, and read the payload's
+    `transcript_path` instead (#1744).
+    """
+    sid = payload.get("session_id")
+    return sid if isinstance(sid, str) and sid.strip() else None
+
+
+def _parse_aelfrice_turns(path: Path) -> list[RecentTurn]:
+    """Every well-formed user or assistant line of an aelfrice turn log."""
     if not path.exists():
         return []
     out: list[RecentTurn] = []
@@ -942,7 +983,7 @@ def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
         ts_obj = rd.get("ts")
         ts = ts_obj if isinstance(ts_obj, str) and ts_obj else None
         out.append(RecentTurn(role=role, text=body, session_id=sid, ts=ts))
-    return out[-n:] if n > 0 else []
+    return out
 
 
 def read_recent_turns_claude_transcript(
@@ -1186,17 +1227,25 @@ def _read_recent_for_pre_compact(
     Resolution order:
       1. aelfrice's own turn log, where the transcript logger writes it
          (`find_aelfrice_log`, #1706). Resolved from the process cwd, not
-         the payload's.
+         the payload's. Every session of the repository shares it, so
+         only the payload's `session_id` turns are read, and a payload
+         without one skips the log (#1744).
       2. <payload.transcript_path> -- the host's own per-session
-         transcript JSONL. Fallback used when the turn log is absent.
+         transcript JSONL. Fallback used when the turn log is absent or
+         holds no turns for this session.
       3. Empty list -- both sources missing or unreadable.
     """
+    sid = payload_session_id(payload)
     try:
         log_path: Path | None = find_aelfrice_log()
     except OSError:
         log_path = None
-    if log_path is not None and log_path.exists():
-        return read_recent_turns_aelfrice(log_path, n=n_recent_turns)
+    if sid is not None and log_path is not None and log_path.exists():
+        recent = read_recent_turns_aelfrice(
+            log_path, n=n_recent_turns, session_id=sid,
+        )
+        if recent:
+            return recent
     tp_obj = payload.get("transcript_path")
     if isinstance(tp_obj, str) and tp_obj.strip():
         tp = Path(tp_obj)

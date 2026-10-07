@@ -1957,8 +1957,8 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
     from aelfrice.context_rebuilder import (
         find_aelfrice_log,
         load_rebuilder_config,
-        read_recent_turns_aelfrice,
         read_recent_turns_claude_transcript,
+        read_recent_turns_latest_session,
         rebuild_v14,
     )
 
@@ -1974,9 +1974,11 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
             Path(transcript_arg), n=n
         )
     else:
+        # The log is shared by every session of the repository; with no
+        # hook payload, read the most recent session's turns (#1744).
         log_path = find_aelfrice_log()
         if log_path.exists():
-            recent = read_recent_turns_aelfrice(log_path, n=n)
+            recent = read_recent_turns_latest_session(log_path, n=n)
         else:
             recent = []
 
@@ -9359,9 +9361,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_rebuild.add_argument(
         "--transcript", default=None,
         help=(
-            "path to a the upstream auto-memory tool session JSONL to read recent turns "
-            "from. Default: walk upward from cwd for "
-            ".git/aelfrice/transcripts/turns.jsonl."
+            "path to a host session transcript JSONL to read recent turns "
+            "from. Default: the most recent session's turns in aelfrice's "
+            "turn log, which every session of the repository shares."
         ),
     )
     p_rebuild.add_argument(

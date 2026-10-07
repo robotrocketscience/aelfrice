@@ -117,7 +117,11 @@ def _set_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
 def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     p = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    # The logger writes the payload's session_id on every line, and the
+    # readers keep only the payload session's turns (#1744).
+    p.write_text(
+        "\n".join(json.dumps({"session_id": "s1", **line}) for line in lines) + "\n"
+    )
     return p
 
 

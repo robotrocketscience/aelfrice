@@ -1,6 +1,6 @@
 ---
 name: aelf:rebuild
-description: Manually fire the context rebuilder. Prints the rebuild block (locked + session-scoped + L2.5/L1 hits) for the most recent transcript turns.
+description: Manually fire the context rebuilder. Prints the rebuild block (locked + session-scoped + L2.5/L1 hits) for the most recent session's turns in aelfrice's turn log.
 argument-hint: (optional) `--n N` recent turns, `--budget T` token budget, `--transcript PATH` Claude Code session JSONL.
 allowed-tools:
   - Bash

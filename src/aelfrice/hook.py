@@ -206,6 +206,7 @@ except ImportError as _e:
 # `sys.modules` lookup on a path that then opens a SQLite store.
 _LAZY_RETRIEVAL_NAMES: Final[dict[str, str]] = {
     "find_aelfrice_log": "aelfrice.context_rebuilder",
+    "payload_session_id": "aelfrice.context_rebuilder",
     "read_recent_turns_aelfrice": "aelfrice.context_rebuilder",
     "read_recent_turns_claude_transcript": "aelfrice.context_rebuilder",
     "rebuild_v14": "aelfrice.context_rebuilder",
@@ -6680,23 +6681,30 @@ def _read_recent_for_pre_compact(
       1. aelfrice's own turn log, written by the transcript-logger's
          UserPromptSubmit/Stop hooks (shipped v1.2.0, #111; installed by
          default via `aelf setup`). Resolved where the logger writes it,
-         from the process cwd (#1706). Preferred when present.
+         from the process cwd (#1706). Preferred when present. Every
+         session of the repository shares it, so only the payload's
+         `session_id` turns are read, and a payload without one skips
+         the log (#1744).
       2. <payload.transcript_path> -- the host's own per-session
          transcript JSONL. Fallback for hosts where the transcript-logger
-         hooks are not installed.
+         hooks are not installed, or when the log holds no turns for
+         this session.
       3. Empty list -- both sources missing or unreadable.
     """
+    sid = cast("str | None", _lazy("payload_session_id")(payload))
     try:
         log_path: Path | None = _lazy("find_aelfrice_log")()
     except OSError:
         log_path = None
-    if log_path is not None and log_path.exists():
-        return cast(
+    if sid is not None and log_path is not None and log_path.exists():
+        recent = cast(
             "list[RecentTurn]",
             _lazy("read_recent_turns_aelfrice")(
-                log_path, n=n_recent_turns,
+                log_path, n=n_recent_turns, session_id=sid,
             ),
         )
+        if recent:
+            return recent
     tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
     if isinstance(tp_obj, str) and tp_obj.strip():
         tp = Path(tp_obj)

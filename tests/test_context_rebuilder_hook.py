@@ -103,7 +103,11 @@ def _turn_log_under_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     p = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    # The logger writes the payload's session_id on every line, and the
+    # readers keep only the payload session's turns (#1744).
+    p.write_text(
+        "\n".join(json.dumps({"session_id": "s1", **line}) for line in lines) + "\n"
+    )
     return p
 
 
@@ -195,7 +199,7 @@ def test_ac1_envelope_carries_locked_session_scoped_and_l1(
         ),
         _mk(
             "S1sess", "session note about session_id propagation",
-            session_id="sess-live",
+            session_id="s1",
         ),
         _mk(
             "F1gen", "BM25 ranks results by frequency and rarity",
@@ -209,12 +213,12 @@ def test_ac1_envelope_carries_locked_session_scoped_and_l1(
         {
             "role": "user",
             "text": "How does session_id propagate through ingest?",
-            "session_id": "sess-live",
+            "session_id": "s1",
         },
         {
             "role": "assistant",
             "text": "session_id is plumbed end-to-end via ingest_turn.",
-            "session_id": "sess-live",
+            "session_id": "s1",
         },
     ])
     ctx = _rebuild_block(_start_compact(cwd=cwd))
