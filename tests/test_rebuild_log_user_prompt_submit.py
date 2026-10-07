@@ -394,6 +394,7 @@ def test_ups_row_carries_the_composition_when_the_branch_is_taken(
 
     cwd = tmp_path / "proj"
     turns_log = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
+    monkeypatch.setenv("AELFRICE_TRANSCRIPTS_DIR", str(turns_log.parent))  # #1706
     turns_log.parent.mkdir(parents=True)
     turns_log.write_text(
         "\n".join(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -283,33 +284,45 @@ def test_read_claude_transcript_missing_file_returns_empty(
 # ---- find_aelfrice_log -------------------------------------------------
 
 
-def test_find_aelfrice_log_walks_to_git_root(tmp_path: Path) -> None:
-    root = tmp_path / "repo"
-    (root / ".git").mkdir(parents=True)
-    nested = root / "a" / "b" / "c"
-    nested.mkdir(parents=True)
-    got = find_aelfrice_log(nested)
-    assert got is not None
-    assert got == root / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, timeout=30,
+    )
 
 
-def test_find_aelfrice_log_returns_none_outside_git(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.timeout(60)
+def test_find_aelfrice_log_in_a_linked_worktree_finds_the_writers_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Only safe test bound: call into a tmp dir that's not in any git tree.
-    # If tmp_path is itself inside a git tree (it isn't on macOS), this
-    # walks to that tree's .git and the test would still pass with a
-    # non-None result; in that case, treat it as a known-pass.
-    here = tmp_path / "no_git_here"
-    here.mkdir()
-    got = find_aelfrice_log(here)
-    # We can't strictly assert None without isolating from FS; assert the
-    # weaker invariant: if it returns a path, that path's grandparent
-    # (.git/aelfrice/transcripts/) reflects an actual .git dir somewhere.
-    if got is not None:
-        # Walk up to confirm a .git ancestor exists; otherwise it's a bug.
-        gitdir = got.parent.parent.parent  # .git/aelfrice/transcripts/turns.jsonl → .git
-        assert gitdir.name == ".git"
+    """#1706: in a linked worktree `.git` is a file. The old walk built a path
+    under it that could never exist; the reader now resolves where the
+    transcript logger writes, under the git common dir."""
+    monkeypatch.delenv("AELFRICE_TRANSCRIPTS_DIR", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "--allow-empty", "-m", "base")
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt))
+    assert (wt / ".git").is_file()
+    monkeypatch.chdir(wt / "")
+    from aelfrice.transcript_logger import turns_path
+
+    written = turns_path()
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text('{"role": "user", "text": "hi"}\n', encoding="utf-8")
+    got = find_aelfrice_log()
+    assert got == written
+    assert got.exists()
+    assert got.resolve().is_relative_to((repo / ".git").resolve())
+
+
+def test_find_aelfrice_log_honours_the_transcripts_dir_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AELFRICE_TRANSCRIPTS_DIR", str(tmp_path / "t"))
+    assert find_aelfrice_log() == tmp_path / "t" / "turns.jsonl"
 
 
 # ---- DEFAULT_TOKEN_BUDGET sanity --------------------------------------

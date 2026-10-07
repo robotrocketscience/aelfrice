@@ -6677,29 +6677,26 @@ def _read_recent_for_pre_compact(
     """Locate a transcript and read its tail.
 
     Resolution order:
-      1. <payload.cwd>/.git/aelfrice/transcripts/turns.jsonl -- the
-         canonical aelfrice log written by the transcript-logger's
-         UserPromptSubmit/Stop hooks (shipped v1.2.0, #111; installed
-         by default via `aelf setup`). Preferred when present.
-      2. <payload.transcript_path> -- Claude Code's internal per-session
+      1. aelfrice's own turn log, written by the transcript-logger's
+         UserPromptSubmit/Stop hooks (shipped v1.2.0, #111; installed by
+         default via `aelf setup`). Resolved where the logger writes it,
+         from the process cwd (#1706). Preferred when present.
+      2. <payload.transcript_path> -- the host's own per-session
          transcript JSONL. Fallback for hosts where the transcript-logger
          hooks are not installed.
       3. Empty list -- both sources missing or unreadable.
     """
-    cwd_obj = payload.get(_CWD_KEY)
-    if isinstance(cwd_obj, str) and cwd_obj.strip():
-        try:
-            cwd = Path(cwd_obj)
-            log_path = _lazy("find_aelfrice_log")(cwd)
-        except OSError:
-            log_path = None
-        if log_path is not None and log_path.exists():
-            return cast(
-                "list[RecentTurn]",
-                _lazy("read_recent_turns_aelfrice")(
-                    log_path, n=n_recent_turns,
-                ),
-            )
+    try:
+        log_path: Path | None = _lazy("find_aelfrice_log")()
+    except OSError:
+        log_path = None
+    if log_path is not None and log_path.exists():
+        return cast(
+            "list[RecentTurn]",
+            _lazy("read_recent_turns_aelfrice")(
+                log_path, n=n_recent_turns,
+            ),
+        )
     tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
     if isinstance(tp_obj, str) and tp_obj.strip():
         tp = Path(tp_obj)

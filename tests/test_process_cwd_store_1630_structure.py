@@ -109,14 +109,9 @@ MEMORYSTORE_CALLS: dict[Site, int] = {
 LAYOUT_JOINS: dict[Site, int] = {
     # Rooted at `_git_common_dir()` with no arguments: the process cwd.
     ("transcript_logger.py", "transcripts_dir"): 1,
-    # KNOWN EXCEPTION, not a store: `find_aelfrice_log(cwd)` reads the
-    # transcript log under the directory it is given, and
-    # `hook._read_recent_for_pre_compact` and `context_rebuilder`'s own
-    # rebuild entry point give it the payload cwd (#1706 tracks both). It is
-    # a read of `turns.jsonl`, not of the store or session state, and
-    # predates #1630. Changing it is a behaviour change, out of scope here.
-    ("context_rebuilder.py", "<module>"): 1,
-    ("context_rebuilder.py", "find_aelfrice_log"): 1,
+    # #1706 closed the one exception: `find_aelfrice_log` now reuses the
+    # writer's `transcripts_dir`, so the rebuilder's turn-log read resolves
+    # from the process cwd like every other consumer.
 }
 
 

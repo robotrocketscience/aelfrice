@@ -99,6 +99,17 @@ def _seed_db(db_path: Path, beliefs: list[Belief]) -> None:
         store.close()
 
 
+@pytest.fixture(autouse=True)
+def _turn_log_under_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader resolves the turn log where the logger writes it (#1706),
+    which honours AELFRICE_TRANSCRIPTS_DIR. These tests plant the log under
+    `tmp_path / "repo"`, so point the resolver there."""
+    monkeypatch.setenv(
+        "AELFRICE_TRANSCRIPTS_DIR",
+        str(tmp_path / "repo" / ".git" / "aelfrice" / "transcripts"),
+    )
+
+
 def _set_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv("AELFRICE_DB", str(path))
 

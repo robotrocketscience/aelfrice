@@ -190,7 +190,6 @@ pasted log)."""
 OPEN_TAG: Final[str] = "<aelfrice-rebuild>"
 CLOSE_TAG: Final[str] = "</aelfrice-rebuild>"
 
-_AELFRICE_LOG_RELPATH: Final[Path] = Path(".git") / "aelfrice" / "transcripts" / "turns.jsonl"
 
 # --- Hook envelope --------------------------------------------------------
 
@@ -1033,20 +1032,23 @@ def _extract_text_from_claude_content(content: object) -> str:
     return "\n".join(parts).strip()
 
 
-def find_aelfrice_log(cwd: Path) -> Path | None:
-    """Walk upward from cwd to find a .git/ root, return its turns.jsonl path.
+def find_aelfrice_log() -> Path:
+    """Path of aelfrice's turn log, where the transcript logger writes it.
 
     Returns the path even if the file does not exist -- callers use
-    Path.exists() to decide. Returns None if no .git/ is found in any
-    ancestor (cwd is outside a git repo).
+    Path.exists() to decide.
+
+    #1706: this reuses the writer's resolver (`transcript_logger.turns_path`):
+    `$AELFRICE_TRANSCRIPTS_DIR`, else the git common dir of the process cwd,
+    else `~/.aelfrice/transcripts/`. It used to walk up from the payload cwd
+    to the first `.git` entry. In a linked worktree `.git` is a file, so the
+    walk built a path under it that could never exist, and the rebuilder
+    never read the turn log from a worktree. It now resolves from the process
+    cwd like every other in-turn consumer (#1630).
     """
-    cur = cwd.resolve()
-    while True:
-        if (cur / ".git").exists():
-            return cur / _AELFRICE_LOG_RELPATH
-        if cur.parent == cur:
-            return None
-        cur = cur.parent
+    from aelfrice.transcript_logger import turns_path  # noqa: PLC0415
+
+    return turns_path()
 
 
 # --- v1.4 hook entry point -----------------------------------------------
@@ -1182,23 +1184,19 @@ def _read_recent_for_pre_compact(
     """Locate a transcript and read its tail.
 
     Resolution order:
-      1. <payload.cwd>/.git/aelfrice/transcripts/turns.jsonl -- the
-         canonical aelfrice log written by the per-turn
-         UserPromptSubmit/Stop hooks.
-      2. <payload.transcript_path> -- Claude Code's internal per-
-         session transcript JSONL. Fallback used when the canonical
-         log is absent.
+      1. aelfrice's own turn log, where the transcript logger writes it
+         (`find_aelfrice_log`, #1706). Resolved from the process cwd, not
+         the payload's.
+      2. <payload.transcript_path> -- the host's own per-session
+         transcript JSONL. Fallback used when the turn log is absent.
       3. Empty list -- both sources missing or unreadable.
     """
-    cwd_obj = payload.get("cwd")
-    if isinstance(cwd_obj, str) and cwd_obj.strip():
-        try:
-            cwd = Path(cwd_obj)
-            log_path = find_aelfrice_log(cwd)
-        except OSError:
-            log_path = None
-        if log_path is not None and log_path.exists():
-            return read_recent_turns_aelfrice(log_path, n=n_recent_turns)
+    try:
+        log_path: Path | None = find_aelfrice_log()
+    except OSError:
+        log_path = None
+    if log_path is not None and log_path.exists():
+        return read_recent_turns_aelfrice(log_path, n=n_recent_turns)
     tp_obj = payload.get("transcript_path")
     if isinstance(tp_obj, str) and tp_obj.strip():
         tp = Path(tp_obj)

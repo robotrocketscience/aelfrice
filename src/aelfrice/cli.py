@@ -1974,8 +1974,8 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
             Path(transcript_arg), n=n
         )
     else:
-        log_path = find_aelfrice_log(Path.cwd())
-        if log_path is not None and log_path.exists():
+        log_path = find_aelfrice_log()
+        if log_path.exists():
             recent = read_recent_turns_aelfrice(log_path, n=n)
         else:
             recent = []
