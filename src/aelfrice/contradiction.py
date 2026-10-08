@@ -3,8 +3,29 @@
 When the graph holds a `CONTRADICTS` edge between two beliefs, the
 tie-breaker picks one as the winner via a deterministic precedence
 rule and supersedes the loser. The result is a normal `SUPERSEDES`
-edge from winner → loser, plus an audit row in `feedback_history`
-recording which rule fired.
+edge from winner → loser, a `RESOLVES` edge in the same direction
+(#1658), plus an audit row in `feedback_history` recording which rule
+fired.
+
+## The `RESOLVES` edge
+
+`RESOLVES` uses the direction its readers expect: `src` is the belief
+that resolves, `dst` is the belief it resolves. Here that is the winner
+→ the loser, the same direction as `SUPERSEDES`.
+
+- `aelf introspect` reports the loser as `decided` (an incoming
+  `RESOLVES`) and the winner as `decides` (an outgoing one).
+- `wonder_gc` never collects a phantom with a `RESOLVES` edge in either
+  direction, so a speculative belief on either side of a resolved
+  contradiction survives GC.
+
+The edge leaves free-text retrieval ranking unchanged. Its valence is
+0.0, the BFS walk has no weight for it (0.0, so the walk skips it), and
+it is stamped with `RESOLVES_WEIGHT` = 0.0, under the clustering floor,
+so it never joins two candidates into one cluster. The HRR structural
+index is the exception: it binds every edge in `EDGE_TYPES`, so the
+edge answers a `RESOLVES:<id>` marker query, and like any added edge it
+adds crosstalk to the winner's row for other `<KIND>:<id>` queries.
 
 ## Precedence (v3.x #888, six classes)
 
@@ -71,6 +92,7 @@ from typing import Final, Optional, Sequence
 from aelfrice.models import (
     BELIEF_CORRECTION,
     EDGE_CONTRADICTS,
+    EDGE_RESOLVES,
     EDGE_SUPERSEDES,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -116,6 +138,15 @@ SOURCE_PREFIX: Final[str] = "contradiction_tiebreaker"
 # convention to match other structural-edge insert paths.
 SUPERSEDES_WEIGHT: Final[float] = 1.0
 
+# Edge weight for RESOLVES edges created by the tie-breaker (#1658).
+# 0.0 on purpose: `Edge.weight` is the one edge field retrieval reads
+# off the row rather than the type. `clustering` drops any edge below
+# `DEFAULT_CLUSTER_EDGE_FLOOR` (0.4), so at 0.0 the RESOLVES edge never
+# merges two candidates into a cluster, and ranking stays exactly what
+# the SUPERSEDES edge already makes it. The edge is a status marker for
+# `aelf introspect` and the wonder GC, not a retrieval signal.
+RESOLVES_WEIGHT: Final[float] = 0.0
+
 
 @dataclass(frozen=True)
 class ResolutionResult:
@@ -133,6 +164,9 @@ class ResolutionResult:
     SUPERSEDES edge; False when an equivalent edge already existed
     (idempotent re-resolve). The audit row is written regardless.
 
+    `resolves_created` is the same report for the RESOLVES edge
+    (#1658), which the function writes beside the SUPERSEDES one.
+
     `audit_event_id` is the rowid of the feedback_history row.
     """
     winner_id: str
@@ -140,6 +174,7 @@ class ResolutionResult:
     rule_fired: str
     supersedes_created: bool
     audit_event_id: int
+    resolves_created: bool
 
 
 def precedence_class(belief: Belief) -> int:
@@ -248,14 +283,15 @@ def resolve_contradiction(
     """Resolve a contradiction between two beliefs.
 
     Picks a winner via the precedence rules (see module docstring),
-    inserts a SUPERSEDES edge from winner → loser if not already
-    present, and writes one audit row to feedback_history tagged
+    inserts a SUPERSEDES edge and a RESOLVES edge (#1658) from winner
+    → loser, each only if not already present, and writes one audit
+    row to feedback_history tagged
     `source=f"{SOURCE_PREFIX}:{rule_fired}"`.
 
     Raises ValueError if either belief is missing. Idempotent: a
-    second call with the same args inserts no new SUPERSEDES edge
-    but still writes a fresh audit row (so re-resolves leave a
-    visible trace).
+    second call with the same args inserts no new SUPERSEDES or
+    RESOLVES edge but still writes a fresh audit row (so re-resolves
+    leave a visible trace).
     """
     a = store.get_belief(a_id)
     if a is None:
@@ -277,6 +313,18 @@ def resolve_contradiction(
         type=EDGE_SUPERSEDES,
         weight=SUPERSEDES_WEIGHT,
     ))
+    # #1658: the RESOLVES edge marks the same decision for its readers
+    # (`introspect` status, the wonder GC exemption). Checked separately
+    # from SUPERSEDES, so a pair whose SUPERSEDES edge came from another
+    # writer (the triple extractor) still gets one.
+    resolves_created = store.get_edge(
+        winner.id, loser.id, EDGE_RESOLVES,
+    ) is None and store.insert_edge(Edge(
+        src=winner.id,
+        dst=loser.id,
+        type=EDGE_RESOLVES,
+        weight=RESOLVES_WEIGHT,
+    ))
 
     timestamp = now if now is not None else _utc_now_iso()
     audit_id = store.insert_feedback_event(
@@ -292,6 +340,7 @@ def resolve_contradiction(
         rule_fired=rule,
         supersedes_created=supersedes_created,
         audit_event_id=audit_id,
+        resolves_created=resolves_created,
     )
 
 

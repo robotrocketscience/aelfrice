@@ -49,10 +49,13 @@ EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
 EDGE_TESTS: Final[str] = "TESTS"
-# v2.1 #548 wonder lifecycle. RESOLVES marks that a speculative phantom
-# resolves (answers or supersedes) an existing belief. A phantom with any
-# RESOLVES edge (incoming or outgoing) is excluded from GC — the edge
-# signals human-observable intent that the phantom should persist.
+# v2.1 #548 wonder lifecycle. RESOLVES marks that `src` resolves (answers
+# or supersedes) `dst`. A phantom with any RESOLVES edge (incoming or
+# outgoing) is excluded from GC — the edge signals human-observable intent
+# that the phantom should persist. The writer is the contradiction
+# tie-breaker (#1658): `resolve_contradiction` writes RESOLVES winner ->
+# loser beside its SUPERSEDES edge, which `aelf introspect` reads as the
+# winner "decides" and the loser "decided".
 EDGE_RESOLVES: Final[str] = "RESOLVES"
 
 # Marker edge — semantically distinct from the relational edge types
@@ -92,9 +95,9 @@ EDGE_POTENTIALLY_STALE: Final[str] = "POTENTIALLY_STALE"
 # asserts coverage of a claim rather than directly arguing for it;
 # just above CITES / DERIVED_FROM (0.5) because passing coverage is
 # slightly stronger evidence than mere reference.
-# RESOLVES (0.0): wonder-lifecycle marker. No propagation valence because
-# resolution intent (phantom answers an existing belief) doesn't carry
-# evidential weight in the Bayesian update chain.
+# RESOLVES (0.0): resolution marker. No propagation valence because
+# resolution intent (a contradiction winner over its loser, #1658) doesn't
+# carry evidential weight in the Bayesian update chain.
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,

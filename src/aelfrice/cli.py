@@ -10054,7 +10054,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         epilog=(
             "Picks a winner per precedence (user_stated > user_corrected "
             "> document_recent; ties broken by recency, then id) and "
-            "creates a SUPERSEDES thread from winner to loser. Each "
+            "creates a SUPERSEDES thread and a RESOLVES edge from winner "
+            "to loser. Each "
             "resolution writes an audit row to feedback_history with "
             "source='contradiction_tiebreaker:<rule>'. Idempotent — "
             "already-resolved pairs are skipped."

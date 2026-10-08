@@ -48,9 +48,9 @@ record.
 value with no name is out of reach. Three writers stamp an edge weight as a
 literal inside the ``Edge(...)`` constructor — ``relationship_detector``
 (both writers), ``triple_extractor`` and ``wonder.lifecycle`` all pass
-``weight=1.0`` inline. ``contradiction`` is the one that names it
-(``SUPERSEDES_WEIGHT``), which is why it appears below and the others do
-not. Naming those three would be a behaviour-preserving refactor and would
+``weight=1.0`` inline. ``contradiction`` is the one that names its weights
+(``SUPERSEDES_WEIGHT`` and ``RESOLVES_WEIGHT``), which is why it appears
+below and the others do not. Naming those three would be a behaviour-preserving refactor and would
 close the gap; it is deliberately not bundled into this change. Constants
 reached only transitively are a different case and *are* covered:
 ``_QUANTIFIER_TOKENS`` is derived from ``QUANT_AXIS``, and the noun-phrase
@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 2
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 3
 
 # --- Kinds -------------------------------------------------------------
 
@@ -407,13 +407,31 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "valence is keyed on edge TYPE and is untouched by this."
         ),
     ),
+    # --- contradiction: RESOLVES (#1658) ------------------------------
+    PinnedThreshold(
+        module="aelfrice.contradiction",
+        name="RESOLVES_WEIGHT",
+        kind=KIND_WEIGHT,
+        value="0.0",
+        size=None,
+        edge_types=("RESOLVES",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Weight stamped on every RESOLVES edge, which the tie-breaker "
+            "writes beside each SUPERSEDES edge. Does not change which "
+            "edges are written. At 0.0 the edge sits under "
+            "`DEFAULT_CLUSTER_EDGE_FLOOR` (0.4), so candidate clustering "
+            "never sees it; any value at or above 0.4 would let it merge "
+            "two candidates into one cluster and move retrieval ranking."
+        ),
+    ),
     PinnedThreshold(
         module="aelfrice.contradiction",
         name="CLASS_NAMES",
         kind=KIND_PATTERN_TABLE,
         value="sha256:4a55a5bd080b914f9d77b3b7c58c85dca6eaf48a05c0ea9ff06b91a4ed365749",
         size=6,
-        edge_types=("SUPERSEDES",),
+        edge_types=("SUPERSEDES", "RESOLVES"),
         overridable=OVERRIDE_NONE,
         gates=(
             "Keyed on the PRECEDENCE_* integers, so this one digest pins "
@@ -698,6 +716,11 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # is exactly the claim a future reader should be able to check rather
     # than take on trust: same 25 regexes, same order, same edge types.
     2: "ebf57aff99876c17ca59a7dadd2dfd1841eb752baf0b78f7134f474f27d4f790",
+    # 3 (#1658): the tie-breaker now writes a RESOLVES edge beside each
+    # SUPERSEDES edge. `RESOLVES_WEIGHT` (0.0) was pinned as a new entry,
+    # and `CLASS_NAMES` names RESOLVES in its edge types, because the
+    # precedence ordering now picks that edge's direction too.
+    3: "3a04f524f6e50c831ba3538f84e5c6b60b5328405c9d9d4d6e43f025188251cb",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
