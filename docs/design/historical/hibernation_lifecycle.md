@@ -1,5 +1,7 @@
 # Hibernation lifecycle (v2.0 #196 behavior half)
 
+> **Superseded:** [#1658](https://github.com/robotrocketscience/aelfrice/issues/1658) dropped the `hibernation_score` and `activation_condition` columns, and the lifecycle below was never built.
+
 ## Status
 
 **Design memo — UNIMPLEMENTED on `github/main` as of v3.1.** Storage

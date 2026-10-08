@@ -73,8 +73,8 @@ Adds `UNIQUE(content_hash)` to the `beliefs` table via a SQLite table-swap
 (SQLite does not support `ALTER TABLE ADD CONSTRAINT`):
 
 1. Read column definitions via `PRAGMA table_info(beliefs)` — preserves any
-   columns added by prior `ALTER TABLE` migrations (e.g. `hibernation_score`,
-   `activation_condition`).
+   columns added by prior `ALTER TABLE` migrations (e.g. `retention_class`,
+   `lock_tier`).
 2. `DROP TABLE IF EXISTS beliefs_new` — clears any partial state from a prior
    failed attempt.
 3. `CREATE TABLE beliefs_new` with `UNIQUE` added to `content_hash`.

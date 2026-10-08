@@ -267,11 +267,8 @@ Slash-command registration test (`tests/test_slash_commands.py`) extended with
   heat kernel for retrieval). Adding a graph-centrality signal to `aelf core`
   is a follow-up once a PageRank pass is computed and persisted; tracked as
   future work, not blocking this CLI.
-- **Hibernation interaction.** Hibernated beliefs (`hibernation_score`
-  populated) are still candidates if they meet the lock / corroboration /
-  posterior gates; the spec does not introduce a hibernation-aware filter.
-  If the operator wants hibernation-respecting output, that's a flag to add
-  later.
+- **Hibernation interaction.** Not applicable: the hibernation columns
+  were dropped in #1658 and no belief hibernates.
 - **`aelf core --explain <id>`.** Useful future verb to print the tag block
   with the threshold values that would change membership. Out of scope for
   the v2.0 ship.

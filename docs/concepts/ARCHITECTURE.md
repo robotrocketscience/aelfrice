@@ -82,7 +82,7 @@ modules against the 134 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 
 ## Data model
 
-**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, hibernation_score, activation_condition, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936)`, lock_tier` (v3.7+, #1016).
+**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936)`, lock_tier` (v3.7+, #1016).
 
 - `type ∈ {factual, correction, preference, requirement, speculative}`. The v3.0 wonder lifecycle added `speculative` for phantom beliefs (#548).
 - `retention_class ∈ {fact, snapshot, transient, unknown}` drives the type-aware compression (#769).
