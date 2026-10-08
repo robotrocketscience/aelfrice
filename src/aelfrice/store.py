@@ -745,25 +745,10 @@ _SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_belief_touches_session_fire "
     "ON belief_touches(session_id, last_fire_idx DESC)",
-    # #981 HRR vocabulary-bridge expansion lane. Precomputed single-hop
-    # semantic neighbours (forward + reverse) for the FTS5-seed expansion
-    # step. A derived cache, rebuilt wholesale by
-    # `hrr_expand.precompute_expand_neighbors`; no FK so the rebuild does not
-    # depend on insert order or cascade timing. `similarity` is the raw HRR
-    # inner product (REAL, 8-byte IEEE round-trip → byte-stable table). The
-    # PRIMARY KEY prefix (belief_id) backs the `WHERE belief_id IN (...)`
-    # runtime lookup.
-    """
-    CREATE TABLE IF NOT EXISTS hrr_expand_neighbors (
-        belief_id   TEXT NOT NULL,
-        neighbor_id TEXT NOT NULL,
-        similarity  REAL NOT NULL,
-        edge_type   TEXT NOT NULL,
-        direction   TEXT NOT NULL,
-        created_at  TEXT NOT NULL,
-        PRIMARY KEY (belief_id, neighbor_id, edge_type, direction)
-    )
-    """,
+    # #1658: `hrr_expand_neighbors` (#981) is no longer created. Nothing
+    # wrote it outside a benchmark, and the HRR expand lane now always
+    # probes the index live. Stores created before #1658 keep the
+    # table; nothing reads it, and no migration drops it.
     # #1126 belief categories. Two additive tables — invisible to the
     # destructive-only migration-policy gate, and (being in _SCHEMA
     # rather than _MIGRATIONS) present on every fresh store. `categories`

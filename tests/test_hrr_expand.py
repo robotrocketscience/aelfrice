@@ -222,6 +222,16 @@ def test_expand_seeds_surfaces_both_directions() -> None:
     assert got == ["b1", "b3"]
 
 
+def test_fresh_store_has_no_neighbour_cache_table() -> None:
+    # #1658: the schema no longer creates `hrr_expand_neighbors`.
+    store = MemoryStore(":memory:")
+    row = store._conn.execute(  # noqa: SLF001
+        "SELECT name FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'hrr_expand_neighbors'"
+    ).fetchone()
+    assert row is None
+
+
 def test_expand_seeds_ignores_legacy_neighbour_table() -> None:
     # A store created before #1658 still has the `hrr_expand_neighbors`
     # table. expand_seeds must not read it: a stale row naming b4 as b2's
