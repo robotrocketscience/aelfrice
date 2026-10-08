@@ -199,6 +199,15 @@ def test_a_restated_question_is_collected(
     assert _collected(store)
 
 
+def test_a_corroborated_question_is_kept(store: MemoryStore) -> None:
+    # A question passes promotion's residue check, so a corroboration you
+    # spoke on the phantom itself is a support promotion counts, and GC
+    # keeps the question as it keeps any other phantom with one.
+    store.insert_belief(_phantom("Should the cache expire after ten minutes?"))
+    _corroborate(store)
+    assert _collected(store) is False
+
+
 @pytest.mark.parametrize("tier", [LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE])
 @pytest.mark.parametrize("supported", [False, True])
 def test_a_locked_phantom_is_never_collected(
