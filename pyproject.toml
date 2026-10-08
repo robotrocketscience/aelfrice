@@ -196,6 +196,30 @@ also_copy = [
     # directory the #1617 checker refuses is also ignored, so the two
     # lists cannot drift apart.
     ".gitignore",
+    # #1746: `tests/test_docs_truth_1511.py` reads SECURITY.md, and
+    # `tests/test_pyright_ratchet_1503.py` reads the baseline.
+    "SECURITY.md",
+    "pyright_baseline.json",
+]
+
+# #1746: tests that can't pass inside `mutants/`, left out of the mutation run
+# only (the ordinary suite still runs them). mutmut runs the whole suite
+# unmutated first and stops at the first failure, leaving every mutant
+# `not checked`, so one of these takes the whole run to zero.
+#   test_conflict_markers_1491, test_docs_cross_file_anchors_1511 (the
+#     non-vacuous floor): they list tracked files with `git ls-files`.
+#     `mutants/` is an untracked copy, so they find none and fail their floor.
+#   test_subprocess_encoding_1441 (the encoding scan): it scans the source
+#     tree, which inside `mutants/` holds mutmut's mutated copies, including
+#     one that drops `encoding=`.
+#   test_block_ceiling_hermetic_home_1716 (the HOME config figures): its
+#     producer runs as a subprocess that imports `mutants/src` and inherits
+#     `MUTANT_UNDER_TEST`, so the stats pass changes the figure it pins.
+pytest_add_cli_args = [
+    "--deselect", "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
+    "--deselect", "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
+    "--deselect", "tests/test_subprocess_encoding_1441.py::test_subprocess_text_mode_pins_the_encoding",
+    "--deselect", "tests/test_block_ceiling_hermetic_home_1716.py::test_a_home_config_does_not_move_the_session_start_figures",
 ]
 
 # `src/aelfrice/__init__.py` is six hand-written lines of package metadata:

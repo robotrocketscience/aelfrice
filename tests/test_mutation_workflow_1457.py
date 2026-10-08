@@ -160,8 +160,11 @@ def test_also_copy_carries_what_the_suite_reads_from_the_repo_root() -> None:
         # constant ending in `_ROOT` — `PACKAGE_ROOT / "__init__.py"` read as
         # a repo-root read (#1579 review). Anchoring keeps the check on real
         # root anchors instead of making every `*_ROOT` name load-bearing.
+        # The bare `REPO` spelling is word-anchored for the same reason; this
+        # pattern missed it, and `SECURITY.md` and `pyright_baseline.json`
+        # went uncopied (#1746).
         for name in re.findall(
-            r'(?:_REPO[A-Z_]*|\b_ROOT\b|repo_root|REPO_ROOT|parents\[1\]'
+            r'(?:_REPO[A-Z_]*|\bREPO\b|\b_ROOT\b|repo_root|REPO_ROOT|parents\[1\]'
             r'|parent\.parent)\s*/\s*"([^"/]+)"',
             source,
         ):
