@@ -385,11 +385,20 @@ def test_bfs_does_not_walk_a_resolves_edge() -> None:
     assert expand_bfs([seed], s) == []
 
 
-def _retrieval_fixture() -> MemoryStore:
-    """Six contradicting pairs on one topic, resolved, SUPERSEDES removed.
+def _retrieval_fixture(
+    edge_type: str = EDGE_RESOLVES, *, loser_matches_query: bool = False,
+) -> MemoryStore:
+    """Six resolved contradicting pairs, with only one edge left per pair.
 
-    Removing SUPERSEDES isolates RESOLVES: whatever `retrieve()` returns
-    differs between the two runs below only if RESOLVES moves it.
+    Each winner matches the query. By default each loser shares no query
+    term, so a loser can enter the results only through the BFS walk.
+    With `loser_matches_query`, the losers match too, so both sides of
+    each edge are candidates and a weight change can join them in a
+    cluster. The tie-breaker writes CONTRADICTS, SUPERSEDES and RESOLVES.
+    The fixture then deletes CONTRADICTS and SUPERSEDES, which BFS walks,
+    so the walk's only route to a loser is the remaining edge.
+    `edge_type` replaces that edge with another type for the control
+    test.
     """
     s = MemoryStore(":memory:")
     for i in range(6):
@@ -400,30 +409,70 @@ def _retrieval_fixture() -> MemoryStore:
         ))
         s.insert_belief(_mk(
             lo, origin=ORIGIN_AGENT_INFERRED,
-            content=f"deploy target region number {i} is beta",
+            content=(
+                f"deploy target region number {i} is beta"
+                if loser_matches_query
+                else f"rollout zone {i} uses quartz cluster"
+            ),
         ))
         s.insert_edge(Edge(src=w, dst=lo, type=EDGE_CONTRADICTS, weight=0.1))
     results = auto_resolve_all_contradictions(s)
     assert len(results) == 6
     for r in results:
+        s.delete_edge(r.winner_id, r.loser_id, EDGE_CONTRADICTS)
         s.delete_edge(r.winner_id, r.loser_id, EDGE_SUPERSEDES)
+        if edge_type != EDGE_RESOLVES:
+            s.delete_edge(r.winner_id, r.loser_id, EDGE_RESOLVES)
+            s.insert_edge(Edge(
+                src=r.winner_id, dst=r.loser_id, type=edge_type, weight=1.0,
+            ))
     return s
 
 
-def test_retrieve_ranking_is_identical_with_and_without_resolves() -> None:
-    s = _retrieval_fixture()
-    assert _count(s, EDGE_RESOLVES) == 6
-    query = "deploy target region"
-    with_edges = [
-        b.id for b in retrieve(s, query, token_budget=120, bfs_enabled=True)
+_RETRIEVAL_QUERY = "deploy target region"
+
+
+def _retrieve_ids(s: MemoryStore) -> list[str]:
+    return [
+        b.id
+        for b in retrieve(s, _RETRIEVAL_QUERY, token_budget=400, bfs_enabled=True)
     ]
+
+
+@pytest.fixture
+def force_bfs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without this, the expansion gate turns BFS off for a query with no
+    structural marker, and `retrieve()` never walks an edge."""
+    monkeypatch.setenv("AELFRICE_FORCE_EXPANSION", "1")
+
+
+@pytest.mark.usefixtures("force_bfs")
+def test_retrieve_bfs_reaches_losers_through_a_walkable_edge() -> None:
+    """Control: with SUPPORTS in place of RESOLVES, BFS brings every loser
+    into the results. The fixture can therefore see an edge BFS walks."""
+    ids = _retrieve_ids(_retrieval_fixture(EDGE_SUPPORTS))
+    assert {f"L{i}" for i in range(6)} <= set(ids)
+
+
+@pytest.mark.usefixtures("force_bfs")
+@pytest.mark.parametrize(
+    "loser_matches_query", [False, True], ids=["bfs_route", "both_candidates"],
+)
+def test_retrieve_ranking_is_identical_with_and_without_resolves(
+    loser_matches_query: bool,
+) -> None:
+    """`bfs_route` catches a BFS walk over RESOLVES; `both_candidates`
+    catches a RESOLVES weight that joins two candidates in a cluster."""
+    s = _retrieval_fixture(loser_matches_query=loser_matches_query)
+    assert _count(s, EDGE_RESOLVES) == 6
+    with_edges = _retrieve_ids(s)
     for i in range(6):
         s.delete_edge(f"W{i}", f"L{i}", EDGE_RESOLVES)
     assert _count(s, EDGE_RESOLVES) == 0
-    without_edges = [
-        b.id for b in retrieve(s, query, token_budget=120, bfs_enabled=True)
-    ]
+    without_edges = _retrieve_ids(s)
     assert with_edges, "fixture retrieved nothing; the comparison is vacuous"
+    if not loser_matches_query:
+        assert not any(b.startswith("L") for b in with_edges)
     assert with_edges == without_edges
 
 
