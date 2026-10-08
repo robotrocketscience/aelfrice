@@ -54,7 +54,7 @@ The function is pure and deterministic. No store reads, no clock reads, no env r
 | `transient` | verbatim | **stub** | Stub = belief id + retention class only, no content. Compressed-out content is recoverable via `store.get_belief(id)` if the consumer needs it. |
 | `unknown` | verbatim | verbatim | Migration-safety. Don't compress beliefs whose retention class hasn't been classified yet — that is a separate audit (#290 §6) before type-aware compression can fire on them. |
 
-The `locked → verbatim` rule mirrors the existing rule that L0 beliefs are never trimmed (`retrieval.py:2451`: *"L0 beliefs are never trimmed."*) — locks override every retention-class decision the same way they override hibernation (#196) and the relevance floor (#289).
+The `locked → verbatim` rule mirrors the existing rule that L0 beliefs are never trimmed (`retrieval.py:2451`: *"L0 beliefs are never trimmed."*) — locks override every retention-class decision the same way they override the relevance floor (#289).
 
 ### Headline strategy details
 
