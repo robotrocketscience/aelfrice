@@ -109,10 +109,14 @@ def test_each_discovery_variable_is_part_of_the_key(
         return None
 
     monkeypatch.setattr(db_paths, "_lookup_git_common_dir", recording)
+    # Each value is looked up twice; only the first of each reaches git.
+    db_paths._git_common_dir()
     db_paths._git_common_dir()
     monkeypatch.setenv(name, "")
     db_paths._git_common_dir()
+    db_paths._git_common_dir()
     monkeypatch.setenv(name, "x")
+    db_paths._git_common_dir()
     db_paths._git_common_dir()
     assert seen == [None, "", "x"]
 
@@ -137,7 +141,44 @@ def test_an_unreadable_cwd_is_looked_up_and_not_cached(
     def gone() -> str:
         raise FileNotFoundError("cwd removed")
 
+    calls: list[bool] = []
+
+    def lookup() -> Path | None:
+        calls.append(True)
+        return None
+
     monkeypatch.setattr(db_paths.os, "getcwd", gone)
-    monkeypatch.setattr(db_paths, "_lookup_git_common_dir", lambda: None)
+    monkeypatch.setattr(db_paths, "_lookup_git_common_dir", lookup)
     assert db_paths._git_common_dir() is None
+    assert db_paths._git_common_dir() is None
+    assert calls == [True, True]
     assert db_paths._git_common_dir_cache == {}
+
+
+@pytest.mark.usefixtures("no_git_env")
+def test_a_timed_out_lookup_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    def lookup() -> Path | None:
+        calls.append(True)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired("git", 5)
+        return tmp_path / ".git"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(db_paths, "_lookup_git_common_dir", lookup)
+    assert db_paths._git_common_dir() is None
+    assert db_paths._git_common_dir() == tmp_path / ".git"
+    assert db_paths._git_common_dir() == tmp_path / ".git"
+    assert calls == [True, True]
+
+
+def test_the_lookup_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow(*_args: object, **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired("git", 5)
+
+    monkeypatch.setattr(db_paths.subprocess, "run", slow)
+    with pytest.raises(subprocess.TimeoutExpired):
+        db_paths._lookup_git_common_dir()
