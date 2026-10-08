@@ -40,10 +40,14 @@ IMPLEMENTS` (`CALLS` is not in the current schema). Co-occurrence/structural
 kinds (`RELATES_TO`, `DERIVED_FROM`, `TEMPORAL_NEXT`, `RESOLVES`) are excluded
 as noise.
 
-`precompute_expand_neighbors` materialises a byte-stable
-`hrr_expand_neighbors` SQLite table (forward + reverse, per active belief);
-`expand_seeds` reads it at query time with a live-probe fallback. The lane's
-results also seed BFS, matching the predecessor.
+`expand_seeds` probes the index live at query time, in both directions, for
+up to five seeds. The lane's results also seed BFS, matching the predecessor.
+
+The lane keeps no on-disk neighbour cache. An earlier `hrr_expand_neighbors`
+table held precomputed neighbours, but only the ablation benchmark ever filled
+it, so every production query already took the live probe. #1658 removed the
+table from the schema. Stores created before that change keep their
+`hrr_expand_neighbors` table, which nothing reads.
 
 ### Similarity floor
 
@@ -61,8 +65,9 @@ in the gap. Empirically a spurious hit on a no-such-edge belief scores
 Every operation is a numpy FFT / matvec over the deterministically-seeded
 struct matrix. There is no `random` / `betavariate` / Thompson sampling
 anywhere in the lane (asserted by an AST scan in `tests/test_hrr_expand.py`).
-The neighbour table is byte-equal across two runs over the same store
-(tie-break: similarity DESC, neighbor_id ASC). Default-OFF keeps `retrieve_v2`
+The live probe's neighbour rows are byte-equal across two runs over the same
+store and across two independent index builds (tie-break: similarity DESC,
+neighbor_id ASC). Default-OFF keeps `retrieve_v2`
 output byte-identical to the pre-#981 path.
 
 ## Flag
