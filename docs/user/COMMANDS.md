@@ -164,7 +164,7 @@ you run now:
 
 ```
 ingest log rule set (`ingest_log.rule_set_hash`):
-  current digest: 13ec6a9f64a4
+  current digest: 0123456789ab
   1500 row(s) in total
   300 row(s) carry a different digest (written under other classifier rules)
   1000 row(s) carry no digest (written before digests were recorded, synthesized for legacy beliefs, or written when no digest could be computed)
