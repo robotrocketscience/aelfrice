@@ -48,6 +48,41 @@ aelfrice uses semantic versioning (semver), and the current line is v4.x. The pr
    scripts/run_bench_gate.sh          # defaults AELFRICE_CORPUS_ROOT to the lab corpus
    ```
 
+   The release run must read the lab corpus at a clean `main` (#1735). The
+   default root is in the primary lab checkout, so it reads whatever branch
+   that checkout has checked out. At the 5.1.0 cut, that was a working branch
+   with a superseded corpus, and the tier failed for that reason alone.
+
+   - If the primary lab checkout can switch branches, switch it to `main` and
+     pull before you run the tier.
+   - If it's in use on another branch, run the tier against a worktree that
+     has `main` checked out. In these commands, replace `<lab-checkout>` with
+     the primary lab checkout's path. To find a worktree of `main`, run
+     `git -C <lab-checkout> worktree list` and look for `[main]`. Git allows
+     only one worktree per branch, so reuse that worktree if it exists.
+     Otherwise, add one:
+
+     ```bash
+     git -C <lab-checkout> worktree add <main-worktree> main
+     ```
+
+     Update the worktree, and then point the script at its corpus:
+
+     ```bash
+     git -C <main-worktree> pull --ff-only
+     AELFRICE_CORPUS_ROOT=<main-worktree>/tests/corpus/v2_0 scripts/run_bench_gate.sh
+     ```
+
+   Before the tests run, the script prints the corpus root, its checkout, the
+   branch, the commit, and whether the corpus has uncommitted changes. Files
+   under the corpus root that no commit tracks, including ignored ones, count
+   as uncommitted changes. The script prints a warning when the branch isn't
+   `main`, when the corpus has uncommitted changes, or when the root isn't in a
+   checkout with at least one commit. "Clean `main`" means the local `main`;
+   the script doesn't compare it with the remote, so pull first. Check those
+   lines before you read the results, and keep them in the block you paste
+   into the PR. To see the lines without running the tier, pass `--dry-run`.
+
    This is the only scheduled run the quality tier gets, and it is mandatory,
    not advisory. By design, the retrieval, compression, and clustering gates
    skip on every public CI run (#1420 §3), so a green `pytest` result says
