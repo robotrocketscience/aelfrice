@@ -246,6 +246,70 @@ def diagnose_dangling_edges(store_path: str) -> DanglingEdgeStats | None:
     )
 
 
+@dataclass(frozen=True)
+class IngestRuleSetStats:
+    """How many `ingest_log` rows carry the current rule-set digest (#1658).
+
+    `total` is every row in `ingest_log`. `missing` counts rows with no
+    `rule_set_hash`: rows written before ingest stamped one. `mismatched`
+    counts rows whose digest differs from `current_hash`, meaning the
+    classifier rules changed after they were written. When this process
+    could not compute a digest, `current_hash` and `mismatched` are None.
+    """
+
+    total: int
+    missing: int
+    mismatched: int | None
+    current_hash: str | None
+
+
+def diagnose_ingest_rule_set(
+    store_path: str, current_hash: str | None = None,
+) -> IngestRuleSetStats | None:
+    """Count `ingest_log` rows by rule-set digest for `store_path` (#1658).
+
+    It runs one aggregate query over a read-only plain sqlite connection,
+    for the same reason `diagnose_dangling_edges` does: opening a
+    `MemoryStore` runs pending migrations. `current_hash` defaults to this
+    process's `rule_set_hash()`.
+
+    Fail-soft: a missing file, a store with no `ingest_log` table, or any
+    sqlite error yields None and the section is not rendered.
+    """
+    if store_path == ":memory:" or not Path(store_path).exists():
+        return None
+    if current_hash is None:
+        from aelfrice.classification_core import (  # noqa: PLC0415
+            rule_set_hash,
+        )
+
+        current_hash = rule_set_hash()
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT COUNT(*), "
+            "SUM(rule_set_hash IS NULL OR rule_set_hash = ''), "
+            "SUM(rule_set_hash IS NOT NULL AND rule_set_hash <> '' "
+            "AND rule_set_hash IS NOT ?) "
+            "FROM ingest_log",
+            (current_hash,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None:
+        return None
+    return IngestRuleSetStats(
+        total=int(row[0] or 0),
+        missing=int(row[1] or 0),
+        mismatched=int(row[2] or 0) if current_hash is not None else None,
+        current_hash=current_hash,
+    )
+
+
 # ---------------------------------------------------------------------------
 # UserPromptSubmit telemetry section (#218 AC4)
 # ---------------------------------------------------------------------------
@@ -485,6 +549,9 @@ class DoctorReport:
     # check endpoint existence, so nothing else reports these. None when
     # no store path was supplied or the store could not be read.
     dangling_edges: DanglingEdgeStats | None = None
+    # #1658: ingest_log rows by rule-set digest. None when no store path
+    # was supplied or the store could not be read.
+    ingest_rule_set: IngestRuleSetStats | None = None
     # Runtime deps declared in pyproject.toml that are not importable
     # in the current environment (issue #236: stale uv tool env).
     missing_runtime_deps: list[str] = field(
@@ -671,6 +738,8 @@ def diagnose(
         )
         # #1375: dangling-edge count, same read-only handle policy.
         report.dangling_edges = diagnose_dangling_edges(store_path)
+        # #1658: rule-set digest coverage, same read-only handle policy.
+        report.ingest_rule_set = diagnose_ingest_rule_set(store_path)
         # #1622: unapplied typed locks, read-only, same policy. Guarded
         # here as well: the detector reports its known failures as
         # unknown, and anything it did not anticipate must not end the
@@ -1503,6 +1572,8 @@ def format_report(report: DoctorReport) -> str:
         _format_failed_migrations_section(report, lines)
         # #1375: store-derived, independent of settings.json.
         _format_dangling_edges_section(report, lines)
+        # #1658: store-derived, independent of settings.json.
+        _format_ingest_rule_set_section(report, lines)
         # #1359: config-derived, independent of settings.json.
         _format_memory_block_section(report, lines)
         # #1622: store- and audit-derived, independent of settings.json.
@@ -1575,6 +1646,7 @@ def format_report(report: DoctorReport) -> str:
     _format_legacy_schema_section(report, lines)
     _format_failed_migrations_section(report, lines)
     _format_dangling_edges_section(report, lines)
+    _format_ingest_rule_set_section(report, lines)
     _format_hrr_section(report, lines)
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
@@ -2240,6 +2312,38 @@ def _format_dangling_edges_section(
         "also inflate every edge count. Report-only: repairing them "
         "needs an `edges` table rebuild, which is out of scope here "
         "(#1161)."
+    )
+
+
+def _format_ingest_rule_set_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the ingest rule-set block to `lines` (#1658).
+
+    Informational, never a failure: a changed rule set is expected after
+    an upgrade. Rendered whenever the store could be read, including at
+    zero, for the same reason as the dangling-edge block.
+    """
+    st = report.ingest_rule_set
+    if st is None:
+        return
+    lines.append("")
+    lines.append("ingest log rule set (`ingest_log.rule_set_hash`):")
+    if st.current_hash is None:
+        lines.append(
+            "  current digest: unavailable, so rows cannot be compared"
+        )
+    else:
+        lines.append(f"  current digest: {st.current_hash[:12]}")
+    lines.append(f"  {st.total} row(s) in total")
+    if st.mismatched is not None:
+        lines.append(
+            f"  {st.mismatched} row(s) carry a different digest "
+            "(written under other classifier rules)"
+        )
+    lines.append(
+        f"  {st.missing} row(s) carry no digest "
+        "(written before ingest recorded one)"
     )
 
 
