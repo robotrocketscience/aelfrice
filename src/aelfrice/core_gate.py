@@ -126,9 +126,18 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
     expected index exactly once with A, B, or C and names no other index. A
     partial or malformed reply is rejected whole, so a failed run can never
     look like a set of labels.
+
+    One surrounding Markdown code fence (```` ``` ```` or ```` ```json ````,
+    closed on its own) is removed first: the smallest model wrapped every
+    reply in one when measured on #1741. Both accept paths, `aelf
+    core-gate accept` and the background labeler, go through this, so they
+    take the same replies.
     """
+    body = reply.strip()
+    if body.startswith("```") and body.endswith("```") and "\n" in body:
+        body = body[body.index("\n") + 1:-3].strip()
     try:
-        rows = json.loads(reply)
+        rows = json.loads(body)
     except (json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"reply is not JSON: {exc}") from exc
     if not isinstance(rows, list):

@@ -10,7 +10,7 @@ from aelfrice import core_gate as cg
 #: The current classifier's digest. CLASSIFIER_VERSION is derived from the
 #: digest, so changing the classifier already changes the version and old
 #: labels stop applying; this pin only makes such a change deliberate.
-PINNED_DIGEST = "35688308d8f69ffb2df87e274772963a643dd01c2272c4034aa628d3a8b881b7"
+PINNED_DIGEST = "ae354b226473cd4812b1f4f0f69bc9303df867e9702d76b95763d1e82ae6fdf3"
 
 #: The examples that replace the reference raters' private ones. Everything
 #: else in the rubric is the raters' text, word for word.
@@ -139,6 +139,28 @@ def test_build_prompt_rejects_bad_batches(snippets: list[tuple[int, str]]) -> No
 
 def test_build_prompt_accepts_a_full_batch() -> None:
     assert cg.build_prompt([(i, "x") for i in range(cg.MAX_BATCH)])
+
+
+@pytest.mark.parametrize("reply", [
+    '```json\n[{"index": 1, "label": "A"}]\n```',
+    '```\n[{"index": 1, "label": "A"}]\n```',
+    '  ```json\n[{"index": 1, "label": "A"}]\n```\n',
+])
+def test_parse_labels_strips_one_closed_fence(reply: str) -> None:
+    """Killed by: not stripping a closed fence (#1741)."""
+    assert cg.parse_labels(reply, {1}) == {1: "A"}
+
+
+@pytest.mark.parametrize("reply", [
+    '```json [{"index": 1, "label": "A"}]```',
+    '```json\n[{"index": 1, "label": "A"}]',
+    '```json\n```json\n[{"index": 1, "label": "A"}]\n```\n```',
+])
+def test_parse_labels_strips_no_unclosed_or_nested_fence(reply: str) -> None:
+    """Killed by: stripping a single-line or unclosed fence, or more than
+    one fence."""
+    with pytest.raises(ValueError):
+        cg.parse_labels(reply, {1})
 
 
 def test_parse_labels_accepts_a_complete_reply() -> None:
