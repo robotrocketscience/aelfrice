@@ -56,11 +56,14 @@ def _phantom(
     )
 
 
-def _type(store: MemoryStore, path: Path, turns: list[tuple[str, str]]) -> None:
-    """Ingest `(session, text)` user turns, typed two days ago."""
+def _type(
+    store: MemoryStore, path: Path, turns: list[tuple[str, str]],
+    *, days_ago: int = 2,
+) -> None:
+    """Ingest `(session, text)` user turns, typed `days_ago` days ago."""
     path.write_text("\n".join(json.dumps({
         "schema_version": 1, "role": "user", "session_id": sid,
-        "ts": _ts(2), "text": text,
+        "ts": _ts(days_ago), "text": text,
     }) for sid, text in turns) + "\n", encoding="utf-8")
     ingest_jsonl(store, path)
 
@@ -153,6 +156,16 @@ def test_a_full_restatement_of_a_paragraph_keeps_it(
     store.insert_belief(_phantom(f"{A}\n{B}"))
     _type(store, tmp_path / "t.jsonl", [("s1", f"{A}\n{B}")])
     assert _collected(store) is False
+
+
+def test_a_restatement_from_before_the_phantom_does_not_keep_it(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # The phantom is 20 days old; you typed its text 25 days ago, before
+    # wonder created it, so promotion doesn't count the restatement.
+    store.insert_belief(_phantom())
+    _type(store, tmp_path / "t.jsonl", [("s1", A)], days_ago=25)
+    assert _collected(store)
 
 
 # Promotion's eligibility gates. Each test gives the phantom a user
