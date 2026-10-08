@@ -362,3 +362,17 @@ def test_retrieve_ranking_is_identical_with_and_without_resolves() -> None:
     ]
     assert with_edges, "fixture retrieved nothing; the comparison is vacuous"
     assert with_edges == without_edges
+
+
+def test_effect_benchmark_is_deterministic_and_not_vacuous() -> None:
+    """`benchmarks/resolves_edge_effect_1658.py` backs the figures quoted
+    for the HRR, wonder-seed and random-walk effects. Same config, same
+    report, and the synthetic stores really do carry RESOLVES edges."""
+    from benchmarks.resolves_edge_effect_1658 import Config, run
+
+    cfg = Config(beliefs=40, edges=160, stores=2, seed=3, rw_walks=10)
+    first, vacuous = run(cfg)
+    second, _ = run(cfg)
+    assert not vacuous
+    assert first == second
+    assert first["hrr_first_store"] is not None
