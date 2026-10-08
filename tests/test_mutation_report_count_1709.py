@@ -26,7 +26,10 @@ import pytest
 from tests.test_mutation_workflow_1457 import _step_body
 
 _BASH = shutil.which("bash")
-pytestmark = pytest.mark.skipif(_BASH is None, reason="needs bash")
+pytestmark = [
+    pytest.mark.skipif(_BASH is None, reason="needs bash"),
+    pytest.mark.timeout(60),  # spawns bash and grep (#1307)
+]
 
 # The first three key shapes are copied from a real `mutmut results
 # --all=true` run (mutmut 3.8.0) over a module with one function and one
@@ -96,7 +99,7 @@ def _run_step(
     proc = subprocess.run(
         [_BASH, "-e", str(script)],
         cwd=tmp_path, env=env, capture_output=True, text=True,
-        encoding="utf-8", check=False,
+        encoding="utf-8", check=False, timeout=30,
     )
     return proc, summary.read_text(encoding="utf-8")
 
