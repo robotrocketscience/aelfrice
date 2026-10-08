@@ -9,6 +9,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from aelfrice import classification_core
 from aelfrice.classification_core import rule_set_hash
 from aelfrice.doctor import (
     diagnose,
@@ -118,3 +121,36 @@ def test_section_absent_without_a_store_path(tmp_path: Path) -> None:
     )
     assert report.ingest_rule_set is None
     assert "ingest log rule set" not in format_report(report)
+
+
+def _no_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make this process's rule-set digest unavailable."""
+    monkeypatch.setattr(classification_core, "rule_set_hash", lambda: None)
+
+
+def test_unavailable_digest_leaves_mismatched_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no current digest, rows cannot be compared, so no count is given."""
+    _no_digest(monkeypatch)
+    st = diagnose_ingest_rule_set(str(_seed(tmp_path)))
+    assert st is not None
+    assert st.current_hash is None
+    assert st.mismatched is None
+    assert (st.total, st.missing) == (4, 1)
+
+
+def test_doctor_report_says_the_digest_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_digest(monkeypatch)
+    report = diagnose(
+        user_settings=tmp_path / "missing-user.json",
+        project_root=tmp_path / "missing-project",
+        store_path=str(_seed(tmp_path)),
+    )
+    text = format_report(report)
+    assert "current digest: unavailable, so rows cannot be compared" in text
+    assert "carry a different digest" not in text
+    assert "4 row(s) in total" in text
+    assert "1 row(s) carry no digest" in text
