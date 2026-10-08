@@ -13,12 +13,14 @@ tests here pin both reasons and then check `retrieve()` end to end.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import random
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from aelfrice.bfs_multihop import expand_bfs
+from aelfrice.cli import _wonder_pick_seed  # pyright: ignore[reportPrivateUsage]
 from aelfrice.clustering import DEFAULT_CLUSTER_EDGE_FLOOR, cluster_candidates
 from aelfrice.contradiction import (
     RESOLVES_WEIGHT,
@@ -30,8 +32,10 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_SPECULATIVE,
     EDGE_CONTRADICTS,
+    EDGE_RELATES_TO,
     EDGE_RESOLVES,
     EDGE_SUPERSEDES,
+    EDGE_SUPPORTS,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -42,6 +46,7 @@ from aelfrice.models import (
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 from aelfrice.wonder.lifecycle import wonder_gc
+from aelfrice.wonder.strategies import random_walk
 
 
 def _mk(
@@ -291,6 +296,64 @@ def test_wonder_gc_keeps_a_phantom_that_won_a_contradiction() -> None:
     assert result.winner_id == "PH"
     gc = wonder_gc(s, ttl_days=14, dry_run=True)
     assert gc.scanned == 0
+
+
+# --- aelf wonder ignores the edge ---------------------------------------------
+
+
+def test_wonder_default_seed_does_not_count_resolves_edges() -> None:
+    """Two beliefs with one ordinary outgoing edge each tie, and the lower
+    id wins the tie. The higher id also won a contradiction, so it has an
+    extra RESOLVES edge. That edge must not make it the seed."""
+    s = MemoryStore(":memory:")
+    for bid in ("a_plain", "b_winner", "t1", "t2", "loser"):
+        s.insert_belief(_mk(bid))
+    s.insert_edge(Edge(src="a_plain", dst="t1", type=EDGE_RELATES_TO, weight=1.0))
+    s.insert_edge(Edge(src="b_winner", dst="t2", type=EDGE_RELATES_TO, weight=1.0))
+    s.insert_edge(Edge(
+        src="b_winner", dst="loser", type=EDGE_RESOLVES, weight=RESOLVES_WEIGHT,
+    ))
+    seed = _wonder_pick_seed(s)
+    assert seed is not None
+    assert seed.id == "a_plain"  # type: ignore[attr-defined]
+
+
+def test_wonder_default_seed_still_counts_other_edge_types() -> None:
+    """Control for the test above: an extra edge of an ordinary type
+    does move the seed, so the fixture can see a counted edge."""
+    s = MemoryStore(":memory:")
+    for bid in ("a_plain", "b_winner", "t1", "t2", "loser"):
+        s.insert_belief(_mk(bid))
+    s.insert_edge(Edge(src="a_plain", dst="t1", type=EDGE_RELATES_TO, weight=1.0))
+    s.insert_edge(Edge(src="b_winner", dst="t2", type=EDGE_RELATES_TO, weight=1.0))
+    s.insert_edge(Edge(src="b_winner", dst="loser", type=EDGE_SUPPORTS, weight=1.0))
+    seed = _wonder_pick_seed(s)
+    assert seed is not None
+    assert seed.id == "b_winner"  # type: ignore[attr-defined]
+
+
+def test_random_walk_never_follows_a_resolves_edge() -> None:
+    """W has one SUPPORTS edge to T and one RESOLVES edge to L. Over
+    many walks, no phantom may contain L."""
+    s = MemoryStore(":memory:")
+    for bid in ("W", "T", "L"):
+        s.insert_belief(_mk(bid))
+    s.insert_edge(Edge(src="W", dst="T", type=EDGE_SUPPORTS, weight=1.0))
+    s.insert_edge(Edge(
+        src="W", dst="L", type=EDGE_RESOLVES, weight=RESOLVES_WEIGHT,
+    ))
+    phantoms = random_walk(s, rng=random.Random(0), n_walks=200, depth=2)
+    assert [p.composition for p in phantoms] == [("T", "W")]
+
+
+def test_random_walk_dead_ends_on_a_belief_with_only_resolves_edges() -> None:
+    s = MemoryStore(":memory:")
+    for bid in ("W", "L"):
+        s.insert_belief(_mk(bid))
+    s.insert_edge(Edge(
+        src="W", dst="L", type=EDGE_RESOLVES, weight=RESOLVES_WEIGHT,
+    ))
+    assert random_walk(s, rng=random.Random(0), n_walks=50, depth=2) == []
 
 
 # --- no ranking change --------------------------------------------------------

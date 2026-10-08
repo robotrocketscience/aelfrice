@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from aelfrice.models import (
     EDGE_CITES,
     EDGE_RELATES_TO,
+    EDGE_RESOLVES,
     EDGE_SUPPORTS,
 )
 from aelfrice.scoring import uncertainty_score
@@ -56,6 +57,11 @@ TC_EDGE_TYPES: frozenset[str] = frozenset({
 # units. Tunable per-bake-off via the ``uncertainty_floor`` arg.
 DEFAULT_RW_UNCERTAINTY_FLOOR: float = -0.5
 
+# Edge types RW never follows. `aelf resolve` writes RESOLVES beside each
+# SUPERSEDES edge (#1658). It records that a contradiction was settled,
+# not that two beliefs compose, and BFS does not walk it either.
+RW_EXCLUDED_EDGE_TYPES: frozenset[str] = frozenset({EDGE_RESOLVES})
+
 
 def _all_belief_ids(store: "MemoryStore") -> list[str]:
     return store.list_belief_ids()
@@ -78,7 +84,8 @@ def random_walk(
     is allowed.
 
     Walk: at each step, pick a uniformly random outgoing edge and
-    follow it. Self-revisits are dropped from the bundle but counted
+    follow it. Edges whose type is in ``RW_EXCLUDED_EDGE_TYPES`` are
+    not candidates. Self-revisits are dropped from the bundle but counted
     in cost (atoms touched). A walk that hits a dead-end before
     completing ``depth`` hops still produces a phantom from the
     truncated bundle, as long as it has ≥2 atoms.
@@ -101,7 +108,10 @@ def random_walk(
         cost = 1.0  # the seed itself
         cursor = seed
         for _ in range(depth):
-            outgoing = store.edges_from(cursor)
+            outgoing = [
+                e for e in store.edges_from(cursor)
+                if e.type not in RW_EXCLUDED_EDGE_TYPES
+            ]
             if not outgoing:
                 break
             edge = rng.choice(outgoing)
@@ -224,6 +234,7 @@ def span_topic_sampling(
 
 __all__ = [
     "DEFAULT_RW_UNCERTAINTY_FLOOR",
+    "RW_EXCLUDED_EDGE_TYPES",
     "TC_EDGE_TYPES",
     "random_walk",
     "span_topic_sampling",

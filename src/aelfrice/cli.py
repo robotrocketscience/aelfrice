@@ -48,6 +48,7 @@ from aelfrice.models import (
     CORROBORATION_MIN_EPISODES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
     EDGE_CONTRADICTS,
+    EDGE_RESOLVES,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     INGEST_SOURCE_CLI_REMEMBER,
@@ -1253,6 +1254,10 @@ def _wonder_pick_seed(store: MemoryStore) -> object | None:
     Determinism is required so two runs against the same store
     produce the same wonder output. We count outbound edges only
     (matches BFS expansion direction).
+
+    `RESOLVES` edges are not counted (#1658). `aelf resolve` writes one
+    beside each `SUPERSEDES` edge, so counting it would favor every
+    contradiction winner as the seed. BFS does not walk the edge either.
     """
     best_id: str | None = None
     best_degree = -1
@@ -1260,7 +1265,9 @@ def _wonder_pick_seed(store: MemoryStore) -> object | None:
         b = store.get_belief(bid)
         if b is None or b.lock_level == LOCK_USER:
             continue
-        degree = len(store.edges_from(bid))
+        degree = sum(
+            1 for e in store.edges_from(bid) if e.type != EDGE_RESOLVES
+        )
         if degree > best_degree or (
             degree == best_degree
             and best_id is not None
