@@ -77,16 +77,12 @@ def test_belief_update_persists_full_row_columns() -> None:
     s = MemoryStore(":memory:")
     b = _mk_belief()
     s.insert_belief(b)
-    b.hibernation_score = 0.42
-    b.activation_condition = '{"on": "next_retrieval"}'
     b.retention_class = RETENTION_FACT
     b.valid_to = "2026-12-31T23:59:59Z"
     b.scope = BELIEF_SCOPE_GLOBAL
     s.update_belief(b)
     got = s.get_belief("b1", include_retired=True)
     assert got is not None
-    assert got.hibernation_score == 0.42
-    assert got.activation_condition == '{"on": "next_retrieval"}'
     assert got.retention_class == RETENTION_FACT
     assert got.valid_to == "2026-12-31T23:59:59Z"
     assert got.scope == BELIEF_SCOPE_GLOBAL

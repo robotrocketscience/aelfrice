@@ -348,8 +348,6 @@ _SCHEMA: tuple[str, ...] = (
         last_retrieved_at   TEXT,
         session_id          TEXT,
         origin              TEXT NOT NULL DEFAULT 'unknown',
-        hibernation_score   REAL,
-        activation_condition TEXT,
         -- #290: orthogonal-to-type retention axis. CHECK constraint
         -- enforces the four-value enum on fresh stores; migrated
         -- stores rely on the python-side RETENTION_CLASSES frozenset
@@ -961,12 +959,10 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE beliefs ADD COLUMN session_id TEXT",
     "ALTER TABLE edges ADD COLUMN anchor_text TEXT",
     "ALTER TABLE beliefs ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown'",
-    # v2.0 #196 hibernation lifecycle columns. Both nullable; behavior
-    # is deferred to a follow-up issue. Storage round-trip only at this
-    # commit. activation_condition is JSON-encoded TEXT (predicate
-    # language ratified at substrate_decision.md § Decision asks #4).
-    "ALTER TABLE beliefs ADD COLUMN hibernation_score REAL",
-    "ALTER TABLE beliefs ADD COLUMN activation_condition TEXT",
+    # The v2.0 #196 hibernation columns used to be added here. #1658
+    # removed those ADD entries along with adding the DROP entries at
+    # the end of this tuple: with both present, every open re-added the
+    # columns and dropped them again, rewriting `beliefs` twice per open.
     # #290 retention class. CHECK constraint omitted — ALTER TABLE
     # ADD COLUMN with a CHECK is brittle across SQLite versions.
     # Python-side RETENTION_CLASSES validates inserts.
@@ -1026,6 +1022,15 @@ _MIGRATIONS: tuple[str, ...] = (
     # byte-identical to a pre-#1314 permanent lock. No CHECK on the
     # ALTER, matching the convention above.
     "ALTER TABLE beliefs ADD COLUMN lock_expires_at TEXT",
+    # #1658: drop the #196 hibernation columns. No code path ever wrote a
+    # non-NULL value, and the lifecycle that would have used them was
+    # never built (docs/design/historical/hibernation_lifecycle.md).
+    # Same shape as the #814 demotion_pressure drop: SQLite >= 3.35, and
+    # the migration loop tolerates "no such column" on a fresh store and
+    # on every later open. An older aelfrice that opens the store
+    # afterwards re-adds both columns through its own ADD COLUMN entries.
+    "ALTER TABLE beliefs DROP COLUMN hibernation_score",
+    "ALTER TABLE beliefs DROP COLUMN activation_condition",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -1248,8 +1253,6 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         session_id=row["session_id"],
         origin=row["origin"],
         corroboration_count=corroboration_count,
-        hibernation_score=row["hibernation_score"],
-        activation_condition=row["activation_condition"],
         retention_class=retention_class,
         valid_to=valid_to,
         scope=scope,
@@ -3032,7 +3035,7 @@ class MemoryStore:
         # Build CREATE TABLE DDL from the existing beliefs table.
         # Using PRAGMA table_info avoids parsing the sqlite_master DDL
         # string and correctly handles extra columns added by ALTER TABLE
-        # on legacy stores (e.g. hibernation_score, activation_condition).
+        # on legacy stores (e.g. retention_class, lock_tier).
         col_info = self._conn.execute(
             "PRAGMA table_info(beliefs)"
         ).fetchall()
@@ -3367,16 +3370,14 @@ class MemoryStore:
                 id, content, content_hash, alpha, beta, type,
                 lock_level, locked_at,
                 created_at, last_retrieved_at, session_id, origin,
-                hibernation_score, activation_condition,
                 retention_class, valid_to, scope, project_context,
                 last_confirmed_at, lock_tier, lock_expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
-                b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, project_context,
                 b.last_confirmed_at, b.lock_tier, b.lock_expires_at,
             ),
@@ -3549,8 +3550,6 @@ class MemoryStore:
                 last_retrieved_at = ?,
                 session_id = ?,
                 origin = ?,
-                hibernation_score = ?,
-                activation_condition = ?,
                 retention_class = ?,
                 valid_to = ?,
                 scope = ?,
@@ -3564,7 +3563,7 @@ class MemoryStore:
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id,
-                b.origin, b.hibernation_score, b.activation_condition,
+                b.origin,
                 b.retention_class, b.valid_to, b.scope, b.project_context,
                 b.last_confirmed_at, b.lock_tier, b.lock_expires_at, b.id,
             ),

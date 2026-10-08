@@ -73,8 +73,6 @@ def build_n50k_store(
                 session_id=None,
                 origin=ORIGIN_UNKNOWN,
                 corroboration_count=0,
-                hibernation_score=None,
-                activation_condition=None,
                 retention_class=RETENTION_UNKNOWN,
             ),
         )

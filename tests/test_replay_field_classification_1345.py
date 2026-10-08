@@ -94,7 +94,7 @@ def test_the_classification_is_not_empty() -> None:
     """
     assert len(_belief_field_names()) >= 20, _belief_field_names()
     assert len(STRICT_FIELDS) >= 3
-    assert len(set(MUTABLE_FIELDS) - _PSEUDO_FIELDS) >= 15
+    assert len(set(MUTABLE_FIELDS) - _PSEUDO_FIELDS) >= 14
 
 
 def test_edge_set_is_not_folded_back_into_the_informational_bucket() -> None:
@@ -179,7 +179,7 @@ def test_the_diff_is_keyed_in_declared_field_order() -> None:
         base,
         alpha=2.0,
         beta=3.0,
-        hibernation_score=0.5,
+        last_confirmed_at="2026-02-01T00:00:00Z",
         lock_level=LOCK_USER,
         session_id="s",
     )

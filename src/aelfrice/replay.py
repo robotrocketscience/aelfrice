@@ -224,8 +224,6 @@ MUTABLE_FIELDS: tuple[str, ...] = (
     "last_confirmed_at",
     "valid_to",
     "corroboration_count",
-    "hibernation_score",
-    "activation_condition",
     "session_id",
     "project_context",
 )
@@ -272,7 +270,7 @@ _POSTERIOR_EPSILON: float = 1e-9
 # Mutable fields compared with the epsilon rather than by equality, because
 # they round-trip through SQLite REAL.
 _FLOAT_MUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"alpha", "beta", "hibernation_score"}
+    {"alpha", "beta"}
 )
 
 

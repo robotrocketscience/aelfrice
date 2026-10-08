@@ -2400,8 +2400,7 @@ def _belief_with_type(
     Does NOT use dataclasses.replace: only id, content, content_hash,
     alpha, beta, type, lock_level, locked_at, created_at,
     last_retrieved_at, session_id, and origin are carried over.
-    corroboration_count, hibernation_score, activation_condition,
-    retention_class, valid_to, scope, project_context,
+    corroboration_count, retention_class, valid_to, scope, project_context,
     last_confirmed_at, and lock_tier are silently reset to their
     dataclass defaults on every call. `store.update_belief()`'s
     subsequent full-row UPDATE then clobbers the stored values of all

@@ -175,8 +175,6 @@ def build_corpus(cfg: CorpusConfig) -> SyntheticCorpus:
                 session_id=None,
                 origin=ORIGIN_UNKNOWN,
                 corroboration_count=0,
-                hibernation_score=None,
-                activation_condition=None,
                 retention_class=RETENTION_UNKNOWN,
             ),
         )
@@ -313,8 +311,6 @@ def _set_locks(
                 last_retrieved_at=b.last_retrieved_at,
                 session_id=b.session_id, origin=b.origin,
                 corroboration_count=b.corroboration_count,
-                hibernation_score=b.hibernation_score,
-                activation_condition=b.activation_condition,
                 retention_class=b.retention_class,
             ),
         )
