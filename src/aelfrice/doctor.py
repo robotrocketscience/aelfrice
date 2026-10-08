@@ -251,7 +251,10 @@ class IngestRuleSetStats:
     """How many `ingest_log` rows carry the current rule-set digest (#1658).
 
     `total` is every row in `ingest_log`. `missing` counts rows with no
-    `rule_set_hash`: rows written before ingest stamped one. `mismatched`
+    `rule_set_hash`: rows written before ingest stamped one, the
+    `legacy_unknown` rows the store synthesizes for beliefs that had no
+    log row, and rows written when the digest could not be computed.
+    `mismatched`
     counts rows whose digest differs from `current_hash`, meaning the
     classifier rules changed after they were written. When this process
     could not compute a digest, `current_hash` and `mismatched` are None.
@@ -2343,7 +2346,8 @@ def _format_ingest_rule_set_section(
         )
     lines.append(
         f"  {st.missing} row(s) carry no digest "
-        "(written before ingest recorded one)"
+        "(written before digests were recorded, synthesized for legacy "
+        "beliefs, or written when no digest could be computed)"
     )
 
 

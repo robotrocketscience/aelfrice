@@ -2,7 +2,8 @@
 
 The section reports how many rows carry a digest other than the current
 one (written under other classifier rules) and how many carry none
-(written before ingest stamped one). It reads the store read-only.
+(older rows, synthesized legacy rows, or rows written when no digest
+could be computed). It reads the store read-only.
 """
 from __future__ import annotations
 
@@ -96,7 +97,12 @@ def test_doctor_report_renders_the_counts(tmp_path: Path) -> None:
     assert "ingest log rule set" in text
     assert "4 row(s) in total" in text
     assert "3 row(s) carry a different digest" in text
-    assert "1 row(s) carry no digest" in text
+    # The label names every way a row ends up with no digest.
+    assert (
+        "1 row(s) carry no digest (written before digests were recorded, "
+        "synthesized for legacy beliefs, or written when no digest could "
+        "be computed)"
+    ) in text
 
 
 def test_doctor_report_renders_the_counts_with_settings_scanned(

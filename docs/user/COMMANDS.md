@@ -167,13 +167,20 @@ ingest log rule set (`ingest_log.rule_set_hash`):
   current digest: 13ec6a9f64a4
   43988 row(s) in total
   0 row(s) carry a different digest (written under other classifier rules)
-  43988 row(s) carry no digest (written before ingest recorded one)
+  43988 row(s) carry no digest (written before digests were recorded, synthesized for legacy beliefs, or written when no digest could be computed)
 ```
 
 A row with a different digest came from an older or newer set of
-classifier rules, which is expected after an upgrade. A row with no
-digest predates #1658, and aelfrice does not backfill it, because
-nothing records which rules wrote it. The section is informational and
+classifier rules, which is expected after an upgrade. A row has no
+digest in any of these cases:
+
+- It predates #1658.
+- aelfrice synthesized it on the first open of an older store, as the
+  `legacy_unknown` log row for a belief that had none.
+- aelfrice wrote it when it could not compute the digest.
+
+aelfrice does not backfill a missing digest, because nothing records
+which rules wrote the row. The section is informational and
 never makes `aelf doctor` exit 1. It runs one read-only query and does
 not change the store. If the current digest cannot be computed, the
 section says so and leaves out the different-digest count.
