@@ -364,6 +364,9 @@ def test_retrieve_ranking_is_identical_with_and_without_resolves() -> None:
     assert with_edges == without_edges
 
 
+# No subprocess here, but the #1307 scan reads the bare `run(...)` call as
+# one, and importing the benchmark pulls in `aelfrice.cli`.
+@pytest.mark.timeout(60)
 def test_effect_benchmark_is_deterministic_and_not_vacuous() -> None:
     """`benchmarks/resolves_edge_effect_1658.py` backs the figures quoted
     for the HRR, wonder-seed and random-walk effects. Same config, same
