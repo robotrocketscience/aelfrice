@@ -18,7 +18,7 @@ import sqlite3
 from pathlib import Path
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_USER, Belief
-from aelfrice.store import MemoryStore
+from aelfrice.store import _SCHEMA, MemoryStore
 
 _DROPPED = ("hibernation_score", "activation_condition")
 
@@ -192,15 +192,22 @@ def test_reopen_leaves_the_schema_alone(tmp_path: Path) -> None:
     assert _schema_version(db) == before
 
 
-def test_fresh_store_never_has_the_columns(tmp_path: Path) -> None:
-    db = tmp_path / "fresh.db"
-    MemoryStore(str(db)).close()
-    raw = sqlite3.connect(str(db))
+def test_create_ddl_never_has_the_columns() -> None:
+    """The CREATE DDL alone must not create either column.
+
+    A fresh `MemoryStore` cannot show this: the trailing DROP entries in
+    `_MIGRATIONS` run on every open and would remove a column that the
+    CREATE DDL had added back. So this runs `_SCHEMA` by itself, with no
+    migrations, on a bare connection.
+    """
+    raw = sqlite3.connect(":memory:")
     try:
+        for stmt in _SCHEMA:
+            raw.execute(stmt)
         cols = _belief_columns(raw)
     finally:
         raw.close()
-    assert "content" in cols  # non-vacuous: the table was read
+    assert "content" in cols  # non-vacuous: the beliefs table was created
     for name in _DROPPED:
         assert name not in cols, name
 
