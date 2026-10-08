@@ -783,9 +783,15 @@ def _count_turn_lines_and_identity(path: Path) -> tuple[int, str | None] | None:
     `turn_id`, so a new turns.jsonl starts with a line no earlier file
     had. Unlike an inode, the first line reads the same from a host and a
     container that share the file, and a recreated file doesn't inherit
-    it. None when the file is empty; None when it can't be opened."""
+    it. The identity is None for an empty file; the whole result is None
+    when the file can't be opened.
+
+    Undecodable bytes are replaced rather than raised (#1749): a
+    UnicodeDecodeError is not an OSError, and before this it escaped on
+    every Stop, so one bad byte in turns.jsonl stopped Stop flushing for
+    as long as the byte stayed in the file."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             first = f.readline()
             count = ('"role"' in first) + sum(1 for line in f if '"role"' in line)
     except OSError:

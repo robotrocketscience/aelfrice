@@ -1298,6 +1298,30 @@ def test_stop_flush_treats_an_inode_cursor_as_another_file(
     assert captured_ingest == [tdir / "turns.jsonl"]
 
 
+def test_identity_is_a_stable_digest_of_the_first_line(tdir: Path) -> None:
+    """#1749: every Stop hook is a new process, so the identity must be the
+    same value in every process. A salted `hash()` or a shorter digest
+    would pass every same-process test and flush on every Stop."""
+    first = '{"role":"user","text":"a"}\n'
+    (tdir / "turns.jsonl").write_text(first, encoding="utf-8")
+    assert tl._count_turn_lines_and_identity(tdir / "turns.jsonl") == (
+        1, "1e246c412c52e83e",
+    )
+
+
+def test_a_bad_byte_does_not_stop_the_flush(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1749: an undecodable byte in turns.jsonl no longer raises out of
+    the count, so the Stop flush still fires at the threshold."""
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 3)
+    with open(tdir / "turns.jsonl", "ab") as f:
+        f.write(b'{"note": "\xff"}\n')
+    assert tl._maybe_stop_flush(tdir) is True
+    assert captured_ingest == [tdir / "turns.jsonl"]
+
+
 def test_identity_is_none_for_an_empty_file(tdir: Path) -> None:
     (tdir / "turns.jsonl").write_text("", encoding="utf-8")
     assert tl._count_turn_lines_and_identity(tdir / "turns.jsonl") == (0, None)
