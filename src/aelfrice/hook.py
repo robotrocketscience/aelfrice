@@ -8989,6 +8989,8 @@ ENV_WONDER_AUTOGC_TTL_DAYS: Final[str] = "AELFRICE_WONDER_AUTOGC_TTL_DAYS"
 
 _WONDER_AUTOGC_DEFAULT_TTL_DAYS: Final[int] = 14
 
+_ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
 
 def _wonder_autogc_enabled(env: dict[str, str] | None = None) -> bool:
     """Return False only when AELFRICE_WONDER_AUTOGC is 0/false/no/off.
@@ -8998,7 +9000,7 @@ def _wonder_autogc_enabled(env: dict[str, str] | None = None) -> bool:
     """
     src = env if env is not None else os.environ
     val = src.get(ENV_WONDER_AUTOGC, "").strip().lower()
-    return val not in {"0", "false", "no", "off"}
+    return val not in _ENV_FALSY
 
 
 def _wonder_autogc_ttl_days(env: dict[str, str] | None = None) -> int:
