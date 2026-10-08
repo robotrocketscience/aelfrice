@@ -8977,8 +8977,9 @@ def _recap_enabled(env: dict[str, str] | None = None) -> bool:
 # it was manual: the #980 audit found 0 phantoms GC'd, ever, and stale
 # phantoms kept reaching retrieval after their TTL. It shipped opt-in (the
 # #606 precedent for store-mutating host lanes). #1658 turned it on by
-# default once `wonder_gc` learned to keep any phantom with evidence
-# toward #1650 promotion; the sweep is a soft delete that `aelf restore`
+# default once `wonder_gc` learned to keep a phantom that #1650 promotion
+# could promote and that has a support promotion counts, and to never
+# collect a locked belief. The sweep is a soft delete that `aelf restore`
 # undoes, and it reports itself in the feed log and on stderr.
 
 ENV_WONDER_AUTOGC: Final[str] = "AELFRICE_WONDER_AUTOGC"

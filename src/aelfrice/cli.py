@@ -1665,7 +1665,8 @@ def _cmd_wonder_gc(args: argparse.Namespace, out: object) -> int:
     must be ``type='speculative'``, still active (``valid_to IS NULL``),
     older than ``--gc-ttl-days`` days, and have unchanged Bayesian priors,
     no endorsement feedback rows (exposure-only rows from the retrieval
-    hook don't count, #1171), and no ``RESOLVES`` edges. A candidate that
+    hook don't count, #1171), no ``RESOLVES`` edges, and no user lock: a
+    locked belief is never collected (#1658). A candidate that
     #1650 evidence promotion could promote and that has a support it
     counts is kept (#1658), and ``scanned`` doesn't count it.
 
