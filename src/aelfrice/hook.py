@@ -7815,6 +7815,50 @@ def _fit_core_gate_batch(
     return chosen, context
 
 
+def _core_gate_label_in_background(
+    store: "MemoryStore", session_id: str, claude: str,
+) -> str | None:
+    """Record a session-end batch and start the detached labeler (#1741).
+
+    In one `BEGIN IMMEDIATE` transaction: collect this session's
+    candidates again, so a concurrent Stop that batched first leaves
+    nothing, and record the newest `core_gate.MAX_BATCH` of them as one
+    batch. No char budget applies, since the prompt never enters the
+    conversation. After the commit, start the child. Returns the batch id,
+    or None when there was nothing to batch.
+
+    A spawn that fails leaves an open batch, as a closed pipe does on the
+    continuation path: it claims its beliefs, and `aelf doctor core-gate
+    --emit` batches them again. Candidates past `MAX_BATCH` stay
+    unclaimed for the next Stop.
+    """
+    from aelfrice import core_gate_background as background  # noqa: PLC0415
+    from aelfrice.core_gate import MAX_BATCH, current_classifier_version  # noqa: PLC0415
+    from aelfrice.models import (  # noqa: PLC0415
+        CORE_GATE_ORIGIN_SESSION_END,
+        CoreGateBatchItem,
+    )
+
+    classifier_version = current_classifier_version()
+    with store.transaction(immediate=True):
+        candidates = _collect_core_gate_session_candidates(store, session_id)
+        batch = candidates[:MAX_BATCH]
+        if len(batch) < CORE_GATE_SESSION_END_N_MIN:
+            return None
+        batch_id = store.create_core_gate_batch(
+            [
+                CoreGateBatchItem(index=i, belief_id=b.id, content_hash=b.content_hash)
+                for i, b in enumerate(batch)
+            ],
+            classifier_version=classifier_version,
+            origin=CORE_GATE_ORIGIN_SESSION_END,
+            session_id=session_id,
+            created_at=_utc_now_iso(),
+        )
+    background.spawn(batch_id, db_path=store.db_path, claude=claude)
+    return batch_id
+
+
 def _maybe_core_gate_session_end(
     store: "MemoryStore",
     payload: dict[str, Any],
@@ -7826,11 +7870,13 @@ def _maybe_core_gate_session_end(
 ) -> bool:
     """Emit the core-gate batch for this session's unclaimed candidates.
 
-    Runs on every Stop. When opted in (step 6; off by default, #1740), it
-    fires on any Stop that finds candidates no label or open batch
-    covers. The transcript logger starts a background
-    ingest of the session's turns only every few turns
-    (`STOP_FLUSH_TURNS`), so this fires at most once per ingest. The host
+    Runs on every Stop, and acts on any Stop that finds candidates no
+    label or open batch covers: by default it labels them in a detached
+    child with nothing written to stdout (step 5, #1741); the
+    continuation (steps 6-9) runs only when that doesn't and the user
+    opted in (off by default, #1740). The transcript logger starts a
+    background ingest of the session's turns only every few turns
+    (`STOP_FLUSH_TURNS`), so this acts at most once per ingest. The host
     runs a Stop's hooks in parallel, so the ingest usually lands after
     this hook has looked, and the batch fires on the next Stop. Returns
     True when it wrote the continuation to `stdout`. In order:
@@ -7841,19 +7887,23 @@ def _maybe_core_gate_session_end(
     2. A headless host entrypoint (#1634, `print_mode.is_headless_hook_env`):
        return. Nobody is there to see the turn it would add.
     3. The Codex host (`_CODEX_TURN_ID_KEY` in the payload): return.
-    4. `AELFRICE_CORE_GATE_SESSION_END` off: return.
-    5. Collect candidates with one indexed query on this session's rows.
+    4. Collect candidates with one indexed query on this session's rows.
        None: return. This is the non-firing path every Stop takes once a
-       flush's candidates are batched.
-    6. Env var unset and `[core_gate] session_end` not `true` (the
-       default, #1740): return. Read only when there are candidates, so
-       the config walk stays off the non-firing path.
-    7. In one `BEGIN IMMEDIATE` transaction: collect again, so a
+       flush's candidates are batched, so the config reads below stay
+       off it.
+    5. (#1741) Background labeling on (`core_gate_background.
+       background_enabled`, default on) and `claude` on PATH:
+       `_core_gate_label_in_background` records the batch and starts the
+       child; return without writing.
+    6. `AELFRICE_CORE_GATE_SESSION_END` off: return.
+    7. Env var unset and `[core_gate] session_end` not `true` (the
+       default, #1740): return.
+    8. In one `BEGIN IMMEDIATE` transaction: collect again, so a
        concurrent Stop that batched first leaves nothing, fit a batch to
        the char budget, build its context, and record the batch
        (`origin='session_end'`, this session's id). An exception anywhere
        in the block rolls the batch back.
-    8. Write `{"hookSpecificOutput": {"hookEventName": "Stop",
+    9. Write `{"hookSpecificOutput": {"hookEventName": "Stop",
        "additionalContext": ...}}` to stdout; the caller returns exit 0.
        The write comes after the commit, so the context never names a
        batch that doesn't exist. A failure between the two (a closed
@@ -7884,16 +7934,24 @@ def _maybe_core_gate_session_end(
         return False
     if _CODEX_TURN_ID_KEY in payload:
         return False
+    if not _collect_core_gate_session_candidates(store, session_id):
+        return False
+    cwd = payload.get(_CWD_KEY)
+    start = Path(cwd) if isinstance(cwd, str) and cwd else None
+    # #1741: label in a detached child when the host CLI is there to run
+    # the classifier. Nothing goes to stdout, so no turn is added.
+    from aelfrice import core_gate_background as background  # noqa: PLC0415
+
+    if background.background_enabled(env, start, stderr):
+        claude = background.find_claude()
+        if claude is not None:
+            _core_gate_label_in_background(store, session_id, claude)
+            return False
     override = _core_gate_session_end_env(env)
     if override is False:
         return False
-    if not _collect_core_gate_session_candidates(store, session_id):
+    if override is None and not _core_gate_session_end_toml_enabled(start, stderr):
         return False
-    if override is None:
-        cwd = payload.get(_CWD_KEY)
-        start = Path(cwd) if isinstance(cwd, str) and cwd else None
-        if not _core_gate_session_end_toml_enabled(start, stderr):
-            return False
 
     from aelfrice.core_gate import current_classifier_version  # noqa: PLC0415
     from aelfrice.models import (  # noqa: PLC0415
@@ -7965,7 +8023,9 @@ def stop(
     missing session_id, no candidates, store errors — all return 0
     silently (or with a single stderr line for visibility).
 
-    It can continue the conversation, without blocking: the #1638
+    By default it labels the session's new core candidates in a detached
+    `claude -p` child and writes nothing to stdout (#1741). Otherwise it
+    can continue the conversation, without blocking: the #1638
     session-end core-gate batch (`_maybe_core_gate_session_end`). When a
     Stop finds this session's core candidates that no label or open batch
     covers, the hook records a batch and writes

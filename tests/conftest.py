@@ -866,6 +866,25 @@ def _sandbox_real_home(
 
 
 @pytest.fixture(autouse=True)
+def _no_background_labeler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test from starting a real `claude -p` run (#1741).
+
+    The Stop hook labels core candidates by running the host's `claude`
+    CLI in a detached child when it finds one on PATH, which a
+    contributor's machine has. Two layers, because tests reach the hook
+    two ways: in process, often with an explicit `env={}` that never reads
+    `os.environ`, so `find_claude` reports no CLI; and through installed
+    entry points in subprocesses, which a monkeypatch can't reach but the
+    environment variable does. A test of the background path sets both
+    back explicitly.
+    """
+    monkeypatch.setenv("AELFRICE_CORE_GATE_BACKGROUND", "0")
+    import aelfrice.core_gate_background as background  # noqa: PLC0415
+
+    monkeypatch.setattr(background, "find_claude", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
     """Hold the session `AELFRICE_DB` pin around every test (#1678).
 

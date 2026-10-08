@@ -1,0 +1,352 @@
+"""Label core-gate batches in the background, with no conversation turn (#1741).
+
+The Stop hook records a session-end batch of this session's unlabeled core
+candidates, then starts this module as a detached child. The child rebuilds
+the batch's classifier prompt from the store, runs the host's `claude` CLI on
+its smallest model, and caches the labels the way `aelf core-gate accept`
+does. Nothing is written to the hook's stdout, so the user's conversation
+gets no turn and sees nothing (#1740 turned the turn-taking path off).
+
+The runner's flags were measured on #1741 before it was built:
+
+- `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
+  `--system-prompt`, and the two `CLAUDE_CODE_DISABLE_*` variables keep
+  Claude Code's own context out of the run. Without them each run carried
+  about 51,000-64,000 input tokens; with them, about 2,300.
+- `--settings '{"disableAllHooks": true}'` keeps the child's run from
+  firing this user's hooks, aelfrice's included, so it can't recurse.
+- `--no-session-persistence` keeps the run out of the session history.
+- Thinking stays on: with it off, agreement with the reference labels fell
+  by about 19 points.
+- `--max-budget-usd 0.10` caps each run (operator ruling, 2026-10-08).
+
+The classifier version is untouched: the prompt is `core_gate.build_prompt`
+and the reply goes through `core_gate.parse_labels`, after stripping one
+surrounding Markdown fence, which the measured model always added.
+
+Never raises into the hook. A failed run leaves the batch open; an open
+batch claims its beliefs, so no later Stop asks about them, and
+`aelf doctor core-gate --emit` batches them again. Unlabeled beliefs keep
+today's core rule, so a failure costs nothing but the label.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, Callable, Final, cast
+
+if TYPE_CHECKING:
+    from aelfrice.store import MemoryStore
+
+BACKGROUND_ENV: Final[str] = "AELFRICE_CORE_GATE_BACKGROUND"
+"""`0`/`false`/`no`/`off` turns background labeling off and
+`1`/`true`/`yes`/`on` turns it on, overriding the TOML key in both
+directions; any other value falls through to the key."""
+
+BACKGROUND_KEY: Final[str] = "background"
+"""`[core_gate] background` in `.aelfrice.toml`. Default `true`."""
+
+CLAUDE_BIN: Final[str] = "claude"
+RUNNER_MODEL: Final[str] = "haiku"
+RUNNER_BUDGET_USD: Final[str] = "0.10"
+RUNNER_TIMEOUT_SECONDS: Final[int] = 300
+RUNNER_SYSTEM_PROMPT: Final[str] = (
+    "You label short text snippets. Follow the user's instructions exactly."
+)
+LOG_FILENAME: Final[str] = "core_gate_background.jsonl"
+
+#: Outcomes written to the log, one per run.
+OUTCOME_ACCEPTED: Final[str] = "accepted"
+OUTCOME_NO_BATCH: Final[str] = "no_batch"
+OUTCOME_NOT_OPEN: Final[str] = "not_open"
+OUTCOME_STALE_VERSION: Final[str] = "stale_version"
+OUTCOME_STALE_BELIEF: Final[str] = "stale_belief"
+OUTCOME_RUN_FAILED: Final[str] = "run_failed"
+OUTCOME_BAD_REPLY: Final[str] = "bad_reply"
+OUTCOME_REFUSED: Final[str] = "refused"
+
+_ON: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_OFF: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
+
+def _env_override(env: dict[str, str] | None) -> bool | None:
+    raw = (env if env is not None else os.environ).get(BACKGROUND_ENV)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ON:
+        return True
+    if norm in _OFF:
+        return False
+    return None
+
+
+CORE_GATE_CONFIG_SECTION: Final[str] = "core_gate"
+
+
+def _load_toml(start: Path | None, stderr: IO[str]) -> dict[str, Any]:
+    """The nearest `.aelfrice.toml`, parsed, or `{}`. Never raises.
+
+    The same discovery and failure handling as the hook's
+    `_load_aelfrice_toml`, kept here because this module must not import
+    `aelfrice.hook`, which imports it (#1631 keeps the hook out of import
+    cycles).
+    """
+    import tomllib  # noqa: PLC0415
+
+    from aelfrice.config_discovery import discover_config  # noqa: PLC0415
+
+    candidate = discover_config(start)
+    if candidate is None:
+        return {}
+    try:
+        raw = candidate.read_bytes()
+    except OSError as exc:
+        print(f"aelfrice hook: cannot read {candidate}: {exc}", file=stderr)
+        return {}
+    try:
+        return cast(dict[str, Any], tomllib.loads(raw.decode("utf-8", errors="replace")))
+    except tomllib.TOMLDecodeError as exc:
+        print(f"aelfrice hook: malformed TOML in {candidate}: {exc}", file=stderr)
+        return {}
+
+
+def background_enabled(
+    env: dict[str, str] | None, start: Path | None, stderr: IO[str],
+) -> bool:
+    """Whether the Stop hook labels in the background. Default True.
+
+    The env var decides when it holds an on or off value; otherwise
+    `[core_gate] background` in the nearest `.aelfrice.toml`. A missing
+    file, section, or key reads as the default; a non-bool value reads as
+    the default with a stderr trace. Never raises.
+    """
+    override = _env_override(env)
+    if override is not None:
+        return override
+    section: Any = _load_toml(start, stderr).get(CORE_GATE_CONFIG_SECTION, {})
+    if not isinstance(section, dict):
+        return True
+    val: Any = cast(dict[str, Any], section).get(BACKGROUND_KEY, True)
+    if not isinstance(val, bool):
+        print(
+            f"aelfrice hook: ignoring [{CORE_GATE_CONFIG_SECTION}] "
+            f"{BACKGROUND_KEY} (expected bool)",
+            file=stderr,
+        )
+        return True
+    return val
+
+
+def find_claude() -> str | None:
+    """Path of the host's `claude` CLI, or None when it isn't on PATH."""
+    return shutil.which(CLAUDE_BIN)
+
+
+def runner_argv(claude: str) -> list[str]:
+    """The measured classifier invocation (see the module docstring)."""
+    return [
+        claude, "-p",
+        "--model", RUNNER_MODEL,
+        "--tools", "",
+        "--settings", '{"disableAllHooks": true}',
+        "--no-session-persistence",
+        "--output-format", "json",
+        "--max-budget-usd", RUNNER_BUDGET_USD,
+        "--system-prompt", RUNNER_SYSTEM_PROMPT,
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+    ]
+
+
+def runner_env(base: dict[str, str]) -> dict[str, str]:
+    """`base` without a thinking cap, and with CLAUDE.md and auto memory off."""
+    env = dict(base)
+    env.pop("MAX_THINKING_TOKENS", None)
+    env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+    env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    return env
+
+
+def strip_fence(text: str) -> str:
+    """`text` without one surrounding Markdown code fence, if it has one."""
+    body = text.strip()
+    if not body.startswith("```"):
+        return body
+    first_newline = body.find("\n")
+    if first_newline == -1 or not body.endswith("```"):
+        return body
+    return body[first_newline + 1:-3].strip()
+
+
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+
+def label_batch(
+    store: "MemoryStore",
+    batch_id: str,
+    *,
+    claude: str,
+    run: Runner | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Run the classifier on one open batch and cache its labels.
+
+    Returns a log record whose `outcome` is one of the `OUTCOME_*` values.
+    Writes labels only on `accepted`; every other outcome writes nothing.
+    Never raises.
+    """
+    from aelfrice import core_gate  # noqa: PLC0415
+    from aelfrice.store import CoreGateAcceptRefused  # noqa: PLC0415
+
+    record: dict[str, object] = {"batch_id": batch_id}
+    try:
+        version = core_gate.current_classifier_version()
+    except core_gate.ClassifierUnavailable:
+        record["outcome"] = OUTCOME_STALE_VERSION
+        return record
+    batch = store.get_core_gate_batch(batch_id)
+    if batch is None:
+        record["outcome"] = OUTCOME_NO_BATCH
+        return record
+    if batch.accepted_at is not None:
+        record["outcome"] = OUTCOME_NOT_OPEN
+        return record
+    if batch.classifier_version != version:
+        record["outcome"] = OUTCOME_STALE_VERSION
+        return record
+    snippets: list[tuple[int, str]] = []
+    for item in sorted(batch.items, key=lambda i: i.index):
+        belief = store.get_belief(item.belief_id)
+        if belief is None or belief.content_hash != item.content_hash:
+            # The label is cached under the hash, so the model must see
+            # the content that hash names.
+            record["outcome"] = OUTCOME_STALE_BELIEF
+            return record
+        snippets.append((item.index, belief.content))
+    prompt = core_gate.build_prompt(snippets)
+    runner = run if run is not None else subprocess.run
+    started = time.monotonic()
+    try:
+        proc = runner(
+            runner_argv(claude), input=prompt, capture_output=True, text=True,
+            timeout=RUNNER_TIMEOUT_SECONDS,
+            env=runner_env(dict(env if env is not None else os.environ)),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        record["outcome"] = OUTCOME_RUN_FAILED
+        record["error"] = type(exc).__name__
+        return record
+    record["seconds"] = round(time.monotonic() - started, 1)
+    try:
+        out = json.loads(proc.stdout)
+    except (json.JSONDecodeError, TypeError):
+        out = None
+    if isinstance(out, dict):
+        cost = cast(dict[str, Any], out).get("total_cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            record["cost_usd"] = cost
+    if proc.returncode != 0 or not isinstance(out, dict):
+        record["outcome"] = OUTCOME_RUN_FAILED
+        record["returncode"] = proc.returncode
+        return record
+    result = cast(dict[str, Any], out).get("result")
+    if not isinstance(result, str):
+        record["outcome"] = OUTCOME_BAD_REPLY
+        return record
+    try:
+        labels = core_gate.parse_labels(
+            strip_fence(result), {item.index for item in batch.items},
+        )
+    except ValueError:
+        record["outcome"] = OUTCOME_BAD_REPLY
+        return record
+    try:
+        store.accept_core_gate_batch(
+            batch_id, labels, classifier_version=version,
+            accepted_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except CoreGateAcceptRefused:
+        record["outcome"] = OUTCOME_REFUSED
+        return record
+    record["outcome"] = OUTCOME_ACCEPTED
+    record["labels"] = len(labels)
+    return record
+
+
+def _append_log(store_path: str, record: dict[str, object]) -> None:
+    """One JSON line per run beside the store. Holds no snippet text."""
+    if store_path == ":memory:":
+        return
+    record = {"ts": datetime.now(timezone.utc).isoformat(), **record}
+    try:
+        with open(Path(store_path).parent / LOG_FILENAME, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
+    """Start the detached child for `batch_id`. True iff it was launched.
+
+    The child gets the hook's store path and `claude` path explicitly, so
+    it doesn't depend on resolving them again. Never raises.
+    """
+    env = dict(os.environ)
+    env["AELFRICE_DB"] = db_path
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL, "close_fds": True, "env": env,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(  # noqa: S603 - args are package-internal
+            [sys.executable, "-m", "aelfrice.core_gate_background", batch_id, claude],
+            **kwargs,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    """The detached child: `python -m aelfrice.core_gate_background BATCH CLAUDE`."""
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 2:
+        return 2
+    batch_id, claude = args
+    from aelfrice.db_paths import db_path  # noqa: PLC0415
+    from aelfrice.store import MemoryStore  # noqa: PLC0415
+
+    path = str(db_path())
+    try:
+        store = MemoryStore(path)
+    except Exception as exc:
+        _append_log(path, {"batch_id": batch_id, "outcome": OUTCOME_RUN_FAILED,
+                           "error": type(exc).__name__})
+        return 1
+    try:
+        record = label_batch(store, batch_id, claude=claude)
+    except Exception as exc:  # never let the child die silently without a trace
+        record = {"batch_id": batch_id, "outcome": OUTCOME_RUN_FAILED,
+                  "error": type(exc).__name__}
+    finally:
+        store.close()
+    _append_log(path, record)
+    return 0 if record.get("outcome") == OUTCOME_ACCEPTED else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
