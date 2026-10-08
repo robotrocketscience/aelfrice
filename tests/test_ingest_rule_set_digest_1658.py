@@ -77,27 +77,123 @@ def test_digest_is_stable_across_processes_and_hash_seeds() -> None:
     assert seen == [compute_rule_set_hash()] * 2
 
 
-@pytest.mark.parametrize(
-    ("module", "name", "value"),
-    [
-        (classification_core, "_PREFERENCE_KEYWORDS", ("prefer",)),
-        (classification_core, "_REQUIREMENT_RE", re.compile(r"\bmust\b")),
-        (classification_core, "_QUESTION_PREFIXES", ("what ",)),
-        (classification_core, "_FLOAT_LEADING_HEDGES", ("maybe ",)),
-        (classification_core, "_FLOAT_INTERNAL_HEDGES", ("maybe we ",)),
-        (classification_core, "TYPE_PRIORS", {"factual": (1.0, 1.0)}),
-        (classification_core, "_AGENT_INFERRED_DEFLATION", 0.5),
-        (correction, "_NEGATION_RE", re.compile(r"\bnot\b")),
-        (correction, "_IMPERATIVE_RE", re.compile(r"^use\b")),
-        (correction, "CORRECTION_SIGNAL_THRESHOLD", 3),
-        (llm_prompt, "SYSTEM_PROMPT", "a different prompt"),
-    ],
+# Every value `_rule_set_payload` hashes, keyed by its path in the payload,
+# mapped to the module attribute it reads. The user-message sample is
+# derived from `build_user_message`, so its own test covers it below.
+_INPUTS: dict[str, tuple[object, str]] = {
+    "classification_core.type_priors": (classification_core, "TYPE_PRIORS"),
+    "classification_core.agent_inferred_deflation": (
+        classification_core, "_AGENT_INFERRED_DEFLATION",
+    ),
+    "classification_core.deflated_alpha_floor": (
+        classification_core, "_DEFLATED_ALPHA_FLOOR",
+    ),
+    "classification_core.user_source": (classification_core, "USER_SOURCE"),
+    "classification_core.requirement_keywords": (
+        classification_core, "_REQUIREMENT_KEYWORDS",
+    ),
+    "classification_core.requirement_re": (classification_core, "_REQUIREMENT_RE"),
+    "classification_core.preference_keywords": (
+        classification_core, "_PREFERENCE_KEYWORDS",
+    ),
+    "classification_core.question_prefixes": (
+        classification_core, "_QUESTION_PREFIXES",
+    ),
+    "classification_core.float_leading_hedges": (
+        classification_core, "_FLOAT_LEADING_HEDGES",
+    ),
+    "classification_core.float_internal_hedges": (
+        classification_core, "_FLOAT_INTERNAL_HEDGES",
+    ),
+    "classification_core.sentence_boundary_re": (
+        classification_core, "_SENTENCE_BOUNDARY_RE",
+    ),
+    "correction.imperative_re": (correction, "_IMPERATIVE_RE"),
+    "correction.correction_anchor_re": (correction, "_CORRECTION_ANCHOR_RE"),
+    "correction.requirement_anchor_re": (correction, "_REQUIREMENT_ANCHOR_RE"),
+    "correction.declarative_re": (correction, "_DECLARATIVE_RE"),
+    "correction.always_never_re": (correction, "_ALWAYS_NEVER_RE"),
+    "correction.negation_re": (correction, "_NEGATION_RE"),
+    "correction.emphasis_re": (correction, "_EMPHASIS_RE"),
+    "correction.prior_ref_re": (correction, "_PRIOR_REF_RE"),
+    "correction.signal_threshold": (correction, "CORRECTION_SIGNAL_THRESHOLD"),
+    "correction.confidence_per_signal": (correction, "_CONFIDENCE_PER_SIGNAL"),
+    "llm_classifier.system_prompt": (llm_prompt, "SYSTEM_PROMPT"),
+}
+_DERIVED_INPUTS = {"llm_classifier.user_message_sample"}
+_REGEX_INPUTS = sorted(
+    key for key, (module, name) in _INPUTS.items()
+    if isinstance(getattr(module, name), re.Pattern)
 )
-def test_digest_changes_when_a_rule_table_changes(
-    monkeypatch: pytest.MonkeyPatch, module: object, name: str, value: object,
+_MARKER = "zz-digest-perturbation-zz"
+
+
+def _perturb(value: object) -> object:
+    """Return a value of the same type that differs from `value`."""
+    if isinstance(value, re.Pattern):
+        return re.compile(f"{value.pattern}|{_MARKER}", value.flags)
+    if isinstance(value, tuple):
+        return (*value, _MARKER)
+    if isinstance(value, dict):
+        return {**value, _MARKER: (1.0, 1.0)}
+    if isinstance(value, str):
+        return value + _MARKER
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value + 1
+    raise TypeError(f"no perturbation for {type(value).__name__}")
+
+
+def test_payload_hashes_exactly_the_listed_inputs() -> None:
+    """Dropping or adding a payload entry fails here.
+
+    Each regex hashes both its pattern and its flags.
+    """
+    payload = classification_core._rule_set_payload()  # pyright: ignore[reportPrivateUsage]
+    keys = {
+        f"{section}.{key}"
+        for section, entries in payload.items()
+        for key in entries  # pyright: ignore[reportGeneralTypeIssues]
+    }
+    assert keys == set(_INPUTS) | _DERIVED_INPUTS
+    for key in _REGEX_INPUTS:
+        section, name = key.split(".")
+        assert payload[section][name].keys() == {"pattern", "flags"}  # pyright: ignore[reportIndexIssue]
+
+
+def test_every_module_level_regex_is_a_digest_input() -> None:
+    """A new rule regex in either classifier module must join the digest."""
+    covered = {(id(m), n) for m, n in _INPUTS.values()}
+    unhashed = [
+        f"{module.__name__}.{name}"
+        for module in (classification_core, correction)
+        for name, value in vars(module).items()
+        if isinstance(value, re.Pattern) and (id(module), name) not in covered
+    ]
+    assert unhashed == []
+
+
+@pytest.mark.parametrize("key", sorted(_INPUTS))
+def test_digest_changes_when_any_input_changes(
+    monkeypatch: pytest.MonkeyPatch, key: str,
 ) -> None:
+    module, name = _INPUTS[key]
     before = compute_rule_set_hash()
-    monkeypatch.setattr(module, name, value)
+    monkeypatch.setattr(module, name, _perturb(getattr(module, name)))
+    after = compute_rule_set_hash()
+    assert after is not None
+    assert after != before
+
+
+@pytest.mark.parametrize("key", _REGEX_INPUTS)
+def test_digest_changes_when_only_regex_flags_change(
+    monkeypatch: pytest.MonkeyPatch, key: str,
+) -> None:
+    module, name = _INPUTS[key]
+    pattern = getattr(module, name)
+    changed = re.compile(pattern.pattern, pattern.flags ^ re.DOTALL)
+    assert changed.flags != pattern.flags
+    before = compute_rule_set_hash()
+    monkeypatch.setattr(module, name, changed)
     after = compute_rule_set_hash()
     assert after is not None
     assert after != before
