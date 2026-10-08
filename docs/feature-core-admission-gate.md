@@ -85,10 +85,31 @@ arms only if a classifier has labeled it as one of the following:
   rejects any other type. This gate needs its own accepted schema that
   carries the A, B, or C label and the classifier version.
 
+#### Background labeling
+
+Since #1741, the Stop hook labels a session's candidates without the
+conversation. When `claude` is on `PATH` and `[core_gate] background` is
+on (the default; `AELFRICE_CORE_GATE_BACKGROUND` overrides it), the hook
+records a `session_end` batch of the newest `MAX_BATCH` candidates and
+starts a detached `python -m aelfrice.core_gate_background` process. That
+process rebuilds the prompt with `build_prompt` from the batch's beliefs,
+runs `claude -p --model haiku` with tools, MCP servers, skills,
+CLAUDE.md, auto memory, and hooks off and a $0.10 budget cap, strips one
+surrounding Markdown fence from the reply, checks it with `parse_labels`,
+and caches the labels. The classifier version doesn't change. Nothing is
+written to the hook's stdout. A run that fails leaves the batch open,
+which the backlog drain covers. Each run appends one line, with no belief
+text, to `core_gate_background.jsonl` beside the store.
+
+Measured on #1741 against the 519-item reference set: 0.832 agreement
+with the two-rater labels, against 0.830 for the earlier smallest-tier
+labeling, and about $0.04 per 50-snippet batch.
+
 #### Session-end batch
 
 The session-end batch is off by default since #1740, because each batch
-adds a turn to the user's conversation. It runs only when
+adds a turn to the user's conversation. It runs only when background
+labeling doesn't (it's off, or `claude` isn't on `PATH`) and
 `[core_gate] session_end = true` or `AELFRICE_CORE_GATE_SESSION_END=1`.
 
 The Stop hook runs the session-end batch. The host's `SessionEnd` event
