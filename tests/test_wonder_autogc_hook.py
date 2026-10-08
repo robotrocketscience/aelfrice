@@ -1,10 +1,11 @@
-"""Opt-in phantom auto-GC on SessionStart (#980 item 2).
+"""Phantom auto-GC on SessionStart (#980 item 2, default-on since #1658).
 
 The wonder GC exit is wired and correct but had never run in any store
 (the #980 audit: 0 phantoms GC'd, ever). This lane makes GC actually run,
-once per session, behind a default-off env flag — covering the helper
-parsing, the no-op-when-disabled contract, and the full session_start()
-integration (soft-delete + `wonder.gc` feed emission + stderr notice).
+once per session, unless AELFRICE_WONDER_AUTOGC turns it off — covering
+the helper parsing, the no-op-when-disabled contract, and the full
+session_start() integration (soft-delete + `wonder.gc` feed emission +
+stderr notice).
 """
 from __future__ import annotations
 
@@ -74,20 +75,22 @@ def _read_feed_events(db_dir: Path) -> list[dict[str, object]]:
 
 
 # ---------------------------------------------------------------------------
-# _wonder_autogc_enabled — default-off, truthy parsing
+# _wonder_autogc_enabled — default-on, falsy parsing (#1658)
 # ---------------------------------------------------------------------------
 
 
-def test_autogc_disabled_by_default() -> None:
-    assert _wonder_autogc_enabled(env={}) is False
+def test_autogc_enabled_by_default() -> None:
+    assert _wonder_autogc_enabled(env={}) is True
 
 
-@pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", " On "])
-def test_autogc_enabled_truthy(val: str) -> None:
+@pytest.mark.parametrize(
+    "val", ["1", "true", "TRUE", "yes", "on", " On ", "", "maybe"],
+)
+def test_autogc_enabled_unless_falsy(val: str) -> None:
     assert _wonder_autogc_enabled(env={ENV_WONDER_AUTOGC: val}) is True
 
 
-@pytest.mark.parametrize("val", ["0", "false", "no", "off", "", "maybe"])
+@pytest.mark.parametrize("val", ["0", "false", "FALSE", "no", "off", " Off "])
 def test_autogc_disabled_falsy(val: str) -> None:
     assert _wonder_autogc_enabled(env={ENV_WONDER_AUTOGC: val}) is False
 
@@ -124,8 +127,7 @@ def test_autogc_noop_when_disabled(
     db = db_dir / "memory.db"
     monkeypatch.setenv("AELFRICE_DB", str(db))
     _insert_stale_phantom(db, "spec1")
-    # Flag unset → disabled.
-    monkeypatch.delenv(ENV_WONDER_AUTOGC, raising=False)
+    monkeypatch.setenv(ENV_WONDER_AUTOGC, "0")
 
     serr = io.StringIO()
     _maybe_run_wonder_autogc(serr)
@@ -236,7 +238,7 @@ def test_session_start_runs_autogc_when_enabled(
     assert "wonder auto-GC" not in sout.getvalue()
 
 
-def test_session_start_skips_autogc_by_default(
+def test_session_start_runs_autogc_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_dir = tmp_path / "aelfrice"
@@ -245,6 +247,35 @@ def test_session_start_skips_autogc_by_default(
     monkeypatch.setenv("AELFRICE_DB", str(db))
     _insert_stale_phantom(db, "spec1")
     monkeypatch.delenv(ENV_WONDER_AUTOGC, raising=False)
+    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
+
+    serr = io.StringIO()
+    rc = session_start(
+        stdin=io.StringIO('{"session_id": "test-session"}'),
+        stdout=io.StringIO(),
+        stderr=serr,
+    )
+    assert rc == 0
+
+    store = MemoryStore(str(db))
+    try:
+        b = store.get_belief("spec1", include_retired=True)
+    finally:
+        store.close()
+    assert b is not None
+    assert b.valid_to is not None  # flag unset: GC ran
+    assert "wonder auto-GC" in serr.getvalue()
+
+
+def test_session_start_skips_autogc_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_dir = tmp_path / "aelfrice"
+    db_dir.mkdir()
+    db = db_dir / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    _insert_stale_phantom(db, "spec1")
+    monkeypatch.setenv(ENV_WONDER_AUTOGC, "0")
 
     rc = session_start(
         stdin=io.StringIO('{"session_id": "test-session"}'),
@@ -259,4 +290,4 @@ def test_session_start_skips_autogc_by_default(
     finally:
         store.close()
     assert b is not None
-    assert b.valid_to is None  # untouched — opt-in stays off by default
+    assert b.valid_to is None  # untouched — the flag turned it off

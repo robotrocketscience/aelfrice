@@ -8970,17 +8970,19 @@ def _recap_enabled(env: dict[str, str] | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Opt-in phantom auto-GC on SessionStart (#980 item 2)
+# Phantom auto-GC on SessionStart (#980 item 2, default-on since #1658)
 # ---------------------------------------------------------------------------
 #
-# The wonder GC exit (`wonder_gc`) is wired and correct but has never run in
-# any store — the #980 audit found 0 phantoms GC'd, ever, so stale phantoms
-# accumulate forever. This opt-in flag makes GC actually run: once per
-# session, behind a default-off env switch (the #606 sentiment-hook
-# precedent — host-side lanes ship opt-in, never default-on destructive).
+# The wonder GC exit (`wonder_gc`) is wired and correct but never ran while
+# it was manual: the #980 audit found 0 phantoms GC'd, ever, and stale
+# phantoms kept reaching retrieval after their TTL. It shipped opt-in (the
+# #606 precedent for store-mutating host lanes). #1658 turned it on by
+# default once `wonder_gc` learned to keep any phantom with evidence
+# toward #1650 promotion; the sweep is a soft delete that `aelf restore`
+# undoes, and it reports itself in the feed log and on stderr.
 
 ENV_WONDER_AUTOGC: Final[str] = "AELFRICE_WONDER_AUTOGC"
-"""Set truthy (1/true/yes/on) to run wonder GC once per SessionStart."""
+"""Set to 0/false/no/off to stop the once-per-SessionStart wonder GC."""
 
 ENV_WONDER_AUTOGC_TTL_DAYS: Final[str] = "AELFRICE_WONDER_AUTOGC_TTL_DAYS"
 """Override the auto-GC age threshold in days (default 14, min 1)."""
@@ -8989,15 +8991,14 @@ _WONDER_AUTOGC_DEFAULT_TTL_DAYS: Final[int] = 14
 
 
 def _wonder_autogc_enabled(env: dict[str, str] | None = None) -> bool:
-    """Return True when AELFRICE_WONDER_AUTOGC is truthy (default off).
+    """Return False only when AELFRICE_WONDER_AUTOGC is 0/false/no/off.
 
-    Opt-in, mirroring the autolock flag: a SessionStart auto-GC is a
-    host-side, store-mutating lane, so it stays default-off until the
-    operator turns it on (#606 precedent, #980 item 2).
+    Default-on since #1658: unset, blank, and unrecognised values all run
+    the sweep, the same reading the repo's other default-on switches use.
     """
     src = env if env is not None else os.environ
     val = src.get(ENV_WONDER_AUTOGC, "").strip().lower()
-    return val in {"1", "true", "yes", "on"}
+    return val not in {"0", "false", "no", "off"}
 
 
 def _wonder_autogc_ttl_days(env: dict[str, str] | None = None) -> int:
@@ -9018,9 +9019,9 @@ def _wonder_autogc_ttl_days(env: dict[str, str] | None = None) -> int:
 
 
 def _maybe_run_wonder_autogc(stderr: IO[str]) -> None:
-    """Opt-in: soft-delete stale phantoms on SessionStart (#980 item 2).
+    """Soft-delete stale phantoms on SessionStart (#980 item 2, #1658).
 
-    No-op unless `_wonder_autogc_enabled()`. Runs `wonder_gc` once and,
+    No-op when `_wonder_autogc_enabled()` is False. Runs `wonder_gc` once and,
     when anything is collected, emits a `wonder.gc` feed-log row — the
     first GC feed emission in the codebase, so swept phantoms show up in
     `aelf feed` and the #991 lifecycle status line — plus a concise

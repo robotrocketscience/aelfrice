@@ -578,8 +578,8 @@ def test_a_retrieving_fire_skips_cleanly_when_the_subtree_is_absent(
 # work, and the post-`try` work without the report, are distinguishable.
 #
 # `_maybe_run_wonder_autogc` is replaced on the module object rather than
-# driven for real: it is opt-in, and its only observable output needs a store
-# holding stale phantoms. The call site reads the module global, so the
+# driven for real: its only observable output needs a store holding stale
+# phantoms. The call site reads the module global, so the
 # replacement is a true reading of whether the call was reached.
 
 _SESSION_START_SUBTREE_PROBE = '''
