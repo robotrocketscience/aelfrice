@@ -138,7 +138,7 @@ Edges link beliefs, from a source to a target. Only the first two are written fo
 | `CONTRADICTS` | Conflicts with the target. | The relationship detector at ingest; the commit hook ("contradicts", "disagrees with"). | Detector: no, set `[relationship_detector] auto_detect = true`. Commit hook: on those phrases |
 | `SUPERSEDES` | Replaces the target. | `aelf resolve`, which keeps the winner of each contradicting pair; the commit hook ("supersedes"). | When you run it, or on that phrase |
 | `POTENTIALLY_STALE` | Marks the target, an older belief, as possibly out of date. | `aelf doctor --detect-stale`. | When you run it |
-| `RESOLVES` | A phantom answers the target. | Nothing writes it yet ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | No |
+| `RESOLVES` | Settles the target: the winner of a contradicting pair resolves the loser. | `aelf resolve`, beside each `SUPERSEDES` edge it writes ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | When you run it |
 
 Work to write more of these edges automatically is tracked in [#1653](https://github.com/robotrocketscience/aelfrice/issues/1653).
 

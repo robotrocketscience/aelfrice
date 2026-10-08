@@ -19,6 +19,8 @@ live in the store but are never displayed together:
   neutral (prose with no grounding signal). The standalone-vs-context-bound
   axis.
 - **status** — floated vs decided, from RESOLVES / POTENTIALLY_STALE edges.
+  `aelf resolve` writes the RESOLVES edges: the winner of a contradiction
+  reads `decides`, the loser reads `decided`.
 - **NOISE** — stranded-capture scaffolding (orphan headers, shell echoes).
   These float to the top of each group as the prime retire candidates.
 

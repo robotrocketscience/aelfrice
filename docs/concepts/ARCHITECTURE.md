@@ -51,7 +51,7 @@ modules against the 135 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `store.py` | SQLite with write-ahead logging (WAL), full-text search version 5 (FTS5), and the create, read, update, and delete (CRUD) operations. `propagate_valence` runs a breadth-first search (BFS) attenuated by broker confidence, and `apply_feedback` fires it on every direct feedback event. To turn it off, set `AELFRICE_VALENCE_PROPAGATION=0`. |
 | `retrieval.py` | `retrieve(store, query, token_budget=2400)`. The lanes are L0, L2.5, L1, and L3. L0 holds the locked beliefs and is never trimmed. L2.5 is the entity index (v1.3+). L1 is the FTS5 lane with BM25 or BM25F — BM25F is default-on since v1.7.0 — and it also applies Bayesian log-additive reranking (v1.3+). L3 is the BFS multi-hop lane (v1.3+, default-off) over the seed set of L0, L2.5, and L1. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)`, the only path to a Bayesian update. Writes `feedback_history`. |
-| `contradiction.py` | `resolve_contradiction` picks a winner by precedence, inserts `SUPERSEDES`, and writes an audit row. Backs `aelf resolve`. |
+| `contradiction.py` | `resolve_contradiction` picks a winner by precedence, inserts `SUPERSEDES` and `RESOLVES` from the winner to the loser, and writes an audit row. Backs `aelf resolve`. |
 | `correction.py` | A heuristic correction detector. No LLM involved. |
 | `classification.py` | Type priors with a regex fallback, plus the polymorphic state machine for the onboard path. |
 | `noise_filter.py` | `is_noise(text, config)` filters out markdown headings, checklist blocks, three-word fragments, and license boilerplate. Tune it in `.aelfrice.toml`; see [the configuration reference](../user/CONFIG.md). |
@@ -103,7 +103,7 @@ modules against the 135 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `RELATES_TO` | +0.3 | weak positive |
 | `TEMPORAL_NEXT` | +0.2 | session-time successor |
 | `SUPERSEDES` | 0.0 | structural; no propagation |
-| `RESOLVES` | 0.0 | structural; closes a `CONTRADICTS` thread |
+| `RESOLVES` | 0.0 | structural; written beside `SUPERSEDES` when `aelf resolve` settles a `CONTRADICTS` pair, from the winner to the loser |
 | `CONTRADICTS` | -0.5 | half negative |
 
 A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387). It's deliberately absent from `EDGE_TYPES`, so it takes no part in valence propagation. The research line carried 17 edge types: the additional speculative and causal markers are `SPECULATES`, `DEPENDS_ON`, and `HIBERNATED`, and the additional structural extractors are `CALLS`, `CO_CHANGED`, `CONTAINS`, and `COMMIT_TOUCHES`. Both groups stay parked until the extractors that produce them ship. The current set of ten types covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x link between code and test (`IMPLEMENTS`, `TESTS`). For the deferred set, see [the recovery inventory in the roadmap](ROADMAP.md#recovery-inventory).
