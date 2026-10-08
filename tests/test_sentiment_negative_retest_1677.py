@@ -99,6 +99,9 @@ def test_an_unclear_fire_is_left_out_of_that_graders_figures() -> None:
     assert report["graders"][0]["graded"] == 2
     assert report["graders"][1]["graded"] == 3
     assert report["kappa_n"] == 2
+    # Only f0 and f1 count: agreement 1/2 against chance 1/2. Counting the
+    # unclear f2 as False would give -0.5.
+    assert report["kappa"] == pytest.approx(0.0)
 
 
 def test_score_refuses_a_sheet_fire_without_both_labels() -> None:
@@ -123,12 +126,19 @@ def test_transcript_prompts_are_typed_short_and_fresh(tmp_path: Path) -> None:
         + _transcript_line("2026-10-02T00:00:03Z", "a sub-task prompt", isSidechain=True)
         + _transcript_line("2026-10-02T00:00:04Z", "meta", isMeta=True)
         + _transcript_line("2026-10-02T00:00:05Z", "y" * 201)
+        + _transcript_line("2026-10-02T00:00:05Z", "z" * 200)
+        # Harness records, which #1647's population left out.
+        + _transcript_line("2026-10-02T00:00:07Z", "[Request interrupted by user]")
+        + _transcript_line("2026-10-02T00:00:08Z", "<command-name>/clear</command-name>")
+        + _transcript_line("2026-10-02T00:00:09Z", "<local-command-stdout>ok</local-command-stdout>")
+        + _transcript_line("2026-10-02T00:00:10Z", "<task-notification>done</task-notification>")
+        + _transcript_line("2026-10-02T00:00:11Z", "no, wrong", isCompactSummary=True)
         + _transcript_line("2026-09-30T23:00:00Z", "too early")
         + json.dumps({"type": "assistant", "timestamp": "2026-10-02T00:00:06Z"}) + "\n",
         encoding="utf-8",
     )
     prompts = rt.transcript_prompts(tmp_path)
-    assert prompts == ["no, that's wrong", "still broken"]
+    assert prompts == ["no, that's wrong", "still broken", "z" * 200]
     assert rt.negative_count(prompts + ["perfect, thanks"]) == 2
 
 
@@ -146,7 +156,8 @@ def test_the_cli_counts_samples_and_scores(tmp_path: Path, capsys: pytest.Captur
     assert rt.main(["count", "--audit", str(audit), "--transcripts", str(tmp_path)]) == 0
     assert "transcript_prompts=1 transcript_negative=1" in capsys.readouterr().out
     sheet = tmp_path / "sheet.jsonl"
-    assert rt.main(["sample", "--audit", str(audit), "--seed", "1", "--dry-run"]) == 0
+    assert rt.main(["sample", "--audit", str(audit), "--seed", "1", "--dry-run",
+                    "--out", str(sheet)]) == 0
     assert not sheet.exists()
     assert rt.main(["sample", "--audit", str(audit), "--seed", "1"]) == 1
     assert rt.main(["sample", "--audit", str(audit), "--seed", "1", "--out", str(sheet)]) == 0
