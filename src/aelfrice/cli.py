@@ -2404,17 +2404,29 @@ def _list_user_locks() -> list[Belief]:
 
     Never creates the store (#1681). Treated as absent when
     `AELFRICE_USER_DB` names the repository store, so one file's locks
-    are not listed twice.
+    are not listed twice. A user store that cannot be opened or read
+    prints one warning and lists nothing, so the repository locks are
+    still listed.
     """
+    import sqlite3
+
     if _user_store_is_repo_store():
         return []
-    store = open_user_store_if_present()
-    if store is None:
-        return []
     try:
-        return store.list_locked_beliefs()
-    finally:
-        store.close()
+        store = open_user_store_if_present()
+        if store is None:
+            return []
+        try:
+            return store.list_locked_beliefs()
+        finally:
+            store.close()
+    except (sqlite3.Error, OSError) as exc:
+        print(
+            f"aelf locked: cannot read the user lock store at "
+            f"{user_db_path()}: {exc}; listing repository locks only.",
+            file=sys.stderr,
+        )
+        return []
 
 
 def _cmd_locked(args: argparse.Namespace, out: object) -> int:
@@ -3625,17 +3637,24 @@ def _user_lock_hint(belief_id: str) -> str | None:
     """A pointer to `--user` when `belief_id` is locked in the user store.
 
     Never creates the user store. None when the store is absent, when
-    it is the repository store, or when it has no such lock.
+    it is the repository store, when it cannot be read, or when it has
+    no such lock. The hint is advice, so a broken user store never
+    turns a repository unlock into a failure.
     """
+    import sqlite3
+
     if _user_store_is_repo_store():
         return None
-    store = open_user_store_if_present()
-    if store is None:
-        return None
     try:
-        b = store.get_belief(belief_id)
-    finally:
-        store.close()
+        store = open_user_store_if_present()
+        if store is None:
+            return None
+        try:
+            b = store.get_belief(belief_id)
+        finally:
+            store.close()
+    except (sqlite3.Error, OSError):
+        return None
     if b is None or b.lock_level != LOCK_USER:
         return None
     return (
@@ -3681,6 +3700,10 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
             return 1
         if result.already_unlocked:
             print(f"already unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            if not getattr(args, "user_scope", False):
+                hint = _user_lock_hint(args.belief_id)
+                if hint is not None:
+                    print(hint, file=sys.stderr)
             return 0
         print(f"unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
     finally:
