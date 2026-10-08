@@ -286,7 +286,9 @@ def resolve_contradiction(
     inserts a SUPERSEDES edge and a RESOLVES edge (#1658) from winner
     → loser, each only if not already present, and writes one audit
     row to feedback_history tagged
-    `source=f"{SOURCE_PREFIX}:{rule_fired}"`.
+    `source=f"{SOURCE_PREFIX}:{rule_fired}"`. The two edges and the
+    audit row commit in one transaction: if any write fails, none of
+    them persists.
 
     Raises ValueError if either belief is missing. Idempotent: a
     second call with the same args inserts no new SUPERSEDES or
@@ -302,41 +304,49 @@ def resolve_contradiction(
 
     winner, loser, rule = _pick_winner(a, b)
 
-    existing = store.get_edge(
-        winner.id, loser.id, EDGE_SUPERSEDES,
-    )
-    # `insert_edge` refuses a self-loop (#1636), so "created" is what it
-    # reports, not an assumption: a belief paired with itself gets no edge.
-    supersedes_created = existing is None and store.insert_edge(Edge(
-        src=winner.id,
-        dst=loser.id,
-        type=EDGE_SUPERSEDES,
-        weight=SUPERSEDES_WEIGHT,
-    ))
-    # #1658: the RESOLVES edge marks the same decision for its readers
-    # (`introspect` status, the wonder GC exemption). It has its own
-    # existence check, so a direct call on a pair that already has
-    # SUPERSEDES still writes RESOLVES. `aelf resolve` never makes that
-    # call: `find_unresolved_contradictions` skips any pair with a
-    # SUPERSEDES edge in either direction, so a pair whose SUPERSEDES
-    # edge came from another writer (the triple extractor) gets no
-    # RESOLVES edge and no audit row from `aelf resolve`.
-    resolves_created = store.get_edge(
-        winner.id, loser.id, EDGE_RESOLVES,
-    ) is None and store.insert_edge(Edge(
-        src=winner.id,
-        dst=loser.id,
-        type=EDGE_RESOLVES,
-        weight=RESOLVES_WEIGHT,
-    ))
-
     timestamp = now if now is not None else _utc_now_iso()
-    audit_id = store.insert_feedback_event(
-        belief_id=loser.id,
-        valence=0.0,  # bookkeeping; replay logic ignores zero-valence
-        source=f"{SOURCE_PREFIX}:{rule}",
-        created_at=timestamp,
-    )
+    # #1658: both edges and the audit row land in one transaction, so a
+    # failure or crash between the writes leaves none of them. A pair
+    # left with SUPERSEDES but no RESOLVES would stay that way, because
+    # `find_unresolved_contradictions` skips any pair with SUPERSEDES.
+    # IMMEDIATE takes the write lock before the existence checks, so a
+    # concurrent resolve of the same pair waits instead of racing the
+    # check-then-insert into an IntegrityError.
+    with store.transaction(immediate=True):
+        existing = store.get_edge(
+            winner.id, loser.id, EDGE_SUPERSEDES,
+        )
+        # `insert_edge` refuses a self-loop (#1636), so "created" is what it
+        # reports, not an assumption: a belief paired with itself gets no edge.
+        supersedes_created = existing is None and store.insert_edge(Edge(
+            src=winner.id,
+            dst=loser.id,
+            type=EDGE_SUPERSEDES,
+            weight=SUPERSEDES_WEIGHT,
+        ))
+        # #1658: the RESOLVES edge marks the same decision for its readers
+        # (`introspect` status, the wonder GC exemption). It has its own
+        # existence check, so a direct call on a pair that already has
+        # SUPERSEDES still writes RESOLVES. `aelf resolve` never makes that
+        # call: `find_unresolved_contradictions` skips any pair with a
+        # SUPERSEDES edge in either direction, so a pair whose SUPERSEDES
+        # edge came from another writer (the triple extractor) gets no
+        # RESOLVES edge and no audit row from `aelf resolve`.
+        resolves_created = store.get_edge(
+            winner.id, loser.id, EDGE_RESOLVES,
+        ) is None and store.insert_edge(Edge(
+            src=winner.id,
+            dst=loser.id,
+            type=EDGE_RESOLVES,
+            weight=RESOLVES_WEIGHT,
+        ))
+
+        audit_id = store.insert_feedback_event(
+            belief_id=loser.id,
+            valence=0.0,  # bookkeeping; replay logic ignores zero-valence
+            source=f"{SOURCE_PREFIX}:{rule}",
+            created_at=timestamp,
+        )
 
     return ResolutionResult(
         winner_id=winner.id,
