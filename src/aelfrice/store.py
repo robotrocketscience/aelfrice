@@ -1029,6 +1029,10 @@ _MIGRATIONS: tuple[str, ...] = (
     # the migration loop tolerates "no such column" on a fresh store and
     # on every later open. An older aelfrice that opens the store
     # afterwards re-adds both columns through its own ADD COLUMN entries.
+    # An older aelfrice that already had the store open when the drop ran
+    # does not: its `_row_to_belief`, INSERT and UPDATE still name the
+    # columns, so its next belief read or write fails. #814 had the same
+    # exposure.
     "ALTER TABLE beliefs DROP COLUMN hibernation_score",
     "ALTER TABLE beliefs DROP COLUMN activation_condition",
 )
