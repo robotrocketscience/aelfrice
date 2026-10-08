@@ -1032,7 +1032,11 @@ _MIGRATIONS: tuple[str, ...] = (
     # An older aelfrice that already had the store open when the drop ran
     # does not: its `_row_to_belief`, INSERT and UPDATE still name the
     # columns, so its next belief read or write fails. #814 had the same
-    # exposure.
+    # exposure. Long-lived holders include `aelf onboard` and the
+    # detached sidecar_warm child a hook spawns, which outlives the hook
+    # for its whole BM25F build. If versions alternate on one store, only
+    # a switch to this version rewrites `beliefs` (these DROPs); a switch
+    # to an older version runs ADD COLUMN, which does not rewrite it.
     "ALTER TABLE beliefs DROP COLUMN hibernation_score",
     "ALTER TABLE beliefs DROP COLUMN activation_condition",
 )
