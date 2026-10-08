@@ -5613,7 +5613,9 @@ def apply_sentiment_feedback(
         if signal.sentiment == sf.NEGATIVE and not sf.is_negative_enabled(toml_cfg):
             # #1647: negative fires measured short of the precision bar,
             # so they move nothing by default. The row still lands, and
-            # it is what a later re-measurement of the lane reads.
+            # it is what a later re-measurement of the lane reads. #1677:
+            # it names the beliefs the fire would have demoted, so each
+            # fire can be graded against its targets.
             _write_sentiment_feedback_audit(
                 prompt=prompt,
                 session_id=session_id,
@@ -5621,6 +5623,7 @@ def apply_sentiment_feedback(
                 applied_ids=[],
                 stderr=serr,
                 abstained="negative_disabled",
+                target_ids=_load_prior_ups_belief_ids(session_id, stderr=serr),
             )
             return 0
         prior_ids = _load_prior_ups_belief_ids(session_id, stderr=serr)
@@ -5763,6 +5766,7 @@ def _write_sentiment_feedback_audit(
     applied_ids: list[str],
     stderr: IO[str] | None = None,
     abstained: str | None = None,
+    target_ids: list[str] | None = None,
 ) -> None:
     """Append one hook-audit row tagged `sentiment_feedback`. Fail-soft.
 
@@ -5775,6 +5779,10 @@ def _write_sentiment_feedback_audit(
     audit recorded corrections that fired and never those that fired
     and found no candidate — the denominator was missing. The row is
     written either way; `abstained` is None on the applied path.
+
+    `target_ids`, when given, are the beliefs the signal would have
+    applied to. A `negative_disabled` row carries them (#1677), and
+    `belief_ids` stays the list that actually moved, which is empty.
     """
     cfg = load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -5801,6 +5809,8 @@ def _write_sentiment_feedback_audit(
     }
     if abstained is not None:
         record["abstained"] = abstained
+    if target_ids is not None:
+        record["target_ids"] = target_ids
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 

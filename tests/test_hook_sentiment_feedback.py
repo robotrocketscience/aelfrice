@@ -691,7 +691,45 @@ def test_by_default_a_complaint_moves_nothing_but_is_recorded(
     assert rows[0].get("abstained") == "negative_disabled", rows
 
 
-_OFF = "[feedback]\nsentiment_from_prose = false\n"
+def test_a_disabled_complaint_names_the_beliefs_it_would_have_demoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1677: grading a negative fire needs its targets. With the lane off,
+    the row lists the prior turn's beliefs as `target_ids` and still
+    reports none as moved."""
+    _default_sentiment(monkeypatch)
+    _, audit_path = _seed_prior_turn(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("no, that's wrong", "s1") == 0
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    assert rows[0]["target_ids"] == ["F1", "F2"], rows
+    assert rows[0]["belief_ids"] == [] and rows[0]["n_beliefs"] == 0, rows
+
+
+def test_a_disabled_complaint_with_no_prior_turn_has_no_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _default_sentiment(monkeypatch)
+    _, audit_path = _seed_prior_turn(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("no, that's wrong", "another-session") == 0
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    assert rows[0]["target_ids"] == [], rows
+    assert rows[0]["abstained"] == "negative_disabled", rows
+
+
+def test_only_a_disabled_complaint_carries_target_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _default_sentiment(monkeypatch)
+    _, audit_path = _seed_prior_turn(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("perfect, thanks", "s1") == 2
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    assert "target_ids" not in rows[0], rows
+
+
+_OFF ="[feedback]\nsentiment_from_prose = false\n"
 _NEG_ON = "[feedback]\nsentiment_negative = true\n"
 
 
