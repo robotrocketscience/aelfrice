@@ -405,6 +405,45 @@ def _parse_instant(ts: str | None) -> datetime | None:
     return parsed
 
 
+def _evidence_supports(
+    store: "MemoryStore", ph: "Belief", born: datetime, sentences: list[str],
+) -> Counter[str]:
+    """Supports per session that #1650 promotion admits for ``ph``.
+
+    Counts each user-spoken transcript corroboration on the phantom, plus
+    each complete restatement of its ``sentences`` in one session. An
+    event counts only when it carries a session id, falls after ``born``,
+    and isn't from the session that created the phantom. The one count
+    behind :func:`find_evidence_promotable_phantoms`.
+    """
+    def admitted(events: list[tuple[str | None, str]]) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for sid, ts in events:
+            when = _parse_instant(ts)
+            if sid is None or when is None or when <= born:
+                continue
+            if ph.session_id is not None and sid == ph.session_id:
+                continue
+            counts[sid] += 1
+        return counts
+
+    # A complete restatement in a session needs every sentence there,
+    # so a session yields as many as its least-restated sentence.
+    per_sentence = [
+        admitted(store.restatement_events(text, exclude_id=ph.id))
+        for text in sentences
+    ]
+    complete: Counter[str] = admitted(store.user_corroborations(ph.id))
+    sessions: set[str] = set()
+    for counts in per_sentence:
+        sessions.update(counts)
+    for sid in sessions:
+        restated = min(c[sid] for c in per_sentence)
+        if restated:
+            complete[sid] += restated
+    return complete
+
+
 def find_evidence_promotable_phantoms(
     store: "MemoryStore", *, min_supports: int = 3, min_sessions: int = 2,
     max_n: int | None = None,
@@ -486,33 +525,7 @@ def find_evidence_promotable_phantoms(
         ):
             continue
 
-        def admitted(
-            events: list[tuple[str | None, str]], start: datetime,
-        ) -> Counter[str]:
-            counts: Counter[str] = Counter()
-            for sid, ts in events:
-                when = _parse_instant(ts)
-                if sid is None or when is None or when <= start:
-                    continue
-                if ph.session_id is not None and sid == ph.session_id:
-                    continue
-                counts[sid] += 1
-            return counts
-
-        # A complete restatement in a session needs every sentence there,
-        # so a session yields as many as its least-restated sentence.
-        per_sentence = [
-            admitted(store.restatement_events(text, exclude_id=ph.id), born)
-            for text in sentences
-        ]
-        complete: Counter[str] = admitted(store.user_corroborations(ph.id), born)
-        sessions: set[str] = set()
-        for counts in per_sentence:
-            sessions.update(counts)
-        for sid in sessions:
-            restated = min(c[sid] for c in per_sentence)
-            if restated:
-                complete[sid] += restated
+        complete = _evidence_supports(store, ph, born, sentences)
         n = sum(complete.values())
         if n >= int(min_supports) and len(complete) >= int(min_sessions):
             out.append(ph)
