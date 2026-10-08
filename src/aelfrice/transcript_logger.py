@@ -31,6 +31,7 @@ never cross the git boundary.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -770,33 +771,38 @@ def _stop_flush_threshold() -> int:
         return DEFAULT_STOP_FLUSH_TURNS
 
 
-def _count_turn_lines_and_identity(path: Path) -> tuple[int, int | None] | None:
-    """(turn-line count, inode) of `path`, read through one file handle.
+def _count_turn_lines_and_identity(path: Path) -> tuple[int, str | None] | None:
+    """(turn-line count, identity) of `path`, from one pass over the file.
 
     Counts role-bearing turn lines. The cheap `'"role"'` substring test
     avoids JSON-parsing every line on the hook hot path — event markers
     (compaction_start, etc.) carry no `role` key, so they are excluded.
 
-    None when the file can't be opened. The inode is None when the
-    filesystem reports 0, and two None identities compare equal, so such
-    a filesystem falls back to comparing counts alone. A rename keeps the
-    inode with the renamed file, so the turns.jsonl that follows a
-    PreCompact rotation always has a different one while the archive
-    exists."""
+    The identity is a digest of the file's first line (#1749). Every line
+    this logger writes carries a timestamp, and turn lines a random
+    `turn_id`, so a new turns.jsonl starts with a line no earlier file
+    had. Unlike an inode, the first line reads the same from a host and a
+    container that share the file, and a recreated file doesn't inherit
+    it. None when the file is empty; None when it can't be opened."""
     try:
         with open(path, encoding="utf-8") as f:
-            ino = os.fstat(f.fileno()).st_ino
-            count = sum(1 for line in f if '"role"' in line)
+            first = f.readline()
+            count = ('"role"' in first) + sum(1 for line in f if '"role"' in line)
     except OSError:
         return None
-    return count, (ino or None)
+    if not first:
+        return 0, None
+    digest = hashlib.blake2b(first.encode("utf-8"), digest_size=8).hexdigest()
+    return count, digest
 
 
-def _read_flush_cursor(tdir: Path) -> tuple[int | None, int]:
+def _read_flush_cursor(tdir: Path) -> tuple[str | None, int]:
     """(identity of the file counted, turn count at the last flush).
 
-    The cursor file holds `<inode> <count>`. A bare `<count>`, written
-    before #1726, has no identity and reads as (None, count)."""
+    The cursor file holds `<identity> <count>`. A bare `<count>`, written
+    before #1726, reads as (None, count). An `<inode> <count>` cursor from
+    #1726 reads as an identity no first-line digest equals. Either way the
+    next Stop counts from 0, which costs at most one extra ingest."""
     try:
         parts = (
             (tdir / STOP_FLUSH_CURSOR_FILENAME)
@@ -804,7 +810,7 @@ def _read_flush_cursor(tdir: Path) -> tuple[int | None, int]:
             .split()
         )
         if len(parts) == 2:
-            return int(parts[0]), int(parts[1])
+            return parts[0], int(parts[1])
         if len(parts) == 1:
             return None, int(parts[0])
     except (OSError, ValueError):
@@ -812,7 +818,7 @@ def _read_flush_cursor(tdir: Path) -> tuple[int | None, int]:
     return None, 0
 
 
-def _write_flush_cursor(tdir: Path, identity: int | None, count: int) -> None:
+def _write_flush_cursor(tdir: Path, identity: str | None, count: int) -> None:
     text = str(count) if identity is None else f"{identity} {count}"
     try:
         (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(text, encoding="utf-8")
@@ -833,20 +839,18 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     statements not yet in the store — never inflating it — while leaving
     the rebuilder / UPS recent-turns window (which reads the live
     turns.jsonl) intact. The cursor records the turn count at the last
-    flush and the inode of the file it counted (#1726). A cursor for any
-    other file counts as 0: PreCompact's rotation, a deleted file, and a
-    cursor written before #1726 all start the count over, with nothing to
-    reset. Before the identity was stored, a reset was inferred from a
-    count below the cursor and never saved, so the next flush after a
-    rotation could wait for twice the threshold.
+    flush and the identity of the file it counted (#1726, #1749): a digest
+    of its first line. A cursor for any other file counts as 0:
+    PreCompact's rotation, a deleted and recreated file, and an older
+    cursor all start the count over, with nothing to reset. Before the
+    identity was stored, a reset was inferred from a count below the
+    cursor and never saved, so the next flush after a rotation could wait
+    for twice the threshold. #1726 used the inode, which a container
+    sees differently from its host and which ext4 reuses for a recreated
+    file (#1749).
 
-    A deleted file is told apart only while its inode isn't reused. ext4
-    can hand a new turns.jsonl the inode of a just-deleted archive, and
-    then a rotation reads as the same file. Nothing in aelfrice deletes
-    archives or turns.jsonl, so only an outside prune reaches that case.
-
-    The count and the identity come from one open file handle, so a Stop
-    that races a rotation records the file it actually counted. A count
+    The count and the identity come from one pass over one open file, so
+    a Stop that races a rotation records the file it actually counted. A count
     below the cursor on the same file also counts as 0. On a shared
     turns.jsonl it usually means another session flushed after this Stop
     counted. Like any flush, it's saved only when it fires, and then it

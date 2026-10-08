@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import subprocess
@@ -1068,18 +1069,31 @@ def test_per_turn_latency_under_budget(tdir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+_WRITES = itertools.count()
+
+
 def _write_turns(tdir: Path, n: int) -> None:
-    """Pre-populate turns.jsonl with n distinct role-bearing turn lines."""
+    """Pre-populate turns.jsonl with n distinct role-bearing turn lines.
+
+    Each call writes a new file's worth of lines: like the logger's own
+    `turn_id`, the `write` field makes its first line one no earlier call
+    produced, so a rewrite reads as a different file (#1749)."""
+    k = next(_WRITES)
     lines = [
-        json.dumps({"role": "user", "text": f"fact number {i}", "session_id": "s"})
+        json.dumps({
+            "role": "user", "text": f"fact number {i}", "session_id": "s",
+            "write": k,
+        })
         for i in range(n)
     ]
     (tdir / "turns.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _identity(tdir: Path) -> int:
-    """The inode of the live turns.jsonl, as the Stop flush cursor records it."""
-    return (tdir / "turns.jsonl").stat().st_ino
+def _identity(tdir: Path) -> str | None:
+    """The live turns.jsonl's identity, as the Stop flush cursor records it."""
+    counted = tl._count_turn_lines_and_identity(tdir / "turns.jsonl")
+    assert counted is not None
+    return counted[1]
 
 
 @pytest.fixture
@@ -1121,7 +1135,7 @@ def test_stop_flush_fires_at_threshold(
     assert (tdir / "turns.jsonl").is_file()
     archive = tdir / "archive"
     assert not archive.exists() or not list(archive.glob("*"))
-    ino = (tdir / "turns.jsonl").stat().st_ino
+    ino = _identity(tdir)
     assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
 
 
@@ -1163,8 +1177,7 @@ def test_stop_flush_resets_a_cursor_above_the_same_files_count(
     _write_turns(tdir, 2)
     # A cursor for this same file, above its count: another session's
     # later flush, or a shrunken file. The count starts over (#1726).
-    ino = os.stat(tdir / "turns.jsonl").st_ino
-    tl._write_flush_cursor(tdir, ino or None, 500)
+    tl._write_flush_cursor(tdir, _identity(tdir), 500)
     rc = _run_main({"hook_event_name": "Stop"})  # fresh count 3 < cursor -> reset to 0
     assert rc == 0
     assert captured_ingest == [tdir / "turns.jsonl"]
@@ -1221,7 +1234,7 @@ def test_stop_flush_treats_a_count_only_cursor_as_another_file(
     _write_turns(tdir, 2)
     assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 3
     assert captured_ingest == [tdir / "turns.jsonl"]
-    ino = (tdir / "turns.jsonl").stat().st_ino
+    ino = _identity(tdir)
     assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
 
 
@@ -1241,26 +1254,60 @@ def test_stop_flush_does_not_save_a_lower_count_on_the_same_file(
     assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 5"
 
 
-def test_stop_flush_compares_counts_alone_without_inodes(
+def test_stop_flush_identity_ignores_the_inode(
     tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """On a filesystem that reports inode 0, the cursor is a bare count and
-    the flush still waits for the next threshold instead of firing on
-    every Stop."""
+    """#1749: a host and a container that share turns.jsonl see different
+    inodes for it. The same content under a new inode is still the same
+    file, so the flush waits for the next threshold."""
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
-    real_fstat = os.fstat
-
-    def no_inode(fd: int) -> os.stat_result:
-        st = list(real_fstat(fd))
-        st[1] = 0  # st_ino
-        return os.stat_result(st)
-
-    monkeypatch.setattr(tl.os, "fstat", no_inode)
     _write_turns(tdir, 3)
     assert tl._maybe_stop_flush(tdir) is True
-    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == "3"
+    live = tdir / "turns.jsonl"
+    copy = tdir / "turns.copy"
+    copy.write_bytes(live.read_bytes())
+    os.replace(copy, live)  # same bytes, new inode
     assert tl._maybe_stop_flush(tdir) is False
+    assert captured_ingest == [live]
+
+
+def test_stop_flush_counts_a_recreated_file_from_zero(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1749: a turns.jsonl rewritten under the same inode, as ext4 does
+    for a deleted and recreated file, starts with a new first line, so the
+    old count doesn't carry over and the flush comes at the threshold."""
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 3)
+    assert tl._maybe_stop_flush(tdir) is True
+    _write_turns(tdir, 3)  # truncated and rewritten in place: same inode
+    assert tl._maybe_stop_flush(tdir) is True
+    assert captured_ingest == [tdir / "turns.jsonl"] * 2
+
+
+def test_stop_flush_treats_an_inode_cursor_as_another_file(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1749: an `<inode> <count>` cursor written by #1726 matches no
+    first-line identity, so the next flush comes at the threshold."""
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 2)
+    ino = (tdir / "turns.jsonl").stat().st_ino
+    (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).write_text(f"{ino} 3", encoding="utf-8")
+    assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 3
     assert captured_ingest == [tdir / "turns.jsonl"]
+
+
+def test_identity_is_none_for_an_empty_file(tdir: Path) -> None:
+    (tdir / "turns.jsonl").write_text("", encoding="utf-8")
+    assert tl._count_turn_lines_and_identity(tdir / "turns.jsonl") == (0, None)
+
+
+def test_identity_counts_a_role_bearing_first_line(tdir: Path) -> None:
+    """The first line is read for the identity and still counted."""
+    _write_turns(tdir, 1)
+    counted = tl._count_turn_lines_and_identity(tdir / "turns.jsonl")
+    assert counted is not None and counted[0] == 1
 
 
 def test_stop_flush_counts_from_zero_when_the_same_file_shrinks(
@@ -1294,5 +1341,5 @@ def test_stop_flush_failed_spawn_does_not_advance_cursor(
     )
     assert tl._maybe_stop_flush(tdir) is True
     assert calls == [tdir / "turns.jsonl"]
-    ino = (tdir / "turns.jsonl").stat().st_ino
+    ino = _identity(tdir)
     assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
