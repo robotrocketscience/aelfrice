@@ -796,6 +796,10 @@ def _sandbox_real_home(
         # A test that exercises git-dir resolution deletes this with a
         # function-scoped `monkeypatch.delenv`.
         mp.setenv("AELFRICE_DB", str(home / "memory.db"))
+        # #1681, the same lever for the user-scope lock store. Its default
+        # is `DEFAULT_DB_DIR`, bound from the real home when `db_paths` is
+        # first imported, so `HOME` alone does not move it in this process.
+        mp.setenv("AELFRICE_USER_DB", str(home / "user" / "memory.db"))
         # #1707: git hooks export `GIT_DIR` and its siblings, so a suite run
         # from inside one (or any shell that sets them) points every
         # `git init` in a tmp dir, and every git-dir store lookup, at the
@@ -862,8 +866,10 @@ def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
     """
     pin = str(_sandbox_real_home / "memory.db")
     transcripts = str(_sandbox_real_home / "transcripts")  # #1706
+    user_pin = str(_sandbox_real_home / "user" / "memory.db")  # #1681
     os.environ["AELFRICE_DB"] = pin
     os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
+    os.environ["AELFRICE_USER_DB"] = user_pin  # #1681
     # #1734: the git-common-dir cache is keyed on cwd, and tests reuse
     # cwds across repositories they create and delete.
     from aelfrice.db_paths import clear_git_common_dir_cache  # noqa: PLC0415
@@ -872,3 +878,4 @@ def _restore_sandbox_store_pin(_sandbox_real_home: Path) -> Iterator[None]:
     yield
     os.environ["AELFRICE_DB"] = pin
     os.environ["AELFRICE_TRANSCRIPTS_DIR"] = transcripts
+    os.environ["AELFRICE_USER_DB"] = user_pin

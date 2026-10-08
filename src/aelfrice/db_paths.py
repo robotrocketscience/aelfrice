@@ -186,8 +186,95 @@ def db_path() -> Path:
     return DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
 
 
+#: Environment variable that names the user-scope lock store (#1681).
+USER_DB_ENV: Final[str] = "AELFRICE_USER_DB"
+
+#: Subdirectory of `DEFAULT_DB_DIR` that holds the user-scope store.
+USER_STORE_DIRNAME: Final[str] = "user"
+
+
+def user_db_path() -> Path:
+    """Resolve the path of the user-scope lock store (#1681).
+
+    A user lock is a rule about how you work, not about one codebase, so
+    it lives in one store that every repository and every worktree
+    shares, rather than in the repository store `db_path()` names.
+
+    Resolution order:
+    1. $AELFRICE_USER_DB (explicit override).
+    2. ~/.aelfrice/user/memory.db.
+
+    `AELFRICE_DB` is deliberately not consulted. It names the repository
+    store, and a pin set to scope one project must not also move the
+    store every project shares. The store has the same schema as the
+    repository store, so lock tiers, expiry, and ids work unchanged.
+
+    Resolving the path creates nothing. Only a write
+    (`open_user_store()`) creates the parent directory, so a read of a
+    user store that was never written finds no file and leaves none.
+
+    `DEFAULT_DB_DIR` is read at call time, not bound here, so a test can
+    repoint it.
+    """
+    override = os.environ.get(USER_DB_ENV)
+    if override:
+        return Path(override)
+    return DEFAULT_DB_DIR / USER_STORE_DIRNAME / DEFAULT_DB_FILENAME
+
+
 def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def open_user_store() -> MemoryStore:
+    """Open the user-scope lock store for writing, creating it if needed.
+
+    The only call that creates the store or its parent directory. The
+    store carries no repository identity (`project_context_default` is
+    empty), because its locks belong to no one repository.
+
+    Every repository writes this one file, so writers from different
+    repositories can run at the same time. The protection is the one a
+    repository store already relies on when two worktrees share it:
+    SQLite's own file locking, the WAL journal, `busy_timeout=5000`, and
+    the `SQLITE_SCHEMA` retry on the open-time DDL (#1310).
+    """
+    p = user_db_path()
+    if str(p) != ":memory:":
+        _ensure_parent_dir(p)
+    return MemoryStore(str(p), project_context_default="")
+
+
+def open_user_store_if_present() -> MemoryStore | None:
+    """Open the user-scope store when it exists, else return None.
+
+    For commands that read the user store or change a lock already in
+    it. It never creates the file or its directory: a missing store
+    returns None before anything is opened.
+
+    An existing store is opened the way `open_store_for_read()` opens
+    the repository store: the writable open first, so expired locks are
+    swept and migrations run, then `mode=ro` only when that open is
+    refused for lack of write access.
+
+    The existence check and the open are two steps. A store deleted
+    between them is recreated empty by the writable open; nothing in
+    aelfrice deletes the user store, so only an outside `rm` racing this
+    call can reach that.
+    """
+    import sqlite3
+
+    from aelfrice.store import is_readonly_open_failure
+
+    p = user_db_path()
+    if str(p) == ":memory:" or not p.is_file():
+        return None
+    try:
+        return MemoryStore(str(p), project_context_default="")
+    except sqlite3.DatabaseError as exc:
+        if not is_readonly_open_failure(exc):
+            raise
+    return MemoryStore(str(p), project_context_default="", read_only=True)
 
 
 def _identity_from_git_common_dir(git_dir: Path) -> str:
