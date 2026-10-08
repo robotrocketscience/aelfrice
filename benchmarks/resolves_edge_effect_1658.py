@@ -2,8 +2,8 @@
 
 `aelf resolve` writes a `RESOLVES` edge beside each `SUPERSEDES` edge.
 Free-text retrieval ignores the edge (see
-`tests/test_resolves_from_contradiction_1658.py`), but three readers count
-every edge type and so can move:
+`tests/test_resolves_from_contradiction_1658.py`). The script measures one
+reader that does move and two that must not:
 
 * `hrr` — the HRR structural index binds every type in `EDGE_TYPES`, so
   `<KIND>:<id>` marker queries see the edge as crosstalk on the winner's
@@ -11,14 +11,15 @@ every edge type and so can move:
   `RESOLVES` kind itself, with and without the edges.
 * `wonder_seed` — `aelf wonder` with no argument and no `--seed` picks
   the non-locked belief with the most outgoing edges
-  (`cli._wonder_pick_seed`). A contradiction winner gains one outgoing
-  edge. The script counts the stores whose picked seed changes.
+  (`cli._wonder_pick_seed`), not counting `RESOLVES`. The script counts
+  the stores whose picked seed changes, which must be none.
 * `random_walk` — the RW strategy (`wonder.strategies.random_walk`) picks
-  uniformly over all outgoing edges. The script counts the stores whose
-  phantom set changes under the same RNG seed. The only shipped caller,
-  the offline bake-off (`python -m aelfrice.wonder.runner`), builds its
-  own corpus with no `CONTRADICTS` edges, so it never sees a `RESOLVES`
-  edge; this row describes a store that has been through `aelf resolve`.
+  uniformly over outgoing edges other than `RESOLVES`. The script counts
+  the stores whose phantom set changes under the same RNG seed, which
+  must be none. The only shipped caller, the offline bake-off
+  (`python -m aelfrice.wonder.runner`), builds its own corpus with no
+  `CONTRADICTS` edges, so it never sees a `RESOLVES` edge; this row
+  describes a store that has been through `aelf resolve`.
 
 Each store is synthetic and in memory. Every belief gets a random origin
 from the tie-breaker's precedence classes; edges get random types drawn

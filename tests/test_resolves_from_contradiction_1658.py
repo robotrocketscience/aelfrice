@@ -481,8 +481,9 @@ def test_retrieve_ranking_is_identical_with_and_without_resolves(
 @pytest.mark.timeout(60)
 def test_effect_benchmark_is_deterministic_and_not_vacuous() -> None:
     """`benchmarks/resolves_edge_effect_1658.py` backs the figures quoted
-    for the HRR, wonder-seed and random-walk effects. Same config, same
-    report, and the synthetic stores really do carry RESOLVES edges."""
+    for the HRR effect and the unchanged wonder seed and random walk.
+    Same config, same report, and the synthetic stores really do carry
+    RESOLVES edges."""
     from benchmarks.resolves_edge_effect_1658 import Config, run
 
     cfg = Config(beliefs=40, edges=160, stores=2, seed=3, rw_walks=10)
@@ -491,3 +492,6 @@ def test_effect_benchmark_is_deterministic_and_not_vacuous() -> None:
     assert not vacuous
     assert first == second
     assert first["hrr_first_store"] is not None
+    # `aelf wonder` skips RESOLVES, so neither wonder reader may move.
+    assert first["wonder_seed"]["seed_changed"] == 0  # type: ignore[index]
+    assert first["random_walk"]["phantom_set_changed"] == 0  # type: ignore[index]
