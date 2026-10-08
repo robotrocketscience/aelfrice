@@ -109,7 +109,13 @@ jobs:
           # `[[:space:]]*` so the same pattern compiles under both grep -E and
           # Python's `re`, which is what lets a test assert it against real
           # mutmut output instead of asserting a substring of this file.
-          MUTANT_LINE='^ *[A-Za-z0-9_.]+__mutmut_[0-9]+: '
+          #
+          # The key class is "anything but a space or a colon" (#1709).
+          # mutmut names a method's mutants with `ǁ` separators
+          # (`pkg.mod.xǁBoxǁshrink__mutmut_1`), and a `[A-Za-z0-9_.]` class
+          # skipped every one of them. A negated ASCII class matches `ǁ`
+          # whether grep reads it as one UTF-8 character or as two bytes.
+          MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
           survived=$(grep -cE ': survived$' mutation-report.txt || true)
@@ -263,10 +269,12 @@ jobs:
           #
           # Same `^ *` note as the weekly guard: mutmut indents every result
           # line by four spaces, so an `^`-anchored count is hard-wired to 0.
-          MUTANT_LINE='^ *[A-Za-z0-9_.]+__mutmut_[0-9]+: '
+          # Same `[^ :]` note too: method mutants carry `ǁ` in the key (#1709).
+          MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
           survived=$(grep -cE ': survived$' mutation-report.txt || true)
+          listed=$(( ${killed:-0} + ${survived:-0} ))
           {
             echo "## Mutation (advisory)"
             echo
@@ -285,11 +293,20 @@ jobs:
             echo "Other statuses (harness signals, not coverage):"
             echo
             echo '```'
+            # Every status in mutmut 3's `status_by_exit_code` (stats.py)
+            # other than killed and survived, so the counts add up to the
+            # total (#1709). A status a later mutmut adds is reported as
+            # unlisted rather than dropped.
             for status in 'no tests' 'timeout' 'suspicious' 'skipped' \
-                'not checked' 'caught by type check'; do
+                'not checked' 'caught by type check' 'segfault' \
+                'check was interrupted by user'; do
               n=$(grep -cE ": ${status}\$" mutation-report.txt || true)
+              listed=$(( listed + ${n:-0} ))
               echo "${status}: ${n:-0}"
             done
+            if [ "${listed}" -ne "${total:-0}" ]; then
+              echo "unlisted status: $(( ${total:-0} - listed ))"
+            fi
             echo '```'
             echo
             echo "Surviving mutants:"
