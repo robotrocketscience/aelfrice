@@ -745,8 +745,6 @@ def test_disabled_targets_are_what_the_enabled_lane_moves(
 def test_with_the_audit_off_no_targets_are_looked_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import aelfrice.hook as hook_mod
-
     _default_sentiment(monkeypatch)
     _seed_prior_turn(tmp_path, monkeypatch)
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "0")
@@ -758,7 +756,7 @@ def test_with_the_audit_off_no_targets_are_looked_up(
         calls.append(session_id)
         return []
 
-    monkeypatch.setattr(hook_mod, "_negative_targets", record)
+    monkeypatch.setattr("aelfrice.hook._negative_targets", record)
     assert apply_sentiment_feedback("no, that's wrong", "s1") == 0
     assert calls == []
 
