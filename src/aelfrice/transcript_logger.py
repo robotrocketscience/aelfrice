@@ -711,11 +711,9 @@ def _handle_pre_compact(payload: dict[str, object]) -> None:
             "event": "compaction_start",
         })
         archived = archive_dir / f"turns-{_utc_compact_ts()}.jsonl"
+        # The Stop flush cursor needs no reset here: it names the file it
+        # counted, and the next turns.jsonl is a different file (#1726).
         os.rename(src, archived)
-        # The new turns.jsonl starts empty, so the Stop flush counts from
-        # 0 (#1726). Left alone, the cursor would make the next flush wait
-        # until the new file passed the old count plus the threshold.
-        _write_flush_cursor(tdir, 0)
         _spawn_background_ingest(archived)
 
 
@@ -777,34 +775,57 @@ def _count_turn_lines(path: Path) -> int:
     substring test avoids JSON-parsing every line on the hook hot path —
     event markers (compaction_start, etc.) carry no `role` key, so they
     are excluded. Returns 0 on any read error (fail-soft)."""
+    counted = _count_turn_lines_and_identity(path)
+    return counted[0] if counted is not None else 0
+
+
+def _count_turn_lines_and_identity(path: Path) -> tuple[int, int | None] | None:
+    """(turn-line count, inode) of `path`, read through one file handle,
+    counting lines the way `_count_turn_lines` describes.
+
+    None when the file can't be opened. The inode is None when the
+    filesystem reports 0, and two None identities compare equal, so such
+    a filesystem falls back to comparing counts alone. A rename keeps the
+    inode with the renamed file, so the turns.jsonl that follows a
+    PreCompact rotation always has a different one while the archive
+    exists."""
     try:
         with open(path, encoding="utf-8") as f:
-            return sum(1 for line in f if '"role"' in line)
+            ino = os.fstat(f.fileno()).st_ino
+            count = sum(1 for line in f if '"role"' in line)
     except OSError:
-        return 0
+        return None
+    return count, (ino or None)
 
 
-def _read_flush_cursor(tdir: Path) -> int:
+def _read_flush_cursor(tdir: Path) -> tuple[int | None, int]:
+    """(identity of the file counted, turn count at the last flush).
+
+    The cursor file holds `<inode> <count>`. A bare `<count>`, written
+    before #1726, has no identity and reads as (None, count)."""
     try:
-        text = (
+        parts = (
             (tdir / STOP_FLUSH_CURSOR_FILENAME)
             .read_text(encoding="utf-8")
-            .strip()
+            .split()
         )
-        return int(text) if text else 0
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1])
+        if len(parts) == 1:
+            return None, int(parts[0])
     except (OSError, ValueError):
-        return 0
+        pass
+    return None, 0
 
 
-def _write_flush_cursor(tdir: Path, value: int) -> None:
+def _write_flush_cursor(tdir: Path, identity: int | None, count: int) -> None:
+    text = str(count) if identity is None else f"{identity} {count}"
     try:
-        (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(
-            str(value), encoding="utf-8",
-        )
+        (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(text, encoding="utf-8")
     except OSError:
         # Fail-soft: a non-writable transcripts dir must never break the
-        # Stop or PreCompact hook. The cursor simply isn't updated, so the
-        # next Stop re-evaluates and re-flushes (ingestion is idempotent).
+        # Stop hook. The cursor simply isn't advanced, so the next Stop
+        # re-evaluates and re-flushes (ingestion is idempotent).
         pass
 
 
@@ -818,23 +839,30 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     statements not yet in the store — never inflating it — while leaving
     the rebuilder / UPS recent-turns window (which reads the live
     turns.jsonl) intact. The cursor records the turn count at the last
-    flush. PreCompact resets it to 0 when it rotates turns.jsonl (#1726).
-    A count below the cursor means the file was reset some other way, so
-    the cursor is reset to 0 and saved. Saving matters: an unsaved reset
-    is forgotten once the new file grows back to the old count, and the
-    flush then waits for twice the threshold.
+    flush and the inode of the file it counted (#1726). A cursor for any
+    other file counts as 0: PreCompact's rotation, a deleted file, and a
+    cursor written before #1726 all start the count over, with nothing to
+    reset. Before the identity was stored, a reset was inferred from a
+    count below the cursor and never saved, so the next flush after a
+    rotation could wait for twice the threshold.
+
+    The count and the identity come from one open file handle, so a Stop
+    that races a rotation records the file it actually counted. A count
+    below the cursor on the same file still counts as 0 but isn't saved:
+    on a shared turns.jsonl it usually means another session flushed
+    after this Stop counted, not that the file shrank.
     """
     threshold = _stop_flush_threshold()
     if threshold <= 0:
         return False
     src = tdir / TURNS_FILENAME
-    if not src.exists():
+    counted = _count_turn_lines_and_identity(src)
+    if counted is None:
         return False
-    now = _count_turn_lines(src)
-    last = _read_flush_cursor(tdir)
-    if now < last:
+    now, identity = counted
+    cursor_identity, last = _read_flush_cursor(tdir)
+    if cursor_identity != identity or now < last:
         last = 0
-        _write_flush_cursor(tdir, 0)
     if now - last < threshold:
         return False
     # Advance the cursor only on a successful spawn (#1012 review): if the
@@ -842,7 +870,7 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     # than silently marking these turns flushed and reopening the recall gap.
     if not _spawn_background_ingest(src):
         return False
-    _write_flush_cursor(tdir, now)
+    _write_flush_cursor(tdir, identity, now)
     return True
 
 

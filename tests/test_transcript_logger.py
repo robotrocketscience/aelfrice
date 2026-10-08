@@ -1077,6 +1077,11 @@ def _write_turns(tdir: Path, n: int) -> None:
     (tdir / "turns.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _identity(tdir: Path) -> int:
+    """The inode of the live turns.jsonl, as the Stop flush cursor records it."""
+    return (tdir / "turns.jsonl").stat().st_ino
+
+
 @pytest.fixture
 def captured_ingest(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """Record _spawn_background_ingest targets instead of forking `aelf`.
@@ -1114,7 +1119,8 @@ def test_stop_flush_fires_at_threshold(
     assert (tdir / "turns.jsonl").is_file()
     archive = tdir / "archive"
     assert not archive.exists() or not list(archive.glob("*"))
-    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text().strip() == "3"
+    ino = (tdir / "turns.jsonl").stat().st_ino
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
 
 
 def test_stop_flush_below_threshold_no_fire(
@@ -1142,7 +1148,7 @@ def test_stop_flush_does_not_refire_until_next_threshold(
 ) -> None:
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
     _write_turns(tdir, 3)
-    tl._write_flush_cursor(tdir, 3)  # already flushed at 3
+    tl._write_flush_cursor(tdir, _identity(tdir), 3)  # already flushed at 3
     rc = _run_main({"hook_event_name": "Stop"})  # -> 4 turns, 4-3 < 3
     assert rc == 0
     assert captured_ingest == []
@@ -1152,7 +1158,7 @@ def test_stop_flush_resets_cursor_after_rotation(
     tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
-    tl._write_flush_cursor(tdir, 500)  # stale cursor from a rotated session
+    tl._write_flush_cursor(tdir, None, 500)  # stale cursor from a rotated session
     _write_turns(tdir, 2)
     rc = _run_main({"hook_event_name": "Stop"})  # fresh count 3 < cursor -> reset to 0
     assert rc == 0
@@ -1163,15 +1169,15 @@ def test_stop_flush_fires_at_threshold_after_a_rotation(
     tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#1726: PreCompact rotates turns.jsonl, so the next flush is due once
-    the new file reaches the threshold. With the cursor left at the
-    threshold, the new file's count reached the cursor instead of passing
+    the new file reaches the threshold. A count-only cursor left at the
+    threshold made the new file's count reach the cursor instead of passing
     it, and the flush waited for twice the threshold.
 
-    Killed by: not resetting the cursor in `_handle_pre_compact`.
+    Killed by: ignoring the cursor's file identity.
     """
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
     _write_turns(tdir, 3)
-    tl._write_flush_cursor(tdir, 3)  # flushed at 3, then compacted
+    tl._write_flush_cursor(tdir, _identity(tdir), 3)  # flushed at 3
     assert _run_main({"hook_event_name": "PreCompact"}) == 0
     captured_ingest.clear()  # the rotation's own archive ingest
     _write_turns(tdir, 2)
@@ -1179,24 +1185,88 @@ def test_stop_flush_fires_at_threshold_after_a_rotation(
     assert captured_ingest == [tdir / "turns.jsonl"]
 
 
-def test_stop_flush_fires_at_threshold_after_a_reset_without_compaction(
+def test_stop_flush_ignores_a_count_written_for_the_rotated_file(
     tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1726: a turns.jsonl reset that PreCompact did not make (a deleted
-    file, or a cursor left over from before the fix) still flushes at the
-    threshold. The first Stop that counts fewer lines than the cursor has
-    to save the reset; otherwise the count grows back to the cursor and
-    the flush waits for twice the threshold.
-
-    Killed by: not saving the cursor reset in `_maybe_stop_flush`.
+    """#1726: a Stop that counted the old file can write its cursor after
+    PreCompact has rotated it. That cursor names the old file, so the new
+    file still flushes at the threshold.
     """
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
-    tl._write_flush_cursor(tdir, 3)  # flushed at 3, then the file was deleted
-    _write_turns(tdir, 1)
-    assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 2
-    assert captured_ingest == []
+    _write_turns(tdir, 3)
+    old_file = _identity(tdir)
+    assert _run_main({"hook_event_name": "PreCompact"}) == 0
+    captured_ingest.clear()
+    tl._write_flush_cursor(tdir, old_file, 3)  # the late Stop's write
     _write_turns(tdir, 2)
     assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 3
+    assert captured_ingest == [tdir / "turns.jsonl"]
+
+
+def test_stop_flush_treats_a_count_only_cursor_as_another_file(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1726: a cursor written before the file identity was stored holds a
+    bare count. It may belong to a file a compaction already rotated, so it
+    counts as 0, and the next flush comes at the threshold rather than
+    after the old count plus the threshold.
+    """
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).write_text("3", encoding="utf-8")
+    _write_turns(tdir, 2)
+    assert _run_main({"hook_event_name": "Stop"}) == 0  # +1 stub -> 3
+    assert captured_ingest == [tdir / "turns.jsonl"]
+    ino = (tdir / "turns.jsonl").stat().st_ino
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
+
+
+def test_stop_flush_does_not_save_a_lower_count_on_the_same_file(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1726: on the same file, a count below the cursor usually means
+    another session flushed after this Stop counted. The Stop doesn't
+    overwrite that session's cursor.
+    """
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 1)
+    ino = _identity(tdir)
+    tl._write_flush_cursor(tdir, ino, 5)
+    assert tl._maybe_stop_flush(tdir) is False
+    assert captured_ingest == []
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 5"
+
+
+def test_stop_flush_compares_counts_alone_without_inodes(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a filesystem that reports inode 0, the cursor is a bare count and
+    the flush still waits for the next threshold instead of firing on
+    every Stop."""
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    real_fstat = os.fstat
+
+    def no_inode(fd: int) -> os.stat_result:
+        st = list(real_fstat(fd))
+        st[1] = 0  # st_ino
+        return os.stat_result(st)
+
+    monkeypatch.setattr(tl.os, "fstat", no_inode)
+    _write_turns(tdir, 3)
+    assert tl._maybe_stop_flush(tdir) is True
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == "3"
+    assert tl._maybe_stop_flush(tdir) is False
+    assert captured_ingest == [tdir / "turns.jsonl"]
+
+
+def test_stop_flush_counts_from_zero_when_the_same_file_shrinks(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turns.jsonl truncated in place keeps its inode. Its count below
+    the cursor still counts as 0 for this Stop."""
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 3)  # rewritten in place: same inode
+    tl._write_flush_cursor(tdir, _identity(tdir), 5)
+    assert tl._maybe_stop_flush(tdir) is True
     assert captured_ingest == [tdir / "turns.jsonl"]
 
 
@@ -1219,4 +1289,5 @@ def test_stop_flush_failed_spawn_does_not_advance_cursor(
     )
     assert tl._maybe_stop_flush(tdir) is True
     assert calls == [tdir / "turns.jsonl"]
-    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text().strip() == "3"
+    ino = (tdir / "turns.jsonl").stat().st_ino
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text() == f"{ino} 3"
