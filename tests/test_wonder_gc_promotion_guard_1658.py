@@ -13,6 +13,8 @@ a locked phantom for collection, so it is kept whatever its evidence.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -284,3 +286,41 @@ def test_the_guard_only_reports_the_ids_it_was_given(
     _corroborate(store)
     assert promotion_guarded_ids(store, []) == set()
     assert promotion_guarded_ids(store, ["other"]) == set()
+
+
+_LAZY_INGEST_PROBE = """
+import sys
+from aelfrice.models import BELIEF_SPECULATIVE, ORIGIN_SPECULATIVE, Belief
+from aelfrice.store import MemoryStore
+from aelfrice.wonder.lifecycle import wonder_gc
+
+store = MemoryStore(sys.argv[1])
+wonder_gc(store, ttl_days=14, dry_run=True)
+print("empty", "aelfrice.ingest" in sys.modules)
+store.insert_belief(Belief(
+    id="p1", content="The cache expires after ten minutes.",
+    content_hash="wonder_p1", alpha=0.3, beta=1.0, type=BELIEF_SPECULATIVE,
+    lock_level="none", locked_at=None,
+    created_at="2001-01-01T00:00:00+00:00", last_retrieved_at=None,
+    origin=ORIGIN_SPECULATIVE,
+))
+wonder_gc(store, ttl_days=14, dry_run=True)
+print("stale", "aelfrice.ingest" in sys.modules)
+store.close()
+"""
+
+
+@pytest.mark.timeout(60)
+def test_a_sweep_with_no_stale_phantom_does_not_import_ingest(
+    tmp_path: Path,
+) -> None:
+    # The guard returns before its lazy aelfrice.ingest import when GC
+    # finds no stale phantom, so a SessionStart sweep on such a store
+    # doesn't pay for that import. A subprocess gives a clean sys.modules;
+    # the stale run is the control that shows the probe sees the import.
+    proc = subprocess.run(
+        [sys.executable, "-c", _LAZY_INGEST_PROBE, str(tmp_path / "m.db")],
+        capture_output=True, text=True, encoding="utf-8", timeout=50,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["empty", "False", "stale", "True"]
