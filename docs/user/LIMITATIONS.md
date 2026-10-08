@@ -111,7 +111,7 @@ The principled response is to add aggregative-query routing at the structural-an
 
 ### Multi-project query
 
-Only one DB writes at a time. The beliefs written in project A are not *written* into project B, because the two projects have different `.git/` directories. Use `AELFRICE_DB` to scope each project explicitly. The read-only federation of v3.0, described earlier, is the path to *read* the beliefs of a peer project into a local query. That path doesn't merge the underlying stores.
+Only one DB writes at a time. The beliefs written in project A are not *written* into project B, because the two projects have different `.git/` directories. Use `AELFRICE_DB` to scope each project explicitly. The exception is a user-scope lock, `aelf lock --user`, which goes to a store every project shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)). That store is written today but not yet injected into prompts, so a user lock doesn't reach retrieval yet. The read-only federation of v3.0, described earlier, is the path to *read* the beliefs of a peer project into a local query. That path doesn't merge the underlying stores.
 
 ## Compatibility
 

@@ -1317,6 +1317,16 @@ Boolean, default `false` (#1740). Precedence (the first decisive tier applies): 
 
 Both the variable and the key apply from the next Stop.
 
+## User lock store: `AELFRICE_USER_DB`
+
+A user-scope lock, written with `aelf lock --user`, lives in a store that every repository and every worktree shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)). By default that store is `~/.aelfrice/user/memory.db`. To put it somewhere else, set `AELFRICE_USER_DB` to the file path.
+
+`AELFRICE_DB` doesn't move the user store. It names only the repository store, so pinning one project's store leaves the shared store where it is. No `.aelfrice.toml` key sets the user store's path.
+
+If `AELFRICE_USER_DB` and the repository store name the same file, `aelf lock --user` and `aelf unlock --user` refuse to run, and `aelf locked` lists that file's locks once, as repository locks.
+
+User locks are stored but not yet injected into prompts.
+
 ## When changes apply
 
 An edit to a `[noise]` key applies on the next `aelf onboard` run, and an edit to `[retrieval] entity_index_enabled` applies on the next `retrieve()` call. An edit never re-filters the beliefs already in the store: the configuration controls ingestion and retrieval, not retention.

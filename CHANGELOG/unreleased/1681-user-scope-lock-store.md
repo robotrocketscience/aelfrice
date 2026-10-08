@@ -1,0 +1,8 @@
+### Added
+
+- **`aelf lock --user` stores a lock that every repository shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)).** A lock about how you work, rather than about one codebase, no longer has to be locked again in each repository. A user lock goes to a store with the same schema as the repository store, at `~/.aelfrice/user/memory.db`, or at the path in the new `AELFRICE_USER_DB` variable. `AELFRICE_DB` still names only the repository store and doesn't move the user store. A plain `aelf lock` is unchanged.
+  - **Write path:** `--user` changes only which store the lock goes to. The tier flags `--reference` and `--frozen`, the windows `--for` and `--until`, and the near-duplicate warning work as they do for a repository lock; the warning checks the user store's locks. `--doc` and `--category` can't be combined with `--user`, and the command exits 1 without writing.
+  - **Typed command:** `/aelf:lock --user <statement>` runs through the prompt hook the same way `/aelf:lock` does, with the same first-line rule and length cap applied to the statement. A failed user lock is reported in the turn, but `aelf doctor` and the SessionStart notice don't list it yet.
+  - **Listing and unlocking:** `aelf locked` lists both scopes, repository locks first, and tags each user lock `[user]`. The new `aelf locked --json` gives every row a `scope` field. `aelf unlock --user <id>` unlocks a user lock.
+  - **Store creation:** only `aelf lock --user` creates the user store. `aelf locked` and `aelf unlock --user` never create it.
+  - **Not yet injected:** a user lock is stored but doesn't reach prompts yet. Injection lands in a follow-up change, and so does a command that promotes a repository lock to user scope.
