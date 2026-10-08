@@ -165,9 +165,9 @@ you run now:
 ```
 ingest log rule set (`ingest_log.rule_set_hash`):
   current digest: 13ec6a9f64a4
-  43988 row(s) in total
-  0 row(s) carry a different digest (written under other classifier rules)
-  43988 row(s) carry no digest (written before digests were recorded, synthesized for legacy beliefs, or written when no digest could be computed)
+  1500 row(s) in total
+  300 row(s) carry a different digest (written under other classifier rules)
+  1000 row(s) carry no digest (written before digests were recorded, synthesized for legacy beliefs, or written when no digest could be computed)
 ```
 
 A row with a different digest came from an older or newer set of
