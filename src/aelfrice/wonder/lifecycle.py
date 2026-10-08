@@ -233,6 +233,10 @@ def wonder_gc(
       phantom with an inbound CONTRADICTS edge, is collected whatever
       support it has.
 
+    ``scanned`` counts only the phantoms GC deletes, or would delete in a
+    dry run. Since #1658 it excludes the phantoms the promotion guard
+    keeps.
+
     If ``dry_run`` is True, reports candidates without mutating the store.
     The second run in non-dry-run mode finds zero new candidates
     (idempotent because ``soft_delete_belief`` guards on ``valid_to IS NULL``).
