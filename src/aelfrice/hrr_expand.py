@@ -27,10 +27,10 @@ The struct index encodes only *outgoing* edges
 
 Determinism (#981 AC2, AC5): every operation is a numpy FFT / matvec over the
 deterministically-seeded struct matrix. There is **no** ``random`` /
-``betavariate`` anywhere in this path. :func:`precompute_expand_neighbors`
-materialises a byte-stable ``hrr_expand_neighbors`` SQLite table (row order:
-``similarity`` DESC, then ``neighbor_id`` ASC); two builds over the same store
-produce an identical table.
+``betavariate`` anywhere in this path. :func:`neighbor_rows` returns a total
+order (``similarity`` DESC, then ``neighbor_id`` ASC), so two probes of the
+same store produce identical output. The lane probes the index live at query
+time; it keeps no on-disk neighbour cache (#1658).
 
 This is *implement-and-ablate* (#981): it lands the lane plus its ablation
 arm and does **not** flip any default. Flipping the default reverses the
@@ -38,7 +38,6 @@ locked #605 determinism philosophy and is routed to a re-opened #897.
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -77,7 +76,6 @@ _HRR_EXPAND_KIND_NAMES: Final[frozenset[str]] = frozenset(
 DEFAULT_SEED_CAP: Final[int] = 5
 DEFAULT_PER_PROBE_K: Final[int] = 3
 DEFAULT_EXPAND_TOP_K: Final[int] = 5
-DEFAULT_MAX_NODES: Final[int] = 2000
 # Similarity floor on the raw HRR inner product. Single-hop typed edges are
 # *bimodal* under this algebra: a present edge recovers its bound term exactly
 # (``unbind(role_k, bind(role_k, id_t)) · id_t == 1.0`` forward; the matching
@@ -90,12 +88,6 @@ DEFAULT_MAX_NODES: Final[int] = 2000
 # dim=512 — well below 0.5; a false positive would need ~128 same-role
 # crosstalk terms to clear the floor.)
 DEFAULT_SIM_FLOOR: Final[float] = 0.5
-# ``created_at`` is an audit-only column never read by retrieval. The cache
-# is a derived, wholesale-rebuilt table, so its default rebuild timestamp is a
-# fixed sentinel (not wall-clock) — two rebuilds over an unchanged store stay
-# byte-identical (#981 AC2).
-_REBUILD_CREATED_AT: Final[str] = "1970-01-01T00:00:00+00:00"
-
 FORWARD: Final[str] = "forward"
 REVERSE: Final[str] = "reverse"
 
@@ -210,7 +202,7 @@ def neighbor_rows(
     Returns ``(neighbor_id, edge_type, direction, similarity)`` tuples across
     every probed kind and both directions, sorted by ``similarity`` DESC then
     ``neighbor_id`` ASC then ``edge_type`` ASC then ``direction`` ASC — a
-    total order, so the output (and any table built from it) is byte-stable.
+    total order, so the output is byte-stable.
     """
     if kinds is None:
         kinds = hrr_expand_edge_types()
@@ -231,98 +223,6 @@ def neighbor_rows(
     return rows
 
 
-def precompute_expand_neighbors(
-    store: "MemoryStore",
-    index: "HRRStructIndex",
-    *,
-    per_probe_k: int = DEFAULT_PER_PROBE_K,
-    max_nodes: int = DEFAULT_MAX_NODES,
-    sim_floor: float = DEFAULT_SIM_FLOOR,
-    now_iso: str | None = None,
-) -> int:
-    """Materialise the ``hrr_expand_neighbors`` table; return rows written.
-
-    For each active belief (``valid_to IS NULL``, ``id`` ASC, capped at
-    ``max_nodes``) the lane's forward + reverse single-hop neighbours are
-    written across every semantic edge kind. The table is fully replaced each
-    run. Insertion order is the total order from :func:`neighbor_rows`, so two
-    runs over an unchanged store produce a byte-identical table (#981 AC2).
-
-    ``now_iso`` pins the ``created_at`` column; it defaults to a fixed rebuild
-    sentinel (not wall-clock) so two rebuilds over an unchanged store stay
-    byte-identical (#981 AC2). ``created_at`` is audit-only and never read by
-    retrieval, so this derived cache prefers an idempotent rebuild over a real
-    timestamp.
-    """
-    conn: sqlite3.Connection = store._conn  # noqa: SLF001 — same pattern as replay.py/telemetry.py
-    if now_iso is None:
-        now_iso = _REBUILD_CREATED_AT
-    kinds = hrr_expand_edge_types()
-    id_matrix = _id_matrix(index)
-
-    seed_ids: list[str] = [
-        str(r[0])
-        for r in conn.execute(
-            "SELECT id FROM beliefs WHERE valid_to IS NULL "
-            "ORDER BY id ASC LIMIT ?",
-            (max_nodes,),
-        ).fetchall()
-    ]
-
-    # Compute every neighbour row *before* mutating the table so a mid-loop
-    # probe failure cannot leave a partially-rebuilt (or empty-after-DELETE)
-    # cache visible to a later same-connection read. The DELETE + insert then
-    # run as one transaction via ``with conn`` (commit on success, rollback on
-    # error), keeping the rebuild atomic (#981 robustness fix).
-    insert_rows: list[tuple[str, str, float, str, str, str]] = [
-        (seed_id, nid, sim, etype, direction, now_iso)
-        for seed_id in seed_ids
-        for (nid, etype, direction, sim) in neighbor_rows(
-            index, seed_id,
-            id_matrix=id_matrix, kinds=kinds,
-            per_probe_k=per_probe_k, sim_floor=sim_floor,
-        )
-    ]
-    with conn:
-        conn.execute("DELETE FROM hrr_expand_neighbors")
-        conn.executemany(
-            "INSERT OR REPLACE INTO hrr_expand_neighbors "
-            "(belief_id, neighbor_id, similarity, edge_type, direction, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            insert_rows,
-        )
-    return len(insert_rows)
-
-
-def _neighbors_from_table(
-    store: "MemoryStore", seed_ids: list[str], *, sim_floor: float,
-) -> list[str] | None:
-    """Look up precomputed neighbour ids for the seeds, or ``None`` if the
-    table is absent / empty.
-
-    Returns neighbour ids ordered by ``similarity`` DESC then ``neighbor_id``
-    ASC (deduplicated, keeping the strongest similarity per neighbour). A
-    missing table (pre-migration DB) returns ``None`` so the caller falls back
-    to a live probe.
-    """
-    conn: sqlite3.Connection = store._conn  # noqa: SLF001 — same pattern as replay.py/telemetry.py
-    placeholders = ",".join("?" for _ in seed_ids)
-    try:
-        rows = conn.execute(
-            f"SELECT neighbor_id, MAX(similarity) AS sim "
-            f"FROM hrr_expand_neighbors "
-            f"WHERE belief_id IN ({placeholders}) AND similarity >= ? "
-            f"GROUP BY neighbor_id "
-            f"ORDER BY sim DESC, neighbor_id ASC",
-            (*seed_ids, sim_floor),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return None
-    if not rows:
-        return None
-    return [str(r[0]) for r in rows]
-
-
 def expand_seeds(
     store: "MemoryStore",
     index: "HRRStructIndex",
@@ -336,8 +236,7 @@ def expand_seeds(
     """Single-hop HRR expansion of the FTS5 seeds into extra candidates.
 
     Caps the seeds at ``seed_cap``, gathers forward + reverse semantic
-    neighbours (from the precomputed ``hrr_expand_neighbors`` table when
-    present, else a live probe against ``index``), drops seeds themselves and
+    neighbours with a live probe against ``index``, drops seeds themselves and
     soft-deleted / invalid beliefs, and returns up to ``top_k`` beliefs in
     deterministic similarity order. Empty seed list or empty index returns
     ``[]``.
@@ -347,25 +246,23 @@ def expand_seeds(
         return []
     seed_set = set(seeds)
 
-    neighbor_ids = _neighbors_from_table(store, seeds, sim_floor=sim_floor)
-    if neighbor_ids is None:
-        # Live fallback: probe the index directly. Merge across seeds keeping
-        # the strongest similarity per neighbour, deterministic tie-break.
-        id_matrix = _id_matrix(index)
-        best: dict[str, float] = {}
-        for seed_id in seeds:
-            for nid, _etype, _dir, sim in neighbor_rows(
-                index, seed_id,
-                id_matrix=id_matrix,
-                per_probe_k=per_probe_k, sim_floor=sim_floor,
-            ):
-                if sim > best.get(nid, float("-inf")):
-                    best[nid] = sim
-        neighbor_ids = [
-            nid for nid, _sim in sorted(
-                best.items(), key=lambda p: (-p[1], p[0]),
-            )
-        ]
+    # Probe the index directly. Merge across seeds keeping the strongest
+    # similarity per neighbour, deterministic tie-break.
+    id_matrix = _id_matrix(index)
+    best: dict[str, float] = {}
+    for seed_id in seeds:
+        for nid, _etype, _dir, sim in neighbor_rows(
+            index, seed_id,
+            id_matrix=id_matrix,
+            per_probe_k=per_probe_k, sim_floor=sim_floor,
+        ):
+            if sim > best.get(nid, float("-inf")):
+                best[nid] = sim
+    neighbor_ids = [
+        nid for nid, _sim in sorted(
+            best.items(), key=lambda p: (-p[1], p[0]),
+        )
+    ]
 
     out: list["Belief"] = []
     for nid in neighbor_ids:

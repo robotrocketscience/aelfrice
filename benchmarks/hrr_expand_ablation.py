@@ -16,8 +16,8 @@ the arm comparison is fully reproducible. Absolute F1 is a retrieval-recall
 proxy, not reader accuracy; the *relative* arm deltas are the deliverable.
 
 Ingest is arm-independent (the flags only change retrieval), so each
-conversation is ingested once, its struct index + neighbour table built once,
-then all four arms run against the same DB.
+conversation is ingested once, its struct index built once, then all four
+arms run against the same DB.
 
 LongMemEval / MAB / StructMemEval are intentionally out of scope here: their
 full corpora are not present locally (only micro smoke fixtures) and per the
@@ -39,7 +39,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Final
 
-from aelfrice.hrr_expand import precompute_expand_neighbors
 from aelfrice.hrr_index import HRRStructIndexCache
 from aelfrice.relationship_detector import write_semantic_edges
 from aelfrice.retrieval import retrieve_v2
@@ -172,7 +171,6 @@ def main() -> None:
                     "SELECT COUNT(*) FROM edges"
                 ).fetchone()[0]
                 cache = HRRStructIndexCache(store=store, store_path=db_path)
-                precompute_expand_neighbors(store, cache.get())
                 for arm in ARMS:
                     run_arm_on_store(
                         store, cache, qa_pairs, arm, args.budget,

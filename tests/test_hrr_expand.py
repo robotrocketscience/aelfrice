@@ -4,8 +4,8 @@ Covers the issue's acceptance criteria:
 
 1. ``use_hrr_expand`` resolves via env > kwarg > TOML > default-OFF; passing
    it never raises.
-2. The lane is deterministic — the precomputed neighbour table is byte-equal
-   across two runs over the same store.
+2. The lane is deterministic — the live probe's neighbour rows are
+   byte-equal across two runs over the same store.
 3. No regression with the flag off — ``retrieve_v2`` output is byte-identical
    to the pre-lane path.
 5. No ``random`` / ``betavariate`` is introduced into the lane.
@@ -14,6 +14,7 @@ Covers the issue's acceptance criteria:
 from __future__ import annotations
 
 import pathlib
+import struct
 
 import pytest
 
@@ -38,6 +39,9 @@ from aelfrice.retrieval import (
 from aelfrice.store import MemoryStore
 
 _SEED = 7
+# Probe repetitions in the determinism test. A per-call coin-flip reorder
+# of two rows survives all of them with probability 2**-_REPEATS.
+_REPEATS = 10
 
 
 def _mk(bid: str, content: str) -> Belief:
@@ -139,47 +143,59 @@ def test_edge_types_intersect_live_schema() -> None:
 # --- AC2: determinism -----------------------------------------------------
 
 
-def _table_rows(store: MemoryStore) -> list[tuple]:
-    return [
-        tuple(r)
+def _all_rows(
+    store: MemoryStore, idx: HRRStructIndex,
+) -> list[tuple[str, str, str, str, bytes]]:
+    """Every live-probe neighbour row for every active belief, in id order.
+
+    Each row is ``(seed, neighbor, edge_type, direction, similarity)`` with
+    the similarity packed as its 8 IEEE-754 bytes, so equality is byte
+    equality, not float closeness.
+    """
+    seeds = [
+        str(r[0])
         for r in store._conn.execute(  # noqa: SLF001
-            "SELECT belief_id, neighbor_id, similarity, edge_type, direction "
-            "FROM hrr_expand_neighbors ORDER BY rowid"
+            "SELECT id FROM beliefs WHERE valid_to IS NULL ORDER BY id"
         ).fetchall()
+    ]
+    return [
+        (seed, nid, etype, direction, struct.pack("<d", sim))
+        for seed in seeds
+        for nid, etype, direction, sim in hx.neighbor_rows(idx, seed)
     ]
 
 
-def test_precompute_table_byte_stable_across_runs() -> None:
+def test_live_probe_rows_byte_stable_across_runs() -> None:
     store = _toy_store()
     idx = _built_index(store)
-    n1 = hx.precompute_expand_neighbors(store, idx, now_iso="2026-01-01T00:00:00Z")
-    rows1 = _table_rows(store)
-    n2 = hx.precompute_expand_neighbors(store, idx, now_iso="2026-01-01T00:00:00Z")
-    rows2 = _table_rows(store)
-    assert n1 == n2
-    assert rows1 == rows2
+    # Repeat the probe so an ordering that varies between calls cannot
+    # match by chance: in the toy store only b2 has two neighbour rows, so a
+    # single comparison would miss a coin-flip reorder half the time.
+    first = _all_rows(store, idx)
+    assert first  # the toy store has semantic edges, so rows exist
+    for _ in range(_REPEATS):
+        assert _all_rows(store, idx) == first
+    seeds = ["b1", "b2", "b4"]
+    first_ids = [b.id for b in hx.expand_seeds(store, idx, seeds)]
+    for _ in range(_REPEATS):
+        assert [b.id for b in hx.expand_seeds(store, idx, seeds)] == first_ids
 
 
-def test_precompute_table_stable_across_independent_index_builds() -> None:
+def test_live_probe_rows_stable_across_independent_index_builds() -> None:
     # Two stores with identical content + a fresh index build each produce
-    # the same neighbour table (the index seed is fixed).
-    rows_a = _table_rows(_precomputed(_toy_store()))
-    rows_b = _table_rows(_precomputed(_toy_store()))
+    # the same neighbour rows (the index seed is fixed).
+    store_a = _toy_store()
+    store_b = _toy_store()
+    rows_a = _all_rows(store_a, _built_index(store_a))
+    rows_b = _all_rows(store_b, _built_index(store_b))
+    assert rows_a
     assert rows_a == rows_b
-
-
-def _precomputed(store: MemoryStore) -> MemoryStore:
-    hx.precompute_expand_neighbors(
-        store, _built_index(store), now_iso="2026-01-01T00:00:00Z",
-    )
-    return store
 
 
 def test_true_edges_dominate_noise_floor() -> None:
     store = _toy_store()
     idx = _built_index(store)
-    hx.precompute_expand_neighbors(store, idx, now_iso="2026-01-01T00:00:00Z")
-    rows = _table_rows(store)
+    rows = _all_rows(store, idx)
     # Only the three semantic edges (each surfaced forward + reverse) survive
     # the floor; the RELATES_TO edge and all cleanup noise are rejected.
     pairs = {(r[0], r[1]) for r in rows}
@@ -190,8 +206,9 @@ def test_true_edges_dominate_noise_floor() -> None:
     assert ("b1", "b5") not in pairs and ("b5", "b1") not in pairs
     # Every surviving similarity is near a true bound term (~1.0), well above
     # the per-pair noise floor.
-    assert all(r[2] > 0.5 for r in rows)
-    assert min(r[2] for r in rows) > idx.noise_floor() * 5
+    sims = [struct.unpack("<d", r[4])[0] for r in rows]
+    assert all(sim > 0.5 for sim in sims)
+    assert min(sims) > idx.noise_floor() * 5
 
 
 # --- neighbour recovery + expand_seeds ------------------------------------
@@ -205,14 +222,28 @@ def test_expand_seeds_surfaces_both_directions() -> None:
     assert got == ["b1", "b3"]
 
 
-def test_expand_seeds_table_and_live_paths_agree() -> None:
-    table_store = _precomputed(_toy_store())
-    live_store = _toy_store()  # no precompute table populated
-    idx_t = _built_index(table_store)
-    idx_l = _built_index(live_store)
-    table_ids = [b.id for b in hx.expand_seeds(table_store, idx_t, ["b2"])]
-    live_ids = [b.id for b in hx.expand_seeds(live_store, idx_l, ["b2"])]
-    assert table_ids == live_ids
+def test_expand_seeds_ignores_legacy_neighbour_table() -> None:
+    # A store created before #1658 still has the `hrr_expand_neighbors`
+    # table. expand_seeds must not read it: a stale row naming b4 as b2's
+    # neighbour must not reach the result, which comes from the live probe.
+    store = _toy_store()
+    idx = _built_index(store)
+    live_ids = [b.id for b in hx.expand_seeds(store, idx, ["b2"])]
+    with store._conn:  # noqa: SLF001
+        store._conn.execute(  # noqa: SLF001
+            "CREATE TABLE IF NOT EXISTS hrr_expand_neighbors ("
+            "belief_id TEXT NOT NULL, neighbor_id TEXT NOT NULL, "
+            "similarity REAL NOT NULL, edge_type TEXT NOT NULL, "
+            "direction TEXT NOT NULL, created_at TEXT NOT NULL, "
+            "PRIMARY KEY (belief_id, neighbor_id, edge_type, direction))"
+        )
+        store._conn.execute(  # noqa: SLF001
+            "INSERT INTO hrr_expand_neighbors VALUES "
+            "('b2', 'b4', 1.0, 'CITES', 'forward', '1970-01-01T00:00:00Z')"
+        )
+    got = [b.id for b in hx.expand_seeds(store, idx, ["b2"])]
+    assert sorted(got) == ["b1", "b3"]
+    assert got == live_ids
 
 
 def test_expand_seeds_excludes_seed_and_respects_top_k() -> None:
