@@ -803,8 +803,8 @@ def _write_flush_cursor(tdir: Path, value: int) -> None:
         )
     except OSError:
         # Fail-soft: a non-writable transcripts dir must never break the
-        # Stop hook. The cursor simply isn't advanced, so the next Stop
-        # re-evaluates and re-flushes (ingestion is idempotent).
+        # Stop or PreCompact hook. The cursor simply isn't updated, so the
+        # next Stop re-evaluates and re-flushes (ingestion is idempotent).
         pass
 
 
@@ -820,7 +820,9 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     turns.jsonl) intact. The cursor records the turn count at the last
     flush. PreCompact resets it to 0 when it rotates turns.jsonl (#1726).
     A count below the cursor means the file was reset some other way, so
-    the cursor is treated as 0.
+    the cursor is reset to 0 and saved. Saving matters: an unsaved reset
+    is forgotten once the new file grows back to the old count, and the
+    flush then waits for twice the threshold.
     """
     threshold = _stop_flush_threshold()
     if threshold <= 0:
@@ -832,6 +834,7 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     last = _read_flush_cursor(tdir)
     if now < last:
         last = 0
+        _write_flush_cursor(tdir, 0)
     if now - last < threshold:
         return False
     # Advance the cursor only on a successful spawn (#1012 review): if the
