@@ -432,10 +432,17 @@ def _retrieval_fixture(
 _RETRIEVAL_QUERY = "deploy target region"
 
 
-def _retrieve_ids(s: MemoryStore) -> list[str]:
+def _retrieve_ids(
+    s: MemoryStore, *, bfs_min_path_score: float | None = None,
+) -> list[str]:
+    kwargs: dict[str, float] = {}
+    if bfs_min_path_score is not None:
+        kwargs["bfs_min_path_score"] = bfs_min_path_score
     return [
         b.id
-        for b in retrieve(s, _RETRIEVAL_QUERY, token_budget=400, bfs_enabled=True)
+        for b in retrieve(
+            s, _RETRIEVAL_QUERY, token_budget=400, bfs_enabled=True, **kwargs,
+        )
     ]
 
 
@@ -462,14 +469,20 @@ def test_retrieve_ranking_is_identical_with_and_without_resolves(
     loser_matches_query: bool,
 ) -> None:
     """`bfs_route` catches a BFS walk over RESOLVES; `both_candidates`
-    catches a RESOLVES weight that joins two candidates in a cluster."""
+    catches a RESOLVES weight that joins two candidates in a cluster.
+
+    The path-score floor is 0.0 here, so BFS walks an edge of any nonzero
+    weight. At the default floor (`DEFAULT_MIN_PATH_SCORE`, 0.10), a
+    RESOLVES weight below 0.10 would be pruned and this test would not
+    see it.
+    """
     s = _retrieval_fixture(loser_matches_query=loser_matches_query)
     assert _count(s, EDGE_RESOLVES) == 6
-    with_edges = _retrieve_ids(s)
+    with_edges = _retrieve_ids(s, bfs_min_path_score=0.0)
     for i in range(6):
         s.delete_edge(f"W{i}", f"L{i}", EDGE_RESOLVES)
     assert _count(s, EDGE_RESOLVES) == 0
-    without_edges = _retrieve_ids(s)
+    without_edges = _retrieve_ids(s, bfs_min_path_score=0.0)
     assert with_edges, "fixture retrieved nothing; the comparison is vacuous"
     if not loser_matches_query:
         assert not any(b.startswith("L") for b in with_edges)
