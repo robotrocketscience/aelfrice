@@ -840,11 +840,18 @@ def _maybe_stop_flush(tdir: Path) -> bool:
     count below the cursor and never saved, so the next flush after a
     rotation could wait for twice the threshold.
 
+    A deleted file is told apart only while its inode isn't reused. ext4
+    can hand a new turns.jsonl the inode of a just-deleted archive, and
+    then a rotation reads as the same file. Nothing in aelfrice deletes
+    archives or turns.jsonl, so only an outside prune reaches that case.
+
     The count and the identity come from one open file handle, so a Stop
     that races a rotation records the file it actually counted. A count
-    below the cursor on the same file still counts as 0 but isn't saved:
-    on a shared turns.jsonl it usually means another session flushed
-    after this Stop counted, not that the file shrank.
+    below the cursor on the same file also counts as 0. On a shared
+    turns.jsonl it usually means another session flushed after this Stop
+    counted. Like any flush, it's saved only when it fires, and then it
+    overwrites the other session's higher cursor at the cost of one extra,
+    idempotent ingest.
     """
     threshold = _stop_flush_threshold()
     if threshold <= 0:
