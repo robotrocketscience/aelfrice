@@ -1156,12 +1156,15 @@ def test_stop_flush_does_not_refire_until_next_threshold(
     assert captured_ingest == []
 
 
-def test_stop_flush_resets_cursor_after_rotation(
+def test_stop_flush_resets_a_cursor_above_the_same_files_count(
     tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
-    tl._write_flush_cursor(tdir, None, 500)  # stale cursor from a rotated session
     _write_turns(tdir, 2)
+    # A cursor for this same file, above its count: another session's
+    # later flush, or a shrunken file. The count starts over (#1726).
+    ino = os.stat(tdir / "turns.jsonl").st_ino
+    tl._write_flush_cursor(tdir, ino or None, 500)
     rc = _run_main({"hook_event_name": "Stop"})  # fresh count 3 < cursor -> reset to 0
     assert rc == 0
     assert captured_ingest == [tdir / "turns.jsonl"]
