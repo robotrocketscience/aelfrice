@@ -11,9 +11,17 @@ This is that instrument.
 hook audit as a `sentiment_feedback` row with `abstained = "negative_disabled"`.
 Since #1677 the row also lists `target_ids`, the prior turn's beliefs the fire
 would have demoted. A row counts when it is timestamped on or after
-`--since`, and its `prompt_prefix` is shorter than the audit's 200-character
-cap. A prefix at the cap may be a truncated longer prompt, so it's excluded,
-which keeps the population to prompts of at most 200 characters.
+`--since`. The detector scores no prompt longer than 200 characters, so every
+row's `prompt_prefix` is the whole prompt; a longer one is skipped as
+malformed.
+
+**A second population, reported beside it.** #1647 ran the detector over the
+host's session transcripts instead. `count --transcripts <dir>` does the same
+for prompts on or after `--since`, and reports how many there are and how
+many the detector scores negative. Those fires carry no targets, so grading
+still uses the audit rows. The two counts differ because audit rows exist
+only once the hook writing them is installed, and only while the hook audit
+is on.
 
 **Grading is not automated.** `sample` writes a seeded sheet of fires. Two
 graders label each fire independently, `true` when the prompt is a verdict on
@@ -21,20 +29,22 @@ the previous answer and `false` when it isn't, or `null` when unclear. `score`
 reads both label files and reports each grader's precision with its Wilson
 95% lower bound, Cohen's kappa on the fires both graded, and the verdict
 against the bar. A fire a grader marked unclear is left out of that grader's
-precision and out of kappa.
+precision and out of kappa. The verdict is `insufficient` until each grader
+has graded at least 30 fires (operator ruling, 2026-10-08), so a thin sample
+can't trigger the default flip.
 
 The sheet holds prompt text. Keep it, and the label files, out of the public
 repository.
 
 Usage::
 
-    uv run python -m benchmarks.sentiment_negative_retest_1677 count --audit <hook_audit.jsonl>...
+    uv run python -m benchmarks.sentiment_negative_retest_1677 count --audit <hook_audit.jsonl>... [--transcripts <dir>]
     uv run python -m benchmarks.sentiment_negative_retest_1677 sample --audit <...> --seed 1677 --out sheet.jsonl
     uv run python -m benchmarks.sentiment_negative_retest_1677 score --sheet sheet.jsonl --labels a.jsonl b.jsonl
 
 `sample --dry-run` prints the counts and the sample size without writing the
-sheet. Every subcommand exits 1 on bad input, and `score` exits 1 when the
-bar fails.
+sheet. Every subcommand exits 1 on bad input, and `score` exits 1 unless the
+verdict is `pass`.
 """
 
 from __future__ import annotations
@@ -52,8 +62,10 @@ from benchmarks.context_rebuilder.kappa import cohens_kappa
 
 DEFAULT_SINCE: Final[str] = "2026-10-01"
 """First day of the fresh window: prompts after 2026-09-30 (#1677 AC1)."""
-PROMPT_PREFIX_CAP: Final[int] = 200
-"""`hook.AUDIT_PROMPT_PREFIX_CAP`: a prefix this long may be truncated."""
+MAX_PROMPT_CHARS: Final[int] = 200
+"""`sentiment_feedback.MAX_PROMPT_CHARS`: the detector scores nothing longer."""
+MIN_GRADED: Final[int] = 30
+"""Fires each grader must grade before the verdict can pass (2026-10-08)."""
 BAR: Final[float] = 0.70
 """Pre-registered precision bar, on each grader (#1647)."""
 DEFAULT_MAX: Final[int] = 200
@@ -110,7 +122,7 @@ def fresh_negative_fires(
         if str(row.get("ts") or "") < since:
             continue
         prefix = row.get("prompt_prefix")
-        if not isinstance(prefix, str) or not prefix or len(prefix) >= PROMPT_PREFIX_CAP:
+        if not isinstance(prefix, str) or not prefix or len(prefix) > MAX_PROMPT_CHARS:
             continue
         seen.setdefault(fire_id(row), row)
     return [seen[k] for k in sorted(seen)]
@@ -169,7 +181,12 @@ def score(
         })
     both = [i for i in sheet_ids if a[i] is not None and b[i] is not None]
     kappa = cohens_kappa([bool(a[i]) for i in both], [bool(b[i]) for i in both])
-    passed = all(g["graded"] > 0 and g["precision"] >= BAR for g in graders)
+    if any(g["graded"] < MIN_GRADED for g in graders):
+        verdict = "insufficient"
+    elif all(g["precision"] >= BAR for g in graders):
+        verdict = "pass"
+    else:
+        verdict = "fail"
     return {
         "fires": len(sheet_ids),
         "graders": graders,
@@ -177,8 +194,55 @@ def score(
         "kappa_n": len(both),
         "agreed": sum(1 for i in both if a[i] == b[i]),
         "bar": BAR,
-        "passed": passed,
+        "min_graded": MIN_GRADED,
+        "verdict": verdict,
     }
+
+
+def transcript_prompts(root: Path, since: str = DEFAULT_SINCE) -> list[str]:
+    """Typed prompts of at most 200 characters in host session transcripts.
+
+    Reads `<root>/<project>/<session>.jsonl`. A prompt is a `user` record
+    that isn't a side-chain or meta record and carries text rather than a
+    tool result. Deduplicated by timestamp and text, since a resumed session
+    can repeat earlier records.
+    """
+    seen: set[tuple[str, str]] = set()
+    prompts: list[str] = []
+    for path in sorted(root.glob("*/*.jsonl")):
+        for row in read_rows([path]):
+            if row.get("type") != "user" or row.get("isSidechain") or row.get("isMeta"):
+                continue
+            ts = str(row.get("timestamp") or "")
+            if ts < since:
+                continue
+            message = row.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                if any(isinstance(c, dict) and c.get("type") == "tool_result" for c in content):
+                    continue
+                content = "".join(
+                    str(c.get("text", "")) for c in content
+                    if isinstance(c, dict) and c.get("type") == "text"
+                )
+            if not isinstance(content, str):
+                continue
+            text = content.strip()
+            if not text or len(text) > MAX_PROMPT_CHARS or (ts[:19], text) in seen:
+                continue
+            seen.add((ts[:19], text))
+            prompts.append(text)
+    return prompts
+
+
+def negative_count(prompts: list[str]) -> int:
+    """How many `prompts` the shipped detector scores negative."""
+    from aelfrice.sentiment_feedback import NEGATIVE, detect_sentiment
+
+    return sum(
+        1 for text in prompts
+        if (signal := detect_sentiment(text)) is not None and signal.sentiment == NEGATIVE
+    )
 
 
 def _date_range(fires: list[dict[str, Any]]) -> str:
@@ -193,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--audit", type=Path, nargs="+", required=True)
         p.add_argument("--since", default=DEFAULT_SINCE)
+    sub.choices["count"].add_argument("--transcripts", type=Path)
     sample = sub.choices["sample"]
     sample.add_argument("--seed", type=int, required=True)
     sample.add_argument("--max", type=int, default=DEFAULT_MAX)
@@ -210,6 +275,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"fires={len(fires)} with_targets={with_targets} "
                   f"since={args.since} range={_date_range(fires)}")
             if args.cmd == "count":
+                if args.transcripts is not None:
+                    prompts = transcript_prompts(args.transcripts, args.since)
+                    print(f"transcript_prompts={len(prompts)} "
+                          f"transcript_negative={negative_count(prompts)} since={args.since}")
                 return 0
             rows = draw_sample(fires, args.seed, args.max)
             print(f"sample={len(rows)} seed={args.seed}")
@@ -230,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(report, indent=2))
-    return 0 if report["passed"] else 1
+    return 0 if report["verdict"] == "pass" else 1
 
 
 if __name__ == "__main__":

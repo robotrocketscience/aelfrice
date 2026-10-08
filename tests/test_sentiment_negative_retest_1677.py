@@ -32,7 +32,7 @@ def test_the_population_is_fresh_short_disabled_negative_fires() -> None:
     rows = [
         keep,
         _row("2026-09-30T23:59:59Z", "no, that's wrong"),  # before the window
-        _row("2026-10-02T00:00:00Z", "x" * 200),  # at the cap: may be truncated
+        _row("2026-10-02T00:00:00Z", "x" * 201),  # longer than the detector scores
         _row("2026-10-02T00:00:00Z", "still broken", abstained="no_prior_injection"),
         _row("2026-10-02T00:00:00Z", "no", hook="user_prompt_submit"),
         _row("2026-10-02T00:00:00Z", ""),
@@ -41,8 +41,8 @@ def test_the_population_is_fresh_short_disabled_negative_fires() -> None:
     assert rt.fresh_negative_fires(rows) == [keep]
 
 
-def test_a_prompt_one_under_the_cap_is_kept() -> None:
-    row = _row("2026-10-02T00:00:00Z", "x" * 199)
+def test_a_prompt_of_exactly_200_characters_is_kept() -> None:
+    row = _row("2026-10-02T00:00:00Z", "x" * 200)
     assert rt.fresh_negative_fires([row]) == [row]
 
 
@@ -58,17 +58,37 @@ def test_the_sample_is_seeded_capped_and_order_independent() -> None:
     assert len(rt.draw_sample(pop, seed=1677, max_n=100)) == 30
 
 
+def test_the_sheet_carries_each_fires_targets() -> None:
+    row = _row("2026-10-02T00:00:00Z", "no, that's wrong", targets=["F1", "F2"])
+    (sheet_row,) = rt.draw_sample([row], seed=1)
+    assert sheet_row["target_ids"] == ["F1", "F2"]
+    assert sheet_row["prompt"] == "no, that's wrong"
+
+
+def _labels(ids: list[str], correct: int) -> dict[str, bool | None]:
+    return {i: n < correct for n, i in enumerate(ids)}
+
+
 def test_score_reports_each_grader_and_the_bar() -> None:
-    ids = [f"f{i}" for i in range(10)]
-    a = {i: n < 8 for n, i in enumerate(ids)}  # 8 of 10
-    b = {i: n < 6 for n, i in enumerate(ids)}  # 6 of 10
-    report = rt.score(ids, a, b)
+    ids = [f"f{i}" for i in range(40)]
+    report = rt.score(ids, _labels(ids, 32), _labels(ids, 24))  # 80% and 60%
     assert [g["precision"] for g in report["graders"]] == [0.8, 0.6]
-    assert report["graders"][0]["wilson_lower"] == pytest.approx(rt.wilson_lower(8, 10))
-    assert report["agreed"] == 8 and report["kappa_n"] == 10
-    assert report["passed"] is False
-    b_pass = {i: n < 7 for n, i in enumerate(ids)}  # exactly the bar
-    assert rt.score(ids, a, b_pass)["passed"] is True
+    assert report["graders"][0]["wilson_lower"] == pytest.approx(rt.wilson_lower(32, 40))
+    assert report["agreed"] == 32 and report["kappa_n"] == 40
+    # p_o = 0.8; p_e = 0.8 * 0.6 + 0.2 * 0.4 = 0.56; kappa = 0.24 / 0.44.
+    assert report["kappa"] == pytest.approx(0.24 / 0.44)
+    assert report["verdict"] == "fail"
+    assert rt.score(ids, _labels(ids, 32), _labels(ids, 28))["verdict"] == "pass"  # 70% exactly
+
+
+def test_fewer_than_30_graded_fires_is_insufficient() -> None:
+    ids = [f"f{i}" for i in range(30)]
+    assert rt.score(ids, _labels(ids, 30), _labels(ids, 30))["verdict"] == "pass"
+    a = _labels(ids, 30)
+    a["f0"] = None  # one unclear fire leaves grader A with 29
+    report = rt.score(ids, a, _labels(ids, 30))
+    assert report["verdict"] == "insufficient"
+    assert report["min_graded"] == 30
 
 
 def test_an_unclear_fire_is_left_out_of_that_graders_figures() -> None:
@@ -86,12 +106,45 @@ def test_score_refuses_a_sheet_fire_without_both_labels() -> None:
         rt.score(["f0", "f1"], {"f0": True, "f1": True}, {"f0": True})
 
 
+def _transcript_line(ts: str, content: object, **extra: object) -> str:
+    return json.dumps({"type": "user", "timestamp": ts,
+                       "message": {"role": "user", "content": content}, **extra}) + "\n"
+
+
+def test_transcript_prompts_are_typed_short_and_fresh(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "s.jsonl").write_text(
+        _transcript_line("2026-10-02T00:00:00Z", "no, that's wrong")
+        + _transcript_line("2026-10-02T00:00:00Z", "no, that's wrong")  # resumed repeat
+        + _transcript_line("2026-10-02T00:00:01Z", [{"type": "text", "text": "still broken"}])
+        + _transcript_line("2026-10-02T00:00:02Z", [
+            {"type": "tool_result", "content": "x"}, {"type": "text", "text": "wrong"}])
+        + _transcript_line("2026-10-02T00:00:03Z", "a sub-task prompt", isSidechain=True)
+        + _transcript_line("2026-10-02T00:00:04Z", "meta", isMeta=True)
+        + _transcript_line("2026-10-02T00:00:05Z", "y" * 201)
+        + _transcript_line("2026-09-30T23:00:00Z", "too early")
+        + json.dumps({"type": "assistant", "timestamp": "2026-10-02T00:00:06Z"}) + "\n",
+        encoding="utf-8",
+    )
+    prompts = rt.transcript_prompts(tmp_path)
+    assert prompts == ["no, that's wrong", "still broken"]
+    assert rt.negative_count(prompts + ["perfect, thanks"]) == 2
+
+
 def test_the_cli_counts_samples_and_scores(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     audit = tmp_path / "hook_audit.jsonl"
-    fires = [_row(f"2026-10-02T00:00:{i:02d}Z", f"wrong {i}", targets=["F1"]) for i in range(4)]
+    fires = [_row(f"2026-10-02T00:{i // 60:02d}:{i % 60:02d}Z", f"wrong {i}", targets=["F1"])
+             for i in range(32)]
     audit.write_text("".join(json.dumps(r) + "\n" for r in fires), encoding="utf-8")
     assert rt.main(["count", "--audit", str(audit)]) == 0
-    assert "fires=4 with_targets=4" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "fires=32 with_targets=32" in out and "transcript_prompts" not in out
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "s.jsonl").write_text(
+        _transcript_line("2026-10-02T00:00:00Z", "no, that's wrong"), encoding="utf-8")
+    assert rt.main(["count", "--audit", str(audit), "--transcripts", str(tmp_path)]) == 0
+    assert "transcript_prompts=1 transcript_negative=1" in capsys.readouterr().out
     sheet = tmp_path / "sheet.jsonl"
     assert rt.main(["sample", "--audit", str(audit), "--seed", "1", "--dry-run"]) == 0
     assert not sheet.exists()
@@ -104,7 +157,7 @@ def test_the_cli_counts_samples_and_scores(tmp_path: Path, capsys: pytest.Captur
     capsys.readouterr()
     labels = [str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")]
     assert rt.main(["score", "--sheet", str(sheet), "--labels", *labels]) == 0
-    assert json.loads(capsys.readouterr().out)["passed"] is True
+    assert json.loads(capsys.readouterr().out)["verdict"] == "pass"
     (tmp_path / "b.jsonl").write_text(
         "".join(json.dumps({"id": i, "correct": False}) + "\n" for i in ids), encoding="utf-8")
     assert rt.main(["score", "--sheet", str(sheet), "--labels", *labels]) == 1
