@@ -222,8 +222,12 @@ def wonder_gc(
     - ``valid_to IS NULL`` (still active)
     - ``created_at`` older than ``ttl_days`` days ago
     - α ≤ 0.3 + ε and β ≤ 1.0 + ε (priors unchanged from ingest defaults)
-    - no ``feedback_history`` rows (``apply_feedback`` never called)
+    - no endorsement ``feedback_history`` rows (exposure-only rows from
+      the retrieval hook don't count, #1171)
     - no ``RESOLVES`` edges (incoming or outgoing)
+    - no support that #1650 evidence promotion counts: a user-spoken
+      corroboration or a complete restatement you typed in another
+      session (#1658, :func:`aelfrice.phantom_promotion_opportunity.has_promotion_evidence`)
 
     If ``dry_run`` is True, reports candidates without mutating the store.
     The second run in non-dry-run mode finds zero new candidates
@@ -234,7 +238,17 @@ def wonder_gc(
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
     cutoff_ts = cutoff.isoformat()
 
-    candidate_ids = store.query_wonder_gc_candidates(cutoff_ts=cutoff_ts)
+    from aelfrice.phantom_promotion_opportunity import (  # noqa: PLC0415
+        has_promotion_evidence,
+    )
+
+    # #1658: the SQL predicate can't see your restatements, which land on
+    # twin beliefs, so a phantom partway to #1650 promotion is kept here.
+    candidate_ids: list[str] = []
+    for belief_id in store.query_wonder_gc_candidates(cutoff_ts=cutoff_ts):
+        phantom = store.get_belief(belief_id)
+        if phantom is not None and not has_promotion_evidence(store, phantom):
+            candidate_ids.append(belief_id)
     scanned = len(candidate_ids)
 
     if dry_run:

@@ -414,7 +414,8 @@ def _evidence_supports(
     each complete restatement of its ``sentences`` in one session. An
     event counts only when it carries a session id, falls after ``born``,
     and isn't from the session that created the phantom. The one count
-    behind :func:`find_evidence_promotable_phantoms`.
+    behind both :func:`find_evidence_promotable_phantoms` and
+    :func:`has_promotion_evidence`, so GC and promotion can't drift apart.
     """
     def admitted(events: list[tuple[str | None, str]]) -> Counter[str]:
         counts: Counter[str] = Counter()
@@ -442,6 +443,31 @@ def _evidence_supports(
         if restated:
             complete[sid] += restated
     return complete
+
+
+def has_promotion_evidence(store: "MemoryStore", phantom: "Belief") -> bool:
+    """True when ``phantom`` has any support #1650 promotion counts.
+
+    Wonder GC (#1658) keeps such a phantom: it is partway to evidence
+    promotion, and collecting it would discard what you said. The count
+    is :func:`find_evidence_promotable_phantoms`'s, with a threshold of
+    one support. A typed twin of only some of a multi-sentence phantom's
+    sentences is not a complete restatement, so it does not count here
+    either. Promotion's eligibility gates (the sentence-residue check,
+    locks, contradictions, an earlier ``aelf demote``) don't apply: they
+    decide whether to promote, not whether you supported the phantom.
+    An unparseable ``created_at`` admits every dated user event, so the
+    guard errs toward keeping the phantom. Read-only.
+    """
+    from aelfrice.ingest import stored_sentences  # noqa: PLC0415
+
+    born = _parse_instant(phantom.created_at) or datetime.min.replace(
+        tzinfo=timezone.utc,
+    )
+    supports = _evidence_supports(
+        store, phantom, born, stored_sentences(phantom.content),
+    )
+    return sum(supports.values()) > 0
 
 
 def find_evidence_promotable_phantoms(

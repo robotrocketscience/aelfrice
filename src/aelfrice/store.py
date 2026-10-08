@@ -3805,6 +3805,10 @@ class MemoryStore:
         regardless of its source. Pinned by
         test_bayesian_update_is_monotone_so_the_prior_band_is_exact.
 
+        This is the SQL pre-filter only. `wonder_gc` also keeps any phantom
+        with a support that #1650 evidence promotion counts (#1658): your
+        restatements land on twin beliefs, which this query can't see.
+
         The caller is responsible for computing `cutoff_ts` from `ttl_days`.
         Returns a list of belief IDs; order is not guaranteed.
         """
