@@ -3792,6 +3792,8 @@ class MemoryStore:
         - no *endorsement* feedback_history rows — rows whose source is in
           `EXPOSURE_ONLY_FEEDBACK_SOURCES` do not count (#1171)
         - no RESOLVES edges (incoming or outgoing)
+        - lock_level != 'user' (#1658): GC never collects a phantom you
+          locked, at either lock tier, whatever its evidence
 
         #1171: the feedback-row clause originally read "no feedback_history
         rows at all", as a proxy for "the posterior was never touched". #1086
@@ -3832,6 +3834,7 @@ class MemoryStore:
             WHERE b.type = 'speculative'
               AND b.origin = 'speculative'
               AND b.valid_to IS NULL
+              AND b.lock_level != ?
               AND b.created_at < ?
               AND b.alpha <= ?
               AND b.beta  <= ?
@@ -3849,6 +3852,7 @@ class MemoryStore:
               )
             """,
             (
+                LOCK_USER,
                 cutoff_ts,
                 alpha_default + alpha_epsilon,
                 beta_default + beta_epsilon,

@@ -7,7 +7,8 @@ so without this guard a stale phantom with a restatement in progress was
 collected. The guard keeps a phantom that promotion could promote and
 that has any support promotion counts, and nothing else: a phantom that
 fails one of promotion's eligibility gates is collected whatever support
-it has.
+it has. The one exception is a user lock: the GC pre-filter never offers
+a locked phantom for collection, so it is kept whatever its evidence.
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_WONDER_INGEST,
     LOCK_NONE,
+    LOCK_TIER_FROZEN,
+    LOCK_TIER_REFERENCE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_SPECULATIVE,
@@ -45,11 +48,11 @@ def _ts(days_ago: int) -> str:
 
 def _phantom(
     content: str = A, *, session: str | None = "s0", created_at: str | None = None,
-    lock: str = LOCK_NONE,
+    lock: str = LOCK_NONE, tier: str = LOCK_TIER_FROZEN,
 ) -> Belief:
     return Belief(
         id="p1", content=content, content_hash="wonder_p1", alpha=0.3, beta=1.0,
-        type=BELIEF_SPECULATIVE, lock_level=lock,
+        type=BELIEF_SPECULATIVE, lock_level=lock, lock_tier=tier,
         locked_at=_ts(19) if lock == LOCK_USER else None,
         created_at=created_at or _ts(20), last_retrieved_at=None,
         session_id=session, origin=ORIGIN_SPECULATIVE,
@@ -194,10 +197,28 @@ def test_a_restated_question_is_collected(
     assert _collected(store)
 
 
-def test_a_locked_phantom_with_support_is_collected(store: MemoryStore) -> None:
+@pytest.mark.parametrize("tier", [LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE])
+@pytest.mark.parametrize("supported", [False, True])
+def test_a_locked_phantom_is_never_collected(
+    store: MemoryStore, tier: str, supported: bool,
+) -> None:
+    # GC never collects a phantom you locked, whatever its evidence. Only
+    # the pre-filter's lock exemption keeps it: the promotion guard refuses
+    # a locked phantom (test_the_guard_does_not_keep_a_locked_phantom).
+    store.insert_belief(_phantom(lock=LOCK_USER, tier=tier))
+    if supported:
+        _corroborate(store)
+    assert store.query_wonder_gc_candidates(cutoff_ts=_ts(14)) == []
+    assert wonder_gc(store, ttl_days=14, dry_run=True).scanned == 0
+    assert _collected(store) is False
+
+
+def test_the_guard_does_not_keep_a_locked_phantom(store: MemoryStore) -> None:
+    # The GC pre-filter already exempts a locked phantom, so wonder_gc never
+    # reaches this gate; the guard still applies it, as promotion does.
     store.insert_belief(_phantom(lock=LOCK_USER))
     _corroborate(store)
-    assert _collected(store)
+    assert promotion_guarded_ids(store, ["p1"]) == set()
 
 
 def test_a_contradicted_phantom_with_support_is_collected(
