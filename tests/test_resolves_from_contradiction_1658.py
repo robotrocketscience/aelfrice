@@ -115,15 +115,27 @@ def test_auto_resolve_rerun_writes_no_second_resolves_edge() -> None:
     assert _count(s, EDGE_RESOLVES) == 1
 
 
-def test_resolves_written_when_supersedes_came_from_another_writer() -> None:
-    """The triple extractor can write SUPERSEDES before the tie-breaker runs.
-    The RESOLVES check is independent, so the pair still gets one."""
+def test_direct_call_writes_resolves_when_supersedes_already_exists() -> None:
+    """`resolve_contradiction` checks RESOLVES on its own, so a direct call
+    on a pair that already has SUPERSEDES still writes RESOLVES."""
     s = _contradicting_pair()
     s.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPERSEDES, weight=1.0))
     result = resolve_contradiction(s, "A", "B")
     assert result.supersedes_created is False
     assert result.resolves_created is True
     assert s.get_edge("A", "B", EDGE_RESOLVES) is not None
+
+
+def test_aelf_resolve_skips_a_pair_whose_supersedes_came_first() -> None:
+    """`aelf resolve` goes through `find_unresolved_contradictions`, which
+    skips any pair with SUPERSEDES in either direction. A pair whose
+    SUPERSEDES came from another writer (the triple extractor) therefore
+    gets no RESOLVES edge from `aelf resolve`."""
+    for src, dst in (("A", "B"), ("B", "A")):
+        s = _contradicting_pair()
+        s.insert_edge(Edge(src=src, dst=dst, type=EDGE_SUPERSEDES, weight=1.0))
+        assert auto_resolve_all_contradictions(s) == []
+        assert _count(s, EDGE_RESOLVES) == 0
 
 
 def test_self_pair_writes_no_resolves_edge() -> None:

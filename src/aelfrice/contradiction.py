@@ -314,9 +314,13 @@ def resolve_contradiction(
         weight=SUPERSEDES_WEIGHT,
     ))
     # #1658: the RESOLVES edge marks the same decision for its readers
-    # (`introspect` status, the wonder GC exemption). Checked separately
-    # from SUPERSEDES, so a pair whose SUPERSEDES edge came from another
-    # writer (the triple extractor) still gets one.
+    # (`introspect` status, the wonder GC exemption). It has its own
+    # existence check, so a direct call on a pair that already has
+    # SUPERSEDES still writes RESOLVES. `aelf resolve` never makes that
+    # call: `find_unresolved_contradictions` skips any pair with a
+    # SUPERSEDES edge in either direction, so a pair whose SUPERSEDES
+    # edge came from another writer (the triple extractor) gets no
+    # RESOLVES edge and no audit row from `aelf resolve`.
     resolves_created = store.get_edge(
         winner.id, loser.id, EDGE_RESOLVES,
     ) is None and store.insert_edge(Edge(
