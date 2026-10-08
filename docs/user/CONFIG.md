@@ -1324,11 +1324,13 @@ With neither, unlabeled beliefs keep today's core rule, so nothing leaves core. 
 
 Boolean, default `true` (#1741). Precedence (the first decisive tier applies): environment variable `AELFRICE_CORE_GATE_BACKGROUND` > TOML `[core_gate] background` > default `true`. `0`, `false`, `no`, and `off` turn it off, and `1`, `true`, `yes`, and `on` turn it on; any other value falls through to the TOML key.
 
-The detached process runs `claude -p --model haiku` with your existing Claude Code login, so it needs no API key. It runs with no tools, no MCP servers, no skills, no CLAUDE.md or auto memory, and all hooks off, so it can't fire your hooks or aelfrice's. Each run is capped at $0.10 with `--max-budget-usd`; a 50-belief batch measured about $0.04, or about $0.0008 per belief. The belief text in the batch goes to the model, as it does when your agent labels a batch.
+The detached process runs `claude -p --model haiku` with your Claude Code login. aelfrice removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from its environment, because in `-p` mode a set key always wins over the login and would be billed; if you use only an API key, background labeling fails and leaves its batches open. The run has no tools, no MCP servers, no skills, and no CLAUDE.md or auto memory, and `disableAllHooks` turns off your hooks and aelfrice's; hooks that your organization's managed settings enforce still run. Each run is capped at $0.10 with `--max-budget-usd`; a 50-belief batch measured about $0.04, or about $0.0008 per belief. The belief text in the batch goes to the model, as it does when your agent labels a batch.
 
 The process writes one line per run to `core_gate_background.jsonl` beside the store, with the batch ID, the outcome, the time taken, and the cost, but no belief text. A run that fails leaves its batch open; `aelf doctor core-gate --emit` batches those beliefs again.
 
-Background labeling doesn't run in a headless session (#1634), on the Codex host, or when `claude` isn't on your `PATH`. The variable and the key apply from the next Stop.
+Background labeling doesn't run on Windows yet, in a headless session (#1634), on the Codex host, or when `claude` isn't on your `PATH`. The variable and the key apply from the next Stop.
+
+The reply goes through the same strict check as `aelf core-gate accept`, which since #1741 also accepts a reply wrapped in one Markdown code fence. That changed the classifier version, so labels made under 5.1.x no longer apply, and those beliefs are labeled again.
 
 ### `session_end`
 

@@ -25,7 +25,7 @@ Three exceptions are on by default:
 
 - **The update notifier** (`lifecycle.py`) makes one GET request to `https://pypi.org/pypi/aelfrice/json` to check for new releases, gated by a time-to-live (TTL). It transmits nothing; it only reads. To disable the notifier, run `export AELF_NO_UPDATE_CHECK=1`.
 - **The pre-issue duplicate guard** (`pre_issue_create_hook.py`, installed by default since v3.4.0) runs `gh issue list --search <tokens>` before a `gh issue create` tool call, and warns you about duplicates. **This guard does transmit data:** the tokens come from the issue title you typed. It fires only on `gh issue create`, never on ordinary retrieval, on ingest, or on any other command. To disable the guard, run `export AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass a single call, set `ALLOW_DUP_ISSUE=1`. To never install the guard, run `aelf setup --no-pre-issue-guard`.
-- **Background core-gate labeling** (`core_gate_background.py`, on by default since #1741) runs your `claude` CLI as `claude -p --model haiku` in a detached process when the Stop hook finds new core candidates. **This path does transmit data:** the text of up to 50 beliefs that the session created, inside the classifier prompt, to the model behind your Claude Code login, which is the same provider your conversation already goes to. It runs only when `claude` is on your `PATH`, never in a headless session or on the Codex host. To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`.
+- **Background core-gate labeling** (`core_gate_background.py`, on by default since #1741) runs your `claude` CLI as `claude -p --model haiku` in a detached process when the Stop hook finds new core candidates. **This path does transmit data:** the stored text of up to 50 beliefs that the session created, inside the classifier prompt, to the model behind your Claude Code login, which is the same provider your conversation already goes to. aelfrice removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the run's environment, so it never bills an API key. It runs only when `claude` is on your `PATH`, and never on Windows, in a headless session, or on the Codex host. To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`.
 
 ## No telemetry
 
@@ -68,9 +68,9 @@ The v1.5.0 default-on flip in `[onboard.llm].enabled` is non-destructive. If you
 
 The opt-out surface is the same surface that already governs the local ingest.
 
-### `aelf doctor --classify-orphans` — the one path that sends *stored* content
+### `aelf doctor --classify-orphans` — an opt-in path that sends *stored* content
 
-Every other outbound path sends text that aelfrice has read straight out of your project files. This path is different, and this page describes it separately for that reason. The path asks the vendor model to assign a type to the beliefs still marked `unknown`, and to do that it sends **the content of those stored beliefs**. That content can include statements you typed that aelfrice captured from conversation transcripts.
+Two outbound paths send the content of stored beliefs: this one, and background core-gate labeling, which is on by default (see the inventory below). Every other outbound path sends text that aelfrice has read straight out of your project files. This path asks for consent, so this page describes it separately. The path asks the vendor model to assign a type to the beliefs still marked `unknown`, and to do that it sends **the content of those stored beliefs**. That content can include statements you typed that aelfrice captured from conversation transcripts.
 
 The boundary of this path is *not* identical to the boundary of onboard. The command passes `enabled=True` internally, so `[onboard.llm].enabled = false` does **not** close a gate here. Running the command is itself the explicit opt-in. These conditions guard the command:
 
@@ -105,7 +105,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 
 Of the three default-on paths, only the notifier transmits nothing; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
-Five rows are of that kind: the pre-issue guard, background labeling, and the last three, each of which runs another program. Those rows are why the count in this section has been wrong before. Only the update notifier and the two classifier rows show up under the in-process grep; the other five show up only under the `subprocess` grep. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
+Four rows are of that kind: the pre-issue guard, background labeling, `aelf gate list`, and `aelf upgrade`, each of which runs another program. Those rows are why the count in this section has been wrong before. The other three, the update notifier, `aelf onboard`, and `aelf doctor --classify-orphans`, show up under the in-process grep; the four show up only under the `subprocess` grep. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
 
 **Confirm at the source:**
 

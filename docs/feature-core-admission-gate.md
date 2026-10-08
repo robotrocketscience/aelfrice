@@ -78,7 +78,9 @@ arms only if a classifier has labeled it as one of the following:
   `<session-start>` block, `<locked>` included, is unaffected.
 - The host-driven onboard classifier is the precedent for the call path. The
   CLI emits the candidates, the host dispatches its cheapest model, and the
-  CLI accepts the labels. The aelfrice CLI makes no outbound call. For that
+  CLI accepts the labels; the aelfrice CLI makes no outbound call on that
+  path. Background labeling (#1741, below) runs the host's `claude` CLI
+  instead. For the onboard
   flow, read [`design/llm_classifier.md`](design/llm_classifier.md).
 - The precedent is the pattern, not the payload. The onboard handshake
   accepts `belief_type` and `persist` for the four belief types, and it
@@ -94,9 +96,11 @@ records a `session_end` batch of the newest `MAX_BATCH` candidates and
 starts a detached `python -m aelfrice.core_gate_background` process. That
 process rebuilds the prompt with `build_prompt` from the batch's beliefs,
 runs `claude -p --model haiku` with tools, MCP servers, skills,
-CLAUDE.md, auto memory, and hooks off and a $0.10 budget cap, strips one
-surrounding Markdown fence from the reply, checks it with `parse_labels`,
-and caches the labels. The classifier version doesn't change. Nothing is
+CLAUDE.md, auto memory, hooks, and API keys off and a $0.10 budget cap,
+checks the reply with `parse_labels`, and caches the labels.
+`parse_labels` strips one surrounding Markdown fence for both accept
+paths; that change made a new classifier version. It's off on Windows
+until verified there. Nothing is
 written to the hook's stdout. A run that fails leaves the batch open,
 which the backlog drain covers. Each run appends one line, with no belief
 text, to `core_gate_background.jsonl` beside the store.

@@ -44,7 +44,7 @@
       "default_on": true,
       "since": "2.1.0",
       "timeout": 30,
-      "description": "Prompt to lock session corrections and directives at turn end (#582, #1315); label the session's new core candidates (#1638) in a detached claude -p run with no conversation turn (#1741; AELFRICE_CORE_GATE_BACKGROUND=0 turns it off), or, with AELFRICE_CORE_GATE_SESSION_END=1, by asking the agent in an extra turn (#1740)."
+      "description": "Prompt to lock session corrections and directives at turn end (#582, #1315); label the session's new core candidates (#1638) in a detached claude -p run with no conversation turn when claude is on PATH (#1741; AELFRICE_CORE_GATE_BACKGROUND=0 or [core_gate] background = false turns it off); when that doesn't run, AELFRICE_CORE_GATE_SESSION_END=1 or [core_gate] session_end = true asks the agent in an extra turn instead (#1740)."
     },
     {
       "name": "search_tool",
