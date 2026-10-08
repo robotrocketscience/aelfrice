@@ -13,8 +13,12 @@ The runner's flags were measured on #1741 before it was built:
   `--system-prompt`, and the two `CLAUDE_CODE_DISABLE_*` variables keep
   Claude Code's own context out of the run. Without them each run carried
   about 51,000-64,000 input tokens; with them, about 2,300.
-- `--settings '{"disableAllHooks": true}'` keeps the child's run from
-  firing this user's hooks, aelfrice's included, so it can't recurse.
+- `--setting-sources ""` loads none of the user's, project's, or local
+  settings files, so no hook, `apiKeyHelper`, or settings `env` block
+  reaches the run (verified: the login still authenticates). Managed
+  settings an organization deploys still apply.
+- `--settings '{"disableAllHooks": true}'` turns hooks off as well, so
+  the run can't fire aelfrice's hooks and recurse.
 - `--no-session-persistence` keeps the run out of the session history.
 - Thinking stays on: with it off, agreement with the reference labels fell
   by about 19 points.
@@ -171,6 +175,7 @@ def runner_argv(claude: str) -> list[str]:
         claude, "-p",
         "--model", RUNNER_MODEL,
         "--tools", "",
+        "--setting-sources", "",
         "--settings", '{"disableAllHooks": true}',
         "--no-session-persistence",
         "--output-format", "json",

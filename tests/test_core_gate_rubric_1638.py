@@ -10,7 +10,7 @@ from aelfrice import core_gate as cg
 #: The current classifier's digest. CLASSIFIER_VERSION is derived from the
 #: digest, so changing the classifier already changes the version and old
 #: labels stop applying; this pin only makes such a change deliberate.
-PINNED_DIGEST = "ae354b226473cd4812b1f4f0f69bc9303df867e9702d76b95763d1e82ae6fdf3"
+PINNED_DIGEST = "76a67522c695f1f314da30b909ddb9aa5dec82168cc3433c938b437a14b6192b"
 
 #: The examples that replace the reference raters' private ones. Everything
 #: else in the rubric is the raters' text, word for word.

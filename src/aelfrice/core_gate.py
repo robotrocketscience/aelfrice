@@ -127,8 +127,9 @@ def parse_labels(reply: str, expected: set[int]) -> dict[int, str]:
     partial or malformed reply is rejected whole, so a failed run can never
     look like a set of labels.
 
-    One surrounding Markdown code fence (```` ``` ```` or ```` ```json ````,
-    closed on its own) is removed first: the smallest model wrapped every
+    One surrounding Markdown code fence (an opening ```` ``` ```` or
+    ```` ```json ```` line, and a reply that ends in ```` ``` ````) is
+    removed first: the smallest model wrapped every
     reply in one when measured on #1741. Both accept paths, `aelf
     core-gate accept` and the background labeler, go through this, so they
     take the same replies.

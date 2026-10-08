@@ -276,7 +276,7 @@ def test_overflow_never_takes_the_opt_in_turn(
 def test_runner_argv_is_the_measured_configuration() -> None:
     """Killed by: dropping or changing any measured flag."""
     assert bg.runner_argv(CLAUDE) == [
-        CLAUDE, "-p", "--model", "haiku", "--tools", "",
+        CLAUDE, "-p", "--model", "haiku", "--tools", "", "--setting-sources", "",
         "--settings", '{"disableAllHooks": true}', "--no-session-persistence",
         "--output-format", "json", "--max-budget-usd", "0.10",
         "--system-prompt", bg.RUNNER_SYSTEM_PROMPT,
@@ -622,3 +622,113 @@ def test_no_log_for_an_in_memory_store(tmp_path: Path, monkeypatch: pytest.Monke
 def test_the_config_section_matches_the_hook() -> None:
     """Killed by: the two modules reading different TOML tables."""
     assert bg.CORE_GATE_CONFIG_SECTION == hook.CORE_GATE_CONFIG_SECTION
+
+
+# --- review round 2 -----------------------------------------------------------
+
+
+def test_a_concurrent_stop_that_batched_first_leaves_nothing(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: not collecting the candidates again inside the
+    transaction, or dropping the empty-batch check. Another Stop batches w1
+    between this Stop's first look and its transaction; this one must
+    neither batch w1 again nor start a second paid run."""
+    calls: list[str] = []
+
+    def racing_find_claude() -> str:
+        store = MemoryStore(str(db))
+        try:
+            store.create_core_gate_batch(
+                [CoreGateBatchItem(index=0, belief_id="w1", content_hash="hash-w1")],
+                classifier_version=str(CLASSIFIER_VERSION), origin="session_end",
+                session_id=SESSION, created_at="2026-10-01T00:00:01Z",
+            )
+        finally:
+            store.close()
+        return CLAUDE
+
+    monkeypatch.setattr(bg, "find_claude", racing_find_claude)
+    monkeypatch.setattr(bg, "spawn", lambda batch_id, **_: calls.append(batch_id) or True)
+    _seed(db, [_belief("w1")])
+    out, err = _stop(tmp_path)
+    assert out == ""
+    assert calls == []
+    assert len(_batches(db)) == 1
+    assert "failed" not in err
+
+
+def test_the_background_batch_takes_an_immediate_transaction(
+    db: Path, tmp_path: Path, spawned: list[tuple[str, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: a deferred transaction, which lets two Stops read the same
+    candidates before either writes."""
+    modes: list[bool] = []
+    real = MemoryStore.transaction
+
+    def spy(self: MemoryStore, *args: Any, **kwargs: Any) -> Any:
+        modes.append(bool(kwargs.get("immediate", False)))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(MemoryStore, "transaction", spy)
+    _seed(db, [_belief("w1")])
+    _stop(tmp_path)
+    assert len(spawned) == 1
+    assert modes and all(modes)
+
+
+@pytest.mark.parametrize("value", [" 0 ", "OFF", "\tno\n"])
+def test_env_value_is_trimmed_and_case_folded(
+    db: Path, tmp_path: Path, spawned: list[tuple[str, str, str]], value: str,
+) -> None:
+    """Killed by: not trimming or case-folding the env value."""
+    _seed(db, [_belief("w1")])
+    _stop(tmp_path, env={bg.BACKGROUND_ENV: value})
+    assert spawned == []
+
+
+def test_the_record_carries_the_run_time(db: Path) -> None:
+    """Killed by: dropping `seconds` from the log record."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE,
+                                run=FakeRun(stdout=_reply([(0, "A")])), env={})
+    finally:
+        store.close()
+    assert isinstance(record["seconds"], float)
+
+
+def test_candidates_are_read_inside_the_transaction(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: reading the candidates before the transaction starts. A
+    competing Stop batches w1 just as this one opens its transaction; a
+    read taken before that point would batch w1 a second time."""
+    calls: list[str] = []
+    monkeypatch.setattr(bg, "find_claude", lambda: CLAUDE)
+    monkeypatch.setattr(bg, "spawn", lambda batch_id, **_: calls.append(batch_id) or True)
+    real = MemoryStore.transaction
+    raced: list[bool] = []
+
+    def racing_transaction(self: MemoryStore, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("immediate") and not raced:
+            raced.append(True)
+            other = MemoryStore(str(db))
+            try:
+                other.create_core_gate_batch(
+                    [CoreGateBatchItem(index=0, belief_id="w1", content_hash="hash-w1")],
+                    classifier_version=str(CLASSIFIER_VERSION), origin="session_end",
+                    session_id=SESSION, created_at="2026-10-01T00:00:01Z",
+                )
+            finally:
+                other.close()
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(MemoryStore, "transaction", racing_transaction)
+    _seed(db, [_belief("w1")])
+    _stop(tmp_path)
+    assert raced == [True]
+    assert calls == []
+    assert len(_batches(db)) == 1
