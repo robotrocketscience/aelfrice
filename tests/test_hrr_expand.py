@@ -233,6 +233,17 @@ def test_expand_seeds_returns_strongest_first() -> None:
     assert [b.id for b in hx.expand_seeds(store, idx, ["b2"], top_k=1)] == ["b1"]
 
 
+def test_expand_seeds_sorts_across_seeds() -> None:
+    """Killed by: dropping the merge sort, so neighbours come out in the
+    order the seeds found them. b4 finds b5 (~0.992) before b2 finds b1
+    (~1.077) and b3 (~1.001), so insertion order puts the weakest first."""
+    store = _toy_store()
+    idx = _built_index(store)
+    got = [b.id for b in hx.expand_seeds(store, idx, ["b4", "b2"])]
+    assert got == ["b1", "b3", "b5"]
+    assert [b.id for b in hx.expand_seeds(store, idx, ["b4", "b2"], top_k=1)] == ["b1"]
+
+
 def _ordering_store() -> MemoryStore:
     """sa -CONTRADICTS-> hub; sb -SUPPORTS-> hub; sb -CITES-> tgt.
 
@@ -240,7 +251,9 @@ def _ordering_store() -> MemoryStore:
     belief's position in the index. With them, sb's probe appends tgt
     (CITES) before the stronger hub (SUPPORTS), and tgt's similarity falls
     between hub's two, so append order and a keep-weakest merge both give
-    a different order from the correct one.
+    a different order from the correct one; with the seeds in both
+    orders, so do keep-first and keep-last merges. Only 2 fillers give
+    this ordering, which `test_ordering_fixture_discriminates` guards.
     """
     s = MemoryStore(":memory:")
     for k in range(2):
@@ -280,11 +293,13 @@ def test_neighbor_rows_are_strongest_first() -> None:
 
 def test_expand_seeds_keeps_each_neighbours_strongest_similarity() -> None:
     """Killed by: keeping a neighbour's weakest similarity across seeds, or
-    the first one seen. hub ranks above tgt only on its stronger sighting."""
+    the first or last one seen. hub ranks above tgt only on its stronger
+    sighting, which comes second in one seed order and first in the other."""
     store = _ordering_store()
     idx = _built_index(store)
-    got = [b.id for b in hx.expand_seeds(store, idx, ["sa", "sb"])]
-    assert got == ["hub", "tgt"]
+    for seeds in (["sa", "sb"], ["sb", "sa"]):
+        got = [b.id for b in hx.expand_seeds(store, idx, seeds)]
+        assert got == ["hub", "tgt"], seeds
 
 
 def test_fresh_store_has_no_neighbour_cache_table() -> None:
