@@ -49,6 +49,19 @@ _OTHER_STATUSES = (
 )
 
 
+# Lines that are not mutant results but that a looser pattern would count:
+# a line count (`wc -l`), an unanchored match, a bare `__mutmut_`, or a key
+# class that allows a colon. None ends in a status, so none moves the
+# killed or survived counts.
+_NOT_MUTANT_LINES = (
+    "    done",
+    "# pkg.mod.x_kept__mutmut_1: see above",
+    "    Error:pkg.mod.x_kept__mutmut_1: see above",
+)
+
+_N_MUTANTS = 3 + len(_OTHER_STATUSES)
+
+
 def _report(*extra: str) -> str:
     lines = [_FUNCTION_KILLED, _METHOD_KILLED, _METHOD_SURVIVED]
     for i, status in enumerate(_OTHER_STATUSES):
@@ -56,6 +69,7 @@ def _report(*extra: str) -> str:
             f"pkg.mod.x_kept__mutmut_{10 + i}"
         )
         lines.append(f"    {key}: {status}")
+    lines.extend(_NOT_MUTANT_LINES)
     lines.extend(extra)
     return "\n".join(lines) + "\n"
 
@@ -94,13 +108,12 @@ def test_the_pr_report_total_counts_method_mutants(
     """AC2/AC3: the table's total counts function and method mutants alike.
 
     Fails under the `[A-Za-z0-9_.]` key class, which counts only the
-    function-mutant lines.
+    function-mutant lines, and under any pattern that also counts one of
+    `_NOT_MUTANT_LINES`.
     """
-    report = _report()
-    proc, summary = _run_step("Report", report, tmp_path, locale)
+    proc, summary = _run_step("Report", _report(), tmp_path, locale)
     assert proc.returncode == 0, proc.stderr
-    n_lines = len(report.splitlines())
-    assert f"| {n_lines} | 2 | 1 |" in summary, summary
+    assert f"| {_N_MUTANTS} | 2 | 1 |" in summary, summary
 
 
 @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
@@ -120,11 +133,15 @@ def test_the_pr_report_counts_add_up_to_the_total(
 
 
 def test_the_pr_report_names_a_status_it_does_not_list(tmp_path: Path) -> None:
-    """AC4: a status a later mutmut adds is reported, not silently dropped."""
-    report = _report("    pkg.mod.xǁBoxǁshrink__mutmut_99: zapped")
+    """AC4: a status a later mutmut adds is reported, not silently dropped,
+    and the line says how many mutants carry one."""
+    report = _report(
+        "    pkg.mod.xǁBoxǁshrink__mutmut_98: zapped",
+        "    pkg.mod.x_kept__mutmut_99: zapped",
+    )
     proc, summary = _run_step("Report", report, tmp_path, "C.UTF-8")
     assert proc.returncode == 0, proc.stderr
-    assert "unlisted status: 1\n" in summary, summary
+    assert "unlisted status: 2\n" in summary, summary
 
 
 @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
@@ -136,7 +153,9 @@ def test_the_weekly_guard_total_counts_method_mutants(
     The guard fails the job on `not checked`, so the report here holds only
     killed and survived mutants.
     """
-    report = "\n".join([_FUNCTION_KILLED, _METHOD_KILLED, _METHOD_SURVIVED]) + "\n"
+    report = "\n".join(
+        [_FUNCTION_KILLED, _METHOD_KILLED, _METHOD_SURVIVED, *_NOT_MUTANT_LINES]
+    ) + "\n"
     proc, _ = _run_step(
         "Assert the run actually produced results", report, tmp_path, locale
     )
