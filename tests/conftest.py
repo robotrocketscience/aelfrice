@@ -872,11 +872,11 @@ def _no_background_labeler(monkeypatch: pytest.MonkeyPatch) -> None:
     The Stop hook labels core candidates by running the host's `claude`
     CLI in a detached child when it finds one on PATH, which a
     contributor's machine has. Two layers, because tests reach the hook
-    two ways: in process, often with an explicit `env={}` that never reads
-    `os.environ`, so `find_claude` reports no CLI; and through installed
-    entry points in subprocesses, which a monkeypatch can't reach but the
-    environment variable does. A test of the background path sets both
-    back explicitly.
+    two ways: in process, often with an explicit `env={}` that the env-var
+    check never sees, so `find_claude` is patched to report no CLI; and
+    through installed entry points in subprocesses, which a monkeypatch
+    can't reach but the environment variable does. A test of the background
+    path sets both back explicitly.
     """
     monkeypatch.setenv("AELFRICE_CORE_GATE_BACKGROUND", "0")
     import aelfrice.core_gate_background as background  # noqa: PLC0415

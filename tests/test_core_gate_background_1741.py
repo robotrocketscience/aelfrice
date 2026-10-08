@@ -32,6 +32,9 @@ from aelfrice.store import MemoryStore
 
 pytestmark = pytest.mark.timeout(60)
 
+# Captured at import, before the autouse conftest fixture replaces it.
+_REAL_FIND_CLAUDE = bg.find_claude
+
 SESSION = "widgetsession-bg"
 CLAUDE = "/opt/widget/bin/claude"
 
@@ -283,25 +286,18 @@ def test_runner_argv_is_the_measured_configuration() -> None:
 
 def test_runner_env_keeps_thinking_and_drops_context() -> None:
     """Killed by: keeping a thinking cap, or not setting either disable."""
-    env = bg.runner_env({"MAX_THINKING_TOKENS": "0", "PATH": "/x"})
+    env = bg.runner_env({
+        "MAX_THINKING_TOKENS": "0", "PATH": "/x",
+        "ANTHROPIC_API_KEY": "widget-key", "ANTHROPIC_AUTH_TOKEN": "widget-token",
+    })
     assert "MAX_THINKING_TOKENS" not in env
+    # A set key always wins in -p mode, so it would bill that account
+    # instead of the Claude Code login (ruling on #1741).
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert env["PATH"] == "/x"
-
-
-@pytest.mark.parametrize(("raw", "want"), [
-    ('[{"index": 0}]', '[{"index": 0}]'),
-    ('```json\n[1]\n```', "[1]"),
-    ('```\n[1]\n```', "[1]"),
-    ('  ```json\n[1]\n```\n', "[1]"),
-    ("```json [1]", "```json [1]"),
-    ("```json\n[1]", "```json\n[1]"),
-])
-def test_strip_fence(raw: str, want: str) -> None:
-    """Killed by: stripping an unclosed or single-line fence, or not
-    stripping a closed one."""
-    assert bg.strip_fence(raw) == want
 
 
 def _open_batch(db: Path, ids: list[str], *, version: str | None = None) -> tuple[MemoryStore, str]:
@@ -433,9 +429,11 @@ def test_spawn_detaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
     assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
     assert seen["argv"] == [sys.executable, "-m", "aelfrice.core_gate_background", "widgetbatch", CLAUDE]
     assert seen["kw"]["env"]["AELFRICE_DB"] == "/x/memory.db"
-    assert seen["kw"]["stdout"] is subprocess.DEVNULL
-    if sys.platform != "win32":
-        assert seen["kw"]["start_new_session"] is True
+    # An inherited stdin or stderr keeps the host waiting on the hook
+    # for the whole CLI run; measured 8.4 s instead of 0.3 s.
+    for stream in ("stdin", "stdout", "stderr"):
+        assert seen["kw"][stream] is subprocess.DEVNULL, stream
+    assert seen["kw"]["start_new_session"] is True
 
 
 def test_spawn_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,3 +459,166 @@ def test_main_logs_one_record_without_text(
     assert rec["batch_id"] == batch_id and rec["outcome"] == bg.OUTCOME_ACCEPTED
     assert "widgetbg" not in lines[0]
     assert bg.main(["only-one"]) == 2
+
+
+# --- review additions ---------------------------------------------------------
+
+
+def test_find_claude_reads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: a wrong binary name, which would turn the feature off with
+    a green suite."""
+    if sys.platform == "win32":
+        pytest.skip("background labeling is off on Windows")
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert _REAL_FIND_CLAUDE() == str(exe)
+    monkeypatch.setenv("PATH", str(tmp_path / "missing"))
+    assert _REAL_FIND_CLAUDE() is None
+
+
+def test_find_claude_is_off_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: dropping the Windows guard (ruling on #1741)."""
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(bg.sys, "platform", "win32")
+    assert _REAL_FIND_CLAUDE() is None
+
+
+def test_spawn_comes_after_the_commit(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: starting the child before the batch is committed, when
+    the child's own connection couldn't see it."""
+    seen: list[int] = []
+    monkeypatch.setattr(bg, "find_claude", lambda: CLAUDE)
+
+    def checking_spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
+        conn = sqlite3.connect(db_path)
+        try:
+            seen.append(conn.execute(
+                "SELECT count(*) FROM core_gate_batches WHERE batch_id = ?", (batch_id,),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        return True
+
+    monkeypatch.setattr(bg, "spawn", checking_spawn)
+    _seed(db, [_belief("w1")])
+    _stop(tmp_path)
+    assert seen == [1]
+
+
+def test_label_batch_reports_a_refused_accept(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: reporting a refused accept as accepted."""
+    from aelfrice.store import CoreGateAcceptRefused
+
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+
+    def refuse(*_a: Any, **_k: Any) -> None:
+        raise CoreGateAcceptRefused("widget")
+
+    monkeypatch.setattr(store, "accept_core_gate_batch", refuse)
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE,
+                                run=FakeRun(stdout=_reply([(0, "A")])), env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_REFUSED
+    assert "labels" not in record
+
+
+def test_label_batch_never_raises_and_keeps_the_cost(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: letting a store error escape, or losing the cost of a run
+    that already happened."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+
+    def locked(*_a: Any, **_k: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "accept_core_gate_batch", locked)
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE,
+                                run=FakeRun(stdout=_reply([(0, "A")], cost=0.03)), env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_STORE_ERROR
+    assert record["error"] == "OperationalError"
+    assert record["cost_usd"] == 0.03
+
+
+def test_label_batch_refuses_a_deleted_belief(db: Path) -> None:
+    """Killed by: not checking that the batch's belief still exists."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    store._conn.execute("DELETE FROM beliefs WHERE id = 'w1'")  # noqa: SLF001
+    store._conn.commit()  # noqa: SLF001
+    run = FakeRun(stdout=_reply([(0, "A")]))
+    try:
+        assert bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={})["outcome"] == bg.OUTCOME_STALE_BELIEF
+    finally:
+        store.close()
+    assert run.calls == []
+
+
+def test_label_batch_passes_the_given_env(db: Path) -> None:
+    """Killed by: ignoring the `env` argument."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    run = FakeRun(stdout=_reply([(0, "A")]))
+    try:
+        bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={"WIDGET_SENTINEL": "1"})
+    finally:
+        store.close()
+    assert run.calls[0]["env"]["WIDGET_SENTINEL"] == "1"
+
+
+def test_label_batch_records_the_label_count_and_ignores_a_bool_cost(db: Path) -> None:
+    """Killed by: dropping `labels` from the record, or logging a bool as a cost."""
+    _seed(db, [_belief("w1"), _belief("w2")])
+    store, batch_id = _open_batch(db, ["w1", "w2"])
+    stdout = json.dumps({"result": json.dumps([{"index": 0, "label": "A"}, {"index": 1, "label": "C"}]),
+                         "total_cost_usd": True})
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE, run=FakeRun(stdout=stdout), env={})
+    finally:
+        store.close()
+    assert record["labels"] == 2
+    assert "cost_usd" not in record
+
+
+def test_runner_timeout_is_five_minutes() -> None:
+    """Killed by: a timeout other than the documented 300 s."""
+    assert bg.RUNNER_TIMEOUT_SECONDS == 300
+
+
+def test_main_returns_one_on_failure(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: inverting the exit code."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    store.close()
+    monkeypatch.setattr(bg.subprocess, "run", FakeRun(stdout="widget"))
+    assert bg.main([batch_id, CLAUDE]) == 1
+    (rec,) = [json.loads(x) for x in (db.parent / bg.LOG_FILENAME).read_text().splitlines()]
+    assert rec["outcome"] == bg.OUTCOME_RUN_FAILED
+
+
+def test_no_log_for_an_in_memory_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: writing a log file for `:memory:` (into the cwd)."""
+    monkeypatch.chdir(tmp_path)
+    bg._append_log(":memory:", {"outcome": "x"})  # pyright: ignore[reportPrivateUsage]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_config_section_matches_the_hook() -> None:
+    """Killed by: the two modules reading different TOML tables."""
+    assert bg.CORE_GATE_CONFIG_SECTION == hook.CORE_GATE_CONFIG_SECTION

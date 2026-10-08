@@ -20,9 +20,11 @@ The runner's flags were measured on #1741 before it was built:
   by about 19 points.
 - `--max-budget-usd 0.10` caps each run (operator ruling, 2026-10-08).
 
-The classifier version is untouched: the prompt is `core_gate.build_prompt`
-and the reply goes through `core_gate.parse_labels`, after stripping one
-surrounding Markdown fence, which the measured model always added.
+The labels are the classifier's own: the prompt is `core_gate.build_prompt`
+and the reply goes through `core_gate.parse_labels`, the same parser
+`aelf core-gate accept` uses. The child's environment drops any API key,
+so the run always uses the Claude Code login (`runner_env`). It doesn't run
+on Windows yet (`find_claude`).
 
 Never raises into the hook. A failed run leaves the batch open; an open
 batch claims its beliefs, so no later Stop asks about them, and
@@ -61,6 +63,11 @@ RUNNER_SYSTEM_PROMPT: Final[str] = (
 )
 LOG_FILENAME: Final[str] = "core_gate_background.jsonl"
 
+#: Removed from the child's environment (see `runner_env`).
+RUNNER_DROPPED_ENV: Final[tuple[str, ...]] = (
+    "MAX_THINKING_TOKENS", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+)
+
 #: Outcomes written to the log, one per run.
 OUTCOME_ACCEPTED: Final[str] = "accepted"
 OUTCOME_NO_BATCH: Final[str] = "no_batch"
@@ -70,6 +77,7 @@ OUTCOME_STALE_BELIEF: Final[str] = "stale_belief"
 OUTCOME_RUN_FAILED: Final[str] = "run_failed"
 OUTCOME_BAD_REPLY: Final[str] = "bad_reply"
 OUTCOME_REFUSED: Final[str] = "refused"
+OUTCOME_STORE_ERROR: Final[str] = "store_error"
 
 _ON: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _OFF: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
@@ -145,7 +153,15 @@ def background_enabled(
 
 
 def find_claude() -> str | None:
-    """Path of the host's `claude` CLI, or None when it isn't on PATH."""
+    """Path of the host's `claude` CLI, or None when it isn't on PATH.
+
+    Always None on Windows until the path is verified there (operator
+    ruling on #1741, 2026-10-08): a detached child may open a console
+    window, and an npm `claude.cmd` shim passes the JSON `--settings`
+    argument through cmd.exe quoting. Windows then behaves as 5.1.1 did.
+    """
+    if sys.platform == "win32":
+        return None
     return shutil.which(CLAUDE_BIN)
 
 
@@ -166,23 +182,22 @@ def runner_argv(claude: str) -> list[str]:
 
 
 def runner_env(base: dict[str, str]) -> dict[str, str]:
-    """`base` without a thinking cap, and with CLAUDE.md and auto memory off."""
+    """`base` for the child run.
+
+    Drops a thinking cap, turns CLAUDE.md and auto memory off, and drops
+    the API credentials. In `-p` mode an exported `ANTHROPIC_API_KEY` is
+    always used when present (https://code.claude.com/docs/en/authentication),
+    so leaving it would bill that key's account instead of the login
+    the user chose (operator ruling on #1741, 2026-10-08). A user with
+    key-only auth then gets no background labels: the run fails and the
+    batch stays open.
+    """
     env = dict(base)
-    env.pop("MAX_THINKING_TOKENS", None)
+    for name in RUNNER_DROPPED_ENV:
+        env.pop(name, None)
     env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return env
-
-
-def strip_fence(text: str) -> str:
-    """`text` without one surrounding Markdown code fence, if it has one."""
-    body = text.strip()
-    if not body.startswith("```"):
-        return body
-    first_newline = body.find("\n")
-    if first_newline == -1 or not body.endswith("```"):
-        return body
-    return body[first_newline + 1:-3].strip()
 
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
@@ -200,27 +215,47 @@ def label_batch(
 
     Returns a log record whose `outcome` is one of the `OUTCOME_*` values.
     Writes labels only on `accepted`; every other outcome writes nothing.
-    Never raises.
+    Never raises: an exception from the store, such as a lock held past
+    its timeout, is `store_error`, and the record keeps whatever it had
+    gathered, including the cost of a run that already happened.
     """
+    record: dict[str, object] = {"batch_id": batch_id}
+    try:
+        _label_batch(store, batch_id, record, claude=claude, run=run, env=env)
+    except Exception as exc:
+        record["outcome"] = OUTCOME_STORE_ERROR
+        record["error"] = type(exc).__name__
+    return record
+
+
+def _label_batch(
+    store: "MemoryStore",
+    batch_id: str,
+    record: dict[str, object],
+    *,
+    claude: str,
+    run: Runner | None,
+    env: dict[str, str] | None,
+) -> None:
+    """`label_batch`'s body. Fills `record` in place, so a raise keeps it."""
     from aelfrice import core_gate  # noqa: PLC0415
     from aelfrice.store import CoreGateAcceptRefused  # noqa: PLC0415
 
-    record: dict[str, object] = {"batch_id": batch_id}
     try:
         version = core_gate.current_classifier_version()
     except core_gate.ClassifierUnavailable:
         record["outcome"] = OUTCOME_STALE_VERSION
-        return record
+        return
     batch = store.get_core_gate_batch(batch_id)
     if batch is None:
         record["outcome"] = OUTCOME_NO_BATCH
-        return record
+        return
     if batch.accepted_at is not None:
         record["outcome"] = OUTCOME_NOT_OPEN
-        return record
+        return
     if batch.classifier_version != version:
         record["outcome"] = OUTCOME_STALE_VERSION
-        return record
+        return
     snippets: list[tuple[int, str]] = []
     for item in sorted(batch.items, key=lambda i: i.index):
         belief = store.get_belief(item.belief_id)
@@ -228,7 +263,7 @@ def label_batch(
             # The label is cached under the hash, so the model must see
             # the content that hash names.
             record["outcome"] = OUTCOME_STALE_BELIEF
-            return record
+            return
         snippets.append((item.index, belief.content))
     prompt = core_gate.build_prompt(snippets)
     runner = run if run is not None else subprocess.run
@@ -242,7 +277,7 @@ def label_batch(
     except (OSError, subprocess.SubprocessError) as exc:
         record["outcome"] = OUTCOME_RUN_FAILED
         record["error"] = type(exc).__name__
-        return record
+        return
     record["seconds"] = round(time.monotonic() - started, 1)
     try:
         out = json.loads(proc.stdout)
@@ -255,18 +290,18 @@ def label_batch(
     if proc.returncode != 0 or not isinstance(out, dict):
         record["outcome"] = OUTCOME_RUN_FAILED
         record["returncode"] = proc.returncode
-        return record
+        return
     result = cast(dict[str, Any], out).get("result")
     if not isinstance(result, str):
         record["outcome"] = OUTCOME_BAD_REPLY
-        return record
+        return
     try:
         labels = core_gate.parse_labels(
-            strip_fence(result), {item.index for item in batch.items},
+            result, {item.index for item in batch.items},
         )
     except ValueError:
         record["outcome"] = OUTCOME_BAD_REPLY
-        return record
+        return
     try:
         store.accept_core_gate_batch(
             batch_id, labels, classifier_version=version,
@@ -274,10 +309,10 @@ def label_batch(
         )
     except CoreGateAcceptRefused:
         record["outcome"] = OUTCOME_REFUSED
-        return record
+        return
     record["outcome"] = OUTCOME_ACCEPTED
     record["labels"] = len(labels)
-    return record
+    return
 
 
 def _append_log(store_path: str, record: dict[str, object]) -> None:
@@ -304,13 +339,9 @@ def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
         "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL, "close_fds": True, "env": env,
     }
-    if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        )
-    else:
-        kwargs["start_new_session"] = True
+    # POSIX only: `find_claude` reports no CLI on Windows, so the hook
+    # never gets here there.
+    kwargs["start_new_session"] = True
     try:
         subprocess.Popen(  # noqa: S603 - args are package-internal
             [sys.executable, "-m", "aelfrice.core_gate_background", batch_id, claude],
