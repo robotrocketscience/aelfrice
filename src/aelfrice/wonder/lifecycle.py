@@ -225,13 +225,17 @@ def wonder_gc(
     - no endorsement ``feedback_history`` rows (exposure-only rows from
       the retrieval hook don't count, #1171)
     - no ``RESOLVES`` edges (incoming or outgoing)
+    - no user lock, at either lock tier (#1658): GC never collects a
+      phantom you locked, whatever its evidence
     - not a phantom that #1650 evidence promotion could promote and
       that has a support promotion counts: a user-spoken corroboration
       or a complete restatement you typed in another session (#1658,
       :func:`aelfrice.phantom_promotion_opportunity.promotion_guarded_ids`).
-      A phantom that fails a promotion gate, such as a question or a
-      phantom with an inbound CONTRADICTS edge, is collected whatever
-      support it has.
+      A phantom that fails a promotion gate, such as one with an inbound
+      CONTRADICTS edge or with text a restatement can't cover, is
+      collected whatever support it has. A question passes those gates:
+      a corroboration you spoke on it keeps it, but typing it again is no
+      restatement, because ingest never keeps a question as yours.
 
     ``scanned`` counts only the phantoms GC deletes, or would delete in a
     dry run. Since #1658 it excludes the phantoms the promotion guard
