@@ -6561,19 +6561,26 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
-    def evidence_promotion_candidates(self) -> list[Belief]:
+    def evidence_promotion_candidates(
+        self, ids: Sequence[str] | None = None,
+    ) -> list[Belief]:
         """Phantoms that could be promoted on evidence (#1650): live,
         unlocked, with no inbound CONTRADICTS edge, no negative-valence
         feedback, and no earlier ``aelf demote`` of an automatic promotion
         (that undo is a veto). Ordered by ``created_at`` then ``id``.
 
+        ``ids`` limits the result to those belief ids. Wonder GC (#1658)
+        passes its candidates, so its guard applies these same gates.
+
         The evidence rule itself is
         :func:`aelfrice.phantom_promotion_opportunity.find_evidence_promotable_phantoms`.
         """
+        ids_json = None if ids is None else json.dumps(list(ids))
         return [_row_to_belief(r) for r in self._conn.execute(
             """
             SELECT b.* FROM beliefs b
             WHERE b.origin = ? AND b.valid_to IS NULL AND b.lock_level != ?
+              AND (? IS NULL OR b.id IN (SELECT je.value FROM json_each(?) je))
               AND NOT EXISTS (
                   SELECT 1 FROM edges e
                   WHERE e.dst = b.id AND e.type = 'CONTRADICTS')
@@ -6585,7 +6592,8 @@ class MemoryStore:
                   WHERE f.belief_id = b.id AND f.source = ?)
             ORDER BY b.created_at ASC, b.id ASC
             """,
-            (ORIGIN_SPECULATIVE, LOCK_USER, _SOURCE_REVERT_EVIDENCE),
+            (ORIGIN_SPECULATIVE, LOCK_USER, ids_json, ids_json,
+             _SOURCE_REVERT_EVIDENCE),
         ).fetchall()]
 
     def user_corroborations(
