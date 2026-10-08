@@ -14,10 +14,14 @@ not here.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Final
 
+from aelfrice import correction as _correction
 from aelfrice.correction import detect_correction
 from aelfrice.models import (
     BELIEF_CORRECTION,
@@ -45,6 +49,19 @@ _AGENT_INFERRED_DEFLATION: Final[float] = 0.2
 _DEFLATED_ALPHA_FLOOR: Final[float] = 0.5
 
 USER_SOURCE: Final[str] = "user"
+
+# Version of the ingest-time classifier, `classify_sentence` (#1658).
+# Every production `record_ingest` call stamps it on its `ingest_log` row
+# as `classifier_version`, so a row says which classifier rules were live
+# when it was written. Bump it when the classification rules change: the
+# keyword and pattern tables below, the correction detector's tables in
+# `aelfrice.correction`, the priors, or the order of the steps in
+# `classify_sentence`. `rule_set_hash()` changes on its own when a table
+# changes; this version is the human-readable name for the change.
+#
+# Not `core_gate.CLASSIFIER_VERSION` (#1638): that one versions the
+# post-ingest core-admission rubric, which never derives an ingest row.
+INGEST_CLASSIFIER_VERSION: Final[str] = "1.0.0"
 
 # --- Heuristic keyword sets ---------------------------------------------
 
@@ -423,3 +440,88 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
         persist=True,
         pending_classification=True,
     )
+
+
+# --- Rule-set digest (#1658) ----------------------------------------------
+
+
+def _pattern_entry(pattern: re.Pattern[str]) -> dict[str, object]:
+    return {"pattern": pattern.pattern, "flags": pattern.flags}
+
+
+def _rule_set_payload() -> dict[str, object]:
+    """Every rule table the ingest classifiers read, as plain data.
+
+    It hashes the data structures themselves, never source text:
+    `inspect.getsource` fails on a bytecode-only install (#1719). The LLM
+    classifier's prompt comes from `aelfrice.llm_classifier`, imported here
+    rather than at module level because this module must stay a leaf. The
+    user-message entry is the message `build_user_message` builds for one
+    fixed candidate, so a change to the request format counts too.
+    """
+    from aelfrice import llm_classifier as _llm  # noqa: PLC0415
+
+    sample = _llm.build_user_message(
+        [_llm.CandidateInput(index=0, text="sample", source="doc:sample")]
+    )
+    c = _correction
+    return {
+        "classification_core": {
+            "type_priors": {k: list(v) for k, v in TYPE_PRIORS.items()},
+            "agent_inferred_deflation": _AGENT_INFERRED_DEFLATION,
+            "deflated_alpha_floor": _DEFLATED_ALPHA_FLOOR,
+            "user_source": USER_SOURCE,
+            "requirement_keywords": list(_REQUIREMENT_KEYWORDS),
+            "requirement_re": _pattern_entry(_REQUIREMENT_RE),
+            "preference_keywords": list(_PREFERENCE_KEYWORDS),
+            "question_prefixes": list(_QUESTION_PREFIXES),
+            "float_leading_hedges": list(_FLOAT_LEADING_HEDGES),
+            "float_internal_hedges": list(_FLOAT_INTERNAL_HEDGES),
+            "sentence_boundary_re": _pattern_entry(_SENTENCE_BOUNDARY_RE),
+        },
+        "correction": {
+            "imperative_re": _pattern_entry(c._IMPERATIVE_RE),  # pyright: ignore[reportPrivateUsage]
+            "correction_anchor_re": _pattern_entry(c._CORRECTION_ANCHOR_RE),  # pyright: ignore[reportPrivateUsage]
+            "requirement_anchor_re": _pattern_entry(c._REQUIREMENT_ANCHOR_RE),  # pyright: ignore[reportPrivateUsage]
+            "declarative_re": _pattern_entry(c._DECLARATIVE_RE),  # pyright: ignore[reportPrivateUsage]
+            "always_never_re": _pattern_entry(c._ALWAYS_NEVER_RE),  # pyright: ignore[reportPrivateUsage]
+            "negation_re": _pattern_entry(c._NEGATION_RE),  # pyright: ignore[reportPrivateUsage]
+            "emphasis_re": _pattern_entry(c._EMPHASIS_RE),  # pyright: ignore[reportPrivateUsage]
+            "prior_ref_re": _pattern_entry(c._PRIOR_REF_RE),  # pyright: ignore[reportPrivateUsage]
+            "signal_threshold": c.CORRECTION_SIGNAL_THRESHOLD,
+            "confidence_per_signal": c._CONFIDENCE_PER_SIGNAL,  # pyright: ignore[reportPrivateUsage]
+        },
+        "llm_classifier": {
+            "system_prompt": _llm._SYSTEM_PROMPT,  # pyright: ignore[reportPrivateUsage]
+            "user_message_sample": sample,
+        },
+    }
+
+
+def compute_rule_set_hash() -> str | None:
+    """Return the sha256 hex of the ingest classifiers' rule tables, uncached.
+
+    The serialization is canonical JSON (sorted keys, no whitespace), so
+    the digest depends only on what the tables hold, not on dict order or
+    the hash seed. It returns None instead of raising when any input is
+    unavailable, so ingest never fails over a missing digest.
+    """
+    try:
+        blob = json.dumps(
+            _rule_set_payload(), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    except Exception:  # noqa: BLE001 - a digest must never break ingest
+        return None
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@functools.cache
+def rule_set_hash() -> str | None:
+    """Return the ingest rule-set digest, computed once per process (#1658).
+
+    Every production `record_ingest` call stamps it on its `ingest_log`
+    row as `rule_set_hash`, and `aelf doctor` counts the rows whose
+    digest differs from this one. See `compute_rule_set_hash`.
+    """
+    return compute_rule_set_hash()
