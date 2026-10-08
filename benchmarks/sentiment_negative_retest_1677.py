@@ -203,15 +203,22 @@ def transcript_prompts(root: Path, since: str = DEFAULT_SINCE) -> list[str]:
     """Typed prompts of at most 200 characters in host session transcripts.
 
     Reads `<root>/<project>/<session>.jsonl`. A prompt is a `user` record
-    that isn't a side-chain or meta record and carries text rather than a
-    tool result. Deduplicated by timestamp and text, since a resumed session
-    can repeat earlier records.
+    that isn't a side-chain, meta, or compaction-summary record, carries
+    text rather than a tool result, and isn't a harness record: #1647's
+    population left those out. Harness records are the openings the
+    detector itself skips (`_HARNESS_PROMPT_PREFIXES`) plus the host's
+    interrupt marker. Deduplicated by timestamp and text, since a resumed
+    session can repeat earlier records.
     """
+    from aelfrice.sentiment_feedback import _HARNESS_PROMPT_PREFIXES  # pyright: ignore[reportPrivateUsage]
+
+    harness = (*_HARNESS_PROMPT_PREFIXES, "[Request interrupted by user")
     seen: set[tuple[str, str]] = set()
     prompts: list[str] = []
     for path in sorted(root.glob("*/*.jsonl")):
         for row in read_rows([path]):
-            if row.get("type") != "user" or row.get("isSidechain") or row.get("isMeta"):
+            if (row.get("type") != "user" or row.get("isSidechain")
+                    or row.get("isMeta") or row.get("isCompactSummary")):
                 continue
             ts = str(row.get("timestamp") or "")
             if ts < since:
@@ -228,6 +235,8 @@ def transcript_prompts(root: Path, since: str = DEFAULT_SINCE) -> list[str]:
             if not isinstance(content, str):
                 continue
             text = content.strip()
+            if text.startswith(harness):
+                continue
             if not text or len(text) > MAX_PROMPT_CHARS or (ts[:19], text) in seen:
                 continue
             seen.add((ts[:19], text))
