@@ -128,19 +128,72 @@ _REGEX_INPUTS = sorted(
 _MARKER = "zz-digest-perturbation-zz"
 
 
-def _perturb(value: object) -> object:
-    """Return a value of the same type that differs from `value`."""
-    if isinstance(value, re.Pattern):
-        return re.compile(f"{value.pattern}|{_MARKER}", value.flags)
-    if isinstance(value, tuple):
-        return (*value, _MARKER)
-    if isinstance(value, dict):
-        return {**value, _MARKER: (1.0, 1.0)}
+def _edit_str(value: str) -> str:
+    """Return `value` with its first character replaced, same length."""
+    if not value:
+        return _MARKER
+    return ("Y" if value[0] == "X" else "X") + value[1:]
+
+
+def _edit_pattern(value: re.Pattern[str]) -> re.Pattern[str]:
+    """Return a pattern of the same length and flags with one character changed.
+
+    It swaps the case of the first letter that still compiles once
+    swapped, for example `\\b` to `\\B` or `use` to `Use`.
+    """
+    text = value.pattern
+    for i, char in enumerate(text):
+        if not char.isalpha() or char.swapcase() == char:
+            continue
+        candidate = text[:i] + char.swapcase() + text[i + 1:]
+        try:
+            return re.compile(candidate, value.flags)
+        except re.error:
+            continue
+    raise AssertionError(f"no same-length edit compiles for {text!r}")
+
+
+def _changed(value: object) -> object:
+    """Return a value of the same type and length that differs from `value`."""
     if isinstance(value, str):
-        return value + _MARKER
+        return _edit_str(value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value + 1
     raise TypeError(f"no perturbation for {type(value).__name__}")
+
+
+def _variants(value: object) -> Iterator[tuple[str, object]]:
+    """Yield labelled values that each differ from `value` in one way.
+
+    Every input gets at least one variant that changes an existing value
+    and keeps its length: a string or regex pattern gets one character
+    changed, and a container gets one variant per element, or per
+    component of a tuple value, changed in place under the same index
+    or key. A digest that hashes only the keys, the lengths, or a
+    constant in place of the values misses these. Containers, strings
+    and patterns also get one variant that adds to the value.
+    """
+    if isinstance(value, re.Pattern):
+        yield "edit pattern", _edit_pattern(value)
+        yield "extend pattern", re.compile(f"{value.pattern}|{_MARKER}", value.flags)
+    elif isinstance(value, tuple):
+        for i, item in enumerate(value):
+            yield f"[{i}]", (*value[:i], _changed(item), *value[i + 1:])
+        yield "append", (*value, _MARKER)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, tuple):
+                for i, part in enumerate(item):
+                    new_item = (*item[:i], _changed(part), *item[i + 1:])
+                    yield f"[{key!r}][{i}]", {**value, key: new_item}
+            else:
+                yield f"[{key!r}]", {**value, key: _changed(item)}
+        yield "add key", {**value, _MARKER: (1.0, 1.0)}
+    elif isinstance(value, str):
+        yield "edit", _edit_str(value)
+        yield "extend", value + _MARKER
+    else:
+        yield "value", _changed(value)
 
 
 def test_payload_hashes_exactly_the_listed_inputs() -> None:
@@ -176,12 +229,22 @@ def test_every_module_level_regex_is_a_digest_input() -> None:
 def test_digest_changes_when_any_input_changes(
     monkeypatch: pytest.MonkeyPatch, key: str,
 ) -> None:
+    """Changing any element of any input, or adding one, changes the digest."""
     module, name = _INPUTS[key]
+    original = getattr(module, name)
     before = compute_rule_set_hash()
-    monkeypatch.setattr(module, name, _perturb(getattr(module, name)))
-    after = compute_rule_set_hash()
-    assert after is not None
-    assert after != before
+    assert before is not None
+    unnoticed: list[str] = []
+    variants = list(_variants(original))
+    for label, changed in variants:
+        assert changed != original, label
+        monkeypatch.setattr(module, name, changed)
+        if compute_rule_set_hash() == before:
+            unnoticed.append(label)
+    monkeypatch.setattr(module, name, original)
+    assert compute_rule_set_hash() == before
+    assert variants
+    assert unnoticed == []
 
 
 @pytest.mark.parametrize("key", _REGEX_INPUTS)
@@ -199,13 +262,19 @@ def test_digest_changes_when_only_regex_flags_change(
     assert after != before
 
 
+@pytest.mark.parametrize("edit", ["same length", "replaced"])
 def test_digest_changes_when_the_user_message_format_changes(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, edit: str,
 ) -> None:
     before = compute_rule_set_hash()
-    monkeypatch.setattr(
-        llm_prompt, "build_user_message", lambda cands: "[]",
-    )
+    real = llm_prompt.build_user_message
+
+    def edited(candidates: list[llm_prompt.CandidateInput]) -> str:
+        if edit == "replaced":
+            return "[]"
+        return _edit_str(real(candidates))
+
+    monkeypatch.setattr(llm_prompt, "build_user_message", edited)
     assert compute_rule_set_hash() != before
 
 
