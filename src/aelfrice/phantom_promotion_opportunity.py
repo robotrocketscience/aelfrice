@@ -445,6 +445,43 @@ def _evidence_supports(
     return complete
 
 
+def _promotable_supports(
+    store: "MemoryStore", ph: "Belief",
+    stored_sentences: Callable[[str], list[str]],
+) -> Counter[str] | None:
+    """Supports per session for ``ph``, or None when it can't be promoted.
+
+    Applies #1650's per-phantom gates, then counts with
+    :func:`_evidence_supports`. The caller has already applied the store
+    gates (:meth:`MemoryStore.evidence_promotion_candidates`).
+    ``stored_sentences`` is :func:`aelfrice.ingest.stored_sentences`,
+    passed in so that ``aelfrice.ingest`` stays a lazy import.
+    """
+    born = _parse_instant(ph.created_at)
+    if born is None:
+        return None
+    # The sentences typing this phantom would store as your beliefs.
+    # A sentence ingest stores but would never keep as yours (a question,
+    # say) can't be restated, so a phantom holding one never qualifies:
+    # nothing separate is needed to exclude it.
+    sentences = stored_sentences(ph.content)
+    # Fail closed on anything a restatement can't cover. Promotion
+    # keeps the phantom's whole text, so a question, a command in a
+    # code fence, a tag, a trailing "Never.", or a symbol such as
+    # "❌" or "≠" that ingest would not store as yours would gain
+    # trust nobody restated. Only whitespace and a short allowlist
+    # of ASCII structure marks may lie outside those sentences.
+    residue = ph.content
+    for text in sentences:
+        residue = residue.replace(text, " ", 1)
+    if any(
+        not ch.isspace() and ch not in _PHANTOM_RESIDUE_ALLOWED
+        for ch in residue
+    ):
+        return None
+    return _evidence_supports(store, ph, born, sentences)
+
+
 def has_promotion_evidence(store: "MemoryStore", phantom: "Belief") -> bool:
     """True when ``phantom`` has any support #1650 promotion counts.
 
@@ -528,30 +565,9 @@ def find_evidence_promotable_phantoms(
 
     out: list[Belief] = []
     for ph in phantoms:
-        born = _parse_instant(ph.created_at)
-        if born is None:
+        complete = _promotable_supports(store, ph, stored_sentences)
+        if complete is None:
             continue
-        # The sentences typing this phantom would store as your beliefs.
-        # A sentence ingest stores but would never keep as yours (a question,
-        # say) can't be restated, so a phantom holding one never qualifies:
-        # nothing separate is needed to exclude it.
-        sentences = stored_sentences(ph.content)
-        # Fail closed on anything a restatement can't cover. Promotion
-        # keeps the phantom's whole text, so a question, a command in a
-        # code fence, a tag, a trailing "Never.", or a symbol such as
-        # "❌" or "≠" that ingest would not store as yours would gain
-        # trust nobody restated. Only whitespace and a short allowlist
-        # of ASCII structure marks may lie outside those sentences.
-        residue = ph.content
-        for text in sentences:
-            residue = residue.replace(text, " ", 1)
-        if any(
-            not ch.isspace() and ch not in _PHANTOM_RESIDUE_ALLOWED
-            for ch in residue
-        ):
-            continue
-
-        complete = _evidence_supports(store, ph, born, sentences)
         n = sum(complete.values())
         if n >= int(min_supports) and len(complete) >= int(min_sessions):
             out.append(ph)
