@@ -6,7 +6,8 @@ allowed-tools:
 ---
 <objective>
 Inspect the locked-belief tier — every user-asserted ground-truth
-statement in the local memory store.
+statement in this repository's store, then every lock in the user-scope
+store, tagged `[user]`.
 </objective>
 
 <process>

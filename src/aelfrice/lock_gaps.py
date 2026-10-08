@@ -286,6 +286,12 @@ def _failed_lock_candidates(
     for r in rows:
         if r.get("command") != "lock" or r.get("reason") not in GAP_REASONS:
             continue
+        if r.get("scope") == "user":
+            # #1681: a failed `/aelf:lock --user` targeted the user store,
+            # which this detector does not read yet. Judged against the
+            # repository store it could never resolve, and its fix
+            # command would lock the statement in the wrong scope.
+            continue
         digest = r.get("arg_sha256")
         ts = r.get("ts")
         if not isinstance(digest, str) or not isinstance(ts, str):

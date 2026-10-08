@@ -1,7 +1,7 @@
 ---
 name: aelf:unlock
 description: Drop the user-lock on a belief without changing its origin. Writes a lock:unlock audit row. Idempotent.
-argument-hint: The belief ID to unlock
+argument-hint: The belief ID to unlock, optionally preceded by --user
 allowed-tools:
   - Bash
 ---
@@ -13,6 +13,9 @@ and writes no audit row.
 </objective>
 
 <process>
-Run: `uv run aelf unlock "$ARGUMENTS"`
+If `$ARGUMENTS` starts with `--user` followed by a space, the lock is in
+the user-scope store. Pass `--user` as its own flag and run
+`uv run aelf unlock --user "<the id after --user>"`.
+Otherwise run: `uv run aelf unlock "$ARGUMENTS"`
 Display the output verbatim. Do not add commentary.
 </process>

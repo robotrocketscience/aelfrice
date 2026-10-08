@@ -2714,6 +2714,28 @@ class CommandReason(str, Enum):
     NONZERO_EXIT = "nonzero_exit"
 
 
+# #1681: the one flag a typed command may carry. `/aelf:lock --user <text>`
+# writes the lock to the user-scope store. The flag must be followed by
+# whitespace and text, or end the argument, so `--username` is not it and
+# falls to the leading-dash refusal like any other flag.
+_USER_SCOPE_FLAG_RE: Final[re.Pattern[str]] = re.compile(r"^--user(?:[ \t]+|$)")
+
+
+def split_user_scope_flag(command: str, argument: str) -> tuple[bool, str]:
+    """Split a leading `--user` off a `/aelf:lock` argument (#1681).
+
+    Returns `(user_scope, statement)`. Only `lock` takes the flag; for
+    any other command, and for a lock argument that does not start with
+    it, the argument comes back unchanged with `user_scope` False.
+    """
+    if command != "lock":
+        return False, argument
+    m = _USER_SCOPE_FLAG_RE.match(argument)
+    if m is None:
+        return False, argument
+    return True, argument[m.end():].strip()
+
+
 class CommandOutcome(NamedTuple):
     """What the executor did, and whether it actually took effect.
 
@@ -2739,6 +2761,7 @@ class CommandOutcome(NamedTuple):
     reason: CommandReason
     command: str = ""
     argument: str = ""
+    user_scope: bool = False
 
 
 def execute_aelf_command(
@@ -2774,11 +2797,18 @@ def execute_aelf_command(
     command, argument = parsed
     if command not in _EXECUTABLE_COMMANDS:
         return None
+    # #1681: `/aelf:lock --user <text>`. The flag is split off here and
+    # every check below applies to the statement alone, which is what is
+    # written: an empty statement, one over the cap, one that itself
+    # starts with `-`, and invalid text are all refused as before.
+    user_scope, argument = split_user_scope_flag(command, argument)
+    display = f"--user {argument}" if user_scope else argument
     if not argument:
         line = f"aelfrice: /aelf:{command} needs an argument; nothing was done."
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.EMPTY_ARGUMENT, command, argument,
+            user_scope,
         )
     if len(argument) > COMMAND_ARGUMENT_CAP:
         # Refused, not truncated. Truncating would write a belief the
@@ -2792,6 +2822,7 @@ def execute_aelf_command(
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.OVER_CAP, command, argument,
+            user_scope,
         )
     if argument.startswith("-"):
         # The argument is user text, never a flag. `argv` is
@@ -2808,6 +2839,7 @@ def execute_aelf_command(
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.LEADING_DASH, command, argument,
+            user_scope,
         )
     try:
         argument.encode("utf-8")
@@ -2825,6 +2857,7 @@ def execute_aelf_command(
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.INVALID_TEXT, command, argument,
+            user_scope,
         )
 
     import contextlib as _contextlib  # noqa: PLC0415
@@ -2860,7 +2893,11 @@ def execute_aelf_command(
         # context, outside COMMAND_NOTE_CAP and outside the writer
         # enumeration that exists to make that impossible.
         with _contextlib.redirect_stdout(buf), _contextlib.redirect_stderr(buf):
-            rc = _cli.main([command, argument], out=buf)
+            argv = (
+                [command, "--user", argument] if user_scope
+                else [command, argument]
+            )
+            rc = _cli.main(argv, out=buf)
     except SystemExit as exc:
         # `exc.code` of 0 is a CLEAN exit. `int(exc.code or 1)` turned it
         # into 1, so a command that succeeded through a SystemExit path
@@ -2871,6 +2908,7 @@ def execute_aelf_command(
         print(line, file=stderr)
         return CommandOutcome(
             line, False, CommandReason.EXCEPTION, command, argument,
+            user_scope,
         )
     finally:
         if session_id:
@@ -2896,7 +2934,7 @@ def execute_aelf_command(
         # decidable; "they meant this to be one line" is not, so the
         # answer here is to show the result rather than to guess.
         line = (
-            f"aelfrice: ran /aelf:{command} {argument!r} — "
+            f"aelfrice: ran /aelf:{command} {display!r} — "
             f"{output or 'done'}"
         )
     else:
@@ -2910,6 +2948,7 @@ def execute_aelf_command(
         CommandReason.OK if rc == 0 else CommandReason.NONZERO_EXIT,
         command,
         argument,
+        user_scope,
     )
 
 
@@ -2989,6 +3028,11 @@ def _write_command_outcome_record(
         "arg_len": len(argument),
         "statement": argument[:COMMAND_OUTCOME_STATEMENT_CAP],
     }
+    if outcome.user_scope:
+        # #1681: the lock was meant for the user store. `lock_gaps` reads
+        # rows against the repository store, so it skips these until it
+        # can check the user store too.
+        record["scope"] = "user"
     if session_id is not None:
         record["session_id"] = session_id
     append_command_outcome(p, record, cfg.max_bytes, stderr=stderr)
