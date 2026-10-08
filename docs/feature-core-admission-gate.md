@@ -96,7 +96,8 @@ records a `session_end` batch of the newest `MAX_BATCH` candidates and
 starts a detached `python -m aelfrice.core_gate_background` process. That
 process rebuilds the prompt with `build_prompt` from the batch's beliefs,
 runs `claude -p --model haiku` with tools, MCP servers, skills,
-CLAUDE.md, auto memory, hooks, and API keys off and a $0.10 budget cap,
+CLAUDE.md, auto memory, hooks, API keys, and the user's settings files
+off and a $0.10 budget cap,
 checks the reply with `parse_labels`, and caches the labels.
 `parse_labels` strips one surrounding Markdown fence for both accept
 paths; that change made a new classifier version. It's off on Windows
