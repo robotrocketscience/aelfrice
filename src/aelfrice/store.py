@@ -545,8 +545,9 @@ _SCHEMA: tuple[str, ...] = (
     # `rule_set_hash` (#1658) name the ingest classifier rules a row was
     # written under: `classification_core.INGEST_CLASSIFIER_VERSION` and
     # `classification_core.rule_set_hash()`, stamped by every production
-    # `record_ingest` call. NULL means the row predates #1658 (or the
-    # digest could not be computed); derive() and replay do not read
+    # `record_ingest` call. NULL means the row predates #1658, is a
+    # synthesized `legacy_unknown` row, or the digest could not be
+    # computed; derive() and replay do not read
     # either column. Not core_gate.CLASSIFIER_VERSION (#1638).
     """
     CREATE TABLE IF NOT EXISTS ingest_log (
@@ -5665,7 +5666,9 @@ class MemoryStore:
 
         Production callers pass `classifier_version` and `rule_set_hash`
         from `aelfrice.classification_core` (#1658); the None defaults
-        exist for tests and for the legacy backfill.
+        exist for tests. The legacy backfill,
+        `_maybe_synthesize_legacy_log_rows`, does not call this method:
+        it inserts its rows directly, with NULL in both columns.
         """
         if source_kind not in INGEST_SOURCE_KINDS:
             raise ValueError(
