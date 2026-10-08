@@ -501,6 +501,11 @@ def promotion_guarded_ids(
     TTL. A typed twin of only some of a
     multi-sentence phantom's sentences is not a complete restatement,
     so it does not count either. Read-only.
+
+    The guard reads promotion's gates, not the ``auto_promote`` switch
+    that :func:`auto_promote_phantoms` checks. With that switch off, the
+    default, GC still keeps a supported phantom that automatic
+    promotion won't promote.
     """
     if not candidate_ids:
         return set()
