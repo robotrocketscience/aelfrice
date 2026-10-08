@@ -138,8 +138,8 @@ def test_direct_call_writes_resolves_when_supersedes_already_exists() -> None:
 def test_aelf_resolve_skips_a_pair_whose_supersedes_came_first() -> None:
     """`aelf resolve` goes through `find_unresolved_contradictions`, which
     skips any pair with SUPERSEDES in either direction. A pair whose
-    SUPERSEDES came from another writer (the triple extractor) therefore
-    gets no RESOLVES edge from `aelf resolve`."""
+    SUPERSEDES came from another writer (the commit hook's triple
+    extractor) therefore gets no RESOLVES edge from `aelf resolve`."""
     for src, dst in (("A", "B"), ("B", "A")):
         s = _contradicting_pair()
         s.insert_edge(Edge(src=src, dst=dst, type=EDGE_SUPERSEDES, weight=1.0))
