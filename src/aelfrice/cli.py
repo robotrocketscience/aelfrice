@@ -9280,7 +9280,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_wonder.add_argument(
         "--seed", default=None,
-        help="explicit seed belief id (default: highest-degree non-locked)",
+        help=(
+            "explicit seed belief id (default: the non-locked belief with"
+            " the most outgoing edges, not counting RESOLVES)"
+        ),
     )
     p_wonder.add_argument(
         "--top", type=int, default=10,

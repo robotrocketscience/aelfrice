@@ -30,11 +30,12 @@ lane is not limited to tooling: `hrr_index.parse_structural_marker`
 routes any one-line prompt that starts with an edge type, a colon and a
 non-space character, such as `SUPERSEDES:the old plan`.
 
-Two `aelf wonder` readers count every outgoing edge, so the winner's
-extra edge can move them: the default seed (`cli._wonder_pick_seed`,
-highest out-degree) and the random-walk strategy, which picks uniformly
-over outgoing edges. `benchmarks/resolves_edge_effect_1658.py` measures
-the HRR, seed and walk effects on synthetic stores.
+`aelf wonder` ignores the edge. The default seed
+(`cli._wonder_pick_seed`, highest out-degree) does not count it, and the
+random-walk strategy does not follow it, so the winner's extra edge moves
+neither. `benchmarks/resolves_edge_effect_1658.py` measures the HRR
+effect and confirms that the seed and the walk do not change on
+synthetic stores.
 
 ## Precedence (v3.x #888, six classes)
 
