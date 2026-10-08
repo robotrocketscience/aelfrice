@@ -495,8 +495,10 @@ def promotion_guarded_ids(
     lock, an inbound CONTRADICTS edge, negative-valence feedback, an
     earlier ``aelf demote``), an unparseable ``created_at``, and the
     sentence-residue check. A phantom that fails any of them can never
-    be promoted, so it is not kept, whatever support it has; a question,
-    for one, is collected after its TTL. A typed twin of only some of a
+    be promoted, so it is not kept, whatever support it has. Typing a
+    question again is no restatement, because ingest never keeps a
+    question as yours, so a restated question is collected after its
+    TTL. A typed twin of only some of a
     multi-sentence phantom's sentences is not a complete restatement,
     so it does not count either. Read-only.
     """
