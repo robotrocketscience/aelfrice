@@ -160,3 +160,35 @@ def test_doctor_report_says_the_digest_is_unavailable(
     assert "carry a different digest" not in text
     assert "4 row(s) in total" in text
     assert "1 row(s) carry no digest" in text
+
+
+def test_query_connection_is_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The section's connection refuses writes, not just happens to skip them.
+
+    A SELECT leaves the bytes unchanged on a read-write connection too, so
+    this test tries a write on every connection the section opens.
+    """
+    path = _seed(tmp_path)
+    real_connect = sqlite3.connect
+    write_errors: list[str | None] = []
+
+    def probing_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        try:
+            conn.execute("CREATE TABLE doctor_write_probe (x INTEGER)")
+        except sqlite3.OperationalError as exc:
+            write_errors.append(str(exc))
+        else:
+            write_errors.append(None)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", probing_connect)
+    st = diagnose_ingest_rule_set(str(path), _CURRENT)
+    monkeypatch.undo()
+    assert st is not None
+    assert write_errors, "the section opened no connection"
+    assert all(
+        err is not None and "readonly" in err for err in write_errors
+    ), write_errors
