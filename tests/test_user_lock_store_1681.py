@@ -127,12 +127,9 @@ def test_default_path_follows_home_in_a_fresh_process(tmp_path: Path) -> None:
     }
     env["HOME"] = str(tmp_path)
     env["AELFRICE_DB"] = str(tmp_path / "repo-pin.db")
+    program = "from aelfrice.db_paths import user_db_path; print(user_db_path())"
     proc = subprocess.run(
-        [
-            sys.executable, "-c",
-            "from aelfrice.db_paths import user_db_path; "
-            "print(user_db_path())",
-        ],
+        [sys.executable, "-c", program],
         env=env, capture_output=True, text=True, check=True, timeout=50,
     )
     assert Path(proc.stdout.strip()) == (
