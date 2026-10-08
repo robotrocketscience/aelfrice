@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice import classification_core, correction, llm_classifier
+from aelfrice import classification_core, correction, llm_classifier, llm_prompt
 from aelfrice.classification import (
     HostClassification,
     accept_classifications,
@@ -90,7 +90,7 @@ def test_digest_is_stable_across_processes_and_hash_seeds() -> None:
         (correction, "_NEGATION_RE", re.compile(r"\bnot\b")),
         (correction, "_IMPERATIVE_RE", re.compile(r"^use\b")),
         (correction, "CORRECTION_SIGNAL_THRESHOLD", 3),
-        (llm_classifier, "_SYSTEM_PROMPT", "a different prompt"),
+        (llm_prompt, "SYSTEM_PROMPT", "a different prompt"),
     ],
 )
 def test_digest_changes_when_a_rule_table_changes(
@@ -108,7 +108,7 @@ def test_digest_changes_when_the_user_message_format_changes(
 ) -> None:
     before = compute_rule_set_hash()
     monkeypatch.setattr(
-        llm_classifier, "build_user_message", lambda cands: "[]",
+        llm_prompt, "build_user_message", lambda cands: "[]",
     )
     assert compute_rule_set_hash() != before
 
@@ -117,9 +117,32 @@ def test_digest_is_none_when_an_input_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A missing LLM classifier module degrades to None, never raises."""
-    monkeypatch.setitem(sys.modules, "aelfrice.llm_classifier", None)
-    monkeypatch.delattr("aelfrice.llm_classifier", raising=False)
+    monkeypatch.setitem(sys.modules, "aelfrice.llm_prompt", None)
+    monkeypatch.delattr("aelfrice.llm_prompt", raising=False)
     assert compute_rule_set_hash() is None
+
+
+def test_classifier_sends_the_hashed_prompt() -> None:
+    """The digest hashes the text `llm_classifier` actually sends."""
+    assert llm_classifier._SYSTEM_PROMPT is llm_prompt.SYSTEM_PROMPT  # pyright: ignore[reportPrivateUsage]
+    assert llm_classifier.build_user_message is llm_prompt.build_user_message
+    assert llm_classifier.CandidateInput is llm_prompt.CandidateInput
+
+
+@pytest.mark.timeout(120)
+def test_digest_does_not_import_the_llm_classifier() -> None:
+    """The ingest path pays for the leaf prompt module only (#1658)."""
+    code = (
+        "import sys;"
+        "from aelfrice.classification_core import rule_set_hash;"
+        "assert rule_set_hash() is not None;"
+        "print('aelfrice.llm_classifier' in sys.modules)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=60, check=True,
+    )
+    assert proc.stdout.strip() == "False"
 
 
 def test_cached_digest_is_computed_once(

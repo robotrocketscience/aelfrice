@@ -454,12 +454,13 @@ def _rule_set_payload() -> dict[str, object]:
 
     It hashes the data structures themselves, never source text:
     `inspect.getsource` fails on a bytecode-only install (#1719). The LLM
-    classifier's prompt comes from `aelfrice.llm_classifier`, imported here
-    rather than at module level because this module must stay a leaf. The
+    classifier's prompt comes from `aelfrice.llm_prompt`, the leaf module
+    `llm_classifier` sends it from, imported here rather than at module
+    level so an import failure degrades the digest to None. The
     user-message entry is the message `build_user_message` builds for one
     fixed candidate, so a change to the request format counts too.
     """
-    from aelfrice import llm_classifier as _llm  # noqa: PLC0415
+    from aelfrice import llm_prompt as _llm  # noqa: PLC0415
 
     sample = _llm.build_user_message(
         [_llm.CandidateInput(index=0, text="sample", source="doc:sample")]
@@ -492,7 +493,7 @@ def _rule_set_payload() -> dict[str, object]:
             "confidence_per_signal": c._CONFIDENCE_PER_SIGNAL,  # pyright: ignore[reportPrivateUsage]
         },
         "llm_classifier": {
-            "system_prompt": _llm._SYSTEM_PROMPT,  # pyright: ignore[reportPrivateUsage]
+            "system_prompt": _llm.SYSTEM_PROMPT,
             "user_message_sample": sample,
         },
     }
