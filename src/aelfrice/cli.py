@@ -1245,7 +1245,7 @@ def _suggested_action_for(path: list[str]) -> str:
 
 
 def _wonder_pick_seed(store: MemoryStore) -> object | None:
-    """Deterministic seed picker: highest-degree non-locked belief.
+    """Return the non-locked belief with the most non-RESOLVES out-edges.
 
     Ties broken by `belief.id` ascending. Returns None when the store
     has no non-locked beliefs (an empty store, or one where every
