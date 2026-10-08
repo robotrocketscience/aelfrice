@@ -144,6 +144,56 @@ def test_an_inherited_git_dir_does_not_change_the_report(
 
 
 @pytest.mark.timeout(60)
+def test_a_status_config_that_hides_untracked_files_is_overridden(
+    corpus_checkout: Path, tmp_path: Path,
+) -> None:
+    repo = corpus_checkout.parent.parent.parent
+    _git(repo, "config", "status.showUntrackedFiles", "no")
+    (corpus_checkout / "new.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _run(corpus_checkout, tmp_path)
+    assert "bench-gate corpus uncommitted changes: yes\n" in run.stdout
+    assert "must read the corpus at a clean main" in run.stderr
+
+
+@pytest.mark.timeout(60)
+def test_a_failed_status_is_reported_and_warns(
+    corpus_checkout: Path, tmp_path: Path,
+) -> None:
+    repo = corpus_checkout.parent.parent.parent
+    (repo / ".git" / "index").write_bytes(b"not an index")
+    run = _run(corpus_checkout, tmp_path)
+    assert "bench-gate corpus uncommitted changes: unknown (git status failed)\n" in run.stdout
+    assert "must read the corpus at a clean main" in run.stderr
+
+
+@pytest.mark.timeout(60)
+def test_the_checkouts_fsmonitor_hook_does_not_run(
+    corpus_checkout: Path, tmp_path: Path,
+) -> None:
+    repo = corpus_checkout.parent.parent.parent
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(repo, "config", "core.fsmonitor", str(hook))
+    _run(corpus_checkout, tmp_path)
+    assert not marker.exists()
+
+
+@pytest.mark.timeout(60)
+def test_an_inherited_object_directory_does_not_change_the_report(
+    corpus_checkout: Path, tmp_path: Path,
+) -> None:
+    repo = corpus_checkout.parent.parent.parent
+    commit = _git(repo, "rev-parse", "--short=12", "HEAD")
+    empty = tmp_path / "objects"
+    empty.mkdir()
+    run = _run(corpus_checkout, tmp_path, extra={"GIT_OBJECT_DIRECTORY": str(empty)})
+    assert f"bench-gate corpus commit: {commit}\n" in run.stdout
+    assert "warning" not in run.stderr
+
+
+@pytest.mark.timeout(60)
 def test_the_dry_run_line_quotes_arguments(tmp_path: Path) -> None:
     root = tmp_path / "corpus"
     root.mkdir()

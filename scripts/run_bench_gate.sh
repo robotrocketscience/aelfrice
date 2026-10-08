@@ -32,12 +32,15 @@ fi
 
 echo "bench-gate corpus root: $AELFRICE_CORPUS_ROOT"
 # #1735: the default root follows whatever branch the lab checkout has
-# checked out, so say which revision this run reads. Git's location
-# variables are cleared so an inherited GIT_DIR (a git hook, say) can't
-# report another repository.
+# checked out, so say which revision this run reads. Git's location and
+# discovery variables are cleared so an inherited GIT_DIR (a git hook,
+# say) can't report another repository, and the checkout's fsmonitor
+# hook is turned off so reading its status runs no program it names.
 corpus_git() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
-        git -C "$AELFRICE_CORPUS_ROOT" "$@"
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+        git -c core.fsmonitor=false -C "$AELFRICE_CORPUS_ROOT" "$@"
 }
 warn_release() {
     echo "warning: a release run must read the corpus at a clean main (RELEASING.md step 7)" >&2
@@ -45,17 +48,22 @@ warn_release() {
 if top=$(corpus_git rev-parse --show-toplevel 2>/dev/null); then
     branch=$(corpus_git symbolic-ref --short -q HEAD || echo "(detached HEAD)")
     commit=$(corpus_git rev-parse --short=12 HEAD 2>/dev/null || echo "(no commits)")
-    # --ignored: a corpus file no commit tracks is read all the same.
-    if [[ -n "$(corpus_git status --porcelain --ignored -- . 2>/dev/null)" ]]; then
-        changes="yes"
+    # --ignored and --untracked-files=all: a corpus file no commit tracks
+    # is read all the same, whatever the checkout's status config says.
+    if status=$(corpus_git status --porcelain --ignored --untracked-files=all -- . 2>/dev/null); then
+        if [[ -n "$status" ]]; then
+            changes="yes"
+        else
+            changes="no"
+        fi
     else
-        changes="no"
+        changes="unknown (git status failed)"
     fi
     echo "bench-gate corpus checkout: $top"
     echo "bench-gate corpus branch: $branch"
     echo "bench-gate corpus commit: $commit"
     echo "bench-gate corpus uncommitted changes: $changes"
-    if [[ "$branch" != "main" || "$changes" == "yes" || "$commit" == "(no commits)" ]]; then
+    if [[ "$branch" != "main" || "$changes" != "no" || "$commit" == "(no commits)" ]]; then
         warn_release
     fi
 else
