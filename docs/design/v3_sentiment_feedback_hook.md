@@ -59,6 +59,11 @@ One JSONL row per sentiment fire. Fields:
 - `escalated` (bool — set when `detect_correction_frequency` fires)
 - `belief_ids` (list of ids actually bumped)
 - `n_beliefs` (count)
+- `abstained` (why nothing moved, when nothing did, for example
+  `"negative_disabled"`)
+- `target_ids` (only on a `negative_disabled` row: the prior turn's beliefs
+  the complaint would have demoted, so a re-measurement can grade each fire
+  against its targets; #1677)
 
 The existing `feedback_history` table still gets one row per affected belief
 via `apply_feedback`, with `source = sentiment_inferred` (module-level

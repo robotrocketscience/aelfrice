@@ -378,7 +378,8 @@ sentiment_from_prose = true
 # apply, as negative feedback. Held out of the default because negative
 # matches measured 62-74% precise on held-out prompts, and the bar was
 # 70% on both graders. A negative match with this off still lands in the
-# hook audit, marked `negative_disabled`.
+# hook audit, marked `negative_disabled`, with the beliefs it would have
+# demoted listed as `target_ids` (#1677).
 # AELFRICE_FEEDBACK_SENTIMENT_NEGATIVE=1 overrides.
 sentiment_negative = false
 
