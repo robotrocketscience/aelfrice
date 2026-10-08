@@ -220,6 +220,9 @@ from aelfrice.db_paths import (
     _open_store,
     db_path,
     open_store_for_read,
+    open_user_store,
+    open_user_store_if_present,
+    user_db_path,
 )
 from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
 
@@ -2003,8 +2006,66 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+# #1681: `aelf lock` flags that have no meaning in the user-scope store.
+# `--doc` anchors a document path that belongs to one repository, and a
+# category is defined per store by `aelf category`, which writes only the
+# repository store, so `--category` could never find one there.
+_USER_SCOPE_REJECTED_LOCK_FLAGS: Final[tuple[tuple[str, str, str], ...]] = (
+    (
+        "doc_uri", "--doc",
+        "a document anchor belongs to one repository, and the user store "
+        "is shared by all of them",
+    ),
+    (
+        "category", "--category",
+        "categories exist only in the repository store",
+    ),
+)
+
+
+def _user_store_is_repo_store() -> bool:
+    """Whether `AELFRICE_USER_DB` and the repository store name one file.
+
+    A user lock written into the repository store would be listed twice
+    and unlocked from the wrong scope, so the user-scope commands refuse
+    this configuration instead of guessing (#1681).
+    """
+    user_p = user_db_path()
+    repo_p = db_path()
+    if ":memory:" in (str(user_p), str(repo_p)):
+        return False
+    return user_p.resolve() == repo_p.resolve()
+
+
+def _user_scope_conflict_message(command: str) -> str:
+    return (
+        f"aelf {command}: --user refused: AELFRICE_USER_DB names the "
+        f"repository store ({db_path()}). Point it at a separate file."
+    )
+
+
+def _open_lock_store(user_scope: bool) -> MemoryStore:
+    """The store a lock write goes to: the user store or the repo store."""
+    return open_user_store() if user_scope else _open_store()
+
+
 def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     from aelfrice.lock_expiry import LockExpiryError, parse_for, parse_until
+
+    # #1681: refuse a flag the user scope cannot honour BEFORE anything is
+    # resolved or opened, so a rejected command writes nothing.
+    user_scope = bool(getattr(args, "user_scope", False))
+    if user_scope:
+        for attr, flag, why in _USER_SCOPE_REJECTED_LOCK_FLAGS:
+            if getattr(args, attr, None):
+                print(
+                    f"aelf lock: {flag} cannot be used with --user: {why}.",
+                    file=sys.stderr,
+                )
+                return 1
+        if _user_store_is_repo_store():
+            print(_user_scope_conflict_message("lock"), file=sys.stderr)
+            return 1
 
     # #1314: resolve the window to an absolute instant BEFORE opening the
     # store, so a malformed `--for` fails without having written a
@@ -2049,7 +2110,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     # Still resolved-and-validated BEFORE this line (#1314): a malformed
     # window must fail without having written a permanent lock the user
     # then has to notice and undo.
-    store = _open_store()
+    #
+    # #1681: the store choice is the only thing `--user` changes. Every
+    # step below — derive, record_ingest, the worker, the tier, the
+    # window, the near-duplicate check — runs against whichever store
+    # this returns.
+    store = _open_lock_store(user_scope)
+    feed_scope: dict[str, object] = {"scope": "user"} if user_scope else {}
     try:
         now = _utc_now_iso(now_dt)
         sid = resolve_session_id(
@@ -2202,15 +2269,32 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             return 1
         if pre_existing_at_lock_id and actual_id == lock_bid:
             print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="upgrade")
+            _feed_log_event(
+                "belief.locked", actual_id, args, kind="upgrade", **feed_scope,
+            )
         elif actual_id in ids_before:
             # content_hash collision with a different-source belief —
             # worker corroborated; preserve the prior surface message.
             print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="corroborated")
+            _feed_log_event(
+                "belief.locked", actual_id, args, kind="corroborated",
+                **feed_scope,
+            )
         else:
             print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
-            _feed_log_event("belief.locked", actual_id, args, kind="new")
+            _feed_log_event(
+                "belief.locked", actual_id, args, kind="new", **feed_scope,
+            )
+        if user_scope:
+            # #1681 PR1 stores the lock; injection lands in a follow-up.
+            # Said here so a user does not expect the rule in the next
+            # prompt's context.
+            print(f"  scope: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
+            print(
+                "  note: user locks are stored but not yet injected into "
+                "prompts (#1681).",
+                file=out,  # type: ignore[arg-type]
+            )
 
         # #1016-B layered locks: apply an explicit --reference/--frozen
         # tier. None = no flag → leave the tier as-is (new locks keep the
@@ -2268,10 +2352,16 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             more = (
                 f" (+{len(near_dups) - 3} more)" if len(near_dups) > 3 else ""
             )
+            # The check ran against the store this lock went to, so the
+            # duplicates it names are in that scope, and so is the fix.
+            fix = (
+                "`aelf unlock --user`" if user_scope
+                else "`aelf unlock`/`aelf delete`"
+            )
             print(  # type: ignore[arg-type]
                 f"  warning: near-duplicate of {len(near_dups)} existing "
-                f"lock(s): {shown}{more} — consider `aelf unlock`/`aelf "
-                f"delete` the redundant one(s) to bound lock injection "
+                f"lock(s): {shown}{more} — consider {fix} "
+                f"the redundant one(s) to bound lock injection "
                 f"(#1016).",
                 file=out,
             )
@@ -2309,20 +2399,57 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _list_user_locks() -> list[Belief]:
+    """Locks in the user-scope store, or [] when it was never written.
+
+    Never creates the store (#1681). Treated as absent when
+    `AELFRICE_USER_DB` names the repository store, so one file's locks
+    are not listed twice.
+    """
+    if _user_store_is_repo_store():
+        return []
+    store = open_user_store_if_present()
+    if store is None:
+        return []
+    try:
+        return store.list_locked_beliefs()
+    finally:
+        store.close()
+
+
 def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     from aelfrice.lock_expiry import format_remaining
 
-    _ = args
     store = open_store_for_read()
     try:
         locked = store.list_locked_beliefs()
     finally:
         store.close()
-    if not locked:
+    # #1681: both scopes, repository locks first, then user locks, each
+    # in the store's own order (`locked_at` DESC, then id). The order is
+    # fixed so two runs over the same stores print the same listing.
+    scoped: list[tuple[str, Belief]] = [("repo", b) for b in locked]
+    scoped += [("user", b) for b in _list_user_locks()]
+    if getattr(args, "json", False):
+        import json as _json
+        rows = [
+            {
+                "id": b.id,
+                "scope": scope,
+                "content": b.content,
+                "lock_tier": getattr(b, "lock_tier", "frozen"),
+                "locked_at": b.locked_at,
+                "lock_expires_at": getattr(b, "lock_expires_at", None),
+            }
+            for scope, b in scoped
+        ]
+        print(_json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+    if not scoped:
         print("no locked beliefs", file=out)  # type: ignore[arg-type]
         return 0
     now = datetime.now(timezone.utc)
-    for b in locked:
+    for scope, b in scoped:
         # #1016-B: annotate the bounded 'reference' tier; 'frozen' (the
         # default, always-verbatim tier) is left unmarked to keep the
         # common-case listing clean.
@@ -2339,7 +2466,10 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
         window = format_remaining(
             getattr(b, "lock_expires_at", None), now=now,
         )
-        print(f"{b.id}{marker} [{window}]: {b.content}", file=out)  # type: ignore[arg-type]
+        # #1681: a user lock is tagged; a repository lock prints as it
+        # always has, so existing readers of this listing see no change.
+        tag = " [user]" if scope == "user" else ""
+        print(f"{b.id}{tag}{marker} [{window}]: {b.content}", file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -3491,16 +3621,63 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _user_lock_hint(belief_id: str) -> str | None:
+    """A pointer to `--user` when `belief_id` is locked in the user store.
+
+    Never creates the user store. None when the store is absent, when
+    it is the repository store, or when it has no such lock.
+    """
+    if _user_store_is_repo_store():
+        return None
+    store = open_user_store_if_present()
+    if store is None:
+        return None
+    try:
+        b = store.get_belief(belief_id)
+    finally:
+        store.close()
+    if b is None or b.lock_level != LOCK_USER:
+        return None
+    return (
+        f"  {belief_id} is a user lock; run `aelf unlock --user {belief_id}`."
+    )
+
+
 def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
-    """Drop a user-lock without touching origin. Inverse of `aelf lock`."""
+    """Drop a user-lock without touching origin. Inverse of `aelf lock`.
+
+    #1681: `--user` selects the user-scope store. Without it, only the
+    repository store is touched. The selector is a flag rather than an
+    id lookup across both stores because a lock's id is derived from its
+    text, so the same statement locked in both scopes has one id in
+    each: a lookup could not tell which one to drop.
+    """
     from aelfrice.promotion import unlock
 
-    store = _open_store()
+    if getattr(args, "user_scope", False):
+        if _user_store_is_repo_store():
+            print(_user_scope_conflict_message("unlock"), file=sys.stderr)
+            return 1
+        user_store = open_user_store_if_present()
+        if user_store is None:
+            print(
+                f"aelf unlock: no user lock store at {user_db_path()}; "
+                f"nothing was unlocked.",
+                file=sys.stderr,
+            )
+            return 1
+        store = user_store
+    else:
+        store = _open_store()
     try:
         try:
             result = unlock(store, args.belief_id)
         except ValueError as e:
             print(str(e), file=sys.stderr)
+            if not getattr(args, "user_scope", False):
+                hint = _user_lock_hint(args.belief_id)
+                if hint is not None:
+                    print(hint, file=sys.stderr)
             return 1
         if result.already_unlocked:
             print(f"already unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
@@ -9469,9 +9646,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "past is rejected rather than accepted and swept away."
         ),
     )
+    p_lock.add_argument(
+        "--user", dest="user_scope", action="store_true", default=False,
+        help=(
+            "write the lock to the user-scope store that every repository "
+            "shares (#1681): ~/.aelfrice/user/memory.db, or "
+            "$AELFRICE_USER_DB. Without it, the lock goes to this "
+            "repository's store. Cannot be combined with --doc or "
+            "--category. User locks are stored but not yet injected."
+        ),
+    )
     p_lock.set_defaults(func=_cmd_lock)
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
+    p_locked.add_argument(
+        "--json", action="store_true", default=False,
+        help=(
+            "emit a JSON array; each row carries a `scope` field, "
+            "`repo` or `user` (#1681)"
+        ),
+    )
     p_locked.set_defaults(func=_cmd_locked)
 
     # #1126 belief categories: keyword-triggered rule grouping. Visible
@@ -9962,6 +10156,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="drop a user-lock on a belief (writes audit row)",
     )
     p_unlock.add_argument("belief_id", help="id of the belief to unlock")
+    p_unlock.add_argument(
+        "--user", dest="user_scope", action="store_true", default=False,
+        help=(
+            "unlock in the user-scope store instead of this repository's "
+            "store (#1681)"
+        ),
+    )
     p_unlock.set_defaults(func=_cmd_unlock)
 
     # Hard-delete: remove a belief and all its edges. Confirmation prompt by
