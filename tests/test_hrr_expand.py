@@ -222,6 +222,71 @@ def test_expand_seeds_surfaces_both_directions() -> None:
     assert got == ["b1", "b3"]
 
 
+def test_expand_seeds_returns_strongest_first() -> None:
+    """Killed by: sorting the merged neighbours weakest-first. The order
+    decides which beliefs survive the ``top_k`` cut."""
+    store = _toy_store()
+    idx = _built_index(store)
+    # b2's in-neighbours: b1 (CONTRADICTS, ~1.077) is stronger than
+    # b3 (SUPPORTS, ~1.001).
+    assert [b.id for b in hx.expand_seeds(store, idx, ["b2"])] == ["b1", "b3"]
+    assert [b.id for b in hx.expand_seeds(store, idx, ["b2"], top_k=1)] == ["b1"]
+
+
+def _ordering_store() -> MemoryStore:
+    """sa -CONTRADICTS-> hub; sb -SUPPORTS-> hub; sb -CITES-> tgt.
+
+    Two filler beliefs come first because the similarities depend on each
+    belief's position in the index. With them, sb's probe appends tgt
+    (CITES) before the stronger hub (SUPPORTS), and tgt's similarity falls
+    between hub's two, so append order and a keep-weakest merge both give
+    a different order from the correct one.
+    """
+    s = MemoryStore(":memory:")
+    for k in range(2):
+        s.insert_belief(_mk(f"f{k}", f"filler {k}"))
+    for bid in ("hub", "sa", "sb", "tgt"):
+        s.insert_belief(_mk(bid, f"{bid} content"))
+    s.insert_edge(Edge(src="sa", dst="hub", type=EDGE_CONTRADICTS, weight=1.0))
+    s.insert_edge(Edge(src="sb", dst="hub", type=EDGE_SUPPORTS, weight=1.0))
+    s.insert_edge(Edge(src="sb", dst="tgt", type=EDGE_CITES, weight=1.0))
+    return s
+
+
+def _sims(idx: HRRStructIndex, seed: str) -> dict[str, float]:
+    return {nid: sim for nid, _e, _d, sim in hx.neighbor_rows(idx, seed)}
+
+
+def test_ordering_fixture_discriminates() -> None:
+    """The precondition the next two tests rely on. If the index math
+    changes and this fails, rebuild the fixture; don't loosen the tests."""
+    store = _ordering_store()
+    idx = _built_index(store)
+    via_sa, via_sb = _sims(idx, "sa")["hub"], _sims(idx, "sb")["hub"]
+    tgt = _sims(idx, "sb")["tgt"]
+    assert via_sa < tgt < via_sb
+
+
+def test_neighbor_rows_are_strongest_first() -> None:
+    """Killed by: dropping or reversing the row sort. sb's probe appends
+    tgt before the stronger hub."""
+    store = _ordering_store()
+    idx = _built_index(store)
+    rows = hx.neighbor_rows(idx, "sb")
+    assert [r[0] for r in rows] == ["hub", "tgt"]
+    sims = [r[3] for r in rows]
+    assert sims == sorted(sims, reverse=True)
+
+
+def test_expand_seeds_keeps_each_neighbours_strongest_similarity() -> None:
+    """Killed by: keeping a neighbour's weakest similarity across seeds, or
+    the first one seen. hub ranks above tgt only on its stronger sighting."""
+    store = _ordering_store()
+    idx = _built_index(store)
+    got = [b.id for b in hx.expand_seeds(store, idx, ["sa", "sb"])]
+    assert got == ["hub", "tgt"]
+
+
 def test_fresh_store_has_no_neighbour_cache_table() -> None:
     # #1658: the schema no longer creates `hrr_expand_neighbors`.
     store = MemoryStore(":memory:")
