@@ -274,10 +274,29 @@ jobs:
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
           survived=$(grep -cE ': survived$' mutation-report.txt || true)
+          unchecked=$(grep -cE ': not checked$' mutation-report.txt || true)
           listed=$(( ${killed:-0} + ${survived:-0} ))
+          # #1746: when the clean run inside `mutants/` fails, mutmut stops
+          # and every mutant stays `not checked`. The step still exits 0, so
+          # say so where a reader looks: the annotation list and the top of
+          # the summary.
+          checked_nothing=""
+          if [ "${total:-0}" -eq 0 ]; then
+            checked_nothing="mutmut listed no mutants at all, so this run tested nothing."
+          elif [ "${unchecked:-0}" -eq "${total:-0}" ]; then
+            checked_nothing="all ${total} mutants are 'not checked': the clean run inside mutants/ failed, so this run tested nothing. Its log names the failing test."
+          fi
+          if [ -n "${checked_nothing}" ]; then
+            echo "::warning title=Mutation run checked nothing::${checked_nothing}"
+          fi
           {
             echo "## Mutation (advisory)"
             echo
+            if [ -n "${checked_nothing}" ]; then
+              echo "> [!WARNING]"
+              echo "> ${checked_nothing}"
+              echo
+            fi
             echo "Scoped to the functions this PR changed under \`src/aelfrice/\`;"
             echo "the scope table above lists them."
             echo "**This job never fails the PR.** A green tick here means the"
