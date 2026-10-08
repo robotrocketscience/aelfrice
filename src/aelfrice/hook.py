@@ -5573,6 +5573,29 @@ def _load_prior_ups_belief_ids(
     return []
 
 
+def _negative_targets(session_id: str, *, stderr: IO[str]) -> list[str]:
+    """The prior turn's beliefs a complaint would have demoted (#1677).
+
+    The live, unlocked ones, by the rule `apply_sentiment_to_pending`
+    uses. [] when there was no prior turn, and on any error: this only
+    feeds an audit row, so it must never break the hook.
+    """
+    prior_ids = _load_prior_ups_belief_ids(session_id, stderr=stderr)
+    if not prior_ids:
+        return []
+    try:
+        from aelfrice.sentiment_feedback import sentiment_receivers  # noqa: PLC0415
+
+        store = _open_store()
+        try:
+            return sentiment_receivers(store, prior_ids)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(f"aelfrice: sentiment target lookup failed (non-fatal): {exc}", file=stderr)
+        return []
+
+
 def apply_sentiment_feedback(
     prompt: str,
     session_id: str | None,
@@ -5615,7 +5638,12 @@ def apply_sentiment_feedback(
             # so they move nothing by default. The row still lands, and
             # it is what a later re-measurement of the lane reads. #1677:
             # it names the beliefs the fire would have demoted, so each
-            # fire can be graded against its targets.
+            # fire can be graded against its targets. With the audit off
+            # there's no row, so the targets aren't looked up.
+            from aelfrice.hook_audit import load_hook_audit_config as _audit_cfg  # noqa: PLC0415
+
+            if not _audit_cfg(stderr=serr).enabled:
+                return 0
             _write_sentiment_feedback_audit(
                 prompt=prompt,
                 session_id=session_id,
@@ -5623,7 +5651,7 @@ def apply_sentiment_feedback(
                 applied_ids=[],
                 stderr=serr,
                 abstained="negative_disabled",
-                target_ids=_load_prior_ups_belief_ids(session_id, stderr=serr),
+                target_ids=_negative_targets(session_id, stderr=serr),
             )
             return 0
         prior_ids = _load_prior_ups_belief_ids(session_id, stderr=serr)

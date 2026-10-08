@@ -472,6 +472,18 @@ def apply_sentiment_to_pending(
     return results
 
 
+def sentiment_receivers(store: MemoryStore, pending_belief_ids: list[str]) -> list[str]:
+    """The ids a signal on `pending_belief_ids` would move (#1677).
+
+    The same rule `apply_sentiment_to_pending` applies: deleted beliefs are
+    skipped, and the lock floor refuses any move on a LOCK_USER belief.
+    """
+    return [
+        b.id for b in map(store.get_belief, pending_belief_ids)
+        if b is not None and b.lock_level != LOCK_USER
+    ]
+
+
 # --- Config -------------------------------------------------------------
 
 

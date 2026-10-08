@@ -19,7 +19,7 @@ from aelfrice.hook import (
     read_hook_audit,
     user_prompt_submit,
 )
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.sentiment_feedback import (
     ENV_SENTIMENT,
     ENV_SENTIMENT_NEGATIVE,
@@ -706,6 +706,63 @@ def test_a_disabled_complaint_names_the_beliefs_it_would_have_demoted(
     assert rows[0]["belief_ids"] == [] and rows[0]["n_beliefs"] == 0, rows
 
 
+def _seed_locked_and_gone_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    db = tmp_path / "memory.db"
+    locked = _mk("L1", "a locked rule")
+    locked.lock_level = LOCK_USER
+    _seed_db(db, [_mk("F1", "the answer is purple"), locked])
+    _set_db(monkeypatch, db)
+    audit_path = _audit_path_for_db(db)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(json.dumps({
+        "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT, "session_id": "s1",
+        "beliefs": [{"id": "F1"}, {"id": "L1"}, {"id": "GONE"}],
+    }) + "\n", encoding="utf-8")
+    return db, audit_path
+
+
+def test_disabled_targets_are_what_the_enabled_lane_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1677: a locked belief and a deleted one are in the prior pack, but
+    the enabled lane moves neither. target_ids must name only what moves."""
+    _default_sentiment(monkeypatch)
+    db, audit_path = _seed_locked_and_gone_pack(tmp_path, monkeypatch)
+    assert apply_sentiment_feedback("no, that's wrong", "s1") == 0
+    rows = [r for r in read_hook_audit(audit_path)
+            if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK]
+    assert rows[0]["target_ids"] == ["F1"], rows
+
+    monkeypatch.setenv(ENV_SENTIMENT_NEGATIVE, "1")
+    apply_sentiment_feedback("no, that's wrong", "s1")
+    moved = {bid for bid in ("F1", "L1")
+             if _read_belief(db, bid).beta != 1.0}
+    assert moved == set(rows[0]["target_ids"])
+
+
+def test_with_the_audit_off_no_targets_are_looked_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aelfrice.hook as hook_mod
+
+    _default_sentiment(monkeypatch)
+    _seed_prior_turn(tmp_path, monkeypatch)
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "0")
+
+    # Recorded, not raised: the hook's fail-soft wrapper would swallow it.
+    calls: list[str] = []
+
+    def record(session_id: str, **_k: object) -> list[str]:
+        calls.append(session_id)
+        return []
+
+    monkeypatch.setattr(hook_mod, "_negative_targets", record)
+    assert apply_sentiment_feedback("no, that's wrong", "s1") == 0
+    assert calls == []
+
+
 def test_a_disabled_complaint_with_no_prior_turn_has_no_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -729,7 +786,7 @@ def test_only_a_disabled_complaint_carries_target_ids(
     assert "target_ids" not in rows[0], rows
 
 
-_OFF ="[feedback]\nsentiment_from_prose = false\n"
+_OFF = "[feedback]\nsentiment_from_prose = false\n"
 _NEG_ON = "[feedback]\nsentiment_negative = true\n"
 
 
