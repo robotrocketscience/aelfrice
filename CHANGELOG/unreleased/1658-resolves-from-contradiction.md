@@ -1,0 +1,7 @@
+### Changed
+
+- **`aelf resolve` now writes a `RESOLVES` edge beside each `SUPERSEDES` edge, so the `RESOLVES` readers finally have a writer ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)).**
+  - **Before:** nothing wrote a `RESOLVES` edge. `aelf introspect` never reported `decided` or `decides`, and the wonder GC exemption for phantoms with a `RESOLVES` edge never applied.
+  - **Now:** when `resolve_contradiction` settles a `CONTRADICTS` pair, it writes `RESOLVES` from the winner to the loser, the same direction as `SUPERSEDES`. `aelf introspect` shows the winner as `decides` and the loser as `decided`, and a phantom on either side of a resolved pair is exempt from `aelf wonder --gc`. A second resolution of the same pair writes no second edge. `ResolutionResult` gains a `resolves_created` field.
+  - **Ranking:** free-text retrieval is unchanged. The edge has valence 0.0, the BFS walk has no weight for it, and its stored weight is 0.0, below the clustering floor of 0.4. A test compares `retrieve()` output with and without the edges. The HRR structural index binds every edge type, so the edge answers a `RESOLVES:<id>` marker query and adds crosstalk to the winner's row for other `<KIND>:<id>` marker queries.
+  - **Limits:** pairs that an earlier `aelf resolve` already settled keep their `SUPERSEDES` edge and get no `RESOLVES` edge, because `aelf resolve` skips settled pairs. The detector-thresholds manifest moves to version 3 to pin `RESOLVES_WEIGHT`.
