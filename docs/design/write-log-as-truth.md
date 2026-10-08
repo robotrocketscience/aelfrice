@@ -60,6 +60,8 @@ ingest_log
                                           if applicable)
 ```
 
+> **Implementation status (2026-10-07, [#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)).** Every production `record_ingest` call now stamps both columns. `classifier_version` is `classification_core.INGEST_CLASSIFIER_VERSION`, which you bump when the `classify_sentence` rules change. `rule_set_hash` is `classification_core.rule_set_hash()`: a sha256 over canonical JSON of the classifier's keyword and pattern tables, the priors, the correction detector's tables in `correction.py`, and the LLM classifier's system prompt and user-message format. It hashes the tables as data, not source text, so it works on an install that ships bytecode only ([#1719](https://github.com/robotrocketscience/aelfrice/issues/1719)). It is computed once per process, and it is NULL when an input cannot be loaded. Rows written before #1658 carry NULL in both columns, and they stay NULL: a backfill could not know which rules wrote them. `aelf doctor` counts the rows whose digest differs from the current one and the rows that have none. Neither `derive()` nor replay reads the columns yet, so a rebuild still applies the current rule set to every row. Do not confuse `INGEST_CLASSIFIER_VERSION` with `core_gate.CLASSIFIER_VERSION` ([#1638](https://github.com/robotrocketscience/aelfrice/issues/1638)), which versions a classifier that labels beliefs after ingest.
+
 The contract:
 
 1. Every belief and every edge has at least one `ingest_log` row pointing at its origin. Beliefs from later synthesis (e.g., feedback-driven re-classification) get a row of `source_kind=feedback_loop_synthesis`.

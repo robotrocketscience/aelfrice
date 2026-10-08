@@ -153,6 +153,31 @@ deliberately does not attempt that rebuild. An `edges` migration is what
 made stores unusable in
 [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161).
 
+## Ingest rule-set reporter
+
+([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658))
+Each `ingest_log` row records the classifier rules that were live when
+aelfrice wrote it: `classifier_version` and `rule_set_hash`, a digest of
+the classifier's keyword and pattern tables and the LLM classifier's
+prompt. `aelf doctor` counts the rows against the digest of the version
+you run now:
+
+```
+ingest log rule set (`ingest_log.rule_set_hash`):
+  current digest: 13ec6a9f64a4
+  43988 row(s) in total
+  0 row(s) carry a different digest (written under other classifier rules)
+  43988 row(s) carry no digest (written before ingest recorded one)
+```
+
+A row with a different digest came from an older or newer set of
+classifier rules, which is expected after an upgrade. A row with no
+digest predates #1658, and aelfrice does not backfill it, because
+nothing records which rules wrote it. The section is informational and
+never makes `aelf doctor` exit 1. It runs one read-only query and does
+not change the store. If the current digest cannot be computed, the
+section says so and leaves out the different-digest count.
+
 ## Help flags
 
 `aelf --help` shows the everyday surface, which is the visible subcommands. `aelf --help --advanced` (or `aelf --advanced`) shows the full surface. The full surface includes the hidden subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `context`, `core-gate`, `demote`, `export-canvas`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `spine`, `stats`, `statusline`, `uninstall`, `unsetup`, `upgrade`, `upgrade-cmd`, `validate`). PR #174 wired the `--advanced` flag in v1.4. `export-obsidian` is visible in the everyday `--help`.

@@ -541,7 +541,13 @@ _SCHEMA: tuple[str, ...] = (
     # SQLite has no native JSON type and we never filter in WHERE
     # on their interior; access is read-then-deserialize. The
     # `(source_kind, source_path)` index covers the spec's required
-    # O(log n) (source_path, raw_text) lookup.
+    # O(log n) (source_path, raw_text) lookup. `classifier_version` and
+    # `rule_set_hash` (#1658) name the ingest classifier rules a row was
+    # written under: `classification_core.INGEST_CLASSIFIER_VERSION` and
+    # `classification_core.rule_set_hash()`, stamped by every production
+    # `record_ingest` call. NULL means the row predates #1658 (or the
+    # digest could not be computed); derive() and replay do not read
+    # either column. Not core_gate.CLASSIFIER_VERSION (#1638).
     """
     CREATE TABLE IF NOT EXISTS ingest_log (
         id                 TEXT PRIMARY KEY,
@@ -5656,6 +5662,10 @@ class MemoryStore:
         derived_belief_ids, derived_edge_ids) are encoded at write
         time so callers don't have to. `ts` and `log_id` are
         injectable for deterministic tests.
+
+        Production callers pass `classifier_version` and `rule_set_hash`
+        from `aelfrice.classification_core` (#1658); the None defaults
+        exist for tests and for the legacy backfill.
         """
         if source_kind not in INGEST_SOURCE_KINDS:
             raise ValueError(
