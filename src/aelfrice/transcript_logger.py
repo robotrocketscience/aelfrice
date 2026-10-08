@@ -770,18 +770,12 @@ def _stop_flush_threshold() -> int:
         return DEFAULT_STOP_FLUSH_TURNS
 
 
-def _count_turn_lines(path: Path) -> int:
-    """Count role-bearing turn lines in turns.jsonl. The cheap `'"role"'`
-    substring test avoids JSON-parsing every line on the hook hot path —
-    event markers (compaction_start, etc.) carry no `role` key, so they
-    are excluded. Returns 0 on any read error (fail-soft)."""
-    counted = _count_turn_lines_and_identity(path)
-    return counted[0] if counted is not None else 0
-
-
 def _count_turn_lines_and_identity(path: Path) -> tuple[int, int | None] | None:
-    """(turn-line count, inode) of `path`, read through one file handle,
-    counting lines the way `_count_turn_lines` describes.
+    """(turn-line count, inode) of `path`, read through one file handle.
+
+    Counts role-bearing turn lines. The cheap `'"role"'` substring test
+    avoids JSON-parsing every line on the hook hot path — event markers
+    (compaction_start, etc.) carry no `role` key, so they are excluded.
 
     None when the file can't be opened. The inode is None when the
     filesystem reports 0, and two None identities compare equal, so such

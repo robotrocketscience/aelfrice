@@ -1104,7 +1104,9 @@ def test_count_turn_lines_excludes_markers(tdir: Path) -> None:
         + json.dumps({"role": "assistant", "text": "b"}) + "\n",
         encoding="utf-8",
     )
-    assert tl._count_turn_lines(src) == 2
+    counted = tl._count_turn_lines_and_identity(src)
+    assert counted is not None
+    assert counted[0] == 2
 
 
 def test_stop_flush_fires_at_threshold(
