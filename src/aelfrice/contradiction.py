@@ -25,7 +25,16 @@ it is stamped with `RESOLVES_WEIGHT` = 0.0, under the clustering floor,
 so it never joins two candidates into one cluster. The HRR structural
 index is the exception: it binds every edge in `EDGE_TYPES`, so the
 edge answers a `RESOLVES:<id>` marker query, and like any added edge it
-adds crosstalk to the winner's row for other `<KIND>:<id>` queries.
+adds crosstalk to the winner's row for other `<KIND>:<id>` queries. That
+lane is not limited to tooling: `hrr_index.parse_structural_marker`
+routes any one-line prompt that starts with an edge type, a colon and a
+non-space character, such as `SUPERSEDES:the old plan`.
+
+Two `aelf wonder` readers count every outgoing edge, so the winner's
+extra edge can move them: the default seed (`cli._wonder_pick_seed`,
+highest out-degree) and the random-walk strategy, which picks uniformly
+over outgoing edges. `benchmarks/resolves_edge_effect_1658.py` measures
+the HRR, seed and walk effects on synthetic stores.
 
 ## Precedence (v3.x #888, six classes)
 
