@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, cast
 
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
 from aelfrice.derivation import META_DERIVED_FROM, META_TURN_SHA, TURN_SHA_LEN
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
@@ -351,6 +352,8 @@ def _ingest_turn(
                 session_id=session_id,
                 ts=ts,
                 raw_meta=row_meta,
+                classifier_version=INGEST_CLASSIFIER_VERSION,
+                rule_set_hash=rule_set_hash(),
             )
             log_ids.append(log_id)
 

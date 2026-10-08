@@ -33,6 +33,7 @@ from typing import Final
 # `np_pattern` is a leaf module (no aelfrice imports) so
 # `entity_extractor` can share the NP regex without closing a
 # store ↔ extractors cycle through this module (#499).
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
 from aelfrice.derivation_worker import run_worker
 from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
 from aelfrice.models import (
@@ -341,6 +342,8 @@ def ingest_triples(
             session_id=session_id,
             ts=ts,
             raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
         )
         obj_log = store.record_ingest(
             source_kind=INGEST_SOURCE_GIT,
@@ -348,6 +351,8 @@ def ingest_triples(
             session_id=session_id,
             ts=ts,
             raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
         )
         pending_edges.append(
             (subj_log, obj_log, triple.relation, triple.anchor_text)

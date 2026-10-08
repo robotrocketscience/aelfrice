@@ -84,6 +84,7 @@ from aelfrice.classification import (
     check_onboard_candidates,
     start_onboard_session,
 )
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import run_worker
 from aelfrice.doctor import (
@@ -2070,6 +2071,8 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             session_id=sid,
             ts=now,
             raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
         )
         run_worker(store)
         entry = store.get_ingest_log_entry(log_id)

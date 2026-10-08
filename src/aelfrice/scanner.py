@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import CODE_FENCE_RE
 from aelfrice.inedible import is_inedible
@@ -302,6 +303,8 @@ def scan_repo(
             session_id=sid,
             ts=created_at,
             raw_meta=raw_meta,
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
         )
         log_ids.append(log_id)
 

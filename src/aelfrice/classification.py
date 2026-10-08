@@ -34,11 +34,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from aelfrice.classification_core import (
+    INGEST_CLASSIFIER_VERSION,
     ClassificationResult,
     TYPE_PRIORS,
     USER_SOURCE,
     classify_sentence,
     get_source_adjusted_prior,
+    rule_set_hash,
 )
 from aelfrice.models import (
     BELIEF_TYPES,
@@ -474,6 +476,8 @@ def accept_classifications(
                 "call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST,
                 "override_belief_type": c.belief_type,
             },
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
         )
         persisting_log_ids.append(log_id)
 
