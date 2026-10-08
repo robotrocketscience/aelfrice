@@ -483,6 +483,8 @@ def test_the_producer_leaves_no_store_path_behind(
     monkeypatch.delenv("AELFRICE_DB", raising=False)
     # The suite's own pin (#1706), not something the producer set.
     monkeypatch.delenv("AELFRICE_TRANSCRIPTS_DIR", raising=False)
+    # The suite's own pin (#1681), likewise.
+    monkeypatch.delenv("AELFRICE_USER_DB", raising=False)
     figures(grid=(20,))
     leaked = sorted(k for k in os.environ if k.startswith(ENV_PREFIX))
     assert not leaked, f"the producer left these set: {leaked}"
