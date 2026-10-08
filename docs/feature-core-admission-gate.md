@@ -95,7 +95,7 @@ on (the default; `AELFRICE_CORE_GATE_BACKGROUND` overrides it), the hook
 records a `session_end` batch of the newest `MAX_BATCH` candidates and
 starts a detached `python -m aelfrice.core_gate_background` process. That
 process rebuilds the prompt with `build_prompt` from the batch's beliefs,
-runs `claude -p --model haiku` with tools, MCP servers, skills,
+runs `claude -p` on its smallest model with tools, MCP servers, skills,
 CLAUDE.md, auto memory, hooks, API keys, and the user's settings files
 off and a $0.10 budget cap,
 checks the reply with `parse_labels`, and caches the labels.

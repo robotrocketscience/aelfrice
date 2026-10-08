@@ -276,7 +276,7 @@ def test_overflow_never_takes_the_opt_in_turn(
 def test_runner_argv_is_the_measured_configuration() -> None:
     """Killed by: dropping or changing any measured flag."""
     assert bg.runner_argv(CLAUDE) == [
-        CLAUDE, "-p", "--model", "haiku", "--tools", "", "--setting-sources", "",
+        CLAUDE, "-p", "--model", bg.RUNNER_MODEL, "--tools", "", "--setting-sources", "",
         "--settings", '{"disableAllHooks": true}', "--no-session-persistence",
         "--output-format", "json", "--max-budget-usd", "0.10",
         "--system-prompt", bg.RUNNER_SYSTEM_PROMPT,
@@ -292,7 +292,7 @@ def test_runner_env_keeps_thinking_and_drops_context() -> None:
     })
     assert "MAX_THINKING_TOKENS" not in env
     # A set key always wins in -p mode, so it would bill that account
-    # instead of the Claude Code login (ruling on #1741).
+    # instead of the `claude` login (ruling on #1741).
     assert "ANTHROPIC_API_KEY" not in env
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"

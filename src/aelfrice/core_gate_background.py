@@ -11,7 +11,7 @@ The runner's flags were measured on #1741 before it was built:
 
 - `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`,
   `--system-prompt`, and the two `CLAUDE_CODE_DISABLE_*` variables keep
-  Claude Code's own context out of the run. Without them each run carried
+  the CLI's own context out of the run. Without them each run carried
   about 51,000-64,000 input tokens; with them, about 2,300.
 - `--setting-sources ""` loads none of the user's, project's, or local
   settings files, so no hook, `apiKeyHelper`, or settings `env` block
@@ -27,7 +27,7 @@ The runner's flags were measured on #1741 before it was built:
 The labels are the classifier's own: the prompt is `core_gate.build_prompt`
 and the reply goes through `core_gate.parse_labels`, the same parser
 `aelf core-gate accept` uses. The child's environment drops any API key,
-so the run always uses the Claude Code login (`runner_env`). It doesn't run
+so the run always uses the `claude` login (`runner_env`). It doesn't run
 on Windows yet (`find_claude`).
 
 Never raises into the hook. A failed run leaves the batch open; an open

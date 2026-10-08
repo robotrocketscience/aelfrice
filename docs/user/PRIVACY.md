@@ -12,20 +12,20 @@ The store, retrieval, scoring, scanner, and feedback paths all run locally again
 grep -rE "requests|httpx|urllib|aiohttp|socket\.|http\." src/aelfrice/
 ```
 
-**That grep is necessary but not sufficient. Here is what it misses.** It matches in-process HTTP calls and socket calls only. It cannot match a network call that the code makes by starting another program: `subprocess.run(["gh", ...])` contains none of those tokens. One shipped hook does exactly that; see the pre-issue duplicate guard below. To cover that class as well, run a second command:
+**That grep is necessary but not sufficient. Here is what it misses.** It matches in-process HTTP calls and socket calls only. It cannot match a network call that the code makes by starting another program: `subprocess.run(["gh", ...])` contains none of those tokens. Two shipped hooks do exactly that: the pre-issue duplicate guard and background core-gate labeling, both described below. To cover that class as well, run a second command:
 
 ```bash
 grep -rE "subprocess|Popen|os\.system" src/aelfrice/
 ```
 
-Then read the argv of each hit. `git` is local; `gh` is not.
+Then read the argv of each hit. `git` is local; `gh` and `claude` are not.
 
 
 Three exceptions are on by default:
 
 - **The update notifier** (`lifecycle.py`) makes one GET request to `https://pypi.org/pypi/aelfrice/json` to check for new releases, gated by a time-to-live (TTL). It transmits nothing; it only reads. To disable the notifier, run `export AELF_NO_UPDATE_CHECK=1`.
 - **The pre-issue duplicate guard** (`pre_issue_create_hook.py`, installed by default since v3.4.0) runs `gh issue list --search <tokens>` before a `gh issue create` tool call, and warns you about duplicates. **This guard does transmit data:** the tokens come from the issue title you typed. It fires only on `gh issue create`, never on ordinary retrieval, on ingest, or on any other command. To disable the guard, run `export AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass a single call, set `ALLOW_DUP_ISSUE=1`. To never install the guard, run `aelf setup --no-pre-issue-guard`.
-- **Background core-gate labeling** (`core_gate_background.py`, on by default since #1741) runs your `claude` CLI as `claude -p --model haiku` in a detached process when the Stop hook finds new core candidates. **This path does transmit data:** the stored text of up to 50 beliefs that the session created, inside the classifier prompt, to the model behind your Claude Code login, which is the same provider your conversation already goes to. aelfrice removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the run's environment and loads none of your user, project, or local Claude Code settings for it, so an `apiKeyHelper` or a key in a settings `env` block isn't used either. Managed settings that your organization deploys still apply, including any credentials they set. It runs only when `claude` is on your `PATH`, and never on Windows, in a headless session, or on the Codex host. To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`.
+- **Background core-gate labeling** (`core_gate_background.py`, on by default since #1741) runs your `claude` CLI as `claude -p` on its smallest model in a detached process when the Stop hook finds new core candidates. **This path does transmit data:** the stored text of up to 50 beliefs that the session created, inside the classifier prompt, to the model behind your `claude` login, which is the same provider your conversation already goes to. aelfrice removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the run's environment and loads none of your user, project, or local `claude` settings for it, so an `apiKeyHelper` or a key in a settings `env` block isn't used either. Managed settings that your organization deploys still apply, including any credentials they set. It runs only when `claude` is on your `PATH`, and never on Windows, in a headless session, or on the Codex host. To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`.
 
 ## No telemetry
 
@@ -97,7 +97,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 |---|---|---|
 | Update notifier — a TTL-gated GET to `https://pypi.org/pypi/aelfrice/json`. To disable it, set `AELF_NO_UPDATE_CHECK=1`. | **on** | nothing; the notifier only reads |
 | Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create`. To disable it, set `AELFRICE_NO_PRE_ISSUE_GUARD=1`. To bypass it once, set `ALLOW_DUP_ISSUE=1`. To never install it, run `aelf setup --no-pre-issue-guard`. | **on** since v3.4.0 | **yes** — the tokens come from the issue title you typed |
-| Background core-gate labeling — `claude -p --model haiku` in a detached process (`core_gate_background.py`). To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`. | **on** since #1741, when `claude` is on `PATH` | **yes** — the text of the session's new core candidates, to the model behind your Claude Code login |
+| Background core-gate labeling — `claude -p` on its smallest model in a detached process (`core_gate_background.py`). To disable it, set `AELFRICE_CORE_GATE_BACKGROUND=0` or `[core_gate] background = false`. | **on** since #1741, when `claude` is on `PATH` | **yes** — the text of the session's new core candidates, to the model behind your `claude` login |
 | `aelf onboard` (direct-API classifier) | on by default since v1.5.0, but runs only with the `[onboard-llm]` extra, `ANTHROPIC_API_KEY`, and recorded consent | candidate sentences the onboard scanner extracts |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | stored belief content |
 | `aelf gate list` — `gh issue list` and `gh issue view` against the repo aelfrice detects from your git remote (`gate_list.py`) | off; an explicit command, hidden from `--help` | repo identity and label filters; no belief content |
@@ -105,7 +105,7 @@ Before v4.2.0, this command hardcoded its gate to open and never read the sentin
 
 Of the three default-on paths, only the notifier transmits nothing; the pre-issue guard and background labeling do transmit. An audit is most likely to miss those two, because each reaches the network by running another program rather than through a socket. See the note on the verification grep above.
 
-Four rows are of that kind: the pre-issue guard, background labeling, `aelf gate list`, and `aelf upgrade`, each of which runs another program. Those rows are why the count in this section has been wrong before: the in-process grep can't see a program a path runs, and it finds the files of `aelf onboard` and `aelf doctor --classify-orphans` only through incidental words, because both call the `anthropic` SDK, which its pattern doesn't name. To find every row, run both greps and add `grep -rn "anthropic" src/aelfrice/`. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
+Four rows are of that kind: the pre-issue guard, background labeling, `aelf gate list`, and `aelf upgrade`, each of which runs another program. Those rows are why the count in this section has been wrong before: the in-process grep can't see a program a path runs, and it finds the files of `aelf onboard` and `aelf doctor --classify-orphans` only through incidental words, because both call the model vendor's Python SDK, which its pattern doesn't name. To find every row, run both greps and also search for that SDK's imports. When you add an outbound path, add its row here, then check which of the two greps would have found that path.
 
 **Confirm at the source:**
 
