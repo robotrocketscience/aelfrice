@@ -30,11 +30,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
+from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
+from aelfrice.derivation_worker import run_worker
 # `np_pattern` is a leaf module (no aelfrice imports) so
 # `entity_extractor` can share the NP regex without closing a
 # store ↔ extractors cycle through this module (#499).
-from aelfrice.classification_core import INGEST_CLASSIFIER_VERSION, rule_set_hash
-from aelfrice.derivation_worker import run_worker
 from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
