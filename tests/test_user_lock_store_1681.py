@@ -409,6 +409,156 @@ def test_unlock_user_naming_the_repo_store_is_refused(
     assert _locked_contents(repo) == [REPO_STATEMENT]
 
 
+@pytest.mark.timeout(60)
+def test_plain_unlock_of_a_missing_id_does_not_hint_at_an_unlocked_user_row(
+    stores: tuple[Path, Path],
+) -> None:
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _user_lock_id(STATEMENT)
+    assert _run(["unlock", "--user", bid])[0] == 0
+    rc, _, err = _run(["unlock", bid])
+    assert rc == 1
+    assert "--user" not in err
+
+
+@pytest.mark.timeout(60)
+def test_already_unlocked_in_the_repo_points_at_the_user_lock(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    # One statement locked in both scopes has one id in each.
+    assert _run(["lock", STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    bid = _user_lock_id(STATEMENT)
+    assert _run(["unlock", bid])[0] == 0
+    rc, out, err = _run(["unlock", bid])
+    assert rc == 0
+    assert out.strip() == f"already unlocked: {bid}"
+    assert f"aelf unlock --user {bid}" in err
+    assert _locked_contents(user) == [STATEMENT]
+
+
+# --- the same-file guard and a broken user store -------------------------
+
+
+@pytest.mark.timeout(60)
+def test_locked_lists_a_shared_file_once_as_repo_locks(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    monkeypatch.setenv("AELFRICE_USER_DB", str(repo))
+    rc, out, _ = _run(["locked", "--json"])
+    assert rc == 0
+    assert [(r["scope"], r["content"]) for r in json.loads(out)] == [
+        ("repo", REPO_STATEMENT),
+    ]
+
+
+@pytest.mark.timeout(60)
+def test_same_file_guard_resolves_the_path(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    link = tmp_path / "link-to-repo"
+    link.symlink_to(repo.parent, target_is_directory=True)
+    monkeypatch.setenv("AELFRICE_USER_DB", str(link / repo.name))
+    rc, _, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 1
+    assert "AELFRICE_USER_DB names the repository store" in err
+    assert not repo.exists()
+
+
+@pytest.mark.timeout(60)
+def test_locked_with_a_corrupt_user_store_lists_repo_locks(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    user.parent.mkdir(parents=True)
+    user.write_bytes(b"this is not a sqlite database" * 64)
+    rc, out, err = _run(["locked", "--json"])
+    assert rc == 0
+    assert [(r["scope"], r["content"]) for r in json.loads(out)] == [
+        ("repo", REPO_STATEMENT),
+    ]
+    assert "cannot read the user lock store" in err
+    assert str(user) in err
+
+
+@pytest.mark.timeout(60)
+def test_plain_unlock_survives_a_corrupt_user_store(
+    stores: tuple[Path, Path],
+) -> None:
+    repo, user = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    [bid] = [
+        r["id"] for r in json.loads(_run(["locked", "--json"])[1])
+    ]
+    user.parent.mkdir(parents=True)
+    user.write_bytes(b"this is not a sqlite database" * 64)
+    assert _run(["unlock", bid])[0] == 0
+    rc, out, _ = _run(["unlock", bid])
+    assert (rc, out.strip()) == (0, f"already unlocked: {bid}")
+    assert _locked_contents(repo) == []
+
+
+@pytest.mark.timeout(60)
+def test_read_open_falls_back_to_read_only_when_writes_are_refused(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    real = db_paths.MemoryStore
+
+    def refuse_writable(path: str, **kw: object) -> MemoryStore:
+        if not kw.get("read_only"):
+            exc = sqlite3.OperationalError("attempt to write a readonly database")
+            exc.sqlite_errorname = "SQLITE_READONLY"  # type: ignore[attr-defined]
+            raise exc
+        return real(path, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db_paths, "MemoryStore", refuse_writable)
+    store = db_paths.open_user_store_if_present()
+    assert store is not None
+    try:
+        assert [b.content for b in store.list_locked_beliefs()] == [STATEMENT]
+    finally:
+        store.close()
+
+
+# --- the feed event and a write under the default path -------------------
+
+
+@pytest.mark.timeout(60)
+def test_lock_user_feed_event_is_tagged_with_its_scope(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    monkeypatch.delenv("AELFRICE_FEED_LOG", raising=False)
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    rows = [
+        json.loads(line)
+        for line in (repo.parent / "feed.jsonl").read_text().splitlines()
+    ]
+    scopes = {
+        r["snippet"]: r.get("scope") for r in rows
+        if r["event"] == "belief.locked"
+    }
+    assert scopes == {REPO_STATEMENT: None, STATEMENT: "user"}
+
+
+@pytest.mark.timeout(60)
+def test_lock_user_writes_under_the_default_dir_when_unset(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = tmp_path / "fakehome" / ".aelfrice"
+    monkeypatch.delenv("AELFRICE_USER_DB", raising=False)
+    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", fake)
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    assert _locked_contents(fake / "user" / "memory.db") == [STATEMENT]
+
+
 # --- /aelf:lock --user through the prompt hook executor ------------------
 
 
