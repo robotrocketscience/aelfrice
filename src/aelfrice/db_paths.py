@@ -64,22 +64,31 @@ def _git_common_dir() -> Path | None:
 
     Cached per process, keyed on the cwd and git's discovery environment
     variables (#1734). A `None` result is cached too, so the fallback is
-    the same on every call. When the cwd itself can't be read, nothing is
-    cached and the lookup runs as before.
+    the same on every call, with one exception: a timed-out lookup is not
+    cached, because a loaded machine can answer the next call. When the
+    cwd itself can't be read, nothing is cached and the lookup runs as
+    before.
     """
     try:
         key = (os.getcwd(), *(os.environ.get(k) for k in _GIT_DISCOVERY_ENV))
     except OSError:
-        return _lookup_git_common_dir()
-    if key in _git_common_dir_cache:
+        key = None
+    if key is not None and key in _git_common_dir_cache:
         return _git_common_dir_cache[key]
-    found = _lookup_git_common_dir()
-    _git_common_dir_cache[key] = found
+    try:
+        found = _lookup_git_common_dir()
+    except subprocess.TimeoutExpired:
+        return None
+    if key is not None:
+        _git_common_dir_cache[key] = found
     return found
 
 
 def _lookup_git_common_dir() -> Path | None:
-    """Run `git rev-parse --git-common-dir` for the cwd; None on any failure.
+    """Run `git rev-parse --git-common-dir` for the cwd; None on failure.
+
+    A timeout raises `subprocess.TimeoutExpired` instead, so the cache in
+    `_git_common_dir()` can tell a transient failure from an answer.
 
     Two worktrees of one repo share a --git-common-dir, so resolving
     against this gives them a single shared DB. Returns None when cwd
@@ -108,7 +117,6 @@ def _lookup_git_common_dir() -> Path | None:
     except (
         FileNotFoundError,
         OSError,
-        subprocess.TimeoutExpired,
         UnicodeDecodeError,
     ):
         return None
@@ -395,8 +403,9 @@ def repo_identity() -> str:
     ``AELFRICE_PROJECT_CONTEXT`` to activate project-context retrieval
     scoping for the current repo (the column is populated and migrate-safe
     regardless; the resolver default stays env-driven per #970). Forks
-    `git` once; prefer `repo_identity_from_db_path()` when a resolved DB
-    path is already in hand.
+    `git` once on a cache miss in `_git_common_dir()` (#1734); prefer
+    `repo_identity_from_db_path()` when a resolved DB path is already in
+    hand.
     """
     git_dir = _git_common_dir()
     if git_dir is None:
