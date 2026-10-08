@@ -38,7 +38,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import IO, TYPE_CHECKING, Any, Final
 
@@ -415,7 +415,7 @@ def _evidence_supports(
     event counts only when it carries a session id, falls after ``born``,
     and isn't from the session that created the phantom. The one count
     behind both :func:`find_evidence_promotable_phantoms` and
-    :func:`has_promotion_evidence`, so GC and promotion can't drift apart.
+    :func:`promotion_guarded_ids`, so GC and promotion can't drift apart.
     """
     def admitted(events: list[tuple[str | None, str]]) -> Counter[str]:
         counts: Counter[str] = Counter()
@@ -453,8 +453,10 @@ def _promotable_supports(
 
     Applies #1650's per-phantom gates, then counts with
     :func:`_evidence_supports`. The caller has already applied the store
-    gates (:meth:`MemoryStore.evidence_promotion_candidates`).
-    ``stored_sentences`` is :func:`aelfrice.ingest.stored_sentences`,
+    gates (:meth:`MemoryStore.evidence_promotion_candidates`). Shared by
+    :func:`find_evidence_promotable_phantoms` and
+    :func:`promotion_guarded_ids`, so promotion and wonder GC apply the
+    same gates. ``stored_sentences`` is :func:`aelfrice.ingest.stored_sentences`,
     passed in so that ``aelfrice.ingest`` stays a lazy import.
     """
     born = _parse_instant(ph.created_at)
@@ -482,29 +484,32 @@ def _promotable_supports(
     return _evidence_supports(store, ph, born, sentences)
 
 
-def has_promotion_evidence(store: "MemoryStore", phantom: "Belief") -> bool:
-    """True when ``phantom`` has any support #1650 promotion counts.
+def promotion_guarded_ids(
+    store: "MemoryStore", candidate_ids: Sequence[str],
+) -> set[str]:
+    """The ids in ``candidate_ids`` that wonder GC must keep (#1658).
 
-    Wonder GC (#1658) keeps such a phantom: it is partway to evidence
-    promotion, and collecting it would discard what you said. The count
-    is :func:`find_evidence_promotable_phantoms`'s, with a threshold of
-    one support. A typed twin of only some of a multi-sentence phantom's
-    sentences is not a complete restatement, so it does not count here
-    either. Promotion's eligibility gates (the sentence-residue check,
-    locks, contradictions, an earlier ``aelf demote``) don't apply: they
-    decide whether to promote, not whether you supported the phantom.
-    An unparseable ``created_at`` admits every dated user event, so the
-    guard errs toward keeping the phantom. Read-only.
+    A phantom is kept when #1650 evidence promotion could promote it and
+    it has at least one support promotion counts. Promotion's gates
+    apply unchanged, through the same code: the store gates (a user
+    lock, an inbound CONTRADICTS edge, negative-valence feedback, an
+    earlier ``aelf demote``), an unparseable ``created_at``, and the
+    sentence-residue check. A phantom that fails any of them can never
+    be promoted, so it is not kept, whatever support it has; a question,
+    for one, is collected after its TTL. A typed twin of only some of a
+    multi-sentence phantom's sentences is not a complete restatement,
+    so it does not count either. Read-only.
     """
+    if not candidate_ids:
+        return set()
     from aelfrice.ingest import stored_sentences  # noqa: PLC0415
 
-    born = _parse_instant(phantom.created_at) or datetime.min.replace(
-        tzinfo=timezone.utc,
-    )
-    supports = _evidence_supports(
-        store, phantom, born, stored_sentences(phantom.content),
-    )
-    return sum(supports.values()) > 0
+    kept: set[str] = set()
+    for ph in store.evidence_promotion_candidates(candidate_ids):
+        supports = _promotable_supports(store, ph, stored_sentences)
+        if supports is not None and sum(supports.values()) > 0:
+            kept.add(ph.id)
+    return kept
 
 
 def find_evidence_promotable_phantoms(

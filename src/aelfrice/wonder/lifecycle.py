@@ -225,9 +225,13 @@ def wonder_gc(
     - no endorsement ``feedback_history`` rows (exposure-only rows from
       the retrieval hook don't count, #1171)
     - no ``RESOLVES`` edges (incoming or outgoing)
-    - no support that #1650 evidence promotion counts: a user-spoken
-      corroboration or a complete restatement you typed in another
-      session (#1658, :func:`aelfrice.phantom_promotion_opportunity.has_promotion_evidence`)
+    - not a phantom that #1650 evidence promotion could promote and
+      that has a support promotion counts: a user-spoken corroboration
+      or a complete restatement you typed in another session (#1658,
+      :func:`aelfrice.phantom_promotion_opportunity.promotion_guarded_ids`).
+      A phantom that fails a promotion gate, such as a question or a
+      phantom with an inbound CONTRADICTS edge, is collected whatever
+      support it has.
 
     If ``dry_run`` is True, reports candidates without mutating the store.
     The second run in non-dry-run mode finds zero new candidates
@@ -239,16 +243,15 @@ def wonder_gc(
     cutoff_ts = cutoff.isoformat()
 
     from aelfrice.phantom_promotion_opportunity import (  # noqa: PLC0415
-        has_promotion_evidence,
+        promotion_guarded_ids,
     )
 
     # #1658: the SQL predicate can't see your restatements, which land on
-    # twin beliefs, so a phantom partway to #1650 promotion is kept here.
-    candidate_ids: list[str] = []
-    for belief_id in store.query_wonder_gc_candidates(cutoff_ts=cutoff_ts):
-        phantom = store.get_belief(belief_id)
-        if phantom is not None and not has_promotion_evidence(store, phantom):
-            candidate_ids.append(belief_id)
+    # twin beliefs, so a phantom #1650 promotion could still promote is
+    # kept here. Promotion's own gates decide which phantoms qualify.
+    stale = store.query_wonder_gc_candidates(cutoff_ts=cutoff_ts)
+    kept = promotion_guarded_ids(store, stale)
+    candidate_ids = [belief_id for belief_id in stale if belief_id not in kept]
     scanned = len(candidate_ids)
 
     if dry_run:
