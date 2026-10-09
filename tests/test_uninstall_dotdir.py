@@ -324,12 +324,13 @@ def test_preserved_paths_match_their_owning_modules() -> None:
     deleted, but no longer positively recognised) and the guarantee in
     AC3 would rest on nothing.
     """
-    from aelfrice import doctor, project_warm
+    from aelfrice import db_paths, doctor, project_warm
 
     expected = {
         doctor._AELFRICE_PROJECTS_DIR.name,
         project_warm._CONFIG_FILENAME,
         auto_install.OPT_OUT_PATH.name,
+        db_paths.USER_STORE_DIRNAME,
     }
     named = set(lifecycle._DOTDIR_PRESERVED)
     assert expected <= named, (

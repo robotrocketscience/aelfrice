@@ -985,6 +985,10 @@ _DOTDIR_PRESERVED: Final[tuple[str, ...]] = (
     # documents `~/.aelfrice/shared/<name>/memory.db` as the conventional
     # location, so this is another store's corpus by another name.
     "shared",
+    # db_paths.USER_STORE_DIRNAME -- the user-scope lock store (#1681).
+    # Every repository reads it, so uninstalling from one must not take
+    # the locks the others share.
+    "user",
 )
 
 
