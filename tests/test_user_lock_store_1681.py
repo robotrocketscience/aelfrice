@@ -613,6 +613,22 @@ def test_same_file_guard_catches_a_case_variant_on_a_case_insensitive_fs(
     assert _locked_contents(repo) == [REPO_STATEMENT]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@pytest.mark.timeout(60)
+def test_locked_with_a_symlink_loop_user_path_lists_repo_locks(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    (tmp_path / "loop1").symlink_to(tmp_path / "loop2")
+    (tmp_path / "loop2").symlink_to(tmp_path / "loop1")
+    monkeypatch.setenv("AELFRICE_USER_DB", str(tmp_path / "loop1"))
+    rc, out, _ = _run(["locked", "--json"])
+    assert rc == 0
+    assert [(r["scope"], r["content"]) for r in json.loads(out)] == [
+        ("repo", REPO_STATEMENT),
+    ]
+
+
 # --- the feed event and a write under the default path -------------------
 
 

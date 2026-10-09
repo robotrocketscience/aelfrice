@@ -2040,8 +2040,14 @@ def _user_store_is_repo_store() -> bool:
         # which `resolve()` canonicalizes.
         return os.path.samefile(user_p, repo_p)
     except OSError:
-        # Either file is missing, so they can only match by path.
+        pass
+    # A file is missing, so they can only match by path.
+    try:
         return user_p.resolve() == repo_p.resolve()
+    except (OSError, RuntimeError):
+        # A symlink loop: RuntimeError before Python 3.13, OSError after.
+        # Not the repository store; opening it fails and is reported.
+        return False
 
 
 def _user_scope_conflict_message(command: str) -> str:
