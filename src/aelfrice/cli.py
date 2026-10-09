@@ -2420,7 +2420,7 @@ def _list_user_locks() -> list[Belief]:
             return store.list_locked_beliefs()
         finally:
             store.close()
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
         print(
             f"aelf locked: cannot read the user lock store at "
             f"{user_db_path()}: {exc}; listing repository locks only.",
@@ -3653,7 +3653,7 @@ def _user_lock_hint(belief_id: str) -> str | None:
             b = store.get_belief(belief_id)
         finally:
             store.close()
-    except (sqlite3.Error, OSError):
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable):
         return None
     if b is None or b.lock_level != LOCK_USER:
         return None

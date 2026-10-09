@@ -523,6 +523,64 @@ def test_read_open_falls_back_to_read_only_when_writes_are_refused(
         store.close()
 
 
+def _make_user_dir_read_only(user: Path) -> None:
+    """Leave the user store with no sidecars in a directory it can't write.
+
+    The writable open is refused and the read-only fallback can't
+    create its `-shm`/`-wal` pair, so it raises
+    `ReadOnlyStoreUnavailable` rather than a `sqlite3.Error`.
+    """
+    for suffix in ("-shm", "-wal"):
+        Path(f"{user}{suffix}").unlink(missing_ok=True)
+    user.parent.chmod(0o555)
+
+
+@pytest.fixture()
+def restore_user_dir(stores: tuple[Path, Path]):  # type: ignore[no-untyped-def]
+    yield
+    _, user = stores
+    if user.parent.exists():
+        user.parent.chmod(0o755)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX directory permissions; root ignores them",
+)
+@pytest.mark.timeout(60)
+def test_locked_with_an_unopenable_user_store_lists_repo_locks(
+    stores: tuple[Path, Path], restore_user_dir: None,
+) -> None:
+    _, user = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    _make_user_dir_read_only(user)
+    rc, out, err = _run(["locked", "--json"])
+    assert rc == 0
+    assert [(r["scope"], r["content"]) for r in json.loads(out)] == [
+        ("repo", REPO_STATEMENT),
+    ]
+    assert err.count("cannot read the user lock store") == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="POSIX directory permissions; root ignores them",
+)
+@pytest.mark.timeout(60)
+def test_plain_unlock_survives_an_unopenable_user_store(
+    stores: tuple[Path, Path], restore_user_dir: None,
+) -> None:
+    _, user = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    [bid] = [r["id"] for r in json.loads(_run(["locked", "--json"])[1])]
+    assert _run(["unlock", bid])[0] == 0
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    _make_user_dir_read_only(user)
+    rc, out, _ = _run(["unlock", bid])
+    assert (rc, out.strip()) == (0, f"already unlocked: {bid}")
+
+
 # --- the feed event and a write under the default path -------------------
 
 
