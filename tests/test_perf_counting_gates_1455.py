@@ -37,7 +37,6 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from aelfrice import hrr_index as hrr_mod
 from aelfrice.bm25 import BM25Index
 from aelfrice.graph_spectral import heat_kernel_score
 from aelfrice.hrr_index import HRRStructIndex
@@ -121,13 +120,15 @@ def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
     """`probe` must not sort all N scores to return K of them.
 
     `argsort` over N=50k is what the 30 ms budget cannot absorb; the
-    implementation uses `argpartition` to isolate K candidates and sorts
-    only those. This asserts the split directly: `argpartition` is called,
-    and every `argsort` call sees at most K elements -- never the full N.
+    implementation partitions the N scores in O(N) to find the cutoff
+    and sorts only the K winners (#1754 moved this from `argpartition`
+    to `np.partition` plus a `lexsort` that breaks ties by id). This
+    asserts the split directly: a partition sees all N scores, and every
+    sort-like call (`argsort`, `sort`, `lexsort`) sees at most K elements.
 
-    Mutation that turns this red: replace the `argpartition` branch with
-    `order = np.argsort(-scores)`, which is the natural simplification and
-    is correct, only slower.
+    Mutation that turns this red: replace the selection with
+    `order = np.argsort(-scores)[:top_k]`, which is the natural
+    simplification and is correct, only slower.
     """
     n, dim, top_k = 512, 64, 10
     rng = np.random.default_rng(0)
@@ -139,27 +140,32 @@ def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
     idx.role_vecs = {"CONTRADICTS": rng.standard_normal(dim).astype(np.float64)}
 
     sorted_sizes: list[int] = []
-    partition_calls = {"n": 0}
-    real_argsort = np.argsort
-    real_argpartition = np.argpartition
+    partition_sizes: list[int] = []
 
-    def spy_argsort(a, *args, **kwargs):  # type: ignore[no-untyped-def]
-        sorted_sizes.append(int(np.asarray(a).size))
-        return real_argsort(a, *args, **kwargs)
+    def spy(real, sink, size_of):  # type: ignore[no-untyped-def]
+        def wrapped(a, *args, **kwargs):  # type: ignore[no-untyped-def]
+            sink.append(size_of(a))
+            return real(a, *args, **kwargs)
+        return wrapped
 
-    def spy_argpartition(a, *args, **kwargs):  # type: ignore[no-untyped-def]
-        partition_calls["n"] += 1
-        return real_argpartition(a, *args, **kwargs)
+    def size(a):  # type: ignore[no-untyped-def]
+        return int(np.asarray(a).size)
 
-    monkeypatch.setattr(hrr_mod.np, "argsort", spy_argsort)
-    monkeypatch.setattr(hrr_mod.np, "argpartition", spy_argpartition)
+    def keys_size(keys):  # type: ignore[no-untyped-def]
+        return int(np.asarray(keys[-1]).size)
+
+    for name in ("argsort", "sort"):
+        monkeypatch.setattr(np, name, spy(getattr(np, name), sorted_sizes, size))
+    monkeypatch.setattr(np, "lexsort", spy(np.lexsort, sorted_sizes, keys_size))
+    for name in ("partition", "argpartition"):
+        monkeypatch.setattr(np, name, spy(getattr(np, name), partition_sizes, size))
 
     out = idx.probe("CONTRADICTS", "b0", top_k=top_k)
 
     assert len(out) == top_k
-    assert partition_calls["n"] == 1, (
-        "probe did not use argpartition; a top-K probe that sorts every "
-        "score is O(N log N) in the term the 30ms budget is spent on"
+    assert n in partition_sizes, (
+        "probe did not partition the N scores; a top-K probe that sorts "
+        "every score is O(N log N) in the term the 30ms budget is spent on"
     )
     assert sorted_sizes, "expected probe to sort the partitioned candidates"
     assert max(sorted_sizes) <= top_k, (
