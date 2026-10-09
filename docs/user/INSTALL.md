@@ -547,6 +547,10 @@ aelfrice keeps these items in every mode:
 - `shared/` is the conventional home for read-only **federation
   peers** (`knowledge_deps.json`). A federation peer is the corpus of
   another store by another name.
+- `user/` holds the **user lock store**, `user/memory.db`, which
+  `aelf lock --user` writes. Every project reads it, so uninstalling
+  from one project leaves it in place. To remove a single user lock,
+  run `aelf unlock --user <id>`.
 - `config.json` is your configuration. aelfrice keeps it for the same
   reason as `opt-out-hooks.json`. `opt-out-hooks.json` records your
   decision that a hook should not be installed, and that decision
@@ -558,8 +562,9 @@ destructive modes name every path they are about to remove before they
 remove it.
 
 To remove the directory entirely, first check
-`ls ~/.aelfrice/projects/` and `ls ~/.aelfrice/shared/`. Then run
-`uninstall`. Then run `rm -rf ~/.aelfrice/`.
+`ls ~/.aelfrice/projects/`, `ls ~/.aelfrice/shared/`, and
+`aelf locked`, which lists your user locks. Then run `uninstall`. Then
+run `rm -rf ~/.aelfrice/`.
 
 ## Troubleshooting
 
