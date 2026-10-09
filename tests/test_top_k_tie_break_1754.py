@@ -98,8 +98,8 @@ def test_empty_scores() -> None:
 class _UlpSplitMatrix(np.ndarray):
     """`@` adds one ulp to every 8th row, as a positional BLAS kernel can.
 
-    Only the full product is perturbed. Indexing returns a plain array, so
-    the re-score of the selected rows sees exact arithmetic.
+    Any `@`, including one on rows taken out of this matrix, is perturbed,
+    so only a re-score that avoids `@` sees exact arithmetic.
     """
 
     def __matmul__(self, other: np.ndarray) -> np.ndarray:  # type: ignore[override]
@@ -108,6 +108,20 @@ class _UlpSplitMatrix(np.ndarray):
         return out
 
     def __getitem__(self, key: object) -> np.ndarray:  # type: ignore[override]
+        return np.asarray(np.asarray(self)[key]).view(_UlpSplitMatrix)  # type: ignore[index]
+
+
+class _RowCountingMatrix(np.ndarray):
+    """Records how many rows each fancy-index takes out of the matrix."""
+
+    taken: list[int]
+
+    def __matmul__(self, other: np.ndarray) -> np.ndarray:  # type: ignore[override]
+        return np.asarray(self) @ other
+
+    def __getitem__(self, key: object) -> np.ndarray:  # type: ignore[override]
+        if isinstance(key, np.ndarray):
+            self.taken.append(int(key.size))
         return np.asarray(self)[key]  # type: ignore[index]
 
 
@@ -124,6 +138,27 @@ def test_top_k_rows_restores_a_tie_split_by_the_product(k: int) -> None:
     idx, scores = top_k_rows(split, probe, k)
     assert idx.tolist() == list(range(k))
     assert len(np.unique(scores)) == 1
+
+
+def test_top_k_rows_does_not_rescore_zero_rows() -> None:
+    """A sparse store: most rows are zero, and fewer than k score above 0.
+
+    The cutoff is then 0.0 and every zero row is within the margin. They
+    must not be copied out and re-scored: at 20k rows that was a full
+    copy of the matrix and a 7-10x slower probe.
+    """
+    rng = np.random.default_rng(5)
+    m = np.zeros((2000, 32))
+    m[:4] = rng.standard_normal((4, 32))
+    probe = rng.standard_normal(32)
+    counted = m.view(_RowCountingMatrix)
+    counted.taken = []
+    idx, scores = top_k_rows(counted, probe, 10)
+    assert max(counted.taken, default=0) <= 4
+    exact = np.einsum("ij,j->i", m, probe)
+    expected = sorted(range(m.shape[0]), key=lambda i: (-exact[i], i))[:10]
+    assert idx.tolist() == expected
+    np.testing.assert_array_equal(scores, exact[expected])
 
 
 def test_top_k_rows_matches_top_k_indices_on_distinct_scores() -> None:
@@ -147,6 +182,16 @@ def test_top_k_rows_k_zero() -> None:
 def test_probe_keeps_the_lowest_ids_among_tied_candidates(
     tied_index: HRRStructIndex, k: int,
 ) -> None:
+    hits = tied_index.probe(EDGE_SUPPORTS, "t", top_k=k)
+    assert [bid for bid, _ in hits] == _citers()[:k]
+    assert len({score for _, score in hits}) == 1
+
+
+@pytest.mark.parametrize("k", [1, 5, 9])
+def test_probe_keeps_ties_that_the_matrix_product_splits(
+    tied_index: HRRStructIndex, k: int,
+) -> None:
+    tied_index.struct = tied_index.struct.view(_UlpSplitMatrix)
     hits = tied_index.probe(EDGE_SUPPORTS, "t", top_k=k)
     assert [bid for bid, _ in hits] == _citers()[:k]
     assert len({score for _, score in hits}) == 1
