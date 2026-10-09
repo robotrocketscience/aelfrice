@@ -95,7 +95,7 @@ def test_v14_snapshot_seeds_are_searchable_after_migration(
     for token in ("quokka", "aardvark", "wibble"):
         proc = subprocess.run(  # noqa: S603 — argv list, not shell
             [*installed_aelf, "search", token],
-            env={"AELFRICE_DB": str(v14_db), "PATH": _path()},
+            env=_env(v14_db),
             capture_output=True,
             text=True,
             check=True,
@@ -124,7 +124,7 @@ def test_v14_migration_grows_tables_and_preserves_belief_rows(
     # `aelf locked` lists locked beliefs and is read-mostly.
     subprocess.run(  # noqa: S603
         [*installed_aelf, "locked"],
-        env={"AELFRICE_DB": str(v14_db), "PATH": _path()},
+        env=_env(v14_db),
         capture_output=True,
         text=True,
         check=True,
@@ -150,13 +150,17 @@ def test_v14_migration_grows_tables_and_preserves_belief_rows(
     )
 
 
-def _path() -> str:
-    """Minimal PATH for subprocess. `installed_aelf` may be an absolute
-    path or `uv run aelf`; either way the resolver is the parent's PATH.
+def _env(db: Path) -> dict[str, str]:
+    """The parent environment with `AELFRICE_DB` pointed at `db`.
+
+    Inherited rather than built from scratch, so the suite's
+    `AELFRICE_USER_DB` and `HOME` pins reach the child: `aelf locked`
+    also reads the user lock store (#1681), and a bare environment
+    sends it to the real `~/.aelfrice/user/memory.db`.
     """
     import os
 
-    return os.environ.get("PATH", "")
+    return {**os.environ, "AELFRICE_DB": str(db)}
 
 
 def test_search_after_migration_returns_seeded_belief(
