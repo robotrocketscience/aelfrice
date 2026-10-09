@@ -635,6 +635,61 @@ def test_lock_user_feed_event_is_tagged_with_its_scope(
     assert scopes == {REPO_STATEMENT: None, STATEMENT: "user"}
 
 
+def _locked_feed_rows(repo: Path) -> list[dict[str, object]]:
+    return [
+        r for r in (
+            json.loads(line)
+            for line in (repo.parent / "feed.jsonl").read_text().splitlines()
+        )
+        if r["event"] == "belief.locked"
+    ]
+
+
+@pytest.mark.timeout(60)
+def test_lock_user_upgrade_feed_event_is_tagged_with_its_scope(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    monkeypatch.delenv("AELFRICE_FEED_LOG", raising=False)
+    assert _run(["lock", "--user", STATEMENT])[0] == 0
+    assert _run(["unlock", "--user", _user_lock_id(STATEMENT)])[0] == 0
+    rc, out, _ = _run(["lock", "--user", STATEMENT])
+    assert rc == 0
+    assert out.startswith("upgraded existing belief to lock:")
+    last = _locked_feed_rows(repo)[-1]
+    assert (last.get("kind"), last.get("scope")) == ("upgrade", "user")
+
+
+@pytest.mark.timeout(60)
+def test_lock_user_corroborated_feed_event_is_tagged_with_its_scope(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses
+
+    from aelfrice.derivation import DerivationInput, derive
+
+    repo, _ = stores
+    monkeypatch.delenv("AELFRICE_FEED_LOG", raising=False)
+    derived = derive(DerivationInput(
+        raw_text=STATEMENT, source_kind="cli_remember",
+        ts="2026-01-01T00:00:00Z", session_id=None,
+    ))
+    assert derived.belief is not None
+    # Same text from another source: the content hash matches, the id
+    # does not, so the worker corroborates this row.
+    other = dataclasses.replace(derived.belief, id="0123456789abcdef")
+    store = db_paths.open_user_store()
+    try:
+        store.insert_belief(other)
+    finally:
+        store.close()
+    rc, out, _ = _run(["lock", "--user", STATEMENT])
+    assert rc == 0
+    assert "(corroborated existing)" in out
+    last = _locked_feed_rows(repo)[-1]
+    assert (last.get("kind"), last.get("scope")) == ("corroborated", "user")
+
+
 @pytest.mark.timeout(60)
 def test_lock_user_writes_under_the_default_dir_when_unset(
     stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
