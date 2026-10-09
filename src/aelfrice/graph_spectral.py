@@ -34,6 +34,7 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
+from aelfrice.hrr import top_k_indices
 from aelfrice.models import (
     EDGE_CITES,
     EDGE_CONTRADICTS,
@@ -398,13 +399,11 @@ def seeds_from_bm25(
     positive = bm25_scores > 0
     if not np.any(positive):
         return out
-    # argpartition is O(N); we only need the top_k indices, not a full
-    # sort. Tie-breaking is arbitrary among equal scores — matches the
-    # spec's "weighted by BM25 score" loose ordering.
+    # O(N) selection. Among scores tied at the cutoff the lowest rows
+    # are kept; rows follow `list_belief_ids()`, so that is the lowest
+    # ids (#1754).
     pos_idx = np.flatnonzero(positive)
-    k = min(top_k, pos_idx.size)
-    top_local = np.argpartition(-bm25_scores[pos_idx], k - 1)[:k]
-    top = pos_idx[top_local]
+    top = pos_idx[top_k_indices(bm25_scores[pos_idx], top_k)]
     weights = bm25_scores[top]
     total = float(weights.sum())
     if total <= 0.0:
