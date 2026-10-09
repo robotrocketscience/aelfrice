@@ -581,6 +581,38 @@ def test_plain_unlock_survives_an_unopenable_user_store(
     assert (rc, out.strip()) == (0, f"already unlocked: {bid}")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX hardlinks")
+@pytest.mark.timeout(60)
+def test_same_file_guard_catches_a_hardlink(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    alias = tmp_path / "alias.db"
+    os.link(repo, alias)
+    monkeypatch.setenv("AELFRICE_USER_DB", str(alias))
+    rc, _, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 1
+    assert "AELFRICE_USER_DB names the repository store" in err
+    assert _locked_contents(repo) == [REPO_STATEMENT]
+
+
+@pytest.mark.timeout(60)
+def test_same_file_guard_catches_a_case_variant_on_a_case_insensitive_fs(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    assert _run(["lock", REPO_STATEMENT])[0] == 0
+    variant = repo.with_name(repo.name.upper())
+    if not variant.exists():
+        pytest.skip("case-sensitive filesystem")
+    monkeypatch.setenv("AELFRICE_USER_DB", str(variant))
+    rc, _, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 1
+    assert "AELFRICE_USER_DB names the repository store" in err
+    assert _locked_contents(repo) == [REPO_STATEMENT]
+
+
 # --- the feed event and a write under the default path -------------------
 
 

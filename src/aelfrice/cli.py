@@ -2034,7 +2034,14 @@ def _user_store_is_repo_store() -> bool:
     repo_p = db_path()
     if ":memory:" in (str(user_p), str(repo_p)):
         return False
-    return user_p.resolve() == repo_p.resolve()
+    try:
+        # Same inode: catches a hardlink, and a case variant of the
+        # repository path on a case-insensitive filesystem, neither of
+        # which `resolve()` canonicalizes.
+        return os.path.samefile(user_p, repo_p)
+    except OSError:
+        # Either file is missing, so they can only match by path.
+        return user_p.resolve() == repo_p.resolve()
 
 
 def _user_scope_conflict_message(command: str) -> str:
