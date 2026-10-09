@@ -50,7 +50,13 @@ _logger = logging.getLogger(__name__)
 _legacy_deprecation_logged = False
 _ephemeral_disable_logged: bool = False
 
-from aelfrice.hrr import DEFAULT_DIM, Vector, bind, random_vector
+from aelfrice.hrr import (
+    DEFAULT_DIM,
+    Vector,
+    bind,
+    random_vector,
+    top_k_rows,
+)
 from aelfrice.models import EDGE_TYPES
 from aelfrice.store import MemoryStore
 
@@ -247,9 +253,11 @@ class HRRStructIndex:
 
         ``score(b) = struct[b] . bind(role[kind], id_vec[target])``.
         Returns an empty list when the index is empty, the kind is
-        unknown, or the target is not a belief in the index. Tie
-        ordering is whatever ``argpartition`` decides — ``score``
-        ties are vanishingly rare in floating-point HRR.
+        unknown, or the target is not a belief in the index. Equal
+        scores are ordered by belief id, and when more than ``top_k``
+        tie at the cutoff the lowest ids are kept (#1754). Ties are
+        common: beliefs with the same outgoing edges have identical
+        struct rows.
         """
         if self.struct.size == 0 or top_k <= 0:
             return []
@@ -258,19 +266,12 @@ class HRRStructIndex:
         if rv is None or iv is None:
             return []
         probe_vec = bind(rv, iv)
-        scores = self.struct @ probe_vec
-        n = len(self.belief_ids)
-        k = min(top_k, n)
-        if k <= 0:
-            return []
-        if k == n:
-            order = np.argsort(-scores)
-        else:
-            top_idx = np.argpartition(-scores, k - 1)[:k]
-            order = top_idx[np.argsort(-scores[top_idx])]
+        # Rows follow `belief_ids`, which `build` takes from
+        # `list_belief_ids()` in ascending id order.
+        order, scores = top_k_rows(self.struct, probe_vec, top_k)
         return [
-            (self.belief_ids[int(i)], float(scores[int(i)]))
-            for i in order
+            (self.belief_ids[int(i)], float(s))
+            for i, s in zip(order, scores)
         ]
 
     def noise_floor(self) -> float:

@@ -101,6 +101,59 @@ def cosine_similarity(a: Vector, b: Vector) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
+# Rows whose BLAS score is within this relative margin of the top-k
+# cutoff are re-scored exactly. BLAS rounding error on an HRR row is
+# about dim * 2.2e-16 * |row| * |probe|, below 1e-12 at dim=2048 with
+# unit-scale vectors, so 1e-9 leaves three orders of headroom.
+_RESCORE_MARGIN: Final[float] = 1e-9
+
+
+def top_k_rows(
+    matrix: npt.NDArray[np.float64], probe: Vector, k: int,
+) -> tuple[npt.NDArray[np.intp], Vector]:
+    """Top ``k`` rows of ``matrix @ probe``: ``(indices, scores)``.
+
+    Ordered by score DESC then row index ASC; see :func:`top_k_indices`.
+    A BLAS matrix-vector product may sum rows in different orders, so
+    two identical rows can score one ulp apart and a tie at the cutoff
+    is lost (#1754: 41 identical rows gave 2 distinct scores under
+    Accelerate). The BLAS product finds the rows near the cutoff;
+    ``einsum`` re-scores just those with one loop for every row, so
+    identical rows score identically.
+    """
+    fast: Vector = matrix @ probe
+    n = int(fast.shape[0])
+    k = min(max(k, 0), n)
+    if k == 0:
+        return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.float64)
+    cutoff = float(np.partition(fast, n - k)[n - k])
+    margin = _RESCORE_MARGIN * (1.0 + float(np.max(np.abs(fast))))
+    near = np.flatnonzero(fast >= cutoff - margin)
+    exact: Vector = np.einsum("ij,j->i", matrix[near], probe)
+    pick = top_k_indices(exact, k)
+    return near[pick], exact[pick]
+
+
+def top_k_indices(scores: Vector, k: int) -> npt.NDArray[np.intp]:
+    """Indices of the ``k`` highest scores, by score DESC then index ASC.
+
+    Among candidates tied at the cutoff score, the lowest indices are
+    kept. Callers lay rows out in ascending belief-id order, so that
+    means the lowest ids (#1754). O(N) selection plus a sort of the
+    ``k`` winners. ``k`` is clamped to ``[0, len(scores)]``.
+    """
+    n = int(scores.shape[0])
+    k = min(max(k, 0), n)
+    if k == 0:
+        return np.empty(0, dtype=np.intp)
+    cutoff = np.partition(scores, n - k)[n - k]
+    above = np.flatnonzero(scores > cutoff)
+    tied = np.flatnonzero(scores == cutoff)[: k - above.size]
+    chosen = np.concatenate((above, tied))
+    order: npt.NDArray[np.intp] = chosen[np.lexsort((chosen, -scores[chosen]))]
+    return order
+
+
 # ---------------------------------------------------------------------------
 # Cleanup memory: nearest-neighbour recovery
 # ---------------------------------------------------------------------------

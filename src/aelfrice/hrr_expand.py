@@ -30,9 +30,9 @@ deterministically-seeded struct matrix. There is **no** ``random`` /
 ``betavariate`` anywhere in this path. :func:`neighbor_rows` returns a total
 order (``similarity`` DESC, then ``neighbor_id`` ASC), so two probes of the
 same store produce identical output. Which candidates reach that sort is
-decided earlier: the reverse probe keeps its top ``per_probe_k`` with
-``argpartition``, which is deterministic for the same index but doesn't
-pick tied candidates at the cutoff by id (#1754). The lane probes the
+decided earlier: the reverse probe keeps its top ``per_probe_k`` by the
+same rule, so among candidates tied at the cutoff it keeps the lowest
+ids (#1754). The lane probes the
 index live at query time; it keeps no on-disk neighbour cache (#1658).
 
 This is *implement-and-ablate* (#981): it lands the lane plus its ablation
