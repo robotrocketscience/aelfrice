@@ -613,6 +613,26 @@ def test_same_file_guard_catches_a_case_variant_on_a_case_insensitive_fs(
     assert _locked_contents(repo) == [REPO_STATEMENT]
 
 
+@pytest.mark.timeout(60)
+def test_lock_user_rechecks_a_case_variant_once_the_store_exists(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _ = stores
+    variant = repo.with_name(repo.name.upper())
+    probe = repo.parent / "Case-Probe"
+    probe.touch()
+    insensitive = (repo.parent / "case-probe").exists()
+    probe.unlink()
+    if not insensitive:
+        pytest.skip("case-sensitive filesystem")
+    # Neither file exists, so the first check can only compare paths.
+    monkeypatch.setenv("AELFRICE_USER_DB", str(variant))
+    rc, _, err = _run(["lock", "--user", STATEMENT])
+    assert rc == 1
+    assert "AELFRICE_USER_DB names the repository store" in err
+    assert STATEMENT not in _all_contents(repo)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
 @pytest.mark.timeout(60)
 def test_locked_with_a_symlink_loop_user_path_lists_repo_locks(

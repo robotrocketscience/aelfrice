@@ -2041,7 +2041,10 @@ def _user_store_is_repo_store() -> bool:
         return os.path.samefile(user_p, repo_p)
     except OSError:
         pass
-    # A file is missing, so they can only match by path.
+    # A file is missing, so they can only match by path. `lock --user`
+    # checks again once it has created the user store, because two
+    # missing paths that differ only in case still name one file on a
+    # case-insensitive filesystem.
     try:
         return user_p.resolve() == repo_p.resolve()
     except (OSError, RuntimeError):
@@ -2129,6 +2132,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     # window, the near-duplicate check — runs against whichever store
     # this returns.
     store = _open_lock_store(user_scope)
+    if user_scope and _user_store_is_repo_store():
+        # The user store did not exist at the first check, so only the
+        # paths were compared. Now that it exists, the check compares
+        # files, and nothing has been written to it yet.
+        store.close()
+        print(_user_scope_conflict_message("lock"), file=sys.stderr)
+        return 1
     feed_scope: dict[str, object] = {"scope": "user"} if user_scope else {}
     try:
         now = _utc_now_iso(now_dt)
