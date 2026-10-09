@@ -104,7 +104,11 @@ def cosine_similarity(a: Vector, b: Vector) -> float:
 # Rows whose BLAS score is within this relative margin of the top-k
 # cutoff are re-scored exactly. BLAS rounding error on an HRR row is
 # about dim * 2.2e-16 * |row| * |probe|, below 1e-12 at dim=2048 with
-# unit-scale vectors, so 1e-9 leaves three orders of headroom.
+# unit-scale vectors, so 1e-9 leaves three orders of headroom. The
+# margin scales with the cutoff and top scores, not with |row| * |probe|,
+# so it assumes rows and probe of about unit norm, as HRR struct rows
+# (sums of a few unit-norm binds) are. Large rows that nearly cancel against
+# the probe can split by more than the margin.
 _RESCORE_MARGIN: Final[float] = 1e-9
 
 
@@ -119,17 +123,28 @@ def top_k_rows(
     is lost (#1754: 41 identical rows gave 2 distinct scores under
     Accelerate). The BLAS product finds the rows near the cutoff;
     ``einsum`` re-scores just those with one loop for every row, so
-    identical rows score identically.
+    identical rows score identically. A row the product scores exactly
+    0.0 is not re-scored: an all-zero row, a belief with no outgoing
+    edges, sums to 0.0 in any order, and those rows can be most of the
+    matrix when few rows score above zero.
     """
     fast: Vector = matrix @ probe
     n = int(fast.shape[0])
     k = min(max(k, 0), n)
     if k == 0:
         return np.empty(0, dtype=np.intp), np.empty(0, dtype=np.float64)
-    cutoff = float(np.partition(fast, n - k)[n - k])
-    margin = _RESCORE_MARGIN * (1.0 + float(np.max(np.abs(fast))))
-    near = np.flatnonzero(fast >= cutoff - margin)
-    exact: Vector = np.einsum("ij,j->i", matrix[near], probe)
+    part = np.partition(fast, n - k)
+    cutoff = float(part[n - k])
+    top = float(part[n - k:].max())
+    lo = cutoff - _RESCORE_MARGIN * (1.0 + max(abs(cutoff), abs(top)))
+    near = np.flatnonzero((fast >= lo) & (fast != 0.0))
+    if lo <= 0.0:
+        # Zero rows all tie at 0.0, so only the k lowest can be picked.
+        zeros = np.flatnonzero(fast == 0.0)[:k]
+        near = np.sort(np.concatenate((near, zeros)))
+    exact: Vector = fast[near]
+    nonzero = exact != 0.0
+    exact[nonzero] = np.einsum("ij,j->i", matrix[near[nonzero]], probe)
     pick = top_k_indices(exact, k)
     return near[pick], exact[pick]
 
