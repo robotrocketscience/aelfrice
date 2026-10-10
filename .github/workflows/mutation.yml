@@ -2,8 +2,9 @@ name: mutation
 
 # Mutation testing, in two modes (#1457).
 #
-# The weekly job is the correctness harness: it runs the whole tree and FAILS
-# LOUDLY if mutmut did not actually execute the mutants it generated. That
+# The weekly job is the correctness harness: it runs the whole tree, in
+# time-boxed shards (#1747), and FAILS LOUDLY if mutmut did not actually
+# execute the mutants it generated. That
 # guard exists because the previous version could not fail. It invoked mutmut
 # with `--paths-to-mutate` / `--tests-dir`, which mutmut 3 removed, so every run
 # from 2026-06-21 onward died with `Error: No such option` — and a blanket
@@ -14,8 +15,9 @@ name: mutation
 #
 # The guard asserts a positive signal, not report non-emptiness: `mutmut
 # results` hides killed mutants unless `--all` is passed, so an empty report is
-# what a fully-killed scope looks like. What it fails on is mutants left `not
-# checked` and a zero mutant total.
+# what a fully-killed scope looks like. What it fails on is a zero mutant
+# total, and a shard whose mutants were all left `not checked`. A shard that
+# ran out of time partway leaves the rest `not checked` and warns instead.
 #
 # The per-PR job is advisory by ratified design (2026-08-09): a surviving mutant
 # is reported, never blocking, until the equivalent-mutant rate has data behind
@@ -52,35 +54,112 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # --- weekly, whole tree, fails on a broken harness ----------------------
-  mutmut:
+  # --- weekly, whole tree in shards, fails on a broken harness -----------
+  # #1747. One job over the whole tree never got past mutant generation: it
+  # hit its 240-minute limit every week with no mutant run. The tree is now
+  # planned into shards by `scripts/mutation_shards.py`, each its own matrix
+  # job with its own runner and time limit, and a last job merges the shards'
+  # reports. The script's docstring says how a shard is cut and why.
+  plan:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Plan the shards
+        id: plan
+        run: |
+          # The plan counts mutants with mutmut's own generator, so it runs
+          # the same exact version the shards install below. It needs only
+          # mutmut, not the project, so it skips the full sync.
+          uv run --no-project --with 'mutmut==3.8.0' \
+              python scripts/mutation_shards.py plan \
+              --out mutation-plan.json --summary mutation-plan.md
+          cat mutation-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          # The matrix below is read from the plan, so the two can't disagree.
+          echo "shards=$(jq -c '[.shards[].index]' mutation-plan.json)" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutation-plan
+          path: mutation-plan.json
+          retention-days: 30
+
+  mutmut:
+    needs: plan
+    if: github.event_name != 'pull_request'
+    name: mutmut (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    # Just under the 360-minute limit of a hosted runner. The time box on
+    # `mutmut run` below is what normally ends the job; this is the backstop.
+    timeout-minutes: 350
+    strategy:
+      # One shard that fails, or runs out of time, says nothing about the
+      # others, so the rest keep running.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
       - name: Install mutmut
-        # Pinned to the major this design targets. `source_paths`,
-        # `only_mutate`, `--max-children` and the `    name: status` report
-        # format the steps below parse are all mutmut-3 specific — an
-        # unpinned major bump is the exact failure mode this workflow exists
-        # to fix, and it would arrive silently.
-        run: uv pip install 'mutmut>=3,<4'
+        # Pinned exactly, for the reason the per-PR job gives: the shard
+        # plan and the pragmas that cut a file into shards both rely on how
+        # this version generates and skips mutants, verified only on 3.8.0.
+        run: uv pip install 'mutmut==3.8.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mutation-plan
+      - name: Scope mutmut to this shard
+        run: |
+          # Writes `only_mutate` and the pragmas for the functions of a split
+          # file that belong to other shards. It edits src/ in place, which
+          # is why it refuses to run outside CI.
+          uv run python scripts/mutation_shards.py apply \
+              --plan mutation-plan.json --shard "${{ matrix.shard }}"
       - name: Run mutation tests
+        env:
+          # The time box. mutmut saves each mutant's result as it finishes
+          # and, on SIGINT, stops its workers and keeps every saved result,
+          # so a shard that runs out of time still reports what it checked.
+          # The rest stay `not checked`. 330 minutes leaves the job's last
+          # 20 for the report and the upload.
+          MUTMUT_TIME_BOX: 330m
         run: |
           # No `|| true` on the whole pipeline. A surviving mutant is a
           # non-zero exit and is not an error here, so the run's status is
           # captured rather than propagated; a *harness* failure is caught by
           # the results assertion below, which is the thing that was missing.
-          uv run mutmut run --max-children 4 || echo "mutmut run exit=$?"
+          #
+          # `timeout` signals the whole process group, so mutmut gets the
+          # SIGINT itself rather than through `uv run`. Exit 124 means the
+          # time box ended the run.
+          status=0
+          timeout --signal=INT --kill-after=5m "${MUTMUT_TIME_BOX}" \
+              .venv/bin/mutmut run --max-children 4 || status=$?
+          echo "mutmut run exit=${status}"
+          if [ "${status}" -eq 124 ]; then
+            echo "::warning title=Mutation time box::shard ${{ matrix.shard }} stopped after ${MUTMUT_TIME_BOX}; unrun mutants stay 'not checked'."
+          fi
           # `--all` is required, not cosmetic: `mutmut results` skips every
           # killed mutant unless it is passed, so a scope in which everything
           # died prints the same empty report as a run that executed nothing.
@@ -92,7 +171,7 @@ jobs:
           # with `Error: Option '--all' requires an argument.` and writes that
           # sentence into the report instead of the results. Verified against
           # mutmut 3.7.0.
-          uv run mutmut results --all=true > mutation-report.txt
+          .venv/bin/mutmut results --all=true > mutation-report.txt
           cat mutation-report.txt
       - name: Assert the run actually produced results
         run: |
@@ -115,6 +194,10 @@ jobs:
           # (`pkg.mod.xǁBoxǁshrink__mutmut_1`), and a `[A-Za-z0-9_.]` class
           # skipped every one of them. A negated ASCII class matches `ǁ`
           # whether grep reads it as one UTF-8 character or as two bytes.
+          #
+          # #1747: a shard that checked some mutants and ran out of time is a
+          # partial result, not a broken harness, so it warns. What fails is
+          # a shard that listed no mutant, or checked none of them.
           MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
@@ -126,17 +209,64 @@ jobs:
             cat mutation-report.txt
             exit 1
           fi
-          if [ "${unchecked}" -ne 0 ]; then
-            echo "::error::${unchecked} of ${total} mutants are 'not checked' — the run aborted before executing them."
+          if [ "${unchecked}" -eq "${total}" ]; then
+            echo "::error::all ${total} mutants are 'not checked' — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
             grep -E ': not checked$' mutation-report.txt | head -20
             exit 1
           fi
-          echo "mutants: ${total} total, ${killed} killed, ${survived} survived"
-      - uses: actions/upload-artifact@v4
+          if [ "${unchecked}" -ne 0 ]; then
+            echo "::warning title=Partial mutation run::${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked'."
+          fi
+          echo "mutants: ${total} total, ${killed} killed, ${survived} survived, ${unchecked} not checked"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: mutation-report
+          name: mutation-report-${{ matrix.shard }}
           path: mutation-report.txt
+          retention-days: 30
+
+  report:
+    needs: [plan, mutmut]
+    # Also after a failed shard: the merged report is most useful then.
+    if: always() && github.event_name != 'pull_request' && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mutation-plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          # Each shard's report lands in its own `mutation-report-<shard>/`.
+          pattern: mutation-report-*
+          path: reports
+      - name: Merge the shard reports
+        run: |
+          # Fails when a planned shard left no report, or when no shard
+          # checked a single mutant. The merge is plain Python and needs no
+          # project install.
+          # With no shard report at all, the glob expands to nothing and
+          # every planned shard is reported missing.
+          shopt -s nullglob
+          status=0
+          python3 scripts/mutation_shards.py merge --plan mutation-plan.json \
+              --summary mutation-summary.md reports/mutation-report-*/ \
+              || status=$?
+          if [ -f mutation-summary.md ]; then
+            cat mutation-summary.md >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          exit "${status}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: mutation-summary
+          path: mutation-summary.md
           retention-days: 30
 
   # --- per PR, changed functions only, advisory --------------------------
