@@ -24,6 +24,14 @@ from typing import NoReturn
 import pytest
 
 from tests.bench_gate.null_model import exempt_gate_modules
+# #1746: pytest finds hooks by name in this module, so importing them here
+# is what turns the guard on. See tests/source_scan_guard.py.
+from tests.source_scan_guard import install as install_source_scan_guard
+from tests.source_scan_guard import pytest_runtest_call as pytest_runtest_call
+from tests.source_scan_guard import pytest_runtest_setup as pytest_runtest_setup
+from tests.source_scan_guard import (
+    pytest_runtest_teardown as pytest_runtest_teardown,
+)
 from tests.bench_protocol import (
     BENCH_MEASUREMENT_PROPERTY,
     BENCH_NULL_VERDICT_PROPERTY,
@@ -31,6 +39,8 @@ from tests.bench_protocol import (
     BENCH_VERDICT_REJECT,
     NO_VERDICT_RECORDED,
 )
+
+install_source_scan_guard()
 
 CORPUS_ENV_VAR = "AELFRICE_CORPUS_ROOT"
 
