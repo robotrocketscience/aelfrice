@@ -88,3 +88,21 @@ def test_each_deselect_states_its_reason_in_the_config() -> None:
     for target in _deselected():
         module = target.split("::")[0].removeprefix("tests/").removesuffix(".py")
         assert module in block, target
+
+
+def test_the_mutation_run_deselects_exactly_these_tests() -> None:
+    """Dropping a `--deselect`, or swapping it for another flag, keeps every
+    other guard here green, and the next mutation run checks nothing again.
+    Update this list together with the reasons in `pyproject.toml`."""
+    config = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert config["tool"]["mutmut"]["pytest_add_cli_args"] == [
+        "--deselect",
+        "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
+        "--deselect",
+        "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
+        "--deselect",
+        "tests/test_subprocess_encoding_1441.py::test_subprocess_text_mode_pins_the_encoding",
+        "--deselect",
+        "tests/test_block_ceiling_hermetic_home_1716.py::"
+        "test_a_home_config_does_not_move_the_session_start_figures",
+    ]
