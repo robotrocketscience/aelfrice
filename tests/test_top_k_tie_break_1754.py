@@ -17,7 +17,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import aelfrice.hrr_index as hrr_index_mod
 from aelfrice.graph_spectral import seeds_from_bm25
 from aelfrice.hrr import top_k_indices, top_k_rows
 from aelfrice.hrr_expand import neighbor_rows
@@ -261,7 +260,7 @@ def test_probe_passes_the_cached_zero_row_mask(
         masks.append(zero_rows)
         return top_k_rows(matrix, probe, k, zero_rows)
 
-    monkeypatch.setattr(hrr_index_mod, "top_k_rows", spy)
+    monkeypatch.setattr("aelfrice.hrr_index.top_k_rows", spy)
     tied_index.probe(EDGE_SUPPORTS, "t", top_k=3)
     tied_index.probe(EDGE_SUPPORTS, "t", top_k=3)
     first, second = masks
