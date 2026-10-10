@@ -1363,6 +1363,7 @@ def _import_edges(module: str, target: str) -> list[tuple[int, str]]:
     return sorted(found)
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(60)
 def test_cli_does_not_import_hook() -> None:
     """`cli` must not import `hook`. This does NOT mean hook is acyclic.
@@ -1400,6 +1401,7 @@ def test_cli_does_not_import_hook() -> None:
     )
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(60)
 def test_env_names_imports_nothing_from_aelfrice() -> None:
     """The property that makes `env_names` a safe place to put a shared

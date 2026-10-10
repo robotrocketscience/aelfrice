@@ -278,6 +278,7 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
 _CENSUS_TIMEOUT_SECONDS = 30
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_no_toml_numeric_knob_accepts_a_bool() -> None:
     """The convention, asserted instead of assumed.

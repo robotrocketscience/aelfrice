@@ -165,6 +165,7 @@ def _apply_feedback_lines() -> int:
     return (after[0] if after else len(text)) - start
 
 
+@pytest.mark.source_scan
 def test_security_md_review_claim_holds() -> None:
     """SECURITY.md's reviewability argument rests on a bound, so derive it.
 

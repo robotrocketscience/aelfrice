@@ -184,6 +184,7 @@ def test_scan_reports_the_file_and_line(tmp_path: Path) -> None:
     assert [(p, n) for p, n, _ in findings] == [(doc, 2), (doc, 4), (doc, 6)]
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("marker", [OPEN, CLOSE])
 def test_no_tracked_file_carries_a_marker(marker: str) -> None:
     """The live guard, and the one the incident needed.
@@ -201,6 +202,7 @@ def test_no_tracked_file_carries_a_marker(marker: str) -> None:
     assert hits == [], f"conflict markers committed: {hits}"
 
 
+@pytest.mark.source_scan
 def test_the_live_scan_reports_no_separator_either() -> None:
     """Separators are conditional, so they need their own live assert."""
     _, findings = scan(tracked_files(_REPO))

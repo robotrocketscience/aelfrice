@@ -52,6 +52,7 @@ def test_the_repo_docs_match_their_resolvers() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(90)
 def test_an_undamaged_copy_passes(tmp_path: Path) -> None:
     result = _run(_copy(tmp_path))
@@ -92,6 +93,7 @@ _DAMAGE = {
 }
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(90)
 @pytest.mark.parametrize("damage", sorted(_DAMAGE))
 def test_a_damaged_claim_fails(tmp_path: Path, damage: str) -> None:

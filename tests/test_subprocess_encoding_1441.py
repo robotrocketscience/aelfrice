@@ -215,6 +215,7 @@ def _is_true(node: ast.expr | None) -> bool:
     return isinstance(node, ast.Constant) and node.value is True
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("callee", ["run", "Popen", "check_output"])
 def test_subprocess_text_mode_pins_the_encoding(callee: str) -> None:
     """Text mode without `encoding=` decodes through the process locale."""

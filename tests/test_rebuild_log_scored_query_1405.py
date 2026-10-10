@@ -163,6 +163,7 @@ def test_ups_path_records_the_string_retrieve_received(
     )
 
 
+@pytest.mark.source_scan
 def test_hook_passes_the_retrieval_query_and_none_on_the_gate_skip_branch() -> None:
     """Both hook call sites, read from source rather than executed.
 
@@ -198,6 +199,7 @@ def test_hook_passes_the_retrieval_query_and_none_on_the_gate_skip_branch() -> N
     assert "scored_query=retrieval_query," not in skip_call
 
 
+@pytest.mark.source_scan
 def test_rebuild_v14_passes_the_post_transform_query() -> None:
     """The call site must hand over `query`, not `raw_query`.
 
@@ -305,6 +307,7 @@ def test_rebuild_v14_logs_the_same_string_it_handed_retrieve(
     ), "extracted_query must remain the pre-transform value, not be overwritten"
 
 
+@pytest.mark.source_scan
 def test_the_gate_skip_branch_cannot_reach_the_retrieval_query_emit() -> None:
     """Why CodeQL alert 566 is a false positive — enforced, not argued.
 

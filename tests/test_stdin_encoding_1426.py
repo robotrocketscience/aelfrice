@@ -669,6 +669,7 @@ def _calls_named(path: Path, name: str) -> list[int]:
     )
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("module", HOOK_MODULES)
 def test_no_hook_reads_stdin_as_text(module: str) -> None:
     """No hook module may go back to reading stdin as decoded text.
@@ -684,6 +685,7 @@ def test_no_hook_reads_stdin_as_text(module: str) -> None:
     )
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("module", HOOK_MODULES)
 def test_every_hook_module_uses_the_helper(module: str) -> None:
     """The companion assert: absence of the bad shape is not presence of the good one.
@@ -721,6 +723,7 @@ def _enclosing_function(tree: ast.AST, lineno: int) -> str | None:
     return best[1] if best else None
 
 
+@pytest.mark.source_scan
 def test_the_cli_has_no_unexpected_locale_stdin_read() -> None:
     """`cli.py` too — it is where the password and the classifications pipe live.
 
@@ -750,6 +753,7 @@ def test_the_cli_has_no_unexpected_locale_stdin_read() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_cli_entry_point_still_calls_the_pin() -> None:
     """The pin is one line in `main()`; nothing else in the file re-establishes it.
 
@@ -777,6 +781,7 @@ UNPINNED_ENTRY_MODULES = (
 )
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("module", UNPINNED_ENTRY_MODULES)
 def test_every_console_script_pins_its_output_streams(module: str) -> None:
     """These six printed diagnostics through whatever code page they found.
