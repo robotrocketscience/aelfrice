@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import aelfrice.hrr_index as hrr_index_mod
 from aelfrice.graph_spectral import seeds_from_bm25
 from aelfrice.hrr import top_k_indices, top_k_rows
 from aelfrice.hrr_expand import neighbor_rows
@@ -249,6 +250,37 @@ def test_probe_keeps_ties_that_the_matrix_product_splits(
     hits = tied_index.probe(EDGE_SUPPORTS, "t", top_k=k)
     assert [bid for bid, _ in hits] == _citers()[:k]
     assert len({score for _, score in hits}) == 1
+
+
+def test_probe_passes_the_cached_zero_row_mask(
+    tied_index: HRRStructIndex, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    masks: list[object] = []
+
+    def spy(matrix, probe, k, zero_rows=None):  # type: ignore[no-untyped-def]
+        masks.append(zero_rows)
+        return top_k_rows(matrix, probe, k, zero_rows)
+
+    monkeypatch.setattr(hrr_index_mod, "top_k_rows", spy)
+    tied_index.probe(EDGE_SUPPORTS, "t", top_k=3)
+    tied_index.probe(EDGE_SUPPORTS, "t", top_k=3)
+    assert masks[0] is not None and masks[1] is masks[0]
+    # Only the target `t`, sorted after every citer, has no outgoing edges.
+    assert np.flatnonzero(masks[0]).tolist() == [_N_TIED]  # type: ignore[arg-type]
+
+
+def test_build_records_the_zero_row_mask(tied_index: HRRStructIndex) -> None:
+    assert tied_index._zero_rows_of is tied_index.struct
+    assert tied_index._zero_rows is not None
+    np.testing.assert_array_equal(
+        tied_index._zero_rows, ~tied_index.struct.any(axis=1),
+    )
+
+
+def test_zero_row_mask_follows_a_replaced_struct(tied_index: HRRStructIndex) -> None:
+    assert not tied_index._all_zero_rows().all()
+    tied_index.struct = np.zeros_like(tied_index.struct)
+    assert tied_index._all_zero_rows().all()
 
 
 def test_neighbor_rows_selects_and_orders_the_lowest_ids(

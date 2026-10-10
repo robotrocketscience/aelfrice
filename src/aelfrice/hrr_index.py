@@ -183,6 +183,12 @@ class HRRStructIndex:
     id_vecs: dict[str, Vector] = field(default_factory=lambda: {})
     role_vecs: dict[str, Vector] = field(default_factory=lambda: {})
     _index: dict[str, int] = field(default_factory=lambda: {}, init=False)
+    _zero_rows: np.ndarray | None = field(
+        default=None, init=False, repr=False, compare=False,
+    )
+    _zero_rows_of: np.ndarray | None = field(
+        default=None, init=False, repr=False, compare=False,
+    )
 
     def build(
         self,
@@ -232,6 +238,10 @@ class HRRStructIndex:
         }
 
         struct = np.zeros((n, self.dim), dtype=np.float64)
+        # A row with no terms stays all zero. Recording that here saves
+        # the probe a scan of the matrix; a row whose terms happen to sum
+        # to zero is left unmarked, which only costs it a re-score.
+        zero_rows = np.ones(n, dtype=bool)
         for i, bid in enumerate(bids):
             terms: list[Vector] = []
             for e in store.edges_from(bid):
@@ -242,7 +252,10 @@ class HRRStructIndex:
                 terms.append(bind(rv, iv))
             if terms:
                 struct[i] = np.sum(np.stack(terms, axis=0), axis=0)
+                zero_rows[i] = False
         self.struct = struct
+        self._zero_rows = zero_rows
+        self._zero_rows_of = struct
         _HRR_BUILD_STATS["last_build_seconds"] = time.perf_counter() - _t0
 
     def probe(
@@ -268,11 +281,25 @@ class HRRStructIndex:
         probe_vec = bind(rv, iv)
         # Rows follow `belief_ids`, which `build` takes from
         # `list_belief_ids()` in ascending id order.
-        order, scores = top_k_rows(self.struct, probe_vec, top_k)
+        order, scores = top_k_rows(
+            self.struct, probe_vec, top_k, self._all_zero_rows(),
+        )
         return [
             (self.belief_ids[int(i)], float(s))
             for i, s in zip(order, scores)
         ]
+
+    def _all_zero_rows(self) -> np.ndarray:
+        """Mask of the all-zero ``struct`` rows: beliefs with no outgoing
+        edges. ``build`` records it; for a loaded or assigned ``struct``
+        it's computed on first use. Cached against the ``struct`` object,
+        which ``build`` and ``load`` replace rather than edit in place."""
+        mask = self._zero_rows
+        if mask is None or self._zero_rows_of is not self.struct:
+            mask = np.logical_not(np.asarray(self.struct).any(axis=1))
+            self._zero_rows = mask
+            self._zero_rows_of = self.struct
+        return mask
 
     def noise_floor(self) -> float:
         """Expected per-bound-pair orthogonal-noise magnitude
