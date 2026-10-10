@@ -39,6 +39,7 @@ import scipy.sparse as sp
 
 from aelfrice.bm25 import BM25Index
 from aelfrice.graph_spectral import heat_kernel_score
+from aelfrice.hrr import top_k_indices
 from aelfrice.hrr_index import HRRStructIndex
 from aelfrice.models import BELIEF_FACTUAL, EDGE_CITES, LOCK_NONE, Belief, Edge
 from aelfrice.store import MemoryStore
@@ -114,8 +115,9 @@ def test_build_makes_one_store_call_per_belief_not_n_squared() -> None:
 # --- HRRStructIndex.probe: top-K, not a full sort ------------------------
 
 
+@pytest.mark.parametrize("live_rows", [512, 3], ids=["dense", "sparse"])
 def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, live_rows: int,
 ) -> None:
     """`probe` must not sort all N scores to return K of them.
 
@@ -125,10 +127,13 @@ def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
     to `np.partition` plus a `lexsort` that breaks ties by id). This
     asserts the split directly: a partition sees all N scores, and every
     sort-like call (`argsort`, `sort`, `lexsort`) sees at most K elements.
+    The sparse case, where fewer than K rows are non-zero, runs the
+    zero-row path in `top_k_rows`.
 
-    Mutation that turns this red: replace the selection with
-    `order = np.argsort(-scores)[:top_k]`, which is the natural
-    simplification and is correct, only slower.
+    Mutation that turns this red: in `top_k_rows`, replace the partition
+    with a full sort of the scores, such as `np.argsort(-fast)`, which is
+    the natural simplification and is correct, only slower. The spies
+    see `np.*` calls only, not ndarray methods such as `fast.argsort()`.
     """
     n, dim, top_k = 512, 64, 10
     rng = np.random.default_rng(0)
@@ -136,6 +141,7 @@ def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
     idx.belief_ids = [f"b{i}" for i in range(n)]
     idx._index = {bid: i for i, bid in enumerate(idx.belief_ids)}
     idx.struct = rng.standard_normal((n, dim)).astype(np.float64) / np.sqrt(dim)
+    idx.struct[live_rows:] = 0.0
     idx.id_vecs = {"b0": rng.standard_normal(dim).astype(np.float64)}
     idx.role_vecs = {"CONTRADICTS": rng.standard_normal(dim).astype(np.float64)}
 
@@ -172,6 +178,43 @@ def test_probe_partitions_for_top_k_instead_of_sorting_all_scores(
         f"probe sorted an array of {max(sorted_sizes)} elements for a "
         f"top-{top_k} query (N={n}). Only the K partitioned candidates may "
         "be sorted."
+    )
+
+
+def test_top_k_indices_partitions_instead_of_sorting_all_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`top_k_indices` must not sort all N scores to return K of them.
+
+    The probe hands it only the candidates near the cutoff, but
+    `seeds_from_bm25` hands it every positive BM25 score, so the probe
+    gate above doesn't cover it.
+
+    Mutation that turns this red: replace the `lexsort` of the chosen
+    indices with `np.argsort(-scores, kind="stable")[:k]`.
+    """
+    n, top_k = 5000, 10
+    scores = np.random.default_rng(0).standard_normal(n)
+    sorted_sizes: list[int] = []
+    real_argsort, real_lexsort = np.argsort, np.lexsort
+
+    def argsort(a, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sorted_sizes.append(int(np.asarray(a).size))
+        return real_argsort(a, *args, **kwargs)
+
+    def lexsort(keys, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sorted_sizes.append(int(np.asarray(keys[-1]).size))
+        return real_lexsort(keys, *args, **kwargs)
+
+    monkeypatch.setattr(np, "argsort", argsort)
+    monkeypatch.setattr(np, "lexsort", lexsort)
+
+    out = top_k_indices(scores, top_k)
+
+    assert out.tolist() == real_argsort(-scores, kind="stable")[:top_k].tolist()
+    assert sorted_sizes and max(sorted_sizes) <= top_k, (
+        f"top_k_indices sorted {max(sorted_sizes, default=0)} elements for "
+        f"a top-{top_k} selection over N={n}"
     )
 
 
