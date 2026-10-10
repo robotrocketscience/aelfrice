@@ -113,7 +113,10 @@ _RESCORE_MARGIN: Final[float] = 1e-9
 
 
 def top_k_rows(
-    matrix: npt.NDArray[np.float64], probe: Vector, k: int,
+    matrix: npt.NDArray[np.float64],
+    probe: Vector,
+    k: int,
+    zero_rows: npt.NDArray[np.bool_] | None = None,
 ) -> tuple[npt.NDArray[np.intp], Vector]:
     """Top ``k`` rows of ``matrix @ probe``: ``(indices, scores)``.
 
@@ -123,10 +126,14 @@ def top_k_rows(
     is lost (#1754: 41 identical rows gave 2 distinct scores under
     Accelerate). The BLAS product finds the rows near the cutoff;
     ``einsum`` re-scores just those with one loop for every row, so
-    identical rows score identically. A row the product scores exactly
-    0.0 is not re-scored: an all-zero row, a belief with no outgoing
-    edges, sums to 0.0 in any order, and those rows can be most of the
-    matrix when few rows score above zero.
+    identical rows score identically.
+
+    An all-zero row, a belief with no outgoing edges, scores exactly 0.0
+    and is not re-scored. Those rows can be most of the matrix when few
+    rows score above zero. ``zero_rows`` marks them; when it's ``None``
+    and the cutoff is near zero, it's computed from ``matrix``. A
+    non-zero row that the product happens to score 0.0 is re-scored
+    like any other row.
     """
     fast: Vector = matrix @ probe
     n = int(fast.shape[0])
@@ -137,14 +144,21 @@ def top_k_rows(
     cutoff = float(part[n - k])
     top = float(part[n - k:].max())
     lo = cutoff - _RESCORE_MARGIN * (1.0 + max(abs(cutoff), abs(top)))
-    near = np.flatnonzero((fast >= lo) & (fast != 0.0))
+    candidates = fast >= lo
+    rescore = candidates
     if lo <= 0.0:
+        zeros: npt.NDArray[np.bool_] = (
+            zero_rows if zero_rows is not None
+            else np.logical_not(np.asarray(matrix).any(axis=1))
+        )
+        rescore = candidates & ~zeros
         # Zero rows all tie at 0.0, so only the k lowest can be picked.
-        zeros = np.flatnonzero(fast == 0.0)[:k]
-        near = np.sort(np.concatenate((near, zeros)))
-    exact: Vector = fast[near]
-    nonzero = exact != 0.0
-    exact[nonzero] = np.einsum("ij,j->i", matrix[near[nonzero]], probe)
+        candidates = rescore.copy()
+        candidates[np.flatnonzero(zeros)[:k]] = True
+    near = np.flatnonzero(candidates)
+    exact: Vector = np.zeros(near.size, dtype=np.float64)
+    live = rescore[near]
+    exact[live] = np.einsum("ij,j->i", matrix[near[live]], probe)
     pick = top_k_indices(exact, k)
     return near[pick], exact[pick]
 

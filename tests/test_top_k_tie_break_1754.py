@@ -161,6 +161,60 @@ def test_top_k_rows_does_not_rescore_zero_rows() -> None:
     np.testing.assert_array_equal(scores, exact[expected])
 
 
+class _ZeroSplitMatrix(np.ndarray):
+    """`@` scores every 8th row exactly 0.0.
+
+    A BLAS kernel can do this to a non-zero row that is orthogonal to the
+    probe to within rounding, while scoring its identical twins a few ulps
+    away from zero.
+    """
+
+    def __matmul__(self, other: np.ndarray) -> np.ndarray:  # type: ignore[override]
+        out = np.asarray(self) @ other
+        out[::8] = 0.0
+        return out
+
+    def __getitem__(self, key: object) -> np.ndarray:  # type: ignore[override]
+        return np.asarray(self)[key]  # type: ignore[index]
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+@pytest.mark.parametrize("k", [1, 3, 7, 12])
+def test_top_k_rows_rescores_a_non_zero_row_that_the_product_scores_zero(
+    k: int, sign: float,
+) -> None:
+    rng = np.random.default_rng(1754)
+    probe = sign * rng.standard_normal(64)
+    row = rng.standard_normal(64)
+    row -= (row @ probe) / (probe @ probe) * probe
+    plain = np.tile(row, (20, 1))
+    exact = np.einsum("ij,j->i", plain, probe)
+    assert exact[0] != 0.0, "the rows must score near zero, not exactly zero"
+
+    idx, scores = top_k_rows(plain.view(_ZeroSplitMatrix), probe, k)
+    assert idx.tolist() == list(range(k))
+    np.testing.assert_array_equal(scores, exact[:k])
+
+
+class _NegativeZeroMatrix(np.ndarray):
+    """`@` scores an all-zero row -0.0, as BLAS can for a negative probe."""
+
+    def __matmul__(self, other: np.ndarray) -> np.ndarray:  # type: ignore[override]
+        out = np.asarray(self) @ other
+        out[out == 0.0] = -0.0
+        return out
+
+
+def test_top_k_rows_scores_zero_rows_as_positive_zero() -> None:
+    rng = np.random.default_rng(9)
+    m = np.zeros((10, 4))
+    m[[3, 7]] = rng.standard_normal((2, 4))
+    _, scores = top_k_rows(m.view(_NegativeZeroMatrix), rng.standard_normal(4), 5)
+    zeros = scores[scores == 0.0]
+    assert zeros.size >= 3
+    assert not np.signbit(zeros).any()
+
+
 def test_top_k_rows_matches_top_k_indices_on_distinct_scores() -> None:
     rng = np.random.default_rng(3)
     m = rng.standard_normal((500, 32))
