@@ -282,7 +282,7 @@ class HRRStructIndex:
         # Rows follow `belief_ids`, which `build` takes from
         # `list_belief_ids()` in ascending id order.
         order, scores = top_k_rows(
-            self.struct, probe_vec, top_k, self._all_zero_rows(),
+            self.struct, probe_vec, top_k, self._all_zero_rows,
         )
         return [
             (self.belief_ids[int(i)], float(s))

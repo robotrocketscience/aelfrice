@@ -16,6 +16,7 @@ Representations*, IEEE Transactions on Neural Networks 6(3).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final
 
 import numpy as np
@@ -116,7 +117,7 @@ def top_k_rows(
     matrix: npt.NDArray[np.float64],
     probe: Vector,
     k: int,
-    zero_rows: npt.NDArray[np.bool_] | None = None,
+    zero_rows: Callable[[], npt.NDArray[np.bool_]] | None = None,
 ) -> tuple[npt.NDArray[np.intp], Vector]:
     """Top ``k`` rows of ``matrix @ probe``: ``(indices, scores)``.
 
@@ -130,10 +131,11 @@ def top_k_rows(
 
     An all-zero row, a belief with no outgoing edges, scores exactly 0.0
     and is not re-scored. Those rows can be most of the matrix when few
-    rows score above zero. ``zero_rows`` marks them; when it's ``None``
-    and the cutoff is near zero, it's computed from ``matrix``. A
-    non-zero row that the product happens to score 0.0 is re-scored
-    like any other row.
+    rows score above zero. ``zero_rows`` returns a mask of them and is
+    called only when the cutoff is near zero, so a caller can cache the
+    mask without paying for it on a dense matrix. When it's ``None`` the
+    mask is computed from ``matrix``. A non-zero row that the product
+    happens to score 0.0 is re-scored like any other row.
     """
     fast: Vector = matrix @ probe
     n = int(fast.shape[0])
@@ -148,7 +150,7 @@ def top_k_rows(
     rescore = candidates
     if lo <= 0.0:
         zeros: npt.NDArray[np.bool_] = (
-            zero_rows if zero_rows is not None
+            zero_rows() if zero_rows is not None
             else np.logical_not(np.asarray(matrix).any(axis=1))
         )
         rescore = candidates & ~zeros
