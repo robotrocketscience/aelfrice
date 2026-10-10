@@ -210,16 +210,22 @@ also_copy = [
 #   test_conflict_markers_1491, test_docs_cross_file_anchors_1511 (the
 #     non-vacuous floor): they list tracked files with `git ls-files`.
 #     `mutants/` is an untracked copy, so they find none and fail their floor.
-#   test_subprocess_encoding_1441 (the encoding scan): it scans the source
-#     tree, which inside `mutants/` holds mutmut's mutated copies, including
-#     one that drops `encoding=`.
 #   test_block_ceiling_hermetic_home_1716 (the HOME config figures): its
 #     producer runs as a subprocess that imports `mutants/src` and inherits
 #     `MUTANT_UNDER_TEST`, so the stats pass changes the figure it pins.
+# Two whole groups are left out as well:
+#   `-m "not source_scan"`: tests that read `src/aelfrice` as text. Inside
+#     `mutants/` they read mutmut's mutated copies, which hold each function
+#     once per mutant, and fail. `tests/source_scan_guard.py` fails any
+#     unmarked test that reads the source, so a new one is caught in the
+#     ordinary suite rather than here.
+#   `tests/e2e`: they run the installed `aelf` in a subprocess, so they can't
+#     kill a mutant, and CI's own pytest job leaves them out the same way.
 pytest_add_cli_args = [
+    "-m", "not source_scan",
+    "--ignore", "tests/e2e",
     "--deselect", "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
     "--deselect", "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
-    "--deselect", "tests/test_subprocess_encoding_1441.py::test_subprocess_text_mode_pins_the_encoding",
     "--deselect", "tests/test_block_ceiling_hermetic_home_1716.py::test_a_home_config_does_not_move_the_session_start_figures",
 ]
 

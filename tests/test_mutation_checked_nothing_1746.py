@@ -99,12 +99,14 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
     Update this list together with the reasons in `pyproject.toml`."""
     config = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
     assert config["tool"]["mutmut"]["pytest_add_cli_args"] == [
+        "-m",
+        "not source_scan",
+        "--ignore",
+        "tests/e2e",
         "--deselect",
         "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
         "--deselect",
         "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
-        "--deselect",
-        "tests/test_subprocess_encoding_1441.py::test_subprocess_text_mode_pins_the_encoding",
         "--deselect",
         "tests/test_block_ceiling_hermetic_home_1716.py::"
         "test_a_home_config_does_not_move_the_session_start_figures",
