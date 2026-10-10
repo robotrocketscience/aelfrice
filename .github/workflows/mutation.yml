@@ -276,15 +276,17 @@ jobs:
           survived=$(grep -cE ': survived$' mutation-report.txt || true)
           unchecked=$(grep -cE ': not checked$' mutation-report.txt || true)
           listed=$(( ${killed:-0} + ${survived:-0} ))
-          # #1746: when the clean run inside `mutants/` fails, mutmut stops
-          # and every mutant stays `not checked`. The step still exits 0, so
+          # #1746: when mutmut stops before running any mutant (a failing
+          # clean run inside `mutants/`, no tests found for any mutant, or a
+          # failed forced-fail check), every mutant stays `not checked`. The
+          # step still exits 0, so
           # say so where a reader looks: the annotation list and the top of
           # the summary.
           checked_nothing=""
           if [ "${total:-0}" -eq 0 ]; then
             checked_nothing="mutmut listed no mutants at all, so this run tested nothing."
           elif [ "${unchecked:-0}" -eq "${total:-0}" ]; then
-            checked_nothing="all ${total} mutants are 'not checked': the clean run inside mutants/ failed, so this run tested nothing. Its log names the failing test."
+            checked_nothing="all ${total} mutants are 'not checked', so this run tested nothing. The 'Run mutation tests' step log shows where mutmut stopped."
           fi
           if [ -n "${checked_nothing}" ]; then
             echo "::warning title=Mutation run checked nothing::${checked_nothing}"

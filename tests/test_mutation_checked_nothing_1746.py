@@ -35,7 +35,10 @@ def _lines(*statuses: str) -> str:
 def test_all_not_checked_warns_in_the_log_and_the_summary(tmp_path: Path) -> None:
     proc, summary = _run_step("Report", _lines(*["not checked"] * 4), tmp_path, "C.UTF-8")
     assert proc.returncode == 0, proc.stderr
-    assert f"{_WARNING}all 4 mutants are 'not checked'" in proc.stdout, proc.stdout
+    assert (
+        f"{_WARNING}all 4 mutants are 'not checked', so this run tested nothing."
+        in proc.stdout
+    ), proc.stdout
     assert "> [!WARNING]\n> all 4 mutants are 'not checked'" in summary, summary
     assert summary.index("[!WARNING]") < summary.index("| mutants |"), summary
 
