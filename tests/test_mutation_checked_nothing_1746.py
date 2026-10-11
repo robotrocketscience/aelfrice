@@ -110,4 +110,16 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
         "--deselect",
         "tests/test_block_ceiling_hermetic_home_1716.py::"
         "test_a_home_config_does_not_move_the_session_start_figures",
+        *(
+            arg
+            for case in (
+                "test_module_raises",
+                "worker_path_passes",
+                "allowlisted_module_passes",
+                "benchmark_seed_corpus_passes",
+                "simulator_populate_store_passes",
+                "migrate_passes",
+            )
+            for arg in ("--deselect", f"tests/test_insert_belief_gate.py::test_gate_on_{case}")
+        ),
     ]
