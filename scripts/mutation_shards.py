@@ -41,8 +41,11 @@ to the version this was verified against.
     scripts/mutation_shards.py apply --plan plan.json --shard 3
     scripts/mutation_shards.py apply --plan plan.json --shard 3 --dry-run
     scripts/mutation_shards.py merge --plan plan.json --summary merged.md DIR...
+    scripts/mutation_shards.py run --time-box-minutes 330 -- mutmut run
+    scripts/mutation_shards.py run --time-box-minutes 330 --dry-run -- mutmut run
 
-`plan` counts every file under `src/aelfrice/` and writes the plan as JSON.
+`plan` counts every file under `src/aelfrice/`, except those
+`[tool.mutmut] do_not_mutate` names, and writes the plan as JSON.
 `--dry-run` prints the plan on stderr and writes nothing.
 
 `apply` writes one shard's pragmas into `src/` and its `only_mutate` into
@@ -54,22 +57,33 @@ throwaway CI checkout: it refuses unless the `CI` environment variable is
 `merge` reads each shard's `mutation-report.txt` from the given directories,
 writes a Markdown summary of the whole run, and prints the totals.
 
+`run` runs mutmut under the time box and keeps its saved results intact
+when the box ends it; `run_boxed` says how. It exits with the command's own
+status, or 124 when the time box ended the run.
+
 Exit codes: 0 on success; 1 when `merge` finds a planned shard with no
 report, or a run that checked no mutant at all; 2 when a count, a file, or
-the plan cannot be read or does not hold; 3 when `apply` is refused.
+the plan cannot be read or does not hold; 3 when `apply` is refused; 124
+when `run` reached its time box.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
+import importlib
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
+import time
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -102,6 +116,9 @@ DEFAULT_CAP: Final[int] = 4000
 #: The weekly job's own pattern for a result line; a test ties the two.
 MUTANT_LINE: Final[re.Pattern[str]] = re.compile(r"^ *[^ :]+__mutmut_[0-9]+: ")
 
+#: Statuses that mean a test ran against the mutant and judged it.
+CHECKED_STATUSES: Final[tuple[str, ...]] = ("killed", "survived", "timeout")
+
 #: The report file each shard uploads, in its own artifact directory.
 REPORT_NAME: Final[str] = "mutation-report.txt"
 
@@ -126,16 +143,19 @@ def count_mutants(path: str, source: str) -> dict[str, int]:
     function, or a method of a module-level class with an indented body.
     A unit with no mutants maps to 0.
     """
-    import libcst as cst
-    from mutmut.mutation.file_mutation import create_mutations
+    # Imported here, and untyped: only the planning job installs mutmut.
+    cst: Any = importlib.import_module("libcst")
+    file_mutation: Any = importlib.import_module("mutmut.mutation.file_mutation")
 
-    module, mutations, _, _ = create_mutations(path, source, None, None)
+    module, mutations, _, _ = file_mutation.create_mutations(path, source, None, None)
     per_node: dict[int, int] = {}
     for mutation in mutations:
         node = mutation.contained_by_top_level_function
         if node is not None:
             per_node[id(node)] = per_node.get(id(node), 0) + 1
     counts: dict[str, int] = {}
+    statement: Any
+    method: Any
     for statement in module.body:
         if isinstance(statement, cst.FunctionDef):
             counts[statement.name.value] = per_node.get(id(statement), 0)
@@ -249,6 +269,28 @@ def assign(pieces: Sequence[Piece], shards: int) -> list[Shard]:
     return out
 
 
+def do_not_mutate(root: Path) -> list[str]:
+    """`[tool.mutmut] do_not_mutate` from `root`'s `pyproject.toml`.
+
+    mutmut 3.8.0 matches each pattern with `fnmatch` against the file's
+    path relative to the root, and generates nothing for a match, so the
+    plan leaves those files out the same way. Function-name patterns
+    (`do_not_mutate_patterns`) aren't modelled, so the plan refuses them
+    rather than counting mutants mutmut would skip.
+    """
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    config = tomllib.loads(text).get("tool", {}).get("mutmut", {})
+    if config.get("do_not_mutate_patterns"):
+        raise PlanError("do_not_mutate_patterns is set; the plan doesn't model it")
+    patterns = config.get("do_not_mutate", [])
+    if not isinstance(patterns, list):
+        raise PlanError("[tool.mutmut] do_not_mutate must be a list")
+    return [str(p) for p in patterns]  # type: ignore[misc]
+
+
 def plan_tree(
     root: Path, shards: int, cap: int, counter: Counter = count_mutants,
 ) -> dict[str, object]:
@@ -256,7 +298,12 @@ def plan_tree(
     if cap < 1:
         raise PlanError(f"--cap must be at least 1, not {cap}")
     pieces: list[Piece] = []
-    paths = sorted(p.relative_to(root).as_posix() for p in root.glob(SOURCE_GLOB))
+    skipped = do_not_mutate(root)
+    paths = sorted(
+        path
+        for path in (p.relative_to(root).as_posix() for p in root.glob(SOURCE_GLOB))
+        if not any(fnmatch.fnmatch(path, pattern) for pattern in skipped)
+    )
     if not paths:
         raise PlanError(f"no files match {SOURCE_GLOB} under {root}")
     unknown = sorted(set(EXCLUDED) - set(paths))
@@ -292,7 +339,7 @@ def render_plan(plan: Mapping[str, object]) -> str:
         "| --- | --- | --- |",
     ]
     for shard in shards:
-        files = shard["files"]
+        files = cast("dict[str, list[str] | None]", shard["files"])
         # Relative to the package, not the bare name: `lifecycle.py` and
         # `wonder/lifecycle.py` are different files.
         names = ", ".join(
@@ -400,8 +447,14 @@ class Tally:
 
     @property
     def checked(self) -> int:
-        """Mutants mutmut ran: everything except `not checked`."""
-        return self.total - self.statuses.get("not checked", 0)
+        """Mutants a test ran against and judged.
+
+        `killed`, `survived`, and `timeout` (the tests hung on the mutant,
+        which mutmut counts as caught). `no tests`, `suspicious`, `skipped`
+        and the rest say nothing about the tests, so a run made only of
+        them checked nothing.
+        """
+        return sum(self.statuses.get(s, 0) for s in CHECKED_STATUSES)
 
     def get(self, status: str) -> int:
         return self.statuses.get(status, 0)
@@ -488,6 +541,152 @@ def read_reports(dirs: Sequence[Path]) -> dict[int, str | None]:
     return out
 
 
+# --- running one shard under a time box ---------------------------------------
+
+#: Exit status `run` returns when the time box ended the run, as GNU timeout does.
+TIMED_OUT: Final[int] = 124
+
+#: How long mutmut gets to stop after SIGINT before it is killed.
+DEFAULT_GRACE_MINUTES: Final[float] = 2.0
+
+
+class MetaSnapshots:
+    """The last copy of each mutmut `.meta` file that parsed.
+
+    mutmut 3.8.0 saves a source file's results by rewriting its `.meta`
+    file in place (`SourceFileMutationData.save`), after every mutant. A
+    signal that lands mid-write leaves the file truncated, and `mutmut
+    results` then fails on it. The time box has to signal mutmut, so it
+    keeps copies to put back.
+    """
+
+    def __init__(self, meta_root: Path, store: Path) -> None:
+        self.meta_root = meta_root
+        self.store = store
+        self._seen: dict[Path, tuple[int, int]] = {}
+
+    def take(self) -> int:
+        """Copy each changed `.meta` that parses. Returns how many it copied.
+
+        A file caught mid-write doesn't parse and is skipped; the previous
+        copy stays until a later pass finds the file whole.
+        """
+        copied = 0
+        for meta in sorted(self.meta_root.rglob("*.meta")):
+            try:
+                stat = meta.stat()
+                data = meta.read_bytes()
+            except OSError:
+                continue
+            key = (stat.st_mtime_ns, stat.st_size)
+            if self._seen.get(meta) == key or not _parses(data):
+                continue
+            target = self.store / meta.relative_to(self.meta_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(target.name + ".tmp")
+            partial.write_bytes(data)
+            os.replace(partial, target)
+            self._seen[meta] = key
+            copied += 1
+        return copied
+
+    def repair(self) -> tuple[list[str], list[str]]:
+        """Put back each `.meta` that no longer parses.
+
+        Returns the files restored from a copy and the files removed because
+        there was none. A removed file's mutants drop out of `mutmut
+        results`, which is reported, rather than crashing it.
+        """
+        restored: list[str] = []
+        removed: list[str] = []
+        for meta in sorted(self.meta_root.rglob("*.meta")):
+            if _parses(meta.read_bytes()):
+                continue
+            name = meta.relative_to(self.meta_root).as_posix()
+            copy = self.store / meta.relative_to(self.meta_root)
+            if copy.is_file():
+                partial = meta.with_name(meta.name + ".tmp")
+                partial.write_bytes(copy.read_bytes())
+                os.replace(partial, meta)
+                restored.append(name)
+            else:
+                meta.unlink()
+                removed.append(name)
+        return restored, removed
+
+
+def _parses(data: bytes) -> bool:
+    try:
+        json.loads(data)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass
+class RunResult:
+    """How a time-boxed run ended."""
+
+    returncode: int
+    timed_out: bool
+    killed: bool
+    restored: list[str]
+    removed: list[str]
+
+
+def run_boxed(
+    command: Sequence[str],
+    *,
+    box_s: float,
+    grace_s: float,
+    every_s: float,
+    meta_root: Path,
+    store: Path,
+    clock: Callable[[], float] = time.monotonic,
+) -> RunResult:
+    """Run `command`, and stop it at `box_s` seconds without losing results.
+
+    The command runs in its own process group, so the stop reaches
+    mutmut's workers too. Every `every_s` seconds the `.meta` files are
+    copied. At the deadline the group gets SIGINT, which mutmut handles by
+    stopping its workers and keeping what it saved, and SIGKILL `grace_s`
+    seconds later if it is still running: a SIGINT that lands while
+    mutmut forks a worker is swallowed. Then every `.meta` that a signal
+    truncated is put back from its last copy.
+    """
+    snapshots = MetaSnapshots(meta_root, store)
+    deadline = clock() + box_s
+    proc = subprocess.Popen(list(command), start_new_session=True)
+    timed_out = killed = False
+    while True:
+        try:
+            returncode = proc.wait(timeout=max(0.0, min(every_s, deadline - clock())))
+            break
+        except subprocess.TimeoutExpired:
+            snapshots.take()
+        if clock() >= deadline:
+            timed_out = True
+            _signal_group(proc, signal.SIGINT)
+            try:
+                returncode = proc.wait(timeout=grace_s)
+            except subprocess.TimeoutExpired:
+                killed = True
+                _signal_group(proc, signal.SIGKILL)
+                returncode = proc.wait()
+            # Workers that outlived mutmut would hold the runner open.
+            _signal_group(proc, signal.SIGKILL)
+            break
+    restored, removed = snapshots.repair()
+    return RunResult(returncode, timed_out, killed, restored, removed)
+
+
+def _signal_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass  # the group already exited
+
+
 # --- command line -------------------------------------------------------------
 
 
@@ -525,8 +724,22 @@ def main(argv: list[str] | None = None) -> int:
     p_merge.add_argument("--summary", type=Path, default=None)
     p_merge.add_argument("dirs", type=Path, nargs="*")
 
+    p_run = sub.add_parser("run", help="run a command under the time box")
+    p_run.add_argument("--time-box-minutes", type=float, required=True)
+    p_run.add_argument("--grace-minutes", type=float, default=DEFAULT_GRACE_MINUTES)
+    p_run.add_argument("--snapshot-seconds", type=float, default=60.0)
+    p_run.add_argument("--meta-root", type=Path, default=Path("mutants"))
+    p_run.add_argument("--store", type=Path, default=Path("mutation-meta-copies"))
+    p_run.add_argument("--dry-run", action="store_true",
+                       help="print what would run; run nothing")
+    # Not `command`: that is the subcommand's own `dest`.
+    p_run.add_argument("argv", nargs=argparse.REMAINDER,
+                       help="the command to run, after --")
+
     args = parser.parse_args(argv)
     root = Path.cwd()
+    if args.command == "run":
+        return _run(args, parser)
     try:
         if args.command == "plan":
             if not args.dry_run and args.out is None:
@@ -563,6 +776,42 @@ def main(argv: list[str] | None = None) -> int:
     except (PlanError, OSError, SyntaxError, ValueError) as exc:
         print(f"mutation_shards: {exc}", file=sys.stderr)
         return 2
+
+
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    command = list(args.argv)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        parser.error("run needs a command after --")
+    box_s = args.time_box_minutes * 60
+    if args.dry_run:
+        print(f"would run {command} for at most {box_s:.0f} s", file=sys.stderr)
+        return 0
+    result = run_boxed(
+        command,
+        box_s=box_s,
+        grace_s=args.grace_minutes * 60,
+        every_s=args.snapshot_seconds,
+        meta_root=args.meta_root,
+        store=args.store,
+    )
+    if result.timed_out:
+        how = "killed after the grace period" if result.killed else "stopped by SIGINT"
+        print(f"mutation_shards: time box reached; {how}", file=sys.stderr)
+    for name in result.restored:
+        print(f"mutation_shards: restored {name} from its last whole copy", file=sys.stderr)
+    for name in result.removed:
+        print(
+            f"mutation_shards: removed {name}: truncated, and no whole copy to "
+            "restore; its mutants are missing from the results",
+            file=sys.stderr,
+        )
+    if result.timed_out:
+        return TIMED_OUT
+    if result.returncode < 0:
+        return 128 - result.returncode
+    return result.returncode
 
 
 if __name__ == "__main__":
