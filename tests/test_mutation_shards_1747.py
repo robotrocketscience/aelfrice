@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +262,18 @@ def test_merge_sums_the_shards_and_passes_a_partial_run(sh: Any) -> None:
     assert "| 1 | 4 | 4 | 1 | 0 | 3 |" in summary
 
 
+def test_merge_warns_when_a_shard_lists_other_than_its_plan(sh: Any) -> None:
+    summary, failed = sh.merge_reports(_two_shard_plan(), {
+        0: _report(killed=4), 1: _report(killed=3),
+    })
+    assert not failed
+    assert "Shard 1 listed a different number of mutants" in summary
+    clean, _ = sh.merge_reports(_two_shard_plan(), {
+        0: _report(killed=4), 1: _report(killed=4),
+    })
+    assert "listed a different number" not in clean
+
+
 def test_merge_fails_when_a_planned_shard_has_no_report(sh: Any) -> None:
     summary, failed = sh.merge_reports(_two_shard_plan(), {0: _report(killed=4)})
     assert failed
@@ -327,6 +340,15 @@ _WRITER = textwrap.dedent("""\
     meta, mode = sys.argv[1], sys.argv[2]
     if mode == "ignore-int":
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if mode == "orphan":
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c",
+            "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)"])
+        with open(meta + ".pid", "w") as f:
+            f.write(str(child.pid))
+    if mode == "self-kill":
+        import os
+        os.kill(os.getpid(), signal.SIGTERM)
     if mode == "truncate-on-int":
         def cut(*_):
             with open(meta, "w") as f:
@@ -399,6 +421,75 @@ def test_a_truncated_meta_is_put_back_from_its_last_whole_copy(sh: Any, tmp_path
     assert copies.take() == 0, "a file that doesn't parse is never copied"
     assert copies.repair() == (["src/a.py.meta"], [])
     assert json.loads(meta.read_text(encoding="utf-8")) == {"exit_code_by_key": {"m": 1}}
+
+
+def test_a_changed_meta_is_copied_again_so_a_restore_is_recent(
+    sh: Any, tmp_path: Path,
+) -> None:
+    """Copying a file only once would restore it to its first state and
+    drop every result saved since."""
+    meta_root = tmp_path / "mutants"
+    meta_root.mkdir()
+    first, second = meta_root / "a.py.meta", meta_root / "b.py.meta"
+    first.write_text('{"n": 1}', encoding="utf-8")
+    second.write_text('{"n": 1}', encoding="utf-8")
+    copies = sh.MetaSnapshots(meta_root, tmp_path / "copies")
+    assert copies.take() == 2, "every changed file, in one pass"
+    assert copies.take() == 0, "an unchanged file isn't copied again"
+    first.write_text('{"n": 22}', encoding="utf-8")  # a different size, so a new key
+    assert copies.take() == 1
+    first.write_text('{"n"', encoding="utf-8")
+    copies.repair()
+    assert json.loads(first.read_text(encoding="utf-8")) == {"n": 22}
+
+
+def test_workers_left_behind_are_killed_with_the_group(sh: Any, tmp_path: Path) -> None:
+    result = _boxed(sh, tmp_path, "orphan", box_s=0.5, grace_s=10)
+    assert result.timed_out
+    pid = int((tmp_path / "mutants/src/a.py.meta.pid").read_text(encoding="utf-8"))
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.02)
+    pytest.fail(f"worker {pid} outlived the run")
+
+
+def test_a_run_killed_by_a_signal_exits_128_plus_the_signal(
+    sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command, _ = _writer(tmp_path, "self-kill")
+    monkeypatch.chdir(tmp_path)
+    assert sh.main(["run", "--time-box-minutes", "1", "--", *command]) == 128 + 15
+
+
+def test_an_interrupted_supervisor_stops_the_run_and_repairs_first(
+    sh: Any, tmp_path: Path,
+) -> None:
+    """A cancelled job interrupts the supervisor, not mutmut's own group."""
+    command, meta_root = _writer(tmp_path, "truncate-on-int")
+    calls = iter(range(1000))
+
+    def clock() -> float:
+        n = next(calls)
+        if n == 20:
+            raise KeyboardInterrupt
+        return 0.0
+
+    with pytest.raises(KeyboardInterrupt):
+        sh.run_boxed(
+            command, box_s=60, grace_s=10, every_s=0.05,
+            meta_root=meta_root, store=tmp_path / "copies", clock=clock,
+        )
+    meta = meta_root / "src" / "a.py.meta"
+    # Stopped: the writer rewrites the file every 20 ms while it runs, and
+    # truncates it on SIGINT, so a whole file that stays put means it was
+    # stopped and the truncation put back.
+    before = meta.read_bytes()
+    time.sleep(0.2)
+    assert meta.read_bytes() == before, "the command still runs after the interrupt"
+    assert json.loads(before)["exit_code_by_key"]["m"] >= 1
 
 
 def test_a_truncated_meta_with_no_copy_is_removed_not_left_to_crash_results(
@@ -492,11 +583,42 @@ def test_each_shard_runs_under_the_time_box_inside_its_job_limit(sh: Any) -> Non
     assert budget <= int(limit.group(1)) <= 360
 
 
+def test_the_run_step_keeps_going_to_the_report_and_records_its_status() -> None:
+    """Without `|| status=$?`, `bash -e` ends the step at the time box's 124,
+    before `mutmut results` writes the report the shard uploads."""
+    run = _step("mutmut", "Run mutation tests")
+    assert re.search(r"\.venv/bin/mutmut run --max-children 4 \|\| status=\$\?$", run, re.MULTILINE)
+    assert 'echo "status=${status}" >> "${GITHUB_OUTPUT}"' in run
+    assert 'if [ "${status}" -eq 124 ]; then' in run
+    assert run.index("|| status=$?") < run.index(".venv/bin/mutmut results --all=true")
+
+
+def test_a_mutmut_failure_partway_fails_the_shard() -> None:
+    """mutmut 3.8.0 exits 0 whether or not mutants survive, so any status
+    but 0 and the time box's 124 is mutmut failing; the guard alone would
+    read the checked part as a partial run."""
+    step = _step("mutmut", "Fail when mutmut stopped on an error")
+    assert "RUN_STATUS: ${{ steps.run.outputs.status }}" in step
+    assert '0|124) echo "mutmut run ended with ${RUN_STATUS}" ;;' in step
+    assert "exit 1 ;;" in step
+    mutmut = _job("mutmut")
+    upload = mutmut[mutmut.index("name: mutation-report-${{ matrix.shard }}") - 200:]
+    assert "if: always()" in upload, "the report uploads even when the shard fails"
+
+
+def test_the_plan_installs_the_pinned_mutmut_for_counting() -> None:
+    plan = _step("plan", "Plan the shards")
+    assert "uv run --no-project --with 'mutmut==3.8.0'" in plan
+    contract = _step("plan", "Check the mutmut contract the plan relies on")
+    assert "tests/test_mutation_function_scope_1632.py" in contract
+
+
 def test_the_shard_guard_fails_only_on_a_run_that_judged_nothing() -> None:
     guard = _step("mutmut", "Assert the run actually produced results")
     assert guard.count("exit 1") == 2
     assert '[ "${total}" -eq 0 ]' in guard
     assert "checked=$(( killed + survived + timedout ))" in guard
+    assert "timedout=$(grep -cE ': timeout$' mutation-report.txt || true)" in guard
     assert '[ "${checked}" -eq 0 ]' in guard
     assert "::warning title=Partial mutation run::" in guard
 

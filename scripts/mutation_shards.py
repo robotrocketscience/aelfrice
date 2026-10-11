@@ -483,6 +483,7 @@ def merge_reports(
     rows: list[str] = []
     whole = Tally()
     missing: list[int] = []
+    mismatched: list[int] = []
     for shard in shards:
         index = shard["index"]
         assert isinstance(index, int)
@@ -494,6 +495,8 @@ def merge_reports(
         t = tally(report)
         for status, n in t.statuses.items():
             whole.statuses[status] = whole.statuses.get(status, 0) + n
+        if t.total != shard["mutants"]:
+            mismatched.append(index)
         rows.append(
             f"| {index} | {shard['mutants']} | {t.total} | {t.get('killed')} "
             f"| {t.get('survived')} | {t.get('not checked')} |",
@@ -510,6 +513,16 @@ def merge_reports(
             "> [!WARNING]",
             f"> No report from shard {', '.join(map(str, missing))}. That "
             "shard's job log shows why.",
+            "",
+        ]
+    if mismatched:
+        # Not a failure: a removed `.meta` (see `MetaSnapshots.repair`) drops
+        # its mutants from the list. But a shard scoped wrong looks the same,
+        # so it is said where a reader looks.
+        out += [
+            "> [!WARNING]",
+            f"> Shard {', '.join(map(str, mismatched))} listed a different "
+            "number of mutants than the plan gave it.",
             "",
         ]
     out += [
@@ -653,31 +666,48 @@ def run_boxed(
     seconds later if it is still running: a SIGINT that lands while
     mutmut forks a worker is swallowed. Then every `.meta` that a signal
     truncated is put back from its last copy.
+
+    If this process is itself interrupted (the job is cancelled, or the
+    caller sends SIGTERM, which `main` turns into an exception), it stops
+    the command the same way and repairs the files before re-raising.
     """
     snapshots = MetaSnapshots(meta_root, store)
     deadline = clock() + box_s
     proc = subprocess.Popen(list(command), start_new_session=True)
     timed_out = killed = False
-    while True:
-        try:
-            returncode = proc.wait(timeout=max(0.0, min(every_s, deadline - clock())))
-            break
-        except subprocess.TimeoutExpired:
-            snapshots.take()
-        if clock() >= deadline:
-            timed_out = True
-            _signal_group(proc, signal.SIGINT)
+    try:
+        while True:
             try:
-                returncode = proc.wait(timeout=grace_s)
+                returncode = proc.wait(timeout=max(0.0, min(every_s, deadline - clock())))
+                break
             except subprocess.TimeoutExpired:
-                killed = True
-                _signal_group(proc, signal.SIGKILL)
-                returncode = proc.wait()
-            # Workers that outlived mutmut would hold the runner open.
-            _signal_group(proc, signal.SIGKILL)
-            break
+                snapshots.take()
+            if clock() >= deadline:
+                timed_out = True
+                returncode, killed = _stop(proc, grace_s)
+                break
+    except BaseException:
+        _stop(proc, grace_s)
+        snapshots.repair()
+        raise
     restored, removed = snapshots.repair()
     return RunResult(returncode, timed_out, killed, restored, removed)
+
+
+def _stop(proc: subprocess.Popen[bytes], grace_s: float) -> tuple[int, bool]:
+    """SIGINT the group, SIGKILL it after `grace_s`; the status and whether
+    the kill was needed."""
+    killed = False
+    _signal_group(proc, signal.SIGINT)
+    try:
+        returncode = proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        killed = True
+        _signal_group(proc, signal.SIGKILL)
+        returncode = proc.wait()
+    # Workers that outlived mutmut would hold the runner open.
+    _signal_group(proc, signal.SIGKILL)
+    return returncode, killed
 
 
 def _signal_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
@@ -788,14 +818,25 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.dry_run:
         print(f"would run {command} for at most {box_s:.0f} s", file=sys.stderr)
         return 0
-    result = run_boxed(
-        command,
-        box_s=box_s,
-        grace_s=args.grace_minutes * 60,
-        every_s=args.snapshot_seconds,
-        meta_root=args.meta_root,
-        store=args.store,
-    )
+
+    def terminated(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    # A cancelled job's SIGTERM reaches this process, not mutmut's own
+    # group; raising lets `run_boxed` stop mutmut and repair first. SIGINT
+    # already raises KeyboardInterrupt.
+    previous = signal.signal(signal.SIGTERM, terminated)
+    try:
+        result = run_boxed(
+            command,
+            box_s=box_s,
+            grace_s=args.grace_minutes * 60,
+            every_s=args.snapshot_seconds,
+            meta_root=args.meta_root,
+            store=args.store,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     if result.timed_out:
         how = "killed after the grace period" if result.killed else "stopped by SIGINT"
         print(f"mutation_shards: time box reached; {how}", file=sys.stderr)
