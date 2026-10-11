@@ -76,11 +76,68 @@ def test_inspect_getsource_is_recorded() -> None:
     assert _reads(lambda: inspect.getsource(ulid.make_generator)) == ["ulid.py"]
 
 
-def test_importing_a_source_module_is_not_a_read() -> None:
-    """`get_data` is how an import reads a `.py` file with no cached
-    bytecode. `exec_module` alone would read the `.pyc` and prove nothing."""
+def test_importing_a_source_module_is_not_a_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An import reads the `.py` in the loader's `get_code`. With no
+    bytecode path it reads the source itself; with a cached `.pyc` it
+    would read that instead and prove nothing."""
+    import importlib._bootstrap_external as external  # pyright: ignore[reportMissingModuleSource]
+
+    def no_cache(path: str) -> str:
+        raise NotImplementedError(path)
+
+    monkeypatch.setattr(external, "cache_from_source", no_cache)
     loader = importlib.machinery.SourceFileLoader("ulid_1746_copy", str(_ULID))
-    assert _reads(lambda: loader.get_data(str(_ULID))) == []
+    assert _reads(lambda: loader.get_code("ulid_1746_copy")) == []
+
+
+def test_a_module_reading_its_own_source_as_it_is_imported_is_not_a_read() -> None:
+    """`core_gate` digests its own source at import. That read belongs to
+    whichever test imports it first, so counting it made the verdict
+    depend on order."""
+    import importlib.util
+
+    path = _ULID.with_name("core_gate.py")
+    spec = importlib.util.spec_from_file_location("core_gate_1746_copy", str(path))
+    assert spec is not None and spec.loader is not None
+    loader = spec.loader
+    module = importlib.util.module_from_spec(spec)
+    linecache.clearcache()
+    assert _reads(lambda: loader.exec_module(module)) == []
+
+
+@pytest.mark.source_scan
+def test_asking_a_loader_for_the_source_is_a_read() -> None:
+    """`get_source` and `pkgutil.get_data` go through the import system's
+    loader, but they hand the caller the text."""
+    import pkgutil
+
+    loader = importlib.machinery.SourceFileLoader("ulid_1746_copy", str(_ULID))
+    assert _reads(lambda: loader.get_source("ulid_1746_copy")) == ["ulid.py"]
+    assert _reads(lambda: pkgutil.get_data("aelfrice", "ulid.py")) == ["ulid.py"]
+
+
+def test_rendering_the_stack_through_the_source_is_not_a_read() -> None:
+    """`inspect.stack()` reads each frame's lines, `src` frames included."""
+    from aelfrice import ulid
+
+    def look(n: int) -> bytes:
+        linecache.clearcache()
+        stacks.append(_reads(inspect.stack))
+        return bytes(n)
+
+    stacks: list[list[str]] = []
+    ulid.make_generator(rand_source=look)()
+    assert stacks == [[]]
+
+
+def test_hypothesis_sampling_the_source_is_not_a_read() -> None:
+    """Hypothesis reads newly imported modules for constants, at random;
+    counting it marked property tests and made the verdict order-dependent."""
+    sampler = types.FunctionType(
+        compile("lambda: open(path, encoding='utf-8').read()", "<sampler>", "eval"),
+        {"__name__": "hypothesis.core", "path": str(_ULID)},
+    )()
+    assert _reads(sampler) == []
 
 
 def test_formatting_a_traceback_through_the_source_is_not_a_read() -> None:
@@ -98,6 +155,47 @@ def test_formatting_a_traceback_through_the_source_is_not_a_read() -> None:
 
 def test_a_file_outside_the_source_tree_is_not_a_read() -> None:
     assert _reads(lambda: Path(__file__).read_text(encoding="utf-8")) == []
+
+
+def test_only_python_files_count() -> None:
+    assert guard._is_source(str(_ULID)) is not None  # pyright: ignore[reportPrivateUsage]
+    assert guard._is_source(str(_ULID.with_name("ulid.txt"))) is None  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.source_scan
+def test_a_bytes_or_symlinked_path_is_still_a_read(tmp_path: Path) -> None:
+    link = tmp_path / "pkg"
+    link.symlink_to(_ULID.parent, target_is_directory=True)
+    assert _reads(lambda: (link / "ulid.py").read_text(encoding="utf-8")) == ["ulid.py"]
+
+    def read_bytes_path() -> None:
+        with open(bytes(_ULID), "rb") as f:
+            f.read()
+
+    assert _reads(read_bytes_path) == ["ulid.py"]
+
+
+def test_a_read_with_no_test_frame_is_not_the_tests() -> None:
+    """A thread running library code reads with no test on its stack."""
+    import threading
+
+    def run() -> None:
+        reader = threading.Thread(target=Path.read_text, args=(_ULID,))
+        reader.start()
+        reader.join(timeout=10)
+        assert not reader.is_alive()
+
+    assert _reads(run) == []
+
+
+def test_executing_or_warning_through_the_source_is_not_a_read() -> None:
+    """`runpy` executes a file, and showing a warning reads one line of it."""
+    import runpy
+    import warnings
+
+    assert _reads(lambda: runpy.run_path(str(_ULID))) == []
+    linecache.clearcache()
+    assert _reads(lambda: warnings.formatwarning("m", UserWarning, str(_ULID), 1)) == []
 
 
 @pytest.mark.source_scan
@@ -147,8 +245,91 @@ def test_a_cache_in_the_test_module_is_cleared_before_each_test() -> None:
     assert foreign.cache_info().currsize == 1, "only the test module's own caches"
 
 
+_CACHED_CLASS = (
+    "import functools\n"
+    "class TestScan:\n"
+    "    @staticmethod\n"
+    "    @functools.lru_cache(maxsize=None)\n"
+    "    def by_static():\n"
+    "        return object()\n"
+    "    @classmethod\n"
+    "    @functools.lru_cache(maxsize=None)\n"
+    "    def by_class(cls):\n"
+    "        return object()\n"
+)
+
+
+class _ModuleItem(_Item):
+    """An item that also has the module the guard clears caches in."""
+
+    def __init__(self, marked: bool, module: types.ModuleType) -> None:
+        super().__init__(marked)
+        self.module = module
+
+
+def _cached_class_module() -> tuple[types.ModuleType, Any]:
+    module = types.ModuleType("tests.fake_class_scan_1746")
+    exec(_CACHED_CLASS, module.__dict__)
+    cls: Any = module.__dict__["TestScan"]
+    cls.by_static()
+    cls.by_class()
+    return module, cls
+
+
+def test_a_cache_on_a_test_class_is_cleared_too() -> None:
+    module, cls = _cached_class_module()
+    guard.clear_module_caches(_ModuleItem(False, module))  # type: ignore[arg-type]
+    assert cls.by_static.cache_info().currsize == 0
+    assert cls.__dict__["by_class"].__func__.cache_info().currsize == 0
+
+
+@pytest.mark.source_scan
+@pytest.mark.parametrize(
+    "hook", ["pytest_runtest_setup", "pytest_runtest_call", "pytest_runtest_teardown"],
+)
+def test_every_phase_hook_audits_its_phase(hook: str) -> None:
+    module, _ = _cached_class_module()
+    phase: Generator[None, object, object] = getattr(guard, hook)(_ModuleItem(False, module))
+    next(phase)
+    _ULID.read_text(encoding="utf-8")
+    with pytest.raises(pytest.fail.Exception, match="ulid.py"):
+        phase.send(None)
+
+
+def test_only_setup_clears_the_caches_once_per_test() -> None:
+    for hook, cleared in (
+        ("pytest_runtest_setup", True),
+        ("pytest_runtest_call", False),
+        ("pytest_runtest_teardown", False),
+    ):
+        module, cls = _cached_class_module()
+        phase: Generator[None, object, object] = getattr(guard, hook)(_ModuleItem(True, module))
+        next(phase)
+        assert (cls.by_static.cache_info().currsize == 0) is cleared, hook
+        with pytest.raises(StopIteration):
+            phase.send(None)
+
+
+def test_a_module_that_reads_the_source_at_import_must_be_marked_whole() -> None:
+    reads = [str(_ULID)]
+    plain = types.ModuleType("tests.fake_import_scan_1746")
+    failure = guard.collection_failure("tests/x.py", plain, reads)
+    assert failure is not None and "src/aelfrice/ulid.py" in failure
+    assert guard.collection_failure("tests/x.py", plain, []) is None
+    for mark in (pytest.mark.source_scan, [pytest.mark.timeout(5), pytest.mark.source_scan]):
+        marked = types.ModuleType("tests.fake_import_scan_1746")
+        setattr(marked, "pytestmark", mark)
+        assert guard.collection_failure("tests/x.py", marked, reads) is None
+    other = types.ModuleType("tests.fake_import_scan_1746")
+    setattr(other, "pytestmark", pytest.mark.timeout(5))
+    assert guard.collection_failure("tests/x.py", other, reads) is not None
+
+
 def test_the_suite_runs_the_guard_on_every_phase() -> None:
-    for hook in ("pytest_runtest_setup", "pytest_runtest_call", "pytest_runtest_teardown"):
+    for hook in (
+        "pytest_runtest_setup", "pytest_runtest_call", "pytest_runtest_teardown",
+        "pytest_make_collect_report",
+    ):
         assert getattr(conftest, hook) is getattr(guard, hook), hook
     assert guard.Audit.installed
 

@@ -17,17 +17,28 @@ not by noticing a change in behaviour.
 This module is what keeps the marker honest. It audits every `open` of a
 `.py` file under `src/aelfrice` while a test's setup, call, or teardown
 runs, and fails that phase when the test does not carry the marker. It
-ignores the reads that are not a test reading the source: the import
-system loading a module, and traceback or stack rendering reading lines to
-print them. `linecache` is cleared before each phase, so a test that calls
-`inspect.getsource` is caught whether or not another test read the same
-file first, and the `functools` caches of the test's own module are cleared
-before each test for the same reason.
+also audits the import of each test module, where module-level code runs,
+and fails collection when the module isn't marked as a whole.
 
-What it can't see: a read in a subprocess, and a source scan cached
-somewhere other than the test's module, such as a module- or session-scoped
-fixture or a shared helper module. A test that only uses such a cache is
-flagged only if it is the first to fill it.
+It ignores the reads that are not a test reading the source: an import
+(the loader reading the module, and the module's own code running as it is
+imported), traceback, warning, and stack rendering reading
+lines to print them, `runpy` executing a file, and Hypothesis sampling
+constants from newly imported modules. `linecache` is cleared before each
+phase, so a test that calls `inspect.getsource` is caught whether or not
+another test read the same file first. The `functools` caches of the test
+module, and of its classes' static and class methods, are cleared before
+each test for the same reason.
+
+What it can't see:
+
+- a read in a subprocess;
+- a scan memoised by hand, such as a module-level dict filled on first use;
+- a scan cached outside the test's module and classes, such as in a
+  module- or session-scoped fixture or a shared helper module.
+
+A test that only reuses one of those caches is flagged only if it happens
+to be the one that fills it, so whether it is flagged depends on test order.
 
 `tests/conftest.py` imports the hooks below, which is what installs them.
 """
@@ -55,10 +66,27 @@ SOURCE_ROOT: Final[str] = str(_REPO / "src" / "aelfrice") + os.sep
 #: Where the reading test's own frame lives.
 TESTS_ROOT: Final[str] = str(_REPO / "tests") + os.sep
 
-#: Modules whose reads of a source file are not a test reading the source.
-#: The import system loads modules, and pytest renders its own reports.
+#: Modules whose reads of a source file are not a test reading the source:
+#: pytest rendering its own reports, traceback and warning display reading
+#: lines to print them, `runpy` executing a file, and Hypothesis collecting
+#: constants from each newly imported module to draw examples from. The
+#: last one matters: it reads at random, so counting it made the verdict
+#: depend on test order and marked property tests that read nothing.
 _IGNORED_MODULE_PREFIXES: Final[tuple[str, ...]] = (
-    "importlib", "_frozen_importlib", "_pytest", "pluggy", "traceback",
+    "_pytest", "pluggy", "traceback", "warnings", "runpy", "hypothesis",
+)
+
+#: The import system reads a module's source in its loader's `get_code`,
+#: and runs the module's own top-level code under `exec_module`. Both are an
+#: import: `src/aelfrice/core_gate.py`, for one, digests its own source when
+#: it is imported, and that read belongs to whichever test imports it first.
+#: `loader.get_source`, `loader.get_data`, and `pkgutil.get_data` go through
+#: the same loader without either frame, to hand the caller the text.
+_IMPORT_MODULE_PREFIXES: Final[tuple[str, ...]] = (
+    "importlib", "_frozen_importlib",
+)
+_IMPORT_FUNCTIONS: Final[frozenset[str]] = frozenset(
+    {"get_code", "exec_module", "_load_unlocked"},
 )
 
 #: `inspect` functions that read source lines to render a stack, not to
@@ -100,11 +128,13 @@ def _rendering(frame: FrameType | None) -> bool:
     """True when the read is not a test reading the source.
 
     Walks out from the `open` call to the first frame in `tests/`, which is
-    the test, fixture, or helper that the read belongs to. On the way, a
-    frame of the import system or of stack rendering means the read is
-    one of those. Every test runs below pytest's own frames, so the walk
-    has to stop at the test: reaching a pytest frame first means pytest
-    itself read the file.
+    the test, fixture, or helper that the read belongs to. On the way, an
+    import (a loader's `get_code`) or a frame that renders, executes, or
+    samples source means the read is one of those. Every test runs below
+    pytest's own frames, so the walk has to stop at the test: reaching a
+    pytest frame first means pytest itself read the file. A read with no
+    test frame at all, such as one from a thread the test started, isn't
+    the test's either.
     """
     while frame is not None:
         if _in_tests(frame.f_code.co_filename):
@@ -112,6 +142,8 @@ def _rendering(frame: FrameType | None) -> bool:
         module = frame.f_globals.get("__name__", "")
         if isinstance(module, str):
             if module.startswith(_IGNORED_MODULE_PREFIXES):
+                return True
+            if module.startswith(_IMPORT_MODULE_PREFIXES) and frame.f_code.co_name in _IMPORT_FUNCTIONS:
                 return True
             if module == "inspect" and frame.f_code.co_name in _IGNORED_INSPECT_FUNCTIONS:
                 return True
@@ -138,6 +170,13 @@ def install() -> None:
         Audit.installed = True
 
 
+def _names(reads: list[str]) -> str:
+    names = ", ".join(str(Path(p).relative_to(_REPO)) for p in reads[:3])
+    if len(reads) > 3:
+        names += f" and {len(reads) - 3} more"
+    return names
+
+
 def audited(item: pytest.Item, phase: str) -> Generator[None, object, object]:
     """One test phase, failed when it read the source without the marker."""
     linecache.clearcache()
@@ -149,11 +188,8 @@ def audited(item: pytest.Item, phase: str) -> Generator[None, object, object]:
         Audit.active = False
     reads = sorted(set(Audit.reads))
     if reads and item.get_closest_marker(MARKER) is None:
-        names = ", ".join(str(Path(p).relative_to(_REPO)) for p in reads[:3])
-        if len(reads) > 3:
-            names += f" and {len(reads) - 3} more"
         pytest.fail(
-            f"this test's {phase} read {names} as text but the test is not "
+            f"this test's {phase} read {_names(reads)} as text but the test is not "
             f"marked `@pytest.mark.{MARKER}`. Inside mutmut's `mutants/` "
             f"tree that file is mutmut's mutated copy, so the test fails and "
             f"stops the mutation run (#1746). Mark the test, or its module "
@@ -177,9 +213,66 @@ def clear_module_caches(item: pytest.Item) -> None:
     if not isinstance(module, ModuleType):
         return
     for value in list(vars(module).values()):
-        clear = getattr(value, "cache_clear", None)
-        if callable(clear) and getattr(value, "__module__", None) == module.__name__:
-            clear()
+        if getattr(value, "__module__", None) != module.__name__:
+            continue
+        _clear(value)
+        if isinstance(value, type):
+            # A cached static or class method of a test class: the
+            # descriptor holds the cached function as `__func__`.
+            for member in list(vars(value).values()):
+                _clear(getattr(member, "__func__", member))
+
+
+def _clear(value: object) -> None:
+    clear = getattr(value, "cache_clear", None)
+    if callable(clear):
+        clear()
+
+
+def _module_marked(module: object) -> bool:
+    """True when `module` sets `pytestmark` to, or to a list holding, the marker."""
+    marks = getattr(module, "pytestmark", [])
+    if not isinstance(marks, list):
+        marks = [marks]
+    return any(getattr(m, "name", None) == MARKER for m in cast("list[object]", marks))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    """Audit a test module's import, where module-level code runs.
+
+    A module-level constant computed from the source is read once, at
+    collection, and every test that uses it would pass the per-test audit.
+    Such a module has to mark itself as a whole.
+    """
+    if not isinstance(collector, pytest.Module):
+        return (yield)
+    Audit.reads = []
+    Audit.active = True
+    try:
+        report = yield
+    finally:
+        Audit.active = False
+    if report.passed:
+        failure = collection_failure(collector.nodeid, collector.obj, Audit.reads)
+        if failure is not None:
+            report.outcome = "failed"
+            report.longrepr = failure
+    return report
+
+
+def collection_failure(nodeid: str, module: object, reads: list[str]) -> str | None:
+    """Why importing a test module fails the guard, or None when it doesn't."""
+    if not reads or _module_marked(module):
+        return None
+    return (
+        f"importing {nodeid} read {_names(sorted(set(reads)))} as text, but "
+        f"the module doesn't set `pytestmark = pytest.mark.{MARKER}`. Code "
+        "that runs at import is shared by every test in the module, so the "
+        "module has to be marked as a whole (#1746)."
+    )
 
 
 @pytest.hookimpl(wrapper=True)
