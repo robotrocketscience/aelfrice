@@ -132,6 +132,25 @@ def test_default_spawns_and_writes_nothing(
     assert spawned == [(batches[0][0], str(db), CLAUDE)]
 
 
+def test_a_failed_spawn_says_so_once_and_keeps_the_batch(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: ignoring `spawn`'s False, writing to stdout, or not logging it."""
+    monkeypatch.setattr(bg, "find_claude", lambda: CLAUDE)
+    monkeypatch.setattr(bg, "spawn", lambda *_a, **_k: False)
+    _seed(db, [_belief("w1")])
+    out, err = _stop(tmp_path)
+    assert out == ""
+    (batch,) = _batches(db)
+    assert [ln for ln in err.splitlines() if batch[0] in ln] == [
+        f"aelfrice hook: could not start background core-gate labeling for "
+        f"batch {batch[0]}; `aelf doctor core-gate --emit` batches its beliefs again"
+    ]
+    lines = (db.parent / bg.LOG_FILENAME).read_text(encoding="utf-8").splitlines()
+    (rec,) = [json.loads(x) for x in lines]
+    assert rec["batch_id"] == batch[0] and rec["outcome"] == bg.OUTCOME_SPAWN_FAILED
+
+
 def test_no_candidates_no_spawn(
     db: Path, tmp_path: Path, spawned: list[tuple[str, str, str]],
 ) -> None:

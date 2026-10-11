@@ -7816,7 +7816,7 @@ def _fit_core_gate_batch(
 
 
 def _core_gate_label_in_background(
-    store: "MemoryStore", session_id: str, claude: str,
+    store: "MemoryStore", session_id: str, claude: str, stderr: IO[str],
 ) -> str | None:
     """Record a session-end batch and start the detached labeler (#1741).
 
@@ -7827,9 +7827,10 @@ def _core_gate_label_in_background(
     conversation. After the commit, start the child. Returns the batch id,
     or None when there was nothing to batch.
 
-    A spawn that fails leaves an open batch, as a closed pipe does on the
-    continuation path: it claims its beliefs, and `aelf doctor core-gate
-    --emit` batches them again. Candidates past `MAX_BATCH` stay
+    A spawn that fails writes one line to `stderr` and one log record,
+    and leaves an open batch, as a closed pipe does on the continuation
+    path: it claims its beliefs, and `aelf doctor core-gate --emit`
+    batches them again. Candidates past `MAX_BATCH` stay
     unclaimed for the next Stop.
     """
     from aelfrice import core_gate_background as background  # noqa: PLC0415
@@ -7855,7 +7856,8 @@ def _core_gate_label_in_background(
             session_id=session_id,
             created_at=_utc_now_iso(),
         )
-    background.spawn(batch_id, db_path=store.db_path, claude=claude)
+    if not background.spawn(batch_id, db_path=store.db_path, claude=claude):
+        background.report_spawn_failure(store.db_path, batch_id, stderr)
     return batch_id
 
 
@@ -7945,7 +7947,7 @@ def _maybe_core_gate_session_end(
     if background.background_enabled(env, start, stderr):
         claude = background.find_claude()
         if claude is not None:
-            _core_gate_label_in_background(store, session_id, claude)
+            _core_gate_label_in_background(store, session_id, claude, stderr)
             return False
     override = _core_gate_session_end_env(env)
     if override is False:
