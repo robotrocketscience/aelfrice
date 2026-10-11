@@ -91,7 +91,6 @@ def _row(draw: st.DrawFn) -> tuple[str, str, str | None]:
 _row_strategy = _row()
 
 
-@pytest.mark.source_scan
 @given(rows=st.lists(_row_strategy, min_size=0, max_size=12))
 @settings(
     max_examples=40,

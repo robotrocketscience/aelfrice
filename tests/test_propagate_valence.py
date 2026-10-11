@@ -374,7 +374,6 @@ def _store_from_edges(
     return s
 
 
-@pytest.mark.source_scan
 @given(
     edges=st.lists(
         # Self-loops are NOT filtered: `insert_edge` accepts src == dst
