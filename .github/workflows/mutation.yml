@@ -149,6 +149,7 @@ jobs:
           uv run python scripts/mutation_shards.py apply \
               --plan mutation-plan.json --shard "${{ matrix.shard }}"
       - name: Run mutation tests
+        id: run
         env:
           # The time box, in minutes. A shard that runs out of time still
           # reports what it checked; the rest stay `not checked`. 330 plus
@@ -156,10 +157,11 @@ jobs:
           # the upload.
           MUTMUT_TIME_BOX_MINUTES: 330
         run: |
-          # No `|| true` on the whole pipeline. A surviving mutant is a
-          # non-zero exit and is not an error here, so the run's status is
-          # captured rather than propagated; a *harness* failure is caught by
-          # the results assertion below, which is the thing that was missing.
+          # No `|| true` on the whole pipeline. The run's status is captured,
+          # not propagated, so `mutmut results` still writes the report; the
+          # assertion below fails the job on it. mutmut 3.8.0 exits 0 whether
+          # or not mutants survive, so 0 is a finished run, 124 is the time
+          # box, and anything else is mutmut failing partway.
           #
           # Not GNU `timeout`. mutmut rewrites its `.meta` result files in
           # place, so a signal mid-write truncates one and `mutmut results`
@@ -172,6 +174,7 @@ jobs:
               --time-box-minutes "${MUTMUT_TIME_BOX_MINUTES}" -- \
               .venv/bin/mutmut run --max-children 4 || status=$?
           echo "mutmut run exit=${status}"
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
           if [ "${status}" -eq 124 ]; then
             echo "::warning title=Mutation time box::shard ${{ matrix.shard }} stopped after ${MUTMUT_TIME_BOX_MINUTES} minutes; unrun mutants stay 'not checked'."
           fi
@@ -237,7 +240,21 @@ jobs:
           if [ "${unchecked}" -ne 0 ]; then
             echo "::warning title=Partial mutation run::${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked'."
           fi
-          echo "mutants: ${total} total, ${killed} killed, ${survived} survived, ${unchecked} not checked"
+          echo "mutants: ${total} total, ${killed} killed, ${survived} survived, ${timedout} timeout, ${unchecked} not checked"
+      - name: Fail when mutmut stopped on an error
+        env:
+          RUN_STATUS: ${{ steps.run.outputs.status }}
+        run: |
+          # A crash partway through, such as an out-of-memory kill or a
+          # worker error, leaves some mutants checked and the rest `not
+          # checked`, which the guard above reads as a time-boxed partial
+          # run. Only 0 (finished) and 124 (time box) are a run that ended
+          # the way it should; the report is uploaded either way.
+          case "${RUN_STATUS}" in
+            0|124) echo "mutmut run ended with ${RUN_STATUS}" ;;
+            *) echo "::error::mutmut run exited ${RUN_STATUS}, not 0 or the time box's 124: it failed partway. The 'Run mutation tests' step log shows why."
+               exit 1 ;;
+          esac
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
