@@ -26,6 +26,7 @@ import pytest
 from tests.bench_gate.null_model import exempt_gate_modules
 # #1746: pytest finds hooks by name in this module, so importing them here
 # is what turns the guard on. See tests/source_scan_guard.py.
+from tests.mutation_tmp import pytest_sessionfinish as pytest_sessionfinish
 from tests.source_scan_guard import install as install_source_scan_guard
 from tests.source_scan_guard import (
     pytest_make_collect_report as pytest_make_collect_report,

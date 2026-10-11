@@ -99,8 +99,6 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
     Update this list together with the reasons in `pyproject.toml`."""
     config = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
     assert config["tool"]["mutmut"]["pytest_add_cli_args"] == [
-        "-o",
-        "tmp_path_retention_policy=none",
         "-m",
         "not source_scan",
         "--ignore",

@@ -224,14 +224,9 @@ also_copy = [
 #     ordinary suite rather than here.
 #   `tests/e2e`: they run the installed `aelf` in a subprocess, so they can't
 #     kill a mutant, and CI's own pytest job leaves them out the same way.
-# And one setting:
-#   `tmp_path_retention_policy=none`: mutmut runs a pytest session per
-#     mutant, and pytest keeps every session's `tmp_path` directories by
-#     default. A local run of about 3,800 mutants left about 3,850 `pytest-N`
-#     folders and filled the disk; a shard's ~7,600 would fill a runner's.
-#     With `none`, each test's directories go when it ends.
+# Each mutant's pytest temporary root is removed by `tests/mutation_tmp.py`,
+# not by `tmp_path_retention_policy=none`, which deletes live sessions' roots.
 pytest_add_cli_args = [
-    "-o", "tmp_path_retention_policy=none",
     "-m", "not source_scan",
     "--ignore", "tests/e2e",
     "--deselect", "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
