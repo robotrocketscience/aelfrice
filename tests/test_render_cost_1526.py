@@ -1556,6 +1556,7 @@ def _scan_1526_cost_functions() -> set[tuple[str, str]]:
     return found
 
 
+@pytest.mark.source_scan
 def test_every_1526_cost_function_is_rebound_or_named_as_an_exception() -> None:
     """A before arm that misses one cost function measures a hybrid.
 
@@ -2511,6 +2512,7 @@ def test_the_search_tool_lane_passes_its_own_cost_function_to_retrieve(
     assert seen[0] is aelfrice.hook_search_tool._belief_line_cost, seen[0]
 
 
+@pytest.mark.source_scan
 def test_every_block_that_emits_the_framing_header_is_enumerated() -> None:
     """Four formatters emit `_FRAMING_HEADER`. There must be four.
 

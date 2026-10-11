@@ -254,6 +254,7 @@ def test_a_payload_cwd_elsewhere_costs_exactly_two_walks(
     )
 
 
+@pytest.mark.source_scan
 def test_no_module_carries_a_private_config_walk() -> None:
     """The census #1304 was filed on, as a standing assertion.
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 # The literal event-name prefix reserved by docs/design/hook_activity_schema.md.
 # Producing hook lives in the user's HOME repo, not in src/aelfrice/.
 RESERVED_EVENT_PREFIX: str = "PostToolUseFailure"
@@ -32,6 +34,7 @@ def _python_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+@pytest.mark.source_scan
 def test_no_aelfrice_writer_emits_post_tool_use_failure_event_name() -> None:
     """No file under src/aelfrice/ contains the literal `PostToolUseFailure`.
 

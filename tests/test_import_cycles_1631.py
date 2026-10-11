@@ -41,6 +41,7 @@ def _graph() -> dict[str, set[str]]:
     return _IC.build_graph(_IC.read_sources_from_tree(_REPO))
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(60)
 def test_hook_is_in_no_import_cycle() -> None:
     """The gate: no component of size two or more contains `aelfrice.hook`.
@@ -59,6 +60,7 @@ def test_hook_is_in_no_import_cycle() -> None:
         )
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(60)
 def test_the_scan_sees_the_hook_edges_it_must_see() -> None:
     """Guard the guard: a scan that misses function-local edges proves nothing.
@@ -123,6 +125,7 @@ def test_every_import_form_becomes_an_edge() -> None:
     ]
 
 
+@pytest.mark.source_scan
 def test_assert_acyclic_exits_nonzero_for_a_module_in_a_cycle(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -215,6 +215,7 @@ def _extract_triples_calls(module: object) -> list[ast.Call]:
     ]
 
 
+@pytest.mark.source_scan
 def test_the_rebuilder_read_path_does_not_pass_the_constraint() -> None:
     """The read-path call site must stay byte-identical (ruling 2026-08-06).
 
@@ -245,6 +246,7 @@ def test_the_rebuilder_read_path_does_not_pass_the_constraint() -> None:
         )
 
 
+@pytest.mark.source_scan
 def test_hook_commit_ingest_does_pass_the_constraint() -> None:
     """The mirror image: the write path must actually opt in.
 

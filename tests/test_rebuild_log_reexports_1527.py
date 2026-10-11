@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 import aelfrice.context_rebuilder as cr
 import aelfrice.rebuild_log as rl
 
@@ -72,6 +74,7 @@ def test_the_re_export_block_covers_all_but_the_two_named_exceptions() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_every_context_rebuilder_import_in_the_tree_resolves() -> None:
     """The consequence the corrected sentence claims, checked against callers.
 

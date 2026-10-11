@@ -320,6 +320,7 @@ _MIGRATIONS: tuple = (
     assert rc == 2
 
 
+@pytest.mark.source_scan
 def test_real_main_store_self_consistent(policy_module) -> None:
     """Smoke: the live `src/aelfrice/store.py` parses cleanly via the
     same extractor the gate uses, and self-comparison (base==head)
