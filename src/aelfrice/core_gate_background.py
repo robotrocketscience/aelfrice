@@ -123,7 +123,7 @@ def _load_toml(start: Path | None, stderr: IO[str]) -> dict[str, Any]:
         print(f"aelfrice hook: cannot read {candidate}: {exc}", file=stderr)
         return {}
     try:
-        return cast(dict[str, Any], tomllib.loads(raw.decode("utf-8", errors="replace")))
+        return tomllib.loads(raw.decode("utf-8", errors="replace"))
     except tomllib.TOMLDecodeError as exc:
         print(f"aelfrice hook: malformed TOML in {candidate}: {exc}", file=stderr)
         return {}
@@ -373,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         _append_log(path, {"batch_id": batch_id, "outcome": OUTCOME_RUN_FAILED,
                            "error": type(exc).__name__})
         return 1
+    record: dict[str, object]
     try:
         record = label_batch(store, batch_id, claude=claude)
     except Exception as exc:  # never let the child die silently without a trace
