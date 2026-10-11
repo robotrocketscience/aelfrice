@@ -77,12 +77,24 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --group dev
+      - name: Check the mutmut contract the plan relies on
+        # The plan and the pragmas rely on how mutmut 3.8.0 counts, names,
+        # and skips mutants. The tests that pin that skip in the ordinary
+        # suite, where mutmut isn't installed, so they run here, against
+        # the exact version the shards install, before anything is planned.
+        env:
+          # Turns the tests' skip-without-mutmut into a failure here.
+          AELF_REQUIRE_MUTMUT: "1"
+        run: |
+          uv run --with 'mutmut==3.8.0' pytest -q \
+              tests/test_mutation_shards_1747.py \
+              tests/test_mutation_function_scope_1632.py
       - name: Plan the shards
         id: plan
         run: |
           # The plan counts mutants with mutmut's own generator, so it runs
-          # the same exact version the shards install below. It needs only
-          # mutmut, not the project, so it skips the full sync.
+          # the same exact version the shards install below.
           uv run --no-project --with 'mutmut==3.8.0' \
               python scripts/mutation_shards.py plan \
               --out mutation-plan.json --summary mutation-plan.md
@@ -138,27 +150,30 @@ jobs:
               --plan mutation-plan.json --shard "${{ matrix.shard }}"
       - name: Run mutation tests
         env:
-          # The time box. mutmut saves each mutant's result as it finishes
-          # and, on SIGINT, stops its workers and keeps every saved result,
-          # so a shard that runs out of time still reports what it checked.
-          # The rest stay `not checked`. 330 minutes leaves the job's last
-          # 20 for the report and the upload.
-          MUTMUT_TIME_BOX: 330m
+          # The time box, in minutes. A shard that runs out of time still
+          # reports what it checked; the rest stay `not checked`. 330 plus
+          # the 2-minute grace leaves the job's last 18 for the report and
+          # the upload.
+          MUTMUT_TIME_BOX_MINUTES: 330
         run: |
           # No `|| true` on the whole pipeline. A surviving mutant is a
           # non-zero exit and is not an error here, so the run's status is
           # captured rather than propagated; a *harness* failure is caught by
           # the results assertion below, which is the thing that was missing.
           #
-          # `timeout` signals the whole process group, so mutmut gets the
-          # SIGINT itself rather than through `uv run`. Exit 124 means the
-          # time box ended the run.
+          # Not GNU `timeout`. mutmut rewrites its `.meta` result files in
+          # place, so a signal mid-write truncates one and `mutmut results`
+          # then fails, and a SIGINT that lands while mutmut forks a worker
+          # is swallowed. `mutation_shards.py run` keeps a copy of each
+          # whole `.meta`, sends SIGINT and then SIGKILL, and puts back any
+          # file a signal truncated. Exit 124 means the time box ended the run.
           status=0
-          timeout --signal=INT --kill-after=5m "${MUTMUT_TIME_BOX}" \
+          .venv/bin/python scripts/mutation_shards.py run \
+              --time-box-minutes "${MUTMUT_TIME_BOX_MINUTES}" -- \
               .venv/bin/mutmut run --max-children 4 || status=$?
           echo "mutmut run exit=${status}"
           if [ "${status}" -eq 124 ]; then
-            echo "::warning title=Mutation time box::shard ${{ matrix.shard }} stopped after ${MUTMUT_TIME_BOX}; unrun mutants stay 'not checked'."
+            echo "::warning title=Mutation time box::shard ${{ matrix.shard }} stopped after ${MUTMUT_TIME_BOX_MINUTES} minutes; unrun mutants stay 'not checked'."
           fi
           # `--all` is required, not cosmetic: `mutmut results` skips every
           # killed mutant unless it is passed, so a scope in which everything
@@ -197,21 +212,26 @@ jobs:
           #
           # #1747: a shard that checked some mutants and ran out of time is a
           # partial result, not a broken harness, so it warns. What fails is
-          # a shard that listed no mutant, or checked none of them.
+          # a shard that listed no mutant, or judged none of them. Judged
+          # means killed, survived, or timeout, the statuses
+          # `mutation_shards.CHECKED_STATUSES` counts: `no tests` or
+          # `suspicious` on every mutant says nothing about the tests.
           MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
           survived=$(grep -cE ': survived$' mutation-report.txt || true)
+          timedout=$(grep -cE ': timeout$' mutation-report.txt || true)
           unchecked=$(grep -cE ': not checked$' mutation-report.txt || true)
+          checked=$(( killed + survived + timedout ))
           if [ "${total}" -eq 0 ]; then
             echo "::error::mutmut listed no mutants at all — the harness is broken, not the tree."
             echo "--- report ---"
             cat mutation-report.txt
             exit 1
           fi
-          if [ "${unchecked}" -eq "${total}" ]; then
-            echo "::error::all ${total} mutants are 'not checked' — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
-            grep -E ': not checked$' mutation-report.txt | head -20
+          if [ "${checked}" -eq 0 ]; then
+            echo "::error::none of ${total} mutants was killed, survived, or timed out — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
+            grep -vE ': (killed|survived|timeout)$' mutation-report.txt | head -20
             exit 1
           fi
           if [ "${unchecked}" -ne 0 ]; then
