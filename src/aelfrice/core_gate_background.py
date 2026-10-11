@@ -47,6 +47,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Callable, Final, cast
 
+from aelfrice.print_mode import ENV_HOST_ENTRYPOINT
+
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
@@ -71,6 +73,16 @@ LOG_FILENAME: Final[str] = "core_gate_background.jsonl"
 RUNNER_DROPPED_ENV: Final[tuple[str, ...]] = (
     "MAX_THINKING_TOKENS", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
 )
+
+#: The parent host session's identity, also removed (see `runner_env`).
+RUNNER_SESSION_ENV: Final[tuple[str, ...]] = (
+    "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+)
+
+#: The headless entrypoint the child runs under (see `runner_env`).
+RUNNER_ENTRYPOINT: Final[str] = "sdk-cli"
 
 #: Outcomes written to the log, one per run.
 OUTCOME_ACCEPTED: Final[str] = "accepted"
@@ -197,10 +209,19 @@ def runner_env(base: dict[str, str]) -> dict[str, str]:
     the user chose (operator ruling on #1741, 2026-10-08). A user with
     key-only auth then gets no background labels: the run fails and the
     batch stays open.
+
+    It also drops the identity of the host session the hook ran in (its
+    session ID and messaging socket and token), so the child is its own
+    session, as in the measured runs. The entrypoint is set to the
+    headless `sdk-cli`: the host only turns an inherited `cli` into it,
+    and keeps an IDE or desktop label. So if a hook fired in the child
+    anyway, aelfrice's headless check skips it whatever session started
+    the Stop.
     """
     env = dict(base)
-    for name in RUNNER_DROPPED_ENV:
+    for name in (*RUNNER_DROPPED_ENV, *RUNNER_SESSION_ENV):
         env.pop(name, None)
+    env[ENV_HOST_ENTRYPOINT] = RUNNER_ENTRYPOINT
     env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return env

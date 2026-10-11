@@ -28,6 +28,7 @@ from aelfrice.models import (
     Belief,
     CoreGateBatchItem,
 )
+from aelfrice.print_mode import is_headless_hook_env
 from aelfrice.store import MemoryStore
 
 pytestmark = pytest.mark.timeout(60)
@@ -316,6 +317,25 @@ def test_runner_env_keeps_thinking_and_drops_context() -> None:
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
     assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+    assert env["PATH"] == "/x"
+
+
+@pytest.mark.parametrize("entrypoint", ["cli", "claude-vscode", "claude-desktop", None])
+def test_runner_env_is_its_own_headless_session(entrypoint: str | None) -> None:
+    """Killed by: passing the host session's identity or messaging channel to
+    the child, or leaving it a label the headless check doesn't skip."""
+    base = {name: "widget" for name in bg.RUNNER_SESSION_ENV} | {"PATH": "/x"}
+    if entrypoint is not None:
+        base["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+    env = bg.runner_env(base)
+    assert set(bg.RUNNER_SESSION_ENV) == {
+        "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+    }
+    assert not set(bg.RUNNER_SESSION_ENV) & set(env)
+    assert env["CLAUDE_CODE_ENTRYPOINT"] == "sdk-cli"
+    assert is_headless_hook_env(env)
     assert env["PATH"] == "/x"
 
 
