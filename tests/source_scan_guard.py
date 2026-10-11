@@ -21,7 +21,13 @@ ignores the reads that are not a test reading the source: the import
 system loading a module, and traceback or stack rendering reading lines to
 print them. `linecache` is cleared before each phase, so a test that calls
 `inspect.getsource` is caught whether or not another test read the same
-file first. A read in a subprocess is not seen.
+file first, and the `functools` caches of the test's own module are cleared
+before each test for the same reason.
+
+What it can't see: a read in a subprocess, and a source scan cached
+somewhere other than the test's module, such as a module- or session-scoped
+fixture or a shared helper module. A test that only uses such a cache is
+flagged only if it is the first to fill it.
 
 `tests/conftest.py` imports the hooks below, which is what installs them.
 """
@@ -34,7 +40,7 @@ import os
 import sys
 from collections.abc import Generator
 from pathlib import Path
-from types import FrameType
+from types import FrameType, ModuleType
 from typing import Final, cast
 
 import pytest
@@ -157,8 +163,28 @@ def audited(item: pytest.Item, phase: str) -> Generator[None, object, object]:
     return result
 
 
+def clear_module_caches(item: pytest.Item) -> None:
+    """Empty every `functools` cache defined in the test's own module.
+
+    A module that caches its source scan reads the source only in the
+    first test that asks, and every later test reuses the result unseen.
+    Inside `mutants/` each of those later tests reads the mutated copy
+    when it runs alone, which is how mutmut runs it after `-m` has left the
+    first one out. Clearing the cache before each test makes every test
+    that uses it read the source itself, where the guard sees it.
+    """
+    module = getattr(item, "module", None)
+    if not isinstance(module, ModuleType):
+        return
+    for value in list(vars(module).values()):
+        clear = getattr(value, "cache_clear", None)
+        if callable(clear) and getattr(value, "__module__", None) == module.__name__:
+            clear()
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Generator[None, object, object]:
+    clear_module_caches(item)
     return (yield from audited(item, "setup"))
 
 

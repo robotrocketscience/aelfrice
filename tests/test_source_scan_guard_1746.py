@@ -11,11 +11,13 @@ the guard would fail it.
 """
 from __future__ import annotations
 
+import functools
 import importlib.machinery
 import inspect
 import linecache
 import tomllib
 import traceback
+import types
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -118,6 +120,31 @@ def test_getsource_is_caught_even_when_another_test_read_the_file_first() -> Non
     inspect.getsource(ulid.make_generator)  # warms linecache
     with pytest.raises(pytest.fail.Exception, match="ulid.py"):
         _phase(_Item(marked=False), lambda: inspect.getsource(ulid.make_generator))
+
+
+def test_a_cache_in_the_test_module_is_cleared_before_each_test() -> None:
+    """A cached source scan is redone, and seen, in every test that uses it."""
+    module = types.ModuleType("tests.fake_scan_1746")
+    exec(
+        "import functools\n"
+        "@functools.lru_cache(maxsize=None)\n"
+        "def scan():\n"
+        "    return object()\n",
+        module.__dict__,
+    )
+    foreign = functools.lru_cache(maxsize=None)(lambda: object())
+    setattr(module, "foreign", foreign)
+    scan: Any = module.__dict__["scan"]
+    scan()
+    foreign()
+
+    class Item:
+        def __init__(self, module: types.ModuleType) -> None:
+            self.module = module
+
+    guard.clear_module_caches(Item(module))  # type: ignore[arg-type]
+    assert scan.cache_info().currsize == 0
+    assert foreign.cache_info().currsize == 1, "only the test module's own caches"
 
 
 def test_the_suite_runs_the_guard_on_every_phase() -> None:
