@@ -239,6 +239,7 @@ def test_subprocess_text_mode_pins_the_encoding(callee: str) -> None:
     )
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("callee", ["read_text", "write_text"])
 def test_path_text_io_pins_the_encoding(callee: str) -> None:
     """`Path.read_text`/`write_text` default to the locale encoding too.
@@ -258,6 +259,7 @@ def test_path_text_io_pins_the_encoding(callee: str) -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_guards_can_see_the_package() -> None:
     """A guard that finds nothing to check passes for the wrong reason."""
     assert len(_calls("run")) >= 14

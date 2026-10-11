@@ -297,6 +297,7 @@ def test_no_toml_numeric_knob_accepts_a_bool() -> None:
     )
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_the_census_actually_scans_something() -> None:
     """A scan that finds nothing satisfies the assertion above.
@@ -429,6 +430,7 @@ def test_a_preceding_early_return_counts_as_a_guard() -> None:
     assert _guards_bool_in_scope(fn, "value")
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_state_readers_are_out_of_scope_on_purpose() -> None:
     """Records the disposition the issue asked for.
@@ -449,6 +451,7 @@ def _unused(_: Any) -> None:  # pragma: no cover - typing shim
     return None
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_the_parsed_tree_cache_covers_the_package() -> None:
     """The shared parse must not go empty (#1383).
