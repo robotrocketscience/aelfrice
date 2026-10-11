@@ -593,6 +593,18 @@ def test_the_run_step_keeps_going_to_the_report_and_records_its_status() -> None
     assert run.index("|| status=$?") < run.index(".venv/bin/mutmut results --all=true")
 
 
+def test_the_shard_runs_with_the_project_environment_on_path() -> None:
+    """`.venv/bin/mutmut` bypasses `uv run`, which is what puts `aelf` on
+    PATH; the first real run failed every shard's stats pass on that."""
+    mutmut = _job("mutmut")
+    step = _step("mutmut", "Put the project's environment on PATH")
+    assert 'echo "${GITHUB_WORKSPACE}/.venv/bin" >> "${GITHUB_PATH}"' in step
+    assert 'echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv" >> "${GITHUB_ENV}"' in step
+    assert mutmut.index("Put the project's environment on PATH") < mutmut.index(
+        "- name: Run mutation tests",
+    )
+
+
 def test_a_mutmut_failure_partway_fails_the_shard() -> None:
     """mutmut 3.8.0 exits 0 whether or not mutants survive, so any status
     but 0 and the time box's 124 is mutmut failing; the guard alone would

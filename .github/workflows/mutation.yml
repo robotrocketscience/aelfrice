@@ -133,6 +133,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
+      - name: Put the project's environment on PATH
+        # The steps below call `.venv/bin/mutmut` directly rather than through
+        # `uv run`, so the time box's signals reach mutmut and not uv. `uv run`
+        # is also what puts `.venv/bin` on PATH for `ci.yml`'s pytest, and
+        # tests that run `aelf` by name need it: without it, mutmut's stats
+        # pass failed `aelf doctor --host codex` ("`aelf` is not on PATH") in
+        # every shard and checked nothing (#1747).
+        run: |
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "${GITHUB_PATH}"
+          echo "VIRTUAL_ENV=${GITHUB_WORKSPACE}/.venv" >> "${GITHUB_ENV}"
       - name: Install mutmut
         # Pinned exactly, for the reason the per-PR job gives: the shard
         # plan and the pragmas that cut a file into shards both rely on how
