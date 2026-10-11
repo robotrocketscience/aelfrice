@@ -23,6 +23,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 _WORKFLOW = _REPO / ".github" / "workflows" / "eval-calibration.yml"
 _PACKAGE = _REPO / "src" / "aelfrice"
@@ -129,6 +131,7 @@ def _reachable_modules() -> set[str]:
     return seen
 
 
+@pytest.mark.source_scan
 def test_the_import_walk_is_not_vacuous() -> None:
     """Guard the guard: an empty walk would satisfy the coverage test."""
     reachable = _reachable_modules()
@@ -139,6 +142,7 @@ def test_the_import_walk_is_not_vacuous() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_pr_filter_covers_every_module_the_metric_depends_on() -> None:
     globs = _pr_path_globs()
     uncovered = sorted(

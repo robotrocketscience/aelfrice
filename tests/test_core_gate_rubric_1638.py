@@ -45,6 +45,7 @@ Decision rules:
 """
 
 
+@pytest.mark.source_scan
 def test_the_classifier_digest_is_pinned() -> None:
     """If this fails, the classifier changed, and so did its version.
 
@@ -54,11 +55,13 @@ def test_the_classifier_digest_is_pinned() -> None:
     assert cg.prompt_digest() == PINNED_DIGEST
 
 
+@pytest.mark.source_scan
 def test_the_version_is_derived_from_the_digest() -> None:
     """No hand-kept version can lag behind a classifier change."""
     assert cg.CLASSIFIER_VERSION == f"core-gate-{cg.prompt_digest()[:16]}"
 
 
+@pytest.mark.source_scan
 def test_the_digest_covers_everything_a_version_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,6 +80,7 @@ def test_the_digest_covers_everything_a_version_names(
             assert cg.prompt_digest() != base, name
 
 
+@pytest.mark.source_scan
 @pytest.mark.parametrize("name", ["build_prompt", "parse_labels"])
 def test_a_change_to_either_function_changes_the_version(
     monkeypatch: pytest.MonkeyPatch, name: str,

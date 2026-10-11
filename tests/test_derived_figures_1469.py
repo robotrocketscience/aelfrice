@@ -550,6 +550,7 @@ def test_a_dash_line_in_a_python_file_is_not_a_changelog_entry(repo: Path) -> No
     assert "44,687" in entries_md[1]
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(120)
 def test_every_non_blank_line_of_the_corpus_lands_in_exactly_one_entry() -> None:
     """The invariant the splitter's docstring claims, asserted rather than
@@ -1087,6 +1088,7 @@ def test_published_constants_speaks_the_emit_figures_protocol() -> None:
     assert all(isinstance(k, str) for k in keys)
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(120)
 def test_every_store_free_key_is_named_by_a_marker() -> None:
     """A producer key nobody cites guards nothing.
@@ -1119,6 +1121,7 @@ def test_every_store_free_key_is_named_by_a_marker() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_repo_passes_the_text_checks() -> None:
     files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
     report = cdf.Report(github=False)
@@ -1130,6 +1133,7 @@ def test_the_repo_passes_the_text_checks() -> None:
     assert report.hard == [], "\n".join(report.hard)
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(120)
 def test_the_repo_passes_the_producer_checks() -> None:
     """Spawns one child per store-free producer (#1307), concurrently (#1578).

@@ -501,6 +501,7 @@ def _stdout_writer_sites() -> dict[str, list[int]]:
     return sites
 
 
+@pytest.mark.source_scan
 def test_the_stdout_writer_enumeration_is_re_derived_from_the_source() -> None:
     """A fifth stdout writer reds here rather than rotting a docstring.
 
@@ -534,6 +535,7 @@ def test_the_stdout_writer_enumeration_is_re_derived_from_the_source() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_writer_scan_follows_the_stream_alias() -> None:
     """The scan's own premise, asserted rather than assumed.
 

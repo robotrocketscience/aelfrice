@@ -67,6 +67,7 @@ def _lazy_call_names() -> list[str]:
     return out
 
 
+@pytest.mark.source_scan
 def test_every_lazy_call_site_asks_for_a_declared_name() -> None:
     """A call site naming a key that is not in the table raises `KeyError`.
 
@@ -89,6 +90,7 @@ def test_every_lazy_call_site_asks_for_a_declared_name() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_every_declared_name_is_actually_used() -> None:
     """The table is not a place to leave entries behind.
 

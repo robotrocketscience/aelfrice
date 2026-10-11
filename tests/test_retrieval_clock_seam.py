@@ -120,6 +120,7 @@ def test_pinned_ranking_is_reproducible(tmp_path: Path) -> None:
         store.close()
 
 
+@pytest.mark.source_scan
 def test_function_bodies_carry_no_direct_clock_reads() -> None:
     """Flag-gated sites (the γ resolver arm) never fire in a default
     config, so pin the acceptance criterion at the source level: the

@@ -436,6 +436,7 @@ def _climbs_parents(node: ast.AST) -> bool:
     )
 
 
+@pytest.mark.source_scan
 def test_no_module_discovers_config_outside_the_shared_walk() -> None:
     """The population guard for acceptance criterion 2.
 
@@ -682,6 +683,7 @@ def _package_sources() -> list[Path]:
     return sorted(_package_dir().rglob("*.py"))
 
 
+@pytest.mark.source_scan
 def test_the_tables_the_doc_calls_envless_really_are() -> None:
     """The remedy in `docs/user/CONFIG.md` has to be reachable.
 
@@ -706,6 +708,7 @@ def test_the_tables_the_doc_calls_envless_really_are() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_no_module_names_an_override_the_doc_denies() -> None:
     """The same claim across the package, not just the owning module.
 
@@ -729,6 +732,7 @@ def test_no_module_names_an_override_the_doc_denies() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_env_scan_sees_names_that_do_exist() -> None:
     """Keeps both guards above from passing because they see nothing.
 

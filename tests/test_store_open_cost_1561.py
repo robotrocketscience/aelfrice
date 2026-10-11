@@ -503,6 +503,7 @@ def test_emit_figures_refuses_a_named_store() -> None:
     assert excinfo.value.code == 2
 
 
+@pytest.mark.source_scan
 def test_every_marker_naming_this_producer_has_a_key_it_emits() -> None:
     """AC1's actual requirement: a marker whose key nothing emits is inert.
 

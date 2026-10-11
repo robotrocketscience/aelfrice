@@ -56,7 +56,15 @@ TEST_SEEDS = 2
 
 
 def _load_replicate() -> Any:
-    """Import the replicate as a module, the `test_budget_census.py` way."""
+    """Import the replicate as a module, the `test_budget_census.py` way.
+
+    The replicate reuses a census already in `sys.modules`, and only a fresh
+    census import clears `AELFRICE_*`. When `test_budget_census.py` loaded
+    it first in this process, the suite's own environment pins were back by
+    now, and the replicate's import guard raised. Dropping the cached census
+    makes the order of the two files irrelevant (#1746).
+    """
+    sys.modules.pop("budget_discriminability_census", None)
     spec = importlib.util.spec_from_file_location(
         "budget_discriminability_aa_replicate", str(_SCRIPT_PATH)
     )
@@ -70,6 +78,19 @@ def _load_replicate() -> Any:
 @pytest.fixture(scope="module")
 def aa() -> Any:
     return _load_replicate()
+
+
+def test_the_replicate_loads_after_another_test_cached_the_census(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1746: a census another test imported, with the suite's environment
+    pins set again since, must not make the replicate's import guard raise.
+    mutmut's warmup imports `test_budget_census.py` first, and the clean run
+    inside `mutants/` died here."""
+    stale = type(sys)("budget_discriminability_census")
+    monkeypatch.setitem(sys.modules, "budget_discriminability_census", stale)
+    monkeypatch.setenv("AELFRICE_DB", "/pinned/by/the/suite")
+    _load_replicate()
 
 
 # --- The perturbation is not inert ------------------------------------

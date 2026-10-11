@@ -38,6 +38,8 @@ from collections.abc import Iterator
 from typing import TypeGuard
 from pathlib import Path
 
+import pytest
+
 import aelfrice
 
 PKG = Path(aelfrice.__file__).resolve().parent
@@ -249,18 +251,22 @@ def _diff(actual: Counter[Site], expected: dict[Site, int]) -> list[str]:
     ]
 
 
+@pytest.mark.source_scan
 def test_no_consumer_redirects_store_resolution() -> None:
     assert _real_scan().violations == []
 
 
+@pytest.mark.source_scan
 def test_db_path_call_sites_match_the_inventory() -> None:
     assert _diff(_real_scan().db_path_calls, DB_PATH_CALLS) == []
 
 
+@pytest.mark.source_scan
 def test_store_constructions_in_hook_match_the_inventory() -> None:
     assert _diff(_real_scan().memorystore_calls, MEMORYSTORE_CALLS) == []
 
 
+@pytest.mark.source_scan
 def test_store_layout_joins_match_the_inventory() -> None:
     assert _diff(_real_scan().layout_joins, LAYOUT_JOINS) == []
 

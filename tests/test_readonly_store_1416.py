@@ -248,6 +248,7 @@ def _calls_by_enclosing_function() -> dict[str, set[str]]:
     return out
 
 
+@pytest.mark.source_scan
 def test_only_the_sanctioned_commands_take_the_read_only_path() -> None:
     """The routed set is exactly the commands audited one at a time.
 

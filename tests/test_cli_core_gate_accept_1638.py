@@ -255,11 +255,27 @@ def test_two_concurrent_accepts_of_one_batch_have_exactly_one_winner(
         {0: "C", 1: "C", 2: "C"},
     )
 
+    # The children import the package this process imported, not whichever
+    # `aelfrice` their own path finds first. Under mutmut the two differ:
+    # mutmut puts `mutants/src` on this process's `sys.path`, which a child
+    # doesn't inherit, so the child's classifier version (a digest of
+    # `core_gate`'s source) wouldn't match the batch's and both accepts
+    # would be refused (#1746).
+    import aelfrice
+
+    package_root = str(Path(aelfrice.__file__).resolve().parents[1])
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            p for p in (package_root, os.environ.get("PYTHONPATH")) if p
+        ),
+    }
+
     def accept(reply: dict[int, str]) -> int:
         return subprocess.run(
             [sys.executable, "-c", _RACE_SCRIPT, bid, start],
             input=_reply(reply), capture_output=True, text=True,
-            encoding="utf-8", env={**os.environ}, timeout=60, check=False,
+            encoding="utf-8", env=env, timeout=60, check=False,
         ).returncode
 
     with ThreadPoolExecutor(max_workers=2) as pool:

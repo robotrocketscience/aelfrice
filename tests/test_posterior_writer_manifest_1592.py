@@ -17,6 +17,8 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "check_posterior_writers.py"
 
@@ -36,6 +38,7 @@ def _write(tmp_path: Path, name: str, body: str) -> Path:
     return src
 
 
+@pytest.mark.source_scan
 def test_every_writer_in_the_tree_is_declared() -> None:
     """The live arm. Fires when a writer is added without a manifest entry."""
     found = check.scan(check.SRC)
@@ -46,6 +49,7 @@ def test_every_writer_in_the_tree_is_declared() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_no_declared_writer_has_vanished() -> None:
     """The other half: a stale entry hides that a writer was removed."""
     found = check.scan(check.SRC)
@@ -55,6 +59,7 @@ def test_no_declared_writer_has_vanished() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_the_checker_passes_on_the_tree_as_it_stands() -> None:
     assert check.main([]) == 0
 
@@ -257,6 +262,7 @@ def test_the_undetectable_list_is_not_silently_empty() -> None:
         assert len(why) > 20
 
 
+@pytest.mark.source_scan
 def test_the_undetectable_writers_are_reported_not_just_stored(
     capsys: Any,
 ) -> None:

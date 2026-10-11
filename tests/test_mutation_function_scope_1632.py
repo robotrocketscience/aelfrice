@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -506,6 +507,19 @@ def test_an_empty_scope_says_so(ms: Any) -> None:
 # --- against mutmut itself, where it is installed ---------------------------
 
 
+def _mutmut(module: str) -> Any:
+    """`module`, skipping without mutmut, except where the workflow needs it.
+
+    The weekly mutation plan job sets `AELF_REQUIRE_MUTMUT=1` and runs
+    these tests against the mutmut it pins (#1747), where a skip would
+    pass over the contract they check.
+    """
+    if os.environ.get("AELF_REQUIRE_MUTMUT") == "1":
+        return importlib.import_module(module)
+    return pytest.importorskip(module)
+
+
+
 def test_mutmut_generates_mutants_only_for_kept_units(
     ms: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -516,12 +530,12 @@ def test_mutmut_generates_mutants_only_for_kept_units(
     mapping. Run from an empty directory so mutmut's config loader reads
     no project file.
     """
-    file_mutation = pytest.importorskip("mutmut.mutation.file_mutation")
+    file_mutation = _mutmut("mutmut.mutation.file_mutation")
     (tmp_path / "pyproject.toml").write_text(
         '[tool.mutmut]\nsource_paths = ["src"]\n', encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    configuration = pytest.importorskip("mutmut.configuration")
+    configuration = _mutmut("mutmut.configuration")
     configuration.reset_config()
     source = _WRITE.replace("@functools.cache\n", "")
     out, failed = ms.exclude_units(source, {"kept", "Box.wait"})
@@ -536,12 +550,12 @@ def test_mutmut_generates_no_mutant_for_the_named_methods(
     ms: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """`MUTMUT_SKIPPED_NAMES` matches what the generator really skips."""
-    file_mutation = pytest.importorskip("mutmut.mutation.file_mutation")
+    file_mutation = _mutmut("mutmut.mutation.file_mutation")
     (tmp_path / "pyproject.toml").write_text(
         '[tool.mutmut]\nsource_paths = ["src"]\n', encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    configuration = pytest.importorskip("mutmut.configuration")
+    configuration = _mutmut("mutmut.configuration")
     configuration.reset_config()
     mutated = file_mutation.mutate_file_contents("src/m.py", _DUNDER)
     keys = {name.partition("__mutmut_")[0] for name in mutated.mutant_names}

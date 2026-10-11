@@ -261,6 +261,7 @@ def test_version_is_a_positive_int() -> None:
 # --- Arm 3: every writer is classified --------------------------------
 
 
+@pytest.mark.source_scan
 def test_every_edge_writer_is_classified() -> None:
     """No module may write an edge without being either covered or excluded.
 
@@ -335,6 +336,7 @@ def test_covered_and_excluded_do_not_overlap() -> None:
     )
 
 
+@pytest.mark.source_scan
 def test_only_the_store_writes_the_edges_table_directly() -> None:
     """Raw SQL would bypass the call-site sweep arm 3 depends on.
 

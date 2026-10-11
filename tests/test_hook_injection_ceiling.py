@@ -755,6 +755,7 @@ def test_element_cost_charges_the_newline_the_block_ships() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.source_scan
 def test_enforce_block_ceiling_has_exactly_one_caller_in_hook_py() -> None:
     """A fourth emit site cannot be added unbounded.
 

@@ -201,6 +201,7 @@ def test_exposure_only_sources_match_their_owning_module() -> None:
     assert hook_search.HOOK_FEEDBACK_SOURCE in EXPOSURE_ONLY_FEEDBACK_SOURCES
 
 
+@pytest.mark.source_scan
 def test_only_hook_search_writes_audit_only_feedback_rows() -> None:
     """Any new `update_posterior=False` call site needs a source in the set.
 

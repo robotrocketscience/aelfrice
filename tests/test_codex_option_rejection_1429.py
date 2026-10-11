@@ -221,6 +221,7 @@ def test_changelog_count_matches_the_command_the_entry_quotes() -> None:
     assert claimed.group(1) == _NUMBER_WORDS[len(discarded)], discarded
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(60)
 def test_applicable_dests_are_the_ones_the_codex_path_reads() -> None:
     """The applicable set is the executor's real read set, not a guess."""

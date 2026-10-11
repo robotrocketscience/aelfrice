@@ -1285,6 +1285,7 @@ def test_each_remedy_the_advisory_names_clears_it_and_keeps_the_marker(
     assert [m.key for m in markers] == ["budget"], remedy
 
 
+@pytest.mark.source_scan
 def test_no_file_in_the_scanned_corpus_exercises_the_divergence() -> None:
     """The claim the module docstring makes, asserted rather than written.
 
@@ -1344,6 +1345,7 @@ def test_the_privacy_page_publishes_the_two_budgets_it_names() -> None:
     assert report.hard == [], "\n".join(report.hard)
 
 
+@pytest.mark.source_scan
 @pytest.mark.timeout(300)
 def test_the_whole_repository_still_passes_the_text_checks() -> None:
     """The gate over its own corpus: more markers than before, and still green.

@@ -408,6 +408,7 @@ def test_scope_binds_start_none_to_the_cwd_at_first_call(
         os.chdir(saved)
 
 
+@pytest.mark.source_scan
 def test_no_aelfrice_module_starts_a_thread_or_task() -> None:
     """Keeps the memo's concurrency caveat latent rather than live.
 

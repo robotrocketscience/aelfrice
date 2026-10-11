@@ -143,6 +143,7 @@ markers = [
     "regression: cumulative integration scenarios run alongside the unit suite",
     "uat: v1.0 acceptance-criteria tests, run as the final pre-tag gate",
     "bench_gated: v2.0 bench-gate harness (#319) — skips when AELFRICE_CORPUS_ROOT is unset",
+    "source_scan: reads src/aelfrice as text; left out of the mutation run (#1746)",
 ]
 
 [tool.pyright]
@@ -196,6 +197,47 @@ also_copy = [
     # directory the #1617 checker refuses is also ignored, so the two
     # lists cannot drift apart.
     ".gitignore",
+    # #1746: `tests/test_docs_truth_1511.py` reads SECURITY.md, and
+    # `tests/test_pyright_ratchet_1503.py` reads the baseline.
+    "SECURITY.md",
+    "pyright_baseline.json",
+]
+
+# #1746: tests that can't pass inside `mutants/`, left out of the mutation run
+# only (the ordinary suite still runs them). mutmut runs the whole suite
+# unmutated first and stops at the first failure, leaving every mutant
+# `not checked`, so one of these takes the whole run to zero.
+#   test_conflict_markers_1491, test_docs_cross_file_anchors_1511 (the
+#     non-vacuous floor): they list tracked files with `git ls-files`.
+#     `mutants/` is an untracked copy, so they find none and fail their floor.
+#   test_block_ceiling_hermetic_home_1716 (the HOME config figures): its
+#     producer runs as a subprocess that imports `mutants/src` and inherits
+#     `MUTANT_UNDER_TEST`, so the stats pass changes the figure it pins.
+#   test_insert_belief_gate (six `test_gate_on_*` cases): the gate names the
+#     module that called `insert_belief`, and under mutmut every call comes
+#     through `mutmut.mutation.trampoline`, so it refuses all of them.
+# Two whole groups are left out as well:
+#   `-m "not source_scan"`: tests that read `src/aelfrice` as text. Inside
+#     `mutants/` they read mutmut's mutated copies, which hold each function
+#     once per mutant, and fail. `tests/source_scan_guard.py` fails any
+#     unmarked test that reads the source, so a new one is caught in the
+#     ordinary suite rather than here.
+#   `tests/e2e`: they run the installed `aelf` in a subprocess, so they can't
+#     kill a mutant, and CI's own pytest job leaves them out the same way.
+# Each mutant's pytest temporary root is removed by `tests/mutation_tmp.py`,
+# not by `tmp_path_retention_policy=none`, which deletes live sessions' roots.
+pytest_add_cli_args = [
+    "-m", "not source_scan",
+    "--ignore", "tests/e2e",
+    "--deselect", "tests/test_conflict_markers_1491.py::test_no_tracked_file_carries_a_marker",
+    "--deselect", "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
+    "--deselect", "tests/test_block_ceiling_hermetic_home_1716.py::test_a_home_config_does_not_move_the_session_start_figures",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_test_module_raises",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_worker_path_passes",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_allowlisted_module_passes",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_benchmark_seed_corpus_passes",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_simulator_populate_store_passes",
+    "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_migrate_passes",
 ]
 
 # `src/aelfrice/__init__.py` is six hand-written lines of package metadata:

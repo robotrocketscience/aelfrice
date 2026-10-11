@@ -100,6 +100,7 @@ def test_l1_hits_takes_no_budget_parameter() -> None:
     assert not any("budget" in p for p in params), sorted(params)
 
 
+@pytest.mark.source_scan
 def test_l25_hits_does_take_a_budget_derived_cap() -> None:
     """The half of the prior claim that is false, pinned so it stays visible.
 

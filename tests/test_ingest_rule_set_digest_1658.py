@@ -352,6 +352,7 @@ def _record_ingest_calls() -> list[tuple[str, int, set[str]]]:
     return calls
 
 
+@pytest.mark.source_scan
 def test_every_record_ingest_call_passes_version_and_digest() -> None:
     """A new writer, or an old one that drops a kwarg, fails here."""
     calls = _record_ingest_calls()

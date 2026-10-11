@@ -407,6 +407,7 @@ def test_retrieve_v2_flag_on_merges_net_new(
 # --- AC5: determinism — no sampling in the lane ---------------------------
 
 
+@pytest.mark.source_scan
 def test_lane_source_has_no_randomness() -> None:
     # AST scan (not a substring grep — the module docstring legitimately
     # mentions "random"/"betavariate" to document their absence). No

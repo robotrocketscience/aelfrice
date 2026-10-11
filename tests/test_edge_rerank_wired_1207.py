@@ -211,6 +211,7 @@ def test_rerank_false_returns_the_raw_expansion(store: MemoryStore) -> None:
     assert raw[_PLAIN] == pytest.approx(done[_PLAIN])
 
 
+@pytest.mark.source_scan
 def test_no_src_caller_disables_the_rerank() -> None:
     """The switch exists for the gate, not for production.
 

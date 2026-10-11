@@ -166,6 +166,7 @@ def _assert_constructing_branches_record(src: str) -> None:
     assert found_any, "found no index-constructing call — did get() move?"
 
 
+@pytest.mark.source_scan
 def test_every_index_constructing_branch_records_an_outcome() -> None:
     """AC2: a test must fail if a branch is added without an outcome.
 
