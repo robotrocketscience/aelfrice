@@ -2881,8 +2881,10 @@ _SHOW_AMBIGUITY_LIST: Final[int] = 10
 def _find_in_user_store(prefix: str, *, limit: int) -> list[Belief]:
     """Beliefs in the user-scope store whose id starts with `prefix` (#1681).
 
-    [] when the store doesn't exist, which this never changes, or when it
-    can't be read, which prints one line to stderr.
+    [] when the store doesn't exist, which this never creates, or when it
+    can't be read, which prints one line to stderr. The database file is
+    opened read-only and never written, though SQLite can create its
+    `-wal` and `-shm` files beside it.
     """
     import sqlite3
 
@@ -2903,6 +2905,33 @@ def _find_in_user_store(prefix: str, *, limit: int) -> list[Belief]:
             file=sys.stderr,
         )
         return []
+
+
+def _resolve_id_across_stores(
+    repo_store: MemoryStore, prefix: str, *, limit: int,
+) -> list[tuple[str, Belief]]:
+    """`(store, belief)` rows an id or id prefix names, in both stores (#1681).
+
+    The repository store comes first, then the user-scope store, which is
+    opened read-only and only if it exists. An exact id wins outright
+    across both stores, as it does within one: when either store has a
+    row whose id equals `prefix`, only exact rows come back, and the same
+    statement locked in both scopes gives one row per store. Otherwise
+    every row in either store whose id starts with `prefix` comes back, at
+    most `limit` per store, so a caller counts candidates over both and
+    never resolves a prefix that two stores share.
+    """
+    rows: list[tuple[str, Belief]] = [
+        ("repo", b)
+        for b in repo_store.find_beliefs_by_id_prefix(prefix, limit=limit)
+    ]
+    rows += [("user", b) for b in _find_in_user_store(prefix, limit=limit)]
+    exact = [(where, b) for where, b in rows if b.id == prefix]
+    return exact if exact else rows
+
+
+def _store_label(where: str) -> str:
+    return f"user ({user_db_path()})" if where == "user" else f"repo ({db_path()})"
 
 
 def _cmd_show(args: argparse.Namespace, out: object) -> int:
@@ -2930,33 +2959,35 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
     scope-id mint and the expired-lock sweep to print one row. Removing
     that cost is filed as its own issue, over every read-only verb
     rather than this one command.
-    """
-    from aelfrice.scoring import posterior_mean
 
+    #1681: the user-scope lock store is searched too, read-only. Candidates
+    are counted across both stores, so a prefix that two stores share is
+    ambiguous; an exact id found in both prints both records.
+    """
     belief_id: str = args.belief_id
     store = open_store_for_read()
     try:
-        matches = store.find_beliefs_by_id_prefix(
-            belief_id, limit=_SHOW_AMBIGUITY_LIST + 1,
+        # #1681: both stores. An injected user lock lives in the user
+        # store, and the same text can also be a repository row with the
+        # same id, so neither store is consulted only as a fallback.
+        scoped = _resolve_id_across_stores(
+            store, belief_id, limit=_SHOW_AMBIGUITY_LIST + 1,
         )
     finally:
         store.close()
-
-    # #1681: an injected user lock lives in the user store. Look there
-    # only when the repository store has no match, read-only, and never
-    # create it.
-    from_user_store = False
-    if not matches:
-        matches = _find_in_user_store(belief_id, limit=_SHOW_AMBIGUITY_LIST + 1)
-        from_user_store = bool(matches)
+    # A `store:` line appears once the user store takes part, on every
+    # record; a repository-only answer prints as it always has.
+    label_stores = any(where == "user" for where, _ in scoped)
+    exact = bool(scoped) and all(b.id == belief_id for _, b in scoped)
+    matches = [b for _, b in scoped]
 
     if not matches:
         print(
             f"aelf show: no belief with id {belief_id!r}", file=sys.stderr,
         )
         return 1
-    if len(matches) > 1:
-        listed = matches[:_SHOW_AMBIGUITY_LIST]
+    if len(matches) > 1 and not exact:
+        listed = scoped[:_SHOW_AMBIGUITY_LIST]
         count = (
             f"more than {_SHOW_AMBIGUITY_LIST}"
             if len(matches) > _SHOW_AMBIGUITY_LIST
@@ -2967,18 +2998,31 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
             f"{count} beliefs start with it",
             file=sys.stderr,
         )
-        for candidate in listed:
-            print(f"  {candidate.id}", file=sys.stderr)
+        for where, candidate in listed:
+            suffix = f" ({where})" if label_stores else ""
+            print(f"  {candidate.id}{suffix}", file=sys.stderr)
         print(
             "aelf show: pass more of the id; this command never guesses.",
             file=sys.stderr,
         )
         return 1
 
-    b = matches[0]
+    # One record, or one exact record per store (repository first), each
+    # separated by a blank line and labelled with its store.
+    for i, (where, b) in enumerate(scoped):
+        if i:
+            print("", file=out)  # type: ignore[arg-type]
+        _print_show_record(b, where if label_stores else None, out)
+    return 0
+
+
+def _print_show_record(b: Belief, where: str | None, out: object) -> None:
+    """One `aelf show` field block; `where` adds the `store:` line."""
+    from aelfrice.scoring import posterior_mean
+
     print(f"belief: {b.id}", file=out)  # type: ignore[arg-type]
-    if from_user_store:
-        print(f"store: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
+    if where is not None:
+        print(f"store: {_store_label(where)}", file=out)  # type: ignore[arg-type]
     print(
         f"status: {'retired' if b.valid_to else 'active'}",
         file=out,  # type: ignore[arg-type]
@@ -3002,7 +3046,6 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
     # read and to parse. Verbatim — `show` exists to undo a truncation.
     print("content:", file=out)  # type: ignore[arg-type]
     print(b.content, file=out)  # type: ignore[arg-type]
-    return 0
 
 
 def _cmd_stale(args: argparse.Namespace, out: object) -> int:
@@ -4305,28 +4348,51 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
               file=sys.stderr)
         return 1
     store = _open_store()
-    # #1681: a user-scope lock is not a row in this store, and feedback
-    # never writes the user store. Say so instead of "belief not found".
-    if (
-        store.get_belief(args.belief_id) is None
-        and any(
-            b.id == args.belief_id
-            for b in _find_in_user_store(args.belief_id, limit=2)
-        )
-    ):
+    # #1681: resolve the id over both stores before writing anything.
+    # Feedback never writes the user store, and an id that names a user
+    # lock is refused even when this store has a row with the same id
+    # (same text, same id): crediting that row would credit a belief the
+    # caller didn't name.
+    scoped = _resolve_id_across_stores(
+        store, args.belief_id, limit=_SHOW_AMBIGUITY_LIST + 1,
+    )
+    exact = bool(scoped) and all(b.id == args.belief_id for _, b in scoped)
+    if len(scoped) > 1 and not exact:
         store.close()
         print(
-            f"feedback error: {args.belief_id} is a user-scope lock; "
-            "feedback doesn't apply to user-scope locks, and the user "
-            "store is never written by feedback. To change it, run "
-            f"`aelf unlock --user {args.belief_id}`.",
+            f"feedback error: ambiguous id {args.belief_id!r}: "
+            f"{len(scoped)} beliefs start with it; pass more of the id.",
+            file=sys.stderr,
+        )
+        for where, candidate in scoped[:_SHOW_AMBIGUITY_LIST]:
+            print(f"  {candidate.id} ({where})", file=sys.stderr)
+        return 1
+    user_rows = [b for where, b in scoped if where == "user"]
+    if user_rows:
+        store.close()
+        target = user_rows[0].id
+        also_repo = any(where == "repo" for where, _ in scoped)
+        what = (
+            "a user-scope lock" if user_rows[0].lock_level == LOCK_USER
+            else "a belief in the user-scope store"
+        )
+        print(
+            f"feedback error: {target} is {what}; feedback doesn't apply "
+            "to user-scope locks, and neither store's database is changed."
+            + (
+                " The repository also has a belief with this id; it was "
+                "left unchanged too."
+                if also_repo else ""
+            )
+            + f" To change the user lock, run `aelf unlock --user {target}`.",
             file=sys.stderr,
         )
         return 1
+    belief_id = scoped[0][1].id if scoped else args.belief_id
     try:
         result = apply_feedback(
             store=store,
-            belief_id=args.belief_id,
+            belief_id=belief_id,
             valence=valence,
             source=args.source,
         )
@@ -4345,16 +4411,16 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         # than printing an "alpha 9.000->9.000" no-op the user has to
         # decode. Exit 0: the event was accepted and audited.
         print(
-            f"recorded {args.signal} for {args.belief_id} but did not move "
+            f"recorded {args.signal} for {belief_id} but did not move "
             "it: the belief carries a user lock, and a lock is ground "
             "truth that passive feedback does not change. To change it, "
-            f"run `aelf unlock {args.belief_id}` first (or `aelf delete` / "
+            f"run `aelf unlock {belief_id}` first (or `aelf delete` / "
             "`aelf demote`), then re-lock the corrected statement.",
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"applied {args.signal} to {args.belief_id}: "
+            f"applied {args.signal} to {belief_id}: "
             f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
             f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
             file=out,  # type: ignore[arg-type]
@@ -4370,7 +4436,7 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         # would otherwise report a posterior move that never happened.
         "feedback.locked_not_applied" if result.skipped_locked
         else "feedback.applied",
-        args.belief_id,
+        belief_id,
         None,
         kind="feedback",
         signal=args.signal,
