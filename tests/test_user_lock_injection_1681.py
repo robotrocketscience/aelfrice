@@ -678,15 +678,14 @@ def test_belief_touches_skip_a_user_lock_that_shares_a_repo_id(
     repo, user = stores
     _seed(repo, [_plain("same", USER_RULE), _plain("p1", "the question tool")])
     _seed(user, [_lock("same", USER_RULE)])
-    out = io.StringIO()
     for i in range(3):
         payload = json.dumps({
             "prompt": f"which question tool do decisions use {i}",
             "session_id": "touch1681", "cwd": str(tmp_path),
         })
-        out = io.StringIO()
         assert user_prompt_submit(
-            stdin=io.StringIO(payload), stdout=out, stderr=io.StringIO(),
+            stdin=io.StringIO(payload), stdout=io.StringIO(),
+            stderr=io.StringIO(),
         ) == 0
     s = MemoryStore(str(repo))
     try:
@@ -870,18 +869,18 @@ def test_feedback_on_a_user_lock_refuses_and_writes_nothing(
 def _count_user_opens(
     monkeypatch: pytest.MonkeyPatch, user: Path,
 ) -> list[str]:
-    import aelfrice.store as store_mod
-
     opens: list[str] = []
-    real = store_mod.MemoryStore
 
-    class _Counting(real):  # type: ignore[valid-type, misc]
+    class _Counting(MemoryStore):
         def __init__(self, path: str, **kw: object) -> None:
             if path == str(user):
                 opens.append(path)
             super().__init__(path, **kw)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(store_mod, "MemoryStore", _Counting)
+    # By dotted path: `read_user_locks` imports the name from
+    # `aelfrice.store` when it runs, and the module-level `MemoryStore`
+    # above stays the real class for seeding.
+    monkeypatch.setattr("aelfrice.store.MemoryStore", _Counting)
     return opens
 
 
