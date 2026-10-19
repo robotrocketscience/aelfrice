@@ -57,6 +57,15 @@ USER_SCOPE_VALUE: Final[str] = "user"
 # reads the L0 set more than once per fire warns once.
 _WARNED: set[str] = set()
 
+# Locks last read from each user-store path, keyed by the file signature
+# they were read at. One hook fire can build the L0 set more than once
+# (the first prompt's `<locked>` section and its retrieval; the compact
+# SessionStart's baseline and its rebuild), and the store is opened once.
+# Any write moves the signature: the database file or its `-wal` sidecar
+# changes size, mtime, or inode.
+_FileSig = tuple[int, int, int]
+_CACHE: dict[str, tuple[tuple[_FileSig | None, _FileSig | None], list[Belief]]] = {}
+
 
 def is_user_scope_lock(b: object) -> bool:
     """Whether `b` was read from the user-scope lock store."""
@@ -91,6 +100,24 @@ def _warn_once(path: Path, exc: BaseException, stderr: IO[str] | None) -> None:
     )
 
 
+def _file_sig(p: Path) -> _FileSig | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _store_sig(path: Path) -> tuple[_FileSig | None, _FileSig | None]:
+    # An empty `-wal` holds no pages, so it reads the same as no `-wal`.
+    # The read-only open itself leaves an empty one behind; without this
+    # the first read would invalidate its own cache entry.
+    wal = _file_sig(Path(f"{path}-wal"))
+    if wal is not None and wal[1] == 0:
+        wal = None
+    return (_file_sig(path), wal)
+
+
 def read_user_locks(
     repo_db_path: str | None = None,
     *,
@@ -105,6 +132,9 @@ def read_user_locks(
 
     `now` is the ISO-8601 UTC instant the expiry filter compares against;
     it defaults to the wall clock, read once.
+
+    The store is opened once per process for as long as the file is
+    unchanged (`_CACHE`); the expiry filter runs on every call.
     """
     from aelfrice.db_paths import user_db_path  # noqa: PLC0415
     from aelfrice.store import (  # noqa: PLC0415
@@ -117,26 +147,36 @@ def read_user_locks(
         return []
     if repo_db_path is not None and _same_file(path, repo_db_path):
         return []
-    try:
-        store = MemoryStore(str(path), project_context_default="", read_only=True)
+    key = str(path)
+    sig = _store_sig(path)
+    cached = _CACHE.get(key)
+    if cached is not None and cached[0] == sig:
+        rows = cached[1]
+    else:
         try:
-            rows = store.list_locked_beliefs()
-        finally:
-            store.close()
-    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
-        _warn_once(path, exc, stderr)
-        return []
+            store = MemoryStore(
+                str(path), project_context_default="", read_only=True,
+            )
+            try:
+                rows = [
+                    b for b in store.list_locked_beliefs()
+                    if b.lock_level == LOCK_USER
+                ]
+            finally:
+                store.close()
+        except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
+            _CACHE.pop(key, None)
+            _warn_once(path, exc, stderr)
+            return []
+        for b in rows:
+            setattr(b, USER_SCOPE_ATTR, USER_SCOPE_VALUE)
+        _CACHE[key] = (sig, rows)
     ts = now if now is not None else datetime.now(timezone.utc).isoformat()
-    out: list[Belief] = []
-    for b in rows:
-        if b.lock_level != LOCK_USER:
-            continue
-        # The #1314 sweep's predicate, inverted: due when at or before now.
-        if b.lock_expires_at is not None and b.lock_expires_at <= ts:
-            continue
-        setattr(b, USER_SCOPE_ATTR, USER_SCOPE_VALUE)
-        out.append(b)
-    return out
+    # The #1314 sweep's predicate, inverted: due when at or before now.
+    return [
+        b for b in rows
+        if b.lock_expires_at is None or b.lock_expires_at > ts
+    ]
 
 
 def merge_lock_sets(
