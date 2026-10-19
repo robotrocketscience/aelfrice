@@ -4611,7 +4611,13 @@ def _emit_core(
                 "corroboration_count": b.corroboration_count,  # type: ignore[attr-defined]
                 "signals": sorted(set(signals)),
             }
-            label = gl.get(b.content_hash)  # type: ignore[attr-defined]
+            # #1681: no label for a user lock. The labels are keyed by the
+            # repository store's content hashes, so a lookup would show the
+            # label of a repository belief that only shares its text.
+            label = (
+                None if is_user_scope_lock(b)
+                else gl.get(b.content_hash)  # type: ignore[attr-defined]
+            )
             if label is not None:
                 row["core_gate_label"] = label
             # #1681: as `aelf locked --json` and `aelf search --json` do.
