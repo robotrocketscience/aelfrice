@@ -6,4 +6,4 @@
   - **Listing and unlocking:** `aelf locked` lists both scopes, repository locks first, and tags each user lock `[user]`. The new `aelf locked --json` gives every row a `scope` field. `aelf unlock --user <id>` unlocks a user lock.
   - **Store creation:** only `aelf lock --user` creates the user store. `aelf locked` and `aelf unlock --user` never create it.
   - **Uninstall:** `aelf uninstall` keeps `~/.aelfrice/user/` in every mode, as it keeps `projects/` and `shared/`, because every repository reads it.
-  - **Not yet injected:** a user lock is stored but doesn't reach prompts yet. Injection lands in a follow-up change, and so does a command that promotes a repository lock to user scope.
+  - **Injection:** see the entry on injecting user locks. A command that promotes a repository lock to user scope lands in a follow-up change.

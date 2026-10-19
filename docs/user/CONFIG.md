@@ -1350,7 +1350,7 @@ A user-scope lock, written with `aelf lock --user`, lives in a store that every 
 
 If `AELFRICE_USER_DB` and the repository store name the same file, `aelf lock --user` and `aelf unlock --user` refuse to run, and `aelf locked` lists that file's locks once, as repository locks.
 
-User locks are stored but not yet injected into prompts.
+The hooks open the user store read-only, next to the repository store, and never create it. If the user store is missing, the hooks inject the repository locks only. If the user store exists but can't be opened or read, the hooks print one warning to stderr and inject the repository locks only.
 
 ## When changes apply
 
