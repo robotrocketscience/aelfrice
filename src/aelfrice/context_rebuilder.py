@@ -88,6 +88,7 @@ from aelfrice.retrieval import (
 )
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
+from aelfrice.user_locks import merge_lock_sets, read_user_locks
 
 # Re-exported, not re-implemented (#1527). The rebuilder config and the
 # phase-1a rebuild_log moved into `aelfrice.rebuild_log`, a module that imports
@@ -296,7 +297,12 @@ def rebuild_v14(
         use_type_aware_compression,
     )
 
-    locked: list[Belief] = store.list_locked_beliefs()
+    # #1681: the L0 set includes user-scope locks. Read them once and hand
+    # the same list to `retrieve()`, so both see one set.
+    user_locks = read_user_locks(store.db_path)
+    locked: list[Belief] = merge_lock_sets(
+        store.list_locked_beliefs(), user_locks,
+    )
     locked_ids: set[str] = {b.id for b in locked}
 
     sid = _latest_session_id(recent_turns)
@@ -317,6 +323,7 @@ def rebuild_v14(
         # topic, so budget them at manifest size too (byte-identical until
         # a lock is demoted to reference).
         manifest_reference_locks=True,
+        user_locks=user_locks,
     )
     # Drop L0 from retrieved (we'll prepend our own copy).
     non_locked_hits: list[Belief] = [

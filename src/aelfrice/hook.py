@@ -4522,10 +4522,17 @@ def _record_injection_events(
             if store is None:
                 return
             # #1135: one commit for the batch instead of one per event.
+            from aelfrice.user_locks import (  # noqa: PLC0415
+                is_user_scope_lock,
+            )
             with store.transaction():
                 for h in hits:
                     bid = getattr(h, "id", None)
                     if not bid:
+                        continue
+                    # #1681: a user lock has no row in this store, and the
+                    # foreign key would fail the whole batch.
+                    if is_user_scope_lock(h):
                         continue
                     store.record_injection_event(
                         session_id=session_id,
@@ -6248,8 +6255,13 @@ def _build_session_start_subblock(
     SessionStart hook fires under. Tests pass a tmp_path explicitly.
 
     Returns "" when all sections are empty (nothing to inject).
+
+    `<locked>` carries the user-scope locks too (#1681), after the
+    repository's, in the order `user_locks.l0_lock_set` gives.
     """
-    locked = store.list_locked_beliefs()
+    from aelfrice.user_locks import l0_lock_set  # noqa: PLC0415
+
+    locked = l0_lock_set(store)
     locked_ids: set[str] = {b.id for b in locked}
 
     core_candidates: list[Belief] = []

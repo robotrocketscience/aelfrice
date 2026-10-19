@@ -192,8 +192,13 @@ def record_retrieval(
     disagree about when the retrieval happened. Callers may pass `now`
     to stamp a whole batch at a caller-chosen instant.
     """
+    from aelfrice.user_locks import is_user_scope_lock  # noqa: PLC0415
+
     serr: IO[str] = stderr if stderr is not None else sys.stderr
     update_posterior: bool = _exposure_updates_posterior()
+    # #1681: a user-scope lock lives in the user store, not this one, so
+    # it has no row here to record an exposure against.
+    beliefs = [b for b in beliefs if not is_user_scope_lock(b)]
     stamped_at: str = now if now is not None else _utc_now_iso()
     written: int = 0
     stamped_ids: list[str] = []

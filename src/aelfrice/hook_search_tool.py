@@ -980,7 +980,14 @@ def _do_search(
     )
     store = MemoryStore(str(p))
     try:
-        locked = store.list_locked_beliefs()
+        # #1681: user-scope locks are L0 here too. Read once and passed to
+        # `retrieve()`, so the `[L0]` tag and the packed set agree.
+        from aelfrice.user_locks import (  # noqa: PLC0415
+            merge_lock_sets,
+            read_user_locks,
+        )
+        user_locks = read_user_locks(store.db_path)
+        locked = merge_lock_sets(store.list_locked_beliefs(), user_locks)
         locked_ids = {b.id for b in locked}
         beliefs = retrieve(
             store,
@@ -994,6 +1001,7 @@ def _do_search(
             # PER_LINE_CHAR_CAP, not `<belief …>`, so it charges its own
             # line. See `_belief_line_cost`.
             belief_cost_fn=_belief_line_cost,
+            user_locks=user_locks,
         )
     finally:
         store.close()
