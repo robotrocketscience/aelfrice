@@ -2210,7 +2210,7 @@ def _write_promoted_copy(
         derived_ids = entry.get("derived_belief_ids") if entry is not None else None
         if not isinstance(derived_ids, list) or not derived_ids:
             raise _PromoteWriteError("derivation produced no belief")
-        actual_id = str(derived_ids[0])
+        actual_id = str(cast("list[object]", derived_ids)[0])
         row = store.get_belief(actual_id, include_retired=True)
         if row is None:
             raise _PromoteWriteError(f"{actual_id} was not written")
