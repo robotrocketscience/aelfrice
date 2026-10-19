@@ -2088,9 +2088,13 @@ def _user_scope_conflict_message(command: str) -> str:
     )
 
 
-def _open_lock_store(user_scope: bool) -> MemoryStore:
-    """The store a lock write goes to: the user store or the repo store."""
-    return open_user_store() if user_scope else _open_store()
+def _open_lock_store(user_scope: bool) -> MemoryStore | None:
+    """The store a lock write goes to: the user store or the repo store.
+
+    None when the user store can't be opened or created, after one
+    stderr line (`_open_user_store_or_report`).
+    """
+    return _open_user_store_or_report("lock") if user_scope else _open_store()
 
 
 # `lock --promote-user` flags the copy can't honour (#1681): the copy
@@ -2450,6 +2454,8 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     # window, the near-duplicate check — runs against whichever store
     # this returns.
     store = _open_lock_store(user_scope)
+    if store is None:
+        return 1
     if user_scope and _user_store_is_repo_store():
         # The user store did not exist at the first check, so only the
         # paths were compared. Now that it exists, the check compares
