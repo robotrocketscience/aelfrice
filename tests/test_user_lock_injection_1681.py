@@ -1102,6 +1102,27 @@ def test_sentiment_skips_a_user_lock_that_shares_a_repo_id(
 # --- a locked user store doesn't stall the hooks ---------------------------------
 
 
+def _record_user_connect_timeouts(
+    monkeypatch: pytest.MonkeyPatch, user: Path,
+) -> list[object]:
+    """The `timeout` each SQLite connect to the user store was opened with.
+
+    A counting check rather than a wall-clock one: what bounds the wait on
+    a locked store is the timeout the connection is opened with, and
+    reading it back does not depend on machine load.
+    """
+    seen: list[object] = []
+    real_connect = sqlite3.connect
+
+    def _connect(database: object, *args: object, **kwargs: object) -> object:
+        if str(user) in str(database):
+            seen.append(kwargs.get("timeout"))
+        return real_connect(database, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
+    return seen
+
+
 def _hold_exclusive(user: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(user), isolation_level=None)
     conn.execute("PRAGMA journal_mode=DELETE")
@@ -1112,32 +1133,30 @@ def _hold_exclusive(user: Path) -> sqlite3.Connection:
 @pytest.mark.timeout(60)
 def test_a_locked_user_store_fails_fast_and_once(
     stores: tuple[Path, Path], tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import time
-
     repo, user = stores
     _seed(repo, [_lock("r1", REPO_RULE)])
     _seed(user, [_lock("u1", USER_RULE)])
     holder = _hold_exclusive(user)
     try:
+        timeouts = _record_user_connect_timeouts(monkeypatch, user)
         err = io.StringIO()
         out = io.StringIO()
         payload = json.dumps({
             "prompt": "which tool do questions go through",
             "session_id": "busy1681", "cwd": str(tmp_path),
         })
-        t0 = time.monotonic()
         assert user_prompt_submit(
             stdin=io.StringIO(payload), stdout=out, stderr=err,
         ) == 0
         ids = _retrieve_ids(repo)
-        elapsed = time.monotonic() - t0
     finally:
         holder.rollback()
         holder.close()
-    # Before: each of three reads waited the 5 s busy timeout (~15 s).
-    assert elapsed < 3.0, elapsed
+    # One attempt for the whole process, opened with the short timeout.
+    # Before: three attempts, each waiting the 5 s default.
+    assert timeouts == [ul.USER_STORE_BUSY_TIMEOUT_MS / 1000.0]
     assert ids == ["r1"]
     assert 'id="r1"' in out.getvalue() and 'id="u1"' not in out.getvalue()
     warnings = [ln for ln in err.getvalue().splitlines() if "user lock store" in ln]
@@ -1296,10 +1315,8 @@ def test_refusal_names_unlock_only_for_a_lock(
 @pytest.mark.parametrize("lane", ["session_start", "search_tool", "agent_context"])
 def test_each_hook_warns_about_a_locked_user_store_on_its_own_stderr(
     lane: str, stores: tuple[Path, Path], tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import time
-
     from aelfrice import hook_agent_context, hook_search_tool
 
     repo, user = stores
@@ -1308,7 +1325,7 @@ def test_each_hook_warns_about_a_locked_user_store_on_its_own_stderr(
     err = io.StringIO()
     holder = _hold_exclusive(user)
     try:
-        t0 = time.monotonic()
+        timeouts = _record_user_connect_timeouts(monkeypatch, user)
         if lane == "session_start":
             session_start(
                 stdin=io.StringIO(json.dumps({"session_id": "ss-busy"})),
@@ -1333,11 +1350,10 @@ def test_each_hook_warns_about_a_locked_user_store_on_its_own_stderr(
                 })),
                 stdout=io.StringIO(), stderr=err,
             )
-        elapsed = time.monotonic() - t0
     finally:
         holder.rollback()
         holder.close()
-    assert elapsed < 3.0, elapsed
+    assert timeouts == [ul.USER_STORE_BUSY_TIMEOUT_MS / 1000.0]
     warnings = [ln for ln in err.getvalue().splitlines() if "user lock store" in ln]
     assert len(warnings) == 1, err.getvalue()
     assert "user lock store" not in capsys.readouterr().err
