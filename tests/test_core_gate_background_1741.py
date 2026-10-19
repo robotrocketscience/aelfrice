@@ -350,6 +350,19 @@ def test_runner_env_is_its_own_session(entrypoint: str | None, expected: str) ->
     assert env["PATH"] == "/x"
 
 
+def test_a_spawn_failure_is_logged_even_when_stderr_is_closed(tmp_path: Path) -> None:
+    """Killed by: printing before logging, or letting a closed stream raise."""
+    err = io.StringIO()
+    err.close()
+    store_path = str(tmp_path / "memory.db")
+    bg.report_spawn_failure(store_path, "widgetbatch", err)
+    (rec,) = [
+        json.loads(x)
+        for x in (tmp_path / bg.LOG_FILENAME).read_text(encoding="utf-8").splitlines()
+    ]
+    assert rec["outcome"] == bg.OUTCOME_SPAWN_FAILED
+
+
 def _open_batch(db: Path, ids: list[str], *, version: str | None = None) -> tuple[MemoryStore, str]:
     store = MemoryStore(str(db))
     batch_id = store.create_core_gate_batch(

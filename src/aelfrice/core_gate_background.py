@@ -394,14 +394,19 @@ def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
 def report_spawn_failure(store_path: str, batch_id: str, stderr: IO[str]) -> None:
     """One line to the hook's stderr, and one log record, when `spawn` fails.
 
-    The batch stays open, as it does after a failed run.
+    The batch stays open, as it does after a failed run. The record is
+    written first, and a stderr that can't be written to is ignored, so
+    neither stops the other or raises into the hook.
     """
-    print(
-        f"aelfrice hook: could not start background core-gate labeling for "
-        f"batch {batch_id}; `aelf doctor core-gate --emit` batches its beliefs again",
-        file=stderr,
-    )
     _append_log(store_path, {"batch_id": batch_id, "outcome": OUTCOME_SPAWN_FAILED})
+    try:
+        print(
+            f"aelfrice hook: could not start background core-gate labeling for "
+            f"batch {batch_id}; `aelf doctor core-gate --emit` batches its beliefs again",
+            file=stderr,
+        )
+    except (OSError, ValueError):
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
