@@ -2075,8 +2075,167 @@ def _open_lock_store(user_scope: bool) -> MemoryStore:
     return open_user_store() if user_scope else _open_store()
 
 
+# `lock --promote-user` flags the copy can't honour (#1681): the copy
+# carries the repository lock's tier and window, and the user store has
+# no document anchors or categories.
+_PROMOTE_USER_REJECTED_LOCK_FLAGS: Final[tuple[tuple[str, str, str], ...]] = (
+    *_USER_SCOPE_REJECTED_LOCK_FLAGS,
+    (
+        "lock_tier", "--reference/--frozen",
+        "the copy keeps the repository lock's tier",
+    ),
+    (
+        "lock_for", "--for",
+        "the copy keeps the repository lock's expiry",
+    ),
+    (
+        "lock_until", "--until",
+        "the copy keeps the repository lock's expiry",
+    ),
+)
+
+
+def _read_user_lock_pairs() -> list[tuple[str, str]]:
+    """`(id, content)` of the user store's active, unexpired locks.
+
+    [] when the store doesn't exist; never creates it. Raises what the
+    read-only open or the read raises, so the caller can refuse rather
+    than add a second copy it couldn't check for.
+    """
+    from aelfrice.user_locks import open_user_store_for_read
+
+    ustore = open_user_store_for_read()
+    if ustore is None:
+        return []
+    try:
+        locks = ustore.list_locked_beliefs()
+    finally:
+        ustore.close()
+    now = datetime.now(timezone.utc).isoformat()
+    return [
+        (b.id, b.content) for b in locks
+        if b.lock_level == LOCK_USER
+        and (b.lock_expires_at is None or b.lock_expires_at > now)
+    ]
+
+
+def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
+    """`aelf lock --promote-user <id>`: copy a repository lock to the user store.
+
+    #1681, operator ruling Q4: a copy. The repository lock is left as it
+    is, and nothing merges automatically. The id is exact, as `unlock`
+    and `feedback` take it. The copy goes through the `aelf lock --user`
+    write path with the repository lock's text, tier, and expiry, so it
+    is the same row `aelf lock --user "<text>"` would write, and the same
+    `belief.locked` feed event, tagged `"scope": "user"` and
+    `"promoted_from": <id>`.
+
+    Refused, with nothing opened for writing: a flag the copy can't
+    honour, a user store that is the repository store, an id that isn't
+    an active, unexpired repository lock, and an unreadable user store.
+    A user lock with the same id, or one the L0 merge would treat as a
+    near-duplicate, means the statement is already in user scope: that is
+    said, nothing is written, and the exit is 0.
+    """
+    import sqlite3
+
+    from aelfrice.dedup import near_duplicate_locks_among
+
+    for attr, flag, why in _PROMOTE_USER_REJECTED_LOCK_FLAGS:
+        if getattr(args, attr, None):
+            print(
+                f"aelf lock: {flag} cannot be used with --promote-user: {why}.",
+                file=sys.stderr,
+            )
+            return 1
+    if _user_store_is_repo_store():
+        print(_user_scope_conflict_message("lock --promote-user"), file=sys.stderr)
+        return 1
+    belief_id: str = args.statement
+    store = open_store_for_read()
+    try:
+        b = store.get_belief(belief_id)
+    finally:
+        store.close()
+    if b is None:
+        print(
+            f"aelf lock --promote-user: no belief with id {belief_id!r} in "
+            f"the repository store ({db_path()}). Pass the full id, as "
+            "`aelf locked` prints it.",
+            file=sys.stderr,
+        )
+        return 1
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if b.lock_level != LOCK_USER or (
+        b.lock_expires_at is not None and b.lock_expires_at <= now_iso
+    ):
+        print(
+            f"aelf lock --promote-user: {belief_id} is not a repository "
+            "lock; only a locked belief can be promoted. Run `aelf locked` "
+            "to list the locks.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        user_pairs = _read_user_lock_pairs()
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
+        print(
+            f"aelf lock --promote-user: cannot read the user lock store at "
+            f"{user_db_path()}: {exc}; nothing was copied.",
+            file=sys.stderr,
+        )
+        return 1
+    same_id = [uid for uid, _ in user_pairs if uid == belief_id]
+    # The L0 merge's direction: a user lock's text against the
+    # repository lock, so "near-duplicate" means here what it means there.
+    dups = same_id or [
+        uid for uid, ucontent in user_pairs
+        if near_duplicate_locks_among([(b.id, b.content)], ucontent)
+    ]
+    if dups:
+        what = (
+            "has a lock with the same id" if same_id
+            else f"has a near-duplicate lock: {', '.join(dups)}"
+        )
+        print(
+            f"not promoted: the user store ({user_db_path()}) already "
+            f"{what}. Nothing was added.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+    print(
+        f"promoting repository lock {belief_id} to the user store",
+        file=out,  # type: ignore[arg-type]
+    )
+    copy_args = argparse.Namespace(
+        statement=b.content,
+        session_id=getattr(args, "session_id", None),
+        doc_uri=None,
+        category=None,
+        lock_tier=b.lock_tier,
+        lock_for=None,
+        lock_until=b.lock_expires_at,
+        user_scope=True,
+        promote_user=False,
+        promoted_from=belief_id,
+    )
+    rc = _cmd_lock(copy_args, out)
+    if rc != 0:
+        return rc
+    print(
+        f"  the repository lock {belief_id} is unchanged; while it is "
+        f"locked, this repository injects it in place of the user copy. "
+        f"To drop it, run `aelf unlock {belief_id}`.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     from aelfrice.lock_expiry import LockExpiryError, parse_for, parse_until
+
+    if getattr(args, "promote_user", False):
+        return _cmd_lock_promote_user(args, out)
 
     # #1681: refuse a flag the user scope cannot honour BEFORE anything is
     # resolved or opened, so a rejected command writes nothing.
@@ -2150,6 +2309,10 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         print(_user_scope_conflict_message("lock"), file=sys.stderr)
         return 1
     feed_scope: dict[str, object] = {"scope": "user"} if user_scope else {}
+    promoted_from = getattr(args, "promoted_from", None)
+    if promoted_from is not None:
+        # #1681: `lock --promote-user` names the repository lock it copied.
+        feed_scope["promoted_from"] = promoted_from
     try:
         now = _utc_now_iso(now_dt)
         sid = resolve_session_id(
@@ -9760,7 +9923,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_rebuild.set_defaults(func=_cmd_rebuild)
 
     p_lock = sub.add_parser("lock", help="insert (or upgrade) a user-locked belief")
-    p_lock.add_argument("statement", help="belief text to lock as ground truth")
+    p_lock.add_argument(
+        "statement",
+        help=(
+            "belief text to lock as ground truth; with --promote-user, "
+            "the id of the repository lock to copy"
+        ),
+    )
     p_lock.add_argument(
         "--id", dest="session_id", default=None,
         help=(
@@ -9835,6 +10004,19 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "$AELFRICE_USER_DB. Without it, the lock goes to this "
             "repository's store. Cannot be combined with --doc or "
             "--category. User locks are injected in every repository."
+        ),
+    )
+    p_lock.add_argument(
+        "--promote-user", dest="promote_user", action="store_true",
+        default=False,
+        help=(
+            "copy the repository lock whose exact id is given in place of "
+            "the statement into the user-scope store (#1681). The "
+            "repository lock is left as it is, and the copy keeps its "
+            "tier and expiry. Nothing is added when the user store "
+            "already has the same id or a near-duplicate. Cannot be "
+            "combined with --doc, --category, --reference, --frozen, "
+            "--for, or --until."
         ),
     )
     p_lock.set_defaults(func=_cmd_lock)
