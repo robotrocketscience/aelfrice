@@ -100,3 +100,54 @@ def test_each_hook_parses_under_its_own_interpreter(path: Path) -> None:
         [shell, "-n", str(path)], capture_output=True, text=True, timeout=30
     )
     assert r.returncode == 0, f"{path.name} is not valid {shell}:\n{r.stderr}"
+
+
+def _vocab_filter() -> tuple[str, str, list[str]]:
+    """The installer's `BANNED_VOCAB`, `ALLOWED_VOCAB_LINE`, and `vocab_hits`
+    definitions as shell source, the allowed line, and the banned words.
+
+    Read from the installer rather than spelled here, so this file carries
+    none of the words the hook bans.
+    """
+    lines = _INSTALLER.read_text(encoding="utf-8").splitlines()
+    vocab = next(ln for ln in lines if ln.startswith("BANNED_VOCAB="))
+    allowed = next(ln for ln in lines if ln.startswith("ALLOWED_VOCAB_LINE="))
+    start = lines.index("vocab_hits() {")
+    func = lines[start:lines.index("}", start) + 1]
+    words = vocab.split("(", 1)[1].split(")", 1)[0].split("|")
+    allowed_line = allowed.split("=", 1)[1][1:-1]
+    return "\n".join([vocab, allowed, *func]), allowed_line, words
+
+
+def _hits(source: str, diff: str) -> list[str]:
+    r = subprocess.run(
+        ["bash", "-c", source + "\nvocab_hits"],
+        input=diff, capture_output=True, text=True, timeout=20, check=True,
+    )
+    return r.stdout.splitlines()
+
+
+@pytest.mark.timeout(30)
+def test_only_the_whole_allowed_line_passes_the_vocabulary_check() -> None:
+    """Killed by: dropping the filter, matching the allowed line as a
+    substring, or letting it exempt the word anywhere else (#1741)."""
+    source, allowed, words = _vocab_filter()
+    word = allowed.split('"')[1]
+    assert word.lower() in (w.lower() for w in words)
+    assert _hits(source, f"{allowed}\n context\n") == []
+    # The same word anywhere else is still caught: a longer line that
+    # contains the allowed one, another assignment, and the allowed line
+    # behind a second `+`.
+    for line in (f"{allowed}  # x", f"+x = {word!r}", f"+{allowed}"):
+        assert len(_hits(source, line + "\n")) == 1, line
+    # Other banned words are unaffected.
+    assert len(_hits(source, f"+{words[0]}\n")) == 1
+
+
+@pytest.mark.timeout(30)
+def test_the_diff_vocabulary_check_uses_the_filter() -> None:
+    """Killed by: a diff check that greps `BANNED_VOCAB` directly again."""
+    text = _INSTALLER.read_text(encoding="utf-8")
+    block = text[text.index("bad_vocab=$(git diff"):text.index('if [ -n "$bad_vocab" ]')]
+    assert "| vocab_hits)" in block
+    assert "BANNED_VOCAB" not in block

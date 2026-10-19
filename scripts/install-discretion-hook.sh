@@ -81,6 +81,16 @@ BANNED_PATHS='^(tests/corpus/v2_0/.+\.jsonl|\.claude/|\.gemini/|\.codex/|\.plann
 # Word boundaries are intentional to avoid blocking on substrings like "claude.md".
 BANNED_VOCAB='\b(Setr|Kulili|Gylf|Sonnet|Opus|Haiku|Anthropic|Claude Code|parallel session|rook.tier|queen.tier|delegate to (Sonnet|Haiku)|Agent tool|Generated with \[Claude Code\])\b'
 
+# The one added line that may carry a banned word, by operator ruling. It
+# matches only as a whole line, so every other use stays blocked.
+# #1741: the CLI model alias the background core-gate labeler runs.
+ALLOWED_VOCAB_LINE='+RUNNER_MODEL: Final[str] = "haiku"'
+
+# Reads a diff on stdin; prints the added lines that carry banned vocabulary.
+vocab_hits() {
+    grep -E '^\+' | grep -vxF -e "$ALLOWED_VOCAB_LINE" | grep -niE "$BANNED_VOCAB" || true
+}
+
 # Banned phrases from ~/.claude/CLAUDE.md — multi-word fragments that indicate
 # fixture/corpus content was seeded from the user's private global instructions.
 # Added 2026-05-11 after PR #673 fixture leak (paraphrase of two-repo workflow
@@ -138,9 +148,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # Check 2: banned vocabulary in diff content.
     bad_vocab=$(git diff "$range" -- . ':(exclude)CLAUDE.md' ':(exclude).gitleaks*.toml' \
         ':(exclude)scripts/install-discretion-hook.sh' \
-        | grep -E '^\+' \
-        | grep -niE "$BANNED_VOCAB" \
-        || true)
+        | vocab_hits)
     if [ -n "$bad_vocab" ]; then
         echo "" >&2
         echo "PRE-PUSH BLOCKED: banned vocabulary in diff for $local_ref" >&2
