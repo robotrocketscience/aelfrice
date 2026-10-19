@@ -694,13 +694,12 @@ def run_boxed(
     mutmut forks a worker is swallowed. Then every `.meta` that a signal
     truncated is put back from its last copy.
 
-    If this process is itself interrupted (the job is cancelled, or the
-    caller sends SIGTERM, which `main` turns into an exception), it stops
-    the command the same way and repairs the files before re-raising.
-    Once that stop begins, SIGINT and SIGTERM are ignored until the repair
-    is done: GitHub's cancel sends SIGINT and then SIGTERM about 7.5
-    seconds later, inside the grace period, and the second signal must
-    not cut the stop short.
+    If this process is itself interrupted (SIGINT, or SIGTERM, which
+    `main` turns into an exception), it stops the command the same way and
+    repairs the files before re-raising. Once that stop begins, SIGINT and
+    SIGTERM are ignored until the repair is done, so a second signal can't
+    cut it short. GitHub's cancel doesn't reach this process: the runner
+    signals only the step's shell, then ends the job.
     """
     snapshots = MetaSnapshots(meta_root, store)
     deadline = clock() + box_s
@@ -718,12 +717,14 @@ def run_boxed(
                 returncode, killed = _stop(proc, grace_s)
                 break
     except BaseException:
-        held = _ignore_stop_signals()
+        held: dict[signal.Signals, Any] = {}
         try:
+            _ignore_stop_signals(held)
             _stop(proc, grace_s)
         finally:
-            # Also when a signal landed before the handlers were swapped:
-            # the group still gets its SIGKILL and the files their repair.
+            # Also when a signal lands while the handlers are swapped, or
+            # `_stop` raises: the group still gets its SIGKILL, the files
+            # their repair, and each swapped handler is put back.
             try:
                 _signal_group(proc, signal.SIGKILL)
                 _reap(proc, None)
@@ -735,23 +736,23 @@ def run_boxed(
     return RunResult(returncode, timed_out, killed, restored, removed)
 
 
-#: The signals a cancelled job sends this process.
+#: The signals that stop this process early.
 _STOP_SIGNALS: Final[tuple[signal.Signals, ...]] = (signal.SIGINT, signal.SIGTERM)
 
 
-def _ignore_stop_signals() -> dict[signal.Signals, Any]:
-    """Ignore SIGINT and SIGTERM; the handlers they had, to restore.
+def _ignore_stop_signals(held: dict[signal.Signals, Any]) -> None:
+    """Ignore SIGINT and SIGTERM, recording in `held` the handler each had.
 
-    Empty off the main thread, where Python can't change handlers.
+    Each handler is recorded before it is replaced, so a signal that
+    interrupts the swap leaves `held` able to undo it. Nothing changes off
+    the main thread, where Python can't set handlers.
     """
-    held: dict[signal.Signals, Any] = {}
     try:
         for sig in _STOP_SIGNALS:
-            held[sig] = signal.signal(sig, signal.SIG_IGN)
+            held[sig] = signal.getsignal(sig)
+            signal.signal(sig, signal.SIG_IGN)
     except ValueError:
-        _restore_signals(held)
-        return {}
-    return held
+        held.clear()
 
 
 def _restore_signals(held: Mapping[signal.Signals, Any]) -> None:

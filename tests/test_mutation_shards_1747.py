@@ -551,6 +551,37 @@ def test_an_interrupted_supervisor_stops_the_run_and_repairs_first(
     assert json.loads(before)["exit_code_by_key"]["m"] >= 1
 
 
+@_SUPERVISED
+def test_a_stop_that_fails_still_kills_the_group_and_restores_handlers(
+    sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: leaving the final SIGKILL to `_stop` alone, or not putting
+    the signal handlers back when the stop raises."""
+    command, meta_root = _writer(tmp_path, "run")
+    calls = iter(range(1000))
+
+    def clock() -> float:
+        if next(calls) == 20:
+            raise KeyboardInterrupt
+        return 0.0
+
+    def broken_stop(proc: Any, grace_s: float) -> tuple[int, bool]:
+        raise RuntimeError("widget")
+
+    monkeypatch.setattr(sh, "_stop", broken_stop)
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    with pytest.raises(RuntimeError, match="widget"):
+        sh.run_boxed(
+            command, box_s=60, grace_s=10, every_s=0.05,
+            meta_root=meta_root, store=tmp_path / "copies", clock=clock,
+        )
+    meta = meta_root / "src" / "a.py.meta"
+    still = meta.read_bytes()
+    time.sleep(0.2)
+    assert meta.read_bytes() == still, "the command still runs after a failed stop"
+    assert {sig: signal.getsignal(sig) for sig in before} == before
+
+
 class _HeldLockPopen(subprocess.Popen[bytes]):
     """A `Popen` whose wait lock is already held, as CPython 3.12 leaves it
     when a KeyboardInterrupt lands between `_wait`'s acquire and its `try`."""
@@ -610,9 +641,9 @@ def _parses(path: Path) -> bool:
 
 @pytest.mark.timeout(60)
 def test_a_second_signal_during_the_stop_cannot_cut_it_short(tmp_path: Path) -> None:
-    """GitHub's cancel sends SIGINT, then SIGTERM about 7.5 s later, inside
-    the grace period. The SIGTERM must not skip the final SIGKILL or the
-    repair of the `.meta` the SIGINT truncated."""
+    """A SIGINT to the supervisor, then a SIGTERM inside the grace period.
+    The SIGTERM must not skip the final SIGKILL or the repair of the
+    `.meta` the SIGINT truncated."""
     command, meta_root = _writer(tmp_path, "truncate-and-hang")
     meta = meta_root / "src" / "a.py.meta"
     pid_file = meta_root / "src" / "a.py.meta.pid"
