@@ -17,7 +17,7 @@ The visible CLI verbs `migrate`, `sweep-feedback`, and `scan-derivation` are als
 | `/aelf:onboard` | the path to the project directory |
 | `/aelf:search` | a keyword query |
 | `/aelf:show` | a belief id, or a prefix of one that exactly one belief starts with. Prints that belief: the content in full, and the origin, lock level, retention class, posterior, timestamps, and scope. It addresses the row by id rather than searching the content, so an ambiguous prefix names the candidates and exits 1 instead of guessing. A retired belief is reachable, and prints `status: retired`. The command changes no belief, and it reads a store you can't write — see [the command reference](COMMANDS.md) for what the store open does pay. v4.x+ ([#1553](https://github.com/robotrocketscience/aelfrice/issues/1553)). |
-| `/aelf:lock` | the statement to lock. Precede it with `--user` to write a user-scope lock that every repository shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)); no other flag is accepted. |
+| `/aelf:lock` | the statement to lock. Precede it with `--user` to write a user-scope lock that every repository shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)); no other flag is accepted. To copy a repository lock into the user store, run `aelf lock --promote-user <id>` in a shell. |
 | `/aelf:unlock` | a belief id, optionally preceded by `--user` for a user-scope lock. Drops the lock without changing the origin tier. |
 | `/aelf:locked` | (none) |
 | `/aelf:confirm` | a belief id. Bumps the posterior without freezing the belief. |
