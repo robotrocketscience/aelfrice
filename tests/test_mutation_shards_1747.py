@@ -649,6 +649,22 @@ def test_a_truncated_meta_with_no_copy_is_removed_not_left_to_crash_results(
     assert not meta.exists()
 
 
+def test_repair_leaves_a_meta_that_parses_alone(sh: Any, tmp_path: Path) -> None:
+    """A whole file newer than its copy holds results the copy doesn't, and
+    a whole file with no copy holds results nothing else does."""
+    meta_root = tmp_path / "mutants"
+    meta_root.mkdir()
+    newer, uncopied = meta_root / "a.py.meta", meta_root / "b.py.meta"
+    newer.write_text('{"n": 1}', encoding="utf-8")
+    copies = sh.MetaSnapshots(meta_root, tmp_path / "copies")
+    assert copies.take() == 1
+    newer.write_text('{"n": 22}', encoding="utf-8")  # saved after the copy
+    uncopied.write_text('{"n": 3}', encoding="utf-8")
+    assert copies.repair() == ([], [])
+    assert json.loads(newer.read_text(encoding="utf-8")) == {"n": 22}
+    assert json.loads(uncopied.read_text(encoding="utf-8")) == {"n": 3}
+
+
 @_SUPERVISED
 def test_run_exits_124_when_the_time_box_ends_the_run(
     sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
