@@ -18,6 +18,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1049,3 +1050,315 @@ def test_an_exact_id_in_one_store_wins_over_a_prefix_in_the_other(
     assert out.splitlines()[0] == "belief: u1"
     assert "u1abc" not in out
     assert "store:" not in out
+
+
+# --- sentiment feedback skips user locks ---------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_sentiment_skips_a_user_lock_that_shares_a_repo_id(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two prompts: the first injects the user lock, the second praises it.
+
+    The repository holds the same text unlocked, so the same id. Only the
+    user lock was shown, so the repository row's posterior must not move;
+    the plain repository hit shown beside it proves the lane ran.
+    """
+    from aelfrice.hook import (
+        AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        _audit_path_for_db,  # pyright: ignore[reportPrivateUsage]
+        read_hook_audit,
+    )
+    from aelfrice.sentiment_feedback import ENV_SENTIMENT
+
+    monkeypatch.setenv(ENV_SENTIMENT, "1")
+    repo, user = stores
+    _seed(repo, [
+        _plain("same", USER_RULE),
+        _plain("p1", "decisions go through the question tool"),
+    ])
+    _seed(user, [_lock("same", USER_RULE)])
+    for prompt in ("which question tool do decisions use", "perfect, thanks"):
+        payload = json.dumps({
+            "prompt": prompt, "session_id": "senti1681", "cwd": str(tmp_path),
+        })
+        assert user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ) == 0
+    rows = [
+        r for r in read_hook_audit(_audit_path_for_db(repo))
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    first = cast("list[dict[str, object]]", rows[0]["beliefs"])
+    by_id = {str(b["id"]): b for b in first}
+    assert by_id["same"].get("scope") == "user"
+    assert all("scope" not in b for bid, b in by_id.items() if bid != "same")
+    assert _alpha(repo, "p1") > 1.0, "the sentiment lane never ran"
+    assert _alpha(repo, "same") == 1.0
+
+
+# --- a locked user store doesn't stall the hooks ---------------------------------
+
+
+def _hold_exclusive(user: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(user), isolation_level=None)
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("BEGIN EXCLUSIVE")
+    return conn
+
+
+@pytest.mark.timeout(60)
+def test_a_locked_user_store_fails_fast_and_once(
+    stores: tuple[Path, Path], tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import time
+
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    holder = _hold_exclusive(user)
+    try:
+        err = io.StringIO()
+        out = io.StringIO()
+        payload = json.dumps({
+            "prompt": "which tool do questions go through",
+            "session_id": "busy1681", "cwd": str(tmp_path),
+        })
+        t0 = time.monotonic()
+        assert user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=out, stderr=err,
+        ) == 0
+        ids = _retrieve_ids(repo)
+        elapsed = time.monotonic() - t0
+    finally:
+        holder.rollback()
+        holder.close()
+    # Before: each of three reads waited the 5 s busy timeout (~15 s).
+    assert elapsed < 3.0, elapsed
+    assert ids == ["r1"]
+    assert 'id="r1"' in out.getvalue() and 'id="u1"' not in out.getvalue()
+    warnings = [ln for ln in err.getvalue().splitlines() if "user lock store" in ln]
+    assert len(warnings) == 1
+    assert "user lock store" not in capsys.readouterr().err
+
+
+# --- figures and the rebuild read repository locks only ---------------------------
+
+
+@pytest.mark.timeout(60)
+def test_rebuild_takes_user_locks_like_retrieve(stores: tuple[Path, Path]) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    s = MemoryStore(str(repo))
+    try:
+        turns = [RecentTurn(role="user", text="anything")]
+        default = rebuild_v14(turns, s, rebuild_log_enabled=False)
+        repo_only = rebuild_v14(
+            turns, s, rebuild_log_enabled=False, user_locks=(),
+        )
+    finally:
+        s.close()
+    assert USER_RULE in default
+    assert USER_RULE not in repo_only
+    assert REPO_RULE in repo_only
+
+
+def test_hermetic_home_hides_the_user_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import importlib.util
+    import os
+    import sys
+
+    producer = Path(__file__).resolve().parents[1] / "scripts" / "measure_block_ceiling.py"
+    spec = importlib.util.spec_from_file_location("measure_block_ceiling", producer)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["measure_block_ceiling"] = mod
+    spec.loader.exec_module(mod)
+    real = tmp_path / "user" / "memory.db"
+    _seed(real, [_lock("u1", USER_RULE)])
+    monkeypatch.setenv("AELFRICE_USER_DB", str(real))
+    with mod._hermetic_home() as home:  # pyright: ignore[reportPrivateUsage]
+        pinned = Path(os.environ["AELFRICE_USER_DB"])
+        assert pinned.is_relative_to(home)
+        assert not pinned.exists()
+        assert ul.read_user_locks() == []
+    assert os.environ["AELFRICE_USER_DB"] == str(real)
+
+
+@pytest.mark.timeout(180)
+def test_a_user_store_in_the_env_does_not_move_a_published_figure(
+    tmp_path: Path,
+) -> None:
+    import os
+    import re
+    import subprocess
+    import sys
+
+    producer = Path(__file__).resolve().parents[1] / "scripts" / "measure_block_ceiling.py"
+    user = tmp_path / "user" / "memory.db"
+    _seed(user, [_lock("u1", USER_RULE * 20)])
+    env = {**os.environ, "AELFRICE_USER_DB": str(user)}
+    out = subprocess.run(
+        [sys.executable, str(producer), "--emit-figures"],
+        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=170,
+    )
+    assert out.returncode == 0, out.stderr[-500:]
+    figures = json.loads(out.stdout.strip().splitlines()[-1])
+    text = producer.read_text()
+    for key in (
+        "ref_lock_30026_session_start_frozen",
+        "ref_lock_30026_session_start_reference",
+    ):
+        m = re.search(rf"measure_block_ceiling\.py#{re.escape(key)} = (\d+)", text)
+        assert m, key
+        assert figures[key] == int(m.group(1)), key
+
+
+# --- cache signature covers the -wal; dedupe checks every repo lock ---------------
+
+
+@pytest.mark.timeout(60)
+def test_a_lock_still_in_the_wal_is_seen_on_the_next_read(
+    stores: tuple[Path, Path],
+) -> None:
+    _, user = stores
+    _seed(user, [_lock("u1", USER_RULE)])
+    writer = MemoryStore(str(user))
+    try:
+        assert [b.id for b in ul.read_user_locks()] == ["u1"]
+        before = user.stat()
+        writer.insert_belief(_lock("u2", "A second user rule about tabs."))
+        # The commit is in the -wal only: the database file is untouched.
+        after = user.stat()
+        assert (after.st_size, after.st_mtime_ns) == (
+            before.st_size, before.st_mtime_ns,
+        )
+        assert sorted(b.id for b in ul.read_user_locks()) == ["u1", "u2"]
+    finally:
+        writer.close()
+
+
+def test_dedupe_checks_every_repo_lock_not_just_the_first() -> None:
+    repo = [
+        _lock("r1", "Indent with four spaces in Python files."),
+        _lock("r2", "Never commit generated build output."),
+        _lock("r3", REPO_RULE),
+    ]
+    merged = ul.merge_lock_sets(repo, [_lock("u1", USER_NEAR_DUP)])
+    assert [b.id for b in merged] == ["r1", "r2", "r3"]
+
+
+# --- confirm and the refusal wording ----------------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_confirm_refuses_a_user_lock_id_even_when_the_repo_shares_it(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("same", USER_RULE)])
+    _seed(user, [_lock("same", USER_RULE), _lock("u1", "Another user rule.")])
+    before_user = user.read_bytes()
+    rc, _, err = _cli(["confirm", "same"], capsys)
+    assert rc == 1
+    assert "confirm error: same is a user-scope lock" in err
+    assert "repository also has a belief with this id" in err
+    assert _alpha(repo, "same") == 1.0
+    rc, _, err = _cli(["confirm", "u1"], capsys)
+    assert rc == 1
+    assert "repository also has" not in err
+    assert user.read_bytes() == before_user
+
+
+@pytest.mark.timeout(60)
+def test_refusal_names_unlock_only_for_a_lock(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE), _plain("u0", "an unlocked user-store row")])
+    rc, _, err = _cli(["feedback", "u0", "used"], capsys)
+    assert rc == 1
+    assert "u0 is a belief in the user-scope store" in err
+    assert "unlock --user" not in err
+    rc, _, err = _cli(["feedback", "u1", "used"], capsys)
+    assert rc == 1
+    assert "aelf unlock --user u1" in err
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("lane", ["session_start", "search_tool", "agent_context"])
+def test_each_hook_warns_about_a_locked_user_store_on_its_own_stderr(
+    lane: str, stores: tuple[Path, Path], tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import time
+
+    from aelfrice import hook_agent_context, hook_search_tool
+
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE), _plain("p1", "the question tool")])
+    _seed(user, [_lock("u1", USER_RULE)])
+    err = io.StringIO()
+    holder = _hold_exclusive(user)
+    try:
+        t0 = time.monotonic()
+        if lane == "session_start":
+            session_start(
+                stdin=io.StringIO(json.dumps({"session_id": "ss-busy"})),
+                stdout=io.StringIO(), stderr=err,
+            )
+        elif lane == "search_tool":
+            hook_search_tool.main(
+                stdin=io.StringIO(json.dumps({
+                    "hook_event_name": "PreToolUse", "tool_name": "Grep",
+                    "tool_input": {"pattern": "question tool"},
+                    "cwd": str(tmp_path), "session_id": "st-busy",
+                })),
+                stdout=io.StringIO(), stderr=err,
+            )
+        else:
+            hook_agent_context.main(
+                stdin=io.StringIO(json.dumps({
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": next(iter(hook_agent_context.AGENT_TOOL_NAMES)),
+                    "tool_input": {"prompt": "use the question tool"},
+                    "cwd": str(tmp_path), "session_id": "ac-busy",
+                })),
+                stdout=io.StringIO(), stderr=err,
+            )
+        elapsed = time.monotonic() - t0
+    finally:
+        holder.rollback()
+        holder.close()
+    assert elapsed < 3.0, elapsed
+    warnings = [ln for ln in err.getvalue().splitlines() if "user lock store" in ln]
+    assert len(warnings) == 1, err.getvalue()
+    assert "user lock store" not in capsys.readouterr().err
+
+
+@pytest.mark.timeout(60)
+def test_a_failed_read_is_cached_for_the_same_file(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A locked store is tried once per process, not once per read."""
+    _, user = stores
+    _seed(user, [_lock("u1", USER_RULE)])
+    holder = _hold_exclusive(user)
+    try:
+        opens = _count_user_opens(monkeypatch, user)
+        err = io.StringIO()
+        assert ul.read_user_locks(stderr=err) == []
+        assert ul.read_user_locks(stderr=err) == []
+        assert ul.read_user_locks(stderr=err) == []
+    finally:
+        holder.rollback()
+        holder.close()
+    assert len(opens) == 1
+    assert err.getvalue().count("user lock store") == 1
