@@ -826,3 +826,228 @@ def test_core_on_an_unreadable_user_store_warns_and_lists_repo_locks(
     assert out.startswith("r1 [LOCK")
     assert "listing repository locks only" in err
     assert os.path.getsize(user) == len(b"not a sqlite file" * 100)
+
+
+# --- review round: one transaction, the expiry filter, open failures ------------
+
+
+def _count(path: Path, table: str) -> int:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+    finally:
+        conn.close()
+
+
+@pytest.mark.timeout(60)
+def test_a_failure_at_the_tier_and_expiry_step_leaves_nothing_and_a_retry_works(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy commits row, tier, and expiry together or not at all."""
+    repo, user = stores
+    expires = "2099-01-02T03:04:05+00:00"
+    _seed(repo, [_lock("r1", REPO_RULE, expires=expires, tier="reference")])
+    real_update = MemoryStore.update_belief
+
+    def failing_update(self: MemoryStore, b: Belief) -> None:
+        if b.lock_expires_at == expires:
+            raise sqlite3.OperationalError("database is locked")
+        real_update(self, b)
+
+    monkeypatch.setattr(MemoryStore, "update_belief", failing_update)
+    rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1
+    assert "the copy failed: database is locked" in err
+    assert "Traceback" not in err
+    assert _count(user, "beliefs") == 0
+    assert _count(user, "ingest_log") == 0
+    assert [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"] == []
+
+    monkeypatch.setattr(MemoryStore, "update_belief", real_update)
+    rc, _, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 0
+    [(_, content, tier, exp)] = _locks(user)
+    assert (content, tier, exp) == (REPO_RULE, "reference", expires)
+    [row] = [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"]
+    assert row["promoted_from"] == "r1"
+
+
+@pytest.mark.timeout(60)
+def test_an_expired_unswept_near_duplicate_does_not_block_a_promote(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The user store is read without the sweep, so the window is checked."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    # Inserted after the seeding open's sweep, so still 'user' on disk.
+    _seed(user, [_lock("u1", NEAR_DUP, expires="2026-01-01T00:00:00+00:00")])
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 0, out
+    assert "not promoted" not in out
+    assert [c for _, c, _, _ in _locks(user)] == [REPO_RULE]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "argv",
+    [["lock", "--promote-user", "r1"], ["lock", "--user", USER_RULE]],
+    ids=["promote", "lock-user"],
+)
+def test_an_unopenable_user_store_prints_one_line_and_exits_1(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, argv: list[str],
+) -> None:
+    repo, _ = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_USER_DB", str(blocker / "user" / "memory.db"))
+    rc, _, err = _cli(argv, capsys)
+    assert rc == 1
+    assert "cannot open the user lock store" in err
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1
+
+
+# --- feedback and confirm on an id both stores hold (ruling 2026-10-19) ---------
+
+
+def _feedback_rows(path: Path, bid: str) -> int:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM feedback_history WHERE belief_id = ?", (bid,),
+        ).fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _alpha(path: Path, bid: str) -> float:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return float(conn.execute(
+            "SELECT alpha FROM beliefs WHERE id = ?", (bid,),
+        ).fetchone()[0])
+    finally:
+        conn.close()
+
+
+@pytest.mark.timeout(60)
+def test_feedback_and_confirm_apply_to_a_repo_lock_that_shares_a_user_lock_id(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The repository copy is the one this repository injects."""
+    repo, user = stores
+    _seed(repo, [_lock("same", REPO_RULE)])
+    _seed(user, [_lock("same", REPO_RULE)])
+    before_user = user.read_bytes()
+    rc, _, err = _cli(["feedback", "same", "used"], capsys)
+    assert rc == 0, err
+    assert "applies to it" in err
+    assert _feedback_rows(repo, "same") == 1
+    alpha = _alpha(repo, "same")
+    rc, _, err = _cli(["confirm", "same"], capsys)
+    assert rc == 0, err
+    assert _alpha(repo, "same") == alpha + 1.0
+    assert user.read_bytes() == before_user
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "command", [["feedback", "same", "used"], ["confirm", "same"]],
+    ids=["feedback", "confirm"],
+)
+def test_feedback_and_confirm_refuse_when_the_repo_row_is_not_a_lock(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    command: list[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("same", REPO_RULE)])
+    _seed(user, [_lock("same", REPO_RULE)])
+    before_user = user.read_bytes()
+    rc, _, err = _cli(command, capsys)
+    assert rc == 1
+    assert "is a user-scope lock" in err
+    assert _feedback_rows(repo, "same") == 0
+    assert _alpha(repo, "same") == 1.0
+    assert user.read_bytes() == before_user
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "command", [["feedback", "u1", "used"], ["confirm", "u1"]],
+    ids=["feedback", "confirm"],
+)
+def test_feedback_and_confirm_refuse_a_user_store_only_id(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    command: list[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    before_user = user.read_bytes()
+    rc, _, err = _cli(command, capsys)
+    assert rc == 1
+    assert "is a user-scope lock" in err
+    assert user.read_bytes() == before_user
+
+
+@pytest.mark.timeout(60)
+def test_sentiment_credits_a_repo_lock_that_won_over_a_same_id_user_lock(
+    stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The repository lock is injected, so its audit row is a repository
+    row and the sentiment lane records feedback on it as before."""
+    from typing import cast
+
+    from aelfrice.hook import (
+        AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        _audit_path_for_db,  # pyright: ignore[reportPrivateUsage]
+        read_hook_audit,
+    )
+    from aelfrice.sentiment_feedback import ENV_SENTIMENT
+
+    monkeypatch.setenv(ENV_SENTIMENT, "1")
+    repo, user = stores
+    _seed(repo, [_lock("same", USER_RULE)])
+    _seed(user, [_lock("same", USER_RULE)])
+    for prompt in ("which question tool do decisions use", "perfect, thanks"):
+        payload = json.dumps({
+            "prompt": prompt, "session_id": "senti1681b", "cwd": str(tmp_path),
+        })
+        assert user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ) == 0
+    rows = [
+        r for r in read_hook_audit(_audit_path_for_db(repo))
+        if r.get("hook") == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    ]
+    first = cast("list[dict[str, object]]", rows[0]["beliefs"])
+    [same] = [b for b in first if b["id"] == "same"]
+    assert "scope" not in same
+    assert _feedback_rows(repo, "same") >= 1
+
+
+@pytest.mark.timeout(60)
+def test_core_shows_no_gate_label_on_a_user_lock() -> None:
+    """Labels are keyed by repository content hashes; a user lock with the
+    same text must not show a repository belief's label."""
+    import argparse
+
+    user_lock = _lock("u1", USER_RULE)
+    setattr(user_lock, ul.USER_SCOPE_ATTR, ul.USER_SCOPE_VALUE)
+    repo_lock = _lock("r1", REPO_RULE)
+    labels = {user_lock.content_hash: "A", repo_lock.content_hash: "B"}
+    args = argparse.Namespace(
+        json=True, limit=None, min_corroboration=2,
+        min_posterior=2.0 / 3.0, min_alpha_beta=4,
+    )
+    out = io.StringIO()
+    cli._emit_core(  # pyright: ignore[reportPrivateUsage]
+        [repo_lock, user_lock], [], args, out, {}, labels,
+    )
+    rows = {r["id"]: r for r in json.loads(out.getvalue())}
+    assert rows["r1"]["core_gate_label"] == "B"
+    assert "core_gate_label" not in rows["u1"]
