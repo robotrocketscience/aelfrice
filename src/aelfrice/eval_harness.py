@@ -264,6 +264,8 @@ def run_calibration_on_fixtures(
                 entity_index_enabled=False,
                 bfs_enabled=False,
                 posterior_weight=None,
+                # #1681: score the fixture, not the machine's user locks.
+                user_locks=(),
             )
 
             rankings.append(tuple(b.id for b in results))

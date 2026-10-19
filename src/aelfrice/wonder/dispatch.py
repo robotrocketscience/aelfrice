@@ -229,6 +229,9 @@ def analyze_gaps(
                 l1_limit=max(1, budget),
                 bfs_enabled=depth > 0,
                 bfs_max_depth=max(1, depth),
+                # #1681: gap analysis reads this store's graph, and a
+                # user lock has no node in it.
+                user_locks=(),
             )
         )
 

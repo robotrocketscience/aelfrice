@@ -483,6 +483,8 @@ def run_multihop_benchmark(
                 l1_limit=top_k,
                 entity_index_enabled=entity_index_enabled,
                 bfs_enabled=bfs_enabled,
+                # #1681: score the corpus, not the machine's user locks.
+                user_locks=(),
             )
             rank = _rank_of(q.correct_id, results)
             if rank is not None:
@@ -539,7 +541,9 @@ def run_benchmark(
     for q in _QUERIES:
         t0 = time.perf_counter()
         results = retrieve(
-            store, q.query, token_budget=DEFAULT_TOKEN_BUDGET, l1_limit=top_k
+            store, q.query, token_budget=DEFAULT_TOKEN_BUDGET, l1_limit=top_k,
+            # #1681: score the corpus, not the machine's user locks.
+            user_locks=(),
         )
         latencies_ms.append((time.perf_counter() - t0) * 1000.0)
 
