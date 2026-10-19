@@ -110,8 +110,10 @@ def stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]
 @pytest.fixture(autouse=True)
 def _reset_warned() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     ul._WARNED.clear()  # pyright: ignore[reportPrivateUsage]
+    ul._CACHE.clear()  # pyright: ignore[reportPrivateUsage]
     yield
     ul._WARNED.clear()  # pyright: ignore[reportPrivateUsage]
+    ul._CACHE.clear()  # pyright: ignore[reportPrivateUsage]
 
 
 def _retrieve_ids(repo: Path, query: str = "", **kw: object) -> list[str]:
@@ -159,7 +161,7 @@ def test_session_start_baseline_carries_the_user_lock(
         stdout=out, stderr=err,
     ) == 0
     text = out.getvalue()
-    assert f'<belief id="u1" lock="user">{USER_RULE}</belief>' in text
+    assert f'<belief id="u1" lock="user" scope="user">{USER_RULE}</belief>' in text
     assert text.index('id="r1"') < text.index('id="u1"')
 
 
@@ -182,7 +184,7 @@ def test_prompt_hook_injects_the_user_lock_and_writes_no_traceback(
     # The first prompt's `<locked>` section is built apart from retrieval,
     # so check the user lock is inside it, not only among the hits.
     locked_section = text[text.index("<locked>"):text.index("</locked>")]
-    assert f'<belief id="u1" lock="user">{USER_RULE}</belief>' in locked_section
+    assert f'<belief id="u1" lock="user" scope="user">{USER_RULE}</belief>' in locked_section
     assert locked_section.index('id="r1"') < locked_section.index('id="u1"')
     # The exposure and injection-event writes skip the user lock; before
     # they did, each one printed a traceback for an id this store lacks.
@@ -394,17 +396,21 @@ def test_order_is_repo_then_user_each_newest_first_then_id(
     stores: tuple[Path, Path],
 ) -> None:
     repo, user = stores
+    # Ids sort the opposite way to `locked_at` in both stores, so an order
+    # by id alone, or by insertion, fails this test.
     _seed(repo, [
-        _lock("r_old", "Old repo rule about linting.", locked_at="2026-09-01T00:00:00+00:00"),
-        _lock("r_new", "New repo rule about formatting.", locked_at="2026-10-01T00:00:00+00:00"),
+        _lock("r_a", "Old repo rule about linting.", locked_at="2026-09-01T00:00:00+00:00"),
+        _lock("r_b", "New repo rule about formatting.", locked_at="2026-10-01T00:00:00+00:00"),
     ])
     # Inserted out of order; two share a timestamp so the id breaks the tie.
     _seed(user, [
-        _lock("u_b", "User rule bravo on commits.", locked_at="2026-10-05T00:00:00+00:00"),
-        _lock("u_old", "User rule on reviews.", locked_at="2026-08-01T00:00:00+00:00"),
-        _lock("u_a", "User rule alpha on branches.", locked_at="2026-10-05T00:00:00+00:00"),
+        _lock("u_m", "User rule mike on commits.", locked_at="2026-10-05T00:00:00+00:00"),
+        _lock("u_a", "User rule alpha on reviews.", locked_at="2026-08-01T00:00:00+00:00"),
+        _lock("u_z", "User rule zulu on branches.", locked_at="2026-10-07T00:00:00+00:00"),
+        _lock("u_k", "User rule kilo on tags.", locked_at="2026-10-05T00:00:00+00:00"),
     ])
-    expected = ["r_new", "r_old", "u_a", "u_b", "u_old"]
+    expected = ["r_b", "r_a", "u_z", "u_k", "u_m", "u_a"]
+    assert sorted(expected[2:]) != expected[2:]
     assert _retrieve_ids(repo) == expected
     assert _retrieve_ids(repo) == expected
 
@@ -558,3 +564,359 @@ def test_wonder_gap_analysis_ignores_the_user_store(
     finally:
         s.close()
     assert [b.id for b in gaps.known_beliefs] == ["p1"]
+
+
+@pytest.mark.timeout(120)
+def test_multihop_benchmark_scores_ignore_the_user_store(
+    stores: tuple[Path, Path],
+) -> None:
+    from aelfrice.benchmark import run_multihop_benchmark, seed_multihop_corpus
+
+    _, user = stores
+
+    def _score() -> tuple[object, object, object]:
+        s = MemoryStore(":memory:")
+        try:
+            seed_multihop_corpus(s)
+            r = run_multihop_benchmark(s, aelfrice_version="test")
+        finally:
+            s.close()
+        return (r.multihop_l1_only, r.multihop_l1_l25, r.multihop_full)
+
+    before = _score()
+    _seed(user, [
+        _lock(f"u{i}", f"User rule number {i} about store retrieval and locks.")
+        for i in range(5)
+    ])
+    assert _score() == before
+
+
+@pytest.mark.timeout(120)
+def test_eval_calibration_rankings_ignore_the_user_store(
+    stores: tuple[Path, Path],
+) -> None:
+    from aelfrice import eval_harness
+
+    _, user = stores
+    load = eval_harness.load_calibration_fixtures  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    run = eval_harness.run_calibration_on_fixtures  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    fixtures = load(eval_harness.DEFAULT_CALIBRATION_CORPUS)[:5]  # pyright: ignore[reportUnknownVariableType]
+    before = run(fixtures).rankings
+    _seed(user, [_lock("u1", USER_RULE)])
+    after = run(fixtures).rankings
+    assert after == before
+    assert all("u1" not in r for r in after)
+
+
+# --- dedupe thresholds at the merge site --------------------------------------
+
+_W = (
+    "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo "
+    "lima mike november oscar papa quebec romeo"
+).split()
+_LEV_BASE = "Always run the full test suite before you open a pull request"
+
+
+def _scores(a: str, b: str) -> tuple[float, float]:
+    from aelfrice.bm25 import tokenize
+    from aelfrice.dedup import jaccard, levenshtein_ratio
+
+    j = jaccard(frozenset(tokenize(a)), frozenset(tokenize(b)))
+    return j, levenshtein_ratio(a, b)
+
+
+def _merged_ids(repo_text: str, user_text: str) -> list[str]:
+    return [
+        b.id for b in ul.merge_lock_sets(
+            [_lock("r1", repo_text)], [_lock("u1", user_text)],
+        )
+    ]
+
+
+def test_jaccard_exactly_at_the_floor_is_a_duplicate() -> None:
+    repo_text = " ".join(_W[:18])
+    user_text = " ".join(_W[:16] + ["sierra", "tango"])
+    j, lev = _scores(repo_text, user_text)
+    assert abs(j - 0.8) < 1e-9 and lev >= 0.85
+    assert _merged_ids(repo_text, user_text) == ["r1"]
+
+
+def test_jaccard_just_below_the_floor_is_kept() -> None:
+    repo_text = " ".join(_W[:17])
+    user_text = " ".join(_W[:15] + ["sierra", "tango"])
+    j, lev = _scores(repo_text, user_text)
+    assert 0.78 < j < 0.8 and lev >= 0.85
+    assert _merged_ids(repo_text, user_text) == ["r1", "u1"]
+
+
+def test_levenshtein_just_above_the_floor_is_a_duplicate() -> None:
+    user_text = "Always a run full test suite before you open the pull request"
+    j, lev = _scores(_LEV_BASE, user_text)
+    assert j == 1.0 and 0.85 <= lev < 0.86
+    assert _merged_ids(_LEV_BASE, user_text) == ["r1"]
+
+
+def test_levenshtein_just_below_the_floor_is_kept() -> None:
+    user_text = "Always you the full test suite before run a open pull request"
+    j, lev = _scores(_LEV_BASE, user_text)
+    assert j == 1.0 and 0.83 < lev < 0.85
+    assert _merged_ids(_LEV_BASE, user_text) == ["r1", "u1"]
+
+
+# --- belief_touches skip -------------------------------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_belief_touches_skip_a_user_lock_that_shares_a_repo_id(
+    stores: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    """Same text in both stores, unlocked in the repository: one id, two rows.
+
+    The user lock is what is injected, so no touch may be credited to the
+    repository's unlocked row, which the foreign key would accept.
+    """
+    repo, user = stores
+    _seed(repo, [_plain("same", USER_RULE), _plain("p1", "the question tool")])
+    _seed(user, [_lock("same", USER_RULE)])
+    out = io.StringIO()
+    for i in range(3):
+        payload = json.dumps({
+            "prompt": f"which question tool do decisions use {i}",
+            "session_id": "touch1681", "cwd": str(tmp_path),
+        })
+        out = io.StringIO()
+        assert user_prompt_submit(
+            stdin=io.StringIO(payload), stdout=out, stderr=io.StringIO(),
+        ) == 0
+    s = MemoryStore(str(repo))
+    try:
+        touched = s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT belief_id FROM belief_touches"
+        ).fetchall()
+    finally:
+        s.close()
+    ids = [r[0] for r in touched]
+    # The fire wrote touches (so the path ran), none for the user lock.
+    assert ids, "no belief_touches rows at all: the touch path never ran"
+    assert "same" not in ids
+
+
+# --- scope="user" in the rendered elements -----------------------------------
+
+
+@pytest.mark.timeout(60)
+def test_baseline_marks_only_the_user_lock(stores: tuple[Path, Path]) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    _, block = _retrieve_baseline_with_block()
+    assert f'<belief id="r1" lock="user">{REPO_RULE}</belief>' in block
+    assert f'<belief id="u1" lock="user" scope="user">{USER_RULE}</belief>' in block
+    assert block.count('scope="user"') == 1
+
+
+@pytest.mark.timeout(60)
+def test_rebuild_marks_only_the_user_lock(stores: tuple[Path, Path]) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    s = MemoryStore(str(repo))
+    try:
+        block = rebuild_v14([RecentTurn(role="user", text="anything")], s)
+    finally:
+        s.close()
+    lines = [
+        ln.strip() for ln in block.splitlines()
+        if ln.strip().startswith("<belief ")
+    ]
+    assert any('id="u1" locked="true" scope="user"' in ln for ln in lines)
+    assert any(
+        'id="r1" locked="true"' in ln and "scope=" not in ln for ln in lines
+    )
+
+
+def test_agent_context_block_marks_the_user_lock() -> None:
+    from aelfrice.hook_agent_context import (
+        _build_block,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    u = _lock("u1", USER_RULE)
+    setattr(u, ul.USER_SCOPE_ATTR, ul.USER_SCOPE_VALUE)
+    block = _build_block([_lock("r1", REPO_RULE), u])
+    assert '<belief id="u1" lock="user" scope="user">' in block
+    assert '<belief id="r1" lock="user">' in block
+
+
+def test_retrieval_charges_the_scope_attribute_it_renders() -> None:
+    """The packer's cost of a user lock is the line the hook renders."""
+    from aelfrice.hook import (
+        _belief_element_line,  # pyright: ignore[reportPrivateUsage]
+    )
+    from aelfrice.render_cost import USER_SCOPE_ATTR_CHARS, chars_to_tokens
+    from aelfrice.retrieval import (
+        _belief_tokens,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # 16-character id, the width the wrapper constant assumes; content
+    # length chosen so the 13 attribute characters cross a token boundary.
+    content = "x" * 11
+    repo_lock = _lock("0123456789abcdef", content)
+    user_lock = _lock("0123456789abcdef", content)
+    setattr(user_lock, ul.USER_SCOPE_ATTR, ul.USER_SCOPE_VALUE)
+    for b in (repo_lock, user_lock):
+        line = _belief_element_line(b)
+        assert _belief_tokens(b) == chars_to_tokens(len(line) + 1)
+    assert len(_belief_element_line(user_lock)) - len(
+        _belief_element_line(repo_lock)
+    ) == USER_SCOPE_ATTR_CHARS
+    assert _belief_tokens(user_lock) > _belief_tokens(repo_lock)
+
+
+# --- CLI: show, search, feedback ------------------------------------------------
+
+
+def _cli(
+    argv: list[str], capsys: pytest.CaptureFixture[str],
+) -> tuple[int, str, str]:
+    from aelfrice import cli
+
+    out = io.StringIO()
+    rc = cli.main(argv, out=out)
+    return rc, out.getvalue(), capsys.readouterr().err
+
+
+@pytest.mark.timeout(60)
+def test_show_finds_a_user_lock_and_names_the_store(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    rc, out, _ = _cli(["show", "u1"], capsys)
+    assert rc == 0
+    assert out.splitlines()[:2] == ["belief: u1", f"store: user ({user})"]
+    assert out.rstrip().endswith(USER_RULE)
+    rc, out, _ = _cli(["show", "r1"], capsys)
+    assert rc == 0
+    assert "store:" not in out
+
+
+@pytest.mark.timeout(60)
+def test_show_reads_the_user_store_without_writing_it(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A writable open would sweep the expired lock to 'none' on disk."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [
+        _lock("u2", "Expired rule about tabs.", expires="2026-01-01T00:00:00+00:00"),
+    ])
+    rc, out, _ = _cli(["show", "u2"], capsys)
+    assert rc == 0
+    assert "store: user" in out
+    assert _lock_level_on_disk(user, "u2") == LOCK_USER
+
+
+@pytest.mark.timeout(60)
+def test_show_never_creates_the_user_store(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    rc, _, err = _cli(["show", "nope"], capsys)
+    assert rc == 1
+    assert "no belief with id" in err
+    assert not user.exists()
+
+
+@pytest.mark.timeout(60)
+def test_search_tags_the_user_lock(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    rc, out, _ = _cli(["search", "question tool"], capsys)
+    assert rc == 0
+    assert f"[locked] r1: {REPO_RULE}" in out
+    assert f"[locked] u1 [user]: {USER_RULE}" in out
+    rc, out, _ = _cli(["search", "question tool", "--json"], capsys)
+    assert rc == 0
+    rows = {r["id"]: r for r in json.loads(out)}
+    assert rows["u1"]["scope"] == "user"
+    assert "scope" not in rows["r1"]
+
+
+@pytest.mark.timeout(60)
+def test_feedback_on_a_user_lock_refuses_and_writes_nothing(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    before = user.read_bytes()
+    rc, _, err = _cli(["feedback", "u1", "used"], capsys)
+    assert rc == 1
+    assert "feedback doesn't apply to user-scope locks" in err
+    assert user.read_bytes() == before
+    rc, _, err = _cli(["feedback", "nope", "used"], capsys)
+    assert rc == 1
+    assert "belief not found" in err
+
+
+# --- the user store is opened once per unchanged file ---------------------------
+
+
+def _count_user_opens(
+    monkeypatch: pytest.MonkeyPatch, user: Path,
+) -> list[str]:
+    import aelfrice.store as store_mod
+
+    opens: list[str] = []
+    real = store_mod.MemoryStore
+
+    class _Counting(real):  # type: ignore[valid-type, misc]
+        def __init__(self, path: str, **kw: object) -> None:
+            if path == str(user):
+                opens.append(path)
+            super().__init__(path, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store_mod, "MemoryStore", _Counting)
+    return opens
+
+
+@pytest.mark.timeout(60)
+def test_user_store_is_opened_once_until_it_changes(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, user = stores
+    _seed(user, [_lock("u1", USER_RULE)])
+    opens = _count_user_opens(monkeypatch, user)
+    assert [b.id for b in ul.read_user_locks()] == ["u1"]
+    assert [b.id for b in ul.read_user_locks()] == ["u1"]
+    assert len(opens) == 1
+    _seed(user, [_lock("u2", "A second user rule about tabs.")])
+    opens.clear()
+    assert sorted(b.id for b in ul.read_user_locks()) == ["u1", "u2"]
+    assert len(opens) == 1
+
+
+@pytest.mark.timeout(60)
+def test_first_prompt_opens_the_user_store_once(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    opens = _count_user_opens(monkeypatch, user)
+    out = io.StringIO()
+    payload = json.dumps({
+        "prompt": "which tool do questions go through",
+        "session_id": "once1681", "cwd": str(tmp_path),
+    })
+    assert user_prompt_submit(
+        stdin=io.StringIO(payload), stdout=out, stderr=io.StringIO(),
+    ) == 0
+    text = out.getvalue()
+    assert "<locked>" in text and 'id="u1"' in text
+    assert len(opens) == 1
