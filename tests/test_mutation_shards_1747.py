@@ -393,6 +393,15 @@ def _writer(tmp_path: Path, mode: str) -> tuple[list[str], Path]:
     return [sys.executable, str(script), str(meta), mode], meta_root
 
 
+#: For a test that runs the supervisor in this process. A stop signal that
+#: misses the run's process group (say, without `start_new_session`) leaves
+#: the supervisor waiting on a run that never ends. The default `signal`
+#: method can't end that wait: its exception lands in `run_boxed`, whose
+#: cleanup waits on the same run again. `thread` ends the whole pytest
+#: process with a stack dump instead, so the hang fails the run.
+_SUPERVISED = pytest.mark.timeout(15, method="thread")
+
+
 def _boxed(sh: Any, tmp_path: Path, mode: str, box_s: float, grace_s: float) -> Any:
     command, meta_root = _writer(tmp_path, mode)
     return sh.run_boxed(
@@ -401,11 +410,13 @@ def _boxed(sh: Any, tmp_path: Path, mode: str, box_s: float, grace_s: float) -> 
     )
 
 
+@_SUPERVISED
 def test_a_run_that_finishes_in_time_keeps_its_own_status(sh: Any, tmp_path: Path) -> None:
     result = _boxed(sh, tmp_path, "finish", box_s=20, grace_s=5)
     assert (result.returncode, result.timed_out, result.killed) == (7, False, False)
 
 
+@_SUPERVISED
 def test_the_time_box_stops_the_run_with_sigint(sh: Any, tmp_path: Path) -> None:
     result = _boxed(sh, tmp_path, "run", box_s=0.5, grace_s=10)
     assert result.timed_out and not result.killed
@@ -413,6 +424,7 @@ def test_the_time_box_stops_the_run_with_sigint(sh: Any, tmp_path: Path) -> None
     json.loads((tmp_path / "mutants/src/a.py.meta").read_text(encoding="utf-8"))
 
 
+@_SUPERVISED
 def test_a_meta_the_stop_signal_truncated_is_restored(sh: Any, tmp_path: Path) -> None:
     """The failure GNU `timeout` left behind: a signal mid-save cuts the
     `.meta` short, and `mutmut results` then fails on it."""
@@ -423,6 +435,7 @@ def test_a_meta_the_stop_signal_truncated_is_restored(sh: Any, tmp_path: Path) -
     assert restored["exit_code_by_key"]["m"] >= 1
 
 
+@_SUPERVISED
 def test_a_run_that_ignores_sigint_is_killed_after_the_grace(sh: Any, tmp_path: Path) -> None:
     result = _boxed(sh, tmp_path, "ignore-int", box_s=0.5, grace_s=0.5)
     assert result.timed_out and result.killed
@@ -461,6 +474,7 @@ def test_a_changed_meta_is_copied_again_so_a_restore_is_recent(
     assert json.loads(first.read_text(encoding="utf-8")) == {"n": 22}
 
 
+@_SUPERVISED
 def test_workers_left_behind_are_killed_with_the_group(sh: Any, tmp_path: Path) -> None:
     result = _boxed(sh, tmp_path, "orphan", box_s=0.5, grace_s=10)
     assert result.timed_out
@@ -474,6 +488,7 @@ def test_workers_left_behind_are_killed_with_the_group(sh: Any, tmp_path: Path) 
     pytest.fail(f"worker {pid} outlived the run")
 
 
+@_SUPERVISED
 def test_a_run_killed_by_a_signal_exits_128_plus_the_signal(
     sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -482,6 +497,7 @@ def test_a_run_killed_by_a_signal_exits_128_plus_the_signal(
     assert sh.main(["run", "--time-box-minutes", "1", "--", *command]) == 128 + 15
 
 
+@_SUPERVISED
 def test_an_interrupted_supervisor_stops_the_run_and_repairs_first(
     sh: Any, tmp_path: Path,
 ) -> None:
@@ -600,6 +616,7 @@ def test_a_truncated_meta_with_no_copy_is_removed_not_left_to_crash_results(
     assert not meta.exists()
 
 
+@_SUPERVISED
 def test_run_exits_124_when_the_time_box_ends_the_run(
     sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
