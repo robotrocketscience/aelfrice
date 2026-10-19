@@ -135,14 +135,18 @@ def _lock_gaps_on_windows() -> bool:
 
 
 def diagnose_lock_gaps(
-    store_path: str, project_root: Path | None = None,
+    store_path: str,
+    project_root: Path | None = None,
+    user_store_path: str | None = None,
 ) -> "LockGapReport":
     """Return the typed `/aelf:lock` requests still unapplied (#1622).
 
     The `[hook_audit]` switch is resolved from `project_root` so a
     project-local `.aelfrice.toml` that disables the audit makes the
     answer unknown rather than zero. Read-only and fail-soft: see
-    `aelfrice.lock_gaps.detect_lock_gaps`.
+    `aelfrice.lock_gaps.detect_lock_gaps`. A failed `/aelf:lock --user`
+    is judged against `user_store_path` (#1681), by default
+    `db_paths.user_db_path()`.
     """
     import io  # noqa: PLC0415
 
@@ -151,7 +155,9 @@ def diagnose_lock_gaps(
 
     # Config warnings belong to the hook's stderr, not to doctor's report.
     cfg = load_hook_audit_config(project_root, stderr=io.StringIO())
-    return detect_lock_gaps(store_path, audit_enabled=cfg.enabled)
+    return detect_lock_gaps(
+        store_path, audit_enabled=cfg.enabled, user_store_path=user_store_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +674,7 @@ def diagnose(
     hrr_store_path: str | None = None,
     hrr_dim: int = 512,
     store_path: str | None = None,
+    user_store_path: str | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -691,6 +698,8 @@ def diagnose(
     `store_path` enables the incomplete-migration block (#1161) — pass
     the resolved DB path so doctor can read the store's failed one-shot
     migrations. Omitted (or unopenable) leaves that block quiet.
+    `user_store_path` is the user lock store (#1681) the lock-gap check
+    reads; it defaults to `db_paths.user_db_path()`.
     """
     # Both home-derived paths are read through `_setup` rather than
     # copied in at import: doctor used to hold a by-value alias of
@@ -748,7 +757,9 @@ def diagnose(
         # unknown, and anything it did not anticipate must not end the
         # doctor run either.
         try:
-            report.lock_gaps = diagnose_lock_gaps(store_path, project_root)
+            report.lock_gaps = diagnose_lock_gaps(
+                store_path, project_root, user_store_path,
+            )
         except Exception as exc:  # noqa: BLE001 - fail-soft section
             from aelfrice.lock_gaps import (  # noqa: PLC0415
                 LockGapReport as _LockGapReport,
@@ -2243,9 +2254,13 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
         )
         for g in st.gaps:
             tries = f", {g.attempts} attempts" if g.attempts > 1 else ""
+            # #1681: a `/aelf:lock --user` request, judged against the
+            # user lock store; its fix carries `--user`.
+            scope = ", user scope" if g.user_scope else ""
             lines.append(
-                f"  - {g.ts} ({g.reason}{tries}): {g.display_statement}"
+                f"  - {g.ts} ({g.reason}{tries}{scope}): {g.display_statement}"
             )
+            lock_cmd = "aelf lock --user" if g.user_scope else "aelf lock"
             fix = g.fix_command
             if fix is not None:
                 lines.append(f"      fix: {fix}")
@@ -2255,7 +2270,7 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                 lines.append(
                     f"      statement shown is the first {len(g.statement)} "
                     f"of {g.arg_len} characters; to fix it, run "
-                    f"`aelf lock` with the full statement"
+                    f"`{lock_cmd}` with the full statement"
                     + (", quoted for your shell" if _lock_gaps_on_windows() else "")
                 )
             elif not g.valid_text:
@@ -2267,7 +2282,7 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
                 # No runnable command on Windows: no single quoting is safe
                 # in both cmd.exe and PowerShell (#1622).
                 lines.append(
-                    "      to fix it, run `aelf lock` with the statement "
+                    f"      to fix it, run `{lock_cmd}` with the statement "
                     "above, quoted for your shell"
                 )
     lines.append(

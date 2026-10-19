@@ -3039,9 +3039,9 @@ def _write_command_outcome_record(
         "statement": argument[:COMMAND_OUTCOME_STATEMENT_CAP],
     }
     if outcome.user_scope:
-        # #1681: the lock was meant for the user store. `lock_gaps` reads
-        # rows against the repository store, so it skips these until it
-        # can check the user store too.
+        # #1681: the lock was meant for the user store. `lock_gaps` judges
+        # a row with this tag against the user store, not the repository
+        # store, and names `aelf lock --user` as its fix.
         record["scope"] = "user"
     if session_id is not None:
         record["session_id"] = session_id

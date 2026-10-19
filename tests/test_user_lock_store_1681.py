@@ -813,7 +813,7 @@ def test_typed_lock_at_the_cap_is_accepted_after_the_flag(
 
 
 @pytest.mark.timeout(120)
-def test_hook_records_user_scope_and_lock_gaps_skips_it(
+def test_hook_records_user_scope_and_lock_gaps_judges_it_in_the_user_store(
     tmp_path: Path, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, user = stores
@@ -832,7 +832,8 @@ def test_hook_records_user_scope_and_lock_gaps_skips_it(
         STATEMENT.encode("utf-8")
     ).hexdigest()
 
-    # A failed user lock is not judged against the repository store.
+    # A failed user lock is judged against the user store, which holds
+    # the statement, not the repository store, which doesn't.
     path = command_outcomes_path_for_db(repo)
     failed = {**row, "reason": "exception"}
     path.write_text(json.dumps(failed) + "\n", encoding="utf-8")

@@ -84,10 +84,21 @@ statement text; `tests/test_lock_gaps_1622.py` pins that.
 Forward-only: rows exist only for requests typed after this shipped.
 Earlier failures carry no outcome and are not reported.
 
+User scope (#1681)
+------------------
+A failed `/aelf:lock --user` row carries `"scope": "user"`. It is judged
+against the user lock store (`db_paths.user_db_path()`, or the
+`user_store_path` a caller passes) by the same rules, and its fix
+command is `aelf lock --user ...`. The same statement failing in both
+scopes is two gaps, one per store. A user store that does not exist
+resolves nothing, as for the repository store, and is never created.
+
 Read-only throughout. The store is opened with a `mode=ro` URI, never
 through `MemoryStore`, whose constructor writes (DDL, migrations).
 Imports only the standard library and `hook_audit`, so the SessionStart
-hook pays nothing for it beyond the file read.
+hook pays nothing for it beyond the file read. `db_paths` is imported
+only to resolve the user store's path, and only when a failed user-scope
+request is on record and no path was passed.
 """
 from __future__ import annotations
 
@@ -149,6 +160,9 @@ _LOCK_ENDED_SOURCES: Final[tuple[str, ...]] = (
 # `models.INGEST_SOURCE_CLI_REMEMBER` by a test.
 _INGEST_SOURCE_LOCK: Final[str] = "cli_remember"
 _LOCK_LEVEL_USER: Final[str] = "user"
+# The outcome row's `scope` for a `/aelf:lock --user` request (#1681).
+SCOPE_USER: Final[str] = "user"
+SCOPE_REPO: Final[str] = "repo"
 
 
 def _on_windows() -> bool:
@@ -171,6 +185,14 @@ class LockGap:
     ts: str
     session_id: str | None
     attempts: int
+    # #1681: `user` for a failed `/aelf:lock --user`, judged against the
+    # user lock store; `repo` otherwise.
+    scope: str = SCOPE_REPO
+
+    @property
+    def user_scope(self) -> bool:
+        """Whether the request was for the user lock store."""
+        return self.scope == SCOPE_USER
 
     @property
     def truncated(self) -> bool:
@@ -216,7 +238,8 @@ class LockGap:
         """
         if self.truncated or not self.valid_text or _on_windows():
             return None
-        return f"aelf lock {shlex.quote(self.statement)}"
+        flag = "--user " if self.user_scope else ""
+        return f"aelf lock {flag}{shlex.quote(self.statement)}"
 
 
 @dataclass(frozen=True)
@@ -276,22 +299,19 @@ def read_command_outcomes(path: Path) -> list[dict[str, object]]:
 
 def _failed_lock_candidates(
     rows: list[dict[str, object]],
-) -> dict[str, LockGap]:
-    """Collapse failed lock rows to one candidate per statement hash.
+) -> dict[tuple[str, str], LockGap]:
+    """Collapse failed lock rows to one candidate per scope and statement hash.
 
     Keeps the latest attempt's timestamp: an unlock is "later" only if it
-    follows the most recent failure, not merely the first.
+    follows the most recent failure, not merely the first. Keyed by
+    `(scope, arg_sha256)` (#1681): a statement that failed in both scopes
+    is judged once against each store.
     """
-    out: dict[str, LockGap] = {}
+    out: dict[tuple[str, str], LockGap] = {}
     for r in rows:
         if r.get("command") != "lock" or r.get("reason") not in GAP_REASONS:
             continue
-        if r.get("scope") == "user":
-            # #1681: a failed `/aelf:lock --user` targeted the user store,
-            # which this detector does not read yet. Judged against the
-            # repository store it could never resolve, and its fix
-            # command would lock the statement in the wrong scope.
-            continue
+        scope = SCOPE_USER if r.get("scope") == SCOPE_USER else SCOPE_REPO
         digest = r.get("arg_sha256")
         ts = r.get("ts")
         if not isinstance(digest, str) or not isinstance(ts, str):
@@ -299,8 +319,8 @@ def _failed_lock_candidates(
         statement = r.get("statement")
         arg_len = r.get("arg_len")
         sid = r.get("session_id")
-        prev = out.get(digest)
-        out[digest] = LockGap(
+        prev = out.get((scope, digest))
+        out[(scope, digest)] = LockGap(
             arg_sha256=digest,
             statement=statement if isinstance(statement, str) else "",
             arg_len=arg_len if isinstance(arg_len, int) else 0,
@@ -308,6 +328,7 @@ def _failed_lock_candidates(
             ts=ts if prev is None or ts >= prev.ts else prev.ts,
             session_id=sid if isinstance(sid, str) else None,
             attempts=1 if prev is None else prev.attempts + 1,
+            scope=scope,
         )
     return out
 
@@ -433,8 +454,44 @@ def _is_resolved(
     return False
 
 
-def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
+def _open_gaps(
+    path: Path, candidates: list[LockGap],
+) -> list[LockGap]:
+    """The candidates the store at `path` does not resolve.
+
+    A store that does not exist resolves nothing. Raises `sqlite3.Error`
+    when it exists and can't be read.
+    """
+    if not candidates or not path.exists():
+        return list(candidates)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        ids = _statement_belief_ids(conn, {g.arg_sha256 for g in candidates})
+        return [
+            g for g in candidates
+            if not _is_resolved(conn, g, ids[g.arg_sha256])
+        ]
+    finally:
+        conn.close()
+
+
+def _default_user_store_path() -> str:
+    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+
+    return str(user_db_path())
+
+
+def detect_lock_gaps(
+    store_path: str,
+    *,
+    audit_enabled: bool,
+    user_store_path: str | None = None,
+) -> LockGapReport:
     """Return the unapplied lock requests for the store at `store_path`.
+
+    A failed `/aelf:lock --user` request is judged against the user lock
+    store at `user_store_path`, which defaults to `db_paths.user_db_path()`
+    and is resolved only when such a request is on record (#1681).
 
     `audit_enabled` is the resolved `[hook_audit]` switch. When it is off
     the hook writes no outcome rows, so the answer is unknown. It is also
@@ -443,7 +500,10 @@ def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
     exists but cannot be read.
 
     A store file that does not exist resolves nothing: every failed
-    request is a gap, because nothing can have been locked.
+    request is a gap, because nothing can have been locked. That holds
+    for the user store too, which is never created here. A user store
+    that exists but can't be read makes the answer unknown, as an
+    unreadable repository store does.
     """
     if not audit_enabled:
         return LockGapReport(
@@ -482,30 +542,34 @@ def detect_lock_gaps(store_path: str, *, audit_enabled: bool) -> LockGapReport:
         (r["ts"] for r in rows if isinstance(r.get("ts"), str)), None,
     )
     candidates = _failed_lock_candidates(rows)
-    if not candidates or not db.exists():
-        return LockGapReport(
-            known=True,
-            gaps=tuple(sorted(candidates.values(), key=lambda g: g.ts)),
-            records_seen=len(rows),
-            first_ts=first_ts if isinstance(first_ts, str) else None,
-        )
-    conn: sqlite3.Connection | None = None
+    repo_candidates = [g for g in candidates.values() if not g.user_scope]
+    user_candidates = [g for g in candidates.values() if g.user_scope]
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        ids = _statement_belief_ids(conn, set(candidates))
-        open_gaps = [
-            g for g in candidates.values()
-            if not _is_resolved(conn, g, ids[g.arg_sha256])
-        ]
+        open_gaps = _open_gaps(db, repo_candidates)
     except sqlite3.Error as exc:
         return LockGapReport(
             known=False,
             unknown_reason=f"the store could not be read: {exc}",
             records_seen=len(rows),
         )
-    finally:
-        if conn is not None:
-            conn.close()
+    if user_candidates:
+        user_path = (
+            user_store_path if user_store_path is not None
+            else _default_user_store_path()
+        )
+        try:
+            open_gaps += (
+                list(user_candidates) if user_path == ":memory:"
+                else _open_gaps(Path(user_path), user_candidates)
+            )
+        except sqlite3.Error as exc:
+            return LockGapReport(
+                known=False,
+                unknown_reason=(
+                    f"the user lock store could not be read: {exc}"
+                ),
+                records_seen=len(rows),
+            )
     return LockGapReport(
         known=True,
         gaps=tuple(sorted(open_gaps, key=lambda g: g.ts)),
