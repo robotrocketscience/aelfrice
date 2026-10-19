@@ -2329,13 +2329,23 @@ def _serialize_belief_for_audit(b: "Belief") -> dict[str, object]:
     propagate per-hit scores through to the hook caller, and adding
     that plumbing was out of scope for #321.
     """
+    from aelfrice.user_locks import is_user_scope_lock  # noqa: PLC0415
+
     locked = b.lock_level == LOCK_USER
     alpha = float(b.alpha)
     beta = float(b.beta)
     denom = alpha + beta
     posterior_mean = (alpha / denom) if denom > 0 else 0.0
+    # #1681: a lock read from the user store says so. Readers that act on
+    # these ids against the repository store (sentiment feedback) skip it,
+    # because the same text there has the same id and is another belief.
+    # A repository row carries no `scope` key, so its shape is unchanged.
+    scope: dict[str, object] = (
+        {"scope": "user"} if is_user_scope_lock(b) else {}
+    )
     return {
         "id": b.id,
+        **scope,
         "lane": "L0" if locked else "L1",
         "locked": locked,
         "content_hash": b.content_hash,
@@ -5634,6 +5644,9 @@ def _load_prior_ups_belief_ids(
                 ids: list[str] = []
                 for b in beliefs_obj:
                     if not isinstance(b, dict):
+                        continue
+                    # #1681: a user-store lock is not this store's belief.
+                    if cast("dict[str, object]", b).get("scope") == "user":
                         continue
                     bid = b.get("id")
                     if isinstance(bid, str) and bid:
