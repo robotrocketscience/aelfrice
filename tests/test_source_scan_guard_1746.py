@@ -232,7 +232,7 @@ def test_a_cache_in_the_test_module_is_cleared_before_each_test() -> None:
         "    return object()\n",
         module.__dict__,
     )
-    foreign = functools.lru_cache(maxsize=None)(lambda: object())
+    foreign = functools.lru_cache(maxsize=None)(object)
     setattr(module, "foreign", foreign)
     scan: Any = module.__dict__["scan"]
     scan()

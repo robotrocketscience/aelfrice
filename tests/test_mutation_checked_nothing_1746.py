@@ -107,7 +107,7 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
         "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
         "--deselect",
         "tests/test_block_ceiling_hermetic_home_1716.py::"
-        "test_a_home_config_does_not_move_the_session_start_figures",
+        + "test_a_home_config_does_not_move_the_session_start_figures",
         *(
             arg
             for case in (
