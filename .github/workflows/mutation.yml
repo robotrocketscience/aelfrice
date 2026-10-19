@@ -101,7 +101,7 @@ jobs:
           cat mutation-plan.md >> "${GITHUB_STEP_SUMMARY}"
           # The matrix below is read from the plan, so the two can't disagree.
           echo "shards=$(jq -c '[.shards[].index]' mutation-plan.json)" >> "${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mutation-plan
           path: mutation-plan.json
@@ -277,7 +277,7 @@ jobs:
             *) echo "::error::mutmut run exited ${RUN_STATUS}, not 0 or the time box's 124: it failed partway. The 'Run mutation tests' step log shows why."
                exit 1 ;;
           esac
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: mutation-report-${{ matrix.shard }}
@@ -321,7 +321,7 @@ jobs:
             cat mutation-summary.md >> "${GITHUB_STEP_SUMMARY}"
           fi
           exit "${status}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: mutation-summary
