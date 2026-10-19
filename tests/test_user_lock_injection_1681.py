@@ -920,3 +920,116 @@ def test_first_prompt_opens_the_user_store_once(
     text = out.getvalue()
     assert "<locked>" in text and 'id="u1"' in text
     assert len(opens) == 1
+
+
+# --- ids shared across the two stores --------------------------------------------
+
+
+def _alpha(path: Path, bid: str) -> float:
+    conn = sqlite3.connect(str(path))
+    try:
+        row = conn.execute(
+            "SELECT alpha FROM beliefs WHERE id = ?", (bid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return float(row[0])
+
+
+@pytest.mark.timeout(60)
+def test_show_prints_both_records_for_an_id_in_both_stores(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same text, same id: unlocked in the repository, locked in the user store."""
+    repo, user = stores
+    _seed(repo, [_plain("same", USER_RULE)])
+    _seed(user, [_lock("same", USER_RULE)])
+    rc, out, _ = _cli(["show", "same"], capsys)
+    assert rc == 0
+    store_lines = [ln for ln in out.splitlines() if ln.startswith("store: ")]
+    assert store_lines == [f"store: repo ({repo})", f"store: user ({user})"]
+    assert out.count("belief: same") == 2
+    assert out.index("lock: none") < out.index("lock: user")
+
+
+@pytest.mark.timeout(60)
+def test_feedback_refuses_an_id_that_both_stores_hold(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("same", USER_RULE)])
+    _seed(user, [_lock("same", USER_RULE)])
+    before_user = user.read_bytes()
+    rc, _, err = _cli(["feedback", "same", "used"], capsys)
+    assert rc == 1
+    assert "is a user-scope lock" in err
+    assert "repository also has a belief with this id" in err
+    assert _alpha(repo, "same") == 1.0
+    assert user.read_bytes() == before_user
+
+
+@pytest.mark.timeout(60)
+def test_a_prefix_matching_in_both_stores_is_ambiguous(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("u1zzz", "a repository belief about widgets")])
+    _seed(user, [_lock("u1abc", USER_RULE)])
+    rc, out, err = _cli(["show", "u1"], capsys)
+    assert rc == 1
+    assert out == ""
+    assert "ambiguous" in err
+    assert "u1zzz (repo)" in err and "u1abc (user)" in err
+    rc, _, err = _cli(["feedback", "u1", "used"], capsys)
+    assert rc == 1
+    assert "ambiguous" in err
+    assert "u1zzz (repo)" in err and "u1abc (user)" in err
+    assert _alpha(repo, "u1zzz") == 1.0
+
+
+@pytest.mark.timeout(60)
+def test_a_prefix_unique_across_both_stores_resolves(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("r9zzz", "a repository belief about widgets")])
+    _seed(user, [_lock("u9abc", USER_RULE)])
+    rc, out, _ = _cli(["show", "u9"], capsys)
+    assert rc == 0
+    assert out.splitlines()[:2] == ["belief: u9abc", f"store: user ({user})"]
+    rc, _, err = _cli(["feedback", "u9", "used"], capsys)
+    assert rc == 1
+    assert "u9abc is a user-scope lock" in err
+    rc, out, _ = _cli(["feedback", "r9", "used"], capsys)
+    assert rc == 0
+    assert "applied used to r9zzz" in out
+    assert _alpha(repo, "r9zzz") == 2.0
+
+
+@pytest.mark.timeout(60)
+def test_read_cache_keeps_a_bounded_number_of_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "unset"
+    for i in range(ul._CACHE_MAX + 2):  # pyright: ignore[reportPrivateUsage]
+        path = tmp_path / f"user{i}" / "memory.db"
+        _seed(path, [_lock(f"u{i}", f"User rule number {i} on caching.")])
+        monkeypatch.setenv("AELFRICE_USER_DB", str(path))
+        assert [b.id for b in ul.read_user_locks()] == [f"u{i}"]
+    cache = ul._CACHE  # pyright: ignore[reportPrivateUsage]
+    assert len(cache) == ul._CACHE_MAX  # pyright: ignore[reportPrivateUsage]
+    assert str(path) in cache
+
+
+@pytest.mark.timeout(60)
+def test_an_exact_id_in_one_store_wins_over_a_prefix_in_the_other(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_plain("u1", "a repository belief whose id is short")])
+    _seed(user, [_lock("u1abc", USER_RULE)])
+    rc, out, _ = _cli(["show", "u1"], capsys)
+    assert rc == 0
+    assert out.splitlines()[0] == "belief: u1"
+    assert "u1abc" not in out
+    assert "store:" not in out
