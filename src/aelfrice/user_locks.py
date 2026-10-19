@@ -10,7 +10,9 @@ Three rules, each deterministic and with no embeddings:
 
 * **Read-only, never create.** The user store is opened `mode=ro`, and
   only when the file exists. A missing store contributes nothing and
-  leaves no file behind. A store that exists but can't be opened or read
+  leaves no file behind. The database file of an existing store is never
+  written, though a read-only open lets SQLite create the `-wal` and
+  `-shm` files beside it. A store that exists but can't be opened or read
   contributes nothing and prints one stderr line per process.
 * **The repository copy wins.** A user lock that near-duplicates a
   repository lock, by `dedup.near_duplicate_locks_among` (the test
@@ -61,10 +63,20 @@ _WARNED: set[str] = set()
 # they were read at. One hook fire can build the L0 set more than once
 # (the first prompt's `<locked>` section and its retrieval; the compact
 # SessionStart's baseline and its rebuild), and the store is opened once.
-# Any write moves the signature: the database file or its `-wal` sidecar
-# changes size, mtime, or inode.
+#
+# The signature is the size, mtime, and inode of the database file and of
+# its `-wal` sidecar. It is only as fresh as the filesystem's mtime
+# resolution: a write that lands in the same timestamp tick and leaves
+# both sizes unchanged can be missed. That staleness lasts at most one
+# process. The hooks are one-shot processes, and nothing long-lived
+# calls `read_user_locks`, so a missed write shows up on the next fire.
+#
+# At most `_CACHE_MAX` paths are kept, oldest dropped first. One process
+# normally reads one user store; the bound keeps a process that is handed
+# many `AELFRICE_USER_DB` values from holding every one.
 _FileSig = tuple[int, int, int]
 _CACHE: dict[str, tuple[tuple[_FileSig | None, _FileSig | None], list[Belief]]] = {}
+_CACHE_MAX: Final[int] = 4
 
 
 def is_user_scope_lock(b: object) -> bool:
@@ -150,7 +162,11 @@ def read_user_locks(
     it defaults to the wall clock, read once.
 
     The store is opened once per process for as long as the file is
-    unchanged (`_CACHE`); the expiry filter runs on every call.
+    unchanged (`_CACHE`); the expiry filter runs on every call. "Unchanged"
+    means the same size, mtime, and inode for the database and its
+    `-wal`, so a write in the same mtime tick that keeps both sizes can be
+    missed for the rest of this process. The hooks are one-shot processes,
+    so the next fire reads it.
     """
     from aelfrice.db_paths import user_db_path  # noqa: PLC0415
     from aelfrice.store import (  # noqa: PLC0415
@@ -186,7 +202,10 @@ def read_user_locks(
             return []
         for b in rows:
             setattr(b, USER_SCOPE_ATTR, USER_SCOPE_VALUE)
+        _CACHE.pop(key, None)
         _CACHE[key] = (sig, rows)
+        while len(_CACHE) > _CACHE_MAX:
+            del _CACHE[next(iter(_CACHE))]
     ts = now if now is not None else datetime.now(timezone.utc).isoformat()
     # The #1314 sweep's predicate, inverted: due when at or before now.
     return [
