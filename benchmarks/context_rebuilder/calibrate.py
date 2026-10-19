@@ -334,6 +334,7 @@ def _measure_one_threshold(
         ]
         block = rebuild_v14(
             recent, store, token_budget=CALIBRATION_TOKEN_BUDGET,
+            user_locks=(),  # #1681: repository locks only
         )
     finally:
         store.close()

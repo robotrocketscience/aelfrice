@@ -742,7 +742,12 @@ def test_probe_calls_retrieve_once_per_prompt_with_the_shipped_kwargs(
     monkeypatch.setattr(probe, "last_lane_telemetry", LaneTelemetry)
     out = probe.probe(object(), ["one", "two"])
     assert [q for q, _ in seen] == ["one", "two"]
-    assert all(kw == {"manifest_reference_locks": True} for _, kw in seen)
+    # #1681: the probe measures the corpus, so it pins L0 to the
+    # repository's locks rather than reading the machine's user store.
+    assert all(
+        kw == {"manifest_reference_locks": True, "user_locks": ()}
+        for _, kw in seen
+    )
     assert out["empty_output_calls"] == 2
 
 

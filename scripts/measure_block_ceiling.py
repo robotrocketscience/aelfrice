@@ -1414,16 +1414,26 @@ def crossing(chars: int, max_locks: int, step: int) -> dict[str, object]:
 def _hermetic_home() -> Iterator[Path]:
     """Point ``HOME`` (and ``USERPROFILE``) at a fresh empty directory (#1716).
 
+    ``AELFRICE_USER_DB`` is pointed at a missing file in that directory as
+    well (#1681), so no user lock store reaches a figure.
+
     The hook reads per-user state: a ``~/.aelfrice.toml`` makes SessionStart
     add the #1652 ignored-config line, which put about 40 tokens on the
     ``session_start`` figures on one machine and none on CI. Measuring under
     an empty home makes every figure the same wherever the producer runs.
     Restored on exit, so a caller in the same process keeps its own home.
     """
-    saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+    saved = {
+        k: os.environ.get(k)
+        for k in ("HOME", "USERPROFILE", "AELFRICE_USER_DB")
+    }
     home = Path(tempfile.mkdtemp(prefix="aelf-ceiling-home-"))
     os.environ["HOME"] = str(home)
     os.environ["USERPROFILE"] = str(home)
+    # #1681: the user lock store is per-user state too, and an exported
+    # `AELFRICE_USER_DB` would put its locks in every figure. Point it at
+    # a path inside the empty home that no one creates.
+    os.environ["AELFRICE_USER_DB"] = str(home / "no-user-store" / "memory.db")
     try:
         yield home
     finally:

@@ -95,6 +95,7 @@ def _ranked(store, query: str, weight: float) -> tuple[str, ...]:
         entity_index_enabled=False,
         bfs_enabled=False,
         posterior_weight=None,
+        user_locks=(),  # #1681: repository locks only
     )
     return tuple(b.id for b in hits)
 

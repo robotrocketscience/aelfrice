@@ -331,13 +331,13 @@ def time_arm(
 
     for q in queries:
         for _ in range(warmup):
-            retrieve(store, q, bfs_enabled=bfs_enabled)
+            retrieve(store, q, bfs_enabled=bfs_enabled, user_locks=())
 
     samples_ms: list[float] = []
     for q in queries:
         for _ in range(iterations):
             t0 = time.perf_counter()
-            retrieve(store, q, bfs_enabled=bfs_enabled)
+            retrieve(store, q, bfs_enabled=bfs_enabled, user_locks=())
             samples_ms.append((time.perf_counter() - t0) * 1000.0)
 
     samples_sorted = sorted(samples_ms)

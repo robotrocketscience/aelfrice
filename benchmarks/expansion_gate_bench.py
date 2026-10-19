@@ -193,7 +193,7 @@ def run_cell(
     with _gate_env(gate_on):
         for row in rows:
             t0 = time.perf_counter()
-            retrieve(store, row.prompt, bfs_enabled=bfs_on)
+            retrieve(store, row.prompt, bfs_enabled=bfs_on, user_locks=())
             dt_ms = (time.perf_counter() - t0) * 1000.0
             tel = last_lane_telemetry()
             s = stats[row.label]

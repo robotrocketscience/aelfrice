@@ -94,7 +94,9 @@ def _score_case(case: dict[str, Any], *, k: int) -> CaseResult:
                 _mk(c["id"], c["content"], ORIGIN_DOCUMENT_RECENT)
             )
         # Large budget so ranking — not the budget trim — decides order.
-        hits = retrieve(store, case["query"], token_budget=100_000)
+        hits = retrieve(
+            store, case["query"], token_budget=100_000, user_locks=(),
+        )
     finally:
         store.close()
     order = [h.id for h in hits]

@@ -847,7 +847,7 @@ def _lane_hits(
     return list(
         retrieval.retrieve(
             store, QUERY, token_budget=budget, l25_token_subbudget=sub,
-            manifest_reference_locks=True, **kwargs,
+            manifest_reference_locks=True, user_locks=(), **kwargs,
         )
     )
 
@@ -1024,7 +1024,7 @@ def _render_session_start(store: Any, budget: int, sub: int, *, legacy: bool) ->
 
     hits = retrieval.retrieve(
         store, "", token_budget=budget, l25_token_subbudget=sub,
-        manifest_reference_locks=True,
+        manifest_reference_locks=True, user_locks=(),
     )
     return Arm(len(hits), len(hook._format_baseline_hits(hits)))
 
@@ -1066,6 +1066,7 @@ def _render_search_tool(
         l25_token_subbudget=sub,
         l1_limit=l1_limit,
         manifest_reference_locks=True,
+        user_locks=(),
         # Pre-#1526 this lane had no cost function of its own and was charged
         # the `<belief …>` element it does not emit. Resolved through
         # `_lane_belief_cost` so this lane's entry in that table is the one
@@ -1097,6 +1098,7 @@ def _render_cli_search(store: Any, budget: int, sub: int, *, legacy: bool) -> Ar
 
     hits = retrieval.retrieve(
         store, QUERY, token_budget=budget, l25_token_subbudget=sub,
+        user_locks=(),
     )
     n_bytes = 0
     for h in hits:
@@ -1757,6 +1759,7 @@ def _rebuild_block_bytes(stores: dict[int, Any]) -> dict[str, Any]:
                     turns, store,
                     token_budget=DEFAULT_REBUILDER_TOKEN_BUDGET,
                     rebuild_log_enabled=False,
+                    user_locks=(),
                 )
             )
         after = len(
@@ -1764,6 +1767,7 @@ def _rebuild_block_bytes(stores: dict[int, Any]) -> dict[str, Any]:
                 turns, store,
                 token_budget=DEFAULT_REBUILDER_TOKEN_BUDGET,
                 rebuild_log_enabled=False,
+                user_locks=(),
             )
         )
         out[f"rebuild_bytes_before_{chars}"] = before

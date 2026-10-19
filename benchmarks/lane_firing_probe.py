@@ -700,7 +700,9 @@ def probe(
         # `manifest_reference_locks=True` mirrors the production hook
         # call in `hook_search.search_and_record`; the probe measures the
         # shipped path, not a convenient one.
-        hits = retrieve(store, prompt, manifest_reference_locks=True)
+        hits = retrieve(
+            store, prompt, manifest_reference_locks=True, user_locks=(),
+        )
         tel = last_lane_telemetry()
         for lane in OBSERVABLE_LANES:
             if lane.observed(tel):
