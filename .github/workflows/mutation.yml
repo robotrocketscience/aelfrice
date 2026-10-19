@@ -202,6 +202,8 @@ jobs:
           .venv/bin/mutmut results --all=true > mutation-report.txt
           cat mutation-report.txt
       - name: Assert the run actually produced results
+        env:
+          RUN_STATUS: ${{ steps.run.outputs.status }}
         run: |
           # The guard for the 2026-06-21 regression, stated as a *positive*
           # signal. Report non-emptiness cannot carry it: see the `--all` note
@@ -229,6 +231,11 @@ jobs:
           # means killed, survived, or timeout, the statuses
           # `mutation_shards.CHECKED_STATUSES` counts: `no tests` or
           # `suspicious` on every mutant says nothing about the tests.
+          #
+          # Only the time box (124) excuses `not checked` mutants. mutmut
+          # 3.8.0 can swallow a ChildProcessError in its result loop and
+          # still exit 0, so a run that exited 0 with mutants left `not
+          # checked` stopped early without saying so, and fails.
           MUTANT_LINE='^ *[^ :]+__mutmut_[0-9]+: '
           total=$(grep -cE "${MUTANT_LINE}" mutation-report.txt || true)
           killed=$(grep -cE ': killed$' mutation-report.txt || true)
@@ -242,15 +249,20 @@ jobs:
             cat mutation-report.txt
             exit 1
           fi
+          echo "mutants: ${total} total, ${killed} killed, ${survived} survived, ${timedout} timeout, ${unchecked} not checked"
+          failure=""
           if [ "${checked}" -eq 0 ]; then
-            echo "::error::none of ${total} mutants was killed, survived, or timed out — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
+            failure="none of ${total} mutants was killed, survived, or timed out — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
             grep -vE ': (killed|survived|timeout)$' mutation-report.txt | head -20
-            exit 1
-          fi
-          if [ "${unchecked}" -ne 0 ]; then
+          elif [ "${unchecked}" -ne 0 ] && [ "${RUN_STATUS}" != 124 ]; then
+            failure="${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked', but mutmut run exited ${RUN_STATUS}, not the time box's 124: it stopped checking mutants before it finished. The 'Run mutation tests' step log shows where."
+          elif [ "${unchecked}" -ne 0 ]; then
             echo "::warning title=Partial mutation run::${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked'."
           fi
-          echo "mutants: ${total} total, ${killed} killed, ${survived} survived, ${timedout} timeout, ${unchecked} not checked"
+          if [ -n "${failure}" ]; then
+            echo "::error::${failure}"
+            exit 1
+          fi
       - name: Fail when mutmut stopped on an error
         env:
           RUN_STATUS: ${{ steps.run.outputs.status }}

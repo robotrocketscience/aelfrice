@@ -14,6 +14,8 @@ import importlib.util
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import textwrap
 import time
@@ -633,6 +635,61 @@ def test_the_shard_guard_fails_only_on_a_run_that_judged_nothing() -> None:
     assert "timedout=$(grep -cE ': timeout$' mutation-report.txt || true)" in guard
     assert '[ "${checked}" -eq 0 ]' in guard
     assert "::warning title=Partial mutation run::" in guard
+
+
+_BASH = shutil.which("bash")
+
+
+def _run_guard(
+    tmp_path: Path, run_status: str, report: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the shard guard's own `run:` body with bash against `report`.
+
+    `${{ ... }}` is GitHub's expression syntax, which bash rejects, so the
+    one expression in the body is filled in the way Actions would.
+    """
+    assert _BASH is not None
+    step = _step("mutmut", "Assert the run actually produced results")
+    assert "RUN_STATUS: ${{ steps.run.outputs.status }}" in step
+    _, sep, body = step.partition("run: |\n")
+    assert sep
+    body = body.replace("${{ matrix.shard }}", "3")
+    assert "${{" not in body
+    (tmp_path / "mutation-report.txt").write_text(report, encoding="utf-8")
+    script = tmp_path / "guard.sh"
+    script.write_text(body, encoding="utf-8")
+    return subprocess.run(
+        [_BASH, "-e", str(script)], cwd=tmp_path,
+        env={**os.environ, "LC_ALL": "C.UTF-8", "RUN_STATUS": run_status},
+        capture_output=True, text=True, encoding="utf-8", check=False, timeout=30,
+    )
+
+
+@pytest.mark.skipif(_BASH is None, reason="needs bash")
+@pytest.mark.timeout(60)  # spawns bash and grep
+@pytest.mark.parametrize(
+    ("run_status", "unchecked", "passes", "annotation"),
+    [
+        # mutmut 3.8.0 can swallow a ChildProcessError and still exit 0.
+        ("0", 2, False, "::error::2 of 4 mutants in shard 3 are 'not checked'"),
+        ("124", 2, True, "::warning title=Partial mutation run::2 of 4"),
+        ("0", 0, True, None),
+    ],
+)
+def test_only_the_time_box_excuses_unchecked_mutants(
+    tmp_path: Path, run_status: str, unchecked: int, passes: bool,
+    annotation: str | None,
+) -> None:
+    proc = _run_guard(
+        tmp_path, run_status,
+        _report(killed=1, survived=4 - unchecked - 1, not_checked=unchecked),
+    )
+    assert (proc.returncode == 0) is passes, proc.stdout + proc.stderr
+    assert "mutants: 4 total" in proc.stdout
+    if annotation is None:
+        assert "::" not in proc.stdout, proc.stdout
+    else:
+        assert annotation in proc.stdout, proc.stdout
 
 
 def test_the_plan_job_checks_the_mutmut_contract_before_planning() -> None:
