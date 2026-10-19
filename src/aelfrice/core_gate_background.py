@@ -74,15 +74,25 @@ RUNNER_DROPPED_ENV: Final[tuple[str, ...]] = (
     "MAX_THINKING_TOKENS", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
 )
 
-#: The parent host session's identity, also removed (see `runner_env`).
+#: The parent host session's identity, also removed (see `runner_env`):
+#: the variables the host sets per session, and those it removes itself
+#: before it starts a background session.
 RUNNER_SESSION_ENV: Final[tuple[str, ...]] = (
     "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_BRIDGE_SESSION_ID",
-    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_HOST_WORKTREE",
+    "CLAUDE_CODE_HOST_WORKTREE_FENCE", "CLAUDE_EFFORT", "AI_AGENT",
+    "TRACEPARENT",
 )
 
 #: The headless entrypoint the child runs under (see `runner_env`).
 RUNNER_ENTRYPOINT: Final[str] = "sdk-cli"
+
+#: Inherited entrypoints `runner_env` replaces with `RUNNER_ENTRYPOINT`.
+#: Others, such as a desktop label, also select how the host
+#: authenticates, so they are kept.
+RUNNER_REPLACED_ENTRYPOINTS: Final[frozenset[str | None]] = frozenset({None, "", "cli"})
 
 #: Outcomes written to the log, one per run.
 OUTCOME_ACCEPTED: Final[str] = "accepted"
@@ -211,17 +221,19 @@ def runner_env(base: dict[str, str]) -> dict[str, str]:
     batch stays open.
 
     It also drops the identity of the host session the hook ran in (its
-    session ID and messaging socket and token), so the child is its own
-    session, as in the measured runs. The entrypoint is set to the
-    headless `sdk-cli`: the host only turns an inherited `cli` into it,
-    and keeps an IDE or desktop label. So if a hook fired in the child
-    anyway, aelfrice's headless check skips it whatever session started
-    the Stop.
+    session ID, effort, trace, and messaging socket and token), so the
+    child is its own session, as in the measured runs. A missing or `cli`
+    entrypoint becomes the headless `sdk-cli`, so if a hook fired in the
+    child anyway, aelfrice's headless check would skip it. Any other
+    entrypoint is kept: the host also uses a desktop label to choose how
+    it authenticates, so replacing it could break the run. For those, the
+    disabled hooks and settings are the only guard.
     """
     env = dict(base)
     for name in (*RUNNER_DROPPED_ENV, *RUNNER_SESSION_ENV):
         env.pop(name, None)
-    env[ENV_HOST_ENTRYPOINT] = RUNNER_ENTRYPOINT
+    if env.get(ENV_HOST_ENTRYPOINT) in RUNNER_REPLACED_ENTRYPOINTS:
+        env[ENV_HOST_ENTRYPOINT] = RUNNER_ENTRYPOINT
     env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
     env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
     return env

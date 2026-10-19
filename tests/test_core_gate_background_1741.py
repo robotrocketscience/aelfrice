@@ -320,22 +320,33 @@ def test_runner_env_keeps_thinking_and_drops_context() -> None:
     assert env["PATH"] == "/x"
 
 
-@pytest.mark.parametrize("entrypoint", ["cli", "claude-vscode", "claude-desktop", None])
-def test_runner_env_is_its_own_headless_session(entrypoint: str | None) -> None:
-    """Killed by: passing the host session's identity or messaging channel to
-    the child, or leaving it a label the headless check doesn't skip."""
+@pytest.mark.parametrize(
+    ("entrypoint", "expected"),
+    [
+        ("cli", "sdk-cli"), ("", "sdk-cli"), (None, "sdk-cli"),
+        ("claude-vscode", "claude-vscode"), ("claude-desktop", "claude-desktop"),
+    ],
+)
+def test_runner_env_is_its_own_session(entrypoint: str | None, expected: str) -> None:
+    """Killed by: passing the host session's identity, effort, trace, or
+    messaging channel to the child; leaving a missing or `cli` entrypoint
+    for the headless check to miss; or replacing a desktop or IDE label,
+    which also selects how the host authenticates."""
     base = {name: "widget" for name in bg.RUNNER_SESSION_ENV} | {"PATH": "/x"}
     if entrypoint is not None:
         base["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
     env = bg.runner_env(base)
     assert set(bg.RUNNER_SESSION_ENV) == {
         "CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_BRIDGE_SESSION_ID",
-        "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_HOST_WORKTREE",
+        "CLAUDE_CODE_HOST_WORKTREE_FENCE", "CLAUDE_EFFORT", "AI_AGENT",
+        "TRACEPARENT",
     }
     assert not set(bg.RUNNER_SESSION_ENV) & set(env)
-    assert env["CLAUDE_CODE_ENTRYPOINT"] == "sdk-cli"
-    assert is_headless_hook_env(env)
+    assert env["CLAUDE_CODE_ENTRYPOINT"] == expected
+    assert is_headless_hook_env(env) is (expected == "sdk-cli")
     assert env["PATH"] == "/x"
 
 
