@@ -670,6 +670,10 @@ def run_boxed(
     If this process is itself interrupted (the job is cancelled, or the
     caller sends SIGTERM, which `main` turns into an exception), it stops
     the command the same way and repairs the files before re-raising.
+    Once that stop begins, SIGINT and SIGTERM are ignored until the repair
+    is done: GitHub's cancel sends SIGINT and then SIGTERM about 7.5
+    seconds later, inside the grace period, and the second signal must
+    not cut the stop short.
     """
     snapshots = MetaSnapshots(meta_root, store)
     deadline = clock() + box_s
@@ -687,11 +691,45 @@ def run_boxed(
                 returncode, killed = _stop(proc, grace_s)
                 break
     except BaseException:
-        _stop(proc, grace_s)
-        snapshots.repair()
+        held = _ignore_stop_signals()
+        try:
+            _stop(proc, grace_s)
+        finally:
+            # Also when a signal landed before the handlers were swapped:
+            # the group still gets its SIGKILL and the files their repair.
+            try:
+                _signal_group(proc, signal.SIGKILL)
+                proc.wait()
+                snapshots.repair()
+            finally:
+                _restore_signals(held)
         raise
     restored, removed = snapshots.repair()
     return RunResult(returncode, timed_out, killed, restored, removed)
+
+
+#: The signals a cancelled job sends this process.
+_STOP_SIGNALS: Final[tuple[signal.Signals, ...]] = (signal.SIGINT, signal.SIGTERM)
+
+
+def _ignore_stop_signals() -> dict[signal.Signals, Any]:
+    """Ignore SIGINT and SIGTERM; the handlers they had, to restore.
+
+    Empty off the main thread, where Python can't change handlers.
+    """
+    held: dict[signal.Signals, Any] = {}
+    try:
+        for sig in _STOP_SIGNALS:
+            held[sig] = signal.signal(sig, signal.SIG_IGN)
+    except ValueError:
+        _restore_signals(held)
+        return {}
+    return held
+
+
+def _restore_signals(held: Mapping[signal.Signals, Any]) -> None:
+    for sig, handler in held.items():
+        signal.signal(sig, handler)
 
 
 def _stop(proc: subprocess.Popen[bytes], grace_s: float) -> tuple[int, bool]:

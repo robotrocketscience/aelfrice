@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -357,8 +358,23 @@ _WRITER = textwrap.dedent("""\
                 f.write('{"exit_code_by_key": {"m"')
             sys.exit(1)
         signal.signal(signal.SIGINT, cut)
+    stopped = []
+    if mode == "truncate-and-hang":
+        # Truncates the file on SIGINT and then never exits on its own, so
+        # only the supervisor's SIGKILL ends it.
+        with open(meta + ".pid", "w") as f:
+            f.write(str(__import__("os").getpid()))
+        signal.signal(signal.SIGINT, lambda *_: stopped.append(1))
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     n = 0
     while True:
+        if stopped:
+            if len(stopped) == 1:
+                stopped.append(1)
+                with open(meta, "w") as f:
+                    f.write('{"cut by SIGINT"')  # a prefix of no whole write
+            time.sleep(0.02)
+            continue
         n += 1
         with open(meta, "w") as f:
             f.write(json.dumps({"exit_code_by_key": {"m": n}}))
@@ -492,6 +508,85 @@ def test_an_interrupted_supervisor_stops_the_run_and_repairs_first(
     time.sleep(0.2)
     assert meta.read_bytes() == before, "the command still runs after the interrupt"
     assert json.loads(before)["exit_code_by_key"]["m"] >= 1
+
+
+def _wait_for(check: Any, what: str, within_s: float = 20.0) -> None:
+    deadline = time.monotonic() + within_s
+    while not check():
+        if time.monotonic() > deadline:
+            pytest.fail(f"timed out waiting for {what}")
+        time.sleep(0.02)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _parses(path: Path) -> bool:
+    try:
+        json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+@pytest.mark.timeout(60)
+def test_a_second_signal_during_the_stop_cannot_cut_it_short(tmp_path: Path) -> None:
+    """GitHub's cancel sends SIGINT, then SIGTERM about 7.5 s later, inside
+    the grace period. The SIGTERM must not skip the final SIGKILL or the
+    repair of the `.meta` the SIGINT truncated."""
+    command, meta_root = _writer(tmp_path, "truncate-and-hang")
+    meta = meta_root / "src" / "a.py.meta"
+    pid_file = meta_root / "src" / "a.py.meta.pid"
+    copy = tmp_path / "copies" / "src" / "a.py.meta"
+    stderr = (tmp_path / "supervisor.err").open("w", encoding="utf-8")
+    supervisor = subprocess.Popen(
+        # `-X faulthandler`: a supervisor that hangs dumps its stack on SIGABRT.
+        [sys.executable, "-X", "faulthandler", str(_SCRIPT), "run",
+         "--time-box-minutes", "10", "--grace-minutes", "0.1",
+         "--snapshot-seconds", "0.05", "--meta-root", str(meta_root),
+         "--store", str(tmp_path / "copies"), "--", *command],
+        cwd=tmp_path, stderr=stderr,
+    )
+    writer = None
+    try:
+        _wait_for(lambda: copy.is_file() and pid_file.is_file(), "a first copy")
+        writer = int(pid_file.read_text(encoding="utf-8"))
+        supervisor.send_signal(signal.SIGINT)  # the cancel
+        # The writer cuts the file on the SIGINT the stop sends it, and then
+        # keeps running: the stop is now in its 6 s grace wait. Not "doesn't
+        # parse": the writer's own rewrites, caught mid-write, don't either.
+        _wait_for(
+            lambda: meta.read_bytes() == b'{"cut by SIGINT"',
+            "the stop's SIGINT to reach the run",
+        )
+        supervisor.send_signal(signal.SIGTERM)  # the cancel's follow-up
+        try:
+            code = supervisor.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            supervisor.send_signal(signal.SIGABRT)
+            supervisor.wait()
+            pytest.fail(
+                "the supervisor never exited:\n"
+                + (tmp_path / "supervisor.err").read_text(encoding="utf-8"),
+            )
+        assert code == -signal.SIGINT, (
+            "the first signal, re-raised once stopped:\n"
+            + (tmp_path / "supervisor.err").read_text(encoding="utf-8")
+        )
+        assert _parses(meta), "the truncated .meta was not repaired"
+        _wait_for(lambda: not _alive(writer), "the run to be killed", within_s=2)
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait()
+        if writer is not None and _alive(writer):
+            os.kill(writer, signal.SIGKILL)
+        stderr.close()
 
 
 def test_a_truncated_meta_with_no_copy_is_removed_not_left_to_crash_results(
