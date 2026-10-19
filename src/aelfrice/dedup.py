@@ -362,11 +362,36 @@ def find_near_duplicate_locks(
     `belief_b_id` = `exclude_id or ""` (the candidate), sorted strongest
     match first. Read-only.
     """
+    return near_duplicate_locks_among(
+        _locked_beliefs_for_indexing(store),
+        text,
+        exclude_id=exclude_id,
+        jaccard_min=jaccard_min,
+        levenshtein_min=levenshtein_min,
+    )
+
+
+def near_duplicate_locks_among(
+    locks: Iterable[tuple[str, str]],
+    text: str,
+    *,
+    exclude_id: str | None = None,
+    jaccard_min: float = DEFAULT_JACCARD_MIN,
+    levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
+) -> list[DuplicatePair]:
+    """`find_near_duplicate_locks` over a lock list the caller already has.
+
+    `locks` is `[(id, content)]`. The test, the thresholds, and the
+    result order are the ones `find_near_duplicate_locks` applies, because
+    that function is this one over the store's locks. The L0 merge of
+    user-scope locks (#1681) calls this with the repository locks it has
+    already read, rather than reading them again once per user lock.
+    """
     if not text.strip():
         return []
     ta = frozenset(tokenize(text))
     out: list[DuplicatePair] = []
-    for bid, content in _locked_beliefs_for_indexing(store):
+    for bid, content in locks:
         if bid == exclude_id or not content.strip():
             continue
         j_score = jaccard(ta, frozenset(tokenize(content)))
