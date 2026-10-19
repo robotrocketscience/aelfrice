@@ -10,9 +10,14 @@ any mutant and stops at the first failure, so one such test leaves every
 mutant `not checked`.
 
 The mutation run leaves these tests out with `-m "not source_scan"` (in
-`[tool.mutmut]` in `pyproject.toml`). Nothing is lost by it: a test that
-reads source text can only kill a mutant by noticing that the text changed,
-not by noticing a change in behaviour.
+`[tool.mutmut]` in `pyproject.toml`). For a test that scans the source,
+nothing is lost: it can only kill a mutant by noticing that the text
+changed. But the guard can't tell a test's own read from code under test
+reading its source at runtime. `core_gate.prompt_digest` calls
+`inspect.getsource`, so behavioural tests of the digest carry the marker
+too, and the mutants only they would kill go unchecked. Inside `mutants/`
+the digest covers the mutated copy, so a test that pins its value would
+fail there anyway.
 
 This module is what keeps the marker honest. It audits every `open` of a
 `.py` file under `src/aelfrice` while a test's setup, call, or teardown
@@ -28,7 +33,9 @@ constants from newly imported modules. `linecache` is cleared before each
 phase, so a test that calls `inspect.getsource` is caught whether or not
 another test read the same file first. The `functools` caches of the test
 module, and of its classes' static and class methods, are cleared before
-each test for the same reason.
+each test for the same reason. That undoes caches a module keeps to stay
+fast, so its tests run slower: measured on 47 such tests, about twice as
+slow, with no measurable change to the whole suite.
 
 What it can't see:
 
@@ -36,6 +43,14 @@ What it can't see:
 - a scan memoised by hand, such as a module-level dict filled on first use;
 - a scan cached outside the test's module and classes, such as in a
   module- or session-scoped fixture or a shared helper module.
+- a file whose lines an ignored reader cached earlier in the same phase,
+  such as `traceback.format_exception` or `inspect.stack()` followed by
+  `inspect.getsource`;
+- a read on a worker thread the test starts, such as
+  `ThreadPoolExecutor.map(Path.read_text, ...)`;
+- an `os.open` relative to a directory descriptor (`dir_fd`);
+- lines read through `warnings.formatwarning`;
+- a test that reads the source and then skips, or is an expected failure.
 
 A test that only reuses one of those caches is flagged only if it happens
 to be the one that fills it, so whether it is flagged depends on test order.
