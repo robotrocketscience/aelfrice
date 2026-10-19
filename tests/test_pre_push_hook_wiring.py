@@ -138,7 +138,10 @@ def test_only_the_whole_allowed_line_passes_the_vocabulary_check() -> None:
     # The same word anywhere else is still caught: a longer line that
     # contains the allowed one, another assignment, and the allowed line
     # behind a second `+`.
-    for line in (f"{allowed}  # x", f"+x = {word!r}", f"+{allowed}"):
+    for line in (
+        f"{allowed}  # x", f"+x = {word!r}", f"+{allowed}",
+        allowed.replace(word, word.capitalize()),
+    ):
         assert len(_hits(source, line + "\n")) == 1, line
     # Other banned words are unaffected.
     assert len(_hits(source, f"+{words[0]}\n")) == 1
