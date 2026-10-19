@@ -78,6 +78,14 @@ _FileSig = tuple[int, int, int]
 _CACHE: dict[str, tuple[tuple[_FileSig | None, _FileSig | None], list[Belief]]] = {}
 _CACHE_MAX: Final[int] = 4
 
+#: How long the read-only user-store connection waits on another
+#: connection's lock, in milliseconds. A hook reads this store on every
+#: prompt and must not stall on it: a store some other process holds
+#: under an exclusive lock is treated as unreadable after this long, and
+#: the repository locks are injected alone. The repository store keeps
+#: its 5000 ms default; it is the store the hook writes.
+USER_STORE_BUSY_TIMEOUT_MS: Final[int] = 150
+
 
 def is_user_scope_lock(b: object) -> bool:
     """Whether `b` was read from the user-scope lock store."""
@@ -188,6 +196,7 @@ def read_user_locks(
         try:
             store = MemoryStore(
                 str(path), project_context_default="", read_only=True,
+                busy_timeout_ms=USER_STORE_BUSY_TIMEOUT_MS,
             )
             try:
                 rows = [
@@ -197,9 +206,12 @@ def read_user_locks(
             finally:
                 store.close()
         except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
-            _CACHE.pop(key, None)
+            # Cached as "no user locks" for this signature, so a process
+            # that finds the store locked or corrupt pays the timeout and
+            # warns once, not on every read. A change to the file moves
+            # the signature and the next read tries again.
+            rows = []
             _warn_once(path, exc, stderr)
-            return []
         for b in rows:
             setattr(b, USER_SCOPE_ATTR, USER_SCOPE_VALUE)
         _CACHE.pop(key, None)

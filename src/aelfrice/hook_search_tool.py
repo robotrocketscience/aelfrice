@@ -986,7 +986,7 @@ def _do_search(
             merge_lock_sets,
             read_user_locks,
         )
-        user_locks = read_user_locks(store.db_path)
+        user_locks = read_user_locks(store.db_path, stderr=stderr)
         locked = merge_lock_sets(store.list_locked_beliefs(), user_locks)
         locked_ids = {b.id for b in locked}
         beliefs = retrieve(

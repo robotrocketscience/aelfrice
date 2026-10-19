@@ -222,9 +222,14 @@ def _do_inject(
 
     store = MemoryStore(str(p))
     try:
+        # #1681: read the user locks with this hook's stderr, so an
+        # unreadable user store warns there, and hand them to retrieve().
+        from aelfrice.user_locks import read_user_locks  # noqa: PLC0415
+
         hits = retrieve(
             store,
             prompt[:QUERY_CHAR_CAP],
+            user_locks=read_user_locks(store.db_path, stderr=stderr),
             token_budget=INJECTED_TOKEN_BUDGET,
             l1_limit=INJECTED_L1_LIMIT,
             # #1016-B: reference-tier locks render as a bounded manifest

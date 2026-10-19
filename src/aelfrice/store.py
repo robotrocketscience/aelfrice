@@ -1614,6 +1614,7 @@ class MemoryStore:
         *,
         project_context_default: str = "",
         read_only: bool = False,
+        busy_timeout_ms: int = 5000,
     ) -> None:
         """Open the store. `read_only=True` opens a diagnostic-safe handle.
 
@@ -1637,6 +1638,12 @@ class MemoryStore:
         for a diagnostic (it should observe the store, not upgrade it) and
         wrong for anything that needs the current schema, which is why this
         is opt-in rather than the default.
+
+        `busy_timeout_ms` is how long a statement waits on another
+        connection's lock, the open-time read included. The default, 5000,
+        is the one every store has used (#89). A reader that must not
+        stall, such as a hook reading the user-scope store (#1681), passes
+        a short one and treats a timeout as an unreadable store.
         """
         # #970: repo identity stamped on new project-scope, non-user-locked
         # beliefs whose project_context is ''. Empty (the default) disables
@@ -1668,7 +1675,8 @@ class MemoryStore:
             # here rather than silently creating an empty store, which is
             # the right failure for a diagnostic pointed at the wrong file.
             self._conn: sqlite3.Connection = sqlite3.connect(
-                read_only_uri(path), uri=True
+                read_only_uri(path), uri=True,
+                timeout=busy_timeout_ms / 1000.0,
             )
             # #1416: prove the handle can actually READ before handing it
             # back. `sqlite3.connect` is lazy — it does not touch the
@@ -1714,7 +1722,7 @@ class MemoryStore:
                     f"aelfrice command, then retry."
                 )
         else:
-            self._conn = sqlite3.connect(path)
+            self._conn = sqlite3.connect(path, timeout=busy_timeout_ms / 1000.0)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
         # The documented WAL pairing: fsync on checkpoint, not on every
@@ -1734,7 +1742,7 @@ class MemoryStore:
         # with `database is locked` immediately. Required for safe
         # multi-worktree access where two processes share one .git/
         # aelfrice/memory.db. Per the v1.1.0 #89 concurrency tests.
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._invalidation_callbacks: list[Callable[[], None]] = []
         # #1310: the whole open-time schema window runs under one

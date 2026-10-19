@@ -3275,6 +3275,10 @@ def user_prompt_submit(
         # inherits the rebuilder synthesis as a "pick up where you
         # left off" block prepended to the session-start sub-block.
         session_start_block = ""
+        # #1681: read the user lock store once, here, so an unreadable one
+        # is reported on this hook's stderr. Later reads in this fire hit
+        # the per-process cache, so they neither reopen nor warn again.
+        _prime_user_locks(serr)
         try:
             if first_prompt:
                 session_start_block = _retrieve_session_start_block(
@@ -7062,6 +7066,8 @@ def session_start(
         # is an empty ledger, which renders everything verbatim.
         _begin_injection_epoch(session_id, stderr=serr)
         retrieve_start = time.monotonic()
+        # #1681: see `_prime_user_locks`.
+        _prime_user_locks(serr)
         hits, body = _retrieve_baseline_with_block()
         if body:
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
@@ -7208,6 +7214,25 @@ def build_lock_gap_notice(*, stderr: IO[str] | None = None) -> str | None:
         return session_start_notice(report)
     except Exception:
         return None
+
+
+def _prime_user_locks(serr: IO[str]) -> None:
+    """Read the user lock store once with this hook's stderr (#1681).
+
+    `retrieve()` and the L0 builders read the user store without a stream
+    of their own, so an unreadable store would warn on `sys.stderr`.
+    Reading it first, here, puts the one warning on the hook's stream;
+    `user_locks.read_user_locks` caches the result, failure included, so
+    the reads that follow in this process neither reopen nor warn.
+    """
+    try:
+        from aelfrice.db_paths import db_path as _db_path  # noqa: PLC0415
+        from aelfrice.user_locks import read_user_locks  # noqa: PLC0415
+
+        p = _db_path()
+        read_user_locks(None if str(p) == ":memory:" else str(p), stderr=serr)
+    except Exception:  # fail-soft: priming is an optimisation of a warning
+        pass
 
 
 def _retrieve_and_format_baseline() -> str:
