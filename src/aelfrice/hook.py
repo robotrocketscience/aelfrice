@@ -7946,7 +7946,9 @@ def _maybe_core_gate_session_end(
 
     if background.background_enabled(env, start, stderr):
         claude = background.find_claude()
-        if claude is not None:
+        # A `:memory:` store is private to this process, so a child could
+        # not see the batch.
+        if claude is not None and store.db_path != ":memory:":
             _core_gate_label_in_background(store, session_id, claude, stderr)
             return False
     override = _core_gate_session_end_env(env)

@@ -137,7 +137,11 @@ def _load_toml(start: Path | None, stderr: IO[str]) -> dict[str, Any]:
 
     from aelfrice.config_discovery import discover_config  # noqa: PLC0415
 
-    candidate = discover_config(start)
+    try:
+        candidate = discover_config(start)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"aelfrice hook: cannot look for .aelfrice.toml: {exc}", file=stderr)
+        return {}
     if candidate is None:
         return {}
     try:
@@ -385,7 +389,10 @@ def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
     kwargs["start_new_session"] = True
     try:
         subprocess.Popen(  # noqa: S603 - args are package-internal
-            [sys.executable, "-m", "aelfrice.core_gate_background", batch_id, claude],
+            # `-P`: `python -m` would otherwise put the working directory,
+            # the project the hook ran in, first on the import path, so an
+            # `aelfrice` package there would run instead of this one.
+            [sys.executable, "-P", "-m", "aelfrice.core_gate_background", batch_id, claude],
             **kwargs,
         )
     except Exception:

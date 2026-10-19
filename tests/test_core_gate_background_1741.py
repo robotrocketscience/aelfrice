@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -501,13 +502,81 @@ def test_spawn_detaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
-    assert seen["argv"] == [sys.executable, "-m", "aelfrice.core_gate_background", "widgetbatch", CLAUDE]
+    assert seen["argv"] == [
+        sys.executable, "-P", "-m", "aelfrice.core_gate_background", "widgetbatch", CLAUDE,
+    ]
     assert seen["kw"]["env"]["AELFRICE_DB"] == "/x/memory.db"
     # An inherited stdin or stderr keeps the host waiting on the hook
     # for the whole CLI run; measured 8.4 s instead of 0.3 s.
     for stream in ("stdin", "stdout", "stderr"):
         assert seen["kw"][stream] is subprocess.DEVNULL, stream
     assert seen["kw"]["start_new_session"] is True
+
+
+@pytest.mark.timeout(60)
+def test_the_child_ignores_an_aelfrice_package_in_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real child, started from a project with its own `aelfrice` package.
+
+    Killed by: dropping `-P`, so `python -m` runs the project's package.
+    """
+    project = tmp_path / "project"
+    shadow = project / "aelfrice"
+    shadow.mkdir(parents=True)
+    marker = tmp_path / "shadow-ran"
+    (shadow / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "core_gate_background.py").write_text(
+        f"open({str(marker)!r}, 'w').close()\n", encoding="utf-8",
+    )
+    store = tmp_path / "store" / "memory.db"
+    store.parent.mkdir()
+    MemoryStore(str(store)).close()
+    monkeypatch.chdir(project)
+    assert bg.spawn("widgetbatch", db_path=str(store), claude=CLAUDE) is True
+    log = store.parent / bg.LOG_FILENAME
+    deadline = time.monotonic() + 45
+    while not log.exists() and not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not marker.exists()
+    (rec,) = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert rec["outcome"] == bg.OUTCOME_NO_BATCH
+
+
+@pytest.mark.parametrize(("kind", "spawns"), [("file", True), ("memory", False)])
+def test_a_memory_store_never_takes_the_background_route(
+    tmp_path: Path, spawned: list[tuple[str, str, str]], monkeypatch: pytest.MonkeyPatch,
+    kind: str, spawns: bool,
+) -> None:
+    """Killed by: spawning a child for a `:memory:` batch it could never see.
+    The file store shows the same candidates do take the background route."""
+    monkeypatch.delenv(bg.BACKGROUND_ENV, raising=False)
+    monkeypatch.delenv(hook.CORE_GATE_SESSION_END_ENV, raising=False)
+    store = MemoryStore(":memory:" if kind == "memory" else str(tmp_path / "memory.db"))
+    try:
+        store.insert_belief(_belief("w1"))
+        hook._maybe_core_gate_session_end(  # pyright: ignore[reportPrivateUsage]
+            store, {"session_id": SESSION, "cwd": str(tmp_path)}, SESSION,
+            env={}, stdout=io.StringIO(), stderr=io.StringIO(),
+        )
+    finally:
+        store.close()
+    assert bool(spawned) is spawns
+
+
+def test_a_cwd_that_breaks_config_discovery_reads_as_no_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: letting a discovery error escape `_load_toml`."""
+    import aelfrice.config_discovery as discovery
+
+    def boom(_start: object) -> None:
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(discovery, "discover_config", boom)
+    err = io.StringIO()
+    assert bg._load_toml(tmp_path, err) == {}  # pyright: ignore[reportPrivateUsage]
+    assert "cannot look for .aelfrice.toml" in err.getvalue()
 
 
 def test_spawn_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
