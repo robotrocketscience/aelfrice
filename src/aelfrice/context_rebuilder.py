@@ -88,7 +88,11 @@ from aelfrice.retrieval import (
 )
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
-from aelfrice.user_locks import merge_lock_sets, read_user_locks
+from aelfrice.user_locks import (
+    is_user_scope_lock,
+    merge_lock_sets,
+    read_user_locks,
+)
 
 # Re-exported, not re-implemented (#1527). The rebuilder config and the
 # phase-1a rebuild_log moved into `aelfrice.rebuild_log`, a module that imports
@@ -790,6 +794,9 @@ def _format_block(
             attrs: list[str] = [f'id="{_xml_attr_value(b.id)}"']
             is_locked = b.lock_level == LOCK_USER
             attrs.append(f'locked="{"true" if is_locked else "false"}"')
+            # #1681: the same provenance marker the hook renders.
+            if is_user_scope_lock(b):
+                attrs.append('scope="user"')
             if not is_locked and b.id in session_ids:
                 attrs.append('session_scoped="true"')
             if is_ref:

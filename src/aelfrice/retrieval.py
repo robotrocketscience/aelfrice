@@ -121,7 +121,7 @@ from aelfrice.scoring import (
     zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
-from aelfrice.user_locks import merge_lock_sets
+from aelfrice.user_locks import is_user_scope_lock, merge_lock_sets
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # #1351: these modules pull numpy/scipy, so they are imported inside the
@@ -673,7 +673,10 @@ def _belief_tokens(b: Belief) -> int:
     """
     return chars_to_tokens(
         belief_line_chars(
-            len(b.content), speculative=(b.origin == ORIGIN_SPECULATIVE),
+            len(b.content),
+            speculative=(b.origin == ORIGIN_SPECULATIVE),
+            # #1681: a user-store lock renders ` scope="user"` as well.
+            user_scope=is_user_scope_lock(b),
         )
     )
 
@@ -4247,10 +4250,7 @@ def retrieve(
     lock that doesn't near-duplicate one, and they count against the
     same budget and relevance floor as the repository's locks.
     """
-    from aelfrice.user_locks import (  # noqa: PLC0415
-        is_user_scope_lock,
-        read_user_locks,
-    )
+    from aelfrice.user_locks import read_user_locks  # noqa: PLC0415
 
     if user_locks is None:
         user_locks = read_user_locks(store.db_path)

@@ -4947,9 +4947,22 @@ def _belief_element_line(h: Belief) -> str:
         ' speculative="1"' if h.origin == ORIGIN_SPECULATIVE else ""
     )
     return (
-        f'<belief id="{h.id}" lock="{lock_attr}"'
+        f'<belief id="{h.id}" lock="{lock_attr}"{_user_scope_attr(h)}'
         f'{speculative_attr}>{content}</belief>'
     )
+
+
+def _user_scope_attr(h: Belief) -> str:
+    """` scope="user"` on a lock read from the user store, else "" (#1681).
+
+    A fixed literal chosen by a provenance check, never interpolated from
+    belief data, like `speculative="1"`. A repository lock renders exactly
+    as before. `render_cost.USER_SCOPE_ATTR_CHARS` is its width, and
+    `retrieval._belief_tokens` charges it.
+    """
+    from aelfrice.user_locks import is_user_scope_lock  # noqa: PLC0415
+
+    return ' scope="user"' if is_user_scope_lock(h) else ""
 
 
 def _ups_belief_line_cost(b: Belief) -> int:
@@ -6398,7 +6411,8 @@ def _build_session_start_subblock(
         content = _escape_for_hook_block(b.content)
         lock_attr = "user" if b.lock_level == LOCK_USER else "none"
         lines.append(
-            f'<belief id="{b.id}" lock="{lock_attr}">{content}</belief>'
+            f'<belief id="{b.id}" lock="{lock_attr}"{_user_scope_attr(b)}>'
+            f'{content}</belief>'
         )
     lines.append("</locked>")
     # Outside `</locked>`, inside `<session-start>`: the section above is the

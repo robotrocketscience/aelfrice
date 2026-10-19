@@ -71,6 +71,9 @@ this issue does not close.
 SPECULATIVE_ATTR_CHARS: Final[int] = 16
 """` speculative="1"` — the #1171 provenance marker, when present."""
 
+USER_SCOPE_ATTR_CHARS: Final[int] = 13
+"""` scope="user"` — the #1681 marker on a lock read from the user store."""
+
 MANIFEST_LINE_WRAPPER_CHARS: Final[int] = 3
 """What one locks-manifest line costs beyond the manifest text itself.
 
@@ -88,9 +91,13 @@ def chars_to_tokens(chars: int) -> int:
     return int((chars + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
 
 
-def belief_line_chars(content_len: int, *, speculative: bool = False) -> int:
+def belief_line_chars(
+    content_len: int, *, speculative: bool = False, user_scope: bool = False,
+) -> int:
     """Characters one rendered `<belief>` line costs, newline included."""
     total = content_len + BELIEF_LINE_WRAPPER_CHARS
     if speculative:
         total += SPECULATIVE_ATTR_CHARS
+    if user_scope:
+        total += USER_SCOPE_ATTR_CHARS
     return total
