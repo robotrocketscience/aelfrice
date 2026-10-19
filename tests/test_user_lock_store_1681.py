@@ -193,7 +193,7 @@ def test_lock_user_writes_the_user_store_not_the_repo_store(
     assert rc == 0
     assert _locked_contents(user) == [STATEMENT]
     assert "scope: user" in out
-    assert "not yet injected" in out
+    assert "injected in every repository" in out
     if repo.exists():
         assert STATEMENT not in _all_contents(repo)
 

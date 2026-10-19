@@ -2309,13 +2309,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 "belief.locked", actual_id, args, kind="new", **feed_scope,
             )
         if user_scope:
-            # #1681 PR1 stores the lock; injection lands in a follow-up.
-            # Said here so a user does not expect the rule in the next
-            # prompt's context.
+            # #1681: said here so a user knows where the lock went and why
+            # a repository might inject its own wording instead.
             print(f"  scope: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
             print(
-                "  note: user locks are stored but not yet injected into "
-                "prompts (#1681).",
+                "  note: user locks are injected in every repository; where "
+                "a repository lock says nearly the same thing, the "
+                "repository copy is injected instead (#1681).",
                 file=out,  # type: ignore[arg-type]
             )
 
@@ -9699,7 +9699,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "shares (#1681): ~/.aelfrice/user/memory.db, or "
             "$AELFRICE_USER_DB. Without it, the lock goes to this "
             "repository's store. Cannot be combined with --doc or "
-            "--category. User locks are stored but not yet injected."
+            "--category. User locks are injected in every repository."
         ),
     )
     p_lock.set_defaults(func=_cmd_lock)
