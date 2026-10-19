@@ -526,6 +526,39 @@ def test_an_interrupted_supervisor_stops_the_run_and_repairs_first(
     assert json.loads(before)["exit_code_by_key"]["m"] >= 1
 
 
+class _HeldLockPopen(subprocess.Popen[bytes]):
+    """A `Popen` whose wait lock is already held, as CPython 3.12 leaves it
+    when a KeyboardInterrupt lands between `_wait`'s acquire and its `try`."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        getattr(self, "_waitpid_lock").acquire()
+
+
+@_SUPERVISED
+def test_the_stop_does_not_depend_on_popens_wait_lock(
+    sh: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the lock held, `Popen.wait()` blocks forever, so a stop that
+    used it would never send its SIGKILL or repair anything."""
+    command, meta_root = _writer(tmp_path, "truncate-on-int")
+    monkeypatch.setattr(sh.subprocess, "Popen", _HeldLockPopen)
+    calls = iter(range(1000))
+
+    def clock() -> float:
+        if next(calls) == 20:
+            raise KeyboardInterrupt
+        return 0.0
+
+    with pytest.raises(KeyboardInterrupt):
+        sh.run_boxed(
+            command, box_s=60, grace_s=2, every_s=0.05,
+            meta_root=meta_root, store=tmp_path / "copies", clock=clock,
+        )
+    meta = meta_root / "src" / "a.py.meta"
+    assert json.loads(meta.read_bytes())["exit_code_by_key"]["m"] >= 1
+
+
 def _wait_for(check: Any, what: str, within_s: float = 20.0) -> None:
     deadline = time.monotonic() + within_s
     while not check():

@@ -699,7 +699,7 @@ def run_boxed(
             # the group still gets its SIGKILL and the files their repair.
             try:
                 _signal_group(proc, signal.SIGKILL)
-                proc.wait()
+                _reap(proc, None)
                 snapshots.repair()
             finally:
                 _restore_signals(held)
@@ -738,14 +738,40 @@ def _stop(proc: subprocess.Popen[bytes], grace_s: float) -> tuple[int, bool]:
     killed = False
     _signal_group(proc, signal.SIGINT)
     try:
-        returncode = proc.wait(timeout=grace_s)
+        returncode = _reap(proc, grace_s)
     except subprocess.TimeoutExpired:
         killed = True
         _signal_group(proc, signal.SIGKILL)
-        returncode = proc.wait()
+        returncode = _reap(proc, None)
     # Workers that outlived mutmut would hold the runner open.
     _signal_group(proc, signal.SIGKILL)
     return returncode, killed
+
+
+def _reap(proc: subprocess.Popen[bytes], timeout_s: float | None) -> int:
+    """`proc`'s exit status, waiting up to `timeout_s` (None: no limit).
+
+    Not `Popen.wait`. CPython 3.12's `Popen._wait` takes its internal lock
+    before the `try` that releases it, so a KeyboardInterrupt raised right
+    after the lock is taken leaves it held. After that, `Popen.wait` with a
+    timeout spins until the timeout, and without one blocks forever. The
+    stop runs right after such an interrupt, so it waits on the pid itself.
+    """
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    while proc.returncode is None:
+        try:
+            pid, status = os.waitpid(proc.pid, os.WNOHANG)
+        except ChildProcessError:
+            # Reaped elsewhere with no status left; `Popen` reads this as 0.
+            proc.returncode = 0
+            break
+        if pid == proc.pid:
+            proc.returncode = os.waitstatus_to_exitcode(status)
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            raise subprocess.TimeoutExpired(proc.args, timeout_s or 0.0)
+        time.sleep(0.01)
+    return proc.returncode
 
 
 def _signal_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
