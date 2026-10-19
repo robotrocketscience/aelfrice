@@ -3875,10 +3875,21 @@ def user_prompt_submit(
             # does. `injected_ids` is the hits' ids on both paths here,
             # so this guard is the only thing keeping the row off a
             # suppressed fire.
-            if emit_memory_block and _next_fire >= 1 and injected_ids:
+            # #1681: a user-store lock has no row of its own here. When the
+            # repository store holds an unlocked belief with the same text
+            # (and so the same id), the foreign key passes and the touch
+            # would be credited to a belief that was not what was shown.
+            from aelfrice.user_locks import (  # noqa: PLC0415
+                is_user_scope_lock as _is_user_lock,
+            )
+            touch_ids = [
+                h.id for h in emitted_hits
+                if getattr(h, "id", None) and not _is_user_lock(h)
+            ]
+            if emit_memory_block and _next_fire >= 1 and touch_ids:
                 _record_touches(
                     session_id=session_id,
-                    belief_ids=injected_ids,
+                    belief_ids=touch_ids,
                     fire_idx=_next_fire - 1,
                     stderr=serr,
                     store=ups_store,
