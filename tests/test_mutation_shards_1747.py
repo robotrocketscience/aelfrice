@@ -265,16 +265,41 @@ def test_merge_sums_the_shards_and_passes_a_partial_run(sh: Any) -> None:
     assert "| 1 | 4 | 4 | 1 | 0 | 3 |" in summary
 
 
-def test_merge_warns_when_a_shard_lists_other_than_its_plan(sh: Any) -> None:
+def test_merge_warns_when_a_shard_lists_fewer_than_its_plan(sh: Any) -> None:
+    """A removed `.meta` drops its mutants from the list, so fewer warns."""
     summary, failed = sh.merge_reports(_two_shard_plan(), {
         0: _report(killed=4), 1: _report(killed=3),
     })
     assert not failed
-    assert "Shard 1 listed a different number of mutants" in summary
+    assert "Shard 1 listed fewer mutants than the plan gave it" in summary
+    clean, failed = sh.merge_reports(_two_shard_plan(), {
+        0: _report(killed=4), 1: _report(killed=4),
+    })
+    assert not failed
+    assert "listed fewer" not in clean and "listed more" not in clean
+
+
+def test_merge_fails_when_a_shard_lists_more_than_its_plan(sh: Any) -> None:
+    """Only a shard scoped wrong lists mutants the plan didn't give it."""
+    summary, failed = sh.merge_reports(_two_shard_plan(), {
+        0: _report(killed=4), 1: _report(killed=5),
+    })
+    assert failed
+    assert "> [!CAUTION]\n> Shard 1 listed more mutants than the plan gave it" in summary
+    assert "listed fewer" not in summary
+
+
+def test_merge_names_a_report_for_a_shard_the_plan_does_not_have(sh: Any) -> None:
+    summary, failed = sh.merge_reports(_two_shard_plan(), {
+        0: _report(killed=4), 1: _report(killed=4), 7: _report(killed=9),
+    })
+    assert not failed
+    assert "Report from shard 7, which the plan doesn't have" in summary
+    assert "8 of 8 planned mutants checked" in summary, "left out of the totals"
     clean, _ = sh.merge_reports(_two_shard_plan(), {
         0: _report(killed=4), 1: _report(killed=4),
     })
-    assert "listed a different number" not in clean
+    assert "the plan doesn't have" not in clean
 
 
 def test_merge_fails_when_a_planned_shard_has_no_report(sh: Any) -> None:

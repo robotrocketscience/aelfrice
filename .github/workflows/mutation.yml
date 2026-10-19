@@ -307,9 +307,9 @@ jobs:
           path: reports
       - name: Merge the shard reports
         run: |
-          # Fails when a planned shard left no report, or when no shard
-          # checked a single mutant. The merge is plain Python and needs no
-          # project install.
+          # Fails when a planned shard left no report, when a shard listed
+          # more mutants than planned, or when no shard checked a single
+          # mutant. The merge is plain Python and needs no project install.
           # With no shard report at all, the glob expands to nothing and
           # every planned shard is reported missing.
           shopt -s nullglob

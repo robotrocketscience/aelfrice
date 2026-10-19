@@ -62,7 +62,8 @@ when the box ends it; `run_boxed` says how. It exits with the command's own
 status, or 124 when the time box ended the run.
 
 Exit codes: 0 on success; 1 when `merge` finds a planned shard with no
-report, or a run that checked no mutant at all; 2 when a count, a file, or
+report, a shard that listed more mutants than planned, or a run that
+checked no mutant at all; 2 when a count, a file, or
 the plan cannot be read or does not hold; 3 when `apply` is refused; 124
 when `run` reached its time box.
 """
@@ -475,18 +476,23 @@ def merge_reports(
 ) -> tuple[str, bool]:
     """The run's Markdown summary, and whether it failed.
 
-    It fails when a planned shard left no report, or when no shard checked
-    a single mutant. A shard that stopped partway is reported, not failed:
-    each shard's own job already decided that.
+    It fails when a planned shard left no report, when a shard listed more
+    mutants than the plan gave it, or when no shard checked a single
+    mutant. A shard that stopped partway is reported, not failed: each
+    shard's own job already decided that. A report for a shard the plan
+    doesn't have is left out of the totals, with a warning.
     """
     shards = _shards(plan)
     rows: list[str] = []
     whole = Tally()
     missing: list[int] = []
-    mismatched: list[int] = []
+    fewer: list[int] = []
+    more: list[int] = []
+    planned_indices: set[int] = set()
     for shard in shards:
         index = shard["index"]
         assert isinstance(index, int)
+        planned_indices.add(index)
         report = reports.get(index)
         if report is None:
             missing.append(index)
@@ -495,8 +501,12 @@ def merge_reports(
         t = tally(report)
         for status, n in t.statuses.items():
             whole.statuses[status] = whole.statuses.get(status, 0) + n
-        if t.total != shard["mutants"]:
-            mismatched.append(index)
+        planned = shard["mutants"]
+        assert isinstance(planned, int)
+        if t.total > planned:
+            more.append(index)
+        elif t.total < planned:
+            fewer.append(index)
         rows.append(
             f"| {index} | {shard['mutants']} | {t.total} | {t.get('killed')} "
             f"| {t.get('survived')} | {t.get('not checked')} |",
@@ -515,14 +525,31 @@ def merge_reports(
             "shard's job log shows why.",
             "",
         ]
-    if mismatched:
+    if more:
+        # A failure: only a shard scoped wrong lists mutants the plan didn't
+        # give it.
+        out += [
+            "> [!CAUTION]",
+            f"> Shard {', '.join(map(str, more))} listed more mutants than "
+            "the plan gave it, so it mutated code outside its scope.",
+            "",
+        ]
+    if fewer:
         # Not a failure: a removed `.meta` (see `MetaSnapshots.repair`) drops
         # its mutants from the list. But a shard scoped wrong looks the same,
         # so it is said where a reader looks.
         out += [
             "> [!WARNING]",
-            f"> Shard {', '.join(map(str, mismatched))} listed a different "
-            "number of mutants than the plan gave it.",
+            f"> Shard {', '.join(map(str, fewer))} listed fewer mutants than "
+            "the plan gave it.",
+            "",
+        ]
+    unplanned = sorted(set(reports) - planned_indices)
+    if unplanned:
+        out += [
+            "> [!WARNING]",
+            f"> Report from shard {', '.join(map(str, unplanned))}, which the "
+            "plan doesn't have, is left out of the totals.",
             "",
         ]
     out += [
@@ -536,7 +563,7 @@ def merge_reports(
         *(f"{s}: {n}" for s, n in sorted(whole.statuses.items())),
         "```",
     ]
-    failed = bool(missing) or whole.checked == 0
+    failed = bool(missing) or bool(more) or whole.checked == 0
     return "\n".join(out), failed
 
 
