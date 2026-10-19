@@ -61,7 +61,7 @@ import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Callable, Final
+from typing import IO, TYPE_CHECKING, Any, Callable, Final, Sequence
 
 from aelfrice.bfs_multihop import (
     DEFAULT_MAX_DEPTH as BFS_DEFAULT_MAX_DEPTH,
@@ -121,6 +121,7 @@ from aelfrice.scoring import (
     zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
+from aelfrice.user_locks import merge_lock_sets
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # #1351: these modules pull numpy/scipy, so they are imported inside the
@@ -2729,6 +2730,7 @@ def _route_structural_query(
     include_locked: bool,
     budget: int,
     manifest_reference_locks: bool = False,
+    user_locks: Sequence[Belief] = (),
 ) -> RetrievalResult | None:
     """Probe the HRR structural lane and pack results to budget.
 
@@ -2785,8 +2787,10 @@ def _route_structural_query(
     # lane firing on every non-marker prompt.
     _record_lane_fired("hrr_structural_hit")
 
+    # #1681: the same L0 set the textual lane packs, user locks included.
     locked: list[Belief] = (
-        list(store.list_locked_beliefs()) if include_locked else []
+        merge_lock_sets(store.list_locked_beliefs(), user_locks)
+        if include_locked else []
     )
     locked_ids: set[str] = {b.id for b in locked}
     locked_used: int = sum(
@@ -4176,6 +4180,7 @@ def retrieve(
     use_type_aware_compression: bool | None = None,
     manifest_reference_locks: bool = False,
     belief_cost_fn: Callable[[Belief], int] | None = None,
+    user_locks: Sequence[Belief] | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -4232,7 +4237,23 @@ def retrieve(
     `retrieve_with_tiers` has carried since v2.0 (#434); added to
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
+
+    `user_locks` (#1681): the user-scope locks that join L0. `None` (the
+    default) reads them from the user-scope store, opened read-only and
+    only if it exists (`user_locks.read_user_locks`); pass a list to use
+    locks the caller has already read, or `()` for repository locks
+    only, which a benchmark over a fixed corpus does. They are merged by
+    `user_locks.merge_lock_sets`: repository locks first, then each user
+    lock that doesn't near-duplicate one, and they count against the
+    same budget and relevance floor as the repository's locks.
     """
+    from aelfrice.user_locks import (  # noqa: PLC0415
+        is_user_scope_lock,
+        read_user_locks,
+    )
+
+    if user_locks is None:
+        user_locks = read_user_locks(store.db_path)
 
     # #1107 cutover: `retrieve()` is a thin adapter over `retrieve_v2`, the
     # single retrieval implementation the production hook path shares with
@@ -4271,6 +4292,7 @@ def retrieve(
         use_type_aware_compression=use_type_aware_compression,
         manifest_reference_locks=manifest_reference_locks,
         belief_cost_fn=belief_cost_fn,
+        user_locks=user_locks,
         # Graduated lanes (#1107): resolver-driven (env -> TOML -> default)
         # rather than hard-off, so a production host gets the lane the moment
         # its resolver says on. temporal spine #1064 (Phase 2), entity-persist
@@ -4311,7 +4333,11 @@ def retrieve(
                 is_enqueue_on_retrieve_enabled,
             )
             if is_enqueue_on_retrieve_enabled():
-                enqueue_retrieval_exposures(store, [b.id for b in out])
+                # #1681: a user lock has no row in this store to queue.
+                enqueue_retrieval_exposures(
+                    store,
+                    [b.id for b in out if not is_user_scope_lock(b)],
+                )
         except Exception as exc:  # noqa: BLE001 - retrieval must never raise
             print(
                 f"aelfrice retrieval: deferred-feedback enqueue failed: {exc}",
@@ -4359,6 +4385,7 @@ def retrieve_with_tiers(
     manifest_reference_locks: bool = False,
     belief_cost_fn: Callable[[Belief], int] | None = None,
     now_ts: int | None = None,
+    user_locks: Sequence[Belief] = (),
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -4507,7 +4534,11 @@ def retrieve_with_tiers(
             _record_lane_fired("compression_renders")
         return cb.rendered_tokens + _render_wrapper_tokens(b)
 
-    locked: list[Belief] = store.list_locked_beliefs()
+    # #1681: `user_locks` join L0 after the repository's locks, minus any
+    # that near-duplicate one. Empty (the default) is the repository set.
+    locked: list[Belief] = merge_lock_sets(
+        store.list_locked_beliefs(), user_locks,
+    )
     locked_ids_list: list[str] = [b.id for b in locked]
     locked_ids: set[str] = set(locked_ids_list)
 
@@ -4850,6 +4881,7 @@ def retrieve_v2(
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     now_ts: int | None = None,
     now: datetime | None = None,
+    user_locks: Sequence[Belief] = (),
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -4964,6 +4996,7 @@ def retrieve_v2(
             include_locked=include_locked,
             budget=budget,
             manifest_reference_locks=manifest_reference_locks,
+            user_locks=user_locks,
         )
         if struct_result is not None:
             # #1366: the structural lane took the whole call, so
@@ -5051,6 +5084,7 @@ def retrieve_v2(
         temporal_spine_enabled=use_temporal_spine,
         temporal_spine_depth=temporal_spine_depth,
         temporal_spine_node_budget=temporal_spine_node_budget,
+        user_locks=user_locks,
     )
     retrieve_elapsed = time.perf_counter() - retrieve_start
     if include_locked:
