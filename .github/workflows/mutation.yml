@@ -121,6 +121,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      # Scripts read the shard from here, not from an inline expression.
+      SHARD: ${{ matrix.shard }}
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -157,7 +160,7 @@ jobs:
           # file that belong to other shards. It edits src/ in place, which
           # is why it refuses to run outside CI.
           uv run python scripts/mutation_shards.py apply \
-              --plan mutation-plan.json --shard "${{ matrix.shard }}"
+              --plan mutation-plan.json --shard "${SHARD}"
       - name: Run mutation tests
         id: run
         env:
@@ -186,7 +189,7 @@ jobs:
           echo "mutmut run exit=${status}"
           echo "status=${status}" >> "${GITHUB_OUTPUT}"
           if [ "${status}" -eq 124 ]; then
-            echo "::warning title=Mutation time box::shard ${{ matrix.shard }} stopped after ${MUTMUT_TIME_BOX_MINUTES} minutes; unrun mutants stay 'not checked'."
+            echo "::warning title=Mutation time box::shard ${SHARD} stopped after ${MUTMUT_TIME_BOX_MINUTES} minutes; unrun mutants stay 'not checked'."
           fi
           # `--all` is required, not cosmetic: `mutmut results` skips every
           # killed mutant unless it is passed, so a scope in which everything
@@ -255,9 +258,9 @@ jobs:
             failure="none of ${total} mutants was killed, survived, or timed out — the run stopped before executing any. The 'Run mutation tests' step log shows where mutmut stopped."
             grep -vE ': (killed|survived|timeout)$' mutation-report.txt | head -20
           elif [ "${unchecked}" -ne 0 ] && [ "${RUN_STATUS}" != 124 ]; then
-            failure="${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked', but mutmut run exited ${RUN_STATUS}, not the time box's 124: it stopped checking mutants before it finished. The 'Run mutation tests' step log shows where."
+            failure="${unchecked} of ${total} mutants in shard ${SHARD} are 'not checked', but mutmut run exited ${RUN_STATUS}, not the time box's 124: it stopped checking mutants before it finished. The 'Run mutation tests' step log shows where."
           elif [ "${unchecked}" -ne 0 ]; then
-            echo "::warning title=Partial mutation run::${unchecked} of ${total} mutants in shard ${{ matrix.shard }} are 'not checked'."
+            echo "::warning title=Partial mutation run::${unchecked} of ${total} mutants in shard ${SHARD} are 'not checked'."
           fi
           if [ -n "${failure}" ]; then
             echo "::error::${failure}"

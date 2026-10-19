@@ -747,7 +747,8 @@ def test_each_shard_scopes_and_uploads_its_own_shard() -> None:
     """Every matrix job applying shard 0, or uploading under one name, would
     still produce a green run with one shard's worth of results."""
     scope = _step("mutmut", "Scope mutmut to this shard")
-    assert '--shard "${{ matrix.shard }}"' in scope
+    assert '--shard "${SHARD}"' in scope
+    assert "SHARD: ${{ matrix.shard }}" in _job("mutmut")
     assert "name: mutation-report-${{ matrix.shard }}" in _job("mutmut")
 
 
@@ -839,14 +840,13 @@ def _run_guard(
     assert "RUN_STATUS: ${{ steps.run.outputs.status }}" in step
     _, sep, body = step.partition("run: |\n")
     assert sep
-    body = body.replace("${{ matrix.shard }}", "3")
     assert "${{" not in body
     (tmp_path / "mutation-report.txt").write_text(report, encoding="utf-8")
     script = tmp_path / "guard.sh"
     script.write_text(body, encoding="utf-8")
     return subprocess.run(
         [_BASH, "-e", str(script)], cwd=tmp_path,
-        env={**os.environ, "LC_ALL": "C.UTF-8", "RUN_STATUS": run_status},
+        env={**os.environ, "LC_ALL": "C.UTF-8", "RUN_STATUS": run_status, "SHARD": "3"},
         capture_output=True, text=True, encoding="utf-8", check=False, timeout=30,
     )
 
