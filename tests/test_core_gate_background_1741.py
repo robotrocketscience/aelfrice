@@ -100,6 +100,15 @@ def _stop(
     return out.getvalue(), err.getvalue()
 
 
+def _accepted_at(db: Path) -> dict[str, str | None]:
+    """`accepted_at` per batch: None while a batch is open."""
+    conn = sqlite3.connect(str(db))
+    try:
+        return dict(conn.execute("SELECT batch_id, accepted_at FROM core_gate_batches").fetchall())
+    finally:
+        conn.close()
+
+
 def _batches(db: Path) -> list[tuple[str, str, list[str]]]:
     """(batch_id, origin, belief ids in index order) per batch."""
     if not db.exists():
@@ -150,6 +159,7 @@ def test_a_failed_spawn_says_so_once_and_keeps_the_batch(
     lines = (db.parent / bg.LOG_FILENAME).read_text(encoding="utf-8").splitlines()
     (rec,) = [json.loads(x) for x in lines]
     assert rec["batch_id"] == batch[0] and rec["outcome"] == bg.OUTCOME_SPAWN_FAILED
+    assert _accepted_at(db) == {batch[0]: None}
 
 
 def test_no_candidates_no_spawn(
@@ -443,6 +453,7 @@ def test_label_batch_writes_nothing_on_failure(
         store.close()
     assert record["outcome"] == outcome, name
     assert _labels(db) == {}
+    assert _accepted_at(db) == {batch_id: None}
 
 
 def test_label_batch_skips_unknown_spent_and_stale(db: Path) -> None:

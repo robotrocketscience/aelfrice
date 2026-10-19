@@ -363,6 +363,8 @@ def _append_log(store_path: str, record: dict[str, object]) -> None:
         with open(Path(store_path).parent / LOG_FILENAME, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
+        # A diagnostic only: an unwritable log must not fail the run or the
+        # hook. The batch stays open either way.
         pass
 
 
