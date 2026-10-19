@@ -4081,6 +4081,43 @@ def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _refuse_user_store_id(
+    command: str, belief_id: str, store: MemoryStore,
+) -> bool:
+    """Refuse a posterior write aimed at a user-store id (#1681); True if so.
+
+    Exact ids only. `feedback` and `confirm` never write the user store,
+    and an id that names a user-store row is refused even when `store`,
+    the repository store, has a row with the same id (same text, same
+    id): crediting that row would credit a belief the caller didn't
+    name. Prints one line to stderr naming the shared repository row
+    when there is one, and the `unlock --user` command only for a lock.
+    """
+    user_rows = [
+        b for b in _find_in_user_store(belief_id, limit=2) if b.id == belief_id
+    ]
+    if not user_rows:
+        return False
+    is_lock = user_rows[0].lock_level == LOCK_USER
+    what, applies_to = (
+        ("a user-scope lock", "user-scope locks") if is_lock
+        else ("a belief in the user-scope store", "the user-scope store")
+    )
+    msg = (
+        f"{command} error: {belief_id} is {what}; {command} doesn't apply "
+        f"to {applies_to}, and neither store's database is changed."
+    )
+    if store.get_belief(belief_id) is not None:
+        msg += (
+            " The repository also has a belief with this id; it was left "
+            "unchanged too."
+        )
+    if is_lock:
+        msg += f" To change the user lock, run `aelf unlock --user {belief_id}`."
+    print(msg, file=sys.stderr)
+    return True
+
+
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0.
 
@@ -4096,6 +4133,10 @@ def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
 
     note = getattr(args, "note", "") or ""
     store = _open_store()
+    # #1681: the same refusal `feedback` makes, for the same reason.
+    if _refuse_user_store_id("confirm", args.belief_id, store):
+        store.close()
+        return 1
     try:
         # ForeignBeliefError subclasses ValueError, so one clause covers both
         # the unknown-belief and foreign-belief rejections.
@@ -4348,32 +4389,9 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
               file=sys.stderr)
         return 1
     store = _open_store()
-    # #1681: exact ids only, as before. Feedback never writes the user
-    # store, and an id that names a user-store row is refused even when
-    # this store has a row with the same id (same text, same id):
-    # crediting that row would credit a belief the caller didn't name.
-    belief_id: str = args.belief_id
-    user_rows = [
-        b for b in _find_in_user_store(belief_id, limit=2) if b.id == belief_id
-    ]
-    if user_rows:
-        also_repo = store.get_belief(belief_id) is not None
+    # #1681: exact ids only, as before. See `_refuse_user_store_id`.
+    if _refuse_user_store_id("feedback", args.belief_id, store):
         store.close()
-        what = (
-            "a user-scope lock" if user_rows[0].lock_level == LOCK_USER
-            else "a belief in the user-scope store"
-        )
-        print(
-            f"feedback error: {belief_id} is {what}; feedback doesn't apply "
-            "to user-scope locks, and neither store's database is changed."
-            + (
-                " The repository also has a belief with this id; it was "
-                "left unchanged too."
-                if also_repo else ""
-            )
-            + f" To change the user lock, run `aelf unlock --user {belief_id}`.",
-            file=sys.stderr,
-        )
         return 1
     try:
         result = apply_feedback(
