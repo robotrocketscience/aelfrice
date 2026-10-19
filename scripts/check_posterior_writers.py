@@ -178,6 +178,13 @@ MANIFEST: dict[str, tuple[str, str]] = {
         "writes). The key is per-function, so a fifth added here does NOT "
         "trip this gate — read the function, not just the manifest",
     ),
+    "cli.py::_write_promoted_copy::update_belief": (
+        IDENTITY,
+        "`lock --promote-user` (#1681): sets the lock fields, tier, and "
+        "expiry on the user-store row it read in the same BEGIN IMMEDIATE "
+        "transaction, so alpha/beta are written back as read and no other "
+        "writer can land between the read and the write",
+    ),
     "cli.py::_apply_scope_change::update_belief": (
         MOVES,
         "flips the scope field and writes a zero-valence audit row. Does "
