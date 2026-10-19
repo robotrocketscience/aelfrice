@@ -397,6 +397,7 @@ processing has one consistent signal:
   </recent-turns>
   <retrieved-beliefs budget_used="1842/2000">
     <belief id="..." score="..." locked="true">...</belief>
+    <belief id="..." locked="true" scope="user">...</belief>
     <belief id="..." score="...">...</belief>
     ...
   </retrieved-beliefs>

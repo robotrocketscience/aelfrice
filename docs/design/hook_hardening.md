@@ -139,8 +139,14 @@ were a directive from the user.
 <belief id="abc123" lock="user">…content…</belief>
 <belief id="def456" lock="none">…content…</belief>
 <belief id="0a91ff2c" lock="none" speculative="1">…content…</belief>
+<belief id="5d0c7e19" lock="user" scope="user">…content…</belief>
 </aelfrice-memory>
 ```
+
+`scope="user"` (#1681) marks a lock read from the user-scope store, which
+every repository shares, rather than from the repository's own store. Like
+`speculative="1"`, it is a fixed literal chosen by a provenance check and never
+interpolated from belief data. A repository lock carries no `scope` attribute.
 
 `speculative="1"` (#1171) marks a wonder-synthesised phantom: content the
 memory system composed from other beliefs, which nobody asserted and nothing
