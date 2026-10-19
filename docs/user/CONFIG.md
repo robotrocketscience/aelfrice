@@ -1350,7 +1350,7 @@ A user-scope lock, written with `aelf lock --user`, lives in a store that every 
 
 If `AELFRICE_USER_DB` and the repository store name the same file, `aelf lock --user` and `aelf unlock --user` refuse to run, and `aelf locked` lists that file's locks once, as repository locks.
 
-An injected user lock carries `scope="user"` on its `<belief>` element, for example `<belief id="…" lock="user" scope="user">`, and a repository lock's element is unchanged. The attribute counts against the token budget like the rest of the element. The hooks open the user store read-only, next to the repository store, and never create it. They never write its database file, though SQLite can create the `-wal` and `-shm` files beside it. If the user store is missing, the hooks inject the repository locks only. If the user store exists but can't be opened or read, the hooks print one warning to stderr and inject the repository locks only.
+An injected user lock carries `scope="user"` on its `<belief>` element, for example `<belief id="…" lock="user" scope="user">`, and a repository lock's element is unchanged. The attribute counts against the token budget like the rest of the element. The hooks open the user store read-only, next to the repository store, and never create it. They never write its database file, though SQLite can create the `-wal` and `-shm` files beside it. If another process holds the user store under a lock, the hooks wait at most 150 ms, then inject the repository locks only and print one warning. If the user store is missing, the hooks inject the repository locks only. If the user store exists but can't be opened or read, the hooks print one warning to stderr and inject the repository locks only.
 
 ## When changes apply
 
