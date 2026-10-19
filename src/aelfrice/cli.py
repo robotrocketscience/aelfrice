@@ -4348,51 +4348,37 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
               file=sys.stderr)
         return 1
     store = _open_store()
-    # #1681: resolve the id over both stores before writing anything.
-    # Feedback never writes the user store, and an id that names a user
-    # lock is refused even when this store has a row with the same id
-    # (same text, same id): crediting that row would credit a belief the
-    # caller didn't name.
-    scoped = _resolve_id_across_stores(
-        store, args.belief_id, limit=_SHOW_AMBIGUITY_LIST + 1,
-    )
-    exact = bool(scoped) and all(b.id == args.belief_id for _, b in scoped)
-    if len(scoped) > 1 and not exact:
-        store.close()
-        print(
-            f"feedback error: ambiguous id {args.belief_id!r}: "
-            f"{len(scoped)} beliefs start with it; pass more of the id.",
-            file=sys.stderr,
-        )
-        for where, candidate in scoped[:_SHOW_AMBIGUITY_LIST]:
-            print(f"  {candidate.id} ({where})", file=sys.stderr)
-        return 1
-    user_rows = [b for where, b in scoped if where == "user"]
+    # #1681: exact ids only, as before. Feedback never writes the user
+    # store, and an id that names a user-store row is refused even when
+    # this store has a row with the same id (same text, same id):
+    # crediting that row would credit a belief the caller didn't name.
+    belief_id: str = args.belief_id
+    user_rows = [
+        b for b in _find_in_user_store(belief_id, limit=2) if b.id == belief_id
+    ]
     if user_rows:
+        also_repo = store.get_belief(belief_id) is not None
         store.close()
-        target = user_rows[0].id
-        also_repo = any(where == "repo" for where, _ in scoped)
         what = (
             "a user-scope lock" if user_rows[0].lock_level == LOCK_USER
             else "a belief in the user-scope store"
         )
         print(
-            f"feedback error: {target} is {what}; feedback doesn't apply "
+            f"feedback error: {belief_id} is {what}; feedback doesn't apply "
             "to user-scope locks, and neither store's database is changed."
             + (
                 " The repository also has a belief with this id; it was "
                 "left unchanged too."
                 if also_repo else ""
             )
-            + f" To change the user lock, run `aelf unlock --user {target}`.",
+            + f" To change the user lock, run `aelf unlock --user {belief_id}`.",
             file=sys.stderr,
         )
         return 1
-    belief_id = scoped[0][1].id if scoped else args.belief_id
     try:
         result = apply_feedback(
             store=store,
-            belief_id=belief_id,
+            belief_id=args.belief_id,
             valence=valence,
             source=args.source,
         )
@@ -4411,16 +4397,16 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         # than printing an "alpha 9.000->9.000" no-op the user has to
         # decode. Exit 0: the event was accepted and audited.
         print(
-            f"recorded {args.signal} for {belief_id} but did not move "
+            f"recorded {args.signal} for {args.belief_id} but did not move "
             "it: the belief carries a user lock, and a lock is ground "
             "truth that passive feedback does not change. To change it, "
-            f"run `aelf unlock {belief_id}` first (or `aelf delete` / "
+            f"run `aelf unlock {args.belief_id}` first (or `aelf delete` / "
             "`aelf demote`), then re-lock the corrected statement.",
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
-            f"applied {args.signal} to {belief_id}: "
+            f"applied {args.signal} to {args.belief_id}: "
             f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
             f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
             file=out,  # type: ignore[arg-type]
@@ -4436,7 +4422,7 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         # would otherwise report a posterior move that never happened.
         "feedback.locked_not_applied" if result.skipped_locked
         else "feedback.applied",
-        belief_id,
+        args.belief_id,
         None,
         kind="feedback",
         signal=args.signal,
