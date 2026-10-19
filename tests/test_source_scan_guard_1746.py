@@ -15,6 +15,8 @@ import functools
 import importlib.machinery
 import inspect
 import linecache
+import subprocess
+import sys
 import tomllib
 import traceback
 import types
@@ -342,3 +344,57 @@ def test_the_mutation_run_leaves_marked_tests_out() -> None:
     assert ["-m", f"not {guard.MARKER}"] in [args[i:i + 2] for i in range(len(args))]
     markers = config["tool"]["pytest"]["ini_options"]["markers"]
     assert any(m.startswith(f"{guard.MARKER}:") for m in markers)
+
+
+_COLLECT_DRIVER = """
+import os, sys
+sys.path.insert(0, {repo!r})
+import pytest
+from tests import source_scan_guard as guard
+guard.TESTS_ROOT = {probes!r} + os.sep
+guard.install()
+sys.exit(pytest.main(
+    ["-q", "-p", "no:cacheprovider", "--continue-on-collection-errors",
+     "--rootdir", {probes!r}, {probes!r}],
+    plugins=[guard],
+))
+"""
+
+
+@pytest.mark.timeout(120)
+def test_importing_an_unmarked_module_that_reads_source_fails_collection(
+    tmp_path: Path,
+) -> None:
+    """End to end through pytest's own collection, in a child process.
+
+    Killed by: leaving the audit off while a module is imported, or not
+    failing the report it returns.
+    """
+    probes = tmp_path / "probes"
+    probes.mkdir()
+    (probes / "pytest.ini").write_text(
+        f"[pytest]\nmarkers =\n    {guard.MARKER}: probe\n", encoding="utf-8",
+    )
+    body = (
+        "from pathlib import Path\n"
+        f"TEXT = Path({str(_ULID)!r}).read_text(encoding='utf-8')\n"
+        "def test_uses_it():\n    assert TEXT\n"
+    )
+    (probes / "test_reads_unmarked.py").write_text(body, encoding="utf-8")
+    (probes / "test_reads_marked.py").write_text(
+        f"import pytest\npytestmark = pytest.mark.{guard.MARKER}\n" + body,
+        encoding="utf-8",
+    )
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        _COLLECT_DRIVER.format(repo=str(_REPO), probes=str(probes)), encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, str(driver)], cwd=tmp_path,
+        capture_output=True, text=True, timeout=110, check=False,
+    )
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out
+    assert "ERROR collecting test_reads_unmarked.py" in out, out
+    assert "test_reads_marked.py" not in out.split("short test summary")[-1], out
+    assert "1 passed" in out, out
