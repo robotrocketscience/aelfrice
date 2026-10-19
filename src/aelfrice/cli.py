@@ -2165,6 +2165,25 @@ def _open_user_store_or_report(command: str) -> MemoryStore | None:
         return None
 
 
+def _record_lock_ingest(
+    store: MemoryStore, text: str, session_id: str | None, ts: str,
+) -> str:
+    """The `ingest_log` row an `aelf lock` writes, for the worker to derive.
+
+    Shared by `_cmd_lock` and `_write_promoted_copy` (#1681), so both stamp
+    the same source, call site, classifier version, and rule-set digest.
+    """
+    return store.record_ingest(
+        source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        raw_text=text,
+        session_id=session_id,
+        ts=ts,
+        raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
+        classifier_version=INGEST_CLASSIFIER_VERSION,
+        rule_set_hash=rule_set_hash(),
+    )
+
+
 def _write_promoted_copy(
     store: MemoryStore,
     content: str,
@@ -2196,15 +2215,7 @@ def _write_promoted_copy(
     with store.transaction(immediate=True):
         pre_existing = store.get_belief(lock_bid, include_retired=True) is not None
         ids_before: set[str] = set(store.list_belief_ids())
-        log_id = store.record_ingest(
-            source_kind=INGEST_SOURCE_CLI_REMEMBER,
-            raw_text=content,
-            session_id=session_id,
-            ts=now,
-            raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
-            classifier_version=INGEST_CLASSIFIER_VERSION,
-            rule_set_hash=rule_set_hash(),
-        )
+        log_id = _record_lock_ingest(store, content, session_id, now)
         run_worker(store)
         entry = store.get_ingest_log_entry(log_id)
         derived_ids = entry.get("derived_belief_ids") if entry is not None else None
@@ -2490,15 +2501,7 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # statement reports success without ever setting lock_level.
         pre_existing_at_lock_id = store.get_belief(lock_bid, include_retired=True) is not None
         ids_before: set[str] = set(store.list_belief_ids())
-        log_id = store.record_ingest(
-            source_kind=INGEST_SOURCE_CLI_REMEMBER,
-            raw_text=args.statement,
-            session_id=sid,
-            ts=now,
-            raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
-            classifier_version=INGEST_CLASSIFIER_VERSION,
-            rule_set_hash=rule_set_hash(),
-        )
+        log_id = _record_lock_ingest(store, args.statement, sid, now)
         run_worker(store)
         entry = store.get_ingest_log_entry(log_id)
         derived_ids = (
