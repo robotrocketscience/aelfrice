@@ -415,6 +415,7 @@ def report_spawn_failure(store_path: str, batch_id: str, stderr: IO[str]) -> Non
             file=stderr,
         )
     except (OSError, ValueError):
+        # A closed or broken stderr: the log record above is already written.
         pass
 
 
