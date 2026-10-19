@@ -2170,7 +2170,11 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
         print(_user_scope_conflict_message("lock --promote-user"), file=sys.stderr)
         return 1
     belief_id: str = args.statement
-    store = open_store_for_read()
+    # The ordinary open, as `aelf lock` uses, not `open_store_for_read()`:
+    # the read-only routing is pinned to the commands #1416 audited one at
+    # a time. The open's expiry sweep also means a lapsed lock reads as
+    # unlocked here; the window check below covers a handle that skipped it.
+    store = _open_store()
     try:
         b = store.get_belief(belief_id)
     finally:
