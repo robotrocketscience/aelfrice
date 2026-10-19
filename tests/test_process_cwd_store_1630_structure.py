@@ -79,6 +79,7 @@ DB_PATH_CALLS: dict[Site, int] = {
     ("hook.py", "_maybe_phantom_opportunity_block"): 1,
     ("hook.py", "_maybe_phantom_promotion_block"): 1,
     ("hook.py", "_open_store"): 1,
+    ("hook.py", "_prime_user_locks"): 1,
     ("hook.py", "_rebuild_and_format"): 1,
     ("hook.py", "_recap_last_ts_path"): 1,
     ("hook.py", "_run_cadence_rebuild"): 1,
