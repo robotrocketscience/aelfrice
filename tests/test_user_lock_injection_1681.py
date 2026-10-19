@@ -980,10 +980,11 @@ def test_a_prefix_matching_in_both_stores_is_ambiguous(
     assert out == ""
     assert "ambiguous" in err
     assert "u1zzz (repo)" in err and "u1abc (user)" in err
+    # feedback takes exact ids only, as before this change: a partial id
+    # is "belief not found", whichever stores it would match in.
     rc, _, err = _cli(["feedback", "u1", "used"], capsys)
     assert rc == 1
-    assert "ambiguous" in err
-    assert "u1zzz (repo)" in err and "u1abc (user)" in err
+    assert "feedback error: belief not found: u1" in err
     assert _alpha(repo, "u1zzz") == 1.0
 
 
@@ -997,10 +998,26 @@ def test_a_prefix_unique_across_both_stores_resolves(
     rc, out, _ = _cli(["show", "u9"], capsys)
     assert rc == 0
     assert out.splitlines()[:2] == ["belief: u9abc", f"store: user ({user})"]
-    rc, _, err = _cli(["feedback", "u9", "used"], capsys)
-    assert rc == 1
-    assert "u9abc is a user-scope lock" in err
-    rc, out, _ = _cli(["feedback", "r9", "used"], capsys)
+
+
+
+@pytest.mark.timeout(60)
+def test_feedback_on_a_partial_id_behaves_as_before(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exact ids only: a unique partial id is still "belief not found"."""
+    repo, user = stores
+    _seed(repo, [_plain("r9zzz", "a repository belief about widgets")])
+    _seed(user, [_lock("u9abc", USER_RULE)])
+    before_user = user.read_bytes()
+    for prefix in ("r9", "u9"):
+        rc, out, err = _cli(["feedback", prefix, "used"], capsys)
+        assert rc == 1
+        assert out == ""
+        assert err.strip() == f"feedback error: belief not found: {prefix}"
+    assert _alpha(repo, "r9zzz") == 1.0
+    assert user.read_bytes() == before_user
+    rc, out, _ = _cli(["feedback", "r9zzz", "used"], capsys)
     assert rc == 0
     assert "applied used to r9zzz" in out
     assert _alpha(repo, "r9zzz") == 2.0
