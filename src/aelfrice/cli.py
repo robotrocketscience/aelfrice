@@ -957,8 +957,14 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "json", False):
         import json as _json
         rows = []
+        from aelfrice.user_locks import is_user_scope_lock
+
         for h in hits:
             row: dict = {"id": h.id, "content": h.content, "locked": h.lock_level == LOCK_USER}
+            # #1681: a lock read from the user store says so, as the
+            # `aelf locked --json` rows do. Repository rows are unchanged.
+            if is_user_scope_lock(h):
+                row["scope"] = "user"
             if show_conflicts:
                 conflict_id = _slot_conflict_preextracted(h, locked_pairs)
                 if conflict_id is not None:
@@ -973,13 +979,17 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
             rows.append(row)
         print(_json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
         return 0
+    from aelfrice.user_locks import is_user_scope_lock
+
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
         conflict_marker = ""
         if show_conflicts:
             if _slot_conflict_preextracted(h, locked_pairs) is not None:
                 conflict_marker = "[!] "
-        print(f"{prefix} {conflict_marker}{h.id}: {h.content}", file=out)  # type: ignore[arg-type]
+        # #1681: tag a user-store lock after its id, as `aelf locked` does.
+        tag = " [user]" if is_user_scope_lock(h) else ""
+        print(f"{prefix} {conflict_marker}{h.id}{tag}: {h.content}", file=out)  # type: ignore[arg-type]
     for belief, peer_name, _score in peer_hits:
         conflict_marker = ""
         if show_conflicts:
@@ -2868,6 +2878,33 @@ def _cmd_context(args: argparse.Namespace, out: object) -> int:
 _SHOW_AMBIGUITY_LIST: Final[int] = 10
 
 
+def _find_in_user_store(prefix: str, *, limit: int) -> list[Belief]:
+    """Beliefs in the user-scope store whose id starts with `prefix` (#1681).
+
+    [] when the store doesn't exist, which this never changes, or when it
+    can't be read, which prints one line to stderr.
+    """
+    import sqlite3
+
+    from aelfrice.user_locks import open_user_store_for_read
+
+    try:
+        ustore = open_user_store_for_read()
+        if ustore is None:
+            return []
+        try:
+            return ustore.find_beliefs_by_id_prefix(prefix, limit=limit)
+        finally:
+            ustore.close()
+    except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
+        print(
+            f"aelf: cannot read the user lock store at {user_db_path()}: "
+            f"{exc}",
+            file=sys.stderr,
+        )
+        return []
+
+
 def _cmd_show(args: argparse.Namespace, out: object) -> int:
     """Read one belief back by id (#1553).
 
@@ -2905,6 +2942,14 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
     finally:
         store.close()
 
+    # #1681: an injected user lock lives in the user store. Look there
+    # only when the repository store has no match, read-only, and never
+    # create it.
+    from_user_store = False
+    if not matches:
+        matches = _find_in_user_store(belief_id, limit=_SHOW_AMBIGUITY_LIST + 1)
+        from_user_store = bool(matches)
+
     if not matches:
         print(
             f"aelf show: no belief with id {belief_id!r}", file=sys.stderr,
@@ -2932,6 +2977,8 @@ def _cmd_show(args: argparse.Namespace, out: object) -> int:
 
     b = matches[0]
     print(f"belief: {b.id}", file=out)  # type: ignore[arg-type]
+    if from_user_store:
+        print(f"store: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
     print(
         f"status: {'retired' if b.valid_to else 'active'}",
         file=out,  # type: ignore[arg-type]
@@ -4258,6 +4305,24 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
               file=sys.stderr)
         return 1
     store = _open_store()
+    # #1681: a user-scope lock is not a row in this store, and feedback
+    # never writes the user store. Say so instead of "belief not found".
+    if (
+        store.get_belief(args.belief_id) is None
+        and any(
+            b.id == args.belief_id
+            for b in _find_in_user_store(args.belief_id, limit=2)
+        )
+    ):
+        store.close()
+        print(
+            f"feedback error: {args.belief_id} is a user-scope lock; "
+            "feedback doesn't apply to user-scope locks, and the user "
+            "store is never written by feedback. To change it, run "
+            f"`aelf unlock --user {args.belief_id}`.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         result = apply_feedback(
             store=store,

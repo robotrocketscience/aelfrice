@@ -118,6 +118,22 @@ def _store_sig(path: Path) -> tuple[_FileSig | None, _FileSig | None]:
     return (_file_sig(path), wal)
 
 
+def open_user_store_for_read() -> MemoryStore | None:
+    """The user store opened read-only, or None when it doesn't exist.
+
+    For commands that look a user lock up by id (`aelf show`,
+    `aelf feedback`). Never creates the file. Raises what the read-only
+    open raises when the file exists but can't be opened.
+    """
+    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+    from aelfrice.store import MemoryStore  # noqa: PLC0415
+
+    path = user_db_path()
+    if str(path) == ":memory:" or not path.is_file():
+        return None
+    return MemoryStore(str(path), project_context_default="", read_only=True)
+
+
 def read_user_locks(
     repo_db_path: str | None = None,
     *,
