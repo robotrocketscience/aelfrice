@@ -42,10 +42,17 @@ def _root(tmp_path: Path) -> Path:
 def test_under_mutmut_the_session_removes_its_own_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Killed by: keeping the root, or removing anything beside it, such as
+    another live session's root or the `pytest-of-<user>` directory."""
     root = _root(tmp_path)
+    other = tmp_path / "pytest-8"
+    (other / "test_y0").mkdir(parents=True)
+    (tmp_path / "pytest-current").symlink_to(other)
     monkeypatch.setenv(mutation_tmp.MUTMUT_ENV, "")
     mutation_tmp.pytest_sessionfinish(_Session(_Config(root)))  # type: ignore[arg-type]
     assert not root.exists()
+    assert (other / "test_y0").is_dir()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["pytest-8", "pytest-current"]
 
 
 def test_outside_mutmut_the_root_is_kept(
