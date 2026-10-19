@@ -4400,17 +4400,31 @@ def _refuse_user_store_id(
 ) -> bool:
     """Refuse a posterior write aimed at a user-store id (#1681); True if so.
 
-    Exact ids only. `feedback` and `confirm` never write the user store,
-    and an id that names a user-store row is refused even when `store`,
-    the repository store, has a row with the same id (same text, same
-    id): crediting that row would credit a belief the caller didn't
-    name. Prints one line to stderr naming the shared repository row
+    Exact ids only. `feedback` and `confirm` never write the user store.
+    An id that names a user-store row is refused, with one exception
+    (operator ruling 2026-10-19): when `store`, the repository store, has
+    a LOCK with the same id, that lock is what this repository injects
+    (the L0 merge drops a user lock that shares a repository lock's id),
+    so the write goes to the repository row, a note says so on stderr,
+    and this returns False. When the repository row isn't a lock, the
+    injected copy was the user lock, and crediting the repository row
+    would credit a belief the caller didn't name, so it is refused.
+    A refusal prints one line to stderr naming the shared repository row
     when there is one, and the `unlock --user` command only for a lock.
     """
     user_rows = [
         b for b in _find_in_user_store(belief_id, limit=2) if b.id == belief_id
     ]
     if not user_rows:
+        return False
+    repo_row = store.get_belief(belief_id)
+    if repo_row is not None and repo_row.lock_level == LOCK_USER:
+        print(
+            f"{command}: {belief_id} is a lock in both this repository and "
+            "the user-scope store; this repository injects its own copy, so "
+            f"{command} applies to it. The user-scope store is unchanged.",
+            file=sys.stderr,
+        )
         return False
     is_lock = user_rows[0].lock_level == LOCK_USER
     what, applies_to = (
@@ -4421,7 +4435,7 @@ def _refuse_user_store_id(
         f"{command} error: {belief_id} is {what}; {command} doesn't apply "
         f"to {applies_to}, and neither store's database is changed."
     )
-    if store.get_belief(belief_id) is not None:
+    if repo_row is not None:
         msg += (
             " The repository also has a belief with this id; it was left "
             "unchanged too."
