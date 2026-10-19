@@ -237,11 +237,11 @@ def test_promote_a_belief_that_is_not_a_lock_exits_1(
 
 
 @pytest.mark.timeout(60)
-def test_promote_refuses_a_lock_past_its_window_on_a_read_only_store(
+def test_promote_refuses_a_lock_past_its_window_on_an_unswept_handle(
     stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On the read-only fallback no sweep has run, so the row still reads
+    """A read-only handle runs no sweep, so the row still reads
     `lock_level = 'user'` after its window closed."""
     repo, user = stores
     _seed(repo, [_lock("r1", REPO_RULE, expires="2026-01-01T00:00:00+00:00")])
@@ -251,7 +251,7 @@ def test_promote_refuses_a_lock_past_its_window_on_a_read_only_store(
     conn.commit()
     conn.close()
     monkeypatch.setattr(
-        cli, "open_store_for_read",
+        cli, "_open_store",
         lambda: MemoryStore(str(repo), read_only=True),
     )
     rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
