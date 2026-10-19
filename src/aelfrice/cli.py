@@ -2137,16 +2137,113 @@ def _read_user_lock_pairs() -> list[tuple[str, str]]:
     ]
 
 
+class _PromoteWriteError(Exception):
+    """The promoted copy could not be written; the transaction rolled back."""
+
+
+def _open_user_store_or_report(command: str) -> MemoryStore | None:
+    """`open_user_store()`, or None after one stderr line (#1681).
+
+    Creating the store's directory or opening the file can fail (a
+    read-only home, a path that is a file). That is reported as one
+    line and an exit of 1, not a traceback.
+    """
+    import sqlite3
+
+    try:
+        return open_user_store()
+    except (OSError, sqlite3.Error) as exc:
+        print(
+            f"aelf {command}: cannot open the user lock store at "
+            f"{user_db_path()}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _write_promoted_copy(
+    store: MemoryStore,
+    content: str,
+    *,
+    tier: str,
+    expires_at: str | None,
+    session_id: str | None,
+    now: str,
+) -> tuple[str, str]:
+    """Write a promoted lock into the user store in ONE transaction (#1681).
+
+    The ingest row, the derived belief, and the lock with its tier and
+    expiry commit together or not at all. `_cmd_lock` commits those in
+    several steps, so a failure between them would leave a permanent,
+    default-tier user lock, which every repository injects, and a retry
+    would then find it and add nothing. Returns `(belief_id, kind)`,
+    where `kind` is the `belief.locked` feed kind. Raises
+    `_PromoteWriteError` or `sqlite3.Error`, after the rollback.
+    """
+    derived = derive(DerivationInput(
+        raw_text=content,
+        source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        ts=now,
+        session_id=session_id,
+    ))
+    if derived.belief is None:
+        raise _PromoteWriteError("derivation produced no belief")
+    lock_bid = derived.belief.id
+    with store.transaction(immediate=True):
+        pre_existing = store.get_belief(lock_bid, include_retired=True) is not None
+        ids_before: set[str] = set(store.list_belief_ids())
+        log_id = store.record_ingest(
+            source_kind=INGEST_SOURCE_CLI_REMEMBER,
+            raw_text=content,
+            session_id=session_id,
+            ts=now,
+            raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
+            classifier_version=INGEST_CLASSIFIER_VERSION,
+            rule_set_hash=rule_set_hash(),
+        )
+        run_worker(store)
+        entry = store.get_ingest_log_entry(log_id)
+        derived_ids = entry.get("derived_belief_ids") if entry is not None else None
+        if not isinstance(derived_ids, list) or not derived_ids:
+            raise _PromoteWriteError("derivation produced no belief")
+        actual_id = str(derived_ids[0])
+        row = store.get_belief(actual_id, include_retired=True)
+        if row is None:
+            raise _PromoteWriteError(f"{actual_id} was not written")
+        if row.lock_level != LOCK_USER:
+            row.locked_at = now
+        row.lock_level = LOCK_USER
+        if row.origin != ORIGIN_USER_VALIDATED:
+            row.origin = ORIGIN_USER_STATED
+        row.lock_tier = tier
+        row.lock_expires_at = expires_at
+        store.update_belief(row)
+        # The predicate `aelf locked` lists by: never report a lock that
+        # did not happen (#1620).
+        verified = store.get_belief(actual_id)
+        if verified is None or verified.lock_level != LOCK_USER:
+            raise _PromoteWriteError(f"{actual_id} is not locked")
+    if pre_existing and actual_id == lock_bid:
+        kind = "upgrade"
+    elif actual_id in ids_before:
+        kind = "corroborated"
+    else:
+        kind = "new"
+    return actual_id, kind
+
+
 def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
     """`aelf lock --promote-user <id>`: copy a repository lock to the user store.
 
     #1681, operator ruling Q4: a copy. The repository lock is left as it
     is, and nothing merges automatically. The id is exact, as `unlock`
-    and `feedback` take it. The copy goes through the `aelf lock --user`
-    write path with the repository lock's text, tier, and expiry, so it
-    is the same row `aelf lock --user "<text>"` would write, and the same
+    and `feedback` take it. The copy is derived and ingested as
+    `aelf lock --user "<text>"` would derive it, and carries the
+    repository lock's tier and expiry. Row, tier, and expiry are written
+    in one transaction on the user store (`_write_promoted_copy`), so a
+    failure partway leaves nothing behind and a retry starts clean. The
     `belief.locked` feed event, tagged `"scope": "user"` and
-    `"promoted_from": <id>`.
+    `"promoted_from": <id>`, is written only after that commit.
 
     Refused, with nothing opened for writing: a flag the copy can't
     honour, a user store that is the repository store, an id that isn't
@@ -2229,21 +2326,51 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
         f"promoting repository lock {belief_id} to the user store",
         file=out,  # type: ignore[arg-type]
     )
-    copy_args = argparse.Namespace(
-        statement=b.content,
-        session_id=getattr(args, "session_id", None),
-        doc_uri=None,
-        category=None,
-        lock_tier=b.lock_tier,
-        lock_for=None,
-        lock_until=b.lock_expires_at,
-        user_scope=True,
-        promote_user=False,
-        promoted_from=belief_id,
+    ustore = _open_user_store_or_report("lock --promote-user")
+    if ustore is None:
+        return 1
+    try:
+        if _user_store_is_repo_store():
+            # The user store may not have existed at the first check.
+            print(
+                _user_scope_conflict_message("lock --promote-user"),
+                file=sys.stderr,
+            )
+            return 1
+        now = _utc_now_iso(datetime.now(timezone.utc).replace(microsecond=0))
+        sid = resolve_session_id(
+            getattr(args, "session_id", None),
+            surface_name="aelf lock",
+        )
+        try:
+            actual_id, kind = _write_promoted_copy(
+                ustore, b.content,
+                tier=b.lock_tier, expires_at=b.lock_expires_at,
+                session_id=sid, now=now,
+            )
+        except (sqlite3.Error, _PromoteWriteError) as exc:
+            print(
+                f"aelf lock --promote-user: the copy failed: {exc}; nothing "
+                "was written to the user store.",
+                file=sys.stderr,
+            )
+            return 1
+    finally:
+        ustore.close()
+    # After the commit, never before: a feed event names a lock that exists.
+    _feed_log_event(
+        "belief.locked", actual_id, None,
+        kind=kind, scope="user", promoted_from=belief_id,
+        snippet=b.content[:120],
     )
-    rc = _cmd_lock(copy_args, out)
-    if rc != 0:
-        return rc
+    print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
+    print(f"  scope: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
+    print(f"  tier: {b.lock_tier}", file=out)  # type: ignore[arg-type]
+    print(
+        "  window: permanent (no expiry)" if b.lock_expires_at is None
+        else f"  window: expires {b.lock_expires_at}",
+        file=out,  # type: ignore[arg-type]
+    )
     print(
         f"  the repository lock {belief_id} is unchanged; while it is "
         f"locked, this repository injects it in place of the user copy. "
@@ -2331,10 +2458,6 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         print(_user_scope_conflict_message("lock"), file=sys.stderr)
         return 1
     feed_scope: dict[str, object] = {"scope": "user"} if user_scope else {}
-    promoted_from = getattr(args, "promoted_from", None)
-    if promoted_from is not None:
-        # #1681: `lock --promote-user` names the repository lock it copied.
-        feed_scope["promoted_from"] = promoted_from
     try:
         now = _utc_now_iso(now_dt)
         sid = resolve_session_id(
