@@ -161,6 +161,119 @@ def diagnose_lock_gaps(
 
 
 # ---------------------------------------------------------------------------
+# Repository locks that near-duplicate a user lock (#1681)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UserLockDuplicateReport:
+    """Repository locks injected in place of a user lock (#1681).
+
+    `known` False means the check couldn't tell (`unknown_reason`).
+    `user_store_present` False means there is no user store, so nothing
+    can be listed. `pairs` holds `(repo_id, repo_content, user_ids)` in
+    the repository store's lock order.
+    """
+
+    known: bool
+    user_store: str = ""
+    user_store_present: bool = False
+    pairs: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    unknown_reason: str | None = None
+
+
+_ACTIVE_LOCKS_SQL: Final[str] = (
+    "SELECT id, content, lock_expires_at FROM beliefs "
+    "WHERE lock_level = 'user' AND valid_to IS NULL "
+    "ORDER BY locked_at DESC, id ASC"
+)
+
+
+def _read_active_lock_pairs(path: str, now: str) -> list[tuple[str, str]]:
+    """`(id, content)` of the unexpired locks in the store at `path`.
+
+    A `mode=ro` connection, not a `MemoryStore`: opening a store runs its
+    DDL, migrations, and expiry sweep, and a diagnostic must not write.
+    Without the sweep, a lock past its window is still `lock_level =
+    'user'` on disk, so it is filtered here with the comparison the
+    sweep makes, as `user_locks.read_user_locks` does.
+    """
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(_ACTIVE_LOCKS_SQL).fetchall()
+    finally:
+        conn.close()
+    return [
+        (str(i), str(c)) for i, c, exp in rows
+        if exp is None or str(exp) > now
+    ]
+
+
+def diagnose_user_lock_duplicates(
+    store_path: str,
+    user_store_path: str | None = None,
+    *,
+    now: str | None = None,
+) -> UserLockDuplicateReport:
+    """List repository locks that a user lock near-duplicates (#1681).
+
+    Operator ruling Q4: `aelf doctor` lists them, so the user can unlock
+    them by hand; nothing is merged. They are the pairs the L0 merge
+    resolves in the repository copy's favor
+    (`user_locks.repo_locks_duplicating_user_locks`).
+
+    Both stores are read with `mode=ro` connections. The user store is
+    never created: a missing one lists nothing. `user_store_path`
+    defaults to `db_paths.user_db_path()`. When it is the repository
+    store, there is one set of locks and nothing to list.
+    """
+    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+    from aelfrice.user_locks import (  # noqa: PLC0415
+        repo_locks_duplicating_user_locks,
+    )
+
+    user_path = (
+        user_store_path if user_store_path is not None
+        else str(user_db_path())
+    )
+    if user_path == ":memory:" or not Path(user_path).is_file():
+        return UserLockDuplicateReport(known=True, user_store=user_path)
+    if store_path == ":memory:" or not Path(store_path).is_file():
+        return UserLockDuplicateReport(
+            known=True, user_store=user_path, user_store_present=True,
+        )
+    try:
+        if os.path.samefile(user_path, store_path):
+            return UserLockDuplicateReport(
+                known=True, user_store=user_path, user_store_present=True,
+            )
+    except OSError:
+        pass
+    ts = now if now is not None else datetime.now(timezone.utc).isoformat()
+    try:
+        repo_locks = _read_active_lock_pairs(store_path, ts)
+    except sqlite3.Error as exc:
+        return UserLockDuplicateReport(
+            known=False, user_store=user_path, user_store_present=True,
+            unknown_reason=f"the repository store could not be read: {exc}",
+        )
+    try:
+        user_locks = _read_active_lock_pairs(user_path, ts)
+    except sqlite3.Error as exc:
+        return UserLockDuplicateReport(
+            known=False, user_store=user_path, user_store_present=True,
+            unknown_reason=f"the user lock store could not be read: {exc}",
+        )
+    pairs = repo_locks_duplicating_user_locks(repo_locks, user_locks)
+    return UserLockDuplicateReport(
+        known=True,
+        user_store=user_path,
+        user_store_present=True,
+        pairs=tuple((rid, rc, tuple(uids)) for rid, rc, uids in pairs),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dangling-edge check (#1375)
 # ---------------------------------------------------------------------------
 
@@ -635,6 +748,11 @@ class DoctorReport:
     # the report's own `known` flag covers a disabled audit and an
     # unreadable store. Informational: it never changes the exit code.
     lock_gaps: "LockGapReport | None" = None
+    # #1681: repository locks that near-duplicate a user lock, so the
+    # user can unlock them by hand. Rendered on both `format_report`
+    # paths; None means no store path was supplied. Informational: it
+    # never changes the exit code.
+    user_lock_duplicates: UserLockDuplicateReport | None = None
     # #1652: `$HOME/.aelfrice.toml` when it exists and the project has no
     # config of its own, so its settings silently do not apply (#1582).
     # A warning only: it never changes the exit code.
@@ -698,8 +816,8 @@ def diagnose(
     `store_path` enables the incomplete-migration block (#1161) — pass
     the resolved DB path so doctor can read the store's failed one-shot
     migrations. Omitted (or unopenable) leaves that block quiet.
-    `user_store_path` is the user lock store (#1681) the lock-gap check
-    reads; it defaults to `db_paths.user_db_path()`.
+    `user_store_path` is the user lock store (#1681) the lock-gap and
+    duplicate-lock checks read; it defaults to `db_paths.user_db_path()`.
     """
     # Both home-derived paths are read through `_setup` rather than
     # copied in at import: doctor used to hold a by-value alias of
@@ -766,6 +884,18 @@ def diagnose(
             )
 
             report.lock_gaps = _LockGapReport(
+                known=False,
+                unknown_reason=f"the check failed: {type(exc).__name__}",
+            )
+        # #1681: read-only, and never creates the user store. Guarded
+        # like the lock-gap check: an unanticipated failure must not end
+        # the doctor run.
+        try:
+            report.user_lock_duplicates = diagnose_user_lock_duplicates(
+                store_path, user_store_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-soft section
+            report.user_lock_duplicates = UserLockDuplicateReport(
                 known=False,
                 unknown_reason=f"the check failed: {type(exc).__name__}",
             )
@@ -1592,6 +1722,8 @@ def format_report(report: DoctorReport) -> str:
         _format_memory_block_section(report, lines)
         # #1622: store- and audit-derived, independent of settings.json.
         _format_lock_gaps_section(report, lines)
+        # #1681: store-derived, independent of settings.json.
+        _format_user_lock_duplicates_section(report, lines)
         # #1652: config-derived, independent of settings.json.
         _format_ignored_home_config_section(report, lines)
         return "\n".join(lines)
@@ -1664,6 +1796,7 @@ def format_report(report: DoctorReport) -> str:
     _format_hrr_section(report, lines)
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
+    _format_user_lock_duplicates_section(report, lines)
     _format_ignored_home_config_section(report, lines)
     _format_mirror_consent_section(report, lines)
     return "\n".join(lines)
@@ -2289,6 +2422,39 @@ def _format_lock_gaps_section(report: DoctorReport, lines: list[str]) -> None:
         "  only requests typed since this check shipped are recorded; "
         "earlier failures are not listed."
     )
+
+
+def _format_user_lock_duplicates_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the repository-locks-that-duplicate-a-user-lock block (#1681).
+
+    Always rendered, like the lock-gap block. It lists; it never merges.
+    """
+    st = report.user_lock_duplicates
+    lines.append("")
+    lines.append("repository locks that near-duplicate a user lock:")
+    if st is None:
+        lines.append("  unknown: no store was checked")
+        return
+    if not st.known:
+        lines.append(f"  unknown: {st.unknown_reason}")
+        return
+    if not st.user_store_present:
+        lines.append(f"  none (no user lock store at {st.user_store})")
+        return
+    if not st.pairs:
+        lines.append(f"  none (user lock store: {st.user_store})")
+        return
+    lines.append(
+        f"  {len(st.pairs)} found (user lock store: {st.user_store}); "
+        "this repository injects each one in place of the user lock it "
+        "duplicates. Nothing is merged automatically."
+    )
+    for rid, content, uids in st.pairs:
+        lines.append(f"  - {rid}: {content}")
+        lines.append(f"      user lock: {', '.join(uids)}")
+        lines.append(f"      fix: aelf unlock {rid}")
 
 
 def _format_dangling_edges_section(

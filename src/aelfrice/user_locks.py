@@ -280,3 +280,42 @@ def l0_lock_set(
     if user_locks is None:
         user_locks = read_user_locks(store.db_path, fallback=fallback)
     return merge_lock_sets(store.list_locked_beliefs(), user_locks)
+
+
+def repo_locks_duplicating_user_locks(
+    repo_locks: Sequence[tuple[str, str]],
+    user_locks: Sequence[tuple[str, str]],
+) -> list[tuple[str, str, list[str]]]:
+    """Repository locks that a user lock near-duplicates (#1681).
+
+    Each lock is `(id, content)`. Returns `(repo_id, repo_content,
+    user_ids)` for every repository lock that shares its id with a user
+    lock or that a user lock near-duplicates, by the test the L0 merge
+    applies (`near_duplicate_locks_among`). These are the repository
+    locks injected in place of a user lock; `aelf doctor` lists them so
+    the user can unlock them by hand. Nothing is merged or changed here.
+
+    Order: `repo_locks` as given; within a row, user ids in
+    `user_locks` order.
+    """
+    if not repo_locks or not user_locks:
+        return []
+    from aelfrice.dedup import near_duplicate_locks_among  # noqa: PLC0415
+
+    # Same direction as `merge_lock_sets`: each user lock's text against
+    # the repository locks, so this lists exactly the pairs that make the
+    # merge drop a user lock.
+    repo_pairs = sorted(repo_locks, key=lambda t: t[0])
+    repo_ids = {rid for rid, _ in repo_locks}
+    by_repo: dict[str, list[str]] = {}
+    for uid, ucontent in user_locks:
+        matched = {p.belief_a_id for p in near_duplicate_locks_among(repo_pairs, ucontent)}
+        if uid in repo_ids:
+            matched.add(uid)
+        for rid in matched:
+            by_repo.setdefault(rid, []).append(uid)
+    return [
+        (rid, rcontent, by_repo[rid])
+        for rid, rcontent in repo_locks if rid in by_repo
+    ]
+
