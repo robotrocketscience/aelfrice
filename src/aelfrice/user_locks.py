@@ -107,7 +107,17 @@ def _same_file(a: Path, b: str) -> bool:
         return False
 
 
-def _warn_once(path: Path, exc: BaseException, stderr: IO[str] | None) -> None:
+#: The end of the unreadable-store warning: what the caller does instead.
+FALLBACK_INJECT: Final[str] = "injecting repository locks only"
+FALLBACK_LIST: Final[str] = "listing repository locks only"
+
+
+def _warn_once(
+    path: Path,
+    exc: BaseException,
+    stderr: IO[str] | None,
+    fallback: str = FALLBACK_INJECT,
+) -> None:
     key = str(path)
     if key in _WARNED:
         return
@@ -115,7 +125,7 @@ def _warn_once(path: Path, exc: BaseException, stderr: IO[str] | None) -> None:
     first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
     print(
         f"aelfrice: cannot read the user lock store at {path}: "
-        f"{first_line}; injecting repository locks only.",
+        f"{first_line}; {fallback}.",
         file=stderr if stderr is not None else sys.stderr,
     )
 
@@ -159,12 +169,14 @@ def read_user_locks(
     *,
     now: str | None = None,
     stderr: IO[str] | None = None,
+    fallback: str = FALLBACK_INJECT,
 ) -> list[Belief]:
     """Active, unexpired user-scope locks, or [] when there are none.
 
     Never creates the user store. Returns [] when it is missing, when it
     is the repository store (`repo_db_path`), or when it can't be opened
-    or read; the last case prints one stderr line per process.
+    or read; the last case prints one stderr line per process, which
+    ends with `fallback` (what the caller does instead).
 
     `now` is the ISO-8601 UTC instant the expiry filter compares against;
     it defaults to the wall clock, read once.
@@ -211,7 +223,7 @@ def read_user_locks(
             # warns once, not on every read. A change to the file moves
             # the signature and the next read tries again.
             rows = []
-            _warn_once(path, exc, stderr)
+            _warn_once(path, exc, stderr, fallback)
         for b in rows:
             setattr(b, USER_SCOPE_ATTR, USER_SCOPE_VALUE)
         _CACHE.pop(key, None)
@@ -257,13 +269,14 @@ def l0_lock_set(
     store: MemoryStore,
     *,
     user_locks: Sequence[Belief] | None = None,
+    fallback: str = FALLBACK_INJECT,
 ) -> list[Belief]:
     """Every lock an injection path injects: the store's, then the user's.
 
     `user_locks=None` reads the user-scope store; pass a list (or `()`)
-    to use locks the caller has already read.
+    to use locks the caller has already read. `fallback` ends the
+    warning an unreadable user store prints.
     """
     if user_locks is None:
-        user_locks = read_user_locks(store.db_path)
+        user_locks = read_user_locks(store.db_path, fallback=fallback)
     return merge_lock_sets(store.list_locked_beliefs(), user_locks)
-

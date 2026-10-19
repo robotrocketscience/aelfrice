@@ -931,13 +931,26 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
         # #938: pre-extract locked-set slots once per invocation (hot path).
         # Zero cost when feature is off — name only bound under the gate;
         # all reads of locked_pairs below are inside `if show_conflicts:`.
+        user_lock_ids: set[str] = set()
         if show_conflicts:
             from aelfrice.contradiction import _slot_conflict_preextracted
+            from aelfrice.user_locks import (
+                FALLBACK_LIST,
+                is_user_scope_lock,
+                l0_lock_set,
+            )
             from aelfrice.value_compare import extract_values
-            locked_beliefs = store.list_locked_beliefs()
+            # #1681: the lock set the hits are injected beside, so the
+            # user locks too, read-only, minus any a repository lock
+            # near-duplicates. The merge drops a user lock that shares a
+            # repository lock's id, so an id names one lock here.
+            locked_beliefs = l0_lock_set(store, fallback=FALLBACK_LIST)
             locked_pairs = [
                 (b, extract_values(b.content)) for b in locked_beliefs
             ]
+            user_lock_ids = {
+                b.id for b in locked_beliefs if is_user_scope_lock(b)
+            }
     finally:
         store.close()
     if not hits and not peer_hits:
@@ -969,6 +982,9 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
                 conflict_id = _slot_conflict_preextracted(h, locked_pairs)
                 if conflict_id is not None:
                     row["slot_conflict_with"] = conflict_id
+                    # #1681: the conflicting lock is in the user store.
+                    if conflict_id in user_lock_ids:
+                        row["slot_conflict_scope"] = "user"
             rows.append(row)
         for belief, peer_name, _score in peer_hits:
             row = {"id": belief.id, "content": belief.content, "scope": peer_name}
@@ -976,6 +992,8 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
                 conflict_id = _slot_conflict_preextracted(belief, locked_pairs)
                 if conflict_id is not None:
                     row["slot_conflict_with"] = conflict_id
+                    if conflict_id in user_lock_ids:
+                        row["slot_conflict_scope"] = "user"
             rows.append(row)
         print(_json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
         return 0
@@ -4394,6 +4412,8 @@ def _emit_core(
     episodes: dict[str, int] | None = None,
     gate_labels: dict[str, str] | None = None,
 ) -> None:
+    from aelfrice.user_locks import is_user_scope_lock
+
     # #1635: the labels use the same corroboration rule as the gate, so a
     # burst is never shown as corroboration evidence.
     ep: dict[str, int] = episodes or {}
@@ -4447,6 +4467,9 @@ def _emit_core(
             label = gl.get(b.content_hash)  # type: ignore[attr-defined]
             if label is not None:
                 row["core_gate_label"] = label
+            # #1681: as `aelf locked --json` and `aelf search --json` do.
+            if is_user_scope_lock(b):
+                row["scope"] = "user"
             rows.append(row)
         print(json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
         return
@@ -4466,7 +4489,9 @@ def _emit_core(
             parts.append(f"β={beta:.1f}")
             parts.append(f"μ={alpha / ab:.3f}")
         tag = f" [{','.join(parts)}]" if parts else ""
-        print(f"{b.id}{tag}: {b.content}", file=out)  # type: ignore[arg-type, attr-defined]
+        # #1681: tag a user-store lock after its id, as `aelf locked` does.
+        scope_tag = " [user]" if is_user_scope_lock(b) else ""
+        print(f"{b.id}{scope_tag}{tag}: {b.content}", file=out)  # type: ignore[arg-type, attr-defined]
 
 
 def _cmd_core(args: argparse.Namespace, out: object) -> int:
@@ -4480,9 +4505,17 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
     read-only fallback no expired-lock sweep has run (#1314), so the
     locked arm carries the same staleness `aelf locked` does there.
     """
+    from aelfrice.user_locks import FALLBACK_LIST, l0_lock_set
+
     store = open_store_for_read()
     try:
-        locked: list[object] = [] if args.no_locked else store.list_locked_beliefs()
+        # #1681: the user locks too, read-only and never created, after
+        # the repository's, minus any a repository lock near-duplicates:
+        # the L0 set the hooks inject.
+        locked: list[object] = (
+            [] if args.no_locked
+            else list(l0_lock_set(store, fallback=FALLBACK_LIST))
+        )
         candidates: list[object] = []
         # #1635: read once; the gate and the labels both use it, and the
         # labels cover the locked beliefs too.
