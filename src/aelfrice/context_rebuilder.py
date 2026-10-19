@@ -73,6 +73,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final, IO, cast
 
 from aelfrice.stream_encoding import read_payload_text
@@ -252,6 +253,7 @@ def rebuild_v14(
     query_strategy: str = DEFAULT_QUERY_STRATEGY,
     working_state: "WorkingState | None" = None,
     use_type_aware_compression: bool | None = None,
+    user_locks: Sequence[Belief] | None = None,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -294,6 +296,10 @@ def rebuild_v14(
     + R3 per-store IDF-clip stack from `aelfrice.query_understanding`;
     it was the default from v3.0 (#718) and was reverted in #1501.
     See `query_understanding.strategy.DEFAULT_STRATEGY` for why.
+
+    `user_locks` (#1681) is the same parameter `retrieve()` takes: `None`
+    reads the user lock store; `()` keeps L0 to the repository's locks,
+    which a measurement over a fixed corpus passes.
     """
     # #798: resolve compression flag once, thread through pack accounting
     # so rebuild_v14's trim matches retrieve()'s trim under the same flag.
@@ -303,7 +309,8 @@ def rebuild_v14(
 
     # #1681: the L0 set includes user-scope locks. Read them once and hand
     # the same list to `retrieve()`, so both see one set.
-    user_locks = read_user_locks(store.db_path)
+    if user_locks is None:
+        user_locks = read_user_locks(store.db_path)
     locked: list[Belief] = merge_lock_sets(
         store.list_locked_beliefs(), user_locks,
     )
