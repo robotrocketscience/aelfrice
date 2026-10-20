@@ -230,15 +230,32 @@ def diagnose_user_lock_duplicates(
     from aelfrice.db_paths import user_db_path  # noqa: PLC0415
     from aelfrice.user_locks import (  # noqa: PLC0415
         repo_locks_duplicating_user_locks,
+        store_file_present,
     )
 
     user_path = (
         user_store_path if user_store_path is not None
         else str(user_db_path())
     )
-    if user_path == ":memory:" or not Path(user_path).is_file():
+    # A path that can't be checked (a parent without search permission)
+    # is unknown, never missing: the store may be there.
+    try:
+        user_present = user_path != ":memory:" and store_file_present(user_path)
+    except OSError as exc:
+        return UserLockDuplicateReport(
+            known=False, user_store=user_path,
+            unknown_reason=f"the user lock store could not be read: {exc}",
+        )
+    if not user_present:
         return UserLockDuplicateReport(known=True, user_store=user_path)
-    if store_path == ":memory:" or not Path(store_path).is_file():
+    try:
+        repo_present = store_path != ":memory:" and store_file_present(store_path)
+    except OSError as exc:
+        return UserLockDuplicateReport(
+            known=False, user_store=user_path, user_store_present=True,
+            unknown_reason=f"the repository store could not be read: {exc}",
+        )
+    if not repo_present:
         return UserLockDuplicateReport(
             known=True, user_store=user_path, user_store_present=True,
         )
@@ -252,14 +269,14 @@ def diagnose_user_lock_duplicates(
     ts = now if now is not None else datetime.now(timezone.utc).isoformat()
     try:
         repo_locks = _read_active_lock_pairs(store_path, ts)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         return UserLockDuplicateReport(
             known=False, user_store=user_path, user_store_present=True,
             unknown_reason=f"the repository store could not be read: {exc}",
         )
     try:
         user_locks = _read_active_lock_pairs(user_path, ts)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         return UserLockDuplicateReport(
             known=False, user_store=user_path, user_store_present=True,
             unknown_reason=f"the user lock store could not be read: {exc}",

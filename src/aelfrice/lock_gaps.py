@@ -454,15 +454,34 @@ def _is_resolved(
     return False
 
 
+def _store_present(path: Path) -> bool:
+    """Whether a store file is at `path`.
+
+    Only a path that is not there (`FileNotFoundError`, or a parent that
+    is a file, `NotADirectoryError`) is missing. Any other `OSError`,
+    such as a parent directory without search permission, is raised: the
+    store may be there, so `detect_lock_gaps` reports it as unreadable rather
+    than as absent. `Path.exists()` and `Path.is_file()` can't be used
+    for this, because Python 3.14 returns False for those errors and
+    3.12 and 3.13 raise them.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
 def _open_gaps(
     path: Path, candidates: list[LockGap],
 ) -> list[LockGap]:
     """The candidates the store at `path` does not resolve.
 
     A store that does not exist resolves nothing. Raises `sqlite3.Error`
-    when it exists and can't be read.
+    when it exists and can't be read, and `OSError` when it can't be
+    checked (`_store_present`).
     """
-    if not candidates or not path.exists():
+    if not candidates or not _store_present(path):
         return list(candidates)
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
@@ -546,7 +565,7 @@ def detect_lock_gaps(
     user_candidates = [g for g in candidates.values() if g.user_scope]
     try:
         open_gaps = _open_gaps(db, repo_candidates)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         return LockGapReport(
             known=False,
             unknown_reason=f"the store could not be read: {exc}",
@@ -562,7 +581,7 @@ def detect_lock_gaps(
                 list(user_candidates) if user_path == ":memory:"
                 else _open_gaps(Path(user_path), user_candidates)
             )
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError) as exc:
             return LockGapReport(
                 known=False,
                 unknown_reason=(
