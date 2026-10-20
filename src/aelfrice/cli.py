@@ -2300,7 +2300,7 @@ def _create_store_file_exclusively(path: Path) -> tuple[int, int] | None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return None
     try:
