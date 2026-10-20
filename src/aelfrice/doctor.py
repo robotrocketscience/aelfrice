@@ -265,6 +265,8 @@ def diagnose_user_lock_duplicates(
                 known=True, user_store=user_path, user_store_present=True,
             )
     except OSError:
+        # The paths can't be compared, so treat them as two stores; the
+        # reads below report the store as unreadable if the error is real.
         pass
     ts = now if now is not None else datetime.now(timezone.utc).isoformat()
     try:
