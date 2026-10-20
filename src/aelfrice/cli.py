@@ -2291,6 +2291,65 @@ def _write_promoted_copy(
     return actual_id, kind
 
 
+def _create_store_file_exclusively(path: Path) -> tuple[int, int] | None:
+    """Create an empty file at `path` if nothing is there; its (dev, inode).
+
+    None when a file is already there. `O_EXCL` makes the check and the
+    creation one step, so a file this returns an identity for is one this
+    process created, never one another process made a moment earlier.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return None
+    try:
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    return (st.st_dev, st.st_ino)
+
+
+def _remove_store_if_still_ours_and_empty(
+    path: Path, ident: tuple[int, int],
+) -> None:
+    """Remove a store a failed promote created, but never one holding data.
+
+    The file is removed, with its `-wal` and `-shm`, only when it is still
+    the file this process created (same device and inode) and it holds no
+    belief and no ingest row. Otherwise, or when either check can't be
+    made, it is left in place and one stderr line says a user store now
+    exists, so another writer's lock is never deleted.
+    """
+    import sqlite3
+
+    reason = ""
+    try:
+        st = os.stat(path)
+        if (st.st_dev, st.st_ino) != ident:
+            reason = "it is no longer the file this command created"
+        else:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                beliefs = conn.execute("SELECT COUNT(*) FROM beliefs").fetchone()[0]
+                ingests = conn.execute("SELECT COUNT(*) FROM ingest_log").fetchone()[0]
+            finally:
+                conn.close()
+            if beliefs or ingests:
+                reason = "another writer has stored data in it"
+    except (OSError, sqlite3.Error) as exc:
+        reason = f"it could not be checked ({exc})"
+    if reason:
+        print(
+            f"aelf lock --promote-user: a user lock store now exists at "
+            f"{path}; it was left in place because {reason}.",
+            file=sys.stderr,
+        )
+        return
+    for f in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        f.unlink(missing_ok=True)
+
+
 def _promote_in_place(
     repo_lock: Belief,
     *,
@@ -2300,18 +2359,21 @@ def _promote_in_place(
 ) -> tuple[str, str]:
     """Write the promoted copy into the user store at its path (#1681).
 
-    When the store wasn't there before this call and the write fails,
-    the file this call created, and its `-wal` and `-shm`, are removed,
-    so a failed promote leaves no user store file. A store another
-    process creates between the check and the open would be removed too;
-    nothing else creates the user store except `aelf lock --user` and
-    another promote. `recheck_same_file` re-runs the user-store-is-repo-
-    store guard on a store that appeared after the first check.
+    When no store is there, this call creates the file itself with
+    `O_EXCL` before opening it, so it knows the file is its own. If the
+    write then fails, the file is removed only when it is still that
+    file and holds no belief and no ingest row
+    (`_remove_store_if_still_ours_and_empty`); otherwise it stays, and
+    stderr says a user store now exists. A store another process creates
+    first is never this call's to remove. `recheck_same_file` re-runs the
+    user-store-is-repo-store guard on a store that appeared after the
+    first check.
     """
-    from aelfrice.user_locks import store_file_present
-
     path = user_db_path()
-    created = str(path) != ":memory:" and not store_file_present(path)
+    ident = (
+        None if str(path) == ":memory:"
+        else _create_store_file_exclusively(path)
+    )
     ustore = open_user_store()
     done = False
     try:
@@ -2326,9 +2388,8 @@ def _promote_in_place(
         return result
     finally:
         ustore.close()
-        if created and not done:
-            for f in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
-                f.unlink(missing_ok=True)
+        if ident is not None and not done:
+            _remove_store_if_still_ours_and_empty(path, ident)
 
 
 def _promote_into_user_store(
