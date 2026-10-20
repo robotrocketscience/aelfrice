@@ -13,13 +13,14 @@ Every path is a temp path. The conftest pins `AELFRICE_DB` and
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
 import os
 import shlex
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -856,12 +857,14 @@ def test_a_failure_at_the_tier_and_expiry_step_leaves_nothing_and_a_retry_works(
         real_update(self, b)
 
     monkeypatch.setattr(MemoryStore, "update_belief", failing_update)
-    rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    rc, out, err = _cli(["lock", "--promote-user", "r1"], capsys)
     assert rc == 1
+    assert out == ""
+    assert err.count("\n") == 1
     assert "the copy failed: database is locked" in err
-    assert "Traceback" not in err
-    assert _count(user, "beliefs") == 0
-    assert _count(user, "ingest_log") == 0
+    # No user store existed, so none is left behind, nor a temporary file.
+    assert not user.exists()
+    assert sorted(f.name for f in user.parent.iterdir()) == []
     assert [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"] == []
 
     monkeypatch.setattr(MemoryStore, "update_belief", real_update)
@@ -903,11 +906,14 @@ def test_an_unopenable_user_store_prints_one_line_and_exits_1(
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x", encoding="utf-8")
     monkeypatch.setenv("AELFRICE_USER_DB", str(blocker / "user" / "memory.db"))
-    rc, _, err = _cli(argv, capsys)
+    rc, out, err = _cli(argv, capsys)
     assert rc == 1
-    assert "cannot open the user lock store" in err
+    assert ("the copy failed" if "--promote-user" in argv
+            else "cannot open the user lock store") in err
     assert "Traceback" not in err
     assert len(err.strip().splitlines()) == 1
+    if "--promote-user" in argv:
+        assert out == ""
 
 
 # --- feedback and confirm on an id both stores hold (ruling 2026-10-19) ---------
@@ -1051,3 +1057,301 @@ def test_core_shows_no_gate_label_on_a_user_lock() -> None:
     rows = {r["id"]: r for r in json.loads(out.getvalue())}
     assert rows["r1"]["core_gate_label"] == "B"
     assert "core_gate_label" not in rows["u1"]
+
+
+# --- second review: existing store, unsearchable dirs, untested lines ----------
+
+
+@pytest.mark.timeout(60)
+def test_a_failed_promote_into_an_existing_user_store_writes_nothing(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    expires = "2099-01-02T03:04:05+00:00"
+    _seed(repo, [_lock("r1", REPO_RULE, expires=expires)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    before = (_count(user, "beliefs"), _count(user, "ingest_log"))
+    real_update = MemoryStore.update_belief
+
+    def failing_update(self: MemoryStore, b: Belief) -> None:
+        if b.lock_expires_at == expires:
+            raise sqlite3.OperationalError("database is locked")
+        real_update(self, b)
+
+    monkeypatch.setattr(MemoryStore, "update_belief", failing_update)
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1 and out == ""
+    assert (_count(user, "beliefs"), _count(user, "ingest_log")) == before
+
+
+@contextlib.contextmanager
+def _chmod0_parent(path: Path) -> Generator[None, None, None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0)
+    try:
+        yield
+    finally:
+        os.chmod(path.parent, 0o755)
+
+
+_SKIP_CHMOD = pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permissions and a non-root user",
+)
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_makes_lock_gaps_unknown(
+    tmp_path: Path, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The store may be there, so the answer is unknown, not a false gap."""
+    repo, user = stores
+    _fail_typed_lock(f"/aelf:lock --user {STATEMENT}", tmp_path, monkeypatch)
+    assert _cli(["lock", "--user", STATEMENT], capsys)[0] == 0
+    with _chmod0_parent(user):
+        report = detect_lock_gaps(
+            str(repo), audit_enabled=True, user_store_path=str(user),
+        )
+        assert not report.known
+        assert report.unknown_reason is not None
+        assert report.unknown_reason.startswith("the user lock store could not be read")
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_repo_store_dir_makes_lock_gaps_unknown(
+    tmp_path: Path, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    _fail_typed_lock(f"/aelf:lock {STATEMENT}", tmp_path, monkeypatch)
+    _seed(repo, [])
+    outcomes = command_outcomes_path_for_db(repo)
+    moved = tmp_path / "outcomes-copy"
+    # The outcome log sits beside the store; read it before the dir closes.
+    moved.write_bytes(outcomes.read_bytes())
+    from aelfrice import lock_gaps as lg
+
+    def outcomes_copy(_db: Path) -> Path:
+        return moved
+
+    monkeypatch.setattr(lg, "command_outcomes_path_for_db", outcomes_copy)
+    with _chmod0_parent(repo):
+        report = detect_lock_gaps(
+            str(repo), audit_enabled=True, user_store_path=str(user),
+        )
+        assert not report.known
+        assert report.unknown_reason is not None
+        assert report.unknown_reason.startswith("the store could not be read")
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_makes_the_doctor_listing_unknown(
+    stores: tuple[Path, Path],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", NEAR_DUP)])
+    with _chmod0_parent(user):
+        report = diagnose_user_lock_duplicates(str(repo), str(user))
+    assert not report.known
+    assert report.unknown_reason is not None
+    assert report.unknown_reason.startswith("the user lock store could not be read")
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_refuses_a_promote(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The duplicate check can't run, so nothing is added."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", NEAR_DUP)])
+    with _chmod0_parent(user):
+        rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1
+    assert "cannot read the user lock store" in err
+    assert [i for i, _, _, _ in _locks(user)] == ["u1"]
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_warns_in_core(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    with _chmod0_parent(user):
+        rc, out, err = _cli(["core", "--locked-only"], capsys)
+    assert rc == 0
+    assert "u1" not in out
+    assert "cannot read the user lock store" in err
+
+
+@pytest.mark.timeout(60)
+def test_lock_gaps_with_an_in_memory_user_store_resolves_nothing(
+    tmp_path: Path, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, _ = stores
+    _fail_typed_lock(f"/aelf:lock --user {STATEMENT}", tmp_path, monkeypatch)
+    assert _cli(["lock", STATEMENT], capsys)[0] == 0
+    [gap] = detect_lock_gaps(
+        str(repo), audit_enabled=True, user_store_path=":memory:",
+    ).gaps
+    assert gap.user_scope
+
+
+@pytest.mark.timeout(60)
+def test_doctor_skips_a_retired_repo_lock(stores: tuple[Path, Path]) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", NEAR_DUP)])
+    conn = sqlite3.connect(str(repo))
+    conn.execute(
+        "UPDATE beliefs SET valid_to = '2026-10-02T00:00:00Z' WHERE id = 'r1'"
+    )
+    conn.commit()
+    conn.close()
+    report = diagnose_user_lock_duplicates(str(repo), str(user))
+    assert report.known and report.pairs == ()
+
+
+def _lock_id(text: str) -> str:
+    from aelfrice.derivation import (
+        DerivationInput,
+        derive,
+    )
+    from aelfrice.models import INGEST_SOURCE_CLI_REMEMBER
+
+    d = derive(DerivationInput(
+        raw_text=text, source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        ts="2026-10-01T00:00:00Z", session_id=None,
+    ))
+    assert d.belief is not None
+    return d.belief.id
+
+
+def _plain_with(bid: str, content: str, origin: str) -> Belief:
+    b = _plain(bid, content)
+    b.origin = origin
+    return b
+
+
+@pytest.mark.timeout(60)
+def test_promote_onto_an_unlocked_row_at_the_lock_id_is_an_upgrade(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A user lock unlocked earlier keeps its row; the promote re-locks it."""
+    from aelfrice.models import ORIGIN_USER_VALIDATED
+
+    repo, user = stores
+    uid = _lock_id(REPO_RULE)
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_plain_with(uid, REPO_RULE, ORIGIN_USER_VALIDATED)])
+    assert _cli(["lock", "--promote-user", "r1"], capsys)[0] == 0
+    [row] = [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"]
+    assert row["kind"] == "upgrade" and row["id"] == uid
+    conn = sqlite3.connect(f"file:{user}?mode=ro", uri=True)
+    [(origin, level)] = conn.execute(
+        "SELECT origin, lock_level FROM beliefs WHERE id = ?", (uid,)
+    ).fetchall()
+    conn.close()
+    # A user-validated row keeps its stronger origin.
+    assert (origin, level) == (ORIGIN_USER_VALIDATED, LOCK_USER)
+
+
+@pytest.mark.timeout(60)
+def test_promote_onto_a_same_text_row_is_corroborated_and_takes_user_origin(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A row with the statement's text under another id is reused."""
+    from aelfrice.models import ORIGIN_AGENT_INFERRED, ORIGIN_USER_STATED
+
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_plain_with("other", REPO_RULE, ORIGIN_AGENT_INFERRED)])
+    assert _cli(["lock", "--promote-user", "r1"], capsys)[0] == 0
+    [row] = [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"]
+    assert row["kind"] == "corroborated" and row["id"] == "other"
+    conn = sqlite3.connect(f"file:{user}?mode=ro", uri=True)
+    [(origin, level)] = conn.execute(
+        "SELECT origin, lock_level FROM beliefs WHERE id = 'other'"
+    ).fetchall()
+    conn.close()
+    assert (origin, level) == (ORIGIN_USER_STATED, LOCK_USER)
+
+
+@pytest.mark.timeout(60)
+def test_a_promote_whose_lock_write_did_not_take_writes_nothing(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final read is the guard: a write that left the row unlocked
+    must not be reported, and the transaction rolls back."""
+    repo, user = stores
+    uid = _lock_id(REPO_RULE)
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_plain(uid, REPO_RULE)])
+    before = (_count(user, "ingest_log"), _locks(user))
+    def no_update(self: MemoryStore, b: Belief) -> None:
+        return None
+
+    monkeypatch.setattr(MemoryStore, "update_belief", no_update)
+    rc, out, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1 and out == ""
+    assert f"{uid} is not locked" in err
+    assert (_count(user, "ingest_log"), _locks(user)) == before
+    assert [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"] == []
+
+
+@pytest.mark.timeout(60)
+def test_a_near_duplicate_added_after_the_first_check_is_caught_in_the_write(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent promote that lands between the read and the write."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u0", USER_RULE)])
+    def none_yet() -> list[tuple[str, str]]:
+        return []
+
+    monkeypatch.setattr(cli, "_read_user_lock_pairs", none_yet)
+    _seed(user, [_lock("u1", NEAR_DUP)])
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 0
+    assert "near-duplicate lock: u1" in out
+    assert sorted(i for i, _, _, _ in _locks(user)) == ["u0", "u1"]
+    assert [r for r in _feed_rows(repo) if r.get("event") == "belief.locked"] == []
+
+
+@pytest.mark.timeout(60)
+def test_show_conflicts_marks_a_peer_hit_against_a_user_lock(
+    tmp_path: Path, stores: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    peer = tmp_path / "peer.db"
+    peer_belief = _plain("pp1", "The default server port is 9090.")
+    peer_belief.scope = "global"
+    _seed(peer, [peer_belief])
+    deps = tmp_path / "knowledge_deps.json"
+    deps.write_text(json.dumps(
+        {"version": 1, "deps": [{"name": "peerA", "path": str(peer)}]},
+    ), encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_KNOWLEDGE_DEPS", str(deps))
+    _seed(repo, [_plain("p0", "an unrelated repository note")])
+    _seed(user, [_lock("u1", "The default server port is 8080.")])
+    monkeypatch.setenv("AELF_SHOW_CONFLICTS", "1")
+    rc, out, _ = _cli(["search", "server port", "--json"], capsys)
+    assert rc == 0
+    rows = {r["id"]: r for r in json.loads(out)}
+    assert rows["pp1"]["scope"] == "peerA"
+    assert rows["pp1"]["slot_conflict_with"] == "u1"
+    assert rows["pp1"]["slot_conflict_scope"] == "user"
