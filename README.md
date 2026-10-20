@@ -10,14 +10,17 @@
 [![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
-**aelfrice gives an AI coding agent a local memory: the rules you lock, and the beliefs that match what you ask, reach the model before it reads your message.**
+**aelfrice gives an AI coding agent a local memory: the rules you lock and the beliefs that match your prompt reach the model before it reads that prompt.**
 
-- **Problem.** An agent forgets your corrections between sessions, so you repeat them.
-- **Method.** Before the model reads each prompt, a hook adds every rule you locked and the beliefs that best match the prompt, from an entity index and BM25 full-text search over a local SQLite store.
-- **Provenance.** Every belief records where it came from and carries a Bayesian confidence that moves when you confirm it with `/aelf:confirm`, rate it with `aelf feedback`, or praise an answer it informed; a lock pins it as ground truth.
-- **Scope.** aelfrice captures your turns and commits as you work, and retrieval runs on your machine with no account, telemetry, embeddings, or LLM. By default it also checks PyPI for updates and runs your `claude` CLI in the background to label new core beliefs; `/aelf:onboard` classifies with your agent's model ([privacy](docs/user/PRIVACY.md)).
+- An agent forgets your corrections between sessions, so you repeat them.
+- Before the model reads each prompt, a hook adds every rule you locked and the beliefs that best match the prompt, found through an entity index and BM25 full-text search over a local SQLite store.
+- Every belief records where it came from and carries a Bayesian confidence. Only a lock makes a belief ground truth.
+- aelfrice captures your turns and commits as you work. Retrieval runs on your machine with no account, telemetry, embeddings, or LLM.
+- By default, aelfrice also checks PyPI for updates and runs your `claude` CLI in the background to label new core beliefs. `/aelf:onboard` classifies with your agent's model. For details, see the [privacy document](docs/user/PRIVACY.md).
 
-**How a conversation becomes beliefs.** A belief is one statement stored with its source, a type, and a confidence score. About every six prompts (12 logged lines, counting the replies), aelfrice splits your prompts into sentences, drops noise and questions, and stores the rest as facts, corrections, preferences, or requirements. The model's replies to you are skipped. When a later prompt matches stored beliefs, the best matches are ranked and added to it. They're beliefs, not facts: `/aelf:confirm` and `aelf feedback` move each one's confidence, and so does a short reply such as "perfect". A complaint such as "that's wrong" counts only if you turn on [negative sentiment feedback](docs/user/CONFIG.md). Only a lock makes a belief ground truth.
+## Beliefs
+
+A belief is one statement stored with its source, a type, and a confidence score. About every six prompts (12 logged lines, counting the replies), aelfrice splits your prompts into sentences, drops noise and questions, and stores the rest as facts, corrections, preferences, or requirements. It skips the model's replies to you. When a later prompt matches stored beliefs, aelfrice ranks the best matches and adds them to that prompt. A belief's confidence moves when you confirm it with `/aelf:confirm`, rate it with `aelf feedback`, or praise an answer it informed with a short reply such as "perfect". A complaint such as "that's wrong" counts only if you turn on [negative sentiment feedback](docs/user/CONFIG.md).
 
 <p align="center">
   <picture>
@@ -83,9 +86,9 @@ From then on, aelfrice runs by itself. To check the install, run `/aelf:doctor` 
 |---|---|---|
 | `/aelf:setup` | Installs the aelfrice hooks into your agent. | You install aelfrice, or repair its hooks. |
 | `/aelf:show <id>` | Prints one belief in full with its origin and confidence. | You want the whole of one belief. |
-| `/aelf:core` | Lists the load-bearing beliefs: locks, repeated ones, and high-confidence ones. | You want to see what anchors your memory. |
+| `/aelf:core` | Lists the beliefs aelfrice treats as core: locks, repeated ones, and high-confidence ones. | You want to see the beliefs your memory relies on most. |
 | `/aelf:feed` | Shows the log of belief writes. | You want to see what aelfrice recorded. |
-| `/aelf:tail` | Streams what the hooks injected on each prompt and session start. | You want to see what the agent was actually told. |
+| `/aelf:tail` | Streams what the hooks injected on each prompt and session start. | You want to see what the agent was told. |
 | `/aelf:stale` | Lists old beliefs that haven't been retrieved recently. | You prune memory that went cold. |
 | `/aelf:restore <id>` | Brings a retired belief back. | You retired something by mistake. |
 | `/aelf:delete <id>` | Deletes a belief permanently. | A belief must be gone for good. |
@@ -114,7 +117,7 @@ Each command has a terminal form, such as `aelf lock "..."`. The [command refere
   </picture>
 </p>
 
-Every belief has one type. Transcript text gets its type from a rule-based classifier, and `/aelf:onboard` uses your agent's model by default. New text from `aelf lock` or the commit hook is stored as `factual`, and `/aelf:wonder` stores `speculative`. Locked is a flag on top of the type, not a type of its own.
+Every belief has one type. Transcript text gets its type from a rule-based classifier, and `/aelf:onboard` uses your agent's model by default. New text from `aelf lock` or the commit hook is stored as `factual`, and `/aelf:wonder` stores `speculative`. Locked is a flag on a belief and leaves its type unchanged.
 
 | Type | What it holds | How a belief gets it |
 |---|---|---|
@@ -124,7 +127,7 @@ Every belief has one type. Transcript text gets its type from a rule-based class
 | `preference` | How you like things done. | It contains a phrase such as "I prefer" or "always use". |
 | `speculative` | A guess that isn't trusted yet, called a phantom. | `/aelf:wonder` writes it. |
 
-Edges link beliefs, from a source to a target. Only the first two are written for every conversation today. The others need a command, an opt-in setting, or a specific phrase in a commit message. The commit hook reads a message when the agent runs `git commit`, and it matches only unambiguous phrasings: "is supported by" counts, but "supports" doesn't.
+Edges link beliefs, from a source to a target. Only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation today. The others need a command, an opt-in setting, or a specific phrase in a commit message. The commit hook reads a message when the agent runs `git commit`, and it matches only unambiguous phrasings: "is supported by" counts, but "supports" doesn't.
 
 | Edge | Meaning | Written by | On by default |
 |---|---|---|---|
@@ -138,9 +141,9 @@ Edges link beliefs, from a source to a target. Only the first two are written fo
 | `CONTRADICTS` | Conflicts with the target. | The relationship detector at ingest; the commit hook ("contradicts", "disagrees with"). | Detector: no, set `[relationship_detector] auto_detect = true`. Commit hook: on those phrases |
 | `SUPERSEDES` | Replaces the target. | `aelf resolve`, which keeps the winner of each contradicting pair; the commit hook ("supersedes"). | When you run it, or on that phrase |
 | `POTENTIALLY_STALE` | Marks the target, an older belief, as possibly out of date. | `aelf doctor --detect-stale`. | When you run it |
-| `RESOLVES` | Settles the target: the winner of a contradicting pair resolves the loser. | `aelf resolve`, beside each `SUPERSEDES` edge it writes ([#1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | When you run it |
+| `RESOLVES` | Settles the target: the winner of a contradicting pair resolves the loser. | `aelf resolve`, beside each `SUPERSEDES` edge it writes ([issue #1658](https://github.com/robotrocketscience/aelfrice/issues/1658)). | When you run it |
 
-Work to write more of these edges automatically is tracked in [#1653](https://github.com/robotrocketscience/aelfrice/issues/1653).
+Work to write more of these edges automatically is tracked in [issue #1653](https://github.com/robotrocketscience/aelfrice/issues/1653).
 
 <p align="center"><img src="docs/assets/02-eterne-hrr.png" width="88%" alt="A pen-and-ink figure holding a sword, with ranks of armored figures branching above and behind him like a tree"></p>
 
