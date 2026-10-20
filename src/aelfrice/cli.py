@@ -2117,6 +2117,43 @@ _PROMOTE_USER_REJECTED_LOCK_FLAGS: Final[tuple[tuple[str, str, str], ...]] = (
 )
 
 
+def _active_user_lock_pairs(locks: list[Belief]) -> list[tuple[str, str]]:
+    """`(id, content)` of the locks in `locks` that are unexpired now.
+
+    A read-only handle skips the open-time expiry sweep, so a lapsed
+    lock can still read `lock_level = 'user'`; the window is checked here.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    return [
+        (b.id, b.content) for b in locks
+        if b.lock_level == LOCK_USER
+        and (b.lock_expires_at is None or b.lock_expires_at > now)
+    ]
+
+
+def _promote_duplicate(
+    user_pairs: list[tuple[str, str]], repo_lock: Belief,
+) -> str | None:
+    """Why the user store already holds `repo_lock`, or None (#1681).
+
+    A user lock with the same id, or one the L0 merge would treat as a
+    near-duplicate of it. The merge's direction: a user lock's text
+    against the repository lock, so "near-duplicate" means here what it
+    means there.
+    """
+    from aelfrice.dedup import near_duplicate_locks_among
+
+    if any(uid == repo_lock.id for uid, _ in user_pairs):
+        return "has a lock with the same id"
+    dups = [
+        uid for uid, ucontent in user_pairs
+        if near_duplicate_locks_among([(repo_lock.id, repo_lock.content)], ucontent)
+    ]
+    if dups:
+        return f"has a near-duplicate lock: {', '.join(dups)}"
+    return None
+
+
 def _read_user_lock_pairs() -> list[tuple[str, str]]:
     """`(id, content)` of the user store's active, unexpired locks.
 
@@ -2133,16 +2170,15 @@ def _read_user_lock_pairs() -> list[tuple[str, str]]:
         locks = ustore.list_locked_beliefs()
     finally:
         ustore.close()
-    now = datetime.now(timezone.utc).isoformat()
-    return [
-        (b.id, b.content) for b in locks
-        if b.lock_level == LOCK_USER
-        and (b.lock_expires_at is None or b.lock_expires_at > now)
-    ]
+    return _active_user_lock_pairs(locks)
 
 
 class _PromoteWriteError(Exception):
     """The promoted copy could not be written; the transaction rolled back."""
+
+
+class _PromoteDuplicate(Exception):
+    """The user store already holds the lock; nothing was written."""
 
 
 def _open_user_store_or_report(command: str) -> MemoryStore | None:
@@ -2186,10 +2222,8 @@ def _record_lock_ingest(
 
 def _write_promoted_copy(
     store: MemoryStore,
-    content: str,
+    repo_lock: Belief,
     *,
-    tier: str,
-    expires_at: str | None,
     session_id: str | None,
     now: str,
 ) -> tuple[str, str]:
@@ -2202,7 +2236,12 @@ def _write_promoted_copy(
     would then find it and add nothing. Returns `(belief_id, kind)`,
     where `kind` is the `belief.locked` feed kind. Raises
     `_PromoteWriteError` or `sqlite3.Error`, after the rollback.
+
+    The duplicate test runs again inside the transaction, which holds
+    the write lock (`BEGIN IMMEDIATE`), so two promotes running at once
+    can't both add a near-duplicate; the second raises `_PromoteDuplicate`.
     """
+    content = repo_lock.content
     derived = derive(DerivationInput(
         raw_text=content,
         source_kind=INGEST_SOURCE_CLI_REMEMBER,
@@ -2213,6 +2252,11 @@ def _write_promoted_copy(
         raise _PromoteWriteError("derivation produced no belief")
     lock_bid = derived.belief.id
     with store.transaction(immediate=True):
+        why = _promote_duplicate(
+            _active_user_lock_pairs(store.list_locked_beliefs()), repo_lock,
+        )
+        if why is not None:
+            raise _PromoteDuplicate(why)
         pre_existing = store.get_belief(lock_bid, include_retired=True) is not None
         ids_before: set[str] = set(store.list_belief_ids())
         log_id = _record_lock_ingest(store, content, session_id, now)
@@ -2230,8 +2274,8 @@ def _write_promoted_copy(
         row.lock_level = LOCK_USER
         if row.origin != ORIGIN_USER_VALIDATED:
             row.origin = ORIGIN_USER_STATED
-        row.lock_tier = tier
-        row.lock_expires_at = expires_at
+        row.lock_tier = repo_lock.lock_tier
+        row.lock_expires_at = repo_lock.lock_expires_at
         store.update_belief(row)
         # The predicate `aelf locked` lists by: never report a lock that
         # did not happen (#1620).
@@ -2247,6 +2291,62 @@ def _write_promoted_copy(
     return actual_id, kind
 
 
+def _promote_into_user_store(
+    repo_lock: Belief, *, session_id: str | None, now: str,
+) -> tuple[str, str]:
+    """Write the promoted copy, creating the user store only on success.
+
+    An existing user store is written in place (`_write_promoted_copy`).
+    When there is none, the copy is written to a fresh store beside the
+    target path, closed, and hard-linked into place, so a failed copy
+    leaves no user store file. When the link fails, because another
+    process created the store in the meantime or the filesystem has no
+    hard links, the copy is written into the store in place instead. The parent directory is created either way, and
+    a process killed mid-copy can leave its temporary file there.
+    Raises what `_write_promoted_copy` raises, and `OSError`.
+    """
+    from aelfrice.user_locks import store_file_present
+
+    path = user_db_path()
+    if str(path) == ":memory:" or store_file_present(path):
+        ustore = open_user_store()
+        try:
+            return _write_promoted_copy(
+                ustore, repo_lock, session_id=session_id, now=now,
+            )
+        finally:
+            ustore.close()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.promote-{os.getpid()}.tmp")
+    sidecars = [tmp, Path(f"{tmp}-wal"), Path(f"{tmp}-shm")]
+    for f in sidecars:
+        f.unlink(missing_ok=True)
+    try:
+        tstore = MemoryStore(str(tmp), project_context_default="")
+        try:
+            result = _write_promoted_copy(
+                tstore, repo_lock, session_id=session_id, now=now,
+            )
+        finally:
+            tstore.close()
+        try:
+            os.link(tmp, path)
+        except OSError:
+            # The store appeared meanwhile (`FileExistsError`), or this
+            # filesystem has no hard links: write into the store in place.
+            ustore = open_user_store()
+            try:
+                return _write_promoted_copy(
+                    ustore, repo_lock, session_id=session_id, now=now,
+                )
+            finally:
+                ustore.close()
+        return result
+    finally:
+        for f in sidecars:
+            f.unlink(missing_ok=True)
+
+
 def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
     """`aelf lock --promote-user <id>`: copy a repository lock to the user store.
 
@@ -2258,7 +2358,9 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
     in one transaction on the user store (`_write_promoted_copy`), so a
     failure partway leaves nothing behind and a retry starts clean. The
     `belief.locked` feed event, tagged `"scope": "user"` and
-    `"promoted_from": <id>`, is written only after that commit.
+    `"promoted_from": <id>`, and the output are written only after that
+    commit. A user store that didn't exist is created only when the copy
+    succeeds (`_promote_into_user_store`).
 
     Refused, with nothing opened for writing: a flag the copy can't
     honour, a user store that is the repository store, an id that isn't
@@ -2268,8 +2370,6 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
     said, nothing is written, and the exit is 0.
     """
     import sqlite3
-
-    from aelfrice.dedup import near_duplicate_locks_among
 
     for attr, flag, why in _PROMOTE_USER_REJECTED_LOCK_FLAGS:
         if getattr(args, attr, None):
@@ -2319,64 +2419,43 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
             file=sys.stderr,
         )
         return 1
-    same_id = [uid for uid, _ in user_pairs if uid == belief_id]
-    # The L0 merge's direction: a user lock's text against the
-    # repository lock, so "near-duplicate" means here what it means there.
-    dups = same_id or [
-        uid for uid, ucontent in user_pairs
-        if near_duplicate_locks_among([(b.id, b.content)], ucontent)
-    ]
-    if dups:
-        what = (
-            "has a lock with the same id" if same_id
-            else f"has a near-duplicate lock: {', '.join(dups)}"
-        )
-        print(
-            f"not promoted: the user store ({user_db_path()}) already "
-            f"{what}. Nothing was added.",
-            file=out,  # type: ignore[arg-type]
-        )
-        return 0
-    print(
-        f"promoting repository lock {belief_id} to the user store",
-        file=out,  # type: ignore[arg-type]
-    )
-    ustore = _open_user_store_or_report("lock --promote-user")
-    if ustore is None:
-        return 1
-    try:
-        if _user_store_is_repo_store():
-            # The user store may not have existed at the first check.
-            print(
-                _user_scope_conflict_message("lock --promote-user"),
-                file=sys.stderr,
-            )
-            return 1
+    why = _promote_duplicate(user_pairs, b)
+    if why is None:
         now = _utc_now_iso(datetime.now(timezone.utc).replace(microsecond=0))
         sid = resolve_session_id(
             getattr(args, "session_id", None),
             surface_name="aelf lock",
         )
         try:
-            actual_id, kind = _write_promoted_copy(
-                ustore, b.content,
-                tier=b.lock_tier, expires_at=b.lock_expires_at,
-                session_id=sid, now=now,
+            actual_id, kind = _promote_into_user_store(
+                b, session_id=sid, now=now,
             )
-        except (sqlite3.Error, _PromoteWriteError) as exc:
+        except _PromoteDuplicate as dup:
+            # Another promote added it after the read above.
+            why = str(dup)
+        except (sqlite3.Error, OSError, _PromoteWriteError) as exc:
             print(
                 f"aelf lock --promote-user: the copy failed: {exc}; nothing "
                 "was written to the user store.",
                 file=sys.stderr,
             )
             return 1
-    finally:
-        ustore.close()
+    if why is not None:
+        print(
+            f"not promoted: the user store ({user_db_path()}) already "
+            f"{why}. Nothing was added.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
     # After the commit, never before: a feed event names a lock that exists.
     _feed_log_event(
         "belief.locked", actual_id, None,
         kind=kind, scope="user", promoted_from=belief_id,
         snippet=b.content[:120],
+    )
+    print(
+        f"promoted repository lock {belief_id} to the user store",
+        file=out,  # type: ignore[arg-type]
     )
     print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
     print(f"  scope: user ({user_db_path()})", file=out)  # type: ignore[arg-type]
