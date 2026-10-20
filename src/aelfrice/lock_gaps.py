@@ -96,9 +96,11 @@ resolves nothing, as for the repository store, and is never created.
 Read-only throughout. The store is opened with a `mode=ro` URI, never
 through `MemoryStore`, whose constructor writes (DDL, migrations).
 Imports only the standard library and `hook_audit`, so the SessionStart
-hook pays nothing for it beyond the file read. `db_paths` is imported
-only to resolve the user store's path, and only when a failed user-scope
-request is on record and no path was passed.
+hook pays nothing for it beyond the file read. Two imports are deferred
+to the calls that need them: `user_locks.store_file_present`, only when
+a failed request is on record, and `db_paths`, only to resolve the user
+store's path when a failed user-scope request is on record and no path
+was passed.
 """
 from __future__ import annotations
 
@@ -454,24 +456,6 @@ def _is_resolved(
     return False
 
 
-def _store_present(path: Path) -> bool:
-    """Whether a store file is at `path`.
-
-    Only a path that is not there (`FileNotFoundError`, or a parent that
-    is a file, `NotADirectoryError`) is missing. Any other `OSError`,
-    such as a parent directory without search permission, is raised: the
-    store may be there, so `detect_lock_gaps` reports it as unreadable rather
-    than as absent. `Path.exists()` and `Path.is_file()` can't be used
-    for this, because Python 3.14 returns False for those errors and
-    3.12 and 3.13 raise them.
-    """
-    try:
-        os.stat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    return True
-
-
 def _open_gaps(
     path: Path, candidates: list[LockGap],
 ) -> list[LockGap]:
@@ -479,9 +463,15 @@ def _open_gaps(
 
     A store that does not exist resolves nothing. Raises `sqlite3.Error`
     when it exists and can't be read, and `OSError` when it can't be
-    checked (`_store_present`).
+    checked (`user_locks.store_file_present`).
     """
-    if not candidates or not _store_present(path):
+    if not candidates:
+        return []
+    # Imported here, not at module scope, so the SessionStart notice pays
+    # for it only when a failed request is on record.
+    from aelfrice.user_locks import store_file_present  # noqa: PLC0415
+
+    if not store_file_present(path):
         return list(candidates)
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
