@@ -250,7 +250,10 @@ def open_user_store_if_present() -> MemoryStore | None:
 
     For commands that read the user store or change a lock already in
     it. It never creates the file or its directory: a missing store
-    returns None before anything is opened.
+    returns None before anything is opened. A path that can't be
+    checked, such as one under a directory without search permission,
+    raises its `OSError` (`user_locks.store_file_present`), so the
+    caller reports the store as unreadable rather than as absent.
 
     An existing store is opened the way `open_store_for_read()` opens
     the repository store: the writable open first, so expired locks are
@@ -265,9 +268,10 @@ def open_user_store_if_present() -> MemoryStore | None:
     import sqlite3
 
     from aelfrice.store import is_readonly_open_failure
+    from aelfrice.user_locks import store_file_present
 
     p = user_db_path()
-    if str(p) == ":memory:" or not p.is_file():
+    if str(p) == ":memory:" or not store_file_present(p):
         return None
     try:
         return MemoryStore(str(p), project_context_default="")
