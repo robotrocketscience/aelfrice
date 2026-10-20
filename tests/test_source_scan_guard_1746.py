@@ -200,6 +200,17 @@ def test_executing_or_warning_through_the_source_is_not_a_read() -> None:
     assert _reads(lambda: warnings.formatwarning("m", UserWarning, str(_ULID), 1)) == []
 
 
+def test_warning_display_from_the_3_14_module_is_not_a_read() -> None:
+    """Python 3.14 runs `warnings.formatwarning` in `_py_warnings` frames
+    (#1773). A reader in that module stands in for it on every version, so
+    3.12 and 3.13 check the 3.14 frame too."""
+    reader = types.FunctionType(
+        compile("lambda: open(path, encoding='utf-8').read()", "<formatwarning>", "eval"),
+        {"__name__": "_py_warnings", "path": str(_ULID)},
+    )()
+    assert _reads(reader) == []
+
+
 @pytest.mark.source_scan
 def test_an_unmarked_test_that_reads_the_source_fails() -> None:
     with pytest.raises(pytest.fail.Exception, match="ulid.py.*not marked"):

@@ -87,8 +87,11 @@ TESTS_ROOT: Final[str] = str(_REPO / "tests") + os.sep
 #: constants from each newly imported module to draw examples from. The
 #: last one matters: it reads at random, so counting it made the verdict
 #: depend on test order and marked property tests that read nothing.
+#: Python 3.14 moved the warnings code to `_py_warnings`, which `warnings`
+#: re-exports, so `formatwarning` runs in frames of that module (#1773).
+#: Before 3.14 no module has that name, so no frame matches it.
 _IGNORED_MODULE_PREFIXES: Final[tuple[str, ...]] = (
-    "_pytest", "pluggy", "traceback", "warnings", "runpy", "hypothesis",
+    "_pytest", "pluggy", "traceback", "warnings", "_py_warnings", "runpy", "hypothesis",
 )
 
 #: The import system reads a module's source in its loader's `get_code`,
