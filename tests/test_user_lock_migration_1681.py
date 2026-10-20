@@ -1618,3 +1618,65 @@ def test_a_replaced_store_file_is_left_in_place(
     assert rc == 1
     assert "no longer the file this command created" in err
     assert user.exists()
+
+
+# --- #1772: aelf locked and aelf unlock --user on an unsearchable user dir ----
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_raises_on_the_presence_check(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store may be there, so it is not reported as absent."""
+    from aelfrice import db_paths
+
+    _, user = stores
+    _seed(user, [_lock("u1", USER_RULE)])
+    with _chmod0_parent(user, monkeypatch):
+        with pytest.raises(PermissionError):
+            db_paths.open_user_store_if_present()
+
+
+@pytest.mark.timeout(60)
+def test_a_user_store_under_a_file_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import db_paths
+
+    parent = tmp_path / "not-a-dir"
+    parent.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("AELFRICE_USER_DB", str(parent / "memory.db"))
+    assert db_paths.open_user_store_if_present() is None
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_warns_in_locked(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", USER_RULE)])
+    with _chmod0_parent(user, monkeypatch):
+        rc, out, err = _cli(["locked"], capsys)
+    assert rc == 0
+    assert "r1" in out and "u1" not in out
+    assert "cannot read the user lock store" in err
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_user_store_dir_fails_a_user_unlock_in_one_line(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, user = stores
+    _seed(user, [_lock("u1", USER_RULE)])
+    with _chmod0_parent(user, monkeypatch):
+        rc, out, err = _cli(["unlock", "--user", "u1"], capsys)
+    assert rc == 1 and out == ""
+    assert len(err.splitlines()) == 1
+    assert err.startswith("aelf unlock: cannot read the user lock store")
+    assert [i for i, _, _, _ in _locks(user)] == ["u1"]
