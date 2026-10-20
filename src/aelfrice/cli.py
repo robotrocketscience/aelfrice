@@ -4280,13 +4280,23 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
     text, so the same statement locked in both scopes has one id in
     each: a lookup could not tell which one to drop.
     """
+    import sqlite3
+
     from aelfrice.promotion import unlock
 
     if getattr(args, "user_scope", False):
         if _user_store_is_repo_store():
             print(_user_scope_conflict_message("unlock"), file=sys.stderr)
             return 1
-        user_store = open_user_store_if_present()
+        try:
+            user_store = open_user_store_if_present()
+        except (sqlite3.Error, OSError, ReadOnlyStoreUnavailable) as exc:
+            print(
+                f"aelf unlock: cannot read the user lock store at "
+                f"{user_db_path()}: {exc}; nothing was unlocked.",
+                file=sys.stderr,
+            )
+            return 1
         if user_store is None:
             print(
                 f"aelf unlock: no user lock store at {user_db_path()}; "
