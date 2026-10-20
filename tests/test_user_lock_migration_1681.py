@@ -1109,6 +1109,7 @@ def _chmod0_parent(
         return False if under(self) else real_is_file(self, *a, **k)  # type: ignore[arg-type]
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.parent.stat().st_mode & 0o777
     with monkeypatch.context() as m:
         m.setattr(Path, "exists", exists)
         m.setattr(Path, "is_file", is_file)
@@ -1116,7 +1117,7 @@ def _chmod0_parent(
         try:
             yield
         finally:
-            os.chmod(path.parent, 0o755)
+            os.chmod(path.parent, mode)
 
 
 _SKIP_CHMOD = pytest.mark.skipif(
