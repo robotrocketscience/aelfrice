@@ -1519,3 +1519,101 @@ def test_a_failed_in_place_write_after_a_failed_link_leaves_no_store(
     assert "nothing was written to the user store" in err
     assert not user.exists()
     assert _user_dir_listing(user) == []
+
+
+# --- a failed fallback write never removes another writer's store ---------------
+
+
+def _fail_in_place_writes(monkeypatch: pytest.MonkeyPatch, user: Path) -> None:
+    real_update = MemoryStore.update_belief
+
+    def failing_in_place(self: MemoryStore, b: Belief) -> None:
+        if os.path.abspath(self.db_path) == os.path.abspath(user):
+            raise sqlite3.OperationalError("database is locked")
+        real_update(self, b)
+
+    monkeypatch.setattr(MemoryStore, "update_belief", failing_in_place)
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("other_writes_a_lock", [True, False], ids=["lock", "empty"])
+def test_a_store_another_writer_creates_before_the_fallback_open_survives(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, other_writes_a_lock: bool,
+) -> None:
+    """The other writer creates the store after the presence check and
+    before this command opens it; this command's write then fails."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+
+    def link_fails_after_the_other_writer(
+        src: object, dst: object, *a: object, **k: object,
+    ) -> None:
+        _seed(user, [_lock("u9", USER_RULE)] if other_writes_a_lock else [])
+        raise OSError(errno.EPERM, "Operation not permitted", str(dst))
+
+    monkeypatch.setattr(os, "link", link_fails_after_the_other_writer)
+    _fail_in_place_writes(monkeypatch, user)
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1 and out == ""
+    assert user.exists()
+    expected = [USER_RULE] if other_writes_a_lock else []
+    assert [c for _, c, _, _ in _locks(user)] == expected
+
+
+@pytest.mark.timeout(60)
+def test_a_lock_written_into_the_created_store_before_the_failure_survives(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """This command created the file, but another writer stored a lock in
+    it before this command's write failed: the file holds data, so it stays."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+
+    def no_links(src: object, dst: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", str(dst))
+
+    real_open = cli.open_user_store
+
+    def open_after_the_other_writer() -> MemoryStore:
+        _seed(user, [_lock("u9", USER_RULE)])
+        return real_open()
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(cli, "open_user_store", open_after_the_other_writer)
+    _fail_in_place_writes(monkeypatch, user)
+    rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1
+    assert "another writer has stored data in it" in err
+    assert [c for _, c, _, _ in _locks(user)] == [USER_RULE]
+
+
+@pytest.mark.timeout(60)
+def test_a_replaced_store_file_is_left_in_place(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The file at the path is no longer the one this command created."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+
+    def no_links(src: object, dst: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", str(dst))
+
+    real_write = cli._write_promoted_copy  # pyright: ignore[reportPrivateUsage]
+
+    def replace_then_fail(store: MemoryStore, *a: object, **k: object) -> tuple[str, str]:
+        if os.path.abspath(store.db_path) != os.path.abspath(user):
+            return real_write(store, *a, **k)  # type: ignore[arg-type]
+        for f in (user, Path(f"{user}-wal"), Path(f"{user}-shm")):
+            f.unlink(missing_ok=True)
+        _seed(user, [])
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(cli, "_write_promoted_copy", replace_then_fail)
+    rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1
+    assert "no longer the file this command created" in err
+    assert user.exists()
