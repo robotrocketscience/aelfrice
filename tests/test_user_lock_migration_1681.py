@@ -14,6 +14,7 @@ Every path is a temp path. The conftest pins `AELFRICE_DB` and
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -1086,13 +1087,36 @@ def test_a_failed_promote_into_an_existing_user_store_writes_nothing(
 
 
 @contextlib.contextmanager
-def _chmod0_parent(path: Path) -> Generator[None, None, None]:
+def _chmod0_parent(
+    path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Take search permission off `path`'s directory.
+
+    `Path.exists()` and `Path.is_file()` are also made to return False
+    for anything under that directory, which is what Python 3.14 does
+    (3.12 and 3.13 raise), so a revert to either fails on every version.
+    """
+    locked = os.path.abspath(path.parent) + os.sep
+    real_exists, real_is_file = Path.exists, Path.is_file
+
+    def under(p: Path) -> bool:
+        return os.path.abspath(p).startswith(locked)
+
+    def exists(self: Path, *a: object, **k: object) -> bool:
+        return False if under(self) else real_exists(self, *a, **k)  # type: ignore[arg-type]
+
+    def is_file(self: Path, *a: object, **k: object) -> bool:
+        return False if under(self) else real_is_file(self, *a, **k)  # type: ignore[arg-type]
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0)
-    try:
-        yield
-    finally:
-        os.chmod(path.parent, 0o755)
+    with monkeypatch.context() as m:
+        m.setattr(Path, "exists", exists)
+        m.setattr(Path, "is_file", is_file)
+        os.chmod(path.parent, 0)
+        try:
+            yield
+        finally:
+            os.chmod(path.parent, 0o755)
 
 
 _SKIP_CHMOD = pytest.mark.skipif(
@@ -1111,7 +1135,7 @@ def test_an_unsearchable_user_store_dir_makes_lock_gaps_unknown(
     repo, user = stores
     _fail_typed_lock(f"/aelf:lock --user {STATEMENT}", tmp_path, monkeypatch)
     assert _cli(["lock", "--user", STATEMENT], capsys)[0] == 0
-    with _chmod0_parent(user):
+    with _chmod0_parent(user, monkeypatch):
         report = detect_lock_gaps(
             str(repo), audit_enabled=True, user_store_path=str(user),
         )
@@ -1138,7 +1162,7 @@ def test_an_unsearchable_repo_store_dir_makes_lock_gaps_unknown(
         return moved
 
     monkeypatch.setattr(lg, "command_outcomes_path_for_db", outcomes_copy)
-    with _chmod0_parent(repo):
+    with _chmod0_parent(repo, monkeypatch):
         report = detect_lock_gaps(
             str(repo), audit_enabled=True, user_store_path=str(user),
         )
@@ -1150,12 +1174,12 @@ def test_an_unsearchable_repo_store_dir_makes_lock_gaps_unknown(
 @_SKIP_CHMOD
 @pytest.mark.timeout(60)
 def test_an_unsearchable_user_store_dir_makes_the_doctor_listing_unknown(
-    stores: tuple[Path, Path],
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, user = stores
     _seed(repo, [_lock("r1", REPO_RULE)])
     _seed(user, [_lock("u1", NEAR_DUP)])
-    with _chmod0_parent(user):
+    with _chmod0_parent(user, monkeypatch):
         report = diagnose_user_lock_duplicates(str(repo), str(user))
     assert not report.known
     assert report.unknown_reason is not None
@@ -1166,12 +1190,13 @@ def test_an_unsearchable_user_store_dir_makes_the_doctor_listing_unknown(
 @pytest.mark.timeout(60)
 def test_an_unsearchable_user_store_dir_refuses_a_promote(
     stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The duplicate check can't run, so nothing is added."""
     repo, user = stores
     _seed(repo, [_lock("r1", REPO_RULE)])
     _seed(user, [_lock("u1", NEAR_DUP)])
-    with _chmod0_parent(user):
+    with _chmod0_parent(user, monkeypatch):
         rc, _, err = _cli(["lock", "--promote-user", "r1"], capsys)
     assert rc == 1
     assert "cannot read the user lock store" in err
@@ -1182,11 +1207,12 @@ def test_an_unsearchable_user_store_dir_refuses_a_promote(
 @pytest.mark.timeout(60)
 def test_an_unsearchable_user_store_dir_warns_in_core(
     stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, user = stores
     _seed(repo, [_lock("r1", REPO_RULE)])
     _seed(user, [_lock("u1", USER_RULE)])
-    with _chmod0_parent(user):
+    with _chmod0_parent(user, monkeypatch):
         rc, out, err = _cli(["core", "--locked-only"], capsys)
     assert rc == 0
     assert "u1" not in out
@@ -1355,3 +1381,141 @@ def test_show_conflicts_marks_a_peer_hit_against_a_user_lock(
     assert rows["pp1"]["scope"] == "peerA"
     assert rows["pp1"]["slot_conflict_with"] == "u1"
     assert rows["pp1"]["slot_conflict_scope"] == "user"
+
+
+# --- third review: link fallbacks, cleanup after success, repo-dir doctor -------
+
+
+@_SKIP_CHMOD
+@pytest.mark.timeout(60)
+def test_an_unsearchable_repo_store_dir_makes_the_doctor_listing_unknown(
+    stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    _seed(user, [_lock("u1", NEAR_DUP)])
+    with _chmod0_parent(repo, monkeypatch):
+        report = diagnose_user_lock_duplicates(str(repo), str(user))
+    assert not report.known
+    assert report.unknown_reason is not None
+    assert report.unknown_reason.startswith("the repository store could not be read")
+
+
+@pytest.mark.timeout(60)
+def test_a_parent_that_is_a_file_reads_as_missing(tmp_path: Path) -> None:
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x", encoding="utf-8")
+    assert ul.store_file_present(blocker / "memory.db") is False
+    report = diagnose_user_lock_duplicates(
+        str(tmp_path / "repo.db"), str(blocker / "memory.db"),
+    )
+    assert report.known and not report.user_store_present
+
+
+def _user_dir_listing(user: Path) -> list[str]:
+    return sorted(f.name for f in user.parent.iterdir())
+
+
+@pytest.mark.timeout(60)
+def test_a_successful_promote_leaves_only_the_store_file(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    assert _cli(["lock", "--promote-user", "r1"], capsys)[0] == 0
+    assert _user_dir_listing(user) == ["memory.db"]
+    assert [c for _, c, _, _ in _locks(user)] == [REPO_RULE]
+
+
+@pytest.mark.timeout(60)
+def test_a_store_that_appears_before_the_link_gets_the_copy_once(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another process creates the store first; the copy goes into it."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+
+    def racing_link(src: object, dst: object, *a: object, **k: object) -> None:
+        _seed(user, [_lock("u9", USER_RULE)])
+        raise FileExistsError(errno.EEXIST, "File exists", str(dst))
+
+    monkeypatch.setattr(os, "link", racing_link)
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 0, out
+    contents = sorted(c for _, c, _, _ in _locks(user))
+    assert contents == sorted([REPO_RULE, USER_RULE])
+    assert not [f for f in _user_dir_listing(user) if ".promote-" in f]
+
+
+@pytest.mark.timeout(60)
+def test_a_store_that_appears_and_is_the_repo_store_is_refused(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same-file guard runs again on a store that appeared late."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    calls = {"n": 0}
+    real_guard = cli._user_store_is_repo_store  # pyright: ignore[reportPrivateUsage]
+
+    def guard() -> bool:
+        calls["n"] += 1
+        return real_guard() if calls["n"] == 1 else True
+
+    def racing_link(src: object, dst: object, *a: object, **k: object) -> None:
+        _seed(user, [_lock("u9", USER_RULE)])
+        raise FileExistsError(errno.EEXIST, "File exists", str(dst))
+
+    monkeypatch.setattr(cli, "_user_store_is_repo_store", guard)
+    monkeypatch.setattr(os, "link", racing_link)
+    rc, out, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1 and out == ""
+    assert "names the repository store" in err
+    assert [c for _, c, _, _ in _locks(user)] == [USER_RULE]
+
+
+@pytest.mark.timeout(60)
+def test_a_filesystem_without_hard_links_gets_the_copy_once(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+
+    def no_links(src: object, dst: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", str(dst))
+
+    monkeypatch.setattr(os, "link", no_links)
+    rc, out, _ = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 0, out
+    assert [c for _, c, _, _ in _locks(user)] == [REPO_RULE]
+    assert _count(user, "ingest_log") == 1
+    assert not [f for f in _user_dir_listing(user) if ".promote-" in f]
+
+
+@pytest.mark.timeout(60)
+def test_a_failed_in_place_write_after_a_failed_link_leaves_no_store(
+    stores: tuple[Path, Path], capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback removes the store it created when its write fails."""
+    repo, user = stores
+    _seed(repo, [_lock("r1", REPO_RULE)])
+    real_update = MemoryStore.update_belief
+
+    def no_links(src: object, dst: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted", str(dst))
+
+    def failing_in_place(self: MemoryStore, b: Belief) -> None:
+        if os.path.abspath(self.db_path) == os.path.abspath(user):
+            raise sqlite3.OperationalError("database is locked")
+        real_update(self, b)
+
+    monkeypatch.setattr(os, "link", no_links)
+    monkeypatch.setattr(MemoryStore, "update_belief", failing_in_place)
+    rc, out, err = _cli(["lock", "--promote-user", "r1"], capsys)
+    assert rc == 1 and out == ""
+    assert "nothing was written to the user store" in err
+    assert not user.exists()
+    assert _user_dir_listing(user) == []
