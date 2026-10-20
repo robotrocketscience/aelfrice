@@ -2291,17 +2291,60 @@ def _write_promoted_copy(
     return actual_id, kind
 
 
+def _promote_in_place(
+    repo_lock: Belief,
+    *,
+    session_id: str | None,
+    now: str,
+    recheck_same_file: bool = False,
+) -> tuple[str, str]:
+    """Write the promoted copy into the user store at its path (#1681).
+
+    When the store wasn't there before this call and the write fails,
+    the file this call created, and its `-wal` and `-shm`, are removed,
+    so a failed promote leaves no user store file. A store another
+    process creates between the check and the open would be removed too;
+    nothing else creates the user store except `aelf lock --user` and
+    another promote. `recheck_same_file` re-runs the user-store-is-repo-
+    store guard on a store that appeared after the first check.
+    """
+    from aelfrice.user_locks import store_file_present
+
+    path = user_db_path()
+    created = str(path) != ":memory:" and not store_file_present(path)
+    ustore = open_user_store()
+    done = False
+    try:
+        if recheck_same_file and _user_store_is_repo_store():
+            raise _PromoteWriteError(
+                f"AELFRICE_USER_DB names the repository store ({db_path()})"
+            )
+        result = _write_promoted_copy(
+            ustore, repo_lock, session_id=session_id, now=now,
+        )
+        done = True
+        return result
+    finally:
+        ustore.close()
+        if created and not done:
+            for f in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+                f.unlink(missing_ok=True)
+
+
 def _promote_into_user_store(
     repo_lock: Belief, *, session_id: str | None, now: str,
 ) -> tuple[str, str]:
     """Write the promoted copy, creating the user store only on success.
 
-    An existing user store is written in place (`_write_promoted_copy`).
+    An existing user store is written in place (`_promote_in_place`).
     When there is none, the copy is written to a fresh store beside the
     target path, closed, and hard-linked into place, so a failed copy
-    leaves no user store file. When the link fails, because another
-    process created the store in the meantime or the filesystem has no
-    hard links, the copy is written into the store in place instead. The parent directory is created either way, and
+    leaves no user store file. If the link finds a store already there
+    (`FileExistsError`), another process created it meanwhile: the copy
+    is written into that store after the same-file guard runs again. Any
+    other link failure, such as a filesystem without hard links, also
+    falls back to the in-place write, which removes the store it created
+    if the write fails. The parent directory is created either way, and
     a process killed mid-copy can leave its temporary file there.
     Raises what `_write_promoted_copy` raises, and `OSError`.
     """
@@ -2309,13 +2352,7 @@ def _promote_into_user_store(
 
     path = user_db_path()
     if str(path) == ":memory:" or store_file_present(path):
-        ustore = open_user_store()
-        try:
-            return _write_promoted_copy(
-                ustore, repo_lock, session_id=session_id, now=now,
-            )
-        finally:
-            ustore.close()
+        return _promote_in_place(repo_lock, session_id=session_id, now=now)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.promote-{os.getpid()}.tmp")
     sidecars = [tmp, Path(f"{tmp}-wal"), Path(f"{tmp}-shm")]
@@ -2331,16 +2368,16 @@ def _promote_into_user_store(
             tstore.close()
         try:
             os.link(tmp, path)
+        except FileExistsError:
+            # Another process created the store meanwhile.
+            return _promote_in_place(
+                repo_lock, session_id=session_id, now=now,
+                recheck_same_file=True,
+            )
         except OSError:
-            # The store appeared meanwhile (`FileExistsError`), or this
-            # filesystem has no hard links: write into the store in place.
-            ustore = open_user_store()
-            try:
-                return _write_promoted_copy(
-                    ustore, repo_lock, session_id=session_id, now=now,
-                )
-            finally:
-                ustore.close()
+            # No hard links here: write in place, removing the store again
+            # if that write fails.
+            return _promote_in_place(repo_lock, session_id=session_id, now=now)
         return result
     finally:
         for f in sidecars:
