@@ -2420,6 +2420,7 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
         )
         return 1
     why = _promote_duplicate(user_pairs, b)
+    promoted: tuple[str, str] | None = None
     if why is None:
         now = _utc_now_iso(datetime.now(timezone.utc).replace(microsecond=0))
         sid = resolve_session_id(
@@ -2427,7 +2428,7 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
             surface_name="aelf lock",
         )
         try:
-            actual_id, kind = _promote_into_user_store(
+            promoted = _promote_into_user_store(
                 b, session_id=sid, now=now,
             )
         except _PromoteDuplicate as dup:
@@ -2440,13 +2441,14 @@ def _cmd_lock_promote_user(args: argparse.Namespace, out: object) -> int:
                 file=sys.stderr,
             )
             return 1
-    if why is not None:
+    if promoted is None:
         print(
             f"not promoted: the user store ({user_db_path()}) already "
             f"{why}. Nothing was added.",
             file=out,  # type: ignore[arg-type]
         )
         return 0
+    actual_id, kind = promoted
     # After the commit, never before: a feed event names a lock that exists.
     _feed_log_event(
         "belief.locked", actual_id, None,
