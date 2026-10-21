@@ -520,6 +520,33 @@ def test_a_backfill_of_an_older_session_logs_nothing_for_a_newer_target(
     assert _rows(store) == []
 
 
+def test_a_corroborating_turn_offers_no_supporter(store: MemoryStore) -> None:
+    first = _ingest_turn(store, _USER, "transcript", session_id="s2",
+                         created_at="2026-10-02T00:00:00Z", role="user")
+    again = _ingest_turn(store, _USER, "transcript", session_id="s3",
+                         created_at="2026-10-03T00:00:00Z", role="user")
+    assert len(first.sources) == 1
+    assert again.inserted == [] and again.sources == ()
+    assert again.resolved == [first.sources[0][0]]
+
+
+def test_ingest_logs_nothing_for_a_sentence_that_corroborates(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Typed first with the log off, then again in a later session with
+    # it on. The second turn only corroborates the first belief, so it
+    # inserts nothing and no supporter is offered.
+    _target(store)
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "0")
+    first = ingest_jsonl(store, _jsonl(
+        tmp_path / "a.jsonl", ("user", "s2", _USER)))
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    again = ingest_jsonl(store, _jsonl(
+        tmp_path / "b.jsonl", ("user", "s3", _USER)))
+    assert (first.beliefs_inserted, again.beliefs_inserted) == (1, 0)
+    assert _rows(store) == []
+
+
 def test_ingest_never_logs_an_assistant_or_system_turn_as_a_supporter(
     store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
