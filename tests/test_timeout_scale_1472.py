@@ -341,8 +341,8 @@ def test_every_workflow_that_runs_pytest_pins_the_scale() -> None:
     The list form is what #1472 is about: its own issue body undercounted
     the marker population, and a hand-maintained enumeration of workflows
     would let the next one that runs pytest inherit a 4x-looser budget
-    unnoticed. `ci.yml` carries no `timeout-minutes`, so there the scale
-    is the only thing bounding a hang.
+    unnoticed. A job's `timeout-minutes` bounds a whole leg, so the scale
+    is what bounds a single test's hang.
     """
     found = _pytest_workflows()
     assert found, "no workflow appears to invoke pytest — the parser has rotted"

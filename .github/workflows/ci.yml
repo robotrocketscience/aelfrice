@@ -32,8 +32,8 @@ env:
   # #1472. tests/conftest.py scales every pytest-timeout budget by this
   # factor so a loaded developer machine does not lose tests that have no
   # defect. CI runs on a dedicated runner and wants the unscaled budgets:
-  # a 4x-looser timeout is 4x longer to notice a hang, and this workflow's
-  # `pytest` step carries no `timeout-minutes` backstop.
+  # a 4x-looser timeout is 4x longer to notice a hang. The `pytest` job
+  # below has a 30-minute `timeout-minutes` backstop for the whole leg.
   #
   # Pinned per workflow, and not inferred from `CI` being set: `CI` is
   # commonly exported in local shells, so the implicit form would change
@@ -47,8 +47,18 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # Pinned image rather than `ubuntu-latest`, for the two required legs
+    # only: a label move can change the system Python and SQLite a leg
+    # resolves, under a required check, with no commit to point at. The
+    # other jobs here keep `ubuntu-latest`.
+    runs-on: ubuntu-24.04
+    # A hung leg is cancelled at 30 minutes instead of the platform's
+    # 360. Recent green legs took 11 to 14 minutes.
+    timeout-minutes: 30
     strategy:
+      # One leg failing must not cancel the other: a 3.12-only failure and
+      # a failure on both versions are different diagnoses.
+      fail-fast: false
       matrix:
         python-version: ['3.12', '3.13']
     steps:
