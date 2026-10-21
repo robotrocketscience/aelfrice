@@ -53,7 +53,10 @@ A containing sentence is still rejected by any of these vetoes:
   alternative and past-state words. A number whose digits are all zero
   counts as ``zero``. Containment only checks user tokens, so without
   this a target that adds "cannot", "few", "unless", "hardly" or
-  "used to" would match.
+  "used to" would match. Words that frame a claim as false or
+  disputed ("wrong", "myth", "the claim that") count too, and a
+  target sentence with a question mark is rejected unless the user
+  sentence has one, since a question asserts nothing.
 * ``value_conflict``: the user sentence holds a whole dotted or
   comma-grouped number (``3.12``, ``1,000``) that the target sentence
   does not, or
@@ -143,6 +146,9 @@ POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
     "became", "went", "changed", "stopped", "ceased", "removed",
     # negative states
     "disabled", "unavailable", "unsupported", "invalid", "false",
+    # frames that dispute or deny the claim they hold
+    "wrong", "incorrect", "untrue", "mistaken", "myth", "misconception",
+    "rumor", "claim", "claims", "claimed", "whether",
 })
 
 # A number such as ``0`` or ``0.0`` reads as the polarity word ``zero``:
@@ -233,6 +239,7 @@ class _Analysis:
     quantifiers: frozenset[float]
     numbers: frozenset[str]
     polarity: frozenset[str]
+    question: bool
 
 
 # Entries kept per cache. One user sentence is checked against many
@@ -388,7 +395,7 @@ def _analyse(text: str) -> _Analysis:
         surface=surface, residual=residual, clauses=clauses,
         clause_anchors=clause_anchors, signals=signals,
         quantifiers=quantifiers,
-        numbers=numbers,
+        numbers=numbers, question="?" in text,
         polarity=(frozenset(signals.tokens) & POLARITY_TOKENS) | (
             {"zero"} if any(_ZERO_RE.fullmatch(n) for n in numbers) else set()
         ),
@@ -485,7 +492,7 @@ def _veto(
         return REJECT_NEGATION_SCOPE
     if user.quantifiers != target.quantifiers:
         return REJECT_QUANTIFIER_MISMATCH
-    if user.polarity != target.polarity:
+    if user.polarity != target.polarity or (target.question and not user.question):
         return REJECT_POLARITY_MISMATCH
     if not user.numbers <= target.numbers:
         return REJECT_VALUE_CONFLICT

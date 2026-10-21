@@ -396,6 +396,25 @@ def test_veto_polarity_mismatch_on_near_negation_hedges_and_past_state(
     _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
 
 
+_STREAMING = "the parser module supports streaming input"
+
+
+@pytest.mark.parametrize("target", [
+    "Does the parser module support streaming input?",
+    "The claim that the parser module supports streaming input is wrong.",
+    "It is a myth that the parser module supports streaming input.",
+], ids=["question", "claim-wrong", "myth"])
+def test_veto_a_target_that_asks_or_disputes_the_claim(target: str) -> None:
+    _assert_vetoed(_STREAMING, target, REJECT_POLARITY_MISMATCH)
+
+
+def test_a_user_question_may_match_a_target_question() -> None:
+    _assert_matches(
+        "does the parser module support streaming input?",
+        "Does the parser module support streaming input?",
+    )
+
+
 def test_a_zero_on_both_sides_and_a_nonzero_number_are_not_polarity() -> None:
     _assert_matches(
         "0 integration tests pass on linux", "0 integration tests pass on linux.",
