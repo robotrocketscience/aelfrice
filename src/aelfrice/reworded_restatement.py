@@ -36,6 +36,12 @@ A containing sentence is still rejected by any of these vetoes:
 * ``mixed_script``: a word in either sentence mixes Latin letters with
   Cyrillic, Greek, Armenian or Cherokee ones, such as a Cyrillic ``o``
   inside ``not``.
+* ``lookalike``: the target sentence holds a letter, mark, digit or
+  symbol outside ASCII that the user sentence lacks, outside a word
+  that starts with a digit, or a word the user sentence lacks that
+  spells a negation, quantifier or polarity word with digits (``n0t``).
+  Either one can hide a negation as an unknown extra word, such as a
+  small-capital or Coptic ``o`` inside ``not``.
 * ``token_stuffing``: one residual word other than a direction word
   appears in the user sentence ``REWORDED_MAX_TOKEN_REPEATS`` times or
   more, counted before stemming.
@@ -168,6 +174,7 @@ REJECT_QUANTIFIER_MISMATCH: Final[str] = "quantifier_mismatch"
 REJECT_VALUE_CONFLICT: Final[str] = "value_conflict"
 REJECT_ORDER_MISMATCH: Final[str] = "order_mismatch"
 REJECT_MIXED_SCRIPT: Final[str] = "mixed_script"
+REJECT_LOOKALIKE: Final[str] = "lookalike"
 REJECT_POLARITY_MISMATCH: Final[str] = "polarity_mismatch"
 REJECT_NEGATION_SCOPE: Final[str] = "negation_scope"
 
@@ -181,6 +188,7 @@ REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_VALUE_CONFLICT,
     REJECT_ORDER_MISMATCH,
     REJECT_MIXED_SCRIPT,
+    REJECT_LOOKALIKE,
     REJECT_POLARITY_MISMATCH,
     REJECT_NEGATION_SCOPE,
 )
@@ -231,6 +239,8 @@ class _Analysis:
 
     text: str
     mixed_script: bool
+    foreign: frozenset[str]
+    digit_spelled: frozenset[str]
     surface: tuple[str, ...]
     residual: tuple[str, ...]
     clauses: tuple[tuple[str, ...], ...]
@@ -267,6 +277,16 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
+# A word that starts with a digit, such as ``20µs`` or ``10kΩ``. A unit
+# symbol outside ASCII inside one is a quantity, not a disguised word.
+_DIGIT_WORD_RE: Final[re.Pattern[str]] = re.compile(r"\b\d\w*")
+
+# Digits that stand in for letters. ``1`` reads as either ``l`` or ``i``.
+_DIGIT_LETTERS: Final[tuple[dict[int, str], ...]] = (
+    str.maketrans("0134578", "oleastb"),
+    str.maketrans("0134578", "oieastb"),
+)
+
 # A whole dotted or comma-grouped number such as ``3.12.1`` or
 # ``1,000,000``. The tokenizer splits it into ``3``, ``12`` and ``1``, so
 # containment alone lets ``3.12`` match ``3.12.1`` and ``1,000`` match
@@ -302,6 +322,33 @@ def _has_mixed_script_word(text: str) -> bool:
         if "LATIN" in scripts and scripts & _CONFUSABLE_SCRIPTS:
             return True
     return False
+
+
+def _foreign_characters(text: str) -> frozenset[str]:
+    """Letters, marks, digits and symbols outside ASCII, outside digit-led words."""
+    return frozenset(
+        ch for ch in _DIGIT_WORD_RE.sub(" ", text)
+        if ord(ch) > 0x7F and unicodedata.category(ch)[0] in "LMNS"
+    )
+
+
+def _digit_spelled_words(tokens: tuple[str, ...]) -> frozenset[str]:
+    """Tokens that spell a negation, quantifier or polarity word with digits.
+
+    ``n0t`` reads as ``not`` and ``d0n`` before ``t`` as ``don't``, but
+    the detector sees neither as negation.
+    """
+    found: set[str] = set()
+    for index, tok in enumerate(tokens):
+        if tok.isdigit() or tok.isalpha():
+            continue
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+        for table in _DIGIT_LETTERS:
+            word = tok.translate(table)
+            if (_negates(word) or word in QUANT_AXIS or word in POLARITY_TOKENS
+                    or (nxt == "t" and _negates(f"{word}'t"))):
+                found.add(tok)
+    return frozenset(found)
 
 
 @lru_cache(maxsize=_CACHE_SIZE)
@@ -392,6 +439,8 @@ def _analyse(text: str) -> _Analysis:
     )
     return _Analysis(
         text=text, mixed_script=_has_mixed_script_word(text),
+        foreign=_foreign_characters(text),
+        digit_spelled=_digit_spelled_words(signals.tokens),
         surface=surface, residual=residual, clauses=clauses,
         clause_anchors=clause_anchors, signals=signals,
         quantifiers=quantifiers,
@@ -483,6 +532,9 @@ def _veto(
     held = frozenset().union(*target.clause_anchors[run[0]:run[1] + 1])
     if target.mixed_script:
         return REJECT_MIXED_SCRIPT
+    if (not target.foreign <= frozenset(user.text)
+            or not target.digit_spelled <= frozenset(user.signals.tokens)):
+        return REJECT_LOOKALIKE
     if user.signals.has_negation != target.signals.has_negation:
         return REJECT_NEGATION_MISMATCH
     if not all(
@@ -569,6 +621,7 @@ __all__ = [
     "DIRECTION_TOKENS",
     "POLARITY_TOKENS",
     "REJECTION_REASONS",
+    "REJECT_LOOKALIKE",
     "REJECT_MIXED_SCRIPT",
     "REJECT_NEGATION_MISMATCH",
     "REJECT_NOT_CONTAINED",

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.reworded_restatement import (
+    REJECT_LOOKALIKE,
     REJECT_MIXED_SCRIPT,
     REJECT_NEGATION_MISMATCH,
     REJECT_NEGATION_SCOPE,
@@ -189,6 +190,36 @@ def test_veto_mixed_script() -> None:
         REJECT_MIXED_SCRIPT,
     )
     _assert_matches(_DEPLOY, "Deploy the billing service into production.")
+
+
+@pytest.mark.parametrize("word", [
+    "n\u1d0ft", "n\u2c9ft", "n\u00f3t", "\ua4e0\ua4b3\ua4d4", "n\u034fot", "n0t",
+    "d0n't",
+], ids=["small-capital-o", "coptic-o", "acute-o", "lisu", "grapheme-joiner",
+        "digit-zero", "digit-contraction"])
+def test_veto_lookalike_negation_in_the_target(word: str) -> None:
+    """Each spelling of not survives NFKC and the mixed-script check."""
+    _assert_vetoed(
+        _DEPLOY, f"We do {word} deploy the billing service into production.",
+        REJECT_LOOKALIKE,
+    )
+
+
+@pytest.mark.parametrize(("user", "target"), [
+    ("integration tests are flaky on windows",
+     "0nly integration tests are flaky on windows."),
+    ("deploys to staging fail", "Deploys to staging fail 1f the cache is cold."),
+], ids=["digit-led-only", "one-as-i"])
+def test_veto_digit_spelled_polarity_word_in_the_target(user: str, target: str) -> None:
+    _assert_vetoed(user, target, REJECT_LOOKALIKE)
+
+
+def test_lookalike_control_characters_and_words_the_user_also_typed() -> None:
+    _assert_matches("the caf\u00e9 menu updates daily", "The caf\u00e9 menu updates daily.")
+    _assert_matches(
+        "the worker runs on x86 hosts", "The worker runs on x86 hosts with 4 cores.",
+    )
+    _assert_matches("we do n0t deploy the billing service", "We do n0t deploy the billing service.")
 
 
 # --- One test per veto ----------------------------------------------------
@@ -502,7 +533,7 @@ def test_rejection_reasons_are_the_published_set() -> None:
         REJECT_NOT_CONTAINED, REJECT_NEGATION_MISMATCH,
         REJECT_QUANTIFIER_MISMATCH, REJECT_VALUE_CONFLICT,
         REJECT_ORDER_MISMATCH, REJECT_MIXED_SCRIPT, REJECT_POLARITY_MISMATCH,
-        REJECT_NEGATION_SCOPE,
+        REJECT_NEGATION_SCOPE, REJECT_LOOKALIKE,
     }
     assert len(REJECTION_REASONS) == len(set(REJECTION_REASONS))
 
