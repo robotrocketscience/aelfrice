@@ -52,8 +52,9 @@ A containing sentence is still rejected by any of these vetoes:
   ``POLARITY_TOKENS``, the hedge, limit, condition, contrast and
   past-state words. Containment only checks user tokens, so without
   this a target that adds "cannot", "few" or "unless" would match.
-* ``value_conflict``: the user sentence holds a whole dotted number
-  (``3.12``) that the target sentence does not, or
+* ``value_conflict``: the user sentence holds a whole dotted or
+  comma-grouped number (``3.12``, ``1,000``) that the target sentence
+  does not, or
   ``value_compare.find_conflicts`` reports a numeric or enum slot
   conflict between the user sentence and the containing target
   sentence.
@@ -250,9 +251,11 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
-# A whole dotted number such as ``3.12.1``. The tokenizer splits it into
-# ``3``, ``12`` and ``1``, so containment alone lets ``3.12`` match it.
-_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"\d+(?:\.\d+)*")
+# A whole dotted or comma-grouped number such as ``3.12.1`` or
+# ``1,000,000``. The tokenizer splits it into ``3``, ``12`` and ``1``, so
+# containment alone lets ``3.12`` match ``3.12.1`` and ``1,000`` match
+# ``1,000,000``.
+_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"\d+(?:[.,]\d+)*")
 
 
 def _normalize(text: str) -> str:

@@ -397,6 +397,18 @@ def test_veto_value_conflict_on_a_dotted_number_the_target_extends() -> None:
     _assert_matches("requires python 3.12.1 on linux with docker", target)
 
 
+def test_veto_value_conflict_on_a_comma_grouped_number_the_target_extends() -> None:
+    """1,000 tokenizes to 1 and 000, which 1,000,000 contains."""
+    _assert_vetoed(
+        "the rate limit is 1,000", "The rate limit is 1,000,000.", REJECT_VALUE_CONFLICT,
+    )
+    _assert_matches("the rate limit is 1,000,000", "The rate limit is 1,000,000.")
+    assert match_reworded(
+        "the rate limit is 1,000 requests per minute",
+        "The rate limit is 1,000,000 requests per minute.",
+    ) is None
+
+
 def test_veto_order_mismatch() -> None:
     target = "The scanner depends on the parser for tokenization in the build."
     _assert_vetoed(
