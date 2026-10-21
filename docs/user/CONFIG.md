@@ -315,6 +315,12 @@ write_temporal_spine = true
 # host's SDK on purpose. AELFRICE_CAPTURE_PRINT_MODE env var overrides.
 capture_print_mode = false
 
+# #1650. Default `false`. When true, transcript ingest logs each sentence
+# you type that rewords a non-user belief from another session, as an
+# unapplied SUPPORTS match. It only logs: no edge, no confidence change.
+# AELFRICE_LOG_REWORDED_SUPPORT env var overrides.
+log_reworded_support = false
+
 [relationship_detector]
 # #988 / #1299. Deterministic contradiction detector. `auto_detect` is
 # default-OFF: when false, ingest writes no CONTRADICTS edges and the
@@ -1016,6 +1022,48 @@ or an `.aelfrice.toml` that does not parse, reads as the default, so a
 headless session is skipped. Bytes that are not valid UTF-8 are replaced
 before the file is parsed. Only an unexpected error, such as a failed import, makes the
 logger record the turn instead.
+
+### `log_reworded_support`
+
+Default `false` (#1650). When you turn it on, transcript ingest
+(`ingest_jsonl`, which `aelf ingest-transcript` and the transcript hooks
+use) checks each sentence you typed against the beliefs it might
+restate in other words, and logs every match. It only logs. It writes no
+`SUPPORTS` edge, changes no belief's confidence, and records no feedback.
+The log exists so the matcher's precision can be measured before any
+match is applied.
+
+A match is logged when all of these hold:
+
+- The sentence's `ingest_log` row is a transcript row with the role
+  `user`. Assistant turns and turns with any other role are never checked.
+- The sentence has a session. The matched belief was not created in that
+  session, because restating something in the same conversation is not
+  new evidence.
+- The matched belief is not one of yours: its origin is not
+  `user_stated`, `user_corrected`, `user_validated`, or `user_transcript`.
+- The reworded-restatement matcher (`aelfrice.reworded_restatement`)
+  finds one sentence of the belief that your sentence restates.
+
+aelfrice checks at most 20 candidate beliefs per sentence: those that
+contain every content word of your sentence, ranked by BM25. Each match
+becomes one row in the `belief_support_evidence` table, with the matched
+sentence's index and text, your sentence's session and `ingest_log` id,
+and `applied` set to 0. When the log is on, `aelf doctor` shows how many
+rows it holds.
+
+The check runs after each turn is saved. If it fails, aelfrice prints one
+line to stderr and keeps the turn; ingest never fails or rolls back
+because of it. On a synthetic store of 10,000 beliefs, the check adds a
+median of 0.6 to 0.7 ms per user turn (p99 about 1.6 ms). With the log
+off, ingest resolves the setting once per run and adds no per-turn work.
+To measure your own setup, run `uv run python
+benchmarks/supports_log_latency.py`.
+
+To turn it on, set this key to `true`, or set
+`AELFRICE_LOG_REWORDED_SUPPORT=1`. The environment variable overrides
+this key in both directions. A value that is not `true` or `false`, or an
+`.aelfrice.toml` that does not parse, reads as the default.
 
 ## `[relationship_detector]` (v4.x+)
 
