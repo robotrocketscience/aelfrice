@@ -168,7 +168,11 @@ _DEPLOY = "deploy the billing service into production"
     "We do n\u200bot deploy the billing service into production.",
     "We do \uff4e\uff4f\uff54 deploy the billing service into production.",
     "We nev\u00ader deploy the billing service into production.",
-], ids=["modifier-apostrophe", "backtick", "zero-width-space", "fullwidth", "soft-hyphen"])
+    "We don\u00b4t deploy the billing service into production.",
+    "We don\u2018t deploy the billing service into production.",
+    "We don\u2032t deploy the billing service into production.",
+], ids=["modifier-apostrophe", "backtick", "zero-width-space", "fullwidth", "soft-hyphen",
+        "acute", "left-single-quote", "prime"])
 def test_negation_hidden_by_unicode_is_seen_after_normalizing(negated: str) -> None:
     _assert_vetoed(_DEPLOY, negated, REJECT_NEGATION_MISMATCH)
 
@@ -190,6 +194,22 @@ def test_veto_mixed_script() -> None:
         REJECT_MIXED_SCRIPT,
     )
     _assert_matches(_DEPLOY, "Deploy the billing service into production.")
+
+
+@pytest.mark.parametrize("letter", ["\u03bf", "\u0585", "\u13a4"],
+                         ids=["greek", "armenian", "cherokee"])
+def test_veto_mixed_script_for_each_listed_script(letter: str) -> None:
+    _assert_vetoed(
+        _DEPLOY, f"We do n{letter}t deploy the billing service into production.",
+        REJECT_MIXED_SCRIPT,
+    )
+
+
+def test_a_word_wholly_in_another_script_is_not_mixed() -> None:
+    _assert_matches(
+        "the \u03bb\u03cc\u03b3\u03bf\u03c2 parser reads input files",
+        "The \u03bb\u03cc\u03b3\u03bf\u03c2 parser reads input files.",
+    )
 
 
 @pytest.mark.parametrize("word", [
@@ -400,8 +420,10 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
      "The cache is stale after deploy."),
     ("the limit is 10 requests per minute",
      "The limit is 10 requests per second or 100 requests per minute."),
+    ("the cache is stale after deploy",
+     "The cache is stale after deploy, maybe."),
 ], ids=["unable", "few", "only", "might", "except", "unless",
-        "disabled", "went", "but", "user-past-tense", "or"])
+        "disabled", "went", "but", "user-past-tense", "or", "before-punctuation"])
 def test_veto_polarity_mismatch(user: str, target: str) -> None:
     """A polarity word on one side only, where containment cannot see it."""
     _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
@@ -554,6 +576,33 @@ def test_veto_order_mismatch() -> None:
         "the parser depends on the scanner for tokenization", target, REJECT_ORDER_MISMATCH,
     )
     _assert_matches("the scanner depends on the parser for tokenization", target)
+
+
+def test_veto_value_conflict_on_an_enum_group() -> None:
+    """non-deterministic and deterministic are different determinism groups."""
+    assert explain_rejection(
+        "the sampler is non-deterministic", "The non-blocking sampler is deterministic.",
+    ) == REJECT_VALUE_CONFLICT
+
+
+def test_veto_value_conflict_on_a_user_value_the_target_lacks() -> None:
+    """Every target timeout is close to a user one, but the user's 60 has no match."""
+    _assert_vetoed(
+        "set timeout = 30 and timeout = 60 for uploads",
+        "Set timeout = 30 and timeout = 30 for uploads with 60 workers.",
+        REJECT_VALUE_CONFLICT,
+    )
+
+
+def test_the_first_vetoed_sentence_names_the_reason() -> None:
+    target = (
+        "The parser depends on the scanner for tokenization. "
+        "We never say the scanner depends on the parser for tokenization."
+    )
+    _assert_vetoed(
+        "the scanner depends on the parser for tokenization", target,
+        REJECT_ORDER_MISMATCH,
+    )
 
 
 def test_first_matching_sentence_wins_over_an_earlier_vetoed_one() -> None:
