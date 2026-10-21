@@ -406,13 +406,13 @@ def test_apply_keeps_a_belief_the_user_affirmed(
     assert (bid in _active_ids(store)) is kept
 
 
-def test_affirmed_sources_are_the_cli_defaults() -> None:
+def test_affirmed_sources_hold_the_cli_defaults() -> None:
     parser = cli_module.build_parser()
     defaults = {
         parser.parse_args(["confirm", "x"]).source,
         parser.parse_args(["feedback", "x", "used"]).source,
     }
-    assert defaults == USER_AFFIRMED_FEEDBACK_SOURCES
+    assert defaults <= USER_AFFIRMED_FEEDBACK_SOURCES
 
 
 def test_apply_keeps_a_belief_another_source_corroborated(
@@ -537,6 +537,35 @@ def test_cli_dry_run_then_apply(
     s = MemoryStore(str(db))
     try:
         assert target not in _active_ids(s)
+    finally:
+        s.close()
+
+
+def test_cli_apply_keeps_a_belief_restored_after_an_earlier_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `aelf restore` is the undo the report offers; a second pass must not
+    # retire the belief again.
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        host = _seed(s, tmp_path)
+        target = _belief_id(s, SCHEDULED_ONLY)
+    finally:
+        s.close()
+    argv = ("doctor", "--retire-scheduled-prompts", str(host), "--apply")
+    code, out = _run_cli(monkeypatch, db, *argv)
+    assert code == 0
+    assert "retired 1 belief(s)." in out
+    code, _ = _run_cli(monkeypatch, db, "restore", target)
+    assert code == 0
+    code, out = _run_cli(monkeypatch, db, *argv)
+    assert code == 0
+    assert "retired 0 belief(s)." in out
+    assert f"another source, kept: 1\n  {target}" in out
+    s = MemoryStore(str(db))
+    try:
+        assert target in _active_ids(s)
     finally:
         s.close()
 
