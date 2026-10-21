@@ -12,8 +12,8 @@ The rule is **stemmed residual containment**:
 0. Normalize each sentence: apostrophe look-alikes become ``'``, NFKC
    folds fullwidth and compatibility forms, format characters such as
    the soft hyphen and zero-width space are deleted, and ``cannot``
-   becomes ``can not`` so it reads as negated, like ``can't``. Every step below
-   and every veto reads the normalized text.
+   becomes ``can not`` so it reads as negated, like ``can't``. Every
+   step below and every veto reads the normalized text.
 1. Tokenize both texts with ``relationship_detector.extract_signals``.
    The residual is the tokens left after dropping stopwords, negation
    and quantifier words. Direction words (``DIRECTION_TOKENS``) stay in
@@ -39,11 +39,10 @@ A containing sentence is still rejected by any of these vetoes:
   inside ``not``. A unit sign after a number (``20µs``, ``10kΩ``,
   ``5 °C``) is not read as a letter here or in the lookalike veto.
 * ``lookalike``: the target sentence holds a letter, mark, digit or
-  symbol outside ASCII that the user sentence lacks, or a word the
-  user sentence lacks that
-  spells a negation, quantifier or polarity word with digits (``n0t``).
-  Either one can hide a negation as an unknown extra word, such as a
-  small-capital or Coptic ``o`` inside ``not``.
+  symbol outside ASCII that the user sentence lacks, or a word the user
+  sentence lacks that spells a negation, quantifier or polarity word
+  with digits (``n0t``). Either one can hide a negation as an unknown
+  extra word, such as a small-capital or Coptic ``o`` inside ``not``.
 * ``token_stuffing``: one residual word other than a direction word
   appears in the user sentence ``REWORDED_MAX_TOKEN_REPEATS`` times or
   more, counted before stemming.
@@ -67,10 +66,9 @@ A containing sentence is still rejected by any of these vetoes:
   sentence has one, since a question asserts nothing.
 * ``value_conflict``: the user sentence holds a whole dotted or
   comma-grouped number (``3.12``, ``1,000``) that the target sentence
-  does not, or
-  ``value_compare.find_conflicts`` reports a numeric or enum slot
-  conflict between the user sentence and the containing target
-  sentence.
+  does not, or ``value_compare.find_conflicts`` reports a numeric or
+  enum slot conflict between the user sentence and the containing
+  target sentence.
 * ``order_mismatch``: the shared tokens appear in a different order
   in the matched target clauses, so "A depends on B" never matches
   "B depends on A".
@@ -79,6 +77,14 @@ The first target sentence, and within it the first run of clauses,
 that contains the user sentence and passes every veto is the match.
 The function is pure: no model, no embeddings, no network, and the
 same input always gives the same output.
+
+Known limit: containment checks only the user's tokens, so a target
+that adds a content word outside ``POLARITY_TOKENS`` and the detector's
+negation and quantifier words still matches, even when that word
+weakens or reverses the claim. A floor on how much of the target the
+user sentence covers was tried and reverted: legitimate rewordings sit
+below any floor that rejects the probes. The later precision gate is
+the backstop.
 """
 from __future__ import annotations
 
@@ -376,7 +382,8 @@ def _negation_anchors(
     A marker is a detector negation word, or a contraction that the
     tokenizer split into ``doesn`` and ``t``. Each anchor holds the
     stem of the nearest residual token before the marker and after it,
-    or ``None`` when the sentence has none on that side.
+    or ``None`` when ``tokens`` hold none on that side. Callers pass one
+    clause at a time.
     """
     anchors: set[_Anchor] = set()
     for index, tok in enumerate(tokens):
