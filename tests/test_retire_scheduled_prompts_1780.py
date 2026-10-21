@@ -570,6 +570,42 @@ def test_cli_apply_keeps_a_belief_restored_after_an_earlier_apply(
         s.close()
 
 
+def test_cli_apply_keeps_a_belief_kept_in_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A review `keep` verdict writes last_confirmed_at and no feedback row.
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        host = _seed(s, tmp_path)
+        target = _belief_id(s, SCHEDULED_ONLY)
+    finally:
+        s.close()
+    review = tmp_path / "review.md"
+    review.write_text(
+        f"- [x] keep   [ ] remove   [ ] lock   | {target} (0d old, 0d cold)\n",
+        encoding="utf-8",
+    )
+    code, out = _run_cli(
+        monkeypatch, db, "review", "--apply", "--out", str(review),
+    )
+    assert (code, out) == (
+        0, "review applied: 1 kept, 0 removed, 0 locked, 0 skipped\n",
+    )
+    code, out = _run_cli(
+        monkeypatch, db, "doctor", "--retire-scheduled-prompts", str(host),
+        "--apply",
+    )
+    assert code == 0
+    assert "retired 0 belief(s)." in out
+    assert f"another source, kept: 1\n  {target}" in out
+    s = MemoryStore(str(db))
+    try:
+        assert target in _active_ids(s)
+    finally:
+        s.close()
+
+
 def test_cli_missing_path_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

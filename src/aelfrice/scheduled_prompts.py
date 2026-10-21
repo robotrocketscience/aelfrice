@@ -15,8 +15,9 @@ every `ingest_log` row that derived or corroborated it carries a flagged
 key. Some evidence never reaches `ingest_log`, so a belief is also kept
 when it is locked, when its origin is no longer `user_transcript` (a
 promotion to `user_validated`, say), when the user affirmed it (`aelf
-confirm`) or restored it (`aelf restore`), or when a source other than transcript ingest corroborated it
-(the host memory mirror, say).
+confirm`), restored it (`aelf restore`) or kept it in `aelf review`,
+or when a source other than transcript ingest corroborated it (the host
+memory mirror, say).
 
 `aelf doctor --retire-scheduled-prompts PATH...` runs the pass. It is a
 dry run unless `--apply` is given.
@@ -197,6 +198,8 @@ def _select(
             continue
         if (
             belief.origin != ORIGIN_USER_TRANSCRIPT
+            # A `keep` verdict in `aelf review` sets only this column.
+            or belief.last_confirmed_at is not None
             or bid in corroborated_elsewhere
             or bid in user_affirmed
         ):
