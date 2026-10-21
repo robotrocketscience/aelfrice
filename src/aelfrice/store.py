@@ -5965,6 +5965,40 @@ class MemoryStore:
             if isinstance(ids, list) and belief_id in ids:
                 out.append(d)
         return out
+
+    def list_ingest_turn_derivations(
+        self,
+    ) -> list[tuple[str, str | None, str | None]]:
+        """`(belief_id, session_id, turn_sha)` per derivation in ingest_log.
+
+        One tuple for each belief id in each row's `derived_belief_ids`,
+        so a belief appears once per row that derived or corroborated it.
+        `turn_sha` is the row's `raw_meta.turn_sha` (#1602), or None when
+        the row has none. Ordered by belief id, then row id. #1780 reads
+        it to find beliefs whose every deriving row is one turn class.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT je.value AS belief_id,
+                   il.session_id AS session_id,
+                   CASE WHEN json_valid(il.raw_meta)
+                        THEN json_extract(il.raw_meta, '$.turn_sha')
+                   END AS turn_sha
+            FROM ingest_log il, json_each(il.derived_belief_ids) je
+            WHERE il.derived_belief_ids IS NOT NULL
+            ORDER BY je.value, il.id
+            """
+        )
+        out: list[tuple[str, str | None, str | None]] = []
+        for row in cur.fetchall():
+            sid = row["session_id"]
+            sha = row["turn_sha"]
+            out.append((
+                str(row["belief_id"]),
+                sid if isinstance(sid, str) else None,
+                sha if isinstance(sha, str) else None,
+            ))
+        return out
     # --- Deferred feedback queue (v1.6+, #191) ---------------------------
 
     def enqueue_deferred_feedback(

@@ -8043,6 +8043,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             ("--gc-orphan-feedback", "gc_orphan_feedback"),
             ("--gc-filesystem-corroboration", "gc_filesystem_corroboration"),
             ("--repair-utc-created-at", "repair_utc_created_at"),
+            ("--retire-scheduled-prompts", "retire_scheduled_prompts"),
         )
         if getattr(args, dest, False)
     ]
@@ -8055,6 +8056,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return 2
     if getattr(args, "repair_utc_created_at", False):
         return _cmd_doctor_repair_utc_created_at(args, out)
+    if getattr(args, "retire_scheduled_prompts", None):
+        return _cmd_doctor_retire_scheduled_prompts(args, out)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
     if getattr(args, "gc_filesystem_corroboration", False):
@@ -8786,6 +8789,42 @@ def _cmd_doctor_repair_utc_created_at(
     finally:
         store.close()
     print(_format_utc_created_at_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_retire_scheduled_prompts(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Retire beliefs derived only from scheduled prompts (issue #1780).
+
+    Reads the host session files given as paths, or the `*.jsonl` files
+    under a directory. Default is dry-run: it lists the beliefs. With
+    `--apply`, it retires them. Locked beliefs are never retired.
+    Bypasses the hooks/graph checks.
+    """
+    from aelfrice.scheduled_prompts import (  # noqa: PLC0415
+        format_scheduled_prompt_report,
+        retire_scheduled_prompt_beliefs,
+    )
+
+    paths = [Path(p) for p in args.retire_scheduled_prompts]
+    missing = [str(p) for p in paths if not p.exists()]
+    if missing:
+        print(
+            "doctor --retire-scheduled-prompts: no such file or directory: "
+            + ", ".join(missing),
+            file=sys.stderr,
+        )
+        return 2
+    apply = bool(getattr(args, "apply", False))
+    store = _open_store()
+    try:
+        report = retire_scheduled_prompt_beliefs(
+            store, paths, dry_run=not apply,
+        )
+    finally:
+        store.close()
+    print(format_scheduled_prompt_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -11326,13 +11365,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
+        "--retire-scheduled-prompts",
+        dest="retire_scheduled_prompts",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help=(
+            "read host session files (a directory is searched for *.jsonl), "
+            "and list the beliefs that only scheduled or meta prompts "
+            "produced (issue #1780). A belief that a typed prompt also "
+            "produced, and a locked belief, are kept. Bypasses the "
+            "hooks/graph checks. Combine with --apply to retire them; "
+            "default is dry-run."
+        ),
+    )
+    p_doctor.add_argument(
         "--apply",
         dest="apply",
         action="store_true",
         default=False,
         help=(
             "with --gc-orphan-feedback, --gc-filesystem-corroboration, "
-            "--repair-utc-created-at, --prune-noise, or --prune-dormant: "
+            "--repair-utc-created-at, --retire-scheduled-prompts, "
+            "--prune-noise, or --prune-dormant: "
             "actually make the change "
             "(default: dry-run)."
         ),

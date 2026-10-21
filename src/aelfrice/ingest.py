@@ -794,6 +794,28 @@ def _user_speech(text: str) -> str | None:
     return rest or None
 
 
+def user_turn_key(obj: dict[str, object]) -> tuple[str, str] | None:
+    """`(session_id, turn_sha)` that ingest stamps for this user record (#1780).
+
+    Takes one transcript record in either shape `ingest_jsonl` reads, and
+    derives the key the same way: the record's text, cut to the user's
+    speech, then fingerprinted. None when the record is not a user turn,
+    has no session, or holds no user speech, because ingest stamps no
+    `turn_sha` for such a record.
+    """
+    normalized = _normalize_jsonl_turn(obj)
+    if normalized is None or normalized["role"] != "user":
+        return None
+    session_id = normalized["session_id"]
+    text = normalized["text"]
+    if not session_id or not text:
+        return None
+    speech = _user_speech(text)
+    if speech is None:
+        return None
+    return session_id, turn_sha(speech)
+
+
 def ingest_jsonl(
     store: MemoryStore,
     jsonl_path: Path | str,
