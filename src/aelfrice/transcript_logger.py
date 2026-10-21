@@ -5,7 +5,8 @@ under `<git-common-dir>/aelfrice/transcripts/turns.jsonl`:
 
 - `UserPromptSubmit` -> append `{"role": "user", "text": <prompt>, ...}`.
   Harness-wrapper prompts (rejected by `noise_filter.is_transcript_noise`)
-  are dropped before append per #747.
+  are dropped before append per #747. A prompt the host transcript marks
+  as scheduled or meta is dropped per #1780.
 - `Stop` -> append `{"role": "assistant", "text": <last assistant turn>, ...}`.
 - `PreCompact` -> write a `compaction_start` marker, rotate
   `turns.jsonl` to `archive/turns-<ts>.jsonl`, spawn
@@ -103,6 +104,14 @@ DUP_WINDOW_SECONDS: Final[float] = 2.0
 # Bounds the dedup read at O(1) in file size, holding the per-append cost
 # inside the sub-10ms budget even when rotation has not run recently.
 _TAIL_READ_BYTES: Final[int] = 65536
+
+# #1780: bytes read from the tail of the host transcript to find the record
+# for the prompt being submitted. The host writes that record before it
+# fires `UserPromptSubmit`, so it sits near the end of the file. The window
+# grows by `_HOST_TAIL_PROMPT_FACTOR` bytes per prompt byte, because JSON
+# escaping can widen each byte of the prompt up to six bytes (`\uXXXX`).
+_HOST_TAIL_READ_BYTES: Final[int] = 262144
+_HOST_TAIL_PROMPT_FACTOR: Final[int] = 6
 
 # #1011: Stop-cadence ingestion flush. Belief ingestion historically fired
 # ONLY on the PreCompact rotation (`_handle_pre_compact`). A session that
@@ -586,11 +595,81 @@ def _skip_headless(payload: dict[str, object]) -> bool:
         return False
 
 
+def is_scheduled_host_record(obj: dict[str, object]) -> bool:
+    """True when the host flags this transcript record as not typed (#1780).
+
+    The host writes a scheduled continuation prompt as a user record with
+    `isMeta: true` and `turnOrigin: "scheduled"`. Either flag is enough.
+    """
+    return bool(obj.get("isMeta")) or obj.get("turnOrigin") == "scheduled"
+
+
+def _prompt_is_scheduled(transcript_path: object, prompt: str) -> bool:
+    """True when the host recorded `prompt` as a scheduled or meta turn (#1780).
+
+    The `UserPromptSubmit` payload carries no such marker; only the host
+    transcript record does. The scan reads a bounded window from the tail
+    of `transcript_path`, so its cost does not depend on the file's size.
+    It walks the window newest first and decides on the first `user`
+    record whose string content equals `prompt`. It stops at the first
+    `assistant` record, because the prompt being submitted has no answer
+    yet: a match behind one is an earlier turn with the same text.
+
+    Every failure reads as False, so the prompt is appended as it was
+    before #1780: a missing or unreadable file, no matching record, or a
+    record the host has not written yet.
+    """
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return False
+    window = _HOST_TAIL_READ_BYTES + _HOST_TAIL_PROMPT_FACTOR * len(
+        prompt.encode("utf-8")
+    )
+    try:
+        with open(transcript_path, "rb") as f:
+            _ = f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - window)
+            _ = f.seek(start)
+            chunk = f.read(window)
+    except OSError:
+        return False
+    segments = chunk.split(b"\n")
+    # A window that starts mid-file opens on a partial line.
+    if start > 0:
+        segments = segments[1:]
+    for raw in reversed(segments):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw.decode("utf-8"))  # pyright: ignore[reportAny]
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        rec = cast(dict[str, object], obj)
+        kind = rec.get("type")
+        if kind == "assistant":
+            return False
+        if kind != "user":
+            continue
+        msg = rec.get("message")
+        if not isinstance(msg, dict):
+            continue
+        if cast(dict[str, object], msg).get("content") != prompt:
+            continue
+        return is_scheduled_host_record(rec)
+    return False
+
+
 def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return
     if _skip_headless(payload):
+        return
+    # #1780: a scheduled continuation prompt is the model's own text, replayed
+    # as a user turn. The host marks it only in its transcript.
+    if _prompt_is_scheduled(payload.get("transcript_path"), prompt):
         return
     # #747: harness-wrapper prompts (<task-notification>, <summary>Monitor,
     # <tool-result>, etc.) carry no user intent and crowd real turns out of
