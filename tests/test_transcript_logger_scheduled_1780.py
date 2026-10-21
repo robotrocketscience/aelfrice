@@ -237,3 +237,44 @@ def test_codex_rollout_is_never_matched(tdir: Path, tmp_path: Path) -> None:
     host = _write(tmp_path / "host.jsonl", [rec])
     _submit(_PROMPT, str(host))
     assert _logged(tdir) == [_PROMPT]
+
+
+# A line the C JSON decoder cannot parse without recursing past the limit.
+_DEEP_LINE = b"[" * 100000 + b"\n"
+
+
+def test_deeply_nested_line_does_not_drop_a_typed_prompt(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    host = _write(tmp_path / "host.jsonl", [_assistant("Ok."), _typed(_PROMPT)])
+    with host.open("ab") as f:
+        f.write(_DEEP_LINE)
+    _submit(_PROMPT, str(host))
+    assert _logged(tdir) == [_PROMPT]
+
+
+def test_deeply_nested_line_is_skipped_like_any_bad_line(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    host = _write(tmp_path / "host.jsonl", [_assistant("Ok."), _scheduled(_PROMPT)])
+    with host.open("ab") as f:
+        f.write(_DEEP_LINE)
+    _submit(_PROMPT, str(host))
+    assert _logged(tdir) == []
+
+
+def test_nul_in_transcript_path_logs(tdir: Path, tmp_path: Path) -> None:
+    _submit(_PROMPT, str(tmp_path / "host\x00.jsonl"))
+    assert _logged(tdir) == [_PROMPT]
+
+
+def test_unexpected_error_in_the_scan_logs(
+    tdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(_obj: dict[str, object]) -> bool:
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(tl, "is_scheduled_host_record", boom)
+    host = _write(tmp_path / "host.jsonl", [_assistant("Ok."), _typed(_PROMPT)])
+    _submit(_PROMPT, str(host))
+    assert _logged(tdir) == [_PROMPT]
