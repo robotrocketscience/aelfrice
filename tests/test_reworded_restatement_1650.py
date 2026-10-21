@@ -113,6 +113,16 @@ def test_a_user_sentence_with_more_breaks_than_the_target_still_matches() -> Non
     )
 
 
+@pytest.mark.parametrize("sentence", [
+    "we deploy the billing service on fridays because traffic is low",
+    "we deploy the billing service on fridays since traffic is low",
+    "we deploy the billing service on fridays so traffic stays low",
+], ids=["because", "since", "so"])
+def test_a_sentence_with_a_residual_clause_word_matches_itself(sentence: str) -> None:
+    """The detector keeps because, since and so as residual content."""
+    _assert_matches(sentence, sentence.capitalize() + ".")
+
+
 def test_target_with_no_stored_sentence_is_rejected() -> None:
     _assert_vetoed("the scanner detects leaked secrets", "   ", REJECT_NO_TARGET_SENTENCES)
 

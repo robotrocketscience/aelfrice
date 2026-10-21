@@ -432,11 +432,20 @@ def _clauses(
     """The stemmed residual and negation anchors of each clause that has a residual.
 
     Anchors are read inside one clause, so a negation never anchors on a
-    word from the clause before or after it.
+    word from the clause before or after it. A word in ``_CLAUSE_WORDS``
+    stays at the start of the clause it opens: the detector keeps
+    ``because``, ``since`` and ``so`` as residual content, so the clauses
+    must hold every residual token the whole sentence holds.
     """
+    chunks: list[str] = []
+    start = 0
+    for found in _CLAUSE_BREAK_RE.finditer(text):
+        chunks.append(text[start:found.start()])
+        start = found.start() if found.group(0).isalpha() else found.end()
+    chunks.append(text[start:])
     stems_out: list[tuple[str, ...]] = []
     anchors_out: list[frozenset[_Anchor]] = []
-    for chunk in _CLAUSE_BREAK_RE.split(text):
+    for chunk in chunks:
         signals = extract_signals(chunk)
         surface, stems = _residual(signals)
         if stems:
