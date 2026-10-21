@@ -590,8 +590,9 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=("SUPPORTS",),
         overridable=OVERRIDE_NONE,
         gates=(
-            "Fewest distinct stemmed residual tokens a user sentence needs "
-            "to match at all. Lowering it lets short sentences match any "
+            "Fewest distinct stemmed residual tokens, not counting "
+            "direction words, a user sentence needs to match at all. "
+            "Lowering it lets short sentences match any "
             "belief that shares a noun or two, which adds edges and lowers "
             "precision."
         ),
@@ -793,7 +794,7 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # 4 (#1650): the reworded-restatement matcher's constants were
     # pinned as new entries. The matcher writes no edge yet, so no store
     # changes; the row records the baseline the SUPPORTS writer starts from.
-    4: "3801ddfd4d372557e1550751a84d02c5e2f597f911cd455f4f01a77c3c278015",
+    4: "c137f1c9a31fc0f345eaf549949104dc17ba7c0e34c309ea099c36dd5ff1f5b8",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.

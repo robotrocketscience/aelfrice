@@ -23,7 +23,8 @@ The rule is **stemmed residual containment**:
    (``ingest.stored_sentences``). The user sentence matches target
    sentence ``i`` when every stemmed residual token of the user
    sentence appears in sentence ``i``, and the user sentence has at
-   least ``REWORDED_MIN_RESIDUAL_TOKENS`` distinct residual tokens.
+   least ``REWORDED_MIN_RESIDUAL_TOKENS`` distinct residual tokens that
+   are not direction words.
 
 A containing sentence is still rejected by any of these vetoes:
 
@@ -76,6 +77,7 @@ from aelfrice.value_compare import extract_values, find_conflicts
 # The fewest distinct stemmed residual tokens a user sentence needs
 # before it can match. Below this, a short sentence such as "the cache"
 # is contained in almost any belief that mentions the same noun.
+# Direction words do not count, so "up to over" is too short.
 REWORDED_MIN_RESIDUAL_TOKENS: Final[int] = 3
 
 # A user sentence in which one residual word, as typed, appears this
@@ -373,7 +375,11 @@ def _evaluate(
 ) -> tuple[RewordedMatch | None, str | None]:
     user = _analyse(user_sentence)
     user_set = frozenset(user.residual)
-    if len(user_set) < REWORDED_MIN_RESIDUAL_TOKENS:
+    content = frozenset(
+        stem for tok in user.surface if tok not in DIRECTION_TOKENS
+        for stem in tokenize_stemmed(tok)
+    )
+    if len(content) < REWORDED_MIN_RESIDUAL_TOKENS:
         return None, REJECT_TOO_SHORT
     if user.mixed_script:
         return None, REJECT_MIXED_SCRIPT

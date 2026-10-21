@@ -89,6 +89,12 @@ def test_minimum_residual_tokens_is_enforced_at_the_boundary() -> None:
     _assert_matches("cache layer stores", target)
 
 
+def test_direction_words_do_not_count_toward_the_minimum() -> None:
+    _assert_vetoed("up to over", "Move up to over the line.", REJECT_TOO_SHORT)
+    _assert_vetoed("cache layer to", "Move the cache layer to disk.", REJECT_TOO_SHORT)
+    _assert_matches("cache layer moves to disk", "The cache layer moves to disk.")
+
+
 def test_direction_words_are_not_dropped() -> None:
     """over vs under, into vs out, up vs down: never a restatement."""
     over = "The update is over the version threshold for rollout."
