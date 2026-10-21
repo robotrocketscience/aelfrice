@@ -108,6 +108,9 @@ def test_the_mutation_run_deselects_exactly_these_tests() -> None:
         "--deselect",
         "tests/test_block_ceiling_hermetic_home_1716.py::"
         + "test_a_home_config_does_not_move_the_session_start_figures",
+        "--deselect",
+        "tests/test_user_lock_injection_1681.py::"
+        + "test_a_user_store_in_the_env_does_not_move_a_published_figure",
         *(
             arg
             for case in (

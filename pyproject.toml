@@ -213,6 +213,11 @@ also_copy = [
 #   test_block_ceiling_hermetic_home_1716 (the HOME config figures): its
 #     producer runs as a subprocess that imports `mutants/src` and inherits
 #     `MUTANT_UNDER_TEST`, so the stats pass changes the figure it pins.
+#   test_user_lock_injection_1681 (the user-store figure pin): it runs the
+#     same producer as a subprocess with `cwd=tmp_path`. Under mutmut the
+#     subprocess loads the trampoline outside `mutants/`, which raises
+#     "Could not figure out where the code to mutate is", and the baseline
+#     run stops there (2026-10-21 dispatch, every shard at 0 mutants run).
 #   test_insert_belief_gate (six `test_gate_on_*` cases): the gate names the
 #     module that called `insert_belief`, and under mutmut every call comes
 #     through `mutmut.mutation.trampoline`, so it refuses all of them.
@@ -231,6 +236,7 @@ pytest_add_cli_args = [
     "--ignore", "tests/e2e",
     "--deselect", "tests/test_docs_cross_file_anchors_1511.py::test_the_scan_is_not_vacuous",
     "--deselect", "tests/test_block_ceiling_hermetic_home_1716.py::test_a_home_config_does_not_move_the_session_start_figures",
+    "--deselect", "tests/test_user_lock_injection_1681.py::test_a_user_store_in_the_env_does_not_move_a_published_figure",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_test_module_raises",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_worker_path_passes",
     "--deselect", "tests/test_insert_belief_gate.py::test_gate_on_allowlisted_module_passes",
