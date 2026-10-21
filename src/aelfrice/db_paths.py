@@ -245,6 +245,24 @@ def open_user_store() -> MemoryStore:
     return MemoryStore(str(p), project_context_default="")
 
 
+def store_file_present(path: Path | str) -> bool:
+    """Whether a store file is at `path`.
+
+    Only a path that is not there (`FileNotFoundError`, or a parent that
+    is a file, `NotADirectoryError`) is missing. Any other `OSError`,
+    such as a parent directory without search permission, is raised: the
+    store may be there, so the caller reports it as unreadable rather
+    than as absent. `Path.exists()` and `Path.is_file()` can't be used
+    for this, because Python 3.14 returns False for those errors and
+    3.12 and 3.13 raise them.
+    """
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
 def open_user_store_if_present() -> MemoryStore | None:
     """Open the user-scope store when it exists, else return None.
 
@@ -252,7 +270,7 @@ def open_user_store_if_present() -> MemoryStore | None:
     it. It never creates the file or its directory: a missing store
     returns None before anything is opened. A path that can't be
     checked, such as one under a directory without search permission,
-    raises its `OSError` (`user_locks.store_file_present`), so the
+    raises its `OSError` (`store_file_present`), so the
     caller reports the store as unreadable rather than as absent.
 
     An existing store is opened the way `open_store_for_read()` opens
@@ -268,7 +286,6 @@ def open_user_store_if_present() -> MemoryStore | None:
     import sqlite3
 
     from aelfrice.store import is_readonly_open_failure
-    from aelfrice.user_locks import store_file_present
 
     p = user_db_path()
     if str(p) == ":memory:" or not store_file_present(p):

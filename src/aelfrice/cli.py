@@ -2409,7 +2409,7 @@ def _promote_into_user_store(
     a process killed mid-copy can leave its temporary file there.
     Raises what `_write_promoted_copy` raises, and `OSError`.
     """
-    from aelfrice.user_locks import store_file_present
+    from aelfrice.db_paths import store_file_present
 
     path = user_db_path()
     if str(path) == ":memory:" or store_file_present(path):

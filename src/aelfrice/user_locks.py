@@ -148,33 +148,18 @@ def _store_sig(path: Path) -> tuple[_FileSig | None, _FileSig | None]:
     return (_file_sig(path), wal)
 
 
-def store_file_present(path: Path | str) -> bool:
-    """Whether a store file is at `path`.
-
-    Only a path that is not there (`FileNotFoundError`, or a parent that
-    is a file, `NotADirectoryError`) is missing. Any other `OSError`,
-    such as a parent directory without search permission, is raised: the
-    store may be there, so the caller reports it as unreadable rather
-    than as absent. `Path.exists()` and `Path.is_file()` can't be used
-    for this, because Python 3.14 returns False for those errors and
-    3.12 and 3.13 raise them.
-    """
-    try:
-        os.stat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    return True
-
-
 def open_user_store_for_read() -> MemoryStore | None:
     """The user store opened read-only, or None when it doesn't exist.
 
     For commands that look a user lock up by id (`aelf show`,
     `aelf feedback`). Never creates the file. Raises what the read-only
     open raises when the file exists but can't be opened, and the
-    `OSError` of a path it can't check (`store_file_present`).
+    `OSError` of a path it can't check (`db_paths.store_file_present`).
     """
-    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        store_file_present,
+        user_db_path,
+    )
     from aelfrice.store import MemoryStore  # noqa: PLC0415
 
     path = user_db_path()
@@ -207,7 +192,10 @@ def read_user_locks(
     missed for the rest of this process. The hooks are one-shot processes,
     so the next fire reads it.
     """
-    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        store_file_present,
+        user_db_path,
+    )
     from aelfrice.store import (  # noqa: PLC0415
         MemoryStore,
         ReadOnlyStoreUnavailable,

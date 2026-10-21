@@ -97,7 +97,7 @@ Read-only throughout. The store is opened with a `mode=ro` URI, never
 through `MemoryStore`, whose constructor writes (DDL, migrations).
 Imports only the standard library and `hook_audit`, so the SessionStart
 hook pays nothing for it beyond the file read. Two imports are deferred
-to the calls that need them: `user_locks.store_file_present`, only when
+to the calls that need them: `db_paths.store_file_present`, only when
 a failed request is on record, and `db_paths`, only to resolve the user
 store's path when a failed user-scope request is on record and no path
 was passed.
@@ -463,13 +463,13 @@ def _open_gaps(
 
     A store that does not exist resolves nothing. Raises `sqlite3.Error`
     when it exists and can't be read, and `OSError` when it can't be
-    checked (`user_locks.store_file_present`).
+    checked (`db_paths.store_file_present`).
     """
     if not candidates:
         return []
     # Imported here, not at module scope, so the SessionStart notice pays
     # for it only when a failed request is on record.
-    from aelfrice.user_locks import store_file_present  # noqa: PLC0415
+    from aelfrice.db_paths import store_file_present  # noqa: PLC0415
 
     if not store_file_present(path):
         return list(candidates)

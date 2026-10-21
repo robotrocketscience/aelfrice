@@ -227,10 +227,12 @@ def diagnose_user_lock_duplicates(
     defaults to `db_paths.user_db_path()`. When it is the repository
     store, there is one set of locks and nothing to list.
     """
-    from aelfrice.db_paths import user_db_path  # noqa: PLC0415
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        store_file_present,
+        user_db_path,
+    )
     from aelfrice.user_locks import (  # noqa: PLC0415
         repo_locks_duplicating_user_locks,
-        store_file_present,
     )
 
     user_path = (

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice import cli
+from aelfrice import cli, db_paths
 from aelfrice import user_locks as ul
 from aelfrice.doctor import (
     DoctorReport,
@@ -1406,7 +1406,7 @@ def test_an_unsearchable_repo_store_dir_makes_the_doctor_listing_unknown(
 def test_a_parent_that_is_a_file_reads_as_missing(tmp_path: Path) -> None:
     blocker = tmp_path / "a-file"
     blocker.write_text("x", encoding="utf-8")
-    assert ul.store_file_present(blocker / "memory.db") is False
+    assert db_paths.store_file_present(blocker / "memory.db") is False
     report = diagnose_user_lock_duplicates(
         str(tmp_path / "repo.db"), str(blocker / "memory.db"),
     )
