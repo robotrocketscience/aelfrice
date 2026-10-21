@@ -49,9 +49,11 @@ A containing sentence is still rejected by any of these vetoes:
   quantifier positions (``relationship_detector.QUANT_AXIS``),
   including one having a quantifier and the other none.
 * ``polarity_mismatch``: the sentences hold different sets of
-  ``POLARITY_TOKENS``, the hedge, limit, condition, contrast and
-  past-state words. Containment only checks user tokens, so without
-  this a target that adds "cannot", "few" or "unless" would match.
+  ``POLARITY_TOKENS``, the hedge, limit, condition, contrast,
+  alternative and past-state words. A number whose digits are all zero
+  counts as ``zero``. Containment only checks user tokens, so without
+  this a target that adds "cannot", "few", "unless", "hardly" or
+  "used to" would match.
 * ``value_conflict``: the user sentence holds a whole dotted or
   comma-grouped number (``3.12``, ``1,000``) that the target sentence
   does not, or
@@ -119,26 +121,33 @@ DIRECTION_TOKENS: Final[frozenset[str]] = frozenset({
 # "Deploys fail unless the cache is warm") says something other than
 # the user sentence. Both sentences must hold the same set of them.
 POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
-    # inability
-    "cannot", "unable",
+    # inability, failure and near-negation
+    "cannot", "unable", "fail", "fails", "failed", "failing", "hardly",
+    "barely", "scarcely", "non", "zero",
     # hedges and modals
     "may", "might", "maybe", "perhaps", "possibly", "probably", "likely",
     "unlikely", "could", "would", "should", "seem", "seems", "appear",
-    "appears",
+    "appears", "allegedly", "supposedly", "reportedly", "apparently",
+    "presumably",
     # partial quantities and limits
     "few", "fewer", "less", "more", "most", "many", "several", "some",
-    "any", "half", "only",
+    "any", "half", "only", "almost", "nearly", "approximately", "roughly",
     # conditions and exceptions
-    "if", "unless", "except", "when", "whenever", "until", "while",
-    "provided", "assuming",
+    "if", "unless", "except", "excluding", "when", "whenever", "until",
+    "while", "provided", "assuming",
     # contrast and alternatives
     "but", "although", "though", "however", "whereas", "or", "either",
+    "instead", "rather", "otherwise",
     # past state or change of state
-    "was", "were", "previously", "formerly", "anymore", "became", "went",
-    "changed",
+    "was", "were", "had", "used", "previously", "formerly", "anymore",
+    "became", "went", "changed", "stopped", "ceased", "removed",
     # negative states
     "disabled", "unavailable", "unsupported", "invalid", "false",
 })
+
+# A number such as ``0`` or ``0.0`` reads as the polarity word ``zero``:
+# "0 tests pass" says what "no tests pass" says.
+_ZERO_RE: Final[re.Pattern[str]] = re.compile(r"0+(?:[.,]0+)*")
 
 RULE_STEMMED_RESIDUAL_CONTAINMENT: Final[str] = "stemmed_residual_containment"
 
@@ -370,6 +379,7 @@ def _analyse(text: str) -> _Analysis:
     signals = extract_signals(text)
     surface, residual = _residual(signals)
     clauses, clause_anchors = _clauses(text)
+    numbers = frozenset(_NUMBER_RE.findall(text))
     quantifiers = frozenset(
         QUANT_AXIS[tok] for tok in signals.tokens if tok in QUANT_AXIS
     )
@@ -378,8 +388,10 @@ def _analyse(text: str) -> _Analysis:
         surface=surface, residual=residual, clauses=clauses,
         clause_anchors=clause_anchors, signals=signals,
         quantifiers=quantifiers,
-        numbers=frozenset(_NUMBER_RE.findall(text)),
-        polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
+        numbers=numbers,
+        polarity=(frozenset(signals.tokens) & POLARITY_TOKENS) | (
+            {"zero"} if any(_ZERO_RE.fullmatch(n) for n in numbers) else set()
+        ),
     )
 
 

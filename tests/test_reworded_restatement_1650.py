@@ -354,6 +354,57 @@ def test_veto_polarity_mismatch(user: str, target: str) -> None:
     _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
 
 
+_REACH = "the worker reaches the database host"
+_REBUILD = "the nightly job rebuilds the search index"
+_FIX = "the cache layer fixes the latency spike"
+
+
+@pytest.mark.parametrize(("user", "target"), [
+    (_REACH, "The worker used to reach the database host."),
+    (_REACH, "The worker stopped reaching the database host."),
+    (_REACH, "The worker hardly reaches the database host."),
+    (_REACH, "The worker barely reaches the database host."),
+    (_REBUILD, "The nightly job hardly ever rebuilds the search index."),
+    (_REBUILD, "The nightly job fails to rebuild the search index."),
+    ("the cache has stale entries after deploy",
+     "The cache had stale entries after deploy."),
+    ("the parser supports yaml input files",
+     "The parser removed support for yaml input files."),
+    ("run the scanner for tokenization",
+     "Run the parser instead of the scanner for tokenization."),
+    ("run the scanner for tokenization",
+     "Run the parser rather than the scanner for tokenization."),
+    ("all tests pass on linux",
+     "All tests pass on linux excluding the network tests."),
+    ("the upload call is blocking", "The upload call is non-blocking."),
+    ("integration tests pass on linux", "0 integration tests pass on linux."),
+    ("integration tests pass on linux", "Zero integration tests pass on linux."),
+    ("all integration tests pass on windows",
+     "Almost all integration tests pass on windows."),
+    ("all integration tests pass on windows",
+     "Nearly all integration tests pass on windows."),
+    (_FIX, "The cache layer allegedly fixes the latency spike."),
+    (_FIX, "The cache layer supposedly fixes the latency spike."),
+    (_FIX, "The cache layer scarcely fixes the latency spike."),
+], ids=["used-to", "stopped", "hardly", "barely", "hardly-ever", "fails-to",
+        "had", "removed", "instead-of", "rather-than", "excluding", "non",
+        "digit-zero", "word-zero", "almost", "nearly", "allegedly",
+        "supposedly", "scarcely"])
+def test_veto_polarity_mismatch_on_near_negation_hedges_and_past_state(
+    user: str, target: str,
+) -> None:
+    _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
+
+
+def test_a_zero_on_both_sides_and_a_nonzero_number_are_not_polarity() -> None:
+    _assert_matches(
+        "0 integration tests pass on linux", "0 integration tests pass on linux.",
+    )
+    _assert_matches(
+        "integration tests pass on linux", "Integration tests pass on linux 10 times.",
+    )
+
+
 def test_veto_polarity_mismatch_control() -> None:
     _assert_matches(
         "the worker cannot reach the database host",
