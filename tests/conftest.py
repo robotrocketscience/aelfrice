@@ -153,8 +153,8 @@ def pytest_collection_modifyitems(
 
     CI pins the scale to 1, per workflow. The suite there runs on a
     dedicated runner, and a 4x-looser budget would weaken hang detection
-    in `ci.yml` and `publish.yml`, neither of which carries a
-    `timeout-minutes` backstop.
+    in `ci.yml`, which carries no `timeout-minutes` backstop. `publish.yml`
+    has a 30-minute job limit, far coarser than any one test's budget.
 
     One deliberate side effect: an item that carried no `timeout` marker
     gains one, so it starts matching `-m timeout` and stops matching
