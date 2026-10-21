@@ -264,6 +264,34 @@ def test_veto_negation_scope_reads_only_the_matched_clauses(user: str, target: s
     _assert_vetoed(user, target, REJECT_NEGATION_SCOPE)
 
 
+def test_negation_with_no_word_before_it_matches_a_target_that_names_a_subject() -> None:
+    _assert_matches(
+        "do not deploy the billing service into production",
+        "The team does not deploy the billing service into production.",
+    )
+
+
+def test_negation_with_no_word_after_it_in_the_target_leaves_the_pair_to_other_vetoes() -> None:
+    assert explain_rejection(
+        "the debug logger is not enabled", "The enabled debug logger is not.",
+    ) == REJECT_ORDER_MISMATCH
+
+
+def test_any_negation_of_the_matched_clauses_can_hold_the_user_negation() -> None:
+    _assert_matches(
+        "the parser module is not fast",
+        "The parser module is not fast with no cache.",
+    )
+
+
+def test_negation_scope_compares_the_word_after_the_negation() -> None:
+    _assert_vetoed(
+        "the parser module is not fast",
+        "The parser module is not slow yet fast.",
+        REJECT_NEGATION_SCOPE,
+    )
+
+
 def test_veto_quantifier_mismatch() -> None:
     target = "The nightly job always rebuilds the search index."
     _assert_vetoed(
