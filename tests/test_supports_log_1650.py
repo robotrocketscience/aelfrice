@@ -7,6 +7,7 @@ synthetic text.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -15,7 +16,7 @@ import pytest
 
 import aelfrice.reworded_restatement as reworded_restatement
 import aelfrice.supports_log as supports_log
-from aelfrice.ingest import _ingest_turn
+from aelfrice.ingest import _ingest_turn, ingest_jsonl
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
@@ -385,3 +386,181 @@ def test_reading_the_flag_does_not_load_the_matcher() -> None:
         check=True, timeout=120,
     )
     assert out.stdout.strip() == "False"
+
+
+# --- Ingest wiring ---------------------------------------------------------
+
+
+def _jsonl(path: Path, *records: tuple[str, str, str]) -> Path:
+    """A transcript-logger turns.jsonl of (role, session, text) records."""
+    lines = [
+        json.dumps({"role": role, "text": text, "session_id": session,
+                    "ts": f"2026-10-02T00:00:{i:02d}Z"})
+        for i, (role, session, text) in enumerate(records)
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _log_id_for(s: MemoryStore, bid: str) -> str:
+    row = s._conn.execute(  # noqa: SLF001
+        "SELECT id FROM ingest_log WHERE derived_belief_ids LIKE ?",
+        (f'%"{bid}"%',)).fetchone()
+    return str(row[0])
+
+
+def _spy_matcher(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+    real = reworded_restatement.match_reworded
+
+    def spy(user: str, target: str) -> object:
+        calls.append(target)
+        return real(user, target)
+
+    monkeypatch.setattr(reworded_restatement, "match_reworded", spy)
+    return calls
+
+
+_OTHER = "The parser handles each request within one second."
+
+
+def test_ingest_with_the_flag_off_logs_nothing_and_runs_no_matcher(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _target(store)
+    calls = _spy_matcher(monkeypatch)
+    passes: list[object] = []
+
+    def no_pass(*args: object) -> int:
+        passes.append(args)
+        return 0
+
+    monkeypatch.setattr(supports_log, "log_reworded_support", no_pass)
+    reads: list[bool] = []
+    real_flag = supports_log.is_reworded_support_log_enabled
+
+    def flag(**kwargs: object) -> bool:
+        value = real_flag()
+        reads.append(value)
+        return value
+
+    monkeypatch.setattr(supports_log, "is_reworded_support_log_enabled", flag)
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", _USER), ("user", "s2", _OTHER)))
+    assert result.beliefs_inserted == 2
+    assert passes == [] and calls == [] and _rows(store) == []
+    assert reads == [False]
+
+
+def test_ingest_with_the_flag_on_logs_a_later_session_restatement(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store)
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert result.beliefs_inserted == 1
+    (row,) = _rows(store)
+    bid = str(row[0])
+    assert row == (bid, "p1", SUPPORT_EVIDENCE_KIND_REWORDED, 1, "s2",
+                   _log_id_for(store, bid), _SPAN, 0)
+
+
+def test_ingest_logs_the_restating_sentence_of_a_longer_turn(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store)
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", f"{_OTHER} {_USER}")))
+    assert result.beliefs_inserted == 2
+    (row,) = _rows(store)
+    bid = str(row[0])
+    supporter = store.get_belief(bid)
+    assert supporter is not None and supporter.content == _USER
+    assert row[5] == _log_id_for(store, bid)
+
+
+def test_ingest_reads_the_toml_flag(store: MemoryStore, tmp_path: Path) -> None:
+    Path(".aelfrice.toml").write_text("[ingest]\nlog_reworded_support = true\n")
+    _target(store)
+    ingest_jsonl(store, _jsonl(tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert len(_rows(store)) == 1
+
+
+def test_ingest_skips_a_target_from_the_same_session(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store, session="s2")
+    ingest_jsonl(store, _jsonl(tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert _rows(store) == []
+
+
+def test_ingest_never_logs_an_assistant_or_system_turn_as_a_supporter(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store)
+    calls = _spy_matcher(monkeypatch)
+    passes: list[object] = []
+    real_pass = supports_log.log_reworded_support
+
+    def spy_pass(s: MemoryStore, pairs: tuple[tuple[str, str], ...]) -> int:
+        passes.append(pairs)
+        return real_pass(s, pairs)
+
+    monkeypatch.setattr(supports_log, "log_reworded_support", spy_pass)
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("assistant", "s2", _USER), ("system", "s2", _USER)))
+    # The system line is ingested as a belief, but no pass runs for it.
+    assert result.beliefs_inserted == 1
+    assert passes == [] and calls == [] and _rows(store) == []
+
+
+def test_ingest_never_logs_support_for_the_users_own_belief(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s1", _SPAN), ("user", "s2", _USER)))
+    assert _rows(store) == []
+
+
+def test_a_failing_pass_leaves_the_ingest_committed(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store)
+
+    def boom(user: str, target: str) -> object:
+        raise RuntimeError("synthetic matcher failure")
+
+    monkeypatch.setattr(reworded_restatement, "match_reworded", boom)
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", _USER), ("user", "s2", _OTHER)))
+    assert result.beliefs_inserted == 2 and result.turns_ingested == 2
+    assert "synthetic matcher failure" in capsys.readouterr().err
+    assert store.transaction_open is False
+    other = sqlite3.connect(str(tmp_path / "sl.db"))
+    try:
+        assert other.execute(
+            "SELECT COUNT(*) FROM beliefs WHERE session_id = 's2'"
+        ).fetchone()[0] == 2
+    finally:
+        other.close()
+    assert _rows(store) == []
+
+
+def test_ingest_on_a_store_without_the_table_still_commits(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store)
+    store._conn.execute("DROP TABLE belief_support_evidence")  # noqa: SLF001
+    store._conn.commit()  # noqa: SLF001
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert result.beliefs_inserted == 1
+    assert store.count_support_evidence(applied=False) == 0

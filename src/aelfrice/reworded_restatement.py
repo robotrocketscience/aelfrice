@@ -1,11 +1,11 @@
 """Reworded-restatement matcher for the SUPPORTS writer (#1650).
 
 Decides whether one sentence the user typed restates one sentence of an
-existing belief in other words. A later change logs each match as a
-candidate SUPPORTS edge and applies it only to phantoms, after a
-precision gate (see ``docs/design/feature-supports-writer.md``). This
-module only decides. It opens no store, writes nothing, and nothing
-calls it yet.
+existing belief in other words. ``aelfrice.supports_log`` logs each
+match as an unapplied SUPPORTS candidate, behind a default-off flag; a
+later change applies them to phantoms only, after a precision gate (see
+``docs/design/feature-supports-writer.md``). This module only decides.
+It opens no store and writes nothing.
 
 The rule is **stemmed residual containment**:
 

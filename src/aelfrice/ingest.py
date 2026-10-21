@@ -123,10 +123,15 @@ class TurnIngest:
     `inserted` is empty for a fully-corroborating turn, so the caller
     saw "no beliefs here" and linked across it, asserting a derivation
     the transcript does not support.
+
+    `sources` pairs each `inserted` id, in the same order, with the
+    `ingest_log` row that produced it (#1650), so a caller can check who
+    typed it without searching `derived_belief_ids`.
     """
 
     inserted: list[str]
     resolved: list[str | None]
+    sources: tuple[tuple[str, str], ...] = ()
 
     @property
     def head(self) -> str | None:
@@ -288,6 +293,7 @@ def _ingest_turn(
         # position-preserving).
         log_belief_ids: list[str | None] = []
         inserted: list[str] = []
+        sources: list[tuple[str, str]] = []
         seen: set[str] = set()
         for log_id in log_ids:
             outcome = worker_result.outcomes.get(log_id)
@@ -313,6 +319,7 @@ def _ingest_turn(
             if bid is not None and was_inserted and bid not in seen:
                 seen.add(bid)
                 inserted.append(bid)
+                sources.append((bid, log_id))
 
         # #809: wire intra-turn DERIVED_FROM edges between consecutive
         # full-length beliefs whose original-prose ordering was separated
@@ -385,7 +392,9 @@ def _ingest_turn(
             if is_temporal_spine_write_enabled():
                 write_temporal_spine(store, new_belief_ids=inserted)
 
-    return TurnIngest(inserted=inserted, resolved=log_belief_ids)
+    return TurnIngest(
+        inserted=inserted, resolved=log_belief_ids, sources=tuple(sources),
+    )
 
 
 @dataclass(frozen=True)
@@ -766,11 +775,22 @@ def ingest_jsonl(
     a session-log record from a headless host session (#1634) --
     `entrypoint` of `sdk-cli`, `sdk-ts`, or `sdk-py` -- unless capture is
     on (`AELFRICE_CAPTURE_PRINT_MODE`, or `[ingest] capture_print_mode`).
+
+    With `AELFRICE_LOG_REWORDED_SUPPORT` or `[ingest] log_reworded_support`
+    on (default off), each user turn's new beliefs are matched against
+    non-user beliefs from other sessions after the turn commits, and
+    each reworded restatement is logged with applied=0 (#1650,
+    `aelfrice.supports_log`). Nothing is applied, and a failure in that
+    pass never fails or rolls back ingest.
     """
     from aelfrice.inedible import is_inedible_path
     from aelfrice.print_mode import (
         is_print_mode_capture_enabled,
         is_print_mode_record,
+    )
+    from aelfrice.supports_log import (
+        is_reworded_support_log_enabled,
+        log_reworded_support,
     )
 
     path = Path(jsonl_path)
@@ -782,6 +802,7 @@ def ingest_jsonl(
     last_per_session: dict[str, tuple[str, str]] = {}
     # session_id -> (last_belief_id_inserted, last_turn_text)
     capture_print_mode: bool | None = None
+    log_support: bool | None = None
 
     if not path.is_file():
         return IngestJsonlResult(0, 0, 0, 0, 0)
@@ -858,6 +879,15 @@ def ingest_jsonl(
             )
             turns_ingested += 1
             beliefs_inserted += len(turn.inserted)
+            # #1650: log reworded restatements by the sentences this user
+            # turn inserted. The turn has committed, and the pass fails
+            # open, so it never undoes the turn. Resolved once, on the
+            # first user turn that inserts a belief.
+            if turn.sources and role == "user":
+                if log_support is None:
+                    log_support = is_reworded_support_log_enabled()
+                if log_support:
+                    log_reworded_support(store, turn.sources)
             # #1364: the chain anchors on the last belief this turn
             # RESOLVED to, not the last it newly inserted. Those differ
             # exactly when the turn corroborates, and reading the
