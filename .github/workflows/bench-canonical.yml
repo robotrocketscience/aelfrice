@@ -120,7 +120,11 @@ jobs:
           # 'no_data' fails the job alongside 'fail' (#1160): an
           # all-SKIP run measured nothing, and reporting that as
           # success is what let a broken dataset download look like a
-          # green calibration. 'warn' stays non-blocking.
+          # green calibration. 'warn' stays non-blocking. Timing
+          # metrics (tolerance.WARN_ONLY_METRICS: avg_latency_ms and
+          # total_ingest_time_s) report a band breach as 'warn', so
+          # runner wall-clock drift never fails this step. Quality
+          # metrics and corpus invariants still fail (CI-01).
           sys.exit(1 if overall.value in ('fail', 'no_data') else 0)
           "
 
