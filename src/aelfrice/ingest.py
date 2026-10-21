@@ -236,6 +236,15 @@ def stored_sentences(text: str) -> list[str]:
     return _partition_sentences(text)[0]
 
 
+def turn_sha(text: str) -> str:
+    """The fingerprint ingest stamps on a turn's rows as `raw_meta.turn_sha`.
+
+    #1602 anchors each sentence to its turn with it. #1780 joins host
+    transcript records to `ingest_log` rows through it.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:TURN_SHA_LEN]
+
+
 def _ingest_turn_ids(
     store: MemoryStore,
     text: str,
@@ -314,9 +323,7 @@ def _ingest_turn(
     # `ts` minted from the clock above would give a re-ingest of the same
     # turn a different anchor, which AC4/AC5 rule out.
     if session_id and created_at:
-        raw_meta[META_TURN_SHA] = hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()[:TURN_SHA_LEN]
+        raw_meta[META_TURN_SHA] = turn_sha(text)
 
     # #1135: one write group per turn. Pre-batching this was ~8
     # commits per 2-sentence turn (record_ingest per sentence, the
