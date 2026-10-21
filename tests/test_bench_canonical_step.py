@@ -33,13 +33,13 @@ _BANDCHECK = "Band-check vs canonical"
 _FINAL = "Fail job unless the band check passed"
 
 
-def _fake_bench(rc: int, *, write: bool) -> list[str]:
-    """A bench stand-in that may write its `--out` file, then exits `rc`."""
+def _fake_bench(rc: int, *, write: bool, body: str = "{}\n") -> list[str]:
+    """A bench stand-in that may write `body` to its `--out` file, then exits `rc`."""
     code = (
         "import sys\n"
         "from pathlib import Path\n"
         f"if {write!r}:\n"
-        "    Path(sys.argv[1]).write_text('{}\\n')\n"
+        f"    Path(sys.argv[1]).write_text({body!r})\n"
         f"sys.exit({rc})\n"
     )
     return [sys.executable, "-c", code]
@@ -76,6 +76,17 @@ def test_run_accepts_only_a_finished_bench_that_wrote_json(
     cmd = [*_fake_bench(rc, write=write), str(out)]
     assert step.main(["run", "--out", str(out), "--", *cmd]) == expected
     # `rc` is recorded whatever it was, so the final step can judge it.
+    assert _outputs(gh_output) == [f"out={out}", f"rc={rc}"]
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("rc", [0, 2])
+def test_run_rejects_a_zero_byte_json(tmp_path: Path, gh_output: Path, rc: int) -> None:
+    """A finished exit code with an empty file at `--out` is not a finished run."""
+    out = tmp_path / "nightly.json"
+    cmd = [*_fake_bench(rc, write=True, body=""), str(out)]
+    assert step.main(["run", "--out", str(out), "--", *cmd]) == 1
+    assert out.is_file() and out.stat().st_size == 0
     assert _outputs(gh_output) == [f"out={out}", f"rc={rc}"]
 
 
