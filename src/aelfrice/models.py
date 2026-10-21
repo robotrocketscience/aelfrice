@@ -282,6 +282,15 @@ CORROBORATION_SOURCE_WONDER_INGEST: Final[str] = "wonder_ingest"
 # the mirror hook calls insert_or_corroborate with this source_type.
 CORROBORATION_SOURCE_CLAUDE_MEMORY: Final[str] = "claude_memory_mirror"
 
+# #1650: kinds of row in `belief_support_evidence`. Wire-format strings;
+# do not rename without a migration. A user sentence that rewords one
+# sentence of an existing belief. Further kinds (check, commit, praise)
+# join the set when their matchers exist.
+SUPPORT_EVIDENCE_KIND_REWORDED: Final[str] = "reworded_restatement"
+SUPPORT_EVIDENCE_KINDS: Final[frozenset[str]] = frozenset(
+    {SUPPORT_EVIDENCE_KIND_REWORDED}
+)
+
 # #1171: feedback_history `source` values written for *exposure* rather than
 # endorsement. `apply_feedback(..., update_posterior=False)` records the event
 # for the recurrence axis (#1086) without moving the posterior — a retrieval is
@@ -605,6 +614,27 @@ class CoreGateBatch:
     items: tuple[CoreGateBatchItem, ...]
     created_at: str
     accepted_at: str | None
+
+
+@dataclass(frozen=True)
+class SupportEvidence:
+    """One `belief_support_evidence` row (#1650).
+
+    A SUPPORTS match from `supporter_id` to one sentence of `target_id`.
+    `applied` is False for a match that was logged without writing an
+    edge. `target_sentence_index` indexes
+    `ingest.stored_sentences(target.content)`.
+    """
+
+    supporter_id: str
+    target_id: str
+    kind: str
+    target_sentence_index: int
+    supporter_session_id: str | None
+    supporter_ingest_log_id: str | None
+    matched_span: str
+    applied: bool
+    created_at: str
 
 
 @dataclass

@@ -71,6 +71,7 @@ from aelfrice.models import (
     ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
     RETENTION_CLASSES,
     RETENTION_UNKNOWN,
+    SUPPORT_EVIDENCE_KINDS,
     CORE_GATE_ORIGIN_DOCTOR,
     Belief,
     CoreGateBatch,
@@ -80,6 +81,7 @@ from aelfrice.models import (
     OnboardSession,
     PhantomLifecycleCounts,
     Session,
+    SupportEvidence,
     validate_belief_scope,
 )
 from aelfrice.meta_beliefs import (
@@ -5413,6 +5415,106 @@ class MemoryStore:
         )
         self._commit_mutation()
         return cur.rowcount
+
+    # --- #1650 SUPPORTS evidence ----------------------------------------
+    #
+    # `belief_support_evidence` records each SUPPORTS match, logged or
+    # applied. These methods write no edge and move no posterior.
+
+    def record_support_evidence(
+        self,
+        supporter_id: str,
+        target_id: str,
+        *,
+        kind: str,
+        target_sentence_index: int,
+        supporter_session_id: str | None,
+        supporter_ingest_log_id: str | None,
+        matched_span: str,
+        applied: bool = False,
+        ts: str | None = None,
+    ) -> bool:
+        """Record one SUPPORTS match. Returns True if a row was inserted.
+
+        Idempotent on `(supporter_id, target_id, kind)`: a repeat is an
+        `INSERT OR IGNORE` no-op that leaves the first row unchanged and
+        returns False. Raises ValueError for a kind outside
+        SUPPORT_EVIDENCE_KINDS, a negative sentence index, or a belief
+        that supports itself. Both ids must name existing beliefs; the
+        foreign keys raise `sqlite3.IntegrityError` otherwise.
+
+        `ts` is the clock-injection seam, as on `record_corroboration`.
+        Commits without bumping the store generation: the row changes no
+        indexed belief or edge content.
+        """
+        if kind not in SUPPORT_EVIDENCE_KINDS:
+            raise ValueError(
+                f"Unknown support evidence kind {kind!r}. "
+                f"Must be one of {sorted(SUPPORT_EVIDENCE_KINDS)}"
+            )
+        if target_sentence_index < 0:
+            raise ValueError(
+                f"target_sentence_index must be >= 0, "
+                f"got {target_sentence_index}"
+            )
+        if supporter_id == target_id:
+            raise ValueError(f"belief {supporter_id!r} cannot support itself")
+        if ts is None:
+            ts = datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO belief_support_evidence
+                (supporter_id, target_id, kind, target_sentence_index,
+                 supporter_session_id, supporter_ingest_log_id,
+                 matched_span, applied, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (supporter_id, target_id, kind, target_sentence_index,
+             supporter_session_id, supporter_ingest_log_id,
+             matched_span, 1 if applied else 0, ts),
+        )
+        self._commit()
+        return cur.rowcount == 1
+
+    def list_support_evidence(self, target_id: str) -> list[SupportEvidence]:
+        """Return the evidence rows for one target belief.
+
+        Ordered by `created_at`, then `supporter_id`, then `kind`: a
+        total order, because those two ids and the target are the key.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT supporter_id, target_id, kind, target_sentence_index,
+                   supporter_session_id, supporter_ingest_log_id,
+                   matched_span, applied, created_at
+              FROM belief_support_evidence
+             WHERE target_id = ?
+             ORDER BY created_at ASC, supporter_id ASC, kind ASC
+            """,
+            (target_id,),
+        )
+        return [
+            SupportEvidence(
+                supporter_id=str(r["supporter_id"]),
+                target_id=str(r["target_id"]),
+                kind=str(r["kind"]),
+                target_sentence_index=int(r["target_sentence_index"]),
+                supporter_session_id=r["supporter_session_id"],
+                supporter_ingest_log_id=r["supporter_ingest_log_id"],
+                matched_span=str(r["matched_span"]),
+                applied=bool(r["applied"]),
+                created_at=str(r["created_at"]),
+            )
+            for r in cur.fetchall()
+        ]
+
+    def count_support_evidence(self, *, applied: bool) -> int:
+        """Count evidence rows whose `applied` flag equals `applied`."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM belief_support_evidence WHERE applied = ?",
+            (1 if applied else 0,),
+        ).fetchone()
+        return int(row[0])
 
     # --- #435 doc linker --------------------------------------------------
     #
