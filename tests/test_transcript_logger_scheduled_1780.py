@@ -177,6 +177,17 @@ def test_list_content_is_not_matched(tdir: Path, tmp_path: Path) -> None:
     assert _logged(tdir) == [_PROMPT]
 
 
+def test_a_newer_non_user_record_does_not_decide(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    host = _write(tmp_path / "host.jsonl", [
+        _typed(_PROMPT),
+        {"type": "system", "isMeta": True, "message": {"content": _PROMPT}},
+    ])
+    _submit(_PROMPT, str(host))
+    assert _logged(tdir) == [_PROMPT]
+
+
 def test_match_behind_an_assistant_record_is_an_earlier_turn(
     tdir: Path, tmp_path: Path,
 ) -> None:
