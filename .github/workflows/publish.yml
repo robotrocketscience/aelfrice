@@ -39,6 +39,15 @@ jobs:
           # Nothing in this job pushes with git. The release steps call the
           # gh CLI with GH_TOKEN, so the token stays out of .git/config.
           persist-credentials: false
+      # Audit CI-03, CI-04: a vX.Y.Z tag on any commit used to publish.
+      # Before anything is built, the tagged commit must be on main and
+      # pyproject.toml must carry the tag's version. main is fetched here
+      # so the check does not depend on which refs checkout fetched.
+      - name: Release preflight
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          scripts/release_preflight.sh --main-ref origin/main "${GITHUB_REF_NAME}"
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: '3.13'
