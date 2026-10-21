@@ -14,9 +14,8 @@ env:
   # #1472. tests/conftest.py scales every pytest-timeout budget by this
   # factor so a loaded developer machine does not lose tests that have no
   # defect. CI runs on a dedicated runner and wants the unscaled budgets:
-  # a 4x-looser timeout is 4x longer to notice a hang, and neither this
-  # workflow's `pytest` step nor `publish.yml`'s carries a
-  # `timeout-minutes` backstop.
+  # a 4x-looser timeout is 4x longer to notice a hang, and the job's
+  # `timeout-minutes` is far coarser than any single test's budget.
   #
   # Pinned per workflow, and not inferred from `CI` being set: `CI` is
   # commonly exported in local shells, so the implicit form would change
@@ -28,6 +27,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi
+    # The v5.1.0 and v5.1.1 runs took 14 minutes, nearly all of it pytest.
+    timeout-minutes: 30
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -35,7 +36,15 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0  # full history so --generate-notes can diff against the prior tag
+          # Nothing in this job pushes with git. The release steps call the
+          # gh CLI with GH_TOKEN, so the token stays out of .git/config.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          # A release job must not restore a cache another workflow wrote.
+          # That cache is a path into the published build.
+          enable-cache: false
       - run: uv sync --frozen --group dev --extra archive
       - run: uv run pytest tests/ -q
       - run: uv build
