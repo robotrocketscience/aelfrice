@@ -41,11 +41,13 @@ A containing sentence is still rejected by any of these vetoes:
   Cyrillic, Greek, Armenian or Cherokee ones, such as a Cyrillic ``o``
   inside ``not``. A unit sign after a number (``20µs``, ``10kΩ``,
   ``5 °C``) is not read as a letter here or in the lookalike veto.
-* ``lookalike``: the target sentence holds a letter, mark, digit or
-  symbol outside ASCII that the user sentence lacks, or a word the user
-  sentence lacks that spells a negation, quantifier or polarity word
-  with digits (``n0t``). Either one can hide a negation as an unknown
-  extra word, such as a small-capital or Coptic ``o`` inside ``not``.
+* ``lookalike``: the target sentence holds a word with a letter, mark,
+  digit or symbol outside ASCII that the user sentence lacks, or a word
+  the user sentence lacks that spells a negation, quantifier or
+  polarity word with digits (``n0t``). Either one can hide a negation
+  as an unknown extra word, such as a small-capital or Coptic ``o``
+  inside ``not``, or an accented ``nevér`` beside a ``café`` the user
+  also typed.
 * ``token_stuffing``: one residual word other than a direction word
   appears in the user sentence ``REWORDED_MAX_TOKEN_REPEATS`` times or
   more, counted before stemming.
@@ -289,6 +291,9 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
+# A run of characters between whitespace and ASCII punctuation.
+_FOREIGN_WORD_RE: Final[re.Pattern[str]] = re.compile(r"[^\s!-/:-@\[-`{-~]+")
+
 # The detector reads ``can't`` as negation but not ``cannot``.
 _CANNOT_RE: Final[re.Pattern[str]] = re.compile(r"\b(can)(not)\b", re.IGNORECASE)
 
@@ -345,11 +350,20 @@ def _has_mixed_script_word(text: str) -> bool:
     return False
 
 
-def _foreign_characters(text: str) -> frozenset[str]:
-    """Letters, marks, digits and symbols outside ASCII."""
+def _foreign_words(text: str) -> frozenset[str]:
+    """Lowercased words that hold a letter, mark, digit or symbol outside ASCII.
+
+    A word here is a run between whitespace and ASCII punctuation, so a
+    symbol such as the arrow U+2192 is a word of its own. Words, not characters,
+    are compared: a user sentence with ``café`` must not let the target
+    hide a negation as ``nevér``.
+    """
     return frozenset(
-        ch for ch in text
-        if ord(ch) > 0x7F and unicodedata.category(ch)[0] in "LMNS"
+        word.lower() for word in _FOREIGN_WORD_RE.findall(text)
+        if any(
+            ord(ch) > 0x7F and unicodedata.category(ch)[0] in "LMNS"
+            for ch in word
+        )
     )
 
 
@@ -506,7 +520,7 @@ def _analyse(text: str) -> _Analysis:
     )
     return _Analysis(
         text=text, mixed_script=_has_mixed_script_word(script_text),
-        foreign=_foreign_characters(script_text),
+        foreign=_foreign_words(script_text),
         digit_spelled=_digit_spelled_words(signals.tokens),
         surface=surface, residual=residual, clauses=clauses,
         clause_anchors=clause_anchors, gaps=gaps, signals=signals,
@@ -608,7 +622,7 @@ def _veto(
     held = frozenset().union(*target.clause_anchors[run[0]:run[1] + 1])
     if target.mixed_script:
         return REJECT_MIXED_SCRIPT
-    if (not target.foreign <= frozenset(user.text)
+    if (not target.foreign <= user.foreign
             or not target.digit_spelled <= frozenset(user.signals.tokens)):
         return REJECT_LOOKALIKE
     if user.signals.has_negation != target.signals.has_negation:

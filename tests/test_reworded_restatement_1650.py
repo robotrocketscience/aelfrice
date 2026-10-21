@@ -293,8 +293,19 @@ def test_veto_digit_spelled_polarity_word_in_the_target(user: str, target: str) 
     _assert_vetoed(user, target, REJECT_LOOKALIKE)
 
 
+@pytest.mark.parametrize(("user", "target"), [
+    ("the café menu updates daily", "The café menu nevér updates daily."),
+    ("the código module deploys the billing service",
+     "The código module does nót deploy the billing service."),
+], ids=["never-acute-e", "not-acute-o"])
+def test_veto_lookalike_reads_words_not_characters(user: str, target: str) -> None:
+    """The user typed the accented letter, but in another word."""
+    _assert_vetoed(user, target, REJECT_LOOKALIKE)
+
+
 def test_lookalike_control_characters_and_words_the_user_also_typed() -> None:
     _assert_matches("the caf\u00e9 menu updates daily", "The caf\u00e9 menu updates daily.")
+    _assert_matches("the CAF\u00c9 menu updates daily", "The caf\u00e9 menu updates daily.")
     _assert_matches(
         "the worker runs on x86 hosts", "The worker runs on x86 hosts with 4 cores.",
     )
