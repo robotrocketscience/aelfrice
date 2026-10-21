@@ -127,10 +127,23 @@ jobs:
           print("ImageOS:", os.environ.get("ImageOS", "<unset>"))
           print("ImageVersion:", os.environ.get("ImageVersion", "<unset>"))
           PY
+      # `-rfEsxX` lists every failure, error, skip, xfail and xpass in the
+      # summary, skips with their reason, so a skip that hides a missing
+      # dependency shows in the log. `--durations=25` names the slowest tests
+      # against the job's timeout. The upload step below keeps the JUnit file.
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: uv run pytest tests/ --ignore=tests/e2e -q
+        run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --junitxml=junit-${{ matrix.python-version }}.xml
       - if: steps.filter.outputs.code != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No code paths changed; reporting pass for docs-only PR."
+      # `always()` so a red leg still keeps its report, which is the case the
+      # report is for. On the docs-only branch there is no file, and the
+      # action warns rather than fails.
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: junit-${{ matrix.python-version }}-${{ github.sha }}
+          path: junit-${{ matrix.python-version }}.xml
+          retention-days: 30
 
   # #1469 — the store-free half of the published-figure gate. Runs the
   # producers named in `<!-- derived: ... -->` markers and hard-fails on any
