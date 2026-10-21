@@ -526,3 +526,80 @@ def test_reads_still_raise_other_operational_errors(tmp_path: Path) -> None:
             s.count_support_evidence(applied=False)
     finally:
         s.close()
+
+
+# --- Candidate targets ---------------------------------------------------
+
+_TERMS = ("scanner", "detects", "secrets")
+
+
+def _cand(
+    bid: str, content: str, *, session: str | None = "s1",
+    origin: str = "agent_inferred",
+) -> Belief:
+    return Belief(
+        id=bid, content=content, content_hash=f"h_{bid}", alpha=1.0,
+        beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
+        created_at="2026-10-01T00:00:00Z", last_retrieved_at=None,
+        session_id=session, origin=origin,
+    )
+
+
+def _candidates(s: MemoryStore, *, limit: int = 20,
+                exclude: tuple[str, ...] = ("user_transcript",),
+                terms: tuple[str, ...] = _TERMS) -> list[str]:
+    return [bid for bid, _ in s.support_candidates(
+        terms, limit=limit, supporter_id="u1", supporter_session_id="s2",
+        exclude_origins=exclude)]
+
+
+def test_a_candidate_holds_every_term(tmp_path: Path) -> None:
+    s = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        s.insert_belief(_cand("all", "The scanner detects leaked secrets."))
+        s.insert_belief(_cand("two", "The scanner detects leaked tokens."))
+        assert _candidates(s) == ["all"]
+    finally:
+        s.close()
+
+
+def test_candidates_skip_excluded_origins_self_same_session_and_retired(
+    tmp_path: Path,
+) -> None:
+    s = MemoryStore(str(tmp_path / "m.db"))
+    text = "The scanner detects leaked secrets in {}."
+    try:
+        s.insert_belief(_cand("keep", text.format("code")))
+        s.insert_belief(_cand("nosess", text.format("docs"), session=None))
+        s.insert_belief(_cand("user", text.format("logs"),
+                              origin="user_transcript"))
+        s.insert_belief(_cand("u1", text.format("tests"), session="s9"))
+        s.insert_belief(_cand("same", text.format("diffs"), session="s2"))
+        s.insert_belief(_cand("gone", text.format("forks")))
+        s.soft_delete_belief("gone")
+        # Retired with its search row left in place, so the query's own
+        # valid_to filter is what drops it.
+        s.insert_belief(_cand("ended", text.format("wikis")))
+        s._conn.execute(  # noqa: SLF001
+            "UPDATE beliefs SET valid_to = '2026-10-02T00:00:00Z' "
+            "WHERE id = 'ended'")
+        s._conn.commit()  # noqa: SLF001
+        assert sorted(_candidates(s)) == ["keep", "nosess"]
+        assert sorted(_candidates(s, exclude=())) == ["keep", "nosess", "user"]
+    finally:
+        s.close()
+
+
+def test_candidates_are_cut_at_the_limit_in_a_total_order(
+    tmp_path: Path,
+) -> None:
+    s = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        for i in range(6):
+            s.insert_belief(_cand(f"b{i}", "The scanner detects secrets."))
+        assert _candidates(s, limit=3) == ["b0", "b1", "b2"]
+        assert len(_candidates(s, limit=6)) == 6
+        assert _candidates(s, limit=0) == []
+        assert _candidates(s, terms=()) == []
+    finally:
+        s.close()

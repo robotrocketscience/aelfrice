@@ -5563,6 +5563,49 @@ class MemoryStore:
             raise
         return int(row[0])
 
+    def support_candidates(
+        self,
+        terms: Sequence[str],
+        *,
+        limit: int,
+        supporter_id: str,
+        supporter_session_id: str,
+        exclude_origins: Iterable[str],
+    ) -> list[tuple[str, str]]:
+        """Beliefs a user sentence may restate, as `(id, content)` pairs (#1650).
+
+        An active belief is a candidate when its content holds every one
+        of `terms` (a conjunctive FTS5 match: quoted terms joined by an
+        implicit AND), its origin is not in `exclude_origins`, it is not
+        `supporter_id`, and it was not created in `supporter_session_id`.
+        A belief with no session is kept: nothing shows it came from the
+        supporter's session.
+
+        Ranked by `bm25` then id, a total order, and cut at `limit`, so
+        the cost of matching each candidate is bounded however large the
+        store is. Empty `terms` or a `limit` below 1 returns `[]` without
+        touching FTS5.
+        """
+        expression = " ".join(_quote_fts5_token(t) for t in terms if t)
+        if not expression or limit < 1:
+            return []
+        origins = tuple(sorted(set(exclude_origins)))
+        origin_clause = (
+            "AND b.origin NOT IN (" + ",".join("?" * len(origins)) + ") "
+            if origins else ""
+        )
+        cur = self._conn.execute(
+            "SELECT b.id, b.content "
+            "FROM beliefs b JOIN beliefs_fts f ON f.id = b.id "
+            "WHERE beliefs_fts MATCH ? AND b.valid_to IS NULL "
+            "AND b.id != ? "
+            "AND (b.session_id IS NULL OR b.session_id != ?) "
+            + origin_clause
+            + "ORDER BY bm25(beliefs_fts), b.id LIMIT ?",
+            (expression, supporter_id, supporter_session_id, *origins, limit),
+        )
+        return [(str(r["id"]), str(r["content"])) for r in cur.fetchall()]
+
     # --- #435 doc linker --------------------------------------------------
     #
     # `belief_documents` rows are 1:1 with (belief_id, doc_uri) pairs.
