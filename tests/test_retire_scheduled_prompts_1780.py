@@ -353,6 +353,24 @@ def test_apply_keeps_a_belief_a_row_without_turn_sha_also_derived(
     assert bid in _active_ids(store)
 
 
+def test_malformed_raw_meta_reads_as_no_turn_sha(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # json_extract raises on invalid JSON; the row must read as unstamped.
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE ingest_log SET raw_meta = '{not json' "
+        "WHERE derived_belief_ids LIKE ?",
+        (f"%{bid}%",),
+    )
+    rows = [(s, h) for b, s, h in store.list_ingest_turn_derivations() if b == bid]
+    assert rows == [(SESSION_A, None)]
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid not in {c for c, _ in report.candidates}
+    assert bid in _active_ids(store)
+
+
 def test_apply_keeps_a_belief_the_user_promoted(
     store: MemoryStore, tmp_path: Path,
 ) -> None:
@@ -477,6 +495,7 @@ def test_format_names_the_beliefs(store: MemoryStore, tmp_path: Path) -> None:
         retire_scheduled_prompt_beliefs(store, [host], dry_run=True),
     )
     assert f"would retire {_belief_id(store, SCHEDULED_ONLY)}" in text
+    assert f"locked, kept: 1\n  {_belief_id(store, LOCKED_SCHEDULED)}" in text
     assert "--apply" in text
 
 
