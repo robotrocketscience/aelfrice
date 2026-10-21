@@ -1061,11 +1061,20 @@ rows it holds.
 
 The check runs after each turn is saved. If it fails, aelfrice prints one
 line to stderr and keeps the turn; ingest never fails or rolls back
-because of it. On a synthetic store of 10,000 beliefs, the check adds a
-median of 0.6 to 0.7 ms per user turn (p99 about 1.6 ms). With the log
-off, ingest resolves the setting once per run and adds no per-turn work.
-To measure your own setup, run `uv run python
-benchmarks/supports_log_latency.py`.
+because of it. Its cost depends on how many beliefs hold every word of
+your sentence. The cap of 20 bounds how many beliefs are matched, but the
+search still ranks every belief that holds the words. On synthetic
+stores of 10,000 beliefs:
+
+| Store | Check alone, median (p99) | Whole user turn, median: off, on |
+|---|---|---|
+| Mostly rare words (the benchmark default) | 0.7 ms (1.6 ms) | 0.8 ms, 1.6 ms |
+| 30 common words, 4-word sentences | 4.5 ms (6.3 ms) | 0.7 ms, 5.5 ms |
+
+With the log off, ingest resolves the setting once per run and adds no
+per-turn work. To measure your own setup, run `uv run python
+benchmarks/supports_log_latency.py`; add `--vocabulary 30 --uniform
+--turn-words 4` for the second row.
 
 To turn it on, set this key to `true`, or set
 `AELFRICE_LOG_REWORDED_SUPPORT=1`. The environment variable overrides
