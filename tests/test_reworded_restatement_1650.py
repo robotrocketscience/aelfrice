@@ -299,6 +299,13 @@ def test_veto_value_conflict() -> None:
     _assert_matches("set retries = 5 for the uploader", control)
 
 
+def test_veto_value_conflict_reads_only_the_containing_sentence() -> None:
+    """A conflicting value in another sentence of the belief does not veto."""
+    target = "Set retries = 5 for the uploader. The timeout = 3 and retries = 7 on the backup."
+    match = _assert_matches("set retries = 5 for the uploader", target)
+    assert match.target_sentence_index == 0
+
+
 def test_a_sentence_naming_two_values_of_one_key_matches_itself() -> None:
     sentence = "upgrade the agent from v2.0 to v2.1 before the freeze"
     _assert_matches(sentence, "Upgrade the agent from v2.0 to v2.1 before the freeze.")
