@@ -453,6 +453,41 @@ def diagnose_ingest_rule_set(
     )
 
 
+def diagnose_reworded_support_log(
+    store_path: str, project_root: Path | None = None,
+) -> int | None:
+    """Count the logged reworded-support rows when the log is on (#1650).
+
+    Returns the number of `belief_support_evidence` rows with applied=0,
+    or None when `[ingest] log_reworded_support` (or its env var) is off
+    for `project_root`, so the section is shown only to someone who
+    turned the log on. Opens the store `read_only=True`, which runs no
+    migration; a store without the table counts 0.
+
+    Fail-soft: a missing file, an unreadable store, or any error yields
+    None and the section is not rendered.
+    """
+    from aelfrice.store import MemoryStore as _Store  # noqa: PLC0415
+    from aelfrice.supports_log import (  # noqa: PLC0415
+        is_reworded_support_log_enabled,
+    )
+
+    if store_path == ":memory:" or not Path(store_path).exists():
+        return None
+    try:
+        if not is_reworded_support_log_enabled(start=project_root):
+            return None
+        store = _Store(store_path, read_only=True)
+    except Exception:  # noqa: BLE001 - fail-soft section
+        return None
+    try:
+        return store.count_support_evidence(applied=False)
+    except Exception:  # noqa: BLE001 - fail-soft section
+        return None
+    finally:
+        store.close()
+
+
 # ---------------------------------------------------------------------------
 # UserPromptSubmit telemetry section (#218 AC4)
 # ---------------------------------------------------------------------------
@@ -695,6 +730,10 @@ class DoctorReport:
     # #1658: ingest_log rows by rule-set digest. None when no store path
     # was supplied or the store could not be read.
     ingest_rule_set: IngestRuleSetStats | None = None
+    # #1650: reworded restatements logged with applied=0. None when no
+    # store path was supplied, the store could not be read, or the log
+    # is off.
+    reworded_support_logged: int | None = None
     # Runtime deps declared in pyproject.toml that are not importable
     # in the current environment (issue #236: stale uv tool env).
     missing_runtime_deps: list[str] = field(
@@ -891,6 +930,10 @@ def diagnose(
         report.dangling_edges = diagnose_dangling_edges(store_path)
         # #1658: rule-set digest coverage, same read-only handle policy.
         report.ingest_rule_set = diagnose_ingest_rule_set(store_path)
+        # #1650: logged reworded support, read-only, shown when the log is on.
+        report.reworded_support_logged = diagnose_reworded_support_log(
+            store_path, project_root,
+        )
         # #1622: unapplied typed locks, read-only, same policy. Guarded
         # here as well: the detector reports its known failures as
         # unknown, and anything it did not anticipate must not end the
@@ -1739,6 +1782,8 @@ def format_report(report: DoctorReport) -> str:
         _format_dangling_edges_section(report, lines)
         # #1658: store-derived, independent of settings.json.
         _format_ingest_rule_set_section(report, lines)
+        # #1650: store-derived, independent of settings.json.
+        _format_reworded_support_section(report, lines)
         # #1359: config-derived, independent of settings.json.
         _format_memory_block_section(report, lines)
         # #1622: store- and audit-derived, independent of settings.json.
@@ -1814,6 +1859,7 @@ def format_report(report: DoctorReport) -> str:
     _format_failed_migrations_section(report, lines)
     _format_dangling_edges_section(report, lines)
     _format_ingest_rule_set_section(report, lines)
+    _format_reworded_support_section(report, lines)
     _format_hrr_section(report, lines)
     _format_memory_block_section(report, lines)
     _format_lock_gaps_section(report, lines)
@@ -2550,6 +2596,27 @@ def _format_ingest_rule_set_section(
         f"  {st.missing} row(s) carry no digest "
         "(written before digests were recorded, synthesized for legacy "
         "beliefs, or written when no digest could be computed)"
+    )
+
+
+def _format_reworded_support_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the reworded-support log count to `lines` (#1650).
+
+    Informational, never a failure. Rendered only when the log is on and
+    the store could be read, including at zero, so a user who turned it
+    on can see it is running.
+    """
+    count = report.reworded_support_logged
+    if count is None:
+        return
+    lines.append("")
+    lines.append(
+        "reworded-support log (`[ingest] log_reworded_support`): on"
+    )
+    lines.append(
+        f"  {count} reworded restatement(s) logged, none applied"
     )
 
 
