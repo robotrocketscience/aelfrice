@@ -150,3 +150,18 @@ def test_the_store_is_not_written(tmp_path: Path) -> None:
     before = store.read_bytes()
     diagnose_reworded_support_log(str(store), _project(tmp_path, on=True))
     assert store.read_bytes() == before
+
+
+def test_the_report_renders_a_zero_count(tmp_path: Path) -> None:
+    # A store with no logged row: the section still shows, so a user who
+    # turned the log on can see it is running.
+    path = tmp_path / "doctor-empty.db"
+    MemoryStore(str(path)).close()
+    report = diagnose(
+        user_settings=tmp_path / "missing-user.json",
+        project_root=_project(tmp_path, on=True), store_path=str(path),
+    )
+    assert report.reworded_support_logged == 0
+    text = format_report(report)
+    assert _HEADER in text
+    assert "  0 reworded restatement(s) logged, none applied" in text
