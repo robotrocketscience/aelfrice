@@ -34,6 +34,14 @@ Three channels are checked:
      Audit-only since #1162 — classifies what it *would* have applied and
      writes nothing. Its enqueue side is also default off.
 
+  4. **Reworded-support log** (`supports_log.log_reworded_support`, wired
+     into `ingest_jsonl` by #1650). Matches each sentence a user typed
+     against non-user beliefs from other sessions and records each
+     reworded restatement in `belief_support_evidence` with applied=0.
+     Behind `AELFRICE_LOG_REWORDED_SUPPORT` / `[ingest]
+     log_reworded_support`, default off. On, it still writes no SUPPORTS
+     edge, no `feedback_history` row, and no posterior move.
+
 No live store is read and no belief content is emitted: every belief here
 is synthetic.
 
@@ -51,9 +59,11 @@ env -> kwarg -> TOML -> default, and pinning only one tier is not enough:
     the run if anything above that scratch directory carries a config
     after all — the pin is verified, not assumed.
 
-Only channel 3's resolvers have a TOML tier to pin. Channel 1's
+Channels 3 and 4 have a TOML tier to pin. Channel 1's
 `_exposure_updates_posterior` is env-only, and channel 2's `is_enabled`
-reads a caller-supplied dict and never touches disk.
+reads a caller-supplied dict and never touches disk. Channel 4's resolver
+takes `start=`, and its ingest run reads the TOML from the working
+directory, so that run happens inside the scratch directory.
 
 Run: `python benchmarks/posterior_channel_audit.py`
 Exits non-zero if any channel's observed behaviour departs from the table
@@ -61,6 +71,7 @@ above, so this doubles as a regression guard on the defaults.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -86,7 +97,13 @@ from aelfrice.hook_search import (  # noqa: E402
     HOOK_RETRIEVAL_VALENCE,
     record_retrieval,
 )
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief  # noqa: E402
+from aelfrice.ingest import ingest_jsonl  # noqa: E402
+from aelfrice.models import (  # noqa: E402
+    BELIEF_FACTUAL,
+    EDGE_SUPPORTS,
+    LOCK_NONE,
+    Belief,
+)
 from aelfrice.sentiment_feedback import (  # noqa: E402
     BASE_VALENCE,
     ESCALATED_NEGATIVE_VALENCE,
@@ -96,6 +113,10 @@ from aelfrice.sentiment_feedback import (  # noqa: E402
     is_negative_enabled as sentiment_negative_is_enabled,
 )
 from aelfrice.store import MemoryStore  # noqa: E402
+from aelfrice.supports_log import (  # noqa: E402
+    ENV_LOG_REWORDED_SUPPORT,
+    is_reworded_support_log_enabled,
+)
 
 ENV_EXPOSURE = "AELFRICE_EXPOSURE_UPDATES_POSTERIOR"
 
@@ -321,6 +342,102 @@ def channel_3_sweeper(scratch: Path) -> list[str]:
     return failures
 
 
+_REWORDED_TARGET = (
+    "Our release checklist covers the changelog. "
+    "The scanner reliably detects leaked secrets in committed source code."
+)
+_REWORDED_USER = "The scanner detects leaked secrets in source code."
+
+
+def _reworded_run(scratch: Path, flag: str | None) -> tuple[
+    tuple[float, float], tuple[float, float], int, int, int, int,
+]:
+    """Ingest one synthetic restatement; return what it changed.
+
+    Runs inside `scratch` so the ingest's TOML lookup is bounded there.
+    Returns (alpha/beta before, after, logged rows, applied rows,
+    SUPPORTS edges, feedback_history rows on the target).
+    """
+    os.environ.pop(ENV_LOG_REWORDED_SUPPORT, None)
+    if flag is not None:
+        os.environ[ENV_LOG_REWORDED_SUPPORT] = flag
+    store = MemoryStore(":memory:")
+    target = _belief("b4")
+    target.content = _REWORDED_TARGET
+    target.session_id = "s1"
+    target.origin = "agent_inferred"
+    store.insert_belief(target)
+    turns = scratch / "turns.jsonl"
+    turns.write_text(json.dumps({
+        "role": "user", "text": _REWORDED_USER, "session_id": "s2",
+        "ts": "2026-10-02T00:00:00Z",
+    }) + "\n")
+    cwd = Path.cwd()
+    os.chdir(scratch)
+    try:
+        before = _ab(store, "b4")
+        ingest_jsonl(store, turns)
+        after = _ab(store, "b4")
+    finally:
+        os.chdir(cwd)
+        os.environ.pop(ENV_LOG_REWORDED_SUPPORT, None)
+    logged = store.count_support_evidence(applied=False)
+    applied = store.count_support_evidence(applied=True)
+    supports = int(store._conn.execute(  # noqa: SLF001
+        "SELECT COUNT(*) FROM edges WHERE type = ?", (EDGE_SUPPORTS,),
+    ).fetchone()[0])
+    feedback = int(store.count_feedback_events("b4"))
+    store.close()
+    return before, after, logged, applied, supports, feedback
+
+
+def channel_4_reworded_support(scratch: Path) -> list[str]:
+    """Reworded-support log (#1650). Off by default; on, it only logs."""
+    failures: list[str] = []
+    print()
+    print("=" * 72)
+    print("CHANNEL 4: reworded-support log (ingest_jsonl, #1650, log-only)")
+    print("=" * 72)
+
+    stray = _scratch_walk_hits(scratch)
+    if stray:
+        failures.append(
+            "the scratch walk is not clean, so the TOML tier is unpinned: "
+            + ", ".join(stray)
+        )
+
+    enabled = is_reworded_support_log_enabled(start=scratch, env={})
+    print(f"  is_reworded_support_log_enabled(default) = {enabled}")
+    if enabled:
+        failures.append("the reworded-support log is on by default")
+
+    for flag in (None, "1"):
+        before, after, logged, applied, supports, feedback = _reworded_run(
+            scratch, flag,
+        )
+        label = ("DEFAULT (unset)" if flag is None
+                 else f"{ENV_LOG_REWORDED_SUPPORT}=1")
+        print(f"  {label:38s} logged={logged} applied={applied} "
+              f"supports_edges={supports} feedback={feedback} "
+              f"a/b {before} -> {after}")
+        if before != after:
+            failures.append(
+                f"the reworded-support log moved a posterior ({label})")
+        if applied or supports or feedback:
+            failures.append(
+                f"the reworded-support log applied evidence ({label})")
+        if flag is None and logged:
+            failures.append("the reworded-support log wrote rows at DEFAULT")
+        if flag is not None and logged != 1:
+            failures.append(
+                f"the opted-in log recorded {logged} rows, not 1, so this "
+                "check proves nothing")
+
+    print("  => no posterior channel: off by default, and on it logs "
+          "applied=0 rows only.")
+    return failures
+
+
 def main() -> int:
     if _CLEARED:
         print(f"(cleared ambient: {', '.join(_CLEARED)})\n")
@@ -330,6 +447,8 @@ def main() -> int:
     failures += channel_2_sentiment()
     with tempfile.TemporaryDirectory() as _tmp:
         failures += channel_3_sweeper(Path(_tmp))
+    with tempfile.TemporaryDirectory() as _tmp:
+        failures += channel_4_reworded_support(Path(_tmp))
 
     print()
     print("=" * 72)
@@ -338,7 +457,8 @@ def main() -> int:
     print("  At default settings ONE automatic channel moves a belief")
     print("  posterior: positive sentiment-from-prose (up, #1647). The")
     print("  other automatic channels are opt-in: exposure (up) and")
-    print("  negative sentiment-from-prose (down).")
+    print("  negative sentiment-from-prose (down). The reworded-support")
+    print("  log (#1650) is opt-in and moves nothing: it logs applied=0.")
 
     if failures:
         print()
