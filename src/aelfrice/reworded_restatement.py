@@ -84,13 +84,27 @@ that contains the user sentence and passes every veto is the match.
 The function is pure: no model, no embeddings, no network, and the
 same input always gives the same output.
 
-Known limit: containment checks only the user's tokens, so a target
+Known limits: containment checks only the user's tokens, so a target
 that adds a content word outside ``POLARITY_TOKENS`` and the detector's
 negation and quantifier words still matches, even when that word
 weakens or reverses the claim. A floor on how much of the target the
 user sentence covers was tried and reverted: legitimate rewordings sit
-below any floor that rejects the probes. The later precision gate is
-the backstop.
+below any floor that rejects the probes. A user sentence crosses a
+target clause boundary only at the same kind of break the target uses
+there, so a two-clause restatement that swaps an equivalent break,
+such as ``and`` for ``;`` or ``,``, or ``then`` for ``and then``, does
+not match. In a synthetic sweep of 6000 two-clause pairs that differ
+only in the break, this rule kept 678 of the 4463 pairs the
+per-sentence rule matched. The rule gives up that recall to block a
+user sentence that takes its subject from one target clause and its
+object from another. The lookalike veto compares whole words that hold
+a non-ASCII letter, mark, digit or symbol, so an inflected accented
+word (``résumés`` against ``résumé``) or a symbol with different
+spacing (``a → b`` against ``a→b``) reads as a lookalike and does not
+match. Polarity words compare surface tokens, so an inflection change
+(``lacks`` against ``is lacking``, ``refuses`` against ``refused``)
+does not match, and ``once`` fires in its frequency sense as well as
+its past-state sense. The later precision gate is the backstop.
 """
 from __future__ import annotations
 
