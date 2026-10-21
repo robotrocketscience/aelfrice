@@ -383,6 +383,26 @@ def test_every_action_in_publish_is_pinned_to_a_commit_sha() -> None:
         )
 
 
+_RELEASING = _REPO / "docs" / "concepts" / "RELEASING.md"
+
+
+def test_the_release_guide_lists_the_preflight_first() -> None:
+    """RELEASING.md lists publish.yml's steps in order; the preflight leads.
+
+    The guide's numbered list is what a release author reads to learn why
+    a tag was refused, so it has to name the script and put it ahead of
+    pytest, the way the workflow runs them.
+    """
+    text = _RELEASING.read_text(encoding="utf-8")
+    anchor = text.index("Pushing a tag starts `.github/workflows/publish.yml`")
+    block = text[anchor:].split("\n\n", 2)[1]
+    items = re.findall(r"^(\d+)\. (.+)$", block, re.M)
+    assert [int(n) for n, _ in items] == list(range(1, len(items) + 1)), items
+    assert "scripts/release_preflight.sh" in items[0][1], items
+    pytest_steps = [i for i, (_, s) in enumerate(items) if "pytest" in s]
+    assert pytest_steps and pytest_steps[0] > 0, items
+
+
 def test_publish_job_settings() -> None:
     """Timeout, no persisted token, a pinned Python and no restored cache."""
     for job_id, lines in _jobs(_publish_text()).items():
