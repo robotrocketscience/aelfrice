@@ -14,6 +14,7 @@ reads the same file.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,7 @@ pytestmark = pytest.mark.timeout(60)
 
 _REPO = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO / "scripts" / "scan_patterns.sh"
+_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
 
 # Dummy rules only. None of these resembles a real scan rule.
 _HIT = "dummy-needle-[0-9]+"
@@ -142,4 +144,47 @@ def test_usage_errors_exit_non_zero(args: list[str]) -> None:
     r = _run(*args)
     assert r.returncode == 2, r
     assert "Usage:" in r.stderr
+
+
+# --- workflow wiring -------------------------------------------------------
+
+
+def _job(name: str) -> str:
+    """The body of one job: every line after `  name:` up to the next job."""
+    lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"  {name}:")
+    out = []
+    for line in lines[start + 1 :]:
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _step(job: str, step_name: str) -> str:
+    """The text of one named step inside a job body."""
+    body = _job(job)
+    start = body.index(f"- name: {step_name}\n")
+    rest = body[start + 1 :]
+    end = re.search(r"\n      - (name|uses):", rest)
+    return body[start : start + 1 + (end.start() if end else len(rest))]
+
+
+@pytest.mark.parametrize(
+    "job, step, mode",
+    [
+        ("pattern-scan", "Scan tracked files", "tree"),
+        ("history-scan", "Scan PR-incoming history", "history"),
+    ],
+)
+def test_both_scan_jobs_run_the_script_and_keep_its_exit(job: str, step: str, mode: str) -> None:
+    text = _step(job, step)
+    call = re.search(
+        rf"^\s*bash scripts/scan_patterns\.sh --mode {mode} /tmp/p .*\|\| rc=\$\?$",
+        text,
+        re.MULTILINE,
+    )
+    assert call, f"{job} does not call the scan script in {mode} mode:\n{text}"
+    assert re.search(r'^\s*exit "\$rc"$', text, re.MULTILINE), text
+    assert "if grep" not in _job(job), f"{job} still has an inline grep loop"
 

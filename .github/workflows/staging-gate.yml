@@ -97,18 +97,12 @@ jobs:
             done
             [ "$skip" -eq 0 ] && echo "$f"
           done)
-          fail=0
-          while IFS= read -r p; do
-            [ -z "$p" ] && continue
-            [[ "$p" =~ ^# ]] && continue
-            if matches=$(grep -EHnI "$p" "${FILES[@]}" 2>/dev/null); then
-              echo "::error::pattern hit"
-              echo "$matches"
-              fail=1
-            fi
-          done < /tmp/p
+          # The script exits 2 on a pattern that does not compile, so a
+          # malformed rule fails this job rather than disabling itself.
+          rc=0
+          bash scripts/scan_patterns.sh --mode tree /tmp/p "${FILES[@]}" || rc=$?
           rm -f /tmp/p
-          exit "$fail"
+          exit "$rc"
 
   history-scan:
     runs-on: ubuntu-latest
@@ -155,17 +149,10 @@ jobs:
           range="${merge_base}..${HEAD_SHA}"
           git log "$range" --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
           git log "$range" -p > /tmp/d
-          fail=0
-          while IFS= read -r p; do
-            [ -z "$p" ] && continue
-            [[ "$p" =~ ^# ]] && continue
-            if grep -El "$p" /tmp/h /tmp/d >/dev/null; then
-              echo "::error::pattern hit in history"
-              fail=1
-            fi
-          done < /tmp/p
+          rc=0
+          bash scripts/scan_patterns.sh --mode history /tmp/p /tmp/h /tmp/d || rc=$?
           rm -f /tmp/p /tmp/h /tmp/d
-          exit "$fail"
+          exit "$rc"
 
   release-docs-check:
     runs-on: ubuntu-latest
