@@ -12,7 +12,10 @@ The join key is `(session_id, turn_sha)`, computed by
 unflagged record is ambiguous, because a typed prompt with the same text
 produced the same key, and it is dropped. A belief is retired only when
 every `ingest_log` row that derived or corroborated it carries a flagged
-key. Locked beliefs are never retired.
+key. Some evidence never reaches `ingest_log`, so a belief is also kept
+when it is locked, when its origin is no longer `user_transcript` (a
+promotion to `user_validated`, say), or when a source other than
+transcript ingest corroborated it (the host memory mirror, say).
 
 `aelf doctor --retire-scheduled-prompts PATH...` runs the pass. It is a
 dry run unless `--apply` is given.
@@ -26,7 +29,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from aelfrice.ingest import user_turn_key
-from aelfrice.models import LOCK_USER
+from aelfrice.models import (
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    LOCK_USER,
+    ORIGIN_USER_TRANSCRIPT,
+)
 from aelfrice.transcript_logger import is_scheduled_host_record
 
 if TYPE_CHECKING:
@@ -56,6 +63,7 @@ class ScheduledPromptReport:
         default_factory=list[tuple[str, str]],
     )
     locked: list[str] = field(default_factory=list[str])
+    other_evidence: list[str] = field(default_factory=list[str])
     retired: int = 0
 
 
@@ -119,14 +127,22 @@ def scan_host_sessions(paths: Iterable[Path]) -> HostTurnScan:
 
 def _select(
     store: "MemoryStore", flagged: set[TurnKey],
-) -> tuple[list[tuple[str, str]], list[str]]:
-    """Active beliefs whose every deriving row is flagged, split by lock."""
+) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+    """Active beliefs whose every deriving row is flagged.
+
+    Returns the candidates, then the ids kept because they are locked,
+    then the ids kept because evidence outside `ingest_log` backs them.
+    """
     every_row_flagged: dict[str, bool] = {}
     for bid, sid, sha in store.list_ingest_turn_derivations():
         hit = sid is not None and sha is not None and (sid, sha) in flagged
         every_row_flagged[bid] = every_row_flagged.get(bid, True) and hit
+    corroborated_elsewhere = store.list_beliefs_corroborated_outside(
+        CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    )
     candidates: list[tuple[str, str]] = []
     locked: list[str] = []
+    other_evidence: list[str] = []
     for bid in sorted(b for b, ok in every_row_flagged.items() if ok):
         belief = store.get_belief(bid)
         if belief is None:
@@ -134,8 +150,14 @@ def _select(
         if belief.lock_level == LOCK_USER:
             locked.append(bid)
             continue
+        if (
+            belief.origin != ORIGIN_USER_TRANSCRIPT
+            or bid in corroborated_elsewhere
+        ):
+            other_evidence.append(bid)
+            continue
         candidates.append((bid, belief.content))
-    return candidates, locked
+    return candidates, locked, other_evidence
 
 
 def retire_scheduled_prompt_beliefs(
@@ -151,10 +173,14 @@ def retire_scheduled_prompt_beliefs(
     if not scan.flagged:
         return report
     if dry_run:
-        report.candidates, report.locked = _select(store, scan.flagged)
+        report.candidates, report.locked, report.other_evidence = _select(
+            store, scan.flagged,
+        )
         return report
     with store.transaction(immediate=True):
-        report.candidates, report.locked = _select(store, scan.flagged)
+        report.candidates, report.locked, report.other_evidence = _select(
+            store, scan.flagged,
+        )
         for bid, _ in report.candidates:
             store.soft_delete_belief(bid)
     report.retired = len(report.candidates)
@@ -181,6 +207,13 @@ def format_scheduled_prompt_report(report: ScheduledPromptReport) -> str:
     if report.locked:
         lines.append(f"locked, kept: {len(report.locked)}")
         for bid in report.locked:
+            lines.append(f"  {bid}")
+    if report.other_evidence:
+        lines.append(
+            "promoted or corroborated by another source, kept: "
+            f"{len(report.other_evidence)}"
+        )
+        for bid in report.other_evidence:
             lines.append(f"  {bid}")
     if report.dry_run:
         if report.candidates:
