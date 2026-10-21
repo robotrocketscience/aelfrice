@@ -304,8 +304,8 @@ def test_veto_lookalike_reads_words_not_characters(user: str, target: str) -> No
 
 
 def test_lookalike_control_characters_and_words_the_user_also_typed() -> None:
-    _assert_matches("the caf\u00e9 menu updates daily", "The caf\u00e9 menu updates daily.")
-    _assert_matches("the CAF\u00c9 menu updates daily", "The caf\u00e9 menu updates daily.")
+    _assert_matches("the café menu updates daily", "The café menu updates daily.")
+    _assert_matches("the CAFÉ menu updates daily", "The café menu updates daily.")
     _assert_matches(
         "the worker runs on x86 hosts", "The worker runs on x86 hosts with 4 cores.",
     )

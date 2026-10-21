@@ -9,9 +9,10 @@ calls it yet.
 
 The rule is **stemmed residual containment**:
 
-0. Normalize each sentence: apostrophe look-alikes become ``'``, NFKC
-   folds fullwidth and compatibility forms, format characters such as
-   the soft hyphen and zero-width space are deleted, and ``cannot``
+0. Normalize each sentence: characters that look like an apostrophe
+   become ``'``, NFKC folds fullwidth and compatibility forms, format
+   characters such as the soft hyphen and zero-width space are
+   deleted, and ``cannot``
    becomes ``can not`` so it reads as negated, like ``can't``. Every
    step below and every veto reads the normalized text.
 1. Tokenize both texts with ``relationship_detector.extract_signals``.
@@ -342,8 +343,8 @@ _NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"\d+(?:[.,]\d+)*")
 def _normalize(text: str) -> str:
     """The form of ``text`` that every rule and veto reads.
 
-    Apostrophe look-alikes become ``'`` so a contraction such as
-    ``don't`` reads as negated, NFKC folds fullwidth and compatibility
+    Characters that look like an apostrophe become ``'`` so a
+    contraction such as ``don't`` reads as negated, NFKC folds fullwidth and compatibility
     forms to their plain letters, and format characters (soft hyphen,
     zero-width space and joiners, bidi controls) are deleted so they
     cannot split or hide a word. ``cannot`` becomes ``can not`` so the

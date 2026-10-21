@@ -2,6 +2,12 @@
 extend-ignore-identifiers-re = [
     "[A-Fa-f0-9]{7,}",
 ]
+# Deliberate forms in the reworded-restatement tests: a Porter stem and
+# a digit-for-letter lookalike word.
+extend-ignore-re = [
+    "\"sourc\"",
+    "\\b0nly\\b",
+]
 
 [files]
 extend-exclude = [
