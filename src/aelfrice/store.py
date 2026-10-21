@@ -5999,6 +5999,20 @@ class MemoryStore:
                 sha if isinstance(sha, str) else None,
             ))
         return out
+
+    def list_beliefs_corroborated_outside(self, source_type: str) -> set[str]:
+        """Ids of beliefs with a corroboration row of any other source type.
+
+        A row whose `source_type` is not `source_type` counts, including a
+        legacy value outside `CORROBORATION_SOURCE_TYPES`. #1780 reads it to
+        keep a belief that a source other than transcript ingest asserted.
+        """
+        cur = self._conn.execute(
+            "SELECT DISTINCT belief_id FROM belief_corroborations "
+            "WHERE source_type != ?",
+            (source_type,),
+        )
+        return {str(r[0]) for r in cur.fetchall()}
     # --- Deferred feedback queue (v1.6+, #191) ---------------------------
 
     def enqueue_deferred_feedback(
