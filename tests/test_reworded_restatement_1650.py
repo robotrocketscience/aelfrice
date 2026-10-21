@@ -531,10 +531,19 @@ _FIX = "the cache layer fixes the latency spike"
     (_FIX, "The cache layer allegedly fixes the latency spike."),
     (_FIX, "The cache layer supposedly fixes the latency spike."),
     (_FIX, "The cache layer scarcely fixes the latency spike."),
+    ("the parser supports yaml input files",
+     "The parser lacks support for yaml input files."),
+    ("the parser supports yaml input files",
+     "The parser dropped support for yaml input files."),
+    ("the parser supports yaml input files",
+     "The parser deprecated support for yaml input files."),
+    (_REACH, "The worker refuses to reach the database host."),
+    (_REACH, "The worker once reached the database host."),
 ], ids=["used-to", "stopped", "hardly", "barely", "hardly-ever", "fails-to",
         "had", "removed", "instead-of", "rather-than", "excluding", "non",
         "digit-zero", "word-zero", "almost", "nearly", "allegedly",
-        "supposedly", "scarcely"])
+        "supposedly", "scarcely", "lacks", "dropped", "deprecated",
+        "refuses", "once"])
 def test_veto_polarity_mismatch_on_near_negation_hedges_and_past_state(
     user: str, target: str,
 ) -> None:

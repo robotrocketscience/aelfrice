@@ -146,7 +146,8 @@ DIRECTION_TOKENS: Final[frozenset[str]] = frozenset({
 POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
     # inability, failure and near-negation
     "unable", "fail", "fails", "failed", "failing", "hardly",
-    "barely", "scarcely", "non", "zero",
+    "barely", "scarcely", "non", "zero", "lack", "lacks", "lacked",
+    "lacking", "refuse", "refuses", "refused", "refusing",
     # hedges and modals
     "may", "might", "maybe", "perhaps", "possibly", "probably", "likely",
     "unlikely", "could", "would", "should", "seem", "seems", "appear",
@@ -163,7 +164,8 @@ POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
     "instead", "rather", "otherwise",
     # past state or change of state
     "was", "were", "had", "used", "previously", "formerly", "anymore",
-    "became", "went", "changed", "stopped", "ceased", "removed",
+    "became", "went", "changed", "stopped", "ceased", "removed", "once",
+    "drops", "dropped", "deprecate", "deprecates", "deprecated",
     # negative states
     "disabled", "unavailable", "unsupported", "invalid", "false",
     # frames that dispute or deny the claim they hold
