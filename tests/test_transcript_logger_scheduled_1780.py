@@ -188,6 +188,23 @@ def test_a_newer_non_user_record_does_not_decide(
     assert _logged(tdir) == [_PROMPT]
 
 
+@pytest.mark.parametrize(
+    "newer",
+    [[1, 2], {"type": "user", "message": "plain text"}],
+    ids=["non-object-line", "non-object-message"],
+)
+def test_odd_newer_line_does_not_hide_the_record(
+    tdir: Path, tmp_path: Path, newer: object,
+) -> None:
+    host = tmp_path / "host.jsonl"
+    host.write_text(
+        json.dumps(_scheduled(_PROMPT)) + "\n" + json.dumps(newer) + "\n",
+        encoding="utf-8",
+    )
+    _submit(_PROMPT, str(host))
+    assert _logged(tdir) == []
+
+
 def test_match_behind_an_assistant_record_is_an_earlier_turn(
     tdir: Path, tmp_path: Path,
 ) -> None:
