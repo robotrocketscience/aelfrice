@@ -166,6 +166,14 @@ def test_veto_token_stuffing() -> None:
     _assert_matches("the system is fast and reliable", target)
 
 
+def test_token_stuffing_counts_typed_words_not_stems_or_directions() -> None:
+    """iterate, iterative and iteratively share one stem; to repeats in a route."""
+    iterate = "the team will iterate on the iterative parser design iteratively"
+    _assert_matches(iterate, iterate.capitalize() + ".")
+    route = "move the file from staging to review to release to archive"
+    _assert_matches(route, route.capitalize() + ".")
+
+
 def test_veto_negation_mismatch() -> None:
     target = "We do not deploy the billing service into production on fridays."
     _assert_vetoed(

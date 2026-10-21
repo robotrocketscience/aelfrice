@@ -606,8 +606,9 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=("SUPPORTS",),
         overridable=OVERRIDE_NONE,
         gates=(
-            "A user sentence that types one residual word this many times "
-            "is rejected as token stuffing. Raising it admits stuffed "
+            "A user sentence that types one residual word, other than a "
+            "direction word, this many times is rejected as token "
+            "stuffing. Raising it admits stuffed "
             "sentences and adds edges; lowering it to 2 rejects ordinary "
             "sentences that repeat one word."
         ),
@@ -794,7 +795,7 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # 4 (#1650): the reworded-restatement matcher's constants were
     # pinned as new entries. The matcher writes no edge yet, so no store
     # changes; the row records the baseline the SUPPORTS writer starts from.
-    4: "c137f1c9a31fc0f345eaf549949104dc17ba7c0e34c309ea099c36dd5ff1f5b8",
+    4: "0c4202eb73809f287364eb6b0b47496bd4c2ffc40918dc9164a2dd635a4ff6eb",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.

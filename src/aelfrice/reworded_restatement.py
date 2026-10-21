@@ -31,8 +31,9 @@ A containing sentence is still rejected by any of these vetoes:
 * ``mixed_script``: a word in either sentence mixes Latin letters with
   Cyrillic, Greek, Armenian or Cherokee ones, such as a Cyrillic ``o``
   inside ``not``.
-* ``token_stuffing``: one residual word appears in the user sentence
-  ``REWORDED_MAX_TOKEN_REPEATS`` times or more, counted before stemming.
+* ``token_stuffing``: one residual word other than a direction word
+  appears in the user sentence ``REWORDED_MAX_TOKEN_REPEATS`` times or
+  more, counted before stemming.
 * ``negation_mismatch``: exactly one of the two sentences is negated.
 * ``negation_scope``: both are negated, but some negation in the user
   sentence has no target negation between the same residual words, so
@@ -88,7 +89,8 @@ REWORDED_MIN_RESIDUAL_TOKENS: Final[int] = 3
 # A user sentence in which one residual word, as typed, appears this
 # many times is rejected. Containment is a set test, so repeating a
 # word adds nothing a real restatement needs. Counted before stemming,
-# so "iterate ... iterative ... iteratively" is not stuffing.
+# so "iterate ... iterative ... iteratively" is not stuffing. Direction
+# words do not count, since "from A to B to C to D" repeats one legitimately.
 REWORDED_MAX_TOKEN_REPEATS: Final[int] = 3
 
 # Direction and ordering words that the relationship detector drops as
@@ -416,7 +418,8 @@ def _evaluate(
         return None, REJECT_TOO_SHORT
     if user.mixed_script:
         return None, REJECT_MIXED_SCRIPT
-    if max(Counter(user.surface).values()) >= REWORDED_MAX_TOKEN_REPEATS:
+    typed = Counter(tok for tok in user.surface if tok not in DIRECTION_TOKENS)
+    if max(typed.values(), default=0) >= REWORDED_MAX_TOKEN_REPEATS:
         return None, REJECT_TOKEN_STUFFING
     sentences = _target_sentences(target_text)
     if not sentences:
