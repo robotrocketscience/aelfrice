@@ -10,8 +10,9 @@ calls it yet.
 The rule is **stemmed residual containment**:
 
 0. Normalize each sentence: apostrophe look-alikes become ``'``, NFKC
-   folds fullwidth and compatibility forms, and format characters such
-   as the soft hyphen and zero-width space are deleted. Every step below
+   folds fullwidth and compatibility forms, format characters such as
+   the soft hyphen and zero-width space are deleted, and ``cannot``
+   becomes ``can not`` so it reads as negated, like ``can't``. Every step below
    and every veto reads the normalized text.
 1. Tokenize both texts with ``relationship_detector.extract_signals``.
    The residual is the tokens left after dropping stopwords, negation
@@ -59,7 +60,7 @@ A containing sentence is still rejected by any of these vetoes:
   ``POLARITY_TOKENS``, the hedge, limit, condition, contrast,
   alternative and past-state words. A number whose digits are all zero
   counts as ``zero``. Containment only checks user tokens, so without
-  this a target that adds "cannot", "few", "unless", "hardly" or
+  this a target that adds "unable", "few", "unless", "hardly" or
   "used to" would match. Words that frame a claim as false or
   disputed ("wrong", "myth", "the claim that") count too, and a
   target sentence with a question mark is rejected unless the user
@@ -127,12 +128,12 @@ DIRECTION_TOKENS: Final[frozenset[str]] = frozenset({
 
 # Words that weaken, limit, condition, date or reverse a claim. Most are
 # detector stopwords, so containment never sees them, and a target that
-# adds one ("The worker cannot reach the host", "Few tests are flaky",
+# adds one ("The worker is unable to reach the host", "Few tests are flaky",
 # "Deploys fail unless the cache is warm") says something other than
 # the user sentence. Both sentences must hold the same set of them.
 POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
     # inability, failure and near-negation
-    "cannot", "unable", "fail", "fails", "failed", "failing", "hardly",
+    "unable", "fail", "fails", "failed", "failing", "hardly",
     "barely", "scarcely", "non", "zero",
     # hedges and modals
     "may", "might", "maybe", "perhaps", "possibly", "probably", "likely",
@@ -278,6 +279,9 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
+# The detector reads ``can't`` as negation but not ``cannot``.
+_CANNOT_RE: Final[re.Pattern[str]] = re.compile(r"\b(can)(not)\b", re.IGNORECASE)
+
 # A unit sign after a number, with an optional space and SI prefix, as
 # NFKC leaves it: the micro sign becomes Greek mu and the ohm sign Greek
 # omega. Removed before the script checks, so ``20µs`` and ``10kΩ`` are
@@ -306,11 +310,13 @@ def _normalize(text: str) -> str:
     ``don't`` reads as negated, NFKC folds fullwidth and compatibility
     forms to their plain letters, and format characters (soft hyphen,
     zero-width space and joiners, bidi controls) are deleted so they
-    cannot split or hide a word.
+    cannot split or hide a word. ``cannot`` becomes ``can not`` so the
+    detector reads it as negated, as it reads ``can't``.
     """
     text = text.translate(_APOSTROPHE_MAP)
     text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return _CANNOT_RE.sub(r"\1 \2", text)
 
 
 def _has_mixed_script_word(text: str) -> bool:

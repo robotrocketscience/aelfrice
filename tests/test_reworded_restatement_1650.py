@@ -379,8 +379,6 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
 
 @pytest.mark.parametrize(("user", "target"), [
     ("the worker can reach the database host",
-     "The worker cannot reach the database host."),
-    ("the worker can reach the database host",
      "The worker is unable to reach the database host."),
     ("integration tests are flaky on windows",
      "Few integration tests are flaky on windows."),
@@ -402,7 +400,7 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
      "The cache is stale after deploy."),
     ("the limit is 10 requests per minute",
      "The limit is 10 requests per second or 100 requests per minute."),
-], ids=["cannot", "unable", "few", "only", "might", "except", "unless",
+], ids=["unable", "few", "only", "might", "except", "unless",
         "disabled", "went", "but", "user-past-tense", "or"])
 def test_veto_polarity_mismatch(user: str, target: str) -> None:
     """A polarity word on one side only, where containment cannot see it."""
@@ -476,6 +474,22 @@ def test_a_zero_on_both_sides_and_a_nonzero_number_are_not_polarity() -> None:
     )
     _assert_matches(
         "integration tests pass on linux", "Integration tests pass on linux 10 times.",
+    )
+
+
+def test_cannot_and_cant_are_one_negation() -> None:
+    _assert_matches(
+        "the worker can't reach the database host",
+        "The worker cannot reach the database host.",
+    )
+    _assert_matches(
+        "the worker CANNOT reach the database host",
+        "The worker can't reach the database host.",
+    )
+    _assert_vetoed(
+        "the worker can reach the database host",
+        "The worker cannot reach the database host.",
+        REJECT_NEGATION_MISMATCH,
     )
 
 
