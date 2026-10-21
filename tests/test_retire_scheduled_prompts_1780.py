@@ -17,8 +17,15 @@ from pathlib import Path
 import pytest
 
 import aelfrice.cli as cli_module
+from aelfrice.claude_memory_reconcile import ingest_memory_text
 from aelfrice.ingest import ingest_jsonl, turn_sha, user_turn_key
-from aelfrice.models import LOCK_USER
+from aelfrice.models import (
+    CORROBORATION_SOURCE_CLAUDE_MEMORY,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    LOCK_USER,
+    ORIGIN_USER_VALIDATED,
+)
+from aelfrice.promotion import promote
 from aelfrice.scheduled_prompts import (
     format_scheduled_prompt_report,
     retire_scheduled_prompt_beliefs,
@@ -225,6 +232,63 @@ def test_apply_keeps_a_belief_a_row_without_turn_sha_also_derived(
     report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
     assert bid not in {b for b, _ in report.candidates}
     assert bid in _active_ids(store)
+
+
+def test_apply_keeps_a_belief_the_user_promoted(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    promote(store, bid)
+    b = store.get_belief(bid)
+    assert b is not None and b.origin == ORIGIN_USER_VALIDATED
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid not in {c for c, _ in report.candidates}
+    assert report.other_evidence == [bid]
+    assert f"another source, kept: 1\n  {bid}" in (
+        format_scheduled_prompt_report(report)
+    )
+    assert bid in _active_ids(store)
+
+
+def test_apply_keeps_a_belief_another_source_corroborated(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # The memory mirror corroborates without writing an ingest_log row.
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    mem = "---\nname: n\ndescription: d\nmetadata:\n  type: user\n---\n"
+    assert ingest_memory_text(store, mem + SCHEDULED_ONLY + "\n") is not None
+    sources = [src for _, src, _, _ in store.list_corroborations(bid)]
+    assert CORROBORATION_SOURCE_CLAUDE_MEMORY in sources
+    rows = [b for b, _, _ in store.list_ingest_turn_derivations() if b == bid]
+    assert len(rows) == 1
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid not in {c for c, _ in report.candidates}
+    assert report.other_evidence == [bid]
+    assert bid in _active_ids(store)
+
+
+def test_apply_retires_a_belief_only_scheduled_turns_corroborated(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # A second scheduled turn in another session adds a transcript
+    # corroboration; that alone does not keep the belief.
+    host_a = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    ingest_jsonl(store, _write_jsonl(tmp_path / "more.jsonl", [
+        _turn(SESSION_B, 10, SCHEDULED_ONLY),
+    ]))
+    sources = [src for _, src, _, _ in store.list_corroborations(bid)]
+    assert sources == [CORROBORATION_SOURCE_TRANSCRIPT_INGEST]
+    host_b = _write_jsonl(host_a.parent / f"{SESSION_B}.jsonl", [
+        _host(SCHEDULED_ONLY, scheduled=True, session=SESSION_B),
+    ])
+    report = retire_scheduled_prompt_beliefs(
+        store, [host_a, host_b], dry_run=False,
+    )
+    assert bid in {c for c, _ in report.candidates}
+    assert bid not in _active_ids(store)
 
 
 def test_second_apply_is_a_no_op(store: MemoryStore, tmp_path: Path) -> None:
