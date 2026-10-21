@@ -188,3 +188,13 @@ def test_both_scan_jobs_run_the_script_and_keep_its_exit(job: str, step: str, mo
     assert re.search(r'^\s*exit "\$rc"$', text, re.MULTILINE), text
     assert "if grep" not in _job(job), f"{job} still has an inline grep loop"
 
+
+@pytest.mark.parametrize("job", ["pattern-scan", "history-scan"])
+def test_both_decode_steps_fail_on_an_empty_pattern_file(job: str) -> None:
+    text = _step(job, "Decode patterns")
+    lines = [ln.strip() for ln in text.splitlines()]
+    assert 'if [ -z "${PATTERNS:-}" ]; then' in lines, text
+    decode = next(i for i, ln in enumerate(lines) if "base64 -d > /tmp/p" in ln)
+    check = next(i for i, ln in enumerate(lines) if ln.startswith("[ -s /tmp/p ] ||"))
+    assert check > decode, text
+    assert "exit 1" in lines[check], text

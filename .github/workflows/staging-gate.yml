@@ -132,12 +132,21 @@ jobs:
           python3 scripts/check_commit_identity.py \
             --range "origin/$BASE_REF..$HEAD_SHA"
 
+      # Fail closed, as pattern-scan does: an unset secret or an empty
+      # decode would otherwise scan nothing and pass. This job also runs on
+      # Dependabot PRs, which read Dependabot secrets rather than Actions
+      # secrets, so SCAN_RULES_B64 must exist in both stores.
       - name: Decode patterns
         env:
           PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
         run: |
           set -euo pipefail
+          if [ -z "${PATTERNS:-}" ]; then
+            echo "::error::SCAN_RULES_B64 not configured"
+            exit 1
+          fi
           echo "$PATTERNS" | base64 -d > /tmp/p
+          [ -s /tmp/p ] || { echo "::error::empty"; exit 1; }
       - name: Scan PR-incoming history
         run: |
           set -euo pipefail
