@@ -33,6 +33,7 @@ from aelfrice.reworded_restatement import (
     REWORDED_MIN_RESIDUAL_TOKENS,
     RULE_STEMMED_RESIDUAL_CONTAINMENT,
     RewordedMatch,
+    candidate_terms,
     explain_rejection,
     match_reworded,
 )
@@ -788,3 +789,30 @@ def test_named_adversarial_negatives_do_not_match(case_id: str) -> None:
     )
     assert case["expected_should_promote"] is False
     assert match_reworded(case["lock_text"], case["phantom_text"]) is None
+
+
+# --- Candidate terms ------------------------------------------------------
+
+
+def test_candidate_terms_are_the_typed_residual_words_without_directions() -> None:
+    assert candidate_terms(
+        "The scanner, in turn, detects leaked secrets in the source code"
+    ) == ("scanner", "turn", "detects", "leaked", "secrets", "source", "code")
+
+
+def test_candidate_terms_name_each_word_once_in_sentence_order() -> None:
+    assert candidate_terms("cache layer stores the cache layer") == (
+        "cache", "layer", "stores")
+
+
+def test_candidate_terms_are_empty_below_the_minimum() -> None:
+    assert candidate_terms("cache layer") == ()
+    assert candidate_terms("up to over") == ()
+    assert candidate_terms("cache layer stores") == ("cache", "layer", "stores")
+
+
+def test_every_candidate_term_is_in_a_matched_target() -> None:
+    target = "The cache layer stores parsed results for reuse."
+    user = "the cache layer stores results"
+    _assert_matches(user, target)
+    assert all(term in target.lower() for term in candidate_terms(user))

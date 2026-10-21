@@ -689,16 +689,20 @@ def _veto(
     return None
 
 
+def _content_stems(user: _Analysis) -> frozenset[str]:
+    """The stems of the residual words that are not direction words."""
+    return frozenset(
+        stem for tok in user.surface if tok not in DIRECTION_TOKENS
+        for stem in tokenize_stemmed(tok)
+    )
+
+
 def _evaluate(
     user_sentence: str, target_text: str,
 ) -> tuple[RewordedMatch | None, str | None]:
     user = _analyse(user_sentence)
     user_set = frozenset(user.residual)
-    content = frozenset(
-        stem for tok in user.surface if tok not in DIRECTION_TOKENS
-        for stem in tokenize_stemmed(tok)
-    )
-    if len(content) < REWORDED_MIN_RESIDUAL_TOKENS:
+    if len(_content_stems(user)) < REWORDED_MIN_RESIDUAL_TOKENS:
         return None, REJECT_TOO_SHORT
     if user.mixed_script:
         return None, REJECT_MIXED_SCRIPT
@@ -737,6 +741,26 @@ def match_reworded(user_sentence: str, target_text: str) -> RewordedMatch | None
     return _evaluate(user_sentence, target_text)[0]
 
 
+def candidate_terms(user_sentence: str) -> tuple[str, ...]:
+    """The words a belief must hold before ``user_sentence`` can match it.
+
+    The residual words of the normalized sentence as typed, without
+    direction words, each once, in sentence order. A target sentence
+    matches only when it holds the stem of every residual word, so a
+    search that requires all of these words narrows the candidates
+    without ranking them away. The search index stems with its own
+    stemmer, so a word pair this matcher stems alike and the index does
+    not can still be missed. Returns ``()`` when the sentence has too
+    few words to match anything (``REJECT_TOO_SHORT``).
+    """
+    user = _analyse(user_sentence)
+    if len(_content_stems(user)) < REWORDED_MIN_RESIDUAL_TOKENS:
+        return ()
+    return tuple(dict.fromkeys(
+        tok for tok in user.surface if tok not in DIRECTION_TOKENS
+    ))
+
+
 def explain_rejection(user_sentence: str, target_text: str) -> str | None:
     """Return why ``match_reworded`` rejects the pair, or ``None`` if it matches.
 
@@ -766,6 +790,7 @@ __all__ = [
     "REWORDED_MIN_RESIDUAL_TOKENS",
     "RULE_STEMMED_RESIDUAL_CONTAINMENT",
     "RewordedMatch",
+    "candidate_terms",
     "explain_rejection",
     "match_reworded",
 ]
