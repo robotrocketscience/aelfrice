@@ -20,6 +20,10 @@ Per the 2026-05-06 ratification on #437, bands are relative-with-floor:
   adversarial category with no reader to refuse with — and the adapters
   now say so instead of writing 0.0. Without this the sentinel would
   land on the non-numeric branch and read as a regression.
+- Warn-only timing (CI-01): a band breach on a metric in
+  `WARN_ONLY_METRICS` (wall-clock latency and ingest time) is a WARN,
+  never a FAIL, so it cannot fail the nightly. Quality metrics and
+  corpus invariants keep their FAIL.
 
 Spec: docs/design/v2_reproducibility_harness.md.
 Issue: #437, #1160.
@@ -135,6 +139,24 @@ METRIC_DIRECTIONS: dict[str, Direction] = {
     "single_hop_mean_sem_pct": Direction.TWO_SIDED,
     "split_delta_pp": Direction.TWO_SIDED,
 }
+
+
+# Timing metrics whose band breach is reported as WARN and never fails
+# the nightly (CI-01, ruled 2026-10-21). They measure the runner's wall
+# clock, which moves with the hosted machine, so a breach says more
+# about the runner than about the code. Their bands and directions are
+# unchanged: the breach still prints, with its observed value and band.
+#
+# Exact leaf names, for the reason `METRIC_DIRECTIONS` gives against
+# substring matching: a name rule such as `*_latency_ms` would let an
+# unrelated metric that happens to match stop failing. A new timing
+# metric fails until someone adds it here. Only a band breach is
+# downgraded. A timing leaf that is missing or not numeric still FAILs,
+# because that means the harness stopped producing it.
+WARN_ONLY_METRICS: frozenset[str] = frozenset({
+    "avg_latency_ms",
+    "total_ingest_time_s",
+})
 
 
 def direction_for(path: tuple[str, ...]) -> Direction:
@@ -416,6 +438,9 @@ def check_report(
         verdict, note = classify(
             cano_val, obs_val, lower, upper, direction=direction,
         )
+        if verdict is Verdict.FAIL and metric_name in WARN_ONLY_METRICS:
+            verdict = Verdict.WARN
+            note = f"{note}; warn-only timing metric (CI-01), does not fail"
         checks.append(BandCheck(
             path=path, canonical=cano_val, observed=obs_val,
             lower=lower, upper=upper, band_kind=kind,

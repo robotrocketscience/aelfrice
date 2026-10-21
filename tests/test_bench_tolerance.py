@@ -151,18 +151,18 @@ def test_check_report_band_checks_single_invocation_adapter():
     """Without the `_` sentinel fix, `_walk_leaves` skipped the
     bucket and `output.*` leaves were never band-checked. Regression
     case from #490: locomo / longmemeval / amabench could silently
-    pass on a 100% latency regression.
+    pass on a large regression. The leaf is a quality metric because
+    a latency breach is warn-only (CI-01) and would not show FAIL.
     """
     cano = _canonical({
-        "longmemeval": {"_": {"_status": "ok", "output": {"avg_latency_ms": 5.0}}},
+        "longmemeval": {"_": {"_status": "ok", "output": {"overall_f1": 0.5}}},
     })
-    # 100% latency regression — far outside the 25% band for latency
     obs = _canonical({
-        "longmemeval": {"_": {"_status": "ok", "output": {"avg_latency_ms": 10.0}}},
+        "longmemeval": {"_": {"_status": "ok", "output": {"overall_f1": 0.1}}},
     })
     checks = tolerance.check_report(cano, obs)
     assert len(checks) == 1
-    assert checks[0].path == ("longmemeval", "_", "output", "avg_latency_ms")
+    assert checks[0].path == ("longmemeval", "_", "output", "overall_f1")
     assert checks[0].verdict == Verdict.FAIL
 
 
@@ -417,3 +417,80 @@ def test_rank_metrics_are_one_sided():
         assert tolerance.direction_for(("locomo", "retrieval_quality", metric)) == (
             tolerance.Direction.HIGHER_IS_BETTER
         ), metric
+
+
+# ---------------------------------------------------------------------------
+# Warn-only timing metrics (CI-01)
+# ---------------------------------------------------------------------------
+
+
+def _lme(output: dict) -> dict:
+    return _canonical({"longmemeval": {"_": {"_status": "ok", "output": output}}})
+
+
+def test_warn_only_metrics_are_the_two_timing_leaves():
+    """Pinned so a widened set shows up as a test change in review."""
+    assert tolerance.WARN_ONLY_METRICS == frozenset({
+        "avg_latency_ms", "total_ingest_time_s",
+    })
+
+
+def test_latency_breach_warns_and_does_not_fail_the_rollup():
+    cano = _lme({
+        "avg_latency_ms": 5.0, "total_ingest_time_s": 100.0,
+        "overall_f1": 0.5,
+    })
+    obs = _lme({
+        "avg_latency_ms": 20.0, "total_ingest_time_s": 400.0,
+        "overall_f1": 0.5,
+    })
+    checks = tolerance.check_report(cano, obs)
+    by_metric = {c.path[-1]: c for c in checks}
+    for metric in ("avg_latency_ms", "total_ingest_time_s"):
+        assert by_metric[metric].verdict is Verdict.WARN, metric
+        assert "warn-only timing metric" in by_metric[metric].note, metric
+        assert "outside band" in by_metric[metric].note, metric
+    overall, counts = tolerance.summarize(checks)
+    assert overall is Verdict.WARN
+    assert counts[Verdict.FAIL.value] == 0
+
+
+def test_quality_breach_still_fails():
+    cano = _lme({"overall_f1": 0.5, "accuracy": 0.8, "mrr": 0.6})
+    obs = _lme({"overall_f1": 0.1, "accuracy": 0.2, "mrr": 0.1})
+    checks = tolerance.check_report(cano, obs)
+    assert [c.verdict for c in checks] == [Verdict.FAIL] * 3
+    overall, _ = tolerance.summarize(checks)
+    assert overall is Verdict.FAIL
+
+
+def test_mixed_breach_fails_on_quality_and_warns_on_latency():
+    cano = _lme({"avg_latency_ms": 5.0, "overall_f1": 0.5})
+    obs = _lme({"avg_latency_ms": 20.0, "overall_f1": 0.1})
+    checks = tolerance.check_report(cano, obs)
+    by_metric = {c.path[-1]: c for c in checks}
+    assert by_metric["avg_latency_ms"].verdict is Verdict.WARN
+    assert by_metric["overall_f1"].verdict is Verdict.FAIL
+    overall, counts = tolerance.summarize(checks)
+    assert overall is Verdict.FAIL
+    assert counts[Verdict.FAIL.value] == 1
+    assert counts[Verdict.WARN.value] == 1
+
+
+def test_missing_latency_leaf_still_fails():
+    """Only a band breach is downgraded, not a leaf the harness dropped."""
+    cano = _lme({"avg_latency_ms": 5.0, "overall_f1": 0.5})
+    obs = _lme({"overall_f1": 0.5})
+    checks = tolerance.check_report(cano, obs)
+    by_metric = {c.path[-1]: c for c in checks}
+    assert by_metric["avg_latency_ms"].verdict is Verdict.FAIL
+    assert tolerance.summarize(checks)[0] is Verdict.FAIL
+
+
+def test_latency_inside_band_still_passes():
+    """The downgrade touches FAIL only; an in-band timing leaf stays PASS."""
+    cano = _lme({"avg_latency_ms": 5.0, "total_ingest_time_s": 100.0})
+    obs = _lme({"avg_latency_ms": 5.0, "total_ingest_time_s": 100.0})
+    checks = tolerance.check_report(cano, obs)
+    assert [c.verdict for c in checks] == [Verdict.PASS, Verdict.PASS]
+    assert tolerance.summarize(checks)[0] is Verdict.PASS
