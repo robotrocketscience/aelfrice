@@ -33,6 +33,10 @@ A containing sentence is still rejected by any of these vetoes:
 * ``token_stuffing``: one residual word appears in the user sentence
   ``REWORDED_MAX_TOKEN_REPEATS`` times or more, counted before stemming.
 * ``negation_mismatch``: exactly one of the two sentences is negated.
+* ``negation_scope``: both are negated, but some negation in the user
+  sentence has no target negation between the same residual words, so
+  "the parser is not fast" never matches "the parser is slow and the
+  scanner is not fast".
 * ``quantifier_mismatch``: the sentences carry different sets of
   quantifier positions (``relationship_detector.QUANT_AXIS``),
   including one having a quantifier and the other none.
@@ -131,6 +135,7 @@ REJECT_VALUE_CONFLICT: Final[str] = "value_conflict"
 REJECT_ORDER_MISMATCH: Final[str] = "order_mismatch"
 REJECT_MIXED_SCRIPT: Final[str] = "mixed_script"
 REJECT_POLARITY_MISMATCH: Final[str] = "polarity_mismatch"
+REJECT_NEGATION_SCOPE: Final[str] = "negation_scope"
 
 REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_TOO_SHORT,
@@ -143,6 +148,7 @@ REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_ORDER_MISMATCH,
     REJECT_MIXED_SCRIPT,
     REJECT_POLARITY_MISMATCH,
+    REJECT_NEGATION_SCOPE,
 )
 
 
@@ -162,6 +168,11 @@ class RewordedMatch:
     rule: str
 
 
+# The stems of the residual words just before and just after one
+# negation marker, or None where the sentence has none on that side.
+_Anchor = tuple[str | None, str | None]
+
+
 @dataclass(frozen=True)
 class _Analysis:
     """Residual tokens and modality signals for one sentence.
@@ -176,6 +187,7 @@ class _Analysis:
     signals: Signals
     quantifiers: frozenset[float]
     polarity: frozenset[str]
+    negation_anchors: frozenset[_Anchor]
 
 
 # Entries kept per cache. One user sentence is checked against many
@@ -235,6 +247,54 @@ def _has_mixed_script_word(text: str) -> bool:
 
 
 @lru_cache(maxsize=_CACHE_SIZE)
+def _negates(word: str) -> bool:
+    """True when the detector reads ``word`` alone as a negation."""
+    return extract_signals(word).has_negation
+
+
+def _negation_anchors(
+    tokens: tuple[str, ...], surface: frozenset[str],
+) -> frozenset[_Anchor]:
+    """The residual words on each side of every negation marker.
+
+    A marker is a detector negation word, or a contraction that the
+    tokenizer split into ``doesn`` and ``t``. Each anchor holds the
+    stem of the nearest residual token before the marker and after it,
+    or ``None`` when the sentence has none on that side.
+    """
+    anchors: set[_Anchor] = set()
+    for index, tok in enumerate(tokens):
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+        if not (_negates(tok) or (nxt == "t" and _negates(f"{tok}'t"))):
+            continue
+        before = [t for t in tokens[:index] if t in surface]
+        after = [t for t in tokens[index + 1:] if t in surface]
+        anchors.add((
+            _stem(before[-1]) if before else None,
+            _stem(after[0]) if after else None,
+        ))
+    return frozenset(anchors)
+
+
+def _stem(token: str) -> str:
+    stems = tokenize_stemmed(token)
+    return stems[0] if stems else token
+
+
+def _anchor_held(anchor: _Anchor, held: frozenset[_Anchor]) -> bool:
+    """True when some anchor in ``held`` agrees with ``anchor`` on each side.
+
+    ``None`` on either side agrees with anything, so a negation with no
+    residual word before it ("do not deploy X") still matches one that
+    names its subject.
+    """
+    return any(
+        all(a is None or b is None or a == b for a, b in zip(anchor, other))
+        for other in held
+    )
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
 def _analyse(text: str) -> _Analysis:
     text = _normalize(text)
     signals = extract_signals(text)
@@ -251,6 +311,7 @@ def _analyse(text: str) -> _Analysis:
         surface=surface, residual=residual, signals=signals,
         quantifiers=quantifiers,
         polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
+        negation_anchors=_negation_anchors(signals.tokens, frozenset(surface)),
     )
 
 
@@ -280,6 +341,11 @@ def _veto(
         return REJECT_MIXED_SCRIPT
     if user.signals.has_negation != target.signals.has_negation:
         return REJECT_NEGATION_MISMATCH
+    if not all(
+        _anchor_held(anchor, target.negation_anchors)
+        for anchor in user.negation_anchors
+    ):
+        return REJECT_NEGATION_SCOPE
     if user.quantifiers != target.quantifiers:
         return REJECT_QUANTIFIER_MISMATCH
     if user.polarity != target.polarity:

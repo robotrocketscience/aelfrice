@@ -19,6 +19,7 @@ import pytest
 from aelfrice.reworded_restatement import (
     REJECT_MIXED_SCRIPT,
     REJECT_NEGATION_MISMATCH,
+    REJECT_NEGATION_SCOPE,
     REJECT_NO_TARGET_SENTENCES,
     REJECT_NOT_CONTAINED,
     REJECT_ORDER_MISMATCH,
@@ -167,6 +168,33 @@ def test_veto_negation_mismatch() -> None:
     _assert_matches("do not deploy the billing service into production", target)
 
 
+def test_veto_negation_scope() -> None:
+    """Both sentences are negated, but the target negates another clause."""
+    _assert_vetoed(
+        "the parser module is not fast",
+        "The parser module is slow and the scanner is not fast.",
+        REJECT_NEGATION_SCOPE,
+    )
+    _assert_vetoed(
+        "the cache layer is not enabled",
+        "The cache layer is enabled and the debug logger is not.",
+        REJECT_NEGATION_SCOPE,
+    )
+    _assert_vetoed(
+        "the parser module doesn't run fast",
+        "The parser module runs fast and the scanner doesn't run fast.",
+        REJECT_NEGATION_SCOPE,
+    )
+    _assert_matches(
+        "the parser module is not fast",
+        "The parser module is not fast and the scanner is slow.",
+    )
+    _assert_matches(
+        "the parser module doesn't run fast",
+        "The parser module does not run fast on large inputs.",
+    )
+
+
 def test_veto_quantifier_mismatch() -> None:
     target = "The nightly job always rebuilds the search index."
     _assert_vetoed(
@@ -207,8 +235,8 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
      "Feature flags are enabled in prod and disabled in staging."),
     ("the timeout is 30 seconds",
      "The timeout went from 30 seconds to 30 minutes."),
-    ("the cache layer is not enabled",
-     "The cache layer is enabled, but the debug logger is not."),
+    ("the cache layer is enabled",
+     "The cache layer is enabled, but the debug logger is slow."),
     ("the cache was stale after deploy",
      "The cache is stale after deploy."),
 ], ids=["cannot", "unable", "few", "only", "might", "except", "unless",
@@ -259,6 +287,7 @@ def test_rejection_reasons_are_the_published_set() -> None:
         REJECT_NOT_CONTAINED, REJECT_NEGATION_MISMATCH,
         REJECT_QUANTIFIER_MISMATCH, REJECT_VALUE_CONFLICT,
         REJECT_ORDER_MISMATCH, REJECT_MIXED_SCRIPT, REJECT_POLARITY_MISMATCH,
+        REJECT_NEGATION_SCOPE,
     }
     assert len(REJECTION_REASONS) == len(set(REJECTION_REASONS))
 
