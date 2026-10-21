@@ -40,7 +40,8 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.ingest import _ingest_turn_ids, _looks_like_subfloor_noise
+from aelfrice.ingest import _ingest_turn_ids
+from aelfrice.sentence_partition import _looks_like_subfloor_noise
 from aelfrice.models import EDGE_DERIVED_FROM
 from aelfrice.store import MemoryStore
 

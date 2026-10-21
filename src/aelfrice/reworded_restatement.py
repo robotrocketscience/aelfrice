@@ -117,8 +117,8 @@ from functools import lru_cache
 from typing import Final
 
 from aelfrice.bm25 import tokenize_stemmed
-from aelfrice.ingest import stored_sentences
 from aelfrice.relationship_detector import QUANT_AXIS, Signals, extract_signals
+from aelfrice.sentence_partition import stored_sentences
 from aelfrice.value_compare import (
     NumericSlot,
     ValueSlots,

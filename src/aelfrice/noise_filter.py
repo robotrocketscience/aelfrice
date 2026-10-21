@@ -731,7 +731,7 @@ def is_transcript_noise(sentence: str) -> bool:
 
     Note: orphan section headers ("Recommendation:") and shell-output
     echoes ("$ …") are handled on the ingest path by
-    `aelfrice.ingest._looks_like_subfloor_noise` (which correctly demotes
+    `aelfrice.sentence_partition._looks_like_subfloor_noise` (which correctly demotes
     an *inline* header to edge anchor_text and drops only unanchored
     ones). For the store-cleanup path — where every candidate is already
     a standalone row — see `is_stranded_capture_noise` (#1081).
