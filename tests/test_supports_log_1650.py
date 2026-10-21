@@ -324,6 +324,23 @@ def test_candidates_per_sentence_are_bounded_by_k(
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("target", [
+    "The ｓｃａｎｎｅｒ reliably detects leaked secrets in committed source code.",
+    "The scanner reliably detects leaked se\u00adcrets in committed source code.",
+    "The scanner reliably detects leaked se\u200bcrets in committed source code.",
+], ids=["fullwidth", "soft-hyphen", "zero-width-space"])
+def test_a_target_the_search_index_splits_or_keeps_unfolded_is_not_found(
+    store: MemoryStore, target: str,
+) -> None:
+    # The documented limit (supports_log, candidate_terms, CONFIG.md):
+    # the matcher reads the target normalized, but the search index that
+    # picks candidates holds it as stored. If the index learns to fold
+    # these forms, this test fails and the docs must change with it.
+    assert reworded_restatement.match_reworded(_USER, target) is not None
+    _target(store, content=target)
+    assert log_reworded_support(store, _typed(store)) == 0
+
+
 def test_a_failure_inside_the_pass_is_reported_and_swallowed(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
