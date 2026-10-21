@@ -20,11 +20,16 @@ The rule is **stemmed residual containment**:
    threshold" never matches "under the threshold".
 2. Stem each residual token with the BM25 Porter stemmer.
 3. Split the target belief into the sentences ingest would store
-   (``ingest.stored_sentences``). The user sentence matches target
-   sentence ``i`` when every stemmed residual token of the user
-   sentence appears in sentence ``i``, and the user sentence has at
-   least ``REWORDED_MIN_RESIDUAL_TOKENS`` distinct residual tokens that
-   are not direction words.
+   (``ingest.stored_sentences``), and split each sentence, and the user
+   sentence, into clauses at commas, colons, semicolons, brackets and
+   the words in ``_CLAUSE_WORDS``. The user sentence matches target
+   sentence ``i`` when each user clause fits inside one clause of
+   sentence ``i`` (all its stemmed residual tokens appear there), the
+   next user clause fits the same target clause or the one after it,
+   and the user sentence has at least ``REWORDED_MIN_RESIDUAL_TOKENS``
+   distinct residual tokens that are not direction words. So "the
+   scanner calls the lexer" never matches "the scanner calls the parser
+   and the parser calls the lexer".
 
 A containing sentence is still rejected by any of these vetoes:
 
@@ -51,13 +56,14 @@ A containing sentence is still rejected by any of these vetoes:
   ``value_compare.find_conflicts`` reports a numeric or enum slot
   conflict between the user sentence and the containing target
   sentence.
-* ``order_mismatch``: the shared tokens appear in a different order,
-  so "A depends on B" never matches "B depends on A".
+* ``order_mismatch``: the shared tokens appear in a different order
+  in the matched target clauses, so "A depends on B" never matches
+  "B depends on A".
 
-The first target sentence that contains the user sentence and passes
-every veto is the match. The function is pure: no model, no
-embeddings, no network, and the same input always gives the same
-output.
+The first target sentence, and within it the first run of clauses,
+that contains the user sentence and passes every veto is the match.
+The function is pure: no model, no embeddings, no network, and the
+same input always gives the same output.
 """
 from __future__ import annotations
 
@@ -179,6 +185,21 @@ class RewordedMatch:
     rule: str
 
 
+# Words that start a new clause. A user sentence must fit inside the
+# matching target clauses, so a subject from one clause and an object
+# from the next never combine into a claim the target does not make.
+# Polarity words such as ``but`` and ``or`` are left out: the polarity
+# veto already rejects a target that adds one.
+_CLAUSE_WORDS: Final[tuple[str, ...]] = ("and", "because", "since", "so", "then")
+
+# Where one clause ends and the next begins.
+_CLAUSE_BREAK_RE: Final[re.Pattern[str]] = re.compile(
+    r"[,:;()\[\]]|\b(?:"
+    + "|".join(_CLAUSE_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
 # The stems of the residual words just before and just after one
 # negation marker, or None where the sentence has none on that side.
 _Anchor = tuple[str | None, str | None]
@@ -195,6 +216,7 @@ class _Analysis:
     mixed_script: bool
     surface: tuple[str, ...]
     residual: tuple[str, ...]
+    clauses: tuple[tuple[str, ...], ...]
     signals: Signals
     quantifiers: frozenset[float]
     numbers: frozenset[str]
@@ -310,21 +332,37 @@ def _anchor_held(anchor: _Anchor, held: frozenset[_Anchor]) -> bool:
     )
 
 
-@lru_cache(maxsize=_CACHE_SIZE)
-def _analyse(text: str) -> _Analysis:
-    text = _normalize(text)
-    signals = extract_signals(text)
+def _residual(signals: Signals) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The residual words as typed and their stems, in sentence order."""
     surface = tuple(
         tok for tok in signals.tokens
         if tok in signals.residual_content or tok in DIRECTION_TOKENS
     )
-    residual = tuple(stem for tok in surface for stem in tokenize_stemmed(tok))
+    return surface, tuple(stem for tok in surface for stem in tokenize_stemmed(tok))
+
+
+def _clauses(text: str) -> tuple[tuple[str, ...], ...]:
+    """The stemmed residual of each clause of ``text`` that has one."""
+    result = []
+    for chunk in _CLAUSE_BREAK_RE.split(text):
+        stems = _residual(extract_signals(chunk))[1]
+        if stems:
+            result.append(stems)
+    return tuple(result)
+
+
+@lru_cache(maxsize=_CACHE_SIZE)
+def _analyse(text: str) -> _Analysis:
+    text = _normalize(text)
+    signals = extract_signals(text)
+    surface, residual = _residual(signals)
     quantifiers = frozenset(
         QUANT_AXIS[tok] for tok in signals.tokens if tok in QUANT_AXIS
     )
     return _Analysis(
         text=text, mixed_script=_has_mixed_script_word(text),
-        surface=surface, residual=residual, signals=signals,
+        surface=surface, residual=residual, clauses=_clauses(text),
+        signals=signals,
         quantifiers=quantifiers,
         numbers=frozenset(_NUMBER_RE.findall(text)),
         polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
@@ -376,12 +414,40 @@ def _first_occurrences(tokens: tuple[str, ...], keep: frozenset[str]) -> list[st
     return [tok for tok in dict.fromkeys(tokens) if tok in keep]
 
 
+def _windows(user: _Analysis, target: _Analysis) -> list[tuple[int, int]]:
+    """The runs of target clauses, as ``(first, last)``, that hold the user clauses.
+
+    Each user clause must fit inside one target clause: every stemmed
+    residual token of the one appears in the other. The next user clause
+    fits the same target clause or the one after it, so a user sentence
+    split by more punctuation than the target still matches, but one
+    user clause never spans two target clauses.
+    """
+    have = [frozenset(clause) for clause in target.clauses]
+    runs: set[tuple[int, int]] = set()
+    for first in range(len(have)):
+        ends = {first}
+        for clause in user.clauses:
+            ends = {
+                nxt for end in ends for nxt in (end, end + 1)
+                if nxt < len(have) and frozenset(clause) <= have[nxt]
+            }
+        runs.update((first, end) for end in ends)
+    return sorted(runs)
+
+
 def _veto(
     user: _Analysis,
     user_set: frozenset[str],
     target: _Analysis,
+    run: tuple[int, int],
 ) -> str | None:
-    """The first veto that rejects a containing target sentence."""
+    """The first veto that rejects a run of clauses holding the user sentence.
+
+    ``run`` gives the first and last target clause of the run. Order is
+    compared inside the run only, so a word the target repeats in an
+    earlier clause does not count.
+    """
     if target.mixed_script:
         return REJECT_MIXED_SCRIPT
     if user.signals.has_negation != target.signals.has_negation:
@@ -399,8 +465,11 @@ def _veto(
         return REJECT_VALUE_CONFLICT
     if _values_conflict(extract_values(user.text), extract_values(target.text)):
         return REJECT_VALUE_CONFLICT
+    window = tuple(
+        stem for clause in target.clauses[run[0]:run[1] + 1] for stem in clause
+    )
     if (_first_occurrences(user.residual, user_set)
-            != _first_occurrences(target.residual, user_set)):
+            != _first_occurrences(window, user_set)):
         return REJECT_ORDER_MISMATCH
     return None
 
@@ -428,17 +497,18 @@ def _evaluate(
     for index, (sentence, target, target_set) in enumerate(sentences):
         if not user_set <= target_set:
             continue
-        veto = _veto(user, user_set, target)
-        if veto is None:
-            match = RewordedMatch(
-                target_sentence_index=index,
-                target_sentence=sentence,
-                matched_tokens=tuple(dict.fromkeys(user.residual)),
-                rule=RULE_STEMMED_RESIDUAL_CONTAINMENT,
-            )
-            return match, None
-        if first_veto is None:
-            first_veto = veto
+        for run in _windows(user, target):
+            veto = _veto(user, user_set, target, run)
+            if veto is None:
+                match = RewordedMatch(
+                    target_sentence_index=index,
+                    target_sentence=sentence,
+                    matched_tokens=tuple(dict.fromkeys(user.residual)),
+                    rule=RULE_STEMMED_RESIDUAL_CONTAINMENT,
+                )
+                return match, None
+            if first_veto is None:
+                first_veto = veto
     return None, first_veto or REJECT_NOT_CONTAINED
 
 

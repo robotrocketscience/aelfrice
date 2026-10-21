@@ -78,6 +78,40 @@ def test_tokens_split_across_two_target_sentences_do_not_match() -> None:
     )
 
 
+@pytest.mark.parametrize(("user", "target"), [
+    ("the scanner calls the lexer",
+     "The scanner calls the parser and the parser calls the lexer."),
+    ("the billing service writes to the audit log",
+     "The billing service writes to the cache and the search service "
+     "writes to the audit log."),
+    ("the billing service writes to the audit log",
+     "The billing service writes to the cache; the search service "
+     "writes to the audit log."),
+], ids=["and", "and-subject", "semicolon"])
+def test_tokens_split_across_two_clauses_of_one_sentence_do_not_match(
+    user: str, target: str,
+) -> None:
+    _assert_vetoed(user, target, REJECT_NOT_CONTAINED)
+
+
+def test_each_clause_of_a_compound_target_matches_on_its_own() -> None:
+    target = "The scanner calls the parser and the parser calls the lexer."
+    _assert_matches("the scanner calls the parser", target)
+    match = _assert_matches("the parser calls the lexer", target)
+    assert match.target_sentence_index == 0
+
+
+def test_a_user_sentence_with_more_breaks_than_the_target_still_matches() -> None:
+    """Two user clauses may share one target clause."""
+    _assert_matches(
+        "config: section with parameters?", "The config section with parameters.",
+    )
+    _assert_matches(
+        "the scanner calls the parser, and the parser calls the lexer",
+        "The scanner calls the parser and the parser calls the lexer.",
+    )
+
+
 def test_target_with_no_stored_sentence_is_rejected() -> None:
     _assert_vetoed("the scanner detects leaked secrets", "   ", REJECT_NO_TARGET_SENTENCES)
 
@@ -196,7 +230,7 @@ def test_veto_negation_scope() -> None:
     """Both sentences are negated, but the target negates another clause."""
     _assert_vetoed(
         "the parser module is not fast",
-        "The parser module is slow and the scanner is not fast.",
+        "The parser module that is not cached runs fast.",
         REJECT_NEGATION_SCOPE,
     )
     _assert_vetoed(
@@ -265,7 +299,7 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
     ("deploys to staging fail",
      "Deploys to staging fail unless the cache is warm."),
     ("feature flags are enabled in staging",
-     "Feature flags are enabled in prod and disabled in staging."),
+     "Feature flags enabled in prod are disabled in staging."),
     ("the timeout is 30 seconds",
      "The timeout went from 30 seconds to 30 minutes."),
     ("the cache layer is enabled",
@@ -293,9 +327,9 @@ def test_veto_polarity_mismatch_control() -> None:
 
 
 def test_veto_value_conflict() -> None:
-    target = "Set retries = 3 and later the retries = 5 for the uploader."
+    target = "Set retries = 3 at startup with retries = 5 for the uploader."
     _assert_vetoed("set retries = 5 for the uploader", target, REJECT_VALUE_CONFLICT)
-    control = "Set retries = 5 and later the timeout = 3 for the uploader."
+    control = "Set retries = 5 at startup with timeout = 3 for the uploader."
     _assert_matches("set retries = 5 for the uploader", control)
 
 
