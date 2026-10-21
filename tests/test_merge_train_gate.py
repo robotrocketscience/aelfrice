@@ -171,9 +171,9 @@ def test_superseded_cancelled_run_does_not_block(stale_first: bool) -> None:
     with it first, last-wins survives. Only sorting on `started_at` passes
     both.
 
-    `failing == []` cannot carry this on its own — `cancelled` is not a
-    failing conclusion, so that assertion is true whichever row is picked.
-    The discriminating assertion is on `latest_per_name`.
+    `pytest (3.12)` is a floor name, so a lone `cancelled` row for it now
+    fails: `failing == []` holds only if the newer success is picked. The
+    assertion on `latest_per_name` pins the row directly.
     """
     fresh = _run("pytest (3.12)", "success", started_at="2026-08-06T11:00:00Z")
     stale = _run("pytest (3.12)", "cancelled", started_at="2026-08-06T10:00:00Z")
@@ -187,7 +187,6 @@ def test_superseded_cancelled_run_does_not_block(stale_first: bool) -> None:
 def test_a_superseded_failure_is_also_dropped_by_the_dedup() -> None:
     """The direction where the dedup is load-bearing for `failing`.
 
-    Above, `failing == []` holds either way because `cancelled` is benign.
     Here the stale row is a genuine `failure`, so taking the wrong row per
     name puts a green context into `failing` and unlabels a mergeable PR.
     """
@@ -198,15 +197,57 @@ def test_a_superseded_failure_is_also_dropped_by_the_dedup() -> None:
     assert evaluate(runs, REQUIRED)["failing"] == []
 
 
-def test_a_genuine_lone_cancellation_is_not_a_failure_either() -> None:
-    """Preserved from the original: cancelled surfaces, it does not block.
+@pytest.mark.parametrize("name", ["e2e (pipx)", "mutation (advisory, PR diff)"])
+def test_a_lone_cancellation_outside_the_floor_is_not_a_failure(name: str) -> None:
+    """Preserved from the original for every name outside the floor.
 
-    Asserted so nobody "tightens" the gate by adding cancelled to the failing
-    set — that would reintroduce the #632 false positive.
+    The mutation diff job ends `cancelled` at its 60-minute cap on routine
+    PRs, so counting that as failing would bounce a PR on an advisory job.
     """
-    runs = [r for r in _all_required_green() if r["name"] != "history-scan"]
-    runs.append(_run("history-scan", "cancelled"))
+    assert name not in FLOOR
+    runs = [*_all_floor_green(), _run(name, "cancelled")]
     assert evaluate(runs, REQUIRED)["failing"] == []
+
+
+@pytest.mark.parametrize("name", sorted(FLOOR))
+def test_a_lone_cancellation_of_a_floor_name_blocks(name: str) -> None:
+    """A job that hits `timeout-minutes` reports `cancelled`, not `timed_out`.
+
+    With the `pytest (*)` legs capped at 30 minutes, a hung leg is the only
+    row for its name and is `cancelled`. Not counting it left `failing`,
+    `pending` and `missing` all empty, and the train pushed.
+    """
+    runs = [r for r in _all_floor_green() if r["name"] != name]
+    runs.append(_run(name, "cancelled"))
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["failing"] == [name]
+    assert verdict["pending"] == [] and verdict["missing"] == []
+
+
+def test_a_cancelled_required_context_outside_floor_names_blocks() -> None:
+    """The floor is `required | FLOOR_NAMES`, so a ruleset-only context counts."""
+    extra = "required-only-context"
+    assert extra not in FLOOR_NAMES
+    runs = [*_all_floor_green(), _run(extra, "cancelled")]
+    assert evaluate(runs, REQUIRED | {extra})["failing"] == [extra]
+
+
+def test_both_timed_out_pytest_legs_fail_through_main(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The reported case through the CLI: both required legs cancelled."""
+    runs = [
+        r for r in _all_floor_green()
+        if r["name"] not in {"pytest (3.12)", "pytest (3.13)"}
+    ]
+    runs += [_run("pytest (3.12)", "cancelled"), _run("pytest (3.13)", "cancelled")]
+    rollup = tmp_path / "rollup.json"
+    rules = tmp_path / "rules.json"
+    rollup.write_text(json.dumps({"check_runs": runs}))
+    rules.write_text(json.dumps(_rules(sorted(REQUIRED))))
+    assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 0
+    verdict = json.loads(capsys.readouterr().out)
+    assert verdict["failing_required"] == ["pytest (3.12)", "pytest (3.13)"]
 
 
 def test_the_trains_own_jobs_are_excluded() -> None:

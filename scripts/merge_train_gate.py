@@ -61,9 +61,10 @@ Two behaviours are inherited deliberately and must not be simplified away:
 
 * **Per-name latest-run dedup (#632).** A superseded run leaves a `cancelled`
   row on the same SHA; keeping only the newest row per name is what stops it
-  blocking merge. `cancelled` is therefore *not* a failure — after the dedup a
-  genuine cancellation surfaces as the only row for its name and an operator
-  can re-trigger.
+  blocking merge. `cancelled` is therefore *not* a failure for most names:
+  after the dedup a genuine cancellation surfaces as the only row for its
+  name and an operator can re-trigger. The exception is a name in the
+  presence floor (`FLOOR_FAILING_CONCLUSIONS`).
 * **`pending` is scoped to the same non-advisory set as `failing`**, so a slow
   or silent *advisory* bot no longer holds the train to
   `CHECK_TIMEOUT_SECONDS`. Any other slow check still does, by design — it
@@ -170,6 +171,21 @@ FAILING_CONCLUSIONS: frozenset[str] = frozenset(
 )
 PENDING_STATUSES: frozenset[str] = frozenset({"queued", "in_progress", "pending"})
 
+# A floor name whose newest row is `cancelled` never finished, so the floor's
+# "the things that must pass, ran" does not hold for it. A job that reaches its
+# `timeout-minutes` reports `cancelled`, not `timed_out`: the `pytest (*)` legs
+# have a 30-minute cap, and without this a hung leg read as settled and the
+# train went on to the FF push. Superseded cancelled rows are already dropped
+# by `latest_per_name` (#632), so only a cancellation with no newer run
+# reaches this check.
+#
+# Scoped to the floor, not to every gating name, because the advisory
+# mutation diff job (`NONGATING_WHILE_PENDING`) ends `cancelled` at its
+# 60-minute cap on routine PRs, and job-level `continue-on-error` does not
+# change that. On the 80 most recent merged PR heads (2026-10-21) no floor
+# name had a cancelled newest row, while 14 heads had one on that job.
+FLOOR_FAILING_CONCLUSIONS: frozenset[str] = frozenset({"cancelled"})
+
 
 def required_contexts(rules: list[dict[str, Any]]) -> set[str]:
     """The required status-check contexts a branch's rules declare.
@@ -243,10 +259,12 @@ def evaluate(
     """
     latest = latest_per_name(check_runs)
     gating = {n: r for n, r in latest.items() if n not in ADVISORY_NAMES}
+    floor = required | FLOOR_NAMES
 
     failing = sorted(
         n for n, r in gating.items()
         if r.get("conclusion") in FAILING_CONCLUSIONS
+        or (n in floor and r.get("conclusion") in FLOOR_FAILING_CONCLUSIONS)
     )
     still_running = {
         n for n, r in gating.items() if r.get("status") in PENDING_STATUSES
@@ -265,7 +283,7 @@ def evaluate(
         # Running, but not waited on (#1633); reported so the log says why
         # the train moved while a check was still going.
         "pending_not_gating": sorted(still_running & NONGATING_WHILE_PENDING),
-        "missing": sorted((required | FLOOR_NAMES) - set(latest)),
+        "missing": sorted(floor - set(latest)),
         "advisory_failing": advisory_failing,
         # Advisory entries that matched nothing on this SHA. A renamed bot
         # would silently start blocking again, so the run says so out loud.
