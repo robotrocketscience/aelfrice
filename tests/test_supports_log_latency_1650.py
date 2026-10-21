@@ -40,3 +40,14 @@ def test_a_small_run_logs_matches_only_in_the_on_arm() -> None:
     assert report["on"]["pass_calls"] == 6
     for key in ("turn_median_ms", "turn_p99_ms", "pass_median_ms", "pass_p99_ms"):
         assert report["on"][key] >= 0
+
+
+@pytest.mark.timeout(120)
+def test_a_uniform_short_turn_run_reports_its_corpus_and_logs_matches() -> None:
+    proc = _run("--beliefs", "300", "--turns", "6", "--vocabulary", "60",
+                "--uniform", "--turn-words", "5")
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout)
+    assert (report["vocabulary"], report["uniform"], report["turn_words"]) == (
+        60, True, 5)
+    assert report["on"]["logged_rows"] > 0

@@ -12,7 +12,11 @@ pays once per call. Each arm ingests one untimed warm-up turn first.
 Half the turns restate a stored belief with one word dropped, so the on
 arm has matches to log; the run exits 1 if it logs none, because a pass
 that matched nothing measures only the candidate query. The corpus is
-pseudo-words, not a real-world distribution. Every path the script
+pseudo-words, not a real-world distribution. Words are drawn Zipf-weighted
+by default, so most are rare and each candidate search hits few beliefs;
+``--uniform`` with a small ``--vocabulary`` draws every word equally
+often, and ``--turn-words`` shortens each user turn. Together they make
+each search hit many beliefs, the costly case. Every path the script
 touches is under a fresh temporary directory, including ``HOME`` and
 the store paths, so it never opens a real store, and the directory is
 removed when the run ends.
@@ -21,6 +25,7 @@ Usage:
 
     uv run python benchmarks/supports_log_latency.py
     uv run python benchmarks/supports_log_latency.py --beliefs 10000 --turns 400
+    uv run python benchmarks/supports_log_latency.py --vocabulary 120 --uniform --turn-words 5
     uv run python benchmarks/supports_log_latency.py --dry-run
 
 Exit status: 0 on a completed run or a dry run, 1 when the on arm logs
@@ -64,7 +69,8 @@ def _vocabulary(rng: random.Random, size: int) -> list[str]:
 
 
 def _sentence(rng: random.Random, vocab: list[str], weights: list[float]) -> str:
-    # Zipf-weighted draw, so a few words are common and most are rare.
+    # Weighted draw: Zipf by default, so a few words are common and most
+    # are rare, or equal weights with --uniform.
     # Distinct words only: the matcher rejects a word typed 3 times.
     size = rng.randint(8, 14)
     words = list(dict.fromkeys(rng.choices(vocab, weights=weights, k=size * 3)))
@@ -88,15 +94,20 @@ def _build_store(path: Path, beliefs: list[str]) -> None:
 
 
 def _turns(rng: random.Random, vocab: list[str], weights: list[float],
-           beliefs: list[str], count: int) -> list[str]:
+           beliefs: list[str], count: int, cap: int) -> list[str]:
+    """User turns, alternating a restatement and an unrelated sentence.
+
+    A `cap` above 0 keeps the first `cap` words of each turn. A prefix of
+    a restatement is still contained in its belief, so it still matches.
+    """
     turns: list[str] = []
     for i in range(count):
         if i % 2 == 0:
             words = rng.choice(beliefs).rstrip(".").split()
             del words[rng.randrange(1, len(words))]
-            turns.append(" ".join(words) + ".")
         else:
-            turns.append(_sentence(rng, vocab, weights))
+            words = _sentence(rng, vocab, weights).rstrip(".").split()
+        turns.append(" ".join(words[:cap] if cap > 0 else words) + ".")
     return turns
 
 
@@ -180,25 +191,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--turns", type=int, default=400)
     parser.add_argument("--vocabulary", type=int, default=4_000)
     parser.add_argument("--seed", type=int, default=1650)
+    parser.add_argument("--turn-words", type=int, default=0,
+                        help="keep the first N words of each user turn "
+                             "(0 keeps every word)")
+    parser.add_argument("--uniform", action="store_true",
+                        help="draw every word equally often, not Zipf-weighted")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the plan and exit 0 without building a store")
     args = parser.parse_args(argv)
     if args.dry_run:
+        draw = "uniform" if args.uniform else "Zipf-weighted"
         print(f"would build {args.beliefs} beliefs from {args.vocabulary} "
-              f"pseudo-words (seed {args.seed}) under {_SANDBOX}, then time "
+              f"{draw} pseudo-words (seed {args.seed}) under {_SANDBOX}, then time "
               f"{args.turns} user turns with the log off and on")
         return 0
     rng = random.Random(args.seed)
     vocab = _vocabulary(rng, args.vocabulary)
-    weights = [1.0 / (rank + 1) for rank in range(len(vocab))]
+    weights = [1.0 if args.uniform else 1.0 / (rank + 1)
+               for rank in range(len(vocab))]
     beliefs = [_sentence(rng, vocab, weights) for _ in range(args.beliefs)]
-    turns = _turns(rng, vocab, weights, beliefs, args.turns)
+    turns = _turns(rng, vocab, weights, beliefs, args.turns, args.turn_words)
     template = _SANDBOX / "template.db"
     _build_store(template, beliefs)
     off = _arm(_SANDBOX, template, turns, "0")
     on = _arm(_SANDBOX, template, turns, "1")
     report = {
         "beliefs": args.beliefs, "turns": args.turns, "seed": args.seed,
+        "vocabulary": args.vocabulary, "uniform": args.uniform,
+        "turn_words": args.turn_words,
         "flag_resolution_median_us": _flag_check_us(_SANDBOX),
         "off": off, "on": on,
     }
