@@ -22,6 +22,7 @@ from aelfrice.reworded_restatement import (
     REJECT_NO_TARGET_SENTENCES,
     REJECT_NOT_CONTAINED,
     REJECT_ORDER_MISMATCH,
+    REJECT_POLARITY_MISMATCH,
     REJECT_QUANTIFIER_MISMATCH,
     REJECT_TOKEN_STUFFING,
     REJECT_TOO_SHORT,
@@ -187,6 +188,47 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
     )
 
 
+@pytest.mark.parametrize(("user", "target"), [
+    ("the worker can reach the database host",
+     "The worker cannot reach the database host."),
+    ("the worker can reach the database host",
+     "The worker is unable to reach the database host."),
+    ("integration tests are flaky on windows",
+     "Few integration tests are flaky on windows."),
+    ("integration tests are flaky on windows",
+     "Only integration tests are flaky on windows."),
+    ("the cache is stale after deploy",
+     "The cache might be stale after deploy."),
+    ("all tests pass on linux",
+     "All tests pass on linux except the network tests."),
+    ("deploys to staging fail",
+     "Deploys to staging fail unless the cache is warm."),
+    ("feature flags are enabled in staging",
+     "Feature flags are enabled in prod and disabled in staging."),
+    ("the timeout is 30 seconds",
+     "The timeout went from 30 seconds to 30 minutes."),
+    ("the cache layer is not enabled",
+     "The cache layer is enabled, but the debug logger is not."),
+    ("the cache was stale after deploy",
+     "The cache is stale after deploy."),
+], ids=["cannot", "unable", "few", "only", "might", "except", "unless",
+        "disabled", "went", "but", "user-past-tense"])
+def test_veto_polarity_mismatch(user: str, target: str) -> None:
+    """A polarity word on one side only, where containment cannot see it."""
+    _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
+
+
+def test_veto_polarity_mismatch_control() -> None:
+    _assert_matches(
+        "the worker cannot reach the database host",
+        "The worker cannot reach the database host.",
+    )
+    _assert_matches(
+        "deploys to staging fail unless the cache is warm",
+        "Deploys to staging fail unless the cache is warm.",
+    )
+
+
 def test_veto_value_conflict() -> None:
     target = "Set retries = 3 and later the retries = 5 for the uploader."
     _assert_vetoed("set retries = 5 for the uploader", target, REJECT_VALUE_CONFLICT)
@@ -216,7 +258,7 @@ def test_rejection_reasons_are_the_published_set() -> None:
         REJECT_TOO_SHORT, REJECT_TOKEN_STUFFING, REJECT_NO_TARGET_SENTENCES,
         REJECT_NOT_CONTAINED, REJECT_NEGATION_MISMATCH,
         REJECT_QUANTIFIER_MISMATCH, REJECT_VALUE_CONFLICT,
-        REJECT_ORDER_MISMATCH, REJECT_MIXED_SCRIPT,
+        REJECT_ORDER_MISMATCH, REJECT_MIXED_SCRIPT, REJECT_POLARITY_MISMATCH,
     }
     assert len(REJECTION_REASONS) == len(set(REJECTION_REASONS))
 

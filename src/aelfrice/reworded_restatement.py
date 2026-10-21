@@ -36,6 +36,10 @@ A containing sentence is still rejected by any of these vetoes:
 * ``quantifier_mismatch``: the sentences carry different sets of
   quantifier positions (``relationship_detector.QUANT_AXIS``),
   including one having a quantifier and the other none.
+* ``polarity_mismatch``: the sentences hold different sets of
+  ``POLARITY_TOKENS``, the hedge, limit, condition, contrast and
+  past-state words. Containment only checks user tokens, so without
+  this a target that adds "cannot", "few" or "unless" would match.
 * ``value_conflict``: ``value_compare.find_conflicts`` reports a
   numeric or enum slot conflict between the user sentence and the
   containing target sentence.
@@ -86,6 +90,33 @@ DIRECTION_TOKENS: Final[frozenset[str]] = frozenset({
     "downward", "inward", "outward", "by",
 })
 
+# Words that weaken, limit, condition, date or reverse a claim. Most are
+# detector stopwords, so containment never sees them, and a target that
+# adds one ("The worker cannot reach the host", "Few tests are flaky",
+# "Deploys fail unless the cache is warm") says something other than
+# the user sentence. Both sentences must hold the same set of them.
+POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
+    # inability
+    "cannot", "unable",
+    # hedges and modals
+    "may", "might", "maybe", "perhaps", "possibly", "probably", "likely",
+    "unlikely", "could", "would", "should", "seem", "seems", "appear",
+    "appears",
+    # partial quantities and limits
+    "few", "fewer", "less", "more", "most", "many", "several", "some",
+    "any", "half", "only",
+    # conditions and exceptions
+    "if", "unless", "except", "when", "whenever", "until", "while",
+    "provided", "assuming",
+    # contrast
+    "but", "although", "though", "however", "whereas",
+    # past state or change of state
+    "was", "were", "previously", "formerly", "anymore", "became", "went",
+    "changed",
+    # negative states
+    "disabled", "unavailable", "unsupported", "invalid", "false",
+})
+
 RULE_STEMMED_RESIDUAL_CONTAINMENT: Final[str] = "stemmed_residual_containment"
 
 # --- Rejection reasons ----------------------------------------------------
@@ -99,6 +130,7 @@ REJECT_QUANTIFIER_MISMATCH: Final[str] = "quantifier_mismatch"
 REJECT_VALUE_CONFLICT: Final[str] = "value_conflict"
 REJECT_ORDER_MISMATCH: Final[str] = "order_mismatch"
 REJECT_MIXED_SCRIPT: Final[str] = "mixed_script"
+REJECT_POLARITY_MISMATCH: Final[str] = "polarity_mismatch"
 
 REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_TOO_SHORT,
@@ -110,6 +142,7 @@ REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_VALUE_CONFLICT,
     REJECT_ORDER_MISMATCH,
     REJECT_MIXED_SCRIPT,
+    REJECT_POLARITY_MISMATCH,
 )
 
 
@@ -142,6 +175,7 @@ class _Analysis:
     residual: tuple[str, ...]
     signals: Signals
     quantifiers: frozenset[float]
+    polarity: frozenset[str]
 
 
 # Entries kept per cache. One user sentence is checked against many
@@ -216,6 +250,7 @@ def _analyse(text: str) -> _Analysis:
         text=text, mixed_script=_has_mixed_script_word(text),
         surface=surface, residual=residual, signals=signals,
         quantifiers=quantifiers,
+        polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
     )
 
 
@@ -247,6 +282,8 @@ def _veto(
         return REJECT_NEGATION_MISMATCH
     if user.quantifiers != target.quantifiers:
         return REJECT_QUANTIFIER_MISMATCH
+    if user.polarity != target.polarity:
+        return REJECT_POLARITY_MISMATCH
     if find_conflicts(extract_values(user.text), extract_values(target.text)):
         return REJECT_VALUE_CONFLICT
     if (_first_occurrences(user.residual, user_set)
@@ -309,12 +346,14 @@ def explain_rejection(user_sentence: str, target_text: str) -> str | None:
 
 __all__ = [
     "DIRECTION_TOKENS",
+    "POLARITY_TOKENS",
     "REJECTION_REASONS",
     "REJECT_MIXED_SCRIPT",
     "REJECT_NEGATION_MISMATCH",
     "REJECT_NOT_CONTAINED",
     "REJECT_NO_TARGET_SENTENCES",
     "REJECT_ORDER_MISMATCH",
+    "REJECT_POLARITY_MISMATCH",
     "REJECT_QUANTIFIER_MISMATCH",
     "REJECT_TOKEN_STUFFING",
     "REJECT_TOO_SHORT",

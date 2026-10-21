@@ -627,6 +627,22 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "removes edges."
         ),
     ),
+    PinnedThreshold(
+        module="aelfrice.reworded_restatement",
+        name="POLARITY_TOKENS",
+        kind=KIND_TOKEN_SET,
+        value="sha256:c3c350654396887e4a63d0771d428c3f5873f329c587b407683724914312006a",
+        size=55,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Hedge, limit, condition, contrast and past-state words that "
+            "both sentences must hold as the same set. Removing one lets "
+            "a weaker or reversed target (`cannot`, `few`, `unless`) "
+            "match and adds wrong edges; adding one rejects more pairs "
+            "and removes edges."
+        ),
+    ),
     # --- wonder: RELATES_TO from phantom to constituents ---------------
     #
     # `wonder.lifecycle` writes one RELATES_TO edge per constituent of an
@@ -774,10 +790,10 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # and `CLASS_NAMES` names RESOLVES in its edge types, because the
     # precedence ordering now picks that edge's direction too.
     3: "3a04f524f6e50c831ba3538f84e5c6b60b5328405c9d9d4d6e43f025188251cb",
-    # 4 (#1650): the reworded-restatement matcher's three constants were
+    # 4 (#1650): the reworded-restatement matcher's constants were
     # pinned as new entries. The matcher writes no edge yet, so no store
     # changes; the row records the baseline the SUPPORTS writer starts from.
-    4: "1457acca077901c2e8496678fe1b71cdcb5b21bd553b7074bff4d40479341975",
+    4: "81140001f2ce9aff8f0d3c9ef38f7d530b91ad1daae70c35564d66e594c12970",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
