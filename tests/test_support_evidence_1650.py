@@ -606,6 +606,23 @@ def test_candidates_are_cut_at_the_limit_in_a_total_order(
         s.close()
 
 
+def test_candidates_are_ranked_by_bm25_before_id(tmp_path: Path) -> None:
+    # Every belief holds every term once. A shorter belief scores better
+    # under BM25, so the ids run against the ranking and the id
+    # tiebreak alone would return them in the opposite order.
+    s = MemoryStore(str(tmp_path / "m.db"))
+    filler = " and runs on every branch push" * 3
+    try:
+        s.insert_belief(_cand("a_long", "The scanner detects secrets"
+                              + filler * 2 + "."))
+        s.insert_belief(_cand("b_mid", "The scanner detects secrets" + filler + "."))
+        s.insert_belief(_cand("c_short", "The scanner detects secrets."))
+        assert _candidates(s) == ["c_short", "b_mid", "a_long"]
+        assert _candidates(s, limit=1) == ["c_short"]
+    finally:
+        s.close()
+
+
 def test_a_candidate_was_created_before_the_supporter(tmp_path: Path) -> None:
     s = MemoryStore(str(tmp_path / "m.db"))
     text = "The scanner detects leaked secrets in {}."
