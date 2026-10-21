@@ -209,14 +209,19 @@ def test_the_content_hash_dedup_moves_rows_to_the_canonical_belief(
 ) -> None:
     # The #219 dedup pass deletes a duplicate belief with foreign keys
     # on, which cascades into this table. Rows on the duplicate move to
-    # the canonical belief first, as edges do.
+    # the canonical belief first, as edges do. A row that would collide
+    # with a canonical row on either side is dropped, and so is a match
+    # inside the group in either direction.
     db = tmp_path / "m.db"
-    s = _store(db, "u1", "u2", "p1", "p1dup")
+    s = _store(db, "u1", "u2", "u3", "p1", "p1dup")
     _record(s, "u1", "p1dup", span="moved target")
-    _record(s, "p1dup", "u2", span="moved supporter")
-    _record(s, "u2", "p1", span="kept", ts="2026-10-02T00:00:00+00:00")
+    _record(s, "p1dup", "u3", span="moved supporter")
+    _record(s, "u2", "p1", span="kept target", ts="2026-10-02T00:00:00+00:00")
     _record(s, "u2", "p1dup", span="collides", ts="2026-10-05T00:00:00+00:00")
+    _record(s, "p1", "u2", span="kept supporter")
+    _record(s, "p1dup", "u2", span="collides supporter")
     _record(s, "p1dup", "p1", span="intra-group")
+    _record(s, "p1", "p1dup", span="intra-group reversed")
     _record(s, "u1", "u2", span="untouched")
     s.close()
     con = sqlite3.connect(db)
@@ -233,10 +238,11 @@ def test_the_content_hash_dedup_moves_rows_to_the_canonical_belief(
         assert s.get_schema_meta(SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE)
         assert s.get_belief("p1dup") is None
         assert [(r[0], r[1], r[6]) for r in _rows(s)] == [
-            ("p1", "u2", "moved supporter"),
+            ("p1", "u2", "kept supporter"),
+            ("p1", "u3", "moved supporter"),
             ("u1", "p1", "moved target"),
             ("u1", "u2", "untouched"),
-            ("u2", "p1", "kept"),
+            ("u2", "p1", "kept target"),
         ]
     finally:
         s.close()
