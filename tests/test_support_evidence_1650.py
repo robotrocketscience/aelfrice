@@ -20,6 +20,7 @@ from aelfrice.models import (
     SupportEvidence,
 )
 from aelfrice.store import (
+    SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,
     SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
     SCHEMA_META_STORE_GENERATION,
     MemoryStore,
@@ -78,6 +79,27 @@ def _columns(s: MemoryStore) -> dict[str, int]:
 def _rows(s: MemoryStore) -> list[tuple[object, ...]]:
     return [tuple(r) for r in s._conn.execute(  # noqa: SLF001
         f"SELECT * FROM {_TABLE} ORDER BY supporter_id, target_id, kind")]
+
+
+def _drop_content_hash_unique(con: sqlite3.Connection) -> None:
+    """Rebuild `beliefs` without UNIQUE(content_hash), as before #219.
+
+    Clears the #219 marker so the next open runs the swap again. Run on
+    a raw connection: foreign keys are off there, so nothing cascades.
+    """
+    (ddl,) = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='beliefs'"
+    ).fetchone()
+    assert ddl.count("UNIQUE") == 1
+    con.executescript(
+        ddl.replace("UNIQUE", "").replace(
+            "CREATE TABLE beliefs", "CREATE TABLE beliefs_legacy", 1)
+        + ";\nINSERT INTO beliefs_legacy SELECT * FROM beliefs;"
+        "\nDROP TABLE beliefs;"
+        "\nALTER TABLE beliefs_legacy RENAME TO beliefs;"
+    )
+    con.execute("DELETE FROM schema_meta WHERE key = ?",
+                (SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,))
 
 
 # --- Schema and migration ------------------------------------------------
@@ -166,20 +188,8 @@ def test_rows_survive_the_content_hash_table_swap(tmp_path: Path) -> None:
     _record(s)
     rows = _rows(s)
     s.close()
-    con = sqlite3.connect(db)  # foreign keys off: nothing cascades here
-    (ddl,) = con.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='beliefs'"
-    ).fetchone()
-    assert ddl.count("UNIQUE") == 1
-    con.executescript(
-        ddl.replace("UNIQUE", "").replace(
-            "CREATE TABLE beliefs", "CREATE TABLE beliefs_legacy", 1)
-        + ";\nINSERT INTO beliefs_legacy SELECT * FROM beliefs;"
-        "\nDROP TABLE beliefs;"
-        "\nALTER TABLE beliefs_legacy RENAME TO beliefs;"
-    )
-    con.execute("DELETE FROM schema_meta WHERE key = ?",
-                (SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,))
+    con = sqlite3.connect(db)
+    _drop_content_hash_unique(con)
     con.commit()
     con.close()
     s = MemoryStore(str(db))
@@ -190,6 +200,44 @@ def test_rows_survive_the_content_hash_table_swap(tmp_path: Path) -> None:
         ).fetchone()[0]
         assert "UNIQUE" in swapped
         assert _rows(s) == rows
+    finally:
+        s.close()
+
+
+def test_the_content_hash_dedup_moves_rows_to_the_canonical_belief(
+    tmp_path: Path,
+) -> None:
+    # The #219 dedup pass deletes a duplicate belief with foreign keys
+    # on, which cascades into this table. Rows on the duplicate move to
+    # the canonical belief first, as edges do.
+    db = tmp_path / "m.db"
+    s = _store(db, "u1", "u2", "p1", "p1dup")
+    _record(s, "u1", "p1dup", span="moved target")
+    _record(s, "p1dup", "u2", span="moved supporter")
+    _record(s, "u2", "p1", span="kept", ts="2026-10-02T00:00:00+00:00")
+    _record(s, "u2", "p1dup", span="collides", ts="2026-10-05T00:00:00+00:00")
+    _record(s, "p1dup", "p1", span="intra-group")
+    _record(s, "u1", "u2", span="untouched")
+    s.close()
+    con = sqlite3.connect(db)
+    _drop_content_hash_unique(con)
+    con.execute(
+        "UPDATE beliefs SET content_hash = 'h_p1', "
+        "created_at = '2026-10-03T00:00:00Z' WHERE id = 'p1dup'")
+    con.execute("DELETE FROM schema_meta WHERE key = ?",
+                (SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,))
+    con.commit()
+    con.close()
+    s = MemoryStore(str(db))
+    try:
+        assert s.get_schema_meta(SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE)
+        assert s.get_belief("p1dup") is None
+        assert [(r[0], r[1], r[6]) for r in _rows(s)] == [
+            ("p1", "u2", "moved supporter"),
+            ("u1", "p1", "moved target"),
+            ("u1", "u2", "untouched"),
+            ("u2", "p1", "kept"),
+        ]
     finally:
         s.close()
 

@@ -842,7 +842,8 @@ _SCHEMA: tuple[str, ...] = (
     # rebuild. In _SCHEMA for the same reason as the category pair: an
     # older store gains the table on its next open. ON DELETE CASCADE on
     # both ids; the #219 beliefs table swap turns foreign keys off, so it
-    # keeps these rows.
+    # keeps these rows, and the #219 dedup pass moves a duplicate's rows
+    # to its canonical belief before deleting it.
     """
     CREATE TABLE IF NOT EXISTS belief_support_evidence (
         supporter_id            TEXT    NOT NULL
@@ -2744,7 +2745,8 @@ class MemoryStore:
           beats agent_* beats everything else).
         - last_retrieved_at: MAX (most recent retrieval).
         - FK rewrites: feedback_history, belief_corroborations, edges
-          (src and dst). belief_entities and belief_versions are
+          (src and dst), belief_support_evidence (supporter_id and
+          target_id). belief_entities and belief_versions are
           dropped for duplicates (same content → same entities; the
           canonical row already has them).
         - One synthetic belief_corroborations row (source_type=
@@ -2944,6 +2946,25 @@ class MemoryStore:
             self._conn.executemany(
                 "UPDATE OR IGNORE edge_versions SET dst = ? "
                 "WHERE dst = ? AND src NOT IN (?, ?)",
+                edge_rewrites,
+            )
+            # #1650: `belief_support_evidence` names two beliefs and is
+            # keyed (supporter_id, target_id, kind), so it takes the
+            # edges rewrite for the same reasons. OR IGNORE keeps the
+            # canonical row's match on a key collision, and the guard
+            # keeps an intra-group match from becoming self-support.
+            # Rows left on a duplicate go with the ON DELETE CASCADE
+            # from the `beliefs` delete below.
+            self._conn.executemany(
+                "UPDATE OR IGNORE belief_support_evidence "
+                "SET supporter_id = ? "
+                "WHERE supporter_id = ? AND target_id NOT IN (?, ?)",
+                edge_rewrites,
+            )
+            self._conn.executemany(
+                "UPDATE OR IGNORE belief_support_evidence "
+                "SET target_id = ? "
+                "WHERE target_id = ? AND supporter_id NOT IN (?, ?)",
                 edge_rewrites,
             )
 
