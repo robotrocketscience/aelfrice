@@ -479,3 +479,50 @@ def test_deleting_either_belief_removes_its_rows(
         assert [(r[0], r[1]) for r in _rows(s)] == [("u2", "p2")]
     finally:
         s.close()
+
+
+# --- A store without the table -------------------------------------------
+
+
+def _drop_table(db: Path) -> None:
+    MemoryStore(str(db)).close()
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(f"DROP TABLE {_TABLE}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_reads_on_a_read_only_store_without_the_table_are_empty(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "m.db"
+    _drop_table(db)
+    s = MemoryStore(str(db), read_only=True)
+    try:
+        assert s.list_support_evidence("p1") == []
+        assert s.count_support_evidence(applied=False) == 0
+        assert s.count_support_evidence(applied=True) == 0
+    finally:
+        s.close()
+
+
+def test_reads_still_raise_other_operational_errors(tmp_path: Path) -> None:
+    db = tmp_path / "m.db"
+    _drop_table(db)
+    conn = sqlite3.connect(db)
+    try:
+        # A table of the same name without the columns the reads select.
+        conn.execute(f"CREATE TABLE {_TABLE} (x INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+    s = MemoryStore(str(db), read_only=True)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            s.list_support_evidence("p1")
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            s.count_support_evidence(applied=False)
+    finally:
+        s.close()

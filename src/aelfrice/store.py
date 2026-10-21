@@ -1144,6 +1144,9 @@ _BACKFILL_STATEMENTS: tuple[str, ...] = (
 )
 
 
+_SUPPORT_EVIDENCE_MISSING: Final[str] = "no such table: belief_support_evidence"
+"""The error a store without the #1650 table raises on a read of it."""
+
 _FTS5_RAREST_TERMS: Final[int] = 3
 """How many query tokens the disjunctive MATCH keeps (#1177, #1158).
 
@@ -5505,18 +5508,28 @@ class MemoryStore:
 
         Ordered by `created_at`, then `supporter_id`, then `kind`: a
         total order, because those two ids and the target are the key.
+
+        A store without the table has no rows, so this returns `[]`
+        rather than raising: a store written before the table existed and
+        opened `read_only=True` runs no migration. Every other
+        `OperationalError` propagates.
         """
-        cur = self._conn.execute(
-            """
-            SELECT supporter_id, target_id, kind, target_sentence_index,
-                   supporter_session_id, supporter_ingest_log_id,
-                   matched_span, applied, created_at
-              FROM belief_support_evidence
-             WHERE target_id = ?
-             ORDER BY created_at ASC, supporter_id ASC, kind ASC
-            """,
-            (target_id,),
-        )
+        try:
+            cur = self._conn.execute(
+                """
+                SELECT supporter_id, target_id, kind, target_sentence_index,
+                       supporter_session_id, supporter_ingest_log_id,
+                       matched_span, applied, created_at
+                  FROM belief_support_evidence
+                 WHERE target_id = ?
+                 ORDER BY created_at ASC, supporter_id ASC, kind ASC
+                """,
+                (target_id,),
+            )
+        except sqlite3.OperationalError as exc:
+            if _SUPPORT_EVIDENCE_MISSING in str(exc):
+                return []
+            raise
         return [
             SupportEvidence(
                 supporter_id=str(r["supporter_id"]),
@@ -5533,11 +5546,21 @@ class MemoryStore:
         ]
 
     def count_support_evidence(self, *, applied: bool) -> int:
-        """Count evidence rows whose `applied` flag equals `applied`."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM belief_support_evidence WHERE applied = ?",
-            (1 if applied else 0,),
-        ).fetchone()
+        """Count evidence rows whose `applied` flag equals `applied`.
+
+        Returns 0 on a store without the table, for the reason
+        `list_support_evidence` returns `[]`.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM belief_support_evidence "
+                "WHERE applied = ?",
+                (1 if applied else 0,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if _SUPPORT_EVIDENCE_MISSING in str(exc):
+                return 0
+            raise
         return int(row[0])
 
     # --- #435 doc linker --------------------------------------------------
