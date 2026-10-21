@@ -273,6 +273,27 @@ def test_apply_keeps(store: MemoryStore, tmp_path: Path, kept: str) -> None:
     assert bid in _active_ids(store)
 
 
+def test_apply_keeps_a_belief_typed_first_and_scheduled_later(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # Every deriving row must be flagged, not only the last one.
+    host_a = _seed(store, tmp_path)
+    bid = _belief_id(store, TYPED_ONLY)
+    ingest_jsonl(store, _write_jsonl(tmp_path / "more.jsonl", [
+        _turn(SESSION_B, 10, TYPED_ONLY),
+    ]))
+    rows = [s for b, s, _ in store.list_ingest_turn_derivations() if b == bid]
+    assert rows == [SESSION_A, SESSION_B]
+    host_b = _write_jsonl(host_a.parent / f"{SESSION_B}.jsonl", [
+        _host(TYPED_ONLY, scheduled=True, session=SESSION_B),
+    ])
+    report = retire_scheduled_prompt_beliefs(
+        store, [host_a, host_b], dry_run=False,
+    )
+    assert bid not in {c for c, _ in report.candidates}
+    assert bid in _active_ids(store)
+
+
 def test_apply_keeps_a_belief_a_row_without_turn_sha_also_derived(
     store: MemoryStore, tmp_path: Path,
 ) -> None:
