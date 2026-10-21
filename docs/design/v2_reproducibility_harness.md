@@ -110,13 +110,15 @@ Each metric carries `lower` and `upper` bounds. Default policy:
 - **Per-metric override:** the canonical JSON can declare wider bands for known-noisy metrics (LLM-judge runs, anything with a non-deterministic ranker tie-break).
 - **Direction (amended by [#1160](https://github.com/robotrocketscience/aelfrice/issues/1160)):** both bounds are still computed and reported, but only the *regression* side fails. Leaving the band on the improving side is a WARN. Symmetric bands made real wins into failures — canonical `mab.Accurate_Retrieval.exact_match = 0.0` with the ±2-point floor put every possible improvement outside its band, and LoCoMo category 5 was pinned at 0.0 the same way, so fixing it would have registered as a band-busting regression. WARN rather than silent PASS because a large unexplained gain in this harness is as likely to be an artifact as a win: token-F1 over a retrieval blob rises when the token budget falls. Direction is a per-metric table (`benchmarks/tolerance.py: METRIC_DIRECTIONS`), keyed on the leaf metric name and falling back to its parent for bucketed metrics; **anything unclassified stays two-sided**, because a metric given the wrong direction goes blind to regressions in its real direction — worse than the false failure this fixes.
 
+- **Warn-only timing (audit CI-01):** a band breach on `avg_latency_ms` or `total_ingest_time_s` is a WARN, never a FAIL. These leaves measure the hosted runner's wall clock, so a breach reflects the machine more than the code. The names are pinned in `benchmarks/tolerance.py: WARN_ONLY_METRICS` by exact leaf name, and a new timing metric fails until you add it there. A timing leaf that is missing or not numeric still fails.
+
 The bands are calibrated on the first canonical run by running it ≥3 times and taking the observed range × 1.5. This is the **calibration-pass** the issue body alludes to and is documented as a one-time operation in the harness README. Re-calibration is a deliberate operator action, not automatic on drift.
 
 ### CI shape — two-tier
 
 **Nightly cron (`replay-soak-gate.yml`-style new workflow):**
 - Runs `aelf bench all`, writes `benchmarks/results/v2.0.0-cron-<date>.json`.
-- Compares against `v2.0.0.json` per-metric; any value outside its `tolerance_band` **on the regression side** is a CI **fail** (issue auto-opened). Outside on the improving side is a WARN — see the direction bullet above.
+- Compares against `v2.0.0.json` per-metric; any value outside its `tolerance_band` **on the regression side** is a CI **fail** (issue auto-opened). Outside on the improving side is a WARN — see the direction bullet above. A timing breach is a WARN on either side, per the warn-only timing bullet above.
 - Soft warnings (drift inside the band but >50% of the band width) emit a workflow notice but pass.
 - Commits the cron JSON to a `benchmark-results` branch on PR for diffability; never pushes to main.
 
