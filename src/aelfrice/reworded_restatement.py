@@ -44,9 +44,11 @@ A containing sentence is still rejected by any of these vetoes:
   ``POLARITY_TOKENS``, the hedge, limit, condition, contrast and
   past-state words. Containment only checks user tokens, so without
   this a target that adds "cannot", "few" or "unless" would match.
-* ``value_conflict``: ``value_compare.find_conflicts`` reports a
-  numeric or enum slot conflict between the user sentence and the
-  containing target sentence.
+* ``value_conflict``: the user sentence holds a whole dotted number
+  (``3.12``) that the target sentence does not, or
+  ``value_compare.find_conflicts`` reports a numeric or enum slot
+  conflict between the user sentence and the containing target
+  sentence.
 * ``order_mismatch``: the shared tokens appear in a different order,
   so "A depends on B" never matches "B depends on A".
 
@@ -186,6 +188,7 @@ class _Analysis:
     residual: tuple[str, ...]
     signals: Signals
     quantifiers: frozenset[float]
+    numbers: frozenset[str]
     polarity: frozenset[str]
     negation_anchors: frozenset[_Anchor]
 
@@ -214,6 +217,10 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 })
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
+
+# A whole dotted number such as ``3.12.1``. The tokenizer splits it into
+# ``3``, ``12`` and ``1``, so containment alone lets ``3.12`` match it.
+_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"\d+(?:\.\d+)*")
 
 
 def _normalize(text: str) -> str:
@@ -310,6 +317,7 @@ def _analyse(text: str) -> _Analysis:
         text=text, mixed_script=_has_mixed_script_word(text),
         surface=surface, residual=residual, signals=signals,
         quantifiers=quantifiers,
+        numbers=frozenset(_NUMBER_RE.findall(text)),
         polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
         negation_anchors=_negation_anchors(signals.tokens, frozenset(surface)),
     )
@@ -350,6 +358,8 @@ def _veto(
         return REJECT_QUANTIFIER_MISMATCH
     if user.polarity != target.polarity:
         return REJECT_POLARITY_MISMATCH
+    if not user.numbers <= target.numbers:
+        return REJECT_VALUE_CONFLICT
     if find_conflicts(extract_values(user.text), extract_values(target.text)):
         return REJECT_VALUE_CONFLICT
     if (_first_occurrences(user.residual, user_set)
