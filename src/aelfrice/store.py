@@ -5445,7 +5445,10 @@ class MemoryStore:
 
         `ts` is the clock-injection seam, as on `record_corroboration`.
         Commits without bumping the store generation: the row changes no
-        indexed belief or edge content.
+        indexed belief or edge content. Runs in `transaction()`, so a
+        refused insert rolls back and releases the write lock; inside a
+        caller's block it re-raises and leaves the rollback to the
+        outermost block.
         """
         if kind not in SUPPORT_EVIDENCE_KINDS:
             raise ValueError(
@@ -5461,19 +5464,19 @@ class MemoryStore:
             raise ValueError(f"belief {supporter_id!r} cannot support itself")
         if ts is None:
             ts = datetime.now(timezone.utc).isoformat()
-        cur = self._conn.execute(
-            """
-            INSERT OR IGNORE INTO belief_support_evidence
+        with self.transaction():
+            cur = self._conn.execute(
+                """
+                INSERT OR IGNORE INTO belief_support_evidence
+                    (supporter_id, target_id, kind, target_sentence_index,
+                     supporter_session_id, supporter_ingest_log_id,
+                     matched_span, applied, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (supporter_id, target_id, kind, target_sentence_index,
                  supporter_session_id, supporter_ingest_log_id,
-                 matched_span, applied, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (supporter_id, target_id, kind, target_sentence_index,
-             supporter_session_id, supporter_ingest_log_id,
-             matched_span, 1 if applied else 0, ts),
-        )
-        self._commit()
+                 matched_span, 1 if applied else 0, ts),
+            )
         return cur.rowcount == 1
 
     def list_support_evidence(self, target_id: str) -> list[SupportEvidence]:

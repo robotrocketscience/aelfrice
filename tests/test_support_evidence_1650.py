@@ -337,6 +337,49 @@ def test_an_unknown_belief_id_is_refused(tmp_path: Path, missing: str) -> None:
         s.close()
 
 
+@pytest.mark.parametrize("missing", ["supporter", "target"])
+def test_a_refused_id_releases_the_write_lock(
+    tmp_path: Path, missing: str,
+) -> None:
+    # The failed INSERT runs inside the implicit transaction the driver
+    # opened for it. Left open, it holds the write lock for the life of
+    # the handle, and every other writer on the store times out.
+    db = tmp_path / "m.db"
+    s = _store(db, "u1", "p1")
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            if missing == "supporter":
+                _record(s, "nope", "p1")
+            else:
+                _record(s, "u1", "nope")
+        assert s.transaction_open is False
+        other = sqlite3.connect(db, timeout=0)
+        try:
+            other.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('t1650', '1')")
+            other.commit()
+        finally:
+            other.close()
+        assert s.get_schema_meta("t1650") == "1"
+    finally:
+        s.close()
+
+
+def test_a_refused_id_inside_a_transaction_keeps_the_outer_group(
+    tmp_path: Path,
+) -> None:
+    s = _store(tmp_path / "m.db", "u1", "u2", "p1")
+    try:
+        with s.transaction():
+            assert _record(s, "u1", "p1") is True
+            with pytest.raises(sqlite3.IntegrityError):
+                _record(s, "u2", "nope")
+            assert _record(s, "u2", "p1") is True
+        assert [r[0] for r in _rows(s)] == ["u1", "u2"]
+    finally:
+        s.close()
+
+
 @pytest.mark.parametrize("deleted", ["u1", "p1"])
 def test_deleting_either_belief_removes_its_rows(
     tmp_path: Path, deleted: str,
