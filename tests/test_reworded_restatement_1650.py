@@ -182,6 +182,16 @@ def test_veto_negation_mismatch() -> None:
     _assert_matches("do not deploy the billing service into production", target)
 
 
+def test_veto_negation_mismatch_when_only_the_user_sentence_is_negated() -> None:
+    """A negated user sentence against an affirmative belief contradicts it."""
+    target = "Deploy the billing service into production on fridays."
+    _assert_vetoed(
+        "do not deploy the billing service into production", target,
+        REJECT_NEGATION_MISMATCH,
+    )
+    _assert_matches("deploy the billing service into production", target)
+
+
 def test_veto_negation_scope() -> None:
     """Both sentences are negated, but the target negates another clause."""
     _assert_vetoed(
@@ -220,6 +230,15 @@ def test_veto_quantifier_mismatch() -> None:
         REJECT_QUANTIFIER_MISMATCH,
     )
     _assert_matches("the nightly job always rebuilds the search index", target)
+
+
+def test_veto_quantifier_mismatch_when_only_the_user_sentence_has_one() -> None:
+    target = "The nightly job rebuilds the search index."
+    _assert_vetoed(
+        "the nightly job always rebuilds the search index", target,
+        REJECT_QUANTIFIER_MISMATCH,
+    )
+    _assert_matches("the nightly job rebuilds the search index", target)
 
 
 def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
