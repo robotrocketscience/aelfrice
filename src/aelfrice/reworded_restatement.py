@@ -9,6 +9,10 @@ calls it yet.
 
 The rule is **stemmed residual containment**:
 
+0. Normalize each sentence: apostrophe look-alikes become ``'``, NFKC
+   folds fullwidth and compatibility forms, and format characters such
+   as the soft hyphen and zero-width space are deleted. Every step below
+   and every veto reads the normalized text.
 1. Tokenize both texts with ``relationship_detector.extract_signals``.
    The residual is the tokens left after dropping stopwords, negation
    and quantifier words. Direction words (``DIRECTION_TOKENS``) stay in
@@ -23,6 +27,9 @@ The rule is **stemmed residual containment**:
 
 A containing sentence is still rejected by any of these vetoes:
 
+* ``mixed_script``: a word in either sentence mixes Latin letters with
+  Cyrillic, Greek, Armenian or Cherokee ones, such as a Cyrillic ``o``
+  inside ``not``.
 * ``token_stuffing``: one residual word appears in the user sentence
   ``REWORDED_MAX_TOKEN_REPEATS`` times or more, counted before stemming.
 * ``negation_mismatch``: exactly one of the two sentences is negated.
@@ -30,7 +37,8 @@ A containing sentence is still rejected by any of these vetoes:
   quantifier positions (``relationship_detector.QUANT_AXIS``),
   including one having a quantifier and the other none.
 * ``value_conflict``: ``value_compare.find_conflicts`` reports a
-  numeric or enum slot conflict.
+  numeric or enum slot conflict between the user sentence and the
+  containing target sentence.
 * ``order_mismatch``: the shared tokens appear in a different order,
   so "A depends on B" never matches "B depends on A".
 
@@ -41,6 +49,8 @@ output.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
@@ -85,6 +95,7 @@ REJECT_NEGATION_MISMATCH: Final[str] = "negation_mismatch"
 REJECT_QUANTIFIER_MISMATCH: Final[str] = "quantifier_mismatch"
 REJECT_VALUE_CONFLICT: Final[str] = "value_conflict"
 REJECT_ORDER_MISMATCH: Final[str] = "order_mismatch"
+REJECT_MIXED_SCRIPT: Final[str] = "mixed_script"
 
 REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_TOO_SHORT,
@@ -95,6 +106,7 @@ REJECTION_REASONS: Final[tuple[str, ...]] = (
     REJECT_QUANTIFIER_MISMATCH,
     REJECT_VALUE_CONFLICT,
     REJECT_ORDER_MISMATCH,
+    REJECT_MIXED_SCRIPT,
 )
 
 
@@ -116,8 +128,13 @@ class RewordedMatch:
 
 @dataclass(frozen=True)
 class _Analysis:
-    """Residual tokens and modality signals for one sentence."""
+    """Residual tokens and modality signals for one sentence.
 
+    ``text`` is the normalized sentence the other fields were read from.
+    """
+
+    text: str
+    mixed_script: bool
     surface: tuple[str, ...]
     residual: tuple[str, ...]
     signals: Signals
@@ -129,9 +146,60 @@ class _Analysis:
 # repeat. Caching changes cost only: every cached value is immutable.
 _CACHE_SIZE: Final[int] = 4096
 
+# Characters that stand in for an apostrophe. Mapped to ``'`` before
+# NFKC, which leaves most of them alone, so ``don\u02bct`` reads as
+# ``don't`` to the negation check.
+_APOSTROPHE_MAP: Final[dict[int, str]] = str.maketrans({
+    "`": "'",  # grave accent
+    "\u00b4": "'",  # acute accent
+    "\u02bc": "'",  # modifier letter apostrophe
+    "\u2018": "'",  # left single quotation mark
+    "\u2019": "'",  # right single quotation mark
+    "\u2032": "'",  # prime
+})
+
+# Scripts with letters that look like Latin ones. A word that mixes
+# Latin with one of these is treated as a spoof.
+_CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
+    "ARMENIAN", "CHEROKEE", "CYRILLIC", "GREEK",
+})
+
+_WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
+
+
+def _normalize(text: str) -> str:
+    """The form of ``text`` that every rule and veto reads.
+
+    Apostrophe look-alikes become ``'`` so a contraction such as
+    ``don't`` reads as negated, NFKC folds fullwidth and compatibility
+    forms to their plain letters, and format characters (soft hyphen,
+    zero-width space and joiners, bidi controls) are deleted so they
+    cannot split or hide a word.
+    """
+    text = text.translate(_APOSTROPHE_MAP)
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
+def _has_mixed_script_word(text: str) -> bool:
+    """True when one word mixes Latin letters with a look-alike script.
+
+    A Cyrillic ``o`` (U+043E) inside ``not`` reads as ``not`` but tokenizes as a
+    different word, which hides the negation from every veto.
+    """
+    for word in _WORD_RE.findall(text):
+        scripts = {
+            unicodedata.name(ch, "").split(" ", 1)[0]
+            for ch in word if ch.isalpha()
+        }
+        if "LATIN" in scripts and scripts & _CONFUSABLE_SCRIPTS:
+            return True
+    return False
+
 
 @lru_cache(maxsize=_CACHE_SIZE)
 def _analyse(text: str) -> _Analysis:
+    text = _normalize(text)
     signals = extract_signals(text)
     surface = tuple(
         tok for tok in signals.tokens
@@ -142,6 +210,7 @@ def _analyse(text: str) -> _Analysis:
         QUANT_AXIS[tok] for tok in signals.tokens if tok in QUANT_AXIS
     )
     return _Analysis(
+        text=text, mixed_script=_has_mixed_script_word(text),
         surface=surface, residual=residual, signals=signals,
         quantifiers=quantifiers,
     )
@@ -164,18 +233,18 @@ def _first_occurrences(tokens: tuple[str, ...], keep: frozenset[str]) -> list[st
 
 
 def _veto(
-    user_text: str,
     user: _Analysis,
     user_set: frozenset[str],
-    target_text: str,
     target: _Analysis,
 ) -> str | None:
     """The first veto that rejects a containing target sentence."""
+    if target.mixed_script:
+        return REJECT_MIXED_SCRIPT
     if user.signals.has_negation != target.signals.has_negation:
         return REJECT_NEGATION_MISMATCH
     if user.quantifiers != target.quantifiers:
         return REJECT_QUANTIFIER_MISMATCH
-    if find_conflicts(extract_values(user_text), extract_values(target_text)):
+    if find_conflicts(extract_values(user.text), extract_values(target.text)):
         return REJECT_VALUE_CONFLICT
     if (_first_occurrences(user.residual, user_set)
             != _first_occurrences(target.residual, user_set)):
@@ -190,6 +259,8 @@ def _evaluate(
     user_set = frozenset(user.residual)
     if len(user_set) < REWORDED_MIN_RESIDUAL_TOKENS:
         return None, REJECT_TOO_SHORT
+    if user.mixed_script:
+        return None, REJECT_MIXED_SCRIPT
     if max(Counter(user.surface).values()) >= REWORDED_MAX_TOKEN_REPEATS:
         return None, REJECT_TOKEN_STUFFING
     sentences = _target_sentences(target_text)
@@ -199,7 +270,7 @@ def _evaluate(
     for index, (sentence, target, target_set) in enumerate(sentences):
         if not user_set <= target_set:
             continue
-        veto = _veto(user_sentence, user, user_set, sentence, target)
+        veto = _veto(user, user_set, target)
         if veto is None:
             match = RewordedMatch(
                 target_sentence_index=index,
@@ -236,6 +307,7 @@ def explain_rejection(user_sentence: str, target_text: str) -> str | None:
 __all__ = [
     "DIRECTION_TOKENS",
     "REJECTION_REASONS",
+    "REJECT_MIXED_SCRIPT",
     "REJECT_NEGATION_MISMATCH",
     "REJECT_NOT_CONTAINED",
     "REJECT_NO_TARGET_SENTENCES",

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.reworded_restatement import (
+    REJECT_MIXED_SCRIPT,
     REJECT_NEGATION_MISMATCH,
     REJECT_NO_TARGET_SENTENCES,
     REJECT_NOT_CONTAINED,
@@ -97,6 +98,39 @@ def test_direction_words_are_not_dropped() -> None:
     _assert_vetoed("scroll down in the panel to see newer messages", up, REJECT_NOT_CONTAINED)
 
 
+_DEPLOY = "deploy the billing service into production"
+
+
+@pytest.mark.parametrize("negated", [
+    "We don\u02bct deploy the billing service into production.",
+    "We don`t deploy the billing service into production.",
+    "We do n\u200bot deploy the billing service into production.",
+    "We do \uff4e\uff4f\uff54 deploy the billing service into production.",
+    "We nev\u00ader deploy the billing service into production.",
+], ids=["modifier-apostrophe", "backtick", "zero-width-space", "fullwidth", "soft-hyphen"])
+def test_negation_hidden_by_unicode_is_seen_after_normalizing(negated: str) -> None:
+    _assert_vetoed(_DEPLOY, negated, REJECT_NEGATION_MISMATCH)
+
+
+def test_fullwidth_user_text_matches_its_plain_form() -> None:
+    _assert_matches(
+        "the scanner detects leaked \uff53\uff45\uff43\uff52\uff45\uff54\uff53",
+        "The scanner detects leaked secrets.",
+    )
+
+
+def test_veto_mixed_script() -> None:
+    """A Cyrillic o inside "not" survives NFKC and hides the negation."""
+    spoofed = "We do n\u043et deploy the billing service into production."
+    _assert_vetoed(_DEPLOY, spoofed, REJECT_MIXED_SCRIPT)
+    _assert_vetoed(
+        "deploy the billing service into pr\u043eduction",
+        "Deploy the billing service into production.",
+        REJECT_MIXED_SCRIPT,
+    )
+    _assert_matches(_DEPLOY, "Deploy the billing service into production.")
+
+
 # --- One test per veto ----------------------------------------------------
 
 
@@ -164,7 +198,7 @@ def test_rejection_reasons_are_the_published_set() -> None:
         REJECT_TOO_SHORT, REJECT_TOKEN_STUFFING, REJECT_NO_TARGET_SENTENCES,
         REJECT_NOT_CONTAINED, REJECT_NEGATION_MISMATCH,
         REJECT_QUANTIFIER_MISMATCH, REJECT_VALUE_CONFLICT,
-        REJECT_ORDER_MISMATCH,
+        REJECT_ORDER_MISMATCH, REJECT_MIXED_SCRIPT,
     }
     assert len(REJECTION_REASONS) == len(set(REJECTION_REASONS))
 
@@ -217,9 +251,9 @@ def test_repeated_calls_return_equal_results() -> None:
 def test_precision_on_the_adversarial_fixture() -> None:
     """The user restatement is ``lock_text``; the target is ``phantom_text``.
 
-    At the time of writing: 20 fire, 18 correct, precision 0.900. The two
-    false positives (D4-01, D4-02) hide an invisible format character
-    inside a word, which the tokenizer splits on.
+    At the time of writing: 18 fire, 18 correct, precision 1.000. D4-01
+    and D4-02 hide a format character inside a word; normalizing deletes
+    it, so the joined word is not contained in the target.
     """
     data = json.loads(_FIXTURE.read_text())
     cases = data["regression_cases"] + data["edge_cases"]
@@ -235,8 +269,9 @@ def test_precision_on_the_adversarial_fixture() -> None:
     assert precision >= 0.78, (true_pos, false_pos, precision)
 
 
-@pytest.mark.parametrize("case_id", ["A1-01", "A5-01", "A5-03", "D5-01", "D5-02",
-                                     "D5-03", "D5-04", "E2-01", "F4-01", "F4-03"])
+@pytest.mark.parametrize("case_id", ["A1-01", "A5-01", "A5-03", "D4-01", "D4-02",
+                                     "D5-01", "D5-02", "D5-03", "D5-04", "E2-01",
+                                     "F4-01", "F4-03"])
 def test_named_adversarial_negatives_do_not_match(case_id: str) -> None:
     data = json.loads(_FIXTURE.read_text())
     case = next(
