@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import aelfrice.reworded_restatement as reworded_restatement
-import aelfrice.supports_log as supports_log
+from aelfrice import supports_log
 from aelfrice.ingest import _ingest_turn, ingest_jsonl
 from aelfrice.models import (
     BELIEF_FACTUAL,
