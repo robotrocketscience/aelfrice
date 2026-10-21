@@ -70,7 +70,12 @@ from typing import Final
 from aelfrice.bm25 import tokenize_stemmed
 from aelfrice.ingest import stored_sentences
 from aelfrice.relationship_detector import QUANT_AXIS, Signals, extract_signals
-from aelfrice.value_compare import extract_values, find_conflicts
+from aelfrice.value_compare import (
+    NumericSlot,
+    ValueSlots,
+    extract_values,
+    find_conflicts,
+)
 
 # --- Pinned constants (see detector_thresholds.py) -----------------------
 
@@ -337,6 +342,34 @@ def _target_sentences(
     return tuple(result)
 
 
+def _numeric_close(a: NumericSlot, b: NumericSlot) -> bool:
+    """True when ``find_conflicts`` sees no conflict between the two values."""
+    return not find_conflicts(ValueSlots((a,), ()), ValueSlots((b,), ()))
+
+
+def _values_conflict(user: ValueSlots, target: ValueSlots) -> bool:
+    """True when the two sentences bind a shared slot to different values.
+
+    ``find_conflicts`` compares every pair across both sides, so a
+    sentence naming two values of one key (``from v2.0 to v2.1``)
+    conflicts with itself. Here a numeric key conflicts only when some
+    value on one side has no close value on the other, so a sentence
+    always matches its own restatement. Enum slots go to
+    ``find_conflicts`` unchanged: it already compares groups as sets.
+    """
+    if find_conflicts(ValueSlots((), user.enum), ValueSlots((), target.enum)):
+        return True
+    shared = {s.key for s in user.numeric} & {s.key for s in target.numeric}
+    for key in sorted(shared):
+        mine = [s for s in user.numeric if s.key == key]
+        theirs = [s for s in target.numeric if s.key == key]
+        if any(not any(_numeric_close(a, b) for b in theirs) for a in mine):
+            return True
+        if any(not any(_numeric_close(a, b) for a in mine) for b in theirs):
+            return True
+    return False
+
+
 def _first_occurrences(tokens: tuple[str, ...], keep: frozenset[str]) -> list[str]:
     return [tok for tok in dict.fromkeys(tokens) if tok in keep]
 
@@ -362,7 +395,7 @@ def _veto(
         return REJECT_POLARITY_MISMATCH
     if not user.numbers <= target.numbers:
         return REJECT_VALUE_CONFLICT
-    if find_conflicts(extract_values(user.text), extract_values(target.text)):
+    if _values_conflict(extract_values(user.text), extract_values(target.text)):
         return REJECT_VALUE_CONFLICT
     if (_first_occurrences(user.residual, user_set)
             != _first_occurrences(target.residual, user_set)):

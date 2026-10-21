@@ -272,6 +272,15 @@ def test_veto_value_conflict() -> None:
     _assert_matches("set retries = 5 for the uploader", control)
 
 
+def test_a_sentence_naming_two_values_of_one_key_matches_itself() -> None:
+    sentence = "upgrade the agent from v2.0 to v2.1 before the freeze"
+    _assert_matches(sentence, "Upgrade the agent from v2.0 to v2.1 before the freeze.")
+    _assert_matches(
+        "v1.2 supersedes v1.1 due to critical fixes",
+        "v1.2 supersedes v1.1 due to critical fixes.",
+    )
+
+
 def test_veto_value_conflict_on_a_dotted_number_the_target_extends() -> None:
     """3.12 tokenizes to 3 and 12, which 3.12.1 contains."""
     target = "Requires python 3.12.1 on linux with docker."
