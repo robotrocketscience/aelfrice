@@ -210,3 +210,9 @@ def test_the_artifact_name_is_unique_per_leg_and_commit() -> None:
     name = _field(_upload_step(), "name") or ""
     assert f"${{{{ matrix.{key} }}}}" in name, name
     assert "${{ github.sha }}" in name, name
+
+
+def test_no_continue_on_error_anywhere_in_the_job() -> None:
+    """On the job or on a step, it turns a red suite into a green required check."""
+    found = [line.strip() for line in _job_lines() if "continue-on-error:" in line]
+    assert found == [], found
