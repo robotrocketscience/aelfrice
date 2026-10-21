@@ -9,6 +9,9 @@ The graph comes from `scripts/import_cycles.py`, the same producer the
 published before/after figures come from, so the test and the figures cannot
 disagree about what an edge is.
 
+`aelfrice.db_paths` is held to the same rule (#1772): it sits below
+`user_locks`, which imports it, so it must not import `user_locks` back.
+
 The other cycles in the package are not this test's subject. Nothing here
 asserts them away; they are dispositioned separately.
 """
@@ -56,6 +59,24 @@ def test_hook_is_in_no_import_cycle() -> None:
         assert "aelfrice.hook" not in component, (
             "aelfrice.hook is in an import cycle with "
             f"{len(component) - 1} other module(s): {', '.join(component)}. "
+            "Re-derive with: uv run python scripts/import_cycles.py"
+        )
+
+
+@pytest.mark.source_scan
+@pytest.mark.timeout(60)
+def test_db_paths_is_in_no_import_cycle() -> None:
+    """#1772: `db_paths` imports nothing that imports it back.
+
+    Falsifiable by putting back `from aelfrice.user_locks import
+    store_file_present` inside `db_paths.open_user_store_if_present`.
+    """
+    graph = _graph()
+    assert "aelfrice.db_paths" in graph, "the scan did not see aelfrice.db_paths"
+    for component in _IC.cycles(graph):
+        assert "aelfrice.db_paths" not in component, (
+            "aelfrice.db_paths is in an import cycle with: "
+            f"{', '.join(component)}. "
             "Re-derive with: uv run python scripts/import_cycles.py"
         )
 
