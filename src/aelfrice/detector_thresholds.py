@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 3
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 4
 
 # --- Kinds -------------------------------------------------------------
 
@@ -574,6 +574,59 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "conflict."
         ),
     ),
+    # --- reworded_restatement: the SUPPORTS matcher (#1650) ------------
+    #
+    # DORMANT, like the value_compare block above. Nothing calls
+    # `match_reworded` yet: the later #1650 change logs its matches with
+    # applied=0 and applies SUPPORTS edges to phantoms only after a
+    # precision gate. Pinned now so that change starts from a recorded
+    # baseline. Read the `gates` text below as what happens WHEN reached.
+    PinnedThreshold(
+        module="aelfrice.reworded_restatement",
+        name="REWORDED_MIN_RESIDUAL_TOKENS",
+        kind=KIND_CUTOFF,
+        value="3",
+        size=None,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Fewest distinct stemmed residual tokens a user sentence needs "
+            "to match at all. Lowering it lets short sentences match any "
+            "belief that shares a noun or two, which adds edges and lowers "
+            "precision."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.reworded_restatement",
+        name="REWORDED_MAX_TOKEN_REPEATS",
+        kind=KIND_CAP,
+        value="3",
+        size=None,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "A user sentence that types one residual word this many times "
+            "is rejected as token stuffing. Raising it admits stuffed "
+            "sentences and adds edges; lowering it to 2 rejects ordinary "
+            "sentences that repeat one word."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.reworded_restatement",
+        name="DIRECTION_TOKENS",
+        kind=KIND_TOKEN_SET,
+        value="sha256:890430f67522186cdf537e632a4e9525e5241b2d572893ea13489f53ee28eabb",
+        size=18,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Direction words kept in the residual although "
+            "`relationship_detector._STOPWORDS` drops them. Removing one "
+            "lets a sentence match its reversal (`over` vs `under`) and "
+            "adds wrong edges; adding one makes containment stricter and "
+            "removes edges."
+        ),
+    ),
     # --- wonder: RELATES_TO from phantom to constituents ---------------
     #
     # `wonder.lifecycle` writes one RELATES_TO edge per constituent of an
@@ -721,6 +774,10 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # and `CLASS_NAMES` names RESOLVES in its edge types, because the
     # precedence ordering now picks that edge's direction too.
     3: "3a04f524f6e50c831ba3538f84e5c6b60b5328405c9d9d4d6e43f025188251cb",
+    # 4 (#1650): the reworded-restatement matcher's three constants were
+    # pinned as new entries. The matcher writes no edge yet, so no store
+    # changes; the row records the baseline the SUPPORTS writer starts from.
+    4: "1e9f24eca42d2892f7b6ffc71b798e2492aedce19212f5f6226981415bb7fcde",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
