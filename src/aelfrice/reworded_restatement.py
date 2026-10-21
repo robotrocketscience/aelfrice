@@ -26,11 +26,14 @@ The rule is **stemmed residual containment**:
    the words in ``_CLAUSE_WORDS``. The user sentence matches target
    sentence ``i`` when each user clause fits inside one clause of
    sentence ``i`` (all its stemmed residual tokens appear there), the
-   next user clause fits the same target clause or the one after it,
+   next user clause fits the same target clause, or the one after it
+   when the two sentences break there with the same kind of break and
+   the user clause opens with the stem that target clause opens with,
    and the user sentence has at least ``REWORDED_MIN_RESIDUAL_TOKENS``
-   distinct residual tokens that are not direction words. So "the
-   scanner calls the lexer" never matches "the scanner calls the parser
-   and the parser calls the lexer".
+   distinct residual tokens that are not direction words. So neither
+   "the scanner calls the lexer" nor "the scanner, calls the lexer"
+   matches "the scanner calls the parser and the parser calls the
+   lexer".
 
 A containing sentence is still rejected by any of these vetoes:
 
@@ -253,6 +256,7 @@ class _Analysis:
     residual: tuple[str, ...]
     clauses: tuple[tuple[str, ...], ...]
     clause_anchors: tuple[frozenset[_Anchor], ...]
+    gaps: tuple[frozenset[str], ...]
     signals: Signals
     quantifiers: frozenset[float]
     numbers: frozenset[str]
@@ -426,10 +430,35 @@ def _residual(signals: Signals) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return surface, tuple(stem for tok in surface for stem in tokenize_stemmed(tok))
 
 
+def _break_kind(found: str) -> str:
+    """The kind of one clause break: the lowercased word, or its punctuation.
+
+    An opening and a closing bracket are one kind.
+    """
+    if found.isalpha():
+        return found.lower()
+    return "()" if found in "()[]" else found
+
+
+def _gap_kind(kinds: set[str]) -> frozenset[str]:
+    """The kind of the gap between two clauses, from the breaks inside it.
+
+    A clause word decides it when the gap has one, so ``, and`` and
+    ``and`` are one kind.
+    """
+    words = {kind for kind in kinds if kind.isalpha()}
+    return frozenset(words or kinds)
+
+
 def _clauses(
     text: str,
-) -> tuple[tuple[tuple[str, ...], ...], tuple[frozenset[_Anchor], ...]]:
-    """The stemmed residual and negation anchors of each clause that has a residual.
+) -> tuple[
+    tuple[tuple[str, ...], ...],
+    tuple[frozenset[_Anchor], ...],
+    tuple[frozenset[str], ...],
+]:
+    """The stemmed residual and negation anchors of each clause that has a
+    residual, and the kind of the gap after each clause but the last.
 
     Anchors are read inside one clause, so a negation never anchors on a
     word from the clause before or after it. A word in ``_CLAUSE_WORDS``
@@ -438,20 +467,30 @@ def _clauses(
     must hold every residual token the whole sentence holds.
     """
     chunks: list[str] = []
+    kinds: list[str] = []
     start = 0
     for found in _CLAUSE_BREAK_RE.finditer(text):
         chunks.append(text[start:found.start()])
+        kinds.append(_break_kind(found.group(0)))
         start = found.start() if found.group(0).isalpha() else found.end()
     chunks.append(text[start:])
     stems_out: list[tuple[str, ...]] = []
     anchors_out: list[frozenset[_Anchor]] = []
-    for chunk in chunks:
+    gaps_out: list[frozenset[str]] = []
+    pending: set[str] = set()
+    for index, chunk in enumerate(chunks):
+        if index:
+            pending.add(kinds[index - 1])
         signals = extract_signals(chunk)
         surface, stems = _residual(signals)
-        if stems:
-            stems_out.append(stems)
-            anchors_out.append(_negation_anchors(signals.tokens, frozenset(surface)))
-    return tuple(stems_out), tuple(anchors_out)
+        if not stems:
+            continue
+        if stems_out:
+            gaps_out.append(_gap_kind(pending))
+        pending = set()
+        stems_out.append(stems)
+        anchors_out.append(_negation_anchors(signals.tokens, frozenset(surface)))
+    return tuple(stems_out), tuple(anchors_out), tuple(gaps_out)
 
 
 @lru_cache(maxsize=_CACHE_SIZE)
@@ -459,7 +498,7 @@ def _analyse(text: str) -> _Analysis:
     text = _normalize(text)
     signals = extract_signals(text)
     surface, residual = _residual(signals)
-    clauses, clause_anchors = _clauses(text)
+    clauses, clause_anchors, gaps = _clauses(text)
     numbers = frozenset(_NUMBER_RE.findall(text))
     script_text = _UNIT_SIGN_RE.sub(r"\1", text)
     quantifiers = frozenset(
@@ -470,7 +509,7 @@ def _analyse(text: str) -> _Analysis:
         foreign=_foreign_characters(script_text),
         digit_spelled=_digit_spelled_words(signals.tokens),
         surface=surface, residual=residual, clauses=clauses,
-        clause_anchors=clause_anchors, signals=signals,
+        clause_anchors=clause_anchors, gaps=gaps, signals=signals,
         quantifiers=quantifiers,
         numbers=numbers, question="?" in text,
         polarity=(frozenset(signals.tokens) & POLARITY_TOKENS) | (
@@ -528,18 +567,27 @@ def _windows(user: _Analysis, target: _Analysis) -> list[tuple[int, int]]:
 
     Each user clause must fit inside one target clause: every stemmed
     residual token of the one appears in the other. The next user clause
-    fits the same target clause or the one after it, so a user sentence
-    split by more punctuation than the target still matches, but one
-    user clause never spans two target clauses.
+    fits the same target clause, so a user sentence split by more
+    punctuation than the target still matches. It moves on to the next
+    target clause only where the target splits the same content at the
+    same kind of break: the user gap and the target gap are the same
+    kind (``_gap_kind``), and the user clause opens with the stem the
+    target clause opens with. So "the scanner, calls the lexer" and "the
+    scanner calls the parser and the lexer" never take their subject
+    from one target clause and their object from the next.
     """
     have = [frozenset(clause) for clause in target.clauses]
     runs: set[tuple[int, int]] = set()
     for first in range(len(have)):
-        ends = {first}
-        for clause in user.clauses:
+        ends = {first} if frozenset(user.clauses[0]) <= have[first] else set()
+        for gap, clause in zip(user.gaps, user.clauses[1:]):
             ends = {
                 nxt for end in ends for nxt in (end, end + 1)
                 if nxt < len(have) and frozenset(clause) <= have[nxt]
+                and (nxt == end or (
+                    target.gaps[end] == gap
+                    and clause[0] == target.clauses[nxt][0]
+                ))
             }
         runs.update((first, end) for end in ends)
     return sorted(runs)

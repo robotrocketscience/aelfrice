@@ -95,6 +95,55 @@ def test_tokens_split_across_two_clauses_of_one_sentence_do_not_match(
     _assert_vetoed(user, target, REJECT_NOT_CONTAINED)
 
 
+_COMPOUND = "The scanner calls the parser and the parser calls the lexer."
+
+
+@pytest.mark.parametrize("user", [
+    "the scanner, calls the lexer",
+    "the scanner; calls the lexer",
+    "the scanner: calls the lexer",
+    "the scanner (calls) the lexer",
+], ids=["comma", "semicolon", "colon", "brackets"])
+def test_a_user_break_of_another_kind_cannot_cross_a_target_clause(user: str) -> None:
+    """The subject sits in the first target clause, the object in the second."""
+    _assert_vetoed(user, _COMPOUND, REJECT_NOT_CONTAINED)
+
+
+def test_an_aligned_user_clause_still_needs_the_same_kind_of_break() -> None:
+    """Each user clause opens where a target clause does, but ; is not and."""
+    _assert_vetoed(
+        "the scanner calls the parser; the parser calls the lexer", _COMPOUND,
+        REJECT_NOT_CONTAINED,
+    )
+
+
+@pytest.mark.parametrize(("user", "target"), [
+    ("the scanner calls the parser and the lexer", _COMPOUND),
+    ("the scanner and calls the lexer", _COMPOUND),
+    ("the billing service writes to the cache, then to the audit log",
+     "The billing service writes to the cache, then the search service "
+     "writes to the audit log."),
+], ids=["object", "subject", "then"])
+def test_a_user_clause_crossing_a_target_break_must_open_where_the_target_clause_does(
+    user: str, target: str,
+) -> None:
+    """The break kinds agree, but the user clause after it starts mid-clause."""
+    _assert_vetoed(user, target, REJECT_NOT_CONTAINED)
+
+
+@pytest.mark.parametrize(("user", "target"), [
+    ("the scanner calls the parser, and the parser calls the lexer", _COMPOUND),
+    ("the scanner calls the parser and the parser calls the lexer",
+     "The scanner calls the parser, and the parser calls the lexer."),
+    ("the scanner calls the parser; the parser calls the lexer",
+     "The scanner calls the parser; the parser calls the lexer."),
+], ids=["comma-and-vs-and", "and-vs-comma-and", "semicolon"])
+def test_a_user_clause_crosses_a_target_break_of_the_same_kind(
+    user: str, target: str,
+) -> None:
+    _assert_matches(user, target)
+
+
 def test_each_clause_of_a_compound_target_matches_on_its_own() -> None:
     target = "The scanner calls the parser and the parser calls the lexer."
     _assert_matches("the scanner calls the parser", target)
