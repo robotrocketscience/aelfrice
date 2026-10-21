@@ -6013,6 +6013,26 @@ class MemoryStore:
             (source_type,),
         )
         return {str(r[0]) for r in cur.fetchall()}
+
+    def list_beliefs_with_positive_feedback(
+        self, sources: Iterable[str],
+    ) -> set[str]:
+        """Ids of beliefs with a feedback_history row of positive valence
+        whose `source` is one of `sources`.
+
+        #1780 reads it to keep a belief the user affirmed with `aelf
+        confirm` or `aelf feedback <id> used`.
+        """
+        wanted = sorted(set(sources))
+        if not wanted:
+            return set()
+        marks = ",".join("?" * len(wanted))
+        cur = self._conn.execute(
+            "SELECT DISTINCT belief_id FROM feedback_history "
+            f"WHERE valence > 0 AND source IN ({marks})",
+            wanted,
+        )
+        return {str(r[0]) for r in cur.fetchall()}
     # --- Deferred feedback queue (v1.6+, #191) ---------------------------
 
     def enqueue_deferred_feedback(
