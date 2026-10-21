@@ -184,6 +184,27 @@ def test_the_version_is_read_at_the_tag_not_from_the_working_tree(
     assert result.returncode == 1, result.stdout + result.stderr
 
 
+def test_the_version_is_read_at_the_tag_not_at_head(
+    repo: tuple[Path, dict[str, str]],
+) -> None:
+    """The tag sits behind HEAD, and the two commits disagree on version.
+
+    Every other fixture tags HEAD, so a script that read HEAD:pyproject.toml
+    would pass them all. Here only the tagged commit carries 1.2.4.
+    """
+    path, env = repo
+    _commit(path, env, "1.2.4", "release 1.2.4")
+    _git(path, env, "tag", "v1.2.4")
+    _commit(path, env, "1.2.3", "later commit at 1.2.3")
+    _git(path, env, "update-ref", "refs/remotes/origin/main", "main")
+    result = _run(path, env, "v1.2.4")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "preflight PASS: pyproject.toml version 1.2.4 matches tag v1.2.4"
+        in result.stdout
+    )
+
+
 def test_a_tag_that_is_not_a_final_release_fails(
     repo: tuple[Path, dict[str, str]],
 ) -> None:
