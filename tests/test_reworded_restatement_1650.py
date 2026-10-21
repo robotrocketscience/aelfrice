@@ -569,6 +569,14 @@ def test_a_zero_on_both_sides_and_a_nonzero_number_are_not_polarity() -> None:
     )
 
 
+@pytest.mark.parametrize("target", [
+    "The backup job runs daily at 10:00.",
+    "The backup job runs daily at 00:30.",
+], ids=["minutes", "hours"])
+def test_a_zero_inside_a_clock_time_is_not_polarity(target: str) -> None:
+    _assert_matches("the backup job runs daily", target)
+
+
 def test_cannot_and_cant_are_one_negation() -> None:
     _assert_matches(
         "the worker can't reach the database host",

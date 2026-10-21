@@ -63,7 +63,8 @@ A containing sentence is still rejected by any of these vetoes:
 * ``polarity_mismatch``: the sentences hold different sets of
   ``POLARITY_TOKENS``, the hedge, limit, condition, contrast,
   alternative and past-state words. A number whose digits are all zero
-  counts as ``zero``. Containment only checks user tokens, so without
+  counts as ``zero``, unless a colon joins it to another number as in
+  the clock time ``10:00``. Containment only checks user tokens, so without
   this a target that adds "unable", "few", "unless", "hardly" or
   "used to" would match. Words that frame a claim as false or
   disputed ("wrong", "myth", "the claim that") count too, and a
@@ -173,6 +174,10 @@ POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
 # A number such as ``0`` or ``0.0`` reads as the polarity word ``zero``:
 # "0 tests pass" says what "no tests pass" says.
 _ZERO_RE: Final[re.Pattern[str]] = re.compile(r"0+(?:[.,]0+)*")
+
+# A colon and a digit on either side of a number, as in ``10:00``.
+_CLOCK_BEFORE_RE: Final[re.Pattern[str]] = re.compile(r"\d:\Z")
+_CLOCK_AFTER_RE: Final[re.Pattern[str]] = re.compile(r":\d")
 
 RULE_STEMMED_RESIDUAL_CONTAINMENT: Final[str] = "stemmed_residual_containment"
 
@@ -332,6 +337,20 @@ def _normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
     return _CANNOT_RE.sub(r"\1 \2", text)
+
+
+def _reads_zero(text: str) -> bool:
+    """True when ``text`` holds a number whose digits are all zero.
+
+    A number that a colon joins to another, such as the ``00`` in the
+    clock time ``10:00``, is not one.
+    """
+    return any(
+        _ZERO_RE.fullmatch(found.group(0))
+        and not _CLOCK_BEFORE_RE.search(text, 0, found.start())
+        and not _CLOCK_AFTER_RE.match(text, found.end())
+        for found in _NUMBER_RE.finditer(text)
+    )
 
 
 def _has_mixed_script_word(text: str) -> bool:
@@ -527,7 +546,7 @@ def _analyse(text: str) -> _Analysis:
         quantifiers=quantifiers,
         numbers=numbers, question="?" in text,
         polarity=(frozenset(signals.tokens) & POLARITY_TOKENS) | (
-            {"zero"} if any(_ZERO_RE.fullmatch(n) for n in numbers) else set()
+            {"zero"} if _reads_zero(text) else set()
         ),
     )
 
