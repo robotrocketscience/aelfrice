@@ -750,8 +750,12 @@ def candidate_terms(user_sentence: str) -> tuple[str, ...]:
     search that requires all of these words narrows the candidates
     without ranking them away. The search index stems with its own
     stemmer, so a word pair this matcher stems alike and the index does
-    not can still be missed. Returns ``()`` when the sentence has too
-    few words to match anything (``REJECT_TOO_SHORT``).
+    not can still be missed. The index also holds a belief's text as
+    stored, while this matcher reads it normalized, so a target word in
+    fullwidth or compatibility letters, or split by a format character
+    such as a soft hyphen or zero-width space, is missed too. Returns
+    ``()`` when the sentence has too few words to match anything
+    (``REJECT_TOO_SHORT``).
     """
     user = _analyse(user_sentence)
     if len(_content_stems(user)) < REWORDED_MIN_RESIDUAL_TOKENS:

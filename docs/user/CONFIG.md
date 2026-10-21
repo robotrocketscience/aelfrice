@@ -1050,7 +1050,10 @@ A match is logged when all of these hold:
   finds one sentence of the belief that your sentence restates.
 
 aelfrice checks at most 20 candidate beliefs per sentence: those that
-contain every content word of your sentence, ranked by BM25. Each match
+contain every content word of your sentence, ranked by BM25. The search
+reads each belief as stored, so a belief whose words are written in
+fullwidth letters or split by an invisible character, such as a soft
+hyphen or zero-width space, is not checked. Each match
 becomes one row in the `belief_support_evidence` table, with the matched
 sentence's index and text, your sentence's session and `ingest_log` id,
 and `applied` set to 0. When the log is on, `aelf doctor` shows how many

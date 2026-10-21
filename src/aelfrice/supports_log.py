@@ -22,6 +22,12 @@ a backfill of an old transcript can't log a sentence the user typed
 before the target existed. At most
 ``REWORDED_CANDIDATE_TOP_K`` targets are matched per sentence.
 
+Candidates come from the store's full-text index, which holds each
+belief as stored. The matcher reads text normalized, so a target whose
+words are in fullwidth letters or split by a format character is never a
+candidate, although the matcher alone would accept it. The log
+undercounts on such text; it does not log a wrong match.
+
 The pass fails open. A read-only store is skipped, and any exception is
 reported on stderr and swallowed, so it never fails or rolls back the
 ingest that called it.
