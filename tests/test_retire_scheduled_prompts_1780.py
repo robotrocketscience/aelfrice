@@ -210,6 +210,23 @@ def test_apply_keeps(store: MemoryStore, tmp_path: Path, kept: str) -> None:
     assert bid in _active_ids(store)
 
 
+def test_apply_keeps_a_belief_a_row_without_turn_sha_also_derived(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    # A turn with no `ts` gets no `turn_sha`, so its row names no turn and
+    # cannot be shown to be scheduled.
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    unstamped = _turn(SESSION_A, 10, SCHEDULED_ONLY)
+    del unstamped["ts"]
+    ingest_jsonl(store, _write_jsonl(tmp_path / "more.jsonl", [unstamped]))
+    rows = [(s, h) for b, s, h in store.list_ingest_turn_derivations() if b == bid]
+    assert (SESSION_A, None) in rows
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid not in {b for b, _ in report.candidates}
+    assert bid in _active_ids(store)
+
+
 def test_second_apply_is_a_no_op(store: MemoryStore, tmp_path: Path) -> None:
     host = _seed(store, tmp_path)
     retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
