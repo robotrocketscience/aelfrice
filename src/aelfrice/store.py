@@ -5570,6 +5570,7 @@ class MemoryStore:
         limit: int,
         supporter_id: str,
         supporter_session_id: str,
+        supporter_created_at: str,
         exclude_origins: Iterable[str],
     ) -> list[tuple[str, str]]:
         """Beliefs a user sentence may restate, as `(id, content)` pairs (#1650).
@@ -5577,9 +5578,13 @@ class MemoryStore:
         An active belief is a candidate when its content holds every one
         of `terms` (a conjunctive FTS5 match: quoted terms joined by an
         implicit AND), its origin is not in `exclude_origins`, it is not
-        `supporter_id`, and it was not created in `supporter_session_id`.
-        A belief with no session is kept: nothing shows it came from the
-        supporter's session.
+        `supporter_id`, it was not created in `supporter_session_id`, and
+        it was created strictly before `supporter_created_at`: a sentence
+        typed before a belief existed can't confirm it. Times compare as
+        `julianday` instants, because rows mix `Z` and `+HH:MM`, and a
+        time that does not parse keeps the belief out. A belief with no
+        session is kept: nothing shows it came from the supporter's
+        session.
 
         Ranked by `bm25` then id, a total order, and cut at `limit`, so
         the cost of matching each candidate is bounded however large the
@@ -5600,9 +5605,11 @@ class MemoryStore:
             "WHERE beliefs_fts MATCH ? AND b.valid_to IS NULL "
             "AND b.id != ? "
             "AND (b.session_id IS NULL OR b.session_id != ?) "
+            "AND julianday(b.created_at) < julianday(?) "
             + origin_clause
             + "ORDER BY bm25(beliefs_fts), b.id LIMIT ?",
-            (expression, supporter_id, supporter_session_id, *origins, limit),
+            (expression, supporter_id, supporter_session_id,
+             supporter_created_at, *origins, limit),
         )
         return [(str(r["id"]), str(r["content"])) for r in cur.fetchall()]
 

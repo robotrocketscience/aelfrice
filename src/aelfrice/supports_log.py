@@ -14,9 +14,12 @@ A supporter counts only when it is provably the user's: its
 supporter with no session is skipped, because nothing shows a target
 came from another session. A target is any active belief whose origin
 is not in ``USER_ORIGINS``, that holds every candidate term of the user
-sentence (``reworded_restatement.candidate_terms``), and that was not
-created in the supporter's session: restating yourself in one
-conversation is emphasis, not evidence. At most
+sentence (``reworded_restatement.candidate_terms``), that was not
+created in the supporter's session (restating yourself in one
+conversation is emphasis, not evidence), and that was created before the
+supporter. Ingest stamps the supporter with the turn's own timestamp, so
+a backfill of an old transcript can't log a sentence the user typed
+before the target existed. At most
 ``REWORDED_CANDIDATE_TOP_K`` targets are matched per sentence.
 
 The pass fails open. A read-only store is skipped, and any exception is
@@ -184,6 +187,7 @@ def _log(store: MemoryStore, supporters: Iterable[tuple[str, str]]) -> int:
             candidates = store.support_candidates(
                 terms, limit=REWORDED_CANDIDATE_TOP_K,
                 supporter_id=belief_id, supporter_session_id=session,
+                supporter_created_at=supporter.created_at,
                 exclude_origins=USER_ORIGINS,
             )
             for target_id, content in candidates:

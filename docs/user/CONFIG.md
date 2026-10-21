@@ -1040,6 +1040,10 @@ A match is logged when all of these hold:
 - The sentence has a session. The matched belief was not created in that
   session, because restating something in the same conversation is not
   new evidence.
+- The matched belief was created before you typed the sentence, by the
+  turn's own timestamp. A sentence typed before a belief existed can't
+  confirm it, so ingesting an old transcript logs nothing for newer
+  beliefs.
 - The matched belief is not one of yours: its origin is not
   `user_stated`, `user_corrected`, `user_validated`, or `user_transcript`.
 - The reworded-restatement matcher (`aelfrice.reworded_restatement`)

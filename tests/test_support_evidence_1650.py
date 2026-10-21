@@ -535,22 +535,23 @@ _TERMS = ("scanner", "detects", "secrets")
 
 def _cand(
     bid: str, content: str, *, session: str | None = "s1",
-    origin: str = "agent_inferred",
+    origin: str = "agent_inferred", created_at: str = "2026-10-01T00:00:00Z",
 ) -> Belief:
     return Belief(
         id=bid, content=content, content_hash=f"h_{bid}", alpha=1.0,
         beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
-        created_at="2026-10-01T00:00:00Z", last_retrieved_at=None,
+        created_at=created_at, last_retrieved_at=None,
         session_id=session, origin=origin,
     )
 
 
 def _candidates(s: MemoryStore, *, limit: int = 20,
                 exclude: tuple[str, ...] = ("user_transcript",),
-                terms: tuple[str, ...] = _TERMS) -> list[str]:
+                terms: tuple[str, ...] = _TERMS,
+                typed_at: str = "2026-10-02T00:00:00Z") -> list[str]:
     return [bid for bid, _ in s.support_candidates(
         terms, limit=limit, supporter_id="u1", supporter_session_id="s2",
-        exclude_origins=exclude)]
+        supporter_created_at=typed_at, exclude_origins=exclude)]
 
 
 def test_a_candidate_holds_every_term(tmp_path: Path) -> None:
@@ -601,5 +602,32 @@ def test_candidates_are_cut_at_the_limit_in_a_total_order(
         assert len(_candidates(s, limit=6)) == 6
         assert _candidates(s, limit=0) == []
         assert _candidates(s, terms=()) == []
+    finally:
+        s.close()
+
+
+def test_a_candidate_was_created_before_the_supporter(tmp_path: Path) -> None:
+    s = MemoryStore(str(tmp_path / "m.db"))
+    text = "The scanner detects leaked secrets in {}."
+    try:
+        s.insert_belief(_cand("before", text.format("code"),
+                              created_at="2026-10-01T23:59:59Z"))
+        # 23:00Z written with an offset: compared as text it sorts after
+        # the supporter's time, and the same instant as the supporter's
+        # sorts before it.
+        s.insert_belief(_cand("offset", text.format("docs"),
+                              created_at="2026-10-02T01:00:00+02:00"))
+        s.insert_belief(_cand("same", text.format("logs"),
+                              created_at="2026-10-02T00:00:00+00:00"))
+        s.insert_belief(_cand("after", text.format("tests"),
+                              created_at="2026-10-20T00:00:00Z"))
+        # insert_belief refuses a bad time, so write one the way a row
+        # from before that check could hold it.
+        s.insert_belief(_cand("garbled", text.format("wikis")))
+        s._conn.execute(  # noqa: SLF001
+            "UPDATE beliefs SET created_at = 'not a time' WHERE id = 'garbled'")
+        s._conn.commit()  # noqa: SLF001
+        assert sorted(_candidates(s)) == ["before", "offset"]
+        assert _candidates(s, typed_at="not a time") == []
     finally:
         s.close()

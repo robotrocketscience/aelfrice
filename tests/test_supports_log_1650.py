@@ -62,11 +62,12 @@ def store(tmp_path: Path) -> Iterator[MemoryStore]:
 def _target(
     s: MemoryStore, bid: str = "p1", content: str = _TARGET, *,
     session: str | None = "s1", origin: str = "agent_inferred",
+    created_at: str = "2026-10-01T00:00:00Z",
 ) -> None:
     s.insert_belief(Belief(
         id=bid, content=content, content_hash=f"h_{bid}", alpha=1.0,
         beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
-        created_at="2026-10-01T00:00:00Z", last_retrieved_at=None,
+        created_at=created_at, last_retrieved_at=None,
         session_id=session, origin=origin,
     ))
 
@@ -203,6 +204,15 @@ def test_a_target_from_the_supporters_session_is_skipped(
 ) -> None:
     _target(store, session="s2")
     assert log_reworded_support(store, _typed(store, session="s2")) == 0
+    assert _rows(store) == []
+
+
+def test_a_target_created_after_the_sentence_was_typed_is_skipped(
+    store: MemoryStore,
+) -> None:
+    # The user typed the sentence on 2026-10-02; this target came later.
+    _target(store, created_at="2026-10-20T00:00:00Z")
+    assert log_reworded_support(store, _typed(store)) == 0
     assert _rows(store) == []
 
 
@@ -494,6 +504,19 @@ def test_ingest_skips_a_target_from_the_same_session(
     monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
     _target(store, session="s2")
     ingest_jsonl(store, _jsonl(tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert _rows(store) == []
+
+
+def test_a_backfill_of_an_older_session_logs_nothing_for_a_newer_target(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The transcript turn is stamped 2026-10-02; the target was created
+    # on 2026-10-20 and the transcript is ingested after that.
+    monkeypatch.setenv(ENV_LOG_REWORDED_SUPPORT, "1")
+    _target(store, session="s9", created_at="2026-10-20T00:00:00Z")
+    result = ingest_jsonl(store, _jsonl(
+        tmp_path / "t.jsonl", ("user", "s2", _USER)))
+    assert result.beliefs_inserted == 1
     assert _rows(store) == []
 
 
