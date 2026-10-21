@@ -372,6 +372,64 @@ def test_every_assignment_of_the_pin_is_the_unscaled_value() -> None:
         )
 
 
+_WORKFLOW_NAME = re.compile(r"[\w.-]+\.ya?ml\b")
+_JOB_TIMEOUT = re.compile(r"^\s+timeout-minutes:\s*\d+\s*$", re.M)
+
+
+def _pin_comment(text: str) -> str:
+    """The whole-line comment block directly above the first pin, as prose.
+
+    The `#` markers are dropped and the lines joined with single spaces,
+    so a phrase that wraps across two comment lines still matches.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if not re.match(rf"^\s*{_PIN}:", line):
+            continue
+        block: list[str] = []
+        j = i - 1
+        while j >= 0 and lines[j].lstrip().startswith("#"):
+            block.append(lines[j].lstrip().lstrip("#").strip())
+            j -= 1
+        return " ".join(part for part in reversed(block) if part)
+    return ""
+
+
+def test_each_pin_comment_describes_only_its_own_workflow() -> None:
+    """The comment above each pin may not make claims about other files.
+
+    Four workflows once said `publish.yml` carried no `timeout-minutes`.
+    publish.yml then gained a 30-minute job limit, and their comments
+    went stale with nothing to flag them. So a comment names no other
+    workflow, and what it says about its own job timeout must match the
+    file.
+    """
+    checked = 0
+    for path in _pytest_workflows():
+        text = path.read_text(encoding="utf-8")
+        comment = _pin_comment(text)
+        if not comment:
+            continue
+        checked += 1
+        others = sorted(set(_WORKFLOW_NAME.findall(comment)) - {path.name})
+        assert not others, (
+            f"{path.name}: the {_PIN} comment names {others}. Describe "
+            f"this workflow only, so a change elsewhere cannot make it false."
+        )
+        has_timeout = bool(_JOB_TIMEOUT.search(_strip_comments(text)))
+        if "no `timeout-minutes`" in comment:
+            assert not has_timeout, (
+                f"{path.name}: the comment says there is no "
+                f"`timeout-minutes`, but the workflow sets one"
+            )
+        if "job's `timeout-minutes`" in comment:
+            assert has_timeout, (
+                f"{path.name}: the comment cites the job's "
+                f"`timeout-minutes`, but the workflow sets none"
+            )
+    assert checked >= 5, f"only {checked} pin comments found; the parser has rotted"
+
+
 def test_the_base_timeout_leaves_room_for_the_slowest_unit_test() -> None:
     """The ini floor, pinned by value.
 
