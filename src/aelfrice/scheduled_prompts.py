@@ -82,11 +82,39 @@ def host_session_files(paths: Iterable[Path]) -> list[Path]:
     return sorted(out)
 
 
+def _queued_prompt_key(rec: dict[str, object]) -> TurnKey | None:
+    """Turn key of a prompt the host queued, or None for a scheduled one.
+
+    A prompt the user types while a turn runs reaches the host file only as
+    an `attachment` record of type `queued_command`, with no `user` record.
+    The transcript logger still writes it to `turns.jsonl`. The key is
+    derived as for a `user` record holding the queued `prompt`.
+    """
+    att = rec.get("attachment")
+    if not isinstance(att, dict):
+        return None
+    att_rec = cast(dict[str, object], att)
+    if att_rec.get("type") != "queued_command":
+        return None
+    origin = att_rec.get("origin")
+    if (
+        isinstance(origin, dict)
+        and cast(dict[str, object], origin).get("kind") == "scheduled"
+    ):
+        return None
+    return user_turn_key({
+        "type": "user",
+        "sessionId": rec.get("sessionId"),
+        "message": {"role": "user", "content": att_rec.get("prompt")},
+    })
+
+
 def scan_host_sessions(paths: Iterable[Path]) -> HostTurnScan:
     """Collect the flagged turn keys from host session JSONL files.
 
     A record counts as flagged when `is_scheduled_host_record` says so,
-    the same test the transcript logger applies. A line that is not a
+    the same test the transcript logger applies. A prompt the host queued
+    counts as unflagged unless its origin is scheduled. A line that is not a
     JSON object is skipped. A file that cannot be read is listed in
     `unreadable` and skipped.
     """
@@ -106,6 +134,11 @@ def scan_host_sessions(paths: Iterable[Path]) -> HostTurnScan:
                     if not isinstance(obj, dict):
                         continue
                     rec = cast(dict[str, object], obj)
+                    if rec.get("type") == "attachment":
+                        queued = _queued_prompt_key(rec)
+                        if queued is not None:
+                            unflagged.add(queued)
+                        continue
                     if rec.get("type") != "user":
                         continue
                     key = user_turn_key(rec)

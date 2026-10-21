@@ -173,6 +173,49 @@ def test_scan_drops_a_key_a_typed_record_shares(tmp_path: Path) -> None:
     assert scan.ambiguous == {(SESSION_A, turn_sha(SAME_SESSION_BOTH))}
 
 
+def _queued(text: str, *, kind: str = "human") -> dict[str, object]:
+    # A prompt typed while a turn runs: the host writes only this record.
+    return {
+        "type": "attachment",
+        "sessionId": SESSION_A,
+        "attachment": {
+            "type": "queued_command", "commandMode": "prompt",
+            "prompt": text, "origin": {"kind": kind},
+        },
+    }
+
+
+def test_scan_drops_a_key_a_queued_typed_prompt_shares(tmp_path: Path) -> None:
+    host = _write_jsonl(tmp_path / "h.jsonl", [
+        _host(SAME_SESSION_BOTH, scheduled=True),
+        _queued(SAME_SESSION_BOTH),
+    ])
+    scan = scan_host_sessions([host])
+    assert scan.flagged == set()
+    assert scan.ambiguous == {(SESSION_A, turn_sha(SAME_SESSION_BOTH))}
+
+
+def test_scan_ignores_a_queued_prompt_of_scheduled_origin(tmp_path: Path) -> None:
+    host = _write_jsonl(tmp_path / "h.jsonl", [
+        _host(SCHEDULED_ONLY, scheduled=True),
+        _queued(SCHEDULED_ONLY, kind="scheduled"),
+    ])
+    scan = scan_host_sessions([host])
+    assert scan.flagged == {(SESSION_A, turn_sha(SCHEDULED_ONLY))}
+
+
+def test_apply_keeps_a_belief_a_queued_typed_prompt_also_made(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    with host.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_queued(SCHEDULED_ONLY)) + "\n")
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid not in {c for c, _ in report.candidates}
+    assert bid in _active_ids(store)
+
+
 def test_dry_run_lists_scheduled_only_beliefs_and_changes_nothing(
     store: MemoryStore, tmp_path: Path,
 ) -> None:
