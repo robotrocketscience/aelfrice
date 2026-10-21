@@ -110,6 +110,23 @@ jobs:
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         name: The [archive] extra must be present, or the archive tests skip
         run: uv run python -c "import cryptography"
+      # The interpreter, SQLite and runner image a leg actually used, so a
+      # failure on one leg can be compared against a green one without
+      # re-running it. uv can resolve the image's own Python as well as a
+      # managed one, so the log reads them rather than assuming.
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        name: Log the interpreter, SQLite and runner image
+        run: |
+          uv run python - <<'PY'
+          import os
+          import sqlite3
+          import sys
+          print("sys.version:", sys.version)
+          print("sys.executable:", sys.executable)
+          print("sqlite3.sqlite_version:", sqlite3.sqlite_version)
+          print("ImageOS:", os.environ.get("ImageOS", "<unset>"))
+          print("ImageVersion:", os.environ.get("ImageVersion", "<unset>"))
+          PY
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q
       - if: steps.filter.outputs.code != 'true' && github.event_name != 'workflow_dispatch'
