@@ -327,7 +327,7 @@ _UNIT_SIGN_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 # Digits that stand in for letters. ``1`` reads as either ``l`` or ``i``.
-_DIGIT_LETTERS: Final[tuple[dict[int, str], ...]] = (
+_DIGIT_LETTERS: Final[tuple[dict[int, int], ...]] = (
     str.maketrans("0134578", "oleastb"),
     str.maketrans("0134578", "oieastb"),
 )
@@ -562,7 +562,7 @@ def _analyse(text: str) -> _Analysis:
         quantifiers=quantifiers,
         numbers=numbers, question="?" in text,
         polarity=(frozenset(signals.tokens) & POLARITY_TOKENS) | (
-            {"zero"} if _reads_zero(text) else set()
+            frozenset({"zero"}) if _reads_zero(text) else frozenset[str]()
         ),
     )
 
@@ -628,7 +628,9 @@ def _windows(user: _Analysis, target: _Analysis) -> list[tuple[int, int]]:
     have = [frozenset(clause) for clause in target.clauses]
     runs: set[tuple[int, int]] = set()
     for first in range(len(have)):
-        ends = {first} if frozenset(user.clauses[0]) <= have[first] else set()
+        ends: set[int] = (
+            {first} if frozenset(user.clauses[0]) <= have[first] else set()
+        )
         for gap, clause in zip(user.gaps, user.clauses[1:]):
             ends = {
                 nxt for end in ends for nxt in (end, end + 1)
@@ -654,7 +656,9 @@ def _veto(
     scope and order are compared inside the run only, so a negation or
     a repeated word in another clause of the target does not count.
     """
-    held = frozenset().union(*target.clause_anchors[run[0]:run[1] + 1])
+    held = frozenset[_Anchor]().union(
+        *target.clause_anchors[run[0]:run[1] + 1]
+    )
     if target.mixed_script:
         return REJECT_MIXED_SCRIPT
     if (not target.foreign <= user.foreign
