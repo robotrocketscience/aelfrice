@@ -827,6 +827,40 @@ _SCHEMA: tuple[str, ...] = (
         accepted_at        TEXT
     )
     """,
+    # #1650 SUPPORTS evidence. One row per (supporter, target, kind)
+    # match a SUPPORTS matcher found, whether or not an edge was written
+    # for it. `applied` is 0 for a match that was only logged, which is
+    # every match until the matcher passes its precision gate
+    # (docs/design/feature-supports-writer.md). `target_sentence_index`
+    # indexes `ingest.stored_sentences(target.content)`: a reworded
+    # restatement supports one sentence of a phantom, not all of it.
+    # The supporter's session and ingest_log id are copied in so the
+    # per-session count needs no search of `derived_belief_ids`. They are
+    # nullable so a later evidence kind without a session needs no table
+    # rebuild. In _SCHEMA for the same reason as the category pair: an
+    # older store gains the table on its next open. ON DELETE CASCADE on
+    # both ids; the #219 beliefs table swap turns foreign keys off, so it
+    # keeps these rows.
+    """
+    CREATE TABLE IF NOT EXISTS belief_support_evidence (
+        supporter_id            TEXT    NOT NULL
+            REFERENCES beliefs(id) ON DELETE CASCADE,
+        target_id               TEXT    NOT NULL
+            REFERENCES beliefs(id) ON DELETE CASCADE,
+        kind                    TEXT    NOT NULL,
+        target_sentence_index   INTEGER NOT NULL
+            CHECK (target_sentence_index >= 0),
+        supporter_session_id    TEXT,
+        supporter_ingest_log_id TEXT,
+        matched_span            TEXT    NOT NULL,
+        applied                 INTEGER NOT NULL DEFAULT 0
+            CHECK (applied IN (0, 1)),
+        created_at              TEXT    NOT NULL,
+        PRIMARY KEY (supporter_id, target_id, kind)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_support_evidence_target "
+    "ON belief_support_evidence(target_id)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
