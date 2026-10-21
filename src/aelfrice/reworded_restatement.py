@@ -76,11 +76,14 @@ REWORDED_MAX_TOKEN_REPEATS: Final[int] = 3
 
 # Direction and ordering words that the relationship detector drops as
 # stopwords but that reverse a sentence's meaning when swapped. They
-# stay in the residual so a swap fails containment.
+# stay in the residual so a swap fails containment. Each word whose
+# partner is listed is listed too (``on`` with ``off``, ``in`` with
+# ``out``), and passive ``by`` is kept so "A is called by B" does not
+# match "A calls B".
 DIRECTION_TOKENS: Final[frozenset[str]] = frozenset({
-    "to", "from", "into", "onto", "out", "over", "under", "up", "down",
-    "off", "above", "below", "before", "after", "upward", "downward",
-    "inward", "outward",
+    "to", "from", "in", "into", "on", "onto", "out", "over", "under",
+    "up", "down", "off", "above", "below", "before", "after", "upward",
+    "downward", "inward", "outward", "by",
 })
 
 RULE_STEMMED_RESIDUAL_CONTAINMENT: Final[str] = "stemmed_residual_containment"

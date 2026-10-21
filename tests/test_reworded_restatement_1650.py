@@ -60,7 +60,9 @@ def test_reworded_sentence_matches_with_index_tokens_and_rule() -> None:
     match = _assert_matches("the scanner detects leaked secrets in source code", target)
     assert match.target_sentence_index == 1
     assert match.target_sentence.startswith("The scanner reliably detects")
-    assert match.matched_tokens == ("scanner", "detect", "leak", "secret", "sourc", "code")
+    assert match.matched_tokens == (
+        "scanner", "detect", "leak", "secret", "in", "sourc", "code",
+    )
     assert match.rule == RULE_STEMMED_RESIDUAL_CONTAINMENT
 
 
@@ -96,6 +98,22 @@ def test_direction_words_are_not_dropped() -> None:
 
     up = "Scroll up in the panel to see newer messages."
     _assert_vetoed("scroll down in the panel to see newer messages", up, REJECT_NOT_CONTAINED)
+
+
+def test_both_words_of_each_direction_pair_are_kept() -> None:
+    """on vs off and in vs out: the detector drops on and in as stopwords."""
+    off = "Turn the cache off for the test suite."
+    _assert_vetoed("turn the cache on for the test suite", off, REJECT_NOT_CONTAINED)
+    _assert_matches("turn the cache off for the test suite", off)
+
+    out = "Copy the logs out of the archive folder."
+    _assert_vetoed("copy the logs in the archive folder", out, REJECT_NOT_CONTAINED)
+
+
+def test_passive_by_is_kept_so_roles_cannot_swap() -> None:
+    target = "The scanner calls the parser."
+    _assert_vetoed("the scanner is called by the parser", target, REJECT_NOT_CONTAINED)
+    _assert_matches("the scanner calls the parser", target)
 
 
 _DEPLOY = "deploy the billing service into production"
