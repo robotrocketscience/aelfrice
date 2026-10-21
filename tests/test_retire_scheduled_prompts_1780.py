@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -227,6 +229,46 @@ def test_scan_skips_a_line_nested_past_the_recursion_limit(
     scan = scan_host_sessions([host])
     assert scan.files_read == 1
     assert scan.flagged == {(SESSION_A, turn_sha(SCHEDULED_ONLY))}
+
+
+def test_scan_skips_lines_that_are_not_json_objects(tmp_path: Path) -> None:
+    host = tmp_path / "h.jsonl"
+    host.write_bytes(
+        b"not json\n[1, 2]\n\xff\xfe\n"
+        + (json.dumps(_host(SCHEDULED_ONLY, scheduled=True)) + "\n").encode(),
+    )
+    scan = scan_host_sessions([host])
+    assert scan.files_read == 1
+    assert scan.unreadable == []
+    assert scan.flagged == {(SESSION_A, turn_sha(SCHEDULED_ONLY))}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 000 does not block reads on Windows or as root",
+)
+def test_unreadable_file_is_listed_and_the_rest_is_read(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    host = _seed(store, tmp_path)
+    blocked = _write_jsonl(tmp_path / "blocked.jsonl", [
+        _host(TYPED_ONLY, scheduled=True),
+    ])
+    blocked.chmod(0)
+    try:
+        report = retire_scheduled_prompt_beliefs(
+            store, [host, blocked], dry_run=True,
+        )
+    finally:
+        blocked.chmod(0o600)
+    assert report.scan.files_read == 1
+    assert report.scan.unreadable == [str(blocked)]
+    assert [bid for bid, _ in report.candidates] == [
+        _belief_id(store, SCHEDULED_ONLY),
+    ]
+    assert f"unreadable, skipped: {blocked}" in (
+        format_scheduled_prompt_report(report)
+    )
 
 
 def test_dry_run_lists_scheduled_only_beliefs_and_changes_nothing(
