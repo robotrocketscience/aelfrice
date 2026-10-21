@@ -40,10 +40,10 @@ class HostTurnScan:
     """Turn keys read from host session files."""
 
     files_read: int = 0
-    unreadable: list[str] = field(default_factory=list)
+    unreadable: list[str] = field(default_factory=list[str])
     flagged_records: int = 0
-    flagged: set[TurnKey] = field(default_factory=set)
-    ambiguous: set[TurnKey] = field(default_factory=set)
+    flagged: set[TurnKey] = field(default_factory=set[TurnKey])
+    ambiguous: set[TurnKey] = field(default_factory=set[TurnKey])
 
 
 @dataclass
@@ -52,8 +52,10 @@ class ScheduledPromptReport:
 
     dry_run: bool
     scan: HostTurnScan
-    candidates: list[tuple[str, str]] = field(default_factory=list)
-    locked: list[str] = field(default_factory=list)
+    candidates: list[tuple[str, str]] = field(
+        default_factory=list[tuple[str, str]],
+    )
+    locked: list[str] = field(default_factory=list[str])
     retired: int = 0
 
 
