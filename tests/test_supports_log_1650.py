@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import aelfrice.reworded_restatement as reworded_restatement
 import aelfrice.supports_log as supports_log
 from aelfrice.ingest import _ingest_turn
 from aelfrice.models import (
@@ -301,13 +302,13 @@ def test_candidates_per_sentence_are_bounded_by_k(
         _target(store, f"p{i}", _TARGET + f" Build {i} passed.")
     monkeypatch.setattr(supports_log, "REWORDED_CANDIDATE_TOP_K", 2)
     calls: list[str] = []
-    real = supports_log.match_reworded
+    real = reworded_restatement.match_reworded
 
     def spy(user: str, target: str) -> object:
         calls.append(target)
         return real(user, target)
 
-    monkeypatch.setattr(supports_log, "match_reworded", spy)
+    monkeypatch.setattr(reworded_restatement, "match_reworded", spy)
     assert log_reworded_support(store, _typed(store)) == 2
     assert len(calls) == 2
 
@@ -319,7 +320,7 @@ def test_a_failure_inside_the_pass_is_reported_and_swallowed(
     _target(store)
     _target(store, "p2", _TARGET + " It runs nightly.")
     pairs = _typed(store)
-    real = supports_log.match_reworded
+    real = reworded_restatement.match_reworded
     seen: list[str] = []
 
     def flaky(user: str, target: str) -> object:
@@ -328,7 +329,7 @@ def test_a_failure_inside_the_pass_is_reported_and_swallowed(
             raise RuntimeError("synthetic matcher failure")
         return real(user, target)
 
-    monkeypatch.setattr(supports_log, "match_reworded", flaky)
+    monkeypatch.setattr(reworded_restatement, "match_reworded", flaky)
     assert log_reworded_support(store, pairs) == 0
     assert "RuntimeError: synthetic matcher failure" in capsys.readouterr().err
     # The first match was rolled back with the pass, and the turn stays.
@@ -367,3 +368,20 @@ def test_a_store_without_the_table_is_skipped(
     with pytest.raises(sqlite3.OperationalError):
         store._conn.execute(  # noqa: SLF001
             "SELECT 1 FROM belief_support_evidence")
+
+
+@pytest.mark.timeout(130)
+def test_reading_the_flag_does_not_load_the_matcher() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import aelfrice.supports_log as s; "
+        "s.is_reworded_support_log_enabled(env={}); "
+        "print('aelfrice.reworded_restatement' in sys.modules)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        check=True, timeout=120,
+    )
+    assert out.stdout.strip() == "False"

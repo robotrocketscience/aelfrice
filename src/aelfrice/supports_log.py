@@ -47,7 +47,6 @@ from aelfrice.models import (
     ORIGIN_USER_VALIDATED,
     SUPPORT_EVIDENCE_KIND_REWORDED,
 )
-from aelfrice.reworded_restatement import candidate_terms, match_reworded
 from aelfrice.store import MemoryStore
 
 ENV_LOG_REWORDED_SUPPORT: Final[str] = "AELFRICE_LOG_REWORDED_SUPPORT"
@@ -159,6 +158,14 @@ def _user_typed(entry: Mapping[str, object] | None, belief_id: str) -> bool:
 
 
 def _log(store: MemoryStore, supporters: Iterable[tuple[str, str]]) -> int:
+    # Imported here, not at module scope: the matcher pulls in the BM25
+    # stack (numpy, scipy), about 130 ms, and ingest imports this module
+    # to read the flag on every run, including with the flag off.
+    from aelfrice.reworded_restatement import (  # noqa: PLC0415
+        candidate_terms,
+        match_reworded,
+    )
+
     recorded = 0
     with store.transaction():
         for belief_id, log_id in supporters:
