@@ -41,9 +41,10 @@ A containing sentence is still rejected by any of these vetoes:
   more, counted before stemming.
 * ``negation_mismatch``: exactly one of the two sentences is negated.
 * ``negation_scope``: both are negated, but some negation in the user
-  sentence has no target negation between the same residual words, so
-  "the parser is not fast" never matches "the parser is slow and the
-  scanner is not fast".
+  sentence has no negation between the same residual words in the
+  matched target clauses, so "do not deploy the billing service" never
+  matches "deploy the billing service and do not deploy the search
+  service".
 * ``quantifier_mismatch``: the sentences carry different sets of
   quantifier positions (``relationship_detector.QUANT_AXIS``),
   including one having a quantifier and the other none.
@@ -217,11 +218,11 @@ class _Analysis:
     surface: tuple[str, ...]
     residual: tuple[str, ...]
     clauses: tuple[tuple[str, ...], ...]
+    clause_anchors: tuple[frozenset[_Anchor], ...]
     signals: Signals
     quantifiers: frozenset[float]
     numbers: frozenset[str]
     polarity: frozenset[str]
-    negation_anchors: frozenset[_Anchor]
 
 
 # Entries kept per cache. One user sentence is checked against many
@@ -341,14 +342,23 @@ def _residual(signals: Signals) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return surface, tuple(stem for tok in surface for stem in tokenize_stemmed(tok))
 
 
-def _clauses(text: str) -> tuple[tuple[str, ...], ...]:
-    """The stemmed residual of each clause of ``text`` that has one."""
-    result = []
+def _clauses(
+    text: str,
+) -> tuple[tuple[tuple[str, ...], ...], tuple[frozenset[_Anchor], ...]]:
+    """The stemmed residual and negation anchors of each clause that has a residual.
+
+    Anchors are read inside one clause, so a negation never anchors on a
+    word from the clause before or after it.
+    """
+    stems_out: list[tuple[str, ...]] = []
+    anchors_out: list[frozenset[_Anchor]] = []
     for chunk in _CLAUSE_BREAK_RE.split(text):
-        stems = _residual(extract_signals(chunk))[1]
+        signals = extract_signals(chunk)
+        surface, stems = _residual(signals)
         if stems:
-            result.append(stems)
-    return tuple(result)
+            stems_out.append(stems)
+            anchors_out.append(_negation_anchors(signals.tokens, frozenset(surface)))
+    return tuple(stems_out), tuple(anchors_out)
 
 
 @lru_cache(maxsize=_CACHE_SIZE)
@@ -356,17 +366,17 @@ def _analyse(text: str) -> _Analysis:
     text = _normalize(text)
     signals = extract_signals(text)
     surface, residual = _residual(signals)
+    clauses, clause_anchors = _clauses(text)
     quantifiers = frozenset(
         QUANT_AXIS[tok] for tok in signals.tokens if tok in QUANT_AXIS
     )
     return _Analysis(
         text=text, mixed_script=_has_mixed_script_word(text),
-        surface=surface, residual=residual, clauses=_clauses(text),
-        signals=signals,
+        surface=surface, residual=residual, clauses=clauses,
+        clause_anchors=clause_anchors, signals=signals,
         quantifiers=quantifiers,
         numbers=frozenset(_NUMBER_RE.findall(text)),
         polarity=frozenset(signals.tokens) & POLARITY_TOKENS,
-        negation_anchors=_negation_anchors(signals.tokens, frozenset(surface)),
     )
 
 
@@ -444,17 +454,18 @@ def _veto(
 ) -> str | None:
     """The first veto that rejects a run of clauses holding the user sentence.
 
-    ``run`` gives the first and last target clause of the run. Order is
-    compared inside the run only, so a word the target repeats in an
-    earlier clause does not count.
+    ``run`` gives the first and last target clause of the run. Negation
+    scope and order are compared inside the run only, so a negation or
+    a repeated word in another clause of the target does not count.
     """
+    held = frozenset().union(*target.clause_anchors[run[0]:run[1] + 1])
     if target.mixed_script:
         return REJECT_MIXED_SCRIPT
     if user.signals.has_negation != target.signals.has_negation:
         return REJECT_NEGATION_MISMATCH
     if not all(
-        _anchor_held(anchor, target.negation_anchors)
-        for anchor in user.negation_anchors
+        _anchor_held(anchor, held)
+        for anchors in user.clause_anchors for anchor in anchors
     ):
         return REJECT_NEGATION_SCOPE
     if user.quantifiers != target.quantifiers:

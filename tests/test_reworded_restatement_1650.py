@@ -253,6 +253,17 @@ def test_veto_negation_scope() -> None:
     )
 
 
+@pytest.mark.parametrize(("user", "target"), [
+    ("do not deploy the billing service",
+     "Deploy the billing service and do not deploy the search service."),
+    ("never restart the billing service",
+     "Restart the billing service and never restart the search service."),
+], ids=["not", "never"])
+def test_veto_negation_scope_reads_only_the_matched_clauses(user: str, target: str) -> None:
+    """The target negates its second clause; the user sentence fits the first."""
+    _assert_vetoed(user, target, REJECT_NEGATION_SCOPE)
+
+
 def test_veto_quantifier_mismatch() -> None:
     target = "The nightly job always rebuilds the search index."
     _assert_vetoed(
