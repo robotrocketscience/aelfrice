@@ -136,7 +136,8 @@ def scan_host_sessions(paths: Iterable[Path]) -> HostTurnScan:
                         continue
                     try:
                         obj = json.loads(raw)  # pyright: ignore[reportAny]
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, RecursionError):
+                        # A line nested past the decoder's limit is bad too.
                         continue
                     if not isinstance(obj, dict):
                         continue

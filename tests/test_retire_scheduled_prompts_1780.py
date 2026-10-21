@@ -218,6 +218,17 @@ def test_apply_keeps_a_belief_a_queued_typed_prompt_also_made(
     assert bid in _active_ids(store)
 
 
+def test_scan_skips_a_line_nested_past_the_recursion_limit(
+    tmp_path: Path,
+) -> None:
+    host = _write_jsonl(tmp_path / "h.jsonl", [_host(SCHEDULED_ONLY, scheduled=True)])
+    with host.open("ab") as f:
+        f.write(b"[" * 100000 + b"\n")
+    scan = scan_host_sessions([host])
+    assert scan.files_read == 1
+    assert scan.flagged == {(SESSION_A, turn_sha(SCHEDULED_ONLY))}
+
+
 def test_dry_run_lists_scheduled_only_beliefs_and_changes_nothing(
     store: MemoryStore, tmp_path: Path,
 ) -> None:
