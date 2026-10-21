@@ -74,37 +74,43 @@ jobs:
 
       - name: Run aelf bench all --canonical
         id: bench
+        # scripts/bench_canonical_step.py writes `out` to GITHUB_OUTPUT
+        # before the bench starts and `rc` after it ends. Exit 2 means an
+        # adapter's dataset was missing: the run finished, wrote its JSON,
+        # and the band check reads those adapters as SKIP. This step fails
+        # only on another exit code or a missing JSON. There is no
+        # continue-on-error: the steps below run on `!cancelled()`, and
+        # the last step reads `rc` itself (audit CI-01).
         run: |
           set -euo pipefail
           today=$(date -u +%Y-%m-%d)
           out=".bench-results-branch/v2.0.0-cron-${today}.json"
           # `--canonical` so the dispatcher refuses if the cut doesn't
-          # match CANONICAL_INVOCATIONS. The merged JSON's label still
-          # reads `v2.0.0 cron <ts>` (canonical-vs-cron is by filename,
-          # not by --canonical flag inside the run).
-          uv run aelf bench all --canonical --out "${out}"
-          echo "out=${out}" >> "$GITHUB_OUTPUT"
-        # Continue on band-check failure so we still commit the cron
-        # entry; `Band-check` step below sets the actual job status.
-        continue-on-error: true
+          # match CANONICAL_INVOCATIONS.
+          python3 scripts/bench_canonical_step.py run --out "${out}" -- \
+            uv run aelf bench all --canonical --out "${out}"
 
       - name: Band-check vs canonical
         id: bandcheck
-        # `hashFiles()` only accepts string literals (not expressions
-        # like `steps.bench.outputs.out`), so the previous form was
-        # silently always-empty and skipped the band-check on every
-        # run. Gate on the step output directly: when bench succeeded,
-        # `out` is set; when it errored under continue-on-error, `out`
-        # is unset.
-        if: steps.bench.outputs.out != ''
+        # Runs whatever the bench step did. The gate is the JSON file
+        # (`test -s` below), not a step output: the old gate read `out`,
+        # which the bench step never wrote when the bench exited 2, so
+        # this step was skipped on every night with a missing dataset.
+        if: ${{ !cancelled() }}
+        env:
+          OUT: ${{ steps.bench.outputs.out }}
         run: |
           set -euo pipefail
+          if [ -z "${OUT}" ] || ! test -s "${OUT}"; then
+            echo "::error::no bench JSON to band-check (out='${OUT}')"
+            exit 1
+          fi
           uv run python -c "
-          import json, sys
+          import os, sys
           from pathlib import Path
           from benchmarks import tolerance
           cano = tolerance.load_report(Path('benchmarks/results/v2.0.0.json'))
-          obs = tolerance.load_report(Path('${{ steps.bench.outputs.out }}'))
+          obs = tolerance.load_report(Path(os.environ['OUT']))
           checks = tolerance.check_report(cano, obs)
           overall, counts = tolerance.summarize(checks)
           print(f'overall: {overall.value}; counts: {counts}')
@@ -122,13 +128,16 @@ jobs:
         # Renders the one-line badge from the merged JSON. Uses
         # `benchmarks.badge` (unit-tested) so the workflow stays free
         # of count logic. Output is stashed in $GITHUB_OUTPUT for the
-        # next step. Skips when bench errored — leaves the previous
+        # next step. Runs when the bench finished (rc 0, or 2 for a
+        # partial run). Skips when it errored, which leaves the previous
         # badge in place rather than rewriting to a stale 0/N line.
         id: badge
-        if: steps.bench.outputs.out != ''
+        if: ${{ !cancelled() && (steps.bench.outputs.rc == '0' || steps.bench.outputs.rc == '2') }}
+        env:
+          OUT: ${{ steps.bench.outputs.out }}
         run: |
           set -euo pipefail
-          text=$(uv run python -m benchmarks.badge "${{ steps.bench.outputs.out }}")
+          text=$(uv run python -m benchmarks.badge "${OUT}")
           echo "text=${text}" >> "$GITHUB_OUTPUT"
           echo "computed: ${text}"
 
@@ -138,11 +147,13 @@ jobs:
         # touched (operator cherry-picks if they want main current).
         # README is copied from the main checkout each run so the
         # bench-canonical-results branch never carries a stale README.
-        if: steps.badge.outputs.text != ''
+        if: ${{ !cancelled() && steps.badge.outputs.text != '' }}
+        env:
+          BADGE_TEXT: ${{ steps.badge.outputs.text }}
         run: |
           set -euo pipefail
           cp README.md .bench-results-branch/README.md
-          new="${{ steps.badge.outputs.text }}" awk '
+          new="${BADGE_TEXT}" awk '
             BEGIN { in_block=0 }
             /<!-- bench-canonical-badge:start -->/ { print; print ENVIRON["new"]; in_block=1; next }
             /<!-- bench-canonical-badge:end -->/   { print; in_block=0; next }
@@ -152,6 +163,8 @@ jobs:
           mv .bench-results-branch/README.md.new .bench-results-branch/README.md
 
       - name: Commit + push to bench-canonical-results
+        # Commits the night's JSON even when the band check failed.
+        if: ${{ !cancelled() }}
         env:
           GIT_AUTHOR_NAME: aelfrice-bench-bot
           GIT_AUTHOR_EMAIL: aelfrice-bench-bot@users.noreply.github.com
@@ -169,8 +182,16 @@ jobs:
             echo "no bench-canonical delta to commit"
           fi
 
-      - name: Fail job if band-busting regression
-        if: steps.bandcheck.outcome == 'failure'
+      - name: Fail job unless the band check passed
+        # Fails when the band check failed, when it was skipped or never
+        # reached, or when the bench exit code is not 0 or 2. It reads
+        # `rc` and the band-check outcome itself, so the job's result does
+        # not depend on an earlier step's failure surviving to the end.
+        if: ${{ !cancelled() }}
+        env:
+          BENCH_RC: ${{ steps.bench.outputs.rc }}
+          BANDCHECK_OUTCOME: ${{ steps.bandcheck.outcome }}
         run: |
-          echo "::error::bench-canonical detected a band-busting regression vs benchmarks/results/v2.0.0.json"
-          exit 1
+          set -euo pipefail
+          python3 scripts/bench_canonical_step.py verdict \
+            --rc "${BENCH_RC}" --bandcheck "${BANDCHECK_OUTCOME}"
