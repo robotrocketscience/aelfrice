@@ -1,7 +1,7 @@
 {
   "aelfrice_version": "5.1.1",
-  "captured_at_utc": "2026-10-21T11:02:02Z",
-  "git_commit": "4aab952b5273cb2b2b0cade5dbc50e36c2e093ea",
+  "captured_at_utc": "2026-10-21T19:38:37Z",
+  "git_commit": "ea090c9a66d9a2fc0755fab7e8ca315fdd20dd76",
   "harness_version": "1",
   "headline_cut": {
     "amabench": [
@@ -95,7 +95,7 @@
   "results": {
     "amabench": {
       "_": {
-        "_elapsed_sec": 854.159,
+        "_elapsed_sec": 978.957,
         "_status": "ok",
         "output": {
           "_not_applicable": {
@@ -196,25 +196,25 @@
     },
     "locomo": {
       "_": {
-        "_elapsed_sec": 0.926,
+        "_elapsed_sec": 0.732,
         "_error_message": "LoCoMo data not found at /tmp/LoCoMo/data/locomo10.json: [Errno 2] No such file or directory: '/tmp/LoCoMo/data/locomo10.json'",
         "_status": "skipped_data_missing"
       }
     },
     "longmemeval": {
       "_": {
-        "_elapsed_sec": 85.813,
+        "_elapsed_sec": 87.612,
         "_status": "ok",
         "output": {
           "_not_applicable": {
             "exact_match": "requires a reader: exact match compares the prediction to the gold answer as whole normalised strings, and the prediction is the retrieved context, which is never one short answer"
           },
           "avg_beliefs_per_query": 47.25,
-          "avg_latency_ms": 24.44,
+          "avg_latency_ms": 23.2,
           "category_stats": {
             "knowledge-update": {
               "avg_beliefs": 49.45,
-              "avg_latency_ms": 20.56,
+              "avg_latency_ms": 20.3,
               "count": 78,
               "exact_match": "n/a",
               "f1": 0.0067,
@@ -222,7 +222,7 @@
             },
             "multi-session": {
               "avg_beliefs": 48.95,
-              "avg_latency_ms": 24.84,
+              "avg_latency_ms": 24.45,
               "count": 133,
               "exact_match": "n/a",
               "f1": 0.0057,
@@ -230,7 +230,7 @@
             },
             "single-session-assistant": {
               "avg_beliefs": 35.59,
-              "avg_latency_ms": 12.13,
+              "avg_latency_ms": 20.45,
               "count": 56,
               "exact_match": "n/a",
               "f1": 0.0206,
@@ -238,7 +238,7 @@
             },
             "single-session-preference": {
               "avg_beliefs": 48.27,
-              "avg_latency_ms": 18.29,
+              "avg_latency_ms": 17.91,
               "count": 30,
               "exact_match": "n/a",
               "f1": 0.0685,
@@ -246,7 +246,7 @@
             },
             "single-session-user": {
               "avg_beliefs": 48.93,
-              "avg_latency_ms": 39.43,
+              "avg_latency_ms": 18.02,
               "count": 70,
               "exact_match": "n/a",
               "f1": 0.0066,
@@ -254,7 +254,7 @@
             },
             "temporal-reasoning": {
               "avg_beliefs": 48.08,
-              "avg_latency_ms": 24.98,
+              "avg_latency_ms": 28.73,
               "count": 133,
               "exact_match": "n/a",
               "f1": 0.0105,
@@ -271,7 +271,7 @@
             "recall_at_5": 0.3383
           },
           "substring_exact_match": 0.476,
-          "total_ingest_time_s": 63.31,
+          "total_ingest_time_s": 64.16,
           "total_ingest_turns": 10960,
           "total_questions": 500
         }
@@ -279,7 +279,7 @@
     },
     "mab": {
       "Accurate_Retrieval": {
-        "_elapsed_sec": 727.608,
+        "_elapsed_sec": 784.541,
         "_status": "ok",
         "output": {
           "_not_applicable": {
@@ -301,7 +301,7 @@
         }
       },
       "Conflict_Resolution": {
-        "_elapsed_sec": 159.241,
+        "_elapsed_sec": 174.763,
         "_status": "ok",
         "output": {
           "_not_applicable": {
@@ -323,7 +323,7 @@
         }
       },
       "Long_Range_Understanding": {
-        "_elapsed_sec": 1605.443,
+        "_elapsed_sec": 1689.882,
         "_status": "ok",
         "output": {
           "_not_applicable": {
@@ -345,7 +345,7 @@
         }
       },
       "Test_Time_Learning": {
-        "_elapsed_sec": 1122.648,
+        "_elapsed_sec": 1241.62,
         "_status": "ok",
         "output": {
           "_not_applicable": {
@@ -369,22 +369,22 @@
     },
     "structmemeval": {
       "accounting": {
-        "_elapsed_sec": 0.084,
+        "_elapsed_sec": 0.072,
         "_error_message": "No cases found. Check --data path and --task/--bench options.",
         "_status": "skipped_data_missing"
       },
       "location": {
-        "_elapsed_sec": 0.089,
+        "_elapsed_sec": 0.085,
         "_error_message": "No cases found. Check --data path and --task/--bench options.",
         "_status": "skipped_data_missing"
       },
       "recommendations": {
-        "_elapsed_sec": 0.084,
+        "_elapsed_sec": 0.069,
         "_error_message": "No cases found. Check --data path and --task/--bench options.",
         "_status": "skipped_data_missing"
       },
       "tree": {
-        "_elapsed_sec": 0.086,
+        "_elapsed_sec": 0.067,
         "_error_message": "No cases found. Check --data path and --task/--bench options.",
         "_status": "skipped_data_missing"
       }
