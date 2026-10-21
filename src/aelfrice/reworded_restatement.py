@@ -35,10 +35,11 @@ A containing sentence is still rejected by any of these vetoes:
 
 * ``mixed_script``: a word in either sentence mixes Latin letters with
   Cyrillic, Greek, Armenian or Cherokee ones, such as a Cyrillic ``o``
-  inside ``not``.
+  inside ``not``. A unit sign after a number (``20µs``, ``10kΩ``,
+  ``5 °C``) is not read as a letter here or in the lookalike veto.
 * ``lookalike``: the target sentence holds a letter, mark, digit or
-  symbol outside ASCII that the user sentence lacks, outside a word
-  that starts with a digit, or a word the user sentence lacks that
+  symbol outside ASCII that the user sentence lacks, or a word the
+  user sentence lacks that
   spells a negation, quantifier or polarity word with digits (``n0t``).
   Either one can hide a negation as an unknown extra word, such as a
   small-capital or Coptic ``o`` inside ``not``.
@@ -277,9 +278,13 @@ _CONFUSABLE_SCRIPTS: Final[frozenset[str]] = frozenset({
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"\w+")
 
-# A word that starts with a digit, such as ``20µs`` or ``10kΩ``. A unit
-# symbol outside ASCII inside one is a quantity, not a disguised word.
-_DIGIT_WORD_RE: Final[re.Pattern[str]] = re.compile(r"\b\d\w*")
+# A unit sign after a number, with an optional space and SI prefix, as
+# NFKC leaves it: the micro sign becomes Greek mu and the ohm sign Greek
+# omega. Removed before the script checks, so ``20µs`` and ``10kΩ`` are
+# quantities, not mixed-script or lookalike words.
+_UNIT_SIGN_RE: Final[re.Pattern[str]] = re.compile(
+    r"(\d\s?[A-Za-z]?)[\u03bc\u03a9\u03c9\u00b0]"
+)
 
 # Digits that stand in for letters. ``1`` reads as either ``l`` or ``i``.
 _DIGIT_LETTERS: Final[tuple[dict[int, str], ...]] = (
@@ -325,9 +330,9 @@ def _has_mixed_script_word(text: str) -> bool:
 
 
 def _foreign_characters(text: str) -> frozenset[str]:
-    """Letters, marks, digits and symbols outside ASCII, outside digit-led words."""
+    """Letters, marks, digits and symbols outside ASCII."""
     return frozenset(
-        ch for ch in _DIGIT_WORD_RE.sub(" ", text)
+        ch for ch in text
         if ord(ch) > 0x7F and unicodedata.category(ch)[0] in "LMNS"
     )
 
@@ -434,12 +439,13 @@ def _analyse(text: str) -> _Analysis:
     surface, residual = _residual(signals)
     clauses, clause_anchors = _clauses(text)
     numbers = frozenset(_NUMBER_RE.findall(text))
+    script_text = _UNIT_SIGN_RE.sub(r"\1", text)
     quantifiers = frozenset(
         QUANT_AXIS[tok] for tok in signals.tokens if tok in QUANT_AXIS
     )
     return _Analysis(
-        text=text, mixed_script=_has_mixed_script_word(text),
-        foreign=_foreign_characters(text),
+        text=text, mixed_script=_has_mixed_script_word(script_text),
+        foreign=_foreign_characters(script_text),
         digit_spelled=_digit_spelled_words(signals.tokens),
         surface=surface, residual=residual, clauses=clauses,
         clause_anchors=clause_anchors, signals=signals,

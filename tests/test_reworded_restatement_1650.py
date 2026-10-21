@@ -222,6 +222,30 @@ def test_lookalike_control_characters_and_words_the_user_also_typed() -> None:
     _assert_matches("we do n0t deploy the billing service", "We do n0t deploy the billing service.")
 
 
+_REQUEST = "the parser handles each request in 5 seconds"
+
+
+@pytest.mark.parametrize(("user", "target"), [
+    (_REQUEST, "The parser handles each request in 5 seconds with 20\u00b5s jitter."),
+    (_REQUEST, "The parser handles each request in 5 seconds with 20\u03bcs jitter."),
+    (_REQUEST, "The parser handles each request in 5 seconds with 20 \u03bcs jitter."),
+    ("the pull resistor value is 10 kiloohm",
+     "The pull resistor value is 10 kiloohm (10k\u2126)."),
+    ("the server room stays cool", "The server room stays cool at 18 \u00b0C."),
+], ids=["micro-sign", "greek-mu", "spaced-mu", "ohm-sign", "degree"])
+def test_a_unit_sign_after_a_number_is_not_a_lookalike(user: str, target: str) -> None:
+    _assert_matches(user, target)
+
+
+def test_a_lookalike_letter_after_a_digit_is_still_vetoed() -> None:
+    """Only unit signs are exempt: a small-capital l in 0nly is not one."""
+    _assert_vetoed(
+        "integration tests are flaky on windows",
+        "0n\u029fy integration tests are flaky on windows.",
+        REJECT_LOOKALIKE,
+    )
+
+
 # --- One test per veto ----------------------------------------------------
 
 
