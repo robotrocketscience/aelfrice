@@ -467,8 +467,9 @@ def _open_gaps(
     """
     if not candidates:
         return []
-    # Imported here, not at module scope, so the SessionStart notice pays
-    # for it only when a failed request is on record.
+    # Imported here, not at module scope: db_paths loads the store. The
+    # SessionStart notice has it loaded already; other callers pay for it
+    # only when a failed request is on record.
     from aelfrice.db_paths import store_file_present  # noqa: PLC0415
 
     if not store_file_present(path):
