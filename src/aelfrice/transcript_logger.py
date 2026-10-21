@@ -616,8 +616,20 @@ def _prompt_is_scheduled(transcript_path: object, prompt: str) -> bool:
     yet: a match behind one is an earlier turn with the same text.
 
     Every failure reads as False, so the prompt is appended as it was
-    before #1780: a missing or unreadable file, no matching record, or a
-    record the host has not written yet.
+    before #1780: a missing or unreadable file, no matching record, a
+    record the host has not written yet, or any exception the scan raises.
+    """
+    try:
+        return _scan_host_tail(transcript_path, prompt)
+    except Exception:
+        return False
+
+
+def _scan_host_tail(transcript_path: object, prompt: str) -> bool:
+    """The scan behind `_prompt_is_scheduled`, which absorbs its exceptions.
+
+    A line that does not parse is skipped, including one nested deeper
+    than the decoder's recursion limit.
     """
     if not isinstance(transcript_path, str) or not transcript_path:
         return False
@@ -642,7 +654,7 @@ def _prompt_is_scheduled(transcript_path: object, prompt: str) -> bool:
             continue
         try:
             obj = json.loads(raw.decode("utf-8"))  # pyright: ignore[reportAny]
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (ValueError, RecursionError):
             continue
         if not isinstance(obj, dict):
             continue
