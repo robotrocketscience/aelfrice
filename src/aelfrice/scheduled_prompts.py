@@ -259,7 +259,8 @@ def format_scheduled_prompt_report(report: ScheduledPromptReport) -> str:
             lines.append(f"  {bid}")
     if report.other_evidence:
         lines.append(
-            "promoted, confirmed or corroborated by another source, kept: "
+            "promoted, confirmed, restored, kept in review or "
+            "corroborated by another source, kept: "
             f"{len(report.other_evidence)}"
         )
         for bid in report.other_evidence:

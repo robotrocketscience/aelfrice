@@ -11374,11 +11374,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "read host session files (a directory is searched for *.jsonl), "
             "and list the beliefs that only scheduled or meta prompts "
             "produced (issue #1780). A belief that a typed prompt also "
-            "produced is kept, as is a locked, promoted or confirmed "
-            "belief and one "
+            "produced is kept, as is a locked, promoted, confirmed or "
+            "restored belief, one kept in aelf review, and one "
             "another source corroborated. Bypasses the "
             "hooks/graph checks. Combine with --apply to retire them; "
-            "default is dry-run."
+            "aelf restore <id> brings one back. Default is dry-run."
         ),
     )
     p_doctor.add_argument(
