@@ -119,11 +119,12 @@ git push github vX.Y.Z
 
 You sign the **release commit** with SSH (`gpg.format = ssh`, key `~/.ssh/id_rrs`). The **tag itself is lightweight**: it points directly at that commit. Every release tag to date has this form; for example, `git cat-file -t v3.8.0` prints `commit`. Pushing a tag starts `.github/workflows/publish.yml`, which does these steps:
 
-1. Run pytest as a gate.
-2. Build the sdist and the wheel.
-3. Generate the Sigstore attestation.
-4. Upload the files to PyPI through [Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
-5. Promote the drafted GitHub Release to published and to Latest.
+1. Run `scripts/release_preflight.sh`. The job stops here unless `main` contains the tagged commit and the `pyproject.toml` version at that commit equals the tag without its leading `v`.
+2. Run pytest as a gate.
+3. Build the sdist and the wheel.
+4. Generate the Sigstore attestation.
+5. Upload the files to PyPI through [Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
+6. Promote the drafted GitHub Release to published and to Latest.
 
 The PyPI publish path has been live since v1.0. Either `pip index versions aelfrice` or `uv tool install aelfrice` reflects the current released set.
 
