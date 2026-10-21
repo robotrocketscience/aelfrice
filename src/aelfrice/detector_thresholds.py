@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 4
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 5
 
 # --- Kinds -------------------------------------------------------------
 
@@ -576,11 +576,11 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
     ),
     # --- reworded_restatement: the SUPPORTS matcher (#1650) ------------
     #
-    # DORMANT, like the value_compare block above. Nothing calls
-    # `match_reworded` yet: the later #1650 change logs its matches with
-    # applied=0 and applies SUPPORTS edges to phantoms only after a
-    # precision gate. Pinned now so that change starts from a recorded
-    # baseline. Read the `gates` text below as what happens WHEN reached.
+    # LOG-ONLY. `supports_log` calls `match_reworded` behind a default-off
+    # flag and records each match in `belief_support_evidence` with
+    # applied=0; nothing writes a SUPPORTS edge yet. A later #1650 change
+    # applies logged matches to phantoms only, after a precision gate.
+    # Read the `gates` text below as what happens once edges are written.
     PinnedThreshold(
         module="aelfrice.reworded_restatement",
         name="REWORDED_MIN_RESIDUAL_TOKENS",
@@ -643,6 +643,37 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "one lets a weaker or reversed target (`unable`, `few`, `or`) "
             "match and adds wrong edges; adding one rejects more pairs "
             "and removes edges."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.supports_log",
+        name="REWORDED_CANDIDATE_TOP_K",
+        kind=KIND_CAP,
+        value="20",
+        size=None,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "The most candidate targets matched against one user sentence, "
+            "ranked by bm25 among beliefs that hold every candidate term. "
+            "Lowering it can drop a real target on a store with many "
+            "near-copies of one belief and removes edges; raising it costs "
+            "matcher time per sentence and can add edges."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.supports_log",
+        name="USER_ORIGINS",
+        kind=KIND_TOKEN_SET,
+        value="sha256:741851d63f6c56848a427d46ae39fa12645e3df0a9772a22ddfac44dfbd31b0e",
+        size=4,
+        edge_types=("SUPPORTS",),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "Origins whose beliefs are never a SUPPORTS target. Removing "
+            "one lets a user sentence support another belief the user "
+            "wrote and adds edges; adding one removes every edge into "
+            "beliefs of that origin."
         ),
     ),
     # --- wonder: RELATES_TO from phantom to constituents ---------------
@@ -796,6 +827,10 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # pinned as new entries. The matcher writes no edge yet, so no store
     # changes; the row records the baseline the SUPPORTS writer starts from.
     4: "11d69e8fefd666aa337c788c0da99d5e3c7b0b50d7b39a2507fa1f1be0e40bd9",
+    # 5 (#1650): the reworded-support log pass pinned its candidate cap
+    # and the origins it never targets. It logs matches with applied=0
+    # and writes no edge, so no store's edges change.
+    5: "dba6a96d2c615b8d265d4fa542412d41c140754dfe3d786762aafb1f6b77efd3",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
