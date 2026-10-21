@@ -18,6 +18,7 @@ import pytest
 
 import aelfrice.cli as cli_module
 from aelfrice.claude_memory_reconcile import ingest_memory_text
+from aelfrice.feedback import apply_feedback
 from aelfrice.ingest import ingest_jsonl, turn_sha, user_turn_key
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
@@ -27,6 +28,7 @@ from aelfrice.models import (
 )
 from aelfrice.promotion import promote
 from aelfrice.scheduled_prompts import (
+    USER_AFFIRMED_FEEDBACK_SOURCES,
     format_scheduled_prompt_report,
     retire_scheduled_prompt_beliefs,
     scan_host_sessions,
@@ -292,6 +294,33 @@ def test_apply_keeps_a_belief_the_user_promoted(
         format_scheduled_prompt_report(report)
     )
     assert bid in _active_ids(store)
+
+
+@pytest.mark.parametrize(
+    ("source", "valence", "kept"),
+    [("user_confirmed", 1.0, True), ("user", 1.0, True),
+     ("user", -1.0, False), ("retrieval_driven_feedback", 1.0, False)],
+    ids=["confirm", "feedback-used", "feedback-harmful", "retrieval"],
+)
+def test_apply_keeps_a_belief_the_user_affirmed(
+    store: MemoryStore, tmp_path: Path, source: str, valence: float, kept: bool,
+) -> None:
+    # `aelf confirm` writes only a feedback_history row, never ingest_log.
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    apply_feedback(store, bid, valence, source, respect_lock=False)
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert (bid in report.other_evidence) is kept
+    assert (bid in _active_ids(store)) is kept
+
+
+def test_affirmed_sources_are_the_cli_defaults() -> None:
+    parser = cli_module.build_parser()
+    defaults = {
+        parser.parse_args(["confirm", "x"]).source,
+        parser.parse_args(["feedback", "x", "used"]).source,
+    }
+    assert defaults == USER_AFFIRMED_FEEDBACK_SOURCES
 
 
 def test_apply_keeps_a_belief_another_source_corroborated(

@@ -14,8 +14,9 @@ produced the same key, and it is dropped. A belief is retired only when
 every `ingest_log` row that derived or corroborated it carries a flagged
 key. Some evidence never reaches `ingest_log`, so a belief is also kept
 when it is locked, when its origin is no longer `user_transcript` (a
-promotion to `user_validated`, say), or when a source other than
-transcript ingest corroborated it (the host memory mirror, say).
+promotion to `user_validated`, say), when the user affirmed it (`aelf
+confirm`), or when a source other than transcript ingest corroborated it
+(the host memory mirror, say).
 
 `aelf doctor --retire-scheduled-prompts PATH...` runs the pass. It is a
 dry run unless `--apply` is given.
@@ -40,6 +41,12 @@ if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
 TurnKey = tuple[str, str]
+
+# Feedback sources a person writes: the defaults of `aelf confirm` and
+# `aelf feedback`. A positive row from either keeps a belief.
+USER_AFFIRMED_FEEDBACK_SOURCES: frozenset[str] = frozenset({
+    "user_confirmed", "user",
+})
 
 
 @dataclass
@@ -173,6 +180,9 @@ def _select(
     corroborated_elsewhere = store.list_beliefs_corroborated_outside(
         CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     )
+    user_affirmed = store.list_beliefs_with_positive_feedback(
+        USER_AFFIRMED_FEEDBACK_SOURCES,
+    )
     candidates: list[tuple[str, str]] = []
     locked: list[str] = []
     other_evidence: list[str] = []
@@ -186,6 +196,7 @@ def _select(
         if (
             belief.origin != ORIGIN_USER_TRANSCRIPT
             or bid in corroborated_elsewhere
+            or bid in user_affirmed
         ):
             other_evidence.append(bid)
             continue
@@ -243,7 +254,7 @@ def format_scheduled_prompt_report(report: ScheduledPromptReport) -> str:
             lines.append(f"  {bid}")
     if report.other_evidence:
         lines.append(
-            "promoted or corroborated by another source, kept: "
+            "promoted, confirmed or corroborated by another source, kept: "
             f"{len(report.other_evidence)}"
         )
         for bid in report.other_evidence:
