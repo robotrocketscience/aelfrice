@@ -114,8 +114,8 @@ POLARITY_TOKENS: Final[frozenset[str]] = frozenset({
     # conditions and exceptions
     "if", "unless", "except", "when", "whenever", "until", "while",
     "provided", "assuming",
-    # contrast
-    "but", "although", "though", "however", "whereas",
+    # contrast and alternatives
+    "but", "although", "though", "however", "whereas", "or", "either",
     # past state or change of state
     "was", "were", "previously", "formerly", "anymore", "became", "went",
     "changed",

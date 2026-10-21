@@ -631,14 +631,14 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         module="aelfrice.reworded_restatement",
         name="POLARITY_TOKENS",
         kind=KIND_TOKEN_SET,
-        value="sha256:c3c350654396887e4a63d0771d428c3f5873f329c587b407683724914312006a",
-        size=55,
+        value="sha256:2139ea6dcdd78fba4a1ea9697d33f782548d758ffa2d1db7a34eef13ea8eaa53",
+        size=57,
         edge_types=("SUPPORTS",),
         overridable=OVERRIDE_NONE,
         gates=(
-            "Hedge, limit, condition, contrast and past-state words that "
-            "both sentences must hold as the same set. Removing one lets "
-            "a weaker or reversed target (`cannot`, `few`, `unless`) "
+            "Hedge, limit, condition, contrast, alternative and past-state "
+            "words that both sentences must hold as the same set. Removing "
+            "one lets a weaker or reversed target (`cannot`, `few`, `or`) "
             "match and adds wrong edges; adding one rejects more pairs "
             "and removes edges."
         ),
@@ -793,7 +793,7 @@ DIGEST_HISTORY: Final[dict[int, str]] = {
     # 4 (#1650): the reworded-restatement matcher's constants were
     # pinned as new entries. The matcher writes no edge yet, so no store
     # changes; the row records the baseline the SUPPORTS writer starts from.
-    4: "81140001f2ce9aff8f0d3c9ef38f7d530b91ad1daae70c35564d66e594c12970",
+    4: "3801ddfd4d372557e1550751a84d02c5e2f597f911cd455f4f01a77c3c278015",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.

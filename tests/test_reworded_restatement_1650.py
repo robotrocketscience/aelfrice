@@ -239,8 +239,10 @@ def test_veto_quantifier_mismatch_compares_every_quantifier() -> None:
      "The cache layer is enabled, but the debug logger is slow."),
     ("the cache was stale after deploy",
      "The cache is stale after deploy."),
+    ("the limit is 10 requests per minute",
+     "The limit is 10 requests per second or 100 requests per minute."),
 ], ids=["cannot", "unable", "few", "only", "might", "except", "unless",
-        "disabled", "went", "but", "user-past-tense"])
+        "disabled", "went", "but", "user-past-tense", "or"])
 def test_veto_polarity_mismatch(user: str, target: str) -> None:
     """A polarity word on one side only, where containment cannot see it."""
     _assert_vetoed(user, target, REJECT_POLARITY_MISMATCH)
