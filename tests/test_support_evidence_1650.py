@@ -372,6 +372,39 @@ def test_bad_input_is_rejected(
         s.close()
 
 
+@pytest.mark.parametrize(("column", "value"), [
+    ("target_sentence_index", -1),
+    ("applied", 2),
+    ("applied", -1),
+])
+def test_the_table_checks_refuse_a_raw_insert(
+    tmp_path: Path, column: str, value: int,
+) -> None:
+    # The method checks its input in Python; the table's CHECK
+    # constraints hold for a writer that skips the method.
+    s = _store(tmp_path / "m.db", "u1", "p1")
+    row: dict[str, object] = {
+        "supporter_id": "u1", "target_id": "p1",
+        "kind": SUPPORT_EVIDENCE_KIND_REWORDED, "target_sentence_index": 0,
+        "matched_span": "x", "applied": 0,
+        "created_at": "2026-10-02T00:00:00+00:00",
+    }
+    row[column] = value
+    sql = (f"INSERT INTO {_TABLE} ({', '.join(row)}) "
+           f"VALUES ({', '.join('?' * len(row))})")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            s._conn.execute(sql, tuple(row.values()))  # noqa: SLF001
+        s._conn.rollback()  # noqa: SLF001
+        assert _rows(s) == []
+        row[column] = 0
+        s._conn.execute(sql, tuple(row.values()))  # noqa: SLF001
+        s._conn.commit()  # noqa: SLF001
+        assert len(_rows(s)) == 1
+    finally:
+        s.close()
+
+
 @pytest.mark.parametrize("missing", ["supporter", "target"])
 def test_an_unknown_belief_id_is_refused(tmp_path: Path, missing: str) -> None:
     s = _store(tmp_path / "m.db", "u1", "p1")
