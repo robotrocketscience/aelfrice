@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,11 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
+    ORIGIN_EVIDENCE_PROMOTED,
     Belief,
 )
 from aelfrice.store import MemoryStore
-from aelfrice.supports_log import ENV_LOG_REWORDED_SUPPORT
+from aelfrice.supports_log import ENV_LOG_REWORDED_SUPPORT, SupportCandidate
 from benchmarks import graded_gate
 from benchmarks import reworded_support_gate_1650 as gate
 
@@ -104,6 +106,34 @@ def test_a_phantom_target_is_left_out_of_both_arms(tmp_path: Path) -> None:
     assert [p.target_id for p in matches] == ["p3"]
     assert rejected == []
     assert skipped == 2
+
+
+def test_a_promoted_phantom_is_a_target(tmp_path: Path) -> None:
+    # Promotion changes the origin and keeps type `speculative` for life.
+    path, s = _store(tmp_path)
+    _target(s, "p1", btype=BELIEF_SPECULATIVE, origin=ORIGIN_EVIDENCE_PROMOTED)
+    assert len(_live_sources(s)) == 1
+    s.close()
+    matches, _, skipped, _ = _sweep(path, tmp_path)
+    assert [p.target_id for p in matches] == ["p1"]
+    assert skipped == 0
+
+
+def test_a_target_missing_from_the_store_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, s = _store(tmp_path)
+    ghost = SupportCandidate(
+        supporter_id="u1", supporter_text=_USER, ingest_log_id="l1", session_id="s2",
+        target_id="gone", target_text=_TARGET, match=None,
+    )
+
+    def candidates(*_: object) -> Iterator[SupportCandidate]:
+        return iter([ghost])
+
+    monkeypatch.setattr(gate, "iter_reworded_candidates", candidates)
+    assert gate.collect_pairs(s, []) == ([], [], 1)
+    s.close()
 
 
 def test_only_the_row_that_inserted_a_belief_is_replayed(tmp_path: Path) -> None:

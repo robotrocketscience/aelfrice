@@ -19,9 +19,11 @@ store. It replays against the store as it is now, so a target retired
 since the sentence was typed is not a candidate.
 
 **Population.** A match counts only when its target is not a phantom
-(`type` is not `speculative`). Log-only mode matches every non-user
-belief, and edges will later apply to phantoms only, so the gate is
-measured on the matches the log already holds. The null arm is pairs the
+(`origin` is not `speculative`). A phantom promoted on evidence keeps
+`type` `speculative` but is no longer a phantom, so it counts. Log-only
+mode matches every non-user belief, and edges will later apply to
+phantoms only, so the gate is measured on the matches the log already
+holds. The null arm is pairs the
 matcher rejected, drawn from the same candidates and the same non-phantom
 targets.
 
@@ -79,7 +81,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from aelfrice.models import BELIEF_SPECULATIVE, INGEST_SOURCE_TRANSCRIPT
+from aelfrice.models import INGEST_SOURCE_TRANSCRIPT, ORIGIN_SPECULATIVE
 from aelfrice.store import MemoryStore, read_only_uri
 from aelfrice.supports_log import iter_reworded_candidates
 from benchmarks.graded_gate import (
@@ -199,7 +201,7 @@ def collect_pairs(
     for cand in iter_reworded_candidates(store, supporters):
         if cand.target_id not in phantom:
             target = store.get_belief(cand.target_id)
-            phantom[cand.target_id] = target is None or target.type == BELIEF_SPECULATIVE
+            phantom[cand.target_id] = target is None or target.origin == ORIGIN_SPECULATIVE
         if phantom[cand.target_id]:
             skipped += 1
             continue
