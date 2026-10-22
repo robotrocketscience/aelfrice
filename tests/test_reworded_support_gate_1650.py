@@ -95,6 +95,9 @@ def test_a_match_and_a_rejected_candidate_land_in_their_arms(tmp_path: Path) -> 
     (m,) = matches
     assert (m.arm, m.target_sentence_index, m.matched_span) == (gate.ARM_MATCH, 1, _SPAN)
     assert (rejected[0].arm, rejected[0].matched_span) == (gate.ARM_NULL, None)
+    # The id depends on the two belief ids only, never on the arm.
+    assert [p.id for p in (*matches, *rejected)] == [
+        gate.pair_id(p.supporter_id, p.target_id) for p in (*matches, *rejected)]
 
 
 def test_a_phantom_target_is_left_out_of_both_arms(tmp_path: Path) -> None:
@@ -261,7 +264,7 @@ def _pairs(arm: str, n: int) -> list[gate.Pair]:
             supporter_id=f"{arm}-s{i}", target_id=f"t{i}", ingest_log_id=f"l{i}",
             user_sentence=f"user {arm} {i}", target_belief=f"belief {i}",
             target_sentence_index=0 if arm == gate.ARM_MATCH else None,
-            matched_span=f"belief {i}" if arm == gate.ARM_MATCH else None,
+            matched_span=f"span {i}" if arm == gate.ARM_MATCH else None,
         ) for i in range(n)), key=lambda p: p.id)
 
 
@@ -291,6 +294,9 @@ def test_the_packet_hides_the_arm_and_the_matched_span(tmp_path: Path) -> None:
     packet = [json.loads(x) for x in (tmp_path / "out" / "packet.jsonl").read_text().splitlines()]
     key = [json.loads(x) for x in (tmp_path / "out" / "key.jsonl").read_text().splitlines()]
     assert all(set(row) == {"id", "user_sentence", "target_belief"} for row in packet)
+    assert packet == [
+        {"id": p.id, "user_sentence": p.user_sentence, "target_belief": p.target_belief}
+        for p in sample]
     assert [row["id"] for row in packet] == [row["id"] for row in key]
     assert {row["arm"] for row in key} == {gate.ARM_MATCH, gate.ARM_NULL}
     assert (tmp_path / "out" / "instructions.txt").read_text() == gate.INSTRUCTIONS
