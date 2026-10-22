@@ -10,9 +10,10 @@ to pass the two-grader precision gate in
 copy read-only, and replays every past user sentence in `ingest_log`
 through `supports_log.iter_reworded_candidates`, the same eligibility
 rules and matcher the log-only pass runs. A sentence is replayed once,
-from the `transcript` row that inserted its belief (the first row that
-derived it); later rows only corroborated it, and ingest offers no
-supporter for a corroborating sentence. The sweep writes no edge, moves
+from the `transcript` row that inserted its belief (the row whose `ts`
+is the belief's `created_at`). Ingest offers no supporter for a
+sentence that corroborated a belief, whether a transcript row or
+another source stored that belief first. The sweep writes no edge, moves
 no posterior, records no evidence row, and never touches the original
 store. It replays against the store as it is now, so a target retired
 since the sentence was typed is not a candidate.
@@ -157,16 +158,22 @@ def copy_store(src: Path, dst: Path) -> None:
 
 
 def replay_supporters(db: Path) -> list[tuple[str, str]]:
-    """`(belief id, ingest_log id)` for the row that inserted each transcript belief.
+    """`(belief id, ingest_log id)` for each belief a transcript row inserted.
 
-    Rows are read in id order, which is insertion order, and only the
-    first row naming a belief as its first derived id is kept.
+    Ingest copies the inserting row's `ts` into the belief's
+    `created_at`, so a transcript row counts only when its `ts` is the
+    belief's `created_at`. A row that corroborated a belief another
+    source stored first, with or without a log row of its own, fails
+    that test. Rows are read in id order, which is insertion order, and
+    only the first row naming a belief as its first derived id is kept.
     """
     conn = sqlite3.connect(read_only_uri(str(db)), uri=True)
     try:
         rows = conn.execute(
-            "SELECT id, json_extract(derived_belief_ids, '$[0]') FROM ingest_log "
-            "WHERE source_kind = ? AND json_valid(derived_belief_ids) ORDER BY id",
+            "SELECT l.id, json_extract(l.derived_belief_ids, '$[0]') FROM ingest_log l "
+            "JOIN beliefs b ON b.id = json_extract(l.derived_belief_ids, '$[0]') "
+            "WHERE l.source_kind = ? AND json_valid(l.derived_belief_ids) "
+            "AND l.ts = b.created_at ORDER BY l.id",
             (INGEST_SOURCE_TRANSCRIPT,),
         ).fetchall()
     finally:

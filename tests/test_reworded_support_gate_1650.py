@@ -11,10 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import run_worker
 from aelfrice.ingest import _ingest_turn  # pyright: ignore[reportPrivateUsage]
 from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_SPECULATIVE,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
     Belief,
 )
@@ -104,7 +108,9 @@ def test_a_phantom_target_is_left_out_of_both_arms(tmp_path: Path) -> None:
 
 def test_only_the_row_that_inserted_a_belief_is_replayed(tmp_path: Path) -> None:
     path, s = _store(tmp_path)
-    _typed(s, session="s2")
+    # A sentence typed twice in one turn: the second row corroborates the
+    # first and carries the same timestamp.
+    _typed(s, f"{_USER} {_USER}", session="s2")
     # The same sentence in a later session corroborates the first belief.
     _typed(s, session="s3", ts="2026-10-03T00:00:00Z")
     s.close()
@@ -114,6 +120,39 @@ def test_only_the_row_that_inserted_a_belief_is_replayed(tmp_path: Path) -> None
     entry = check.get_ingest_log_entry(supporters[0][1])
     check.close()
     assert entry is not None and entry["session_id"] == "s2"
+
+
+def _live_sources(s: MemoryStore) -> tuple[tuple[str, str], ...]:
+    """What the log-only pass is offered for one typed `_USER` turn."""
+    turn = _ingest_turn(s, _USER, "transcript", session_id="s2",
+                        created_at="2026-10-02T00:00:00Z", role="user")
+    return turn.sources
+
+
+def test_a_sentence_another_source_logged_first_is_not_replayed(tmp_path: Path) -> None:
+    path, s = _store(tmp_path)
+    _target(s, "p1")
+    s.record_ingest(source_kind=INGEST_SOURCE_CLI_REMEMBER, raw_text=_USER,
+                    session_id="s0", ts="2026-10-01T12:00:00Z")
+    run_worker(s)
+    assert _live_sources(s) == ()
+    s.close()
+    assert gate.replay_supporters(path) == []
+    matches, rejected, _, _ = _sweep(path, tmp_path)
+    assert matches == [] and rejected == []
+
+
+def test_a_sentence_stored_with_no_log_row_is_not_replayed(tmp_path: Path) -> None:
+    path, s = _store(tmp_path)
+    _target(s, "p1")
+    # Some writers store a belief without an ingest_log row.
+    out = derive(DerivationInput(raw_text=_USER, source_kind=INGEST_SOURCE_CLI_REMEMBER,
+                                 ts="2026-10-01T12:00:00Z"))
+    assert out.belief is not None
+    s.insert_or_corroborate(out.belief, source_type=CORROBORATION_SOURCE_MCP_REMEMBER)
+    assert _live_sources(s) == ()
+    s.close()
+    assert gate.replay_supporters(path) == []
 
 
 def test_the_log_only_rules_decide_who_supports_what(tmp_path: Path) -> None:
