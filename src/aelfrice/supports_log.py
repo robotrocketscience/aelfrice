@@ -43,9 +43,10 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Final, cast
+from typing import IO, TYPE_CHECKING, Any, Final, cast
 
 from aelfrice.config_discovery import discover_config
 from aelfrice.models import (
@@ -57,6 +58,9 @@ from aelfrice.models import (
     SUPPORT_EVIDENCE_KIND_REWORDED,
 )
 from aelfrice.store import MemoryStore
+
+if TYPE_CHECKING:
+    from aelfrice.reworded_restatement import RewordedMatch
 
 ENV_LOG_REWORDED_SUPPORT: Final[str] = "AELFRICE_LOG_REWORDED_SUPPORT"
 SECTION: Final[str] = "ingest"
@@ -166,7 +170,31 @@ def _user_typed(entry: Mapping[str, object] | None, belief_id: str) -> bool:
     return cast("list[object]", ids)[0] == belief_id
 
 
-def _log(store: MemoryStore, supporters: Iterable[tuple[str, str]]) -> int:
+@dataclass(frozen=True)
+class SupportCandidate:
+    """One user sentence and one belief it may restate, with the matcher's answer.
+
+    `match` is None when `match_reworded` rejects the pair.
+    """
+
+    supporter_id: str
+    supporter_text: str
+    ingest_log_id: str
+    session_id: str
+    target_id: str
+    target_text: str
+    match: RewordedMatch | None
+
+
+def iter_reworded_candidates(
+    store: MemoryStore, supporters: Iterable[tuple[str, str]],
+) -> Iterator[SupportCandidate]:
+    """Each candidate target of each eligible supporter, matched or not.
+
+    Applies every rule in the module docstring, so a candidate yielded
+    with a match is exactly a row `log_reworded_support` records. Reads
+    only, so it runs on a read-only store.
+    """
     # Imported here, not at module scope: the matcher pulls in the BM25
     # stack (numpy, scipy), about 130 ms, and ingest imports this module
     # to read the flag on every run, including with the flag off.
@@ -175,41 +203,50 @@ def _log(store: MemoryStore, supporters: Iterable[tuple[str, str]]) -> int:
         match_reworded,
     )
 
+    for belief_id, log_id in supporters:
+        entry = store.get_ingest_log_entry(log_id)
+        if not _user_typed(entry, belief_id):
+            continue
+        session = cast("Mapping[str, object]", entry).get("session_id")
+        if not isinstance(session, str) or not session:
+            continue
+        supporter = store.get_belief(belief_id)
+        if supporter is None:
+            continue
+        terms = candidate_terms(supporter.content)
+        if not terms:
+            continue
+        candidates = store.support_candidates(
+            terms, limit=REWORDED_CANDIDATE_TOP_K,
+            supporter_id=belief_id, supporter_session_id=session,
+            supporter_created_at=supporter.created_at,
+            exclude_origins=USER_ORIGINS,
+        )
+        for target_id, content in candidates:
+            yield SupportCandidate(
+                supporter_id=belief_id, supporter_text=supporter.content,
+                ingest_log_id=log_id, session_id=session,
+                target_id=target_id, target_text=content,
+                match=match_reworded(supporter.content, content),
+            )
+
+
+def _log(store: MemoryStore, supporters: Iterable[tuple[str, str]]) -> int:
     recorded = 0
     with store.transaction():
-        for belief_id, log_id in supporters:
-            entry = store.get_ingest_log_entry(log_id)
-            if not _user_typed(entry, belief_id):
+        for cand in iter_reworded_candidates(store, supporters):
+            if cand.match is None:
                 continue
-            session = cast("Mapping[str, object]", entry).get("session_id")
-            if not isinstance(session, str) or not session:
-                continue
-            supporter = store.get_belief(belief_id)
-            if supporter is None:
-                continue
-            terms = candidate_terms(supporter.content)
-            if not terms:
-                continue
-            candidates = store.support_candidates(
-                terms, limit=REWORDED_CANDIDATE_TOP_K,
-                supporter_id=belief_id, supporter_session_id=session,
-                supporter_created_at=supporter.created_at,
-                exclude_origins=USER_ORIGINS,
-            )
-            for target_id, content in candidates:
-                match = match_reworded(supporter.content, content)
-                if match is None:
-                    continue
-                if store.record_support_evidence(
-                    belief_id, target_id,
-                    kind=SUPPORT_EVIDENCE_KIND_REWORDED,
-                    target_sentence_index=match.target_sentence_index,
-                    supporter_session_id=session,
-                    supporter_ingest_log_id=log_id,
-                    matched_span=match.target_sentence,
-                    applied=False,
-                ):
-                    recorded += 1
+            if store.record_support_evidence(
+                cand.supporter_id, cand.target_id,
+                kind=SUPPORT_EVIDENCE_KIND_REWORDED,
+                target_sentence_index=cand.match.target_sentence_index,
+                supporter_session_id=cand.session_id,
+                supporter_ingest_log_id=cand.ingest_log_id,
+                matched_span=cand.match.target_sentence,
+                applied=False,
+            ):
+                recorded += 1
     return recorded
 
 
@@ -246,6 +283,8 @@ __all__ = [
     "REWORDED_CANDIDATE_TOP_K",
     "SECTION",
     "USER_ORIGINS",
+    "SupportCandidate",
     "is_reworded_support_log_enabled",
+    "iter_reworded_candidates",
     "log_reworded_support",
 ]

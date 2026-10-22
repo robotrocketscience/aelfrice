@@ -191,6 +191,24 @@ def test_the_pass_writes_no_edge_and_moves_no_posterior(
     assert store.count_support_evidence(applied=True) == 0
 
 
+def test_the_iterator_yields_rejected_candidates_and_the_pass_logs_only_matches(
+    store: MemoryStore,
+) -> None:
+    # p2 holds every candidate term but negates the claim, so the
+    # matcher rejects it.
+    _target(store, "p1")
+    _target(store, "p2", "The scanner never detects leaked secrets in source code.")
+    pairs = _typed(store)
+    found = {c.target_id: c for c in supports_log.iter_reworded_candidates(store, pairs)}
+    assert sorted(found) == ["p1", "p2"]
+    assert found["p2"].match is None
+    match = found["p1"].match
+    assert match is not None and match.target_sentence == _SPAN
+    assert (found["p1"].supporter_text, found["p1"].session_id) == (_USER, "s2")
+    assert log_reworded_support(store, pairs) == 1
+    assert [r[1] for r in _rows(store)] == ["p1"]
+
+
 def test_a_repeat_pass_adds_nothing(store: MemoryStore) -> None:
     _target(store)
     pairs = _typed(store)
