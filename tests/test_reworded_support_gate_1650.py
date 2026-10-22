@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from aelfrice.models import (
 )
 from aelfrice.store import MemoryStore
 from aelfrice.supports_log import ENV_LOG_REWORDED_SUPPORT
+from benchmarks import graded_gate
 from benchmarks import reworded_support_gate_1650 as gate
 
 _TARGET = (
@@ -212,10 +214,94 @@ def test_one_store_and_seed_give_byte_identical_files(tmp_path: Path) -> None:
     assert len((tmp_path / "a" / "packet.jsonl").read_text().splitlines()) == 2
 
 
+# --- Score -------------------------------------------------------------------
+
+
+def _arms(n_match: int, n_null: int) -> dict[str, str]:
+    arms = {f"m{i:03d}": gate.ARM_MATCH for i in range(n_match)}
+    arms.update({f"n{i:03d}": gate.ARM_NULL for i in range(n_null)})
+    return arms
+
+
+def _labels(
+    arms: dict[str, str], match_true: int, null_true: int,
+) -> dict[str, bool | None]:
+    labels: dict[str, bool | None] = {}
+    for arm, n_true in ((gate.ARM_MATCH, match_true), (gate.ARM_NULL, null_true)):
+        ids = sorted(i for i in arms if arms[i] == arm)
+        labels.update({i: k < n_true for k, i in enumerate(ids)})
+    return labels
+
+
+def test_precision_is_scored_on_the_matches_only() -> None:
+    arms = _arms(40, 40)
+    report = gate.score(arms, _labels(arms, 32, 0), _labels(arms, 32, 40))
+    assert [g["precision"] for g in report["graders"]] == [0.8, 0.8]
+    assert report["verdict"] == "pass"
+    lower, upper = graded_gate.wilson_interval(32, 40)
+    assert (report["graders"][0]["wilson_lower"], report["graders"][0]["wilson_upper"]) == (
+        lower, upper)
+
+
+def test_the_null_arm_reports_how_often_a_grader_calls_a_rejected_pair_a_restatement() -> None:
+    arms = _arms(40, 20)
+    report = gate.score(arms, _labels(arms, 40, 5), _labels(arms, 40, 0))
+    a_null, b_null = report["null_arm"]
+    assert (a_null["graded"], a_null["called_restatement"]) == (20, 5)
+    assert a_null["false_match_rate"] == 0.25
+    assert a_null["wilson_upper"] == graded_gate.wilson_interval(5, 20)[1]
+    assert b_null["false_match_rate"] == 0.0
+
+
+def test_kappa_covers_both_arms_and_skips_unclear_labels() -> None:
+    arms = _arms(2, 2)
+    a: dict[str, bool | None] = {"m000": True, "m001": True, "n000": False, "n001": None}
+    b: dict[str, bool | None] = {"m000": True, "m001": False, "n000": False, "n001": True}
+    report = gate.score(arms, a, b)
+    # m000, m001, n000 count: a = TTF, b = TFF, kappa 0.4. Counting the
+    # unclear n001 as False would give 0.0; leaving out the null arm, 0.0.
+    assert report["kappa_n"] == 3
+    assert math.isclose(report["kappa"], 0.4)
+    assert report["graders"][0]["graded"] == 2
+    assert report["null_arm"][0]["graded"] == 1
+
+
+def test_fewer_than_30_graded_matches_is_insufficient_however_many_null_pairs() -> None:
+    arms = _arms(30, 100)
+    assert gate.score(arms, _labels(arms, 30, 0), _labels(arms, 30, 0))["verdict"] == "pass"
+    a = _labels(arms, 30, 0)
+    a["m000"] = None  # one unclear match leaves grader A with 29
+    report = gate.score(arms, a, _labels(arms, 30, 0))
+    assert report["verdict"] == "insufficient"
+    assert report["min_graded"] == gate.MIN_GRADED_MATCHES == 30
+
+
+def test_the_thresholds_are_the_1677_gates() -> None:
+    from benchmarks import sentiment_negative_retest_1677 as rt
+
+    assert (gate.PRECISION_BAR, gate.MIN_GRADED_MATCHES) == (rt.BAR, rt.MIN_GRADED)
+    arms = _arms(40, 0)
+    assert gate.score(arms, _labels(arms, 28, 0), _labels(arms, 28, 0))["verdict"] == "pass"
+    assert gate.score(arms, _labels(arms, 27, 0), _labels(arms, 40, 0))["verdict"] == "fail"
+
+
+def test_score_refuses_a_pair_without_both_labels() -> None:
+    arms = _arms(1, 1)
+    with pytest.raises(ValueError, match="1 key pairs lack a label"):
+        gate.score(arms, {"m000": True, "n000": False}, {"m000": True})
+
+
+def test_read_key_refuses_an_unknown_arm(tmp_path: Path) -> None:
+    path = tmp_path / "key.jsonl"
+    path.write_text(json.dumps({"id": "x", "arm": "real"}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="arm=match|null"):
+        gate.read_key(path)
+
+
 # --- CLI ---------------------------------------------------------------------
 
 
-def test_the_cli_sweeps(
+def test_the_cli_sweeps_and_scores(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     path, s = _store(tmp_path)
@@ -232,4 +318,13 @@ def test_the_cli_sweeps(
     assert gate.main(["sweep", "--store", str(tmp_path / "none.db"), "--seed", "1",
                       "--out", str(out)]) == 1
     assert gate.main(["sweep", "--store", str(path), "--seed", "1", "--out", str(out)]) == 0
-    assert len((out / "packet.jsonl").read_text().splitlines()) == 2
+    ids = [json.loads(x)["id"] for x in (out / "packet.jsonl").read_text().splitlines()]
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.jsonl").write_text(
+            "".join(json.dumps({"id": i, "correct": True}) + "\n" for i in ids),
+            encoding="utf-8")
+    capsys.readouterr()
+    labels = [str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")]
+    assert gate.main(["score", "--key", str(out / "key.jsonl"), "--labels", *labels]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert (report["matches"], report["null_pairs"], report["verdict"]) == (1, 1, "insufficient")

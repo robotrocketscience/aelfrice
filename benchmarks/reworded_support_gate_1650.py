@@ -39,15 +39,29 @@ writes three files to `--out`:
 
 The same store and seed give byte-identical files.
 
+**Score.** Two fresh graders label every packet row independently, in
+the label format of `benchmarks.graded_gate`. `score` reports each
+grader's precision on the matches with its Wilson 95% interval, the
+null-arm false-match rate (the share of rejected pairs a grader called a
+restatement) with its interval, Cohen's kappa on the pairs both graded,
+and the verdict. Unclear labels are left out of precision, rates, and
+kappa. The verdict uses the #1677 gate's thresholds: `pass` when each
+grader's precision on the matches reaches `PRECISION_BAR`, and
+`insufficient` while either grader has graded fewer than `MIN_GRADED`
+matches. The #1677 gate pre-registers no kappa or null-arm threshold, so
+neither takes part in the verdict here.
+
 The packet and the key hold user text. Keep them, and the label files,
 out of the public repository.
 
 Usage::
 
     uv run python -m benchmarks.reworded_support_gate_1650 sweep --store <copy of memory.db> --seed 1650 --out <dir>
+    uv run python -m benchmarks.reworded_support_gate_1650 score --key <dir>/key.jsonl --labels a.jsonl b.jsonl
 
-`sweep --dry-run` prints the counts without writing files. It exits 1
-on bad input.
+`sweep --dry-run` prints the counts without writing files. Every
+subcommand exits 1 on bad input, and `score` exits 1 unless the verdict
+is `pass`.
 """
 
 from __future__ import annotations
@@ -67,7 +81,22 @@ from typing import Any, Final
 from aelfrice.models import BELIEF_SPECULATIVE, INGEST_SOURCE_TRANSCRIPT
 from aelfrice.store import MemoryStore, read_only_uri
 from aelfrice.supports_log import iter_reworded_candidates
+from benchmarks.graded_gate import (
+    BAR,
+    MIN_GRADED,
+    Labels,
+    grader_figures,
+    paired_kappa,
+    read_labels,
+    require_labels,
+    verdict,
+    wilson_interval,
+)
 
+PRECISION_BAR: Final[float] = BAR
+"""Precision each grader must reach on the matches: the #1677 gate's bar."""
+MIN_GRADED_MATCHES: Final[int] = MIN_GRADED
+"""Matches each grader must grade before the verdict can pass (#1677)."""
 DEFAULT_MAX: Final[int] = 200
 """Largest match sample the precision gate grades (feature-supports-writer.md)."""
 ARM_MATCH: Final[str] = "match"
@@ -220,6 +249,59 @@ def write_sample(sample: list[Pair], out: Path) -> None:
     ), encoding="utf-8")
 
 
+def read_key(path: Path) -> dict[str, str]:
+    """{pair id: arm} from a key file; ValueError on an unknown arm."""
+    arms: dict[str, str] = {}
+    with path.open(encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row.get("id"), str) or row.get("arm") not in (ARM_MATCH, ARM_NULL):
+                raise ValueError(f"{path}:{n}: need an id and arm=match|null")
+            arms[row["id"]] = row["arm"]
+    return arms
+
+
+def _with_upper(ids: list[str], labels: Labels) -> dict[str, Any]:
+    figures = grader_figures(ids, labels)
+    figures["wilson_upper"] = wilson_interval(figures["correct"], figures["graded"])[1]
+    return figures
+
+
+def score(arms: Mapping[str, str], a: Labels, b: Labels) -> dict[str, Any]:
+    """Precision on matches, null-arm false-match rate, kappa, and the verdict."""
+    ids = sorted(arms)
+    require_labels(ids, a, b, "key pairs")
+    match_ids = [i for i in ids if arms[i] == ARM_MATCH]
+    null_ids = [i for i in ids if arms[i] == ARM_NULL]
+    graders = [_with_upper(match_ids, a), _with_upper(match_ids, b)]
+    null: list[dict[str, Any]] = []
+    for labels in (a, b):
+        figures = _with_upper(null_ids, labels)
+        null.append({
+            "graded": figures["graded"],
+            "called_restatement": figures["correct"],
+            "false_match_rate": figures["precision"],
+            "wilson_lower": figures["wilson_lower"],
+            "wilson_upper": figures["wilson_upper"],
+        })
+    kappa, kappa_n, agreed = paired_kappa(ids, a, b)
+    return {
+        "pairs": len(ids),
+        "matches": len(match_ids),
+        "null_pairs": len(null_ids),
+        "graders": graders,
+        "null_arm": null,
+        "kappa": kappa,
+        "kappa_n": kappa_n,
+        "agreed": agreed,
+        "bar": PRECISION_BAR,
+        "min_graded": MIN_GRADED_MATCHES,
+        "verdict": verdict(graders, PRECISION_BAR, MIN_GRADED_MATCHES),
+    }
+
+
 def sweep(store_path: Path, work: Path) -> tuple[list[Pair], list[Pair], int, int]:
     """`(matches, rejected, phantom skipped, supporters)` from a read-only copy."""
     if not store_path.is_file():
@@ -247,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--work-dir", type=Path,
                     help="where the store copy goes while the sweep runs")
     sw.add_argument("--dry-run", action="store_true")
+    sc = sub.add_parser("score")
+    sc.add_argument("--key", type=Path, required=True)
+    sc.add_argument("--labels", type=Path, nargs=2, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -267,10 +352,13 @@ def main(argv: list[str] | None = None) -> int:
             write_sample(sample, out)
             print(f"wrote {out}")
             return 0
-    except (OSError, ValueError, sqlite3.Error) as exc:
+        report = score(read_key(args.key), read_labels(args.labels[0]),
+                       read_labels(args.labels[1]))
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    return 0
+    print(json.dumps(report, indent=2))
+    return 0 if report["verdict"] == "pass" else 1
 
 
 if __name__ == "__main__":
