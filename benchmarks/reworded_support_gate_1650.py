@@ -48,11 +48,12 @@ grader's precision on the matches with its Wilson 95% interval, the
 null-arm false-match rate (the share of rejected pairs a grader called a
 restatement) with its interval, Cohen's kappa on the pairs both graded,
 and the verdict. Unclear labels are left out of precision, rates, and
-kappa. The verdict uses the #1677 gate's thresholds: `pass` when each
-grader's precision on the matches reaches `PRECISION_BAR`, and
+kappa. The verdict starts from the #1677 gate's thresholds: `pass` when
+each grader's precision on the matches reaches `PRECISION_BAR`, and
 `insufficient` while either grader has graded fewer than `MIN_GRADED`
-matches. The #1677 gate pre-registers no kappa or null-arm threshold, so
-neither takes part in the verdict here.
+matches. A verdict that isn't `insufficient` becomes `unreliable` when
+kappa is under `KAPPA_BAR`, or when either grader calls more than
+`NULL_RATE_CEILING` of the null arm a restatement or grades none of it.
 
 The packet and the key hold user text. Keep them, and the label files,
 out of the public repository.
@@ -100,6 +101,13 @@ PRECISION_BAR: Final[float] = BAR
 """Precision each grader must reach on the matches: the #1677 gate's bar."""
 MIN_GRADED_MATCHES: Final[int] = MIN_GRADED
 """Matches each grader must grade before the verdict can pass (#1677)."""
+KAPPA_BAR: Final[float] = 0.60
+"""Agreement the two graders must reach, or their precision can't certify the
+matcher (operator ruling 2026-10-22)."""
+NULL_RATE_CEILING: Final[float] = 0.20
+"""Largest share of rejected pairs either grader may call a restatement
+(operator ruling 2026-10-22). Above it the grader says yes too readily."""
+VERDICT_UNRELIABLE: Final[str] = "unreliable"
 DEFAULT_MAX: Final[int] = 200
 """Largest match sample the precision gate grades (feature-supports-writer.md)."""
 ARM_MATCH: Final[str] = "match"
@@ -278,6 +286,25 @@ def _with_upper(ids: list[str], labels: Labels) -> dict[str, Any]:
     return figures
 
 
+def gate_verdict(
+    graders: list[dict[str, Any]], null: list[dict[str, Any]], kappa: float,
+) -> str:
+    """The #1677 verdict, made `unreliable` when the graders can't certify it.
+
+    `insufficient` still comes first. After it, kappa under `KAPPA_BAR`, a
+    null-arm rate over `NULL_RATE_CEILING`, or a grader with no graded null
+    pair (whose rate is unmeasured) gives `unreliable`.
+    """
+    base = verdict(graders, PRECISION_BAR, MIN_GRADED_MATCHES)
+    if base == "insufficient":
+        return base
+    if kappa < KAPPA_BAR:
+        return VERDICT_UNRELIABLE
+    if any(n["graded"] == 0 or n["false_match_rate"] > NULL_RATE_CEILING for n in null):
+        return VERDICT_UNRELIABLE
+    return base
+
+
 def score(arms: Mapping[str, str], a: Labels, b: Labels) -> dict[str, Any]:
     """Precision on matches, null-arm false-match rate, kappa, and the verdict."""
     ids = sorted(arms)
@@ -307,7 +334,9 @@ def score(arms: Mapping[str, str], a: Labels, b: Labels) -> dict[str, Any]:
         "agreed": agreed,
         "bar": PRECISION_BAR,
         "min_graded": MIN_GRADED_MATCHES,
-        "verdict": verdict(graders, PRECISION_BAR, MIN_GRADED_MATCHES),
+        "kappa_bar": KAPPA_BAR,
+        "null_rate_ceiling": NULL_RATE_CEILING,
+        "verdict": gate_verdict(graders, null, kappa),
     }
 
 

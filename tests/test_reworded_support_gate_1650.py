@@ -340,7 +340,9 @@ def test_precision_is_scored_on_the_matches_only() -> None:
     arms = _arms(40, 40)
     report = gate.score(arms, _labels(arms, 32, 0), _labels(arms, 32, 40))
     assert [g["precision"] for g in report["graders"]] == [0.8, 0.8]
-    assert report["verdict"] == "pass"
+    # Grader B's null-arm yeses don't count toward precision, but they do
+    # make the verdict unreliable.
+    assert report["verdict"] == gate.VERDICT_UNRELIABLE
     lower, upper = graded_gate.wilson_interval(32, 40)
     assert (report["graders"][0]["wilson_lower"], report["graders"][0]["wilson_upper"]) == (
         lower, upper)
@@ -383,9 +385,54 @@ def test_the_thresholds_are_the_1677_gates() -> None:
     from benchmarks import sentiment_negative_retest_1677 as rt
 
     assert (gate.PRECISION_BAR, gate.MIN_GRADED_MATCHES) == (rt.BAR, rt.MIN_GRADED)
-    arms = _arms(40, 0)
+    arms = _arms(40, 10)
     assert gate.score(arms, _labels(arms, 28, 0), _labels(arms, 28, 0))["verdict"] == "pass"
-    assert gate.score(arms, _labels(arms, 27, 0), _labels(arms, 40, 0))["verdict"] == "fail"
+    assert gate.score(arms, _labels(arms, 27, 0), _labels(arms, 27, 0))["verdict"] == "fail"
+
+
+def test_the_kappa_bar_and_null_ceiling_are_the_ruled_values() -> None:
+    assert (gate.KAPPA_BAR, gate.NULL_RATE_CEILING) == (0.60, 0.20)
+
+
+def _verdict(kappa: float, null_rates: tuple[float, float], null_graded: int = 10) -> str:
+    graders = [{"graded": 40, "precision": 0.9}, {"graded": 40, "precision": 0.9}]
+    null = [{"graded": null_graded, "false_match_rate": r} for r in null_rates]
+    return gate.gate_verdict(graders, null, kappa)
+
+
+def test_kappa_under_the_bar_is_unreliable() -> None:
+    assert _verdict(0.60, (0.0, 0.0)) == "pass"
+    assert _verdict(0.5999, (0.0, 0.0)) == gate.VERDICT_UNRELIABLE
+
+
+def test_a_null_rate_over_the_ceiling_is_unreliable() -> None:
+    assert _verdict(1.0, (0.20, 0.20)) == "pass"
+    assert _verdict(1.0, (0.0, 0.2001)) == gate.VERDICT_UNRELIABLE
+    assert _verdict(1.0, (0.2001, 0.0)) == gate.VERDICT_UNRELIABLE
+
+
+def test_an_ungraded_null_arm_is_unreliable() -> None:
+    assert _verdict(1.0, (0.0, 0.0), null_graded=0) == gate.VERDICT_UNRELIABLE
+
+
+def test_unreliable_also_overrides_a_fail() -> None:
+    graders = [{"graded": 40, "precision": 0.5}, {"graded": 40, "precision": 0.5}]
+    null = [{"graded": 10, "false_match_rate": 0.0}] * 2
+    assert gate.gate_verdict(graders, null, 1.0) == "fail"
+    assert gate.gate_verdict(graders, null, 0.1) == gate.VERDICT_UNRELIABLE
+
+
+def test_insufficient_comes_before_unreliable() -> None:
+    graders = [{"graded": 29, "precision": 0.9}, {"graded": 40, "precision": 0.9}]
+    null = [{"graded": 0, "false_match_rate": 0.0}] * 2
+    assert gate.gate_verdict(graders, null, 0.0) == "insufficient"
+
+
+def test_the_score_report_names_the_new_thresholds() -> None:
+    arms = _arms(30, 30)
+    report = gate.score(arms, _labels(arms, 30, 0), _labels(arms, 30, 0))
+    assert (report["kappa_bar"], report["null_rate_ceiling"]) == (0.60, 0.20)
+    assert report["verdict"] == "pass"
 
 
 def test_score_refuses_a_pair_without_both_labels() -> None:
