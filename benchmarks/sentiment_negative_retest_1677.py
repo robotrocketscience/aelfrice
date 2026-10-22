@@ -32,6 +32,7 @@ against the bar. A fire a grader marked unclear is left out of that grader's
 precision and out of kappa. The verdict is `insufficient` until each grader
 has graded at least 30 fires (operator ruling, 2026-10-08), so a thin sample
 can't trigger the default flip.
+The scoring lives in `benchmarks.graded_gate`, which the #1650 gate shares.
 
 The sheet holds prompt text. Keep it, and the label files, out of the public
 repository.
@@ -52,36 +53,34 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import random
 import sys
 from pathlib import Path
 from typing import Any, Final
 
-from benchmarks.context_rebuilder.kappa import cohens_kappa
+from benchmarks.graded_gate import (
+    BAR,
+    MIN_GRADED,
+    Z_95,
+    read_labels,
+    require_labels,
+    score_pair,
+    wilson_lower,
+)
 
 DEFAULT_SINCE: Final[str] = "2026-10-01"
 """First day of the fresh window: prompts after 2026-09-30 (#1677 AC1)."""
 MAX_PROMPT_CHARS: Final[int] = 200
 """`sentiment_feedback.MAX_PROMPT_CHARS`: the detector scores nothing longer."""
-MIN_GRADED: Final[int] = 30
-"""Fires each grader must grade before the verdict can pass (2026-10-08)."""
-BAR: Final[float] = 0.70
-"""Pre-registered precision bar, on each grader (#1647)."""
 DEFAULT_MAX: Final[int] = 200
 """Largest sample #1647 graded."""
-Z_95: Final[float] = 1.959963984540054
 
-
-def wilson_lower(successes: int, n: int, z: float = Z_95) -> float:
-    """Wilson score interval lower bound; 0.0 when n is 0."""
-    if n <= 0:
-        return 0.0
-    p = successes / n
-    denom = 1.0 + z * z / n
-    centre = p + z * z / (2 * n)
-    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
-    return (centre - margin) / denom
+__all__ = [
+    "BAR", "DEFAULT_MAX", "DEFAULT_SINCE", "MAX_PROMPT_CHARS", "MIN_GRADED",
+    "Z_95", "draw_sample", "fire_id", "fresh_negative_fires", "main",
+    "negative_count", "read_labels", "read_rows", "score",
+    "transcript_prompts", "wilson_lower",
+]
 
 
 def fire_id(row: dict[str, Any]) -> str:
@@ -146,57 +145,12 @@ def draw_sample(
     ]
 
 
-def read_labels(path: Path) -> dict[str, bool | None]:
-    """{fire id: True | False | None} from a JSONL file of {"id", "correct"}."""
-    labels: dict[str, bool | None] = {}
-    with path.open(encoding="utf-8") as f:
-        for n, line in enumerate(f, 1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            correct = row.get("correct")
-            if not isinstance(row.get("id"), str) or correct not in (True, False, None):
-                raise ValueError(f"{path}:{n}: need an id and correct=true|false|null")
-            labels[row["id"]] = correct
-    return labels
-
-
 def score(
     sheet_ids: list[str], a: dict[str, bool | None], b: dict[str, bool | None],
 ) -> dict[str, Any]:
     """Per-grader precision, Wilson bounds, kappa, and the verdict."""
-    missing = [i for i in sheet_ids if i not in a or i not in b]
-    if missing:
-        raise ValueError(f"{len(missing)} sheet fires lack a label from both graders")
-    graders: list[dict[str, Any]] = []
-    for labels in (a, b):
-        graded = [labels[i] for i in sheet_ids if labels[i] is not None]
-        correct = sum(1 for x in graded if x)
-        n = len(graded)
-        graders.append({
-            "graded": n,
-            "correct": correct,
-            "precision": correct / n if n else 0.0,
-            "wilson_lower": wilson_lower(correct, n),
-        })
-    both = [i for i in sheet_ids if a[i] is not None and b[i] is not None]
-    kappa = cohens_kappa([bool(a[i]) for i in both], [bool(b[i]) for i in both])
-    if any(g["graded"] < MIN_GRADED for g in graders):
-        verdict = "insufficient"
-    elif all(g["precision"] >= BAR for g in graders):
-        verdict = "pass"
-    else:
-        verdict = "fail"
-    return {
-        "fires": len(sheet_ids),
-        "graders": graders,
-        "kappa": kappa,
-        "kappa_n": len(both),
-        "agreed": sum(1 for i in both if a[i] == b[i]),
-        "bar": BAR,
-        "min_graded": MIN_GRADED,
-        "verdict": verdict,
-    }
+    require_labels(sheet_ids, a, b, "sheet fires")
+    return {"fires": len(sheet_ids), **score_pair(sheet_ids, a, b, BAR, MIN_GRADED)}
 
 
 def transcript_prompts(root: Path, since: str = DEFAULT_SINCE) -> list[str]:
