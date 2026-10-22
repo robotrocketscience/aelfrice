@@ -7,8 +7,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,7 +26,7 @@ from aelfrice.models import (
     ORIGIN_EVIDENCE_PROMOTED,
     Belief,
 )
-from aelfrice.store import MemoryStore
+from aelfrice.store import MemoryStore, read_only_uri
 from aelfrice.supports_log import ENV_LOG_REWORDED_SUPPORT, SupportCandidate
 from benchmarks import graded_gate
 from benchmarks import reworded_support_gate_1650 as gate
@@ -221,6 +223,32 @@ def test_the_sweep_reads_a_read_only_copy_and_leaves_the_store_alone(
     rows = check.count_support_evidence(applied=False)
     check.close()
     assert rows == 0
+
+
+def test_the_sweep_opens_the_store_and_reads_the_copy_through_mode_ro(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A source hash can't show this: a read-write handle that writes
+    # nothing leaves the bytes alone, but on a live store its close can
+    # checkpoint the write-ahead log into the file.
+    path, s = _store(tmp_path)
+    _target(s, "p1")
+    _typed(s)
+    s.close()
+    opened: list[tuple[str, bool]] = []
+
+    def connect(database: str, *, uri: bool = False) -> sqlite3.Connection:
+        opened.append((database, uri))
+        return sqlite3.connect(database, uri=uri)
+
+    monkeypatch.setattr(gate, "sqlite3", SimpleNamespace(connect=connect, Error=sqlite3.Error))
+    _sweep(path, tmp_path)
+    copy = str(tmp_path / "work" / "memory.db")
+    assert opened == [
+        (read_only_uri(str(path)), True),  # the source, for the backup
+        (copy, False),  # the backup's target
+        (read_only_uri(copy), True),  # the copy, for the replay
+    ]
 
 
 # --- Sample ------------------------------------------------------------------
