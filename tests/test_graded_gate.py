@@ -29,6 +29,12 @@ def test_an_unclear_label_is_left_out_of_precision_and_kappa() -> None:
     assert gg.paired_kappa(ids, a, b) == (0.0, 2, 1)
 
 
+def test_the_thresholds_are_the_pre_registered_values() -> None:
+    # #1647 pre-registered the 0.70 bar; the operator set 30 on 2026-10-08.
+    # Every graded gate reads both from here, so pin the literals.
+    assert (gg.BAR, gg.MIN_GRADED) == (0.70, 30)
+
+
 def test_the_verdict_needs_min_graded_items_on_each_grader() -> None:
     enough = {"graded": gg.MIN_GRADED, "precision": 1.0}
     short = {"graded": gg.MIN_GRADED - 1, "precision": 1.0}
