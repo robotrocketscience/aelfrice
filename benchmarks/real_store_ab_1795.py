@@ -101,7 +101,6 @@ from aelfrice.bm25 import tokenize, tokenize_stemmed
 from aelfrice.dedup import (
     DEFAULT_JACCARD_MIN as DEDUP_JACCARD_MIN,
     DEFAULT_LEVENSHTEIN_MIN,
-    DEFAULT_MAX_CANDIDATE_PAIRS as DEDUP_MAX_CANDIDATE_PAIRS,
     dedup_audit,
 )
 from aelfrice.hook import (
@@ -125,7 +124,6 @@ from aelfrice.rebuild_log import RecentTurn
 from aelfrice.relationship_detector import (
     DEFAULT_CONFIDENCE_MIN,
     DEFAULT_JACCARD_MIN,
-    DEFAULT_MAX_CANDIDATE_PAIRS,
     DEFAULT_MAX_EDGES_PER_BELIEF,
     DEFAULT_RESIDUAL_OVERLAP_MIN,
     LABEL_REFINES,
@@ -324,6 +322,18 @@ def belief_texts(db: Path, ids: Sequence[str]) -> dict[str, str]:
 # them from `relationship_detector` and `dedup`. The audits they call are
 # unchanged. Their per-belief cap was `DEFAULT_MAX_EDGES_PER_BELIEF` in
 # each module, 8 in both; only `relationship_detector` keeps it now.
+#
+# The audits sort their candidate pairs by id and cut the list at
+# `max_candidate_pairs`, 5000 by default. One pass over a whole store at
+# that cap leaves out every pair past the cut, so a late cluster gets no
+# edge. All three writers here run with `pair_cap`, which no pass over the
+# store can reach.
+
+
+def pair_cap(store: MemoryStore) -> int:
+    """A candidate-pair cap above the pair count of the store's active beliefs."""
+    n = len(store.list_beliefs_for_indexing())
+    return max(1, n * (n - 1) // 2)
 
 
 def write_supports_edges(store: MemoryStore) -> dict[str, int]:
@@ -336,9 +346,9 @@ def write_supports_edges(store: MemoryStore) -> dict[str, int]:
         jaccard_min=DEFAULT_JACCARD_MIN,
         residual_overlap_min=DEFAULT_RESIDUAL_OVERLAP_MIN,
         confidence_min=DEFAULT_CONFIDENCE_MIN,
-        max_candidate_pairs=DEFAULT_MAX_CANDIDATE_PAIRS,
+        max_candidate_pairs=pair_cap(store),
     )
-    refines = [p for p in report.pairs if p.label == LABEL_REFINES]
+    refines =[p for p in report.pairs if p.label == LABEL_REFINES]
     per_belief: dict[str, int] = {}
     written = existing = gated = self_pairs = 0
     for pair in refines:
@@ -364,6 +374,7 @@ def write_supports_edges(store: MemoryStore) -> dict[str, int]:
         "n_refines": len(refines), "n_edges_written": written,
         "n_edges_skipped_existing": existing, "n_edges_skipped_gated": gated,
         "n_edges_skipped_self_pair": self_pairs,
+        "n_candidate_pairs": report.n_candidate_pairs, "truncated": report.truncated,
     }
 
 
@@ -376,7 +387,7 @@ def write_supersedes_edges(store: MemoryStore) -> dict[str, int]:
         store,
         jaccard_min=DEDUP_JACCARD_MIN,
         levenshtein_min=DEFAULT_LEVENSHTEIN_MIN,
-        max_candidate_pairs=DEDUP_MAX_CANDIDATE_PAIRS,
+        max_candidate_pairs=pair_cap(store),
     )
     per_belief: dict[str, int] = {}
     written = existing = gated = 0
@@ -407,6 +418,7 @@ def write_supersedes_edges(store: MemoryStore) -> dict[str, int]:
     return {
         "n_clusters": len(report.clusters), "n_edges_written": written,
         "n_edges_skipped_existing": existing, "n_edges_skipped_gated": gated,
+        "n_candidate_pairs": report.n_candidate_pairs, "truncated": report.truncated,
     }
 
 
@@ -414,7 +426,7 @@ def apply_writers(db: Path) -> dict[str, dict[str, int]]:
     """Run the three A1 writers on the copy at `db`."""
     store = MemoryStore(str(db))
     try:
-        contradicts = write_semantic_edges(store)
+        contradicts = write_semantic_edges(store, max_candidate_pairs=pair_cap(store))
         supports = write_supports_edges(store)
         supersedes = write_supersedes_edges(store)
     finally:

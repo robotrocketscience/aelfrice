@@ -503,6 +503,29 @@ def test_the_a1_writers_produce_each_edge_type(tmp_path: Path) -> None:
     assert again["supersedes"]["n_edges_written"] == 0
 
 
+def test_the_writers_reach_pairs_past_the_audit_cap(tmp_path: Path) -> None:
+    # 110 near-duplicates hold 5995 candidate pairs, over the audits' default
+    # cap of 5000. Pairs sort by id before the cut, so a capped pass gives
+    # the later `z` beliefs no edge at all.
+    path = tmp_path / "cap" / "memory.db"
+    path.parent.mkdir(parents=True)
+    s = MemoryStore(str(path))
+    for i in range(110):
+        _add(s, f"a{i:03d}",
+             f"the deployment script runs the database migration step on host number {i}")
+    for i in range(20):
+        _add(s, f"z{i:03d}",
+             f"python deps install fast on the shared build runner in the east region {i}")
+    _add(s, "zz0", "the release script always tags the build")
+    _add(s, "zz1", "the release script never tags the build")
+    s.close()
+    report = bench.apply_writers(path)
+    assert report["supports"]["truncated"] is False
+    assert report["supersedes"]["truncated"] is False
+    late = {t for a, b, t in _edges(path) if a.startswith("z") or b.startswith("z")}
+    assert late == {EDGE_SUPPORTS, EDGE_SUPERSEDES, EDGE_CONTRADICTS}
+
+
 def test_the_writers_name_the_commits_that_removed_them() -> None:
     # 01d4dcfb and 6c630223 deleted the writer functions; c3a500fa only
     # dropped their ingest wiring.
