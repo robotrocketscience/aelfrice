@@ -593,8 +593,12 @@ def _hand(
     return rows
 
 
+_H1_PASS: dict[str, Any] = {"H1": "pass"}
+
+
 def _score(rows: list[Row], **kw: Any) -> dict[str, Any]:
     items, a, b = _key(rows)
+    kw.setdefault("census_report", _H1_PASS)
     return bench.score(items, a, b, seed=1, **kw)
 
 
@@ -712,6 +716,27 @@ def test_h4_needs_half_of_a3s_relevant_additions_to_bridge() -> None:
     failing = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A3, bridging=1))
     assert failing["arms"]["A3"]["graders"][0]["bridging_share"] == _approx(4 / 12)
     assert failing["hypotheses"]["H4"] == bench.V_FAIL
+
+
+def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
+    # #1795 H1: under 1 per 100, A1 is substrate-starved, not a lane verdict.
+    rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
+    starved = _score(rows, census_report={"H1": "fail"})
+    assert starved["hypotheses"]["H1"] == bench.V_FAIL
+    assert starved["hypotheses"]["H2"] == bench.V_STARVED
+    assert starved["arms"]["A1"]["gain_verdict"] == bench.V_PASS
+    no_census = _score(rows, census_report=None)
+    assert no_census["hypotheses"]["H1"] == bench.V_NOT_MEASURED
+    assert no_census["hypotheses"]["H2"] == bench.V_NEEDS_CENSUS
+    assert _score(rows)["hypotheses"]["H2"] == bench.V_PASS
+    # A failed H0 outranks the substrate: the instrument comes first.
+    unreliable = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3),
+                        census_report={"H1": "fail"})
+    assert unreliable["hypotheses"]["H2"] == bench.V_UNRELIABLE
+    # H3 and H4 don't depend on the writers' substrate.
+    a2 = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A2),
+                census_report={"H1": "fail"})
+    assert a2["hypotheses"]["H3"] == bench.V_PASS
 
 
 def test_the_bars_are_the_pre_registered_ones() -> None:
@@ -874,8 +899,10 @@ def test_score_cli_reads_a_packet_key_and_two_label_files(
     labels.write_text("".join(
         json.dumps({"id": r["id"], "correct": bool(r["arms"]) and "A0" in r["arms"]}) + "\n"
         for r in map(json.loads, k.splitlines())), encoding="utf-8")
-    assert bench.main(["score", "--key", str(key_path),
-                       "--labels", str(labels), str(labels)]) == 0
+    census = tmp_path / "census.json"
+    census.write_text(json.dumps({"H1": "pass"}), encoding="utf-8")
+    assert bench.main(["score", "--key", str(key_path), "--labels", str(labels), str(labels),
+                       "--census", str(census)]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["hypotheses"]["H0"] == bench.V_PASS
     assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT

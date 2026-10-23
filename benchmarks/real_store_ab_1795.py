@@ -210,6 +210,8 @@ V_INCONCLUSIVE: Final[str] = "inconclusive"
 V_INSUFFICIENT: Final[str] = "insufficient"
 V_UNRELIABLE: Final[str] = "unreliable"
 V_NOT_MEASURED: Final[str] = "not measured"
+V_STARVED: Final[str] = "substrate-starved"
+V_NEEDS_CENSUS: Final[str] = "needs census"
 V_AGREE: Final[str] = "agree"
 V_DISAGREE: Final[str] = "disagree"
 
@@ -1139,6 +1141,11 @@ def score(
     both graders pass it. A grader with fewer than `MIN_GRADED` graded
     items in the arm's or A0's top 10 makes the result `insufficient`. A
     failed H0 makes every arm result, H6 included, `unreliable`.
+
+    H2 is a lane verdict only when the census passed H1. Under #1795's H1
+    kill condition a failed H1 reports H2 as `substrate-starved`, and with
+    no writers census H2 is `needs census`. The arm's own figures and
+    verdict stay under `arms`.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
@@ -1163,6 +1170,8 @@ def score(
     hyp["H1"] = (census_report or {}).get("H1", V_NOT_MEASURED)
     for h, arm in HYPOTHESIS_ARMS.items():
         hyp[h] = per_arm[arm]["gain_verdict"] if arm in per_arm else V_NOT_MEASURED
+    if ARM_A1 in per_arm and reliable and hyp["H1"] != V_PASS:
+        hyp["H2"] = V_STARVED if hyp["H1"] == V_FAIL else V_NEEDS_CENSUS
     hyp["H5"] = {arm: per_arm[arm]["h5_verdict"] for arm in arms}
     if proxy_report is None:
         hyp["H6"] = V_NOT_MEASURED
