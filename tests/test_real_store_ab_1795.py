@@ -803,6 +803,17 @@ def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     assert rep["hypotheses"]["H2"] == bench.V_UNRELIABLE
 
 
+def test_a_grader_with_no_graded_null_item_fails_h0() -> None:
+    # Grader A leaves every null item unclear: a rate of 0 out of 0.
+    rows = [(r[0], r[1], r[2], r[3], None if r[2] is None else r[4], r[5])
+            for r in _hand([2, 2, 2, 2], [3, 3, 2, 4])]
+    rep = _score(rows)
+    assert rep["null_arm"][0]["graded"] == 0
+    assert rep["kappa"] == _approx(1.0)
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+    assert rep["hypotheses"]["H2"] == bench.V_UNRELIABLE
+
+
 def test_too_few_graded_items_is_insufficient() -> None:
     rep = _score(_hand([2, 2], [3, 3]))
     assert rep["arms"]["A1"]["graders"][0]["graded"] == 20 < graded_gate.MIN_GRADED
