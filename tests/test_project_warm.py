@@ -124,7 +124,7 @@ def test_resolve_project_root_git_worktree(
     ref = resolve_project_root(wt, aelfrice_home=fake_home)
 
     # ProjectRef.root is the worktree working directory — not the main
-    # checkout — so _warm_store can os.chdir to the right place.
+    # checkout — so _warm_store resolves the store from the right place.
     assert ref is not None
     assert ref.root == wt.resolve()
     assert ref.root != repo.resolve()

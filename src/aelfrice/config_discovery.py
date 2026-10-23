@@ -180,9 +180,9 @@ def discover_config(start: Path | None = None) -> Path | None:
     O(path depth) in `lstat` — measured at 7 `lstat` for a depth-8 cwd,
     against 26 `start=None` calls in one `retrieve()`, i.e. ~182 extra
     syscalls per retrieval, the same cost class #1289 removed. The
-    invariant holds today: the only `os.chdir` in `src/aelfrice` is
-    `project_warm._warm_store`, which runs in its own CLI process,
-    restores cwd in a `finally`, and is never inside a scope.
+    invariant holds today: `src/aelfrice` makes no `os.chdir` call.
+    `project_warm._warm_store` used to, and now passes `start` instead
+    (#1796).
     """
     memo = _CONFIG_DISCOVERY_MEMO.get()
     if memo is not None and start is None and _CWD_KEY in memo:

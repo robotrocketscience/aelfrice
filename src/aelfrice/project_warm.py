@@ -18,8 +18,8 @@ no-ops and return `WarmResult.DEBOUNCED`.
 worktree path. Two worktrees of the same repo share one git-common-dir
 and therefore share one sentinel, matching the v1.1.0 design principle
 that worktrees share a single belief store. `ProjectRef.root` remains
-the worktree working directory so that `_warm_store` can `os.chdir` to
-the right place for `db_path()`.
+the worktree working directory so that `_warm_store` can pass it to
+`db_path(start=...)`.
 
 Resolution order for `resolve_project_root(path)`:
 
@@ -186,7 +186,7 @@ def resolve_project_root(
     overrides the default `~/.aelfrice/` for tests.
 
     For git repos/worktrees: `ProjectRef.root` is the worktree working
-    directory (used by `_warm_store` for `os.chdir`), while
+    directory (where `_warm_store` resolves the store from), while
     `ProjectRef.id` is keyed off the git-common-dir so all worktrees of
     one repo share the same sentinel.
     """
@@ -291,7 +291,7 @@ def _write_sentinel(path: Path, ts: float) -> None:
     path.write_text(f"{ts:.6f}\n", encoding="utf-8")
 
 
-def _warm_store(project_root: Path) -> None:
+def _warm_store(project_root: Path, start: Path | None = None) -> None:
     """Open the project DB and touch the indexes a search would read.
 
     Cheap: a `count_beliefs` plus `list_locked_beliefs` is enough to
@@ -299,21 +299,21 @@ def _warm_store(project_root: Path) -> None:
     cache. We close the connection immediately — there is no
     in-process state to keep alive across CLI invocations.
 
+    `start` is the directory the user moved into. The store resolves
+    from there, so a `[store]` marker in a subfolder warms that folder's
+    store rather than the repository's (#1796). A marker that names no
+    usable store warms nothing.
+
     Imports are local to keep the module light when the warming side is
     never invoked (e.g., on `aelf --version`).
     """
-    from aelfrice.db_paths import db_path  # noqa: PLC0415
+    from aelfrice.db_paths import StoreMarkerError, db_path  # noqa: PLC0415
     from aelfrice.store import MemoryStore  # noqa: PLC0415
 
-    # `db_path()` reads cwd-derived state; project_root is the right cwd.
-    import os  # noqa: PLC0415
-
-    saved_cwd = os.getcwd()
     try:
-        os.chdir(str(project_root))
-        path = db_path()
-    finally:
-        os.chdir(saved_cwd)
+        path = db_path(start=start if start is not None else project_root)
+    except StoreMarkerError:
+        return
     if not path.exists():
         # Nothing to warm yet — first onboard hasn't run. Touching the
         # parent dir is harmless but a no-op for performance, so skip.
@@ -333,8 +333,12 @@ def warm_project(
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS,
     config: WarmConfig | None = None,
     now: float | None = None,
+    start: Path | None = None,
 ) -> WarmResult:
     """Warm `ref`'s project store. Idempotent + debounced.
+
+    `start` is the directory to resolve the store from, defaulting to
+    `ref.root`; see `_warm_store`.
 
     Returns:
         - `WarmResult.DENIED_PATH` when `ref.root` is on the deny list.
@@ -355,7 +359,7 @@ def warm_project(
     last = _read_sentinel(sentinel)
     if last is not None and (current - last) < debounce_seconds:
         return WarmResult.DEBOUNCED
-    _warm_store(ref.root)
+    _warm_store(ref.root, start)
     _write_sentinel(sentinel, current)
     return WarmResult.WARMED
 
@@ -381,4 +385,5 @@ def warm_path(
         debounce_seconds=debounce_seconds,
         config=cfg,
         now=now,
+        start=path,
     )
