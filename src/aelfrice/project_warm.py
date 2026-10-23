@@ -79,6 +79,7 @@ class WarmResult(str, enum.Enum):
     DEBOUNCED = "debounced"
     UNKNOWN_PROJECT = "unknown_project"
     DENIED_PATH = "denied_path"
+    BROKEN_MARKER = "broken_marker"
 
 
 @dataclass(frozen=True)
@@ -327,10 +328,11 @@ def _warm_store(project_root: Path, start: Path | None = None) -> None:
         store.close()
 
 
-def _sentinel_id(ref: ProjectRef, start: Path | None) -> str:
+def _sentinel_id(ref: ProjectRef, start: Path | None) -> str | None:
     """The debounce key: `ref.id`, extended by the store's path when a
     `[store]` marker selects the store (#1796), so each marker folder of
-    one repository is debounced on its own."""
+    one repository is debounced on its own. None when the marker names
+    no usable store, so nothing is warmed and no sentinel is written."""
     if start is None:
         return ref.id
     from aelfrice.db_paths import (  # noqa: PLC0415
@@ -342,7 +344,7 @@ def _sentinel_id(ref: ProjectRef, start: Path | None) -> str:
     try:
         selection = resolve_store(start)
     except StoreMarkerError:
-        return ref.id
+        return None
     if selection.rule != STORE_RULE_MARKER:
         return ref.id
     return f"{ref.id}-{_project_id(selection.path)}"
@@ -363,6 +365,8 @@ def warm_project(
 
     Returns:
         - `WarmResult.DENIED_PATH` when `ref.root` is on the deny list.
+        - `WarmResult.BROKEN_MARKER` when the `[store]` marker for
+          `start` names no usable store; nothing is warmed (#1796).
         - `WarmResult.DEBOUNCED` when the sentinel was last written
           fewer than `debounce_seconds` ago.
         - `WarmResult.WARMED` after a successful warm + sentinel
@@ -375,7 +379,10 @@ def warm_project(
     cfg = config if config is not None else load_config()
     if _is_denied(ref.root, cfg.deny_globs):
         return WarmResult.DENIED_PATH
-    sentinel = _sentinel_path(_sentinel_id(ref, start), cfg.aelfrice_home)
+    sentinel_id = _sentinel_id(ref, start)
+    if sentinel_id is None:
+        return WarmResult.BROKEN_MARKER
+    sentinel = _sentinel_path(sentinel_id, cfg.aelfrice_home)
     current = now if now is not None else time.time()
     last = _read_sentinel(sentinel)
     if last is not None and (current - last) < debounce_seconds:
