@@ -781,6 +781,16 @@ def test_the_key_is_written_outside_the_packet_directory(tmp_path: Path) -> None
         assert not inside.exists()
 
 
+def test_a_relative_packet_directory_still_keeps_the_key_out(tmp_path: Path) -> None:
+    # `--out pkt` beside `--key <cwd>/pkt/key.jsonl` names one directory twice.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    inside = Path.cwd() / "pkt" / "key.jsonl"
+    with pytest.raises(bench.InputError, match="outside"):
+        bench.write_packet(packet, key, Path("pkt"), inside)
+    assert not inside.exists()
+
+
 def test_the_packet_hides_arm_and_rank(tmp_path: Path) -> None:
     first = _runs(["seed", "con"], ["con", "rel", "seed"], ["w1", "w2"], ["w2"])
     # Same union per prompt, other arms and ranks.
