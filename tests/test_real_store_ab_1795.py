@@ -290,6 +290,30 @@ def test_a0_ignores_ambient_env_and_project_config(
     assert Path.cwd() == cwd
 
 
+def test_a0_ignores_a_project_config_above_the_work_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The empty config in the work dir stops discovery before an ancestor's.
+    path = _store(tmp_path)
+    query = "the deployment script migration release checklist"
+    prompt: list[dict[str, Any]] = [{"prompt_id": "p", "text": query, "context": []}]
+    work = tmp_path / "project" / "work"
+    work.mkdir(parents=True)
+
+    def a0() -> list[str]:
+        return bench.run_arm(path, prompt, bench.ARM_A0, work)["prompts"][0]["ranked"]
+
+    clean = a0()
+    (work / ".aelfrice.toml").unlink(missing_ok=True)
+    (tmp_path / "project" / ".aelfrice.toml").write_text(
+        "[retrieval]\nuse_bm25f_anchors = false\n")
+    cwd = Path.cwd()
+    monkeypatch.chdir(work)
+    assert _direct(path, query) != clean
+    monkeypatch.chdir(cwd)
+    assert a0() == clean
+
+
 def test_a1_writes_edges_on_the_copy_and_expands(tmp_path: Path) -> None:
     path = _store(tmp_path)
     before = _edges(path)
