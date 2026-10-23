@@ -1211,6 +1211,18 @@ def test_h6_compares_the_proxy_sign_with_each_grader() -> None:
     assert rep["hypotheses"]["H6"]["A1"]["verdict"] == bench.V_UNRELIABLE
 
 
+def test_h6_needs_the_proxy_to_agree_with_both_graders() -> None:
+    # Grader B calls only A1's first 2 items per prompt relevant: no gain.
+    rows = [(r[0], r[1], r[2], r[3], r[4], r[5] if not r[0].startswith("x")
+             else int(r[0].split("-")[1]) < 2) for r in _hand([2, 2, 2, 2], [3, 3, 2, 4])]
+    proxy = {"prompts": [{"arms": {"A0": [{"id": "a", "used": False}],
+                                   "A1": [{"id": "a", "used": True}]}}]}
+    rep = _score(rows, proxy_report=proxy)
+    assert rep["hypotheses"]["H0"] == bench.V_PASS
+    assert rep["hypotheses"]["H6"]["A1"] == {
+        "proxy_sign": 1, "grader_signs": [1, 0], "verdict": bench.V_DISAGREE}
+
+
 def test_h6_takes_each_graders_sign_from_the_top_ten_gain() -> None:
     # A1 adds a relevant belief past rank 10 on every prompt: a packed gain
     # of 1 but a top-10 gain of 0, the gain H2 is decided on.
