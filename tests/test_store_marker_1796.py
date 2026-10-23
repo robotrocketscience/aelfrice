@@ -981,3 +981,175 @@ def test_a_hook_with_a_broken_marker_exits_0_and_writes_no_store(
     assert result.returncode == 0, result.stderr
     assert not _repo_store(repo).exists()
     assert not (env / "home" / ".aelfrice" / "memory.db").exists()
+
+
+# --- second review: commit routing edges -------------------------------------
+
+
+def test_the_owning_folder_stops_at_symlinks_missing_folders_and_nested_repos(
+    env: Path,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    root = env / "root"
+    (root / "real" / "deep").mkdir(parents=True)
+    outside = env / "outside"
+    outside.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    (root / "nested" / ".git").mkdir(parents=True)
+
+    own = hk._owning_folder  # pyright: ignore[reportPrivateUsage]
+    assert own(root, "real/deep/x.py") == root / "real" / "deep"
+    assert own(root, "real/gone/x.py") == root / "real"
+    assert own(root, "link/x.py") == root
+    assert own(root, "nested/x.py") == root
+    assert own(root, "top.py") == root
+
+
+def test_a_folder_replaced_by_a_symlink_keeps_the_commit_in_this_repository(
+    marked_repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _stage(marked_repo, "shared/x.py")
+    _commit_staged(marked_repo, "seed")
+    _git("rm", "-q", "-r", "shared", cwd=marked_repo)
+    outside = env / "outside"
+    outside.mkdir()
+    (marked_repo / "shared").symlink_to(outside, target_is_directory=True)
+    _git("add", "shared", cwd=marked_repo)
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    assert hk._commit_stores(rev, str(marked_repo)) == [  # pyright: ignore[reportPrivateUsage]
+        _repo_store(marked_repo),
+    ]
+
+
+def test_a_merge_lands_in_the_stores_of_the_files_it_brought_in(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    base = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=marked_repo, check=True,
+        capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+    _git("checkout", "-q", "-b", "side", cwd=marked_repo)
+    _stage(marked_repo, "project-a/side.txt")
+    _commit_staged(marked_repo, "side work")
+    _git("checkout", "-q", base, cwd=marked_repo)
+    _stage(marked_repo, "top.txt")
+    _commit_staged(marked_repo, "mainline work")
+    _git(
+        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
+        "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "side",
+        "-m", _TRIPLE_MSG, cwd=marked_repo,
+    )
+    assert hk._commit_stores("HEAD", str(marked_repo)) == [  # pyright: ignore[reportPrivateUsage]
+        _named_store(marked_repo, "project-a"),
+    ]
+
+
+def test_routing_a_wide_commit_asks_git_a_fixed_number_of_times(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resolving every changed folder must not fork git once per folder."""
+    from aelfrice import hook_commit_ingest as hk
+
+    repo = _init_repo(env / "repo")
+    for i in range(40):
+        _stage(repo, f"dir{i}/f.txt")
+    rev = _commit_staged(repo, _TRIPLE_MSG)
+    monkeypatch.chdir(repo)
+    db_paths.clear_git_common_dir_cache()
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def counting_run(args: list[str], *a: object, **k: object) -> object:
+        calls.append(list(args))
+        return real_run(args, *a, **k)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(subprocess, "run", counting_run)
+    stores = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
+    assert stores == [_repo_store(repo)]
+    git_calls = [c for c in calls if c and c[0] == "git"]
+    assert len(git_calls) <= 4, git_calls
+
+
+# --- second review: resolver edges -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['["store"]\npath = \n', "['store']\npath = \n", '"store".path = \n',
+     '"store" = { path = \n'],
+    ids=["dq-header", "sq-header", "dq-dotted", "dq-inline"],
+)
+def test_a_broken_quoted_store_table_is_an_error(
+    env: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+) -> None:
+    repo = _init_repo(env / "repo")
+    folder = repo / "proj"
+    folder.mkdir()
+    (folder / CONFIG_FILENAME).write_text(text, encoding="utf-8")
+    monkeypatch.chdir(folder)
+    with pytest.raises(StoreMarkerError):
+        resolve_store()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["[retrieval]\nstore = 1\n[broken\n", "[storefront]\nx = \n",
+     "store_x = \n"],
+    ids=["key-under-other-table", "storefront", "store-prefix"],
+)
+def test_a_broken_config_without_a_store_table_is_no_marker(
+    env: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+) -> None:
+    repo = _init_repo(env / "repo")
+    (repo / CONFIG_FILENAME).write_text(text, encoding="utf-8")
+    monkeypatch.chdir(repo)
+    assert resolve_store().rule == STORE_RULE_GIT
+
+
+def test_an_unknown_home_in_a_marker_path_is_an_error(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _init_repo(env / "repo")
+    _marker(repo / "proj", "~no-such-user-1796/x")
+    monkeypatch.chdir(repo / "proj")
+    with pytest.raises(StoreMarkerError, match="home directory"):
+        resolve_store()
+
+
+def test_a_marker_naming_a_store_in_another_repository_keeps_its_identity(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = _init_repo(env / "other")
+    other_store = _common_dir(other) / "aelfrice"
+    _marker(env / "scratch", str(other_store))
+    monkeypatch.chdir(env / "scratch")
+    selection = resolve_store()
+    assert selection.owned_store
+    _write(["via-marker"])
+    expected = db_paths._identity_from_git_common_dir(_common_dir(other))
+    assert _context_of(other_store / "memory.db", "via-marker") == expected
+
+
+def test_project_warm_debounces_each_marker_folder_on_its_own(
+    monorepo: Path, env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import project_warm
+    from aelfrice.project_warm import WarmConfig, WarmResult
+
+    for name in ("project-a", "project-b"):
+        monkeypatch.chdir(monorepo / name)
+        _write([f"{name}-1"])
+    cfg = WarmConfig(deny_globs=(), aelfrice_home=env / "home" / ".aelfrice")
+    first = project_warm.warm_path(monorepo / "project-a", config=cfg, now=1000.0)
+    second = project_warm.warm_path(monorepo / "project-b", config=cfg, now=1001.0)
+    again = project_warm.warm_path(monorepo / "project-a", config=cfg, now=1002.0)
+    assert (first, second, again) == (
+        WarmResult.WARMED, WarmResult.WARMED, WarmResult.DEBOUNCED,
+    )
