@@ -960,6 +960,16 @@ def test_unclear_labels_are_left_out_of_precision() -> None:
     assert g["precision_a0"] == _approx(8 / 20)
 
 
+def test_unclear_labels_are_left_out_of_the_gain_and_the_additions() -> None:
+    # One not-relevant arm item per prompt is unclear to both graders.
+    # Counted as relevant, it would add 1 to every prompt's gain.
+    g = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], unclear_arm=1))["arms"]["A1"]["graders"][0]
+    assert g["mean_gain"] == _approx(1.0)
+    assert g["packed_mean_gain"] == _approx(1.0)
+    a3 = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A3, unclear_arm=1))
+    assert a3["arms"]["A3"]["graders"][0]["relevant_additions"] == 12
+
+
 def test_h4_needs_half_of_a3s_relevant_additions_to_bridge() -> None:
     passing = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A3, bridging=2))
     g = passing["arms"]["A3"]["graders"][0]
