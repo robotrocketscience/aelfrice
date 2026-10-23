@@ -670,8 +670,23 @@ def _packet(tmp_path: Path, runs: Mapping[str, Any], seed: int = 9) -> tuple[str
     work.mkdir()
     packet, key = bench.build_packet(runs, bench.prepare_copy(path, work), seed)
     out = work / "out"
-    bench.write_packet(packet, key, out)
-    return (out / "packet.jsonl").read_text(), (out / "key.jsonl").read_text()
+    bench.write_packet(packet, key, out, work / "key.jsonl")
+    return (out / "packet.jsonl").read_text(), (work / "key.jsonl").read_text()
+
+
+def test_the_key_is_written_outside_the_packet_directory(tmp_path: Path) -> None:
+    # #1795: blind packets and a hidden key. A grader handed the packet
+    # directory must not find the key in it.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out = tmp_path / "packet"
+    bench.write_packet(packet, key, out, tmp_path / "key.jsonl")
+    assert sorted(p.name for p in out.iterdir()) == ["instructions.txt", "packet.jsonl"]
+    assert json.loads((tmp_path / "key.jsonl").read_text())["belief_id"] == "B1"
+    for inside in (out / "key.jsonl", out / "sub" / "key.jsonl"):
+        with pytest.raises(bench.InputError, match="outside"):
+            bench.write_packet(packet, key, out, inside)
+        assert not inside.exists()
 
 
 def test_the_packet_hides_arm_and_rank(tmp_path: Path) -> None:
@@ -1200,7 +1215,10 @@ def test_no_subcommand_writes_or_opens_the_source_for_writing(
         assert bench.main(["run", "--store", str(path), "--prompts", str(prompts),
                            "--arm", arm, "--out", runs[-1]]) == 0
     assert bench.main(["packet", "--runs", *runs, "--store", str(path), "--seed", "2",
-                       "--out", str(d / "pk")]) == 0
+                       "--out", str(d / "pk"), "--key", str(d / "key.jsonl")]) == 0
+    assert sorted(p.name for p in (d / "pk").iterdir()) == ["instructions.txt", "packet.jsonl"]
+    assert bench.main(["packet", "--runs", *runs, "--store", str(path), "--seed", "2",
+                       "--out", str(d / "pk"), "--key", str(d / "pk" / "key.jsonl")]) == 1
     assert bench.main(["proxy", "--store", str(path), "--runs", *runs, "--prompts",
                        str(prompts), "--out", str(d / "proxy.json")]) == 0
     assert _sha(path) == before

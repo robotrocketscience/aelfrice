@@ -26,7 +26,9 @@ goes.
 - `run`: one arm's non-locked packed belief ids per prompt, in rank
   order, retrieved through the production `retrieve()` with the
   arguments the UserPromptSubmit hook passes it.
-- `packet`: the blind grader packet, its instructions, and the hidden key.
+- `packet`: the blind grader packet and its instructions in `--out`, and
+  the hidden key at `--key`, which must lie outside `--out`. Give each
+  grader the `--out` directory only.
 - `score`: the H0 to H6 verdicts from two graders' labels.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief. Reported beside the graders, never gating.
@@ -72,9 +74,9 @@ Usage::
     uv run python -m benchmarks.real_store_ab_1795 census --store <memory.db> --writers
     uv run python -m benchmarks.real_store_ab_1795 sample --store <memory.db> --seed 1795 --out prompts.jsonl
     uv run python -m benchmarks.real_store_ab_1795 run --store <memory.db> --prompts prompts.jsonl --arm A0 --out A0.json
-    uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <dir>
+    uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <packet-dir> --key key.jsonl
     uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A1W.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
-    uv run python -m benchmarks.real_store_ab_1795 score --key <dir>/key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json
+    uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json
 """
 
 from __future__ import annotations
@@ -946,12 +948,18 @@ def _jsonl(rows: Sequence[Mapping[str, Any]]) -> str:
 
 
 def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str, Any]],
-                 out: Path) -> None:
-    """Write packet.jsonl, instructions.txt, and key.jsonl to `out`."""
+                 out: Path, key_path: Path) -> None:
+    """Write packet.jsonl and instructions.txt to `out`, and the key to `key_path`.
+
+    The graders get `out`, so the key, which holds each row's arms and
+    ranks and marks the null arm, must lie outside it.
+    """
+    if key_path.resolve().is_relative_to(out.resolve()):
+        raise InputError(f"the key {key_path} must be outside the packet directory {out}")
     out.mkdir(parents=True, exist_ok=True)
     (out / "packet.jsonl").write_text(_jsonl(packet), encoding="utf-8")
     (out / "instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
-    (out / "key.jsonl").write_text(_jsonl(key), encoding="utf-8")
+    key_path.write_text(_jsonl(key), encoding="utf-8")
 
 
 # --- Usage proxy --------------------------------------------------------------
@@ -1373,7 +1381,10 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--runs", type=Path, nargs="+", required=True)
     k.add_argument("--store", type=Path, required=True)
     k.add_argument("--seed", type=int, required=True)
-    k.add_argument("--out", type=Path, required=True)
+    k.add_argument("--out", type=Path, required=True,
+                   help="directory for packet.jsonl and instructions.txt, for the graders")
+    k.add_argument("--key", type=Path, required=True,
+                   help="where the hidden key goes, outside --out")
     work_dir(k)
     sc = sub.add_parser("score", help="H0 to H6 from two graders' labels")
     sc.add_argument("--key", type=Path, required=True)
@@ -1408,7 +1419,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         runs = read_runs(args.runs)
         with tempfile.TemporaryDirectory(dir=args.work_dir) as work:
             packet, key = build_packet(runs, prepare_copy(args.store, Path(work)), args.seed)
-        write_packet(packet, key, args.out)
+        write_packet(packet, key, args.out, args.key)
         print(f"items={len(packet)} null={sum(1 for r in key if r['arms'] is None)}")
     elif cmd == "score":
         report = score(
