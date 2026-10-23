@@ -1017,6 +1017,11 @@ def paired_bootstrap_ci(gains: Sequence[float], seed: int,
     return lo, hi
 
 
+def at_least(value: float, bar: float) -> bool:
+    """`value >= bar`, counting a value within `BAR_TOLERANCE` of the bar as on it."""
+    return value >= bar - BAR_TOLERANCE
+
+
 def at_most(value: float, bar: float) -> bool:
     """`value <= bar`, counting a value within `BAR_TOLERANCE` of the bar as on it."""
     return value <= bar + BAR_TOLERANCE
@@ -1141,7 +1146,7 @@ def score(
     arms = sorted({arm for i in items if i.arms for arm in i.arms} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
     null = [null_figures(items, a), null_figures(items, b)]
-    reliable = kappa >= KAPPA_BAR and all(
+    reliable = at_least(kappa, KAPPA_BAR) and all(
         n["graded"] > 0 and n["rate"] <= NULL_RATE_CEILING for n in null
     )
     # H0's kill condition: when either bar fails, every arm result is

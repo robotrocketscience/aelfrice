@@ -656,6 +656,23 @@ def test_low_kappa_makes_every_verdict_unreliable() -> None:
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_UNRELIABLE}
 
 
+def _null_table(tt: int, tf: int, ft: int, ff: int) -> list[Row]:
+    """Null-arm items with grader A's and B's labels in the given counts."""
+    pairs = [(True, True)] * tt + [(True, False)] * tf + [(False, True)] * ft
+    pairs += [(False, False)] * ff
+    return [(f"n{k}", "p0", None, False, a, b) for k, (a, b) in enumerate(pairs)]
+
+
+def test_a_kappa_of_exactly_the_bar_holds_h0() -> None:
+    # The exact kappa of this table is 3/5; the float one is 0.5999999999999996.
+    on_bar = _score(_null_table(2, 1, 1, 14))
+    assert on_bar["kappa"] == _approx(0.6)
+    assert on_bar["hypotheses"]["H0"] == bench.V_PASS
+    under = _score(_null_table(2, 1, 2, 13))
+    assert under["kappa"] == _approx(48 / 102)
+    assert under["hypotheses"]["H0"] == bench.V_FAIL
+
+
 def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
     assert rep["null_arm"][0]["rate"] == _approx(0.3)
