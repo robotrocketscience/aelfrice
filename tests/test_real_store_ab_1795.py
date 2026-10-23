@@ -764,6 +764,13 @@ def test_an_arm_one_grader_fails_fails() -> None:
         assert rep["hypotheses"]["H2"] == bench.V_FAIL
 
 
+def test_a_pass_needs_a_tenth_of_the_prompts_to_gain() -> None:
+    # Mean and interval clear the bars; only the gaining share differs.
+    assert bench.gain_verdict(0.3, (0.1, 0.5), 0.10) == bench.V_PASS
+    assert bench.gain_verdict(0.3, (0.1, 0.5), 0.05) == bench.V_INCONCLUSIVE
+    assert bench.gain_verdict(0.29, (0.1, 0.5), 0.5) == bench.V_INCONCLUSIVE
+
+
 def test_low_kappa_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], flip_b=6))
     assert rep["kappa"] < bench.KAPPA_BAR
