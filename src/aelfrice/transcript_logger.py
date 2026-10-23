@@ -133,8 +133,16 @@ def transcripts_dir() -> Path:
 
     Resolution order mirrors `cli.db_path()`:
     1. `$AELFRICE_TRANSCRIPTS_DIR` (explicit override).
-    2. `<git-common-dir>/aelfrice/transcripts/` when in a git work-tree.
-    3. `~/.aelfrice/transcripts/` (non-git fallback).
+    2. `transcripts/` beside the store a `[store]` marker selects
+       (#1796). Turns written in one marker folder are ingested into
+       that folder's store, so they can't share a log with the
+       repository's other folders.
+    3. `<git-common-dir>/aelfrice/transcripts/` when in a git work-tree.
+    4. `~/.aelfrice/transcripts/` (non-git fallback).
+
+    `$AELFRICE_DB` does not move the log, as before markers existed. A
+    marker that names no usable store raises `StoreMarkerError` rather
+    than logging the turn to the shared directory.
 
     The git-tree path lives under `.git/`, which git does not track,
     so transcripts never cross the git boundary.
@@ -142,8 +150,15 @@ def transcripts_dir() -> Path:
     override = os.environ.get("AELFRICE_TRANSCRIPTS_DIR")
     if override:
         return Path(override)
-    from aelfrice.db_paths import _git_common_dir  # noqa: PLC0415
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        STORE_RULE_MARKER,
+        _git_common_dir,
+        resolve_store,
+    )
 
+    selection = resolve_store()
+    if selection.rule == STORE_RULE_MARKER:
+        return selection.path.parent / TRANSCRIPTS_SUBDIR
     git_dir = _git_common_dir()
     if git_dir is not None:
         return git_dir / "aelfrice" / TRANSCRIPTS_SUBDIR
