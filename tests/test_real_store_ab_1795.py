@@ -1105,6 +1105,20 @@ def test_h4_needs_half_of_a3s_relevant_additions_to_bridge() -> None:
     assert failing["hypotheses"]["H4"] == bench.V_FAIL
 
 
+def test_h4_fails_low_bridging_on_an_inconclusive_gain() -> None:
+    # #1795 H4 kills on bridging whatever the gain. A mean gain of 0.2 is
+    # inconclusive when every addition bridges, and fails when none does.
+    a0, a3 = [2] * 40, [3] * 8 + [2] * 32
+    bridged = _score(_hand(a0, a3, arm=bench.ARM_A3, bridging=3))
+    g = bridged["arms"]["A3"]["graders"][0]
+    assert g["mean_gain"] == _approx(0.2) and g["ci95"][0] > 0.0
+    assert g["bridging_share"] == _approx(1.0)
+    assert bridged["hypotheses"]["H4"] == bench.V_INCONCLUSIVE
+    unbridged = _score(_hand(a0, a3, arm=bench.ARM_A3))
+    assert unbridged["arms"]["A3"]["graders"][0]["bridging_share"] == _approx(0.0)
+    assert unbridged["hypotheses"]["H4"] == bench.V_FAIL
+
+
 def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
     # #1795 H1: under 1 per 100, A1 is substrate-starved, not a lane verdict.
     rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
