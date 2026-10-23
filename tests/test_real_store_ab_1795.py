@@ -1050,14 +1050,16 @@ def test_a_bridging_share_on_the_bar_passes_h4() -> None:
     assert rep["hypotheses"]["H4"] == bench.V_PASS
 
 
-def _substrate_store(tmp_path: Path, beliefs: int) -> Path:
-    """`beliefs` active beliefs and one CONTRADICTS edge, a probed kind."""
-    path = tmp_path / f"sub{beliefs}" / "memory.db"
+def _substrate_store(tmp_path: Path, beliefs: int, edges: int = 1) -> Path:
+    """`beliefs` active beliefs and `edges` CONTRADICTS edges, a probed kind."""
+    path = tmp_path / f"sub{beliefs}-{edges}" / "memory.db"
     path.parent.mkdir(parents=True)
     s = MemoryStore(str(path))
     for i in range(beliefs):
         _add(s, f"b{i:03d}", _filler(i))
-    s.insert_edge(Edge(src="b000", dst="b001", type=EDGE_CONTRADICTS, weight=1.0))
+    for k in range(edges):
+        s.insert_edge(Edge(src=f"b{2 * k:03d}", dst=f"b{2 * k + 1:03d}",
+                           type=EDGE_CONTRADICTS, weight=1.0))
     s.close()
     return path
 
@@ -1074,6 +1076,26 @@ def test_h1_passes_at_exactly_one_probed_edge_per_100_beliefs(
     assert on["H1"] == bench.V_PASS
     under = bench.census([_substrate_store(tmp_path, 101)], tmp_path, writers=True)
     assert under["H1"] == bench.V_FAIL
+
+
+def test_h1_reads_the_median_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_writers(_db: Path) -> dict[str, dict[str, int]]:
+        return {}
+
+    monkeypatch.setattr(bench, "apply_writers", no_writers)
+    # 0, 3, and 1 probed edges per 100 beliefs: the median is 1, a pass.
+    stores = [_substrate_store(tmp_path, 100, n) for n in (0, 3, 1)]
+    rep = bench.census(stores, tmp_path, writers=True)
+    assert [r["probed_per_100_beliefs"] for r in rep["stores"]] == [0.0, 3.0, 1.0]
+    assert rep["median_probed_per_100_beliefs"] == _approx(1.0)
+    assert rep["H1"] == bench.V_PASS
+    # Two stores under the bar outvote one far above it.
+    starved = bench.census(
+        [_substrate_store(tmp_path, 200, n) for n in (0, 1, 50)], tmp_path, writers=True)
+    assert starved["median_probed_per_100_beliefs"] == _approx(0.5)
+    assert starved["H1"] == bench.V_FAIL
 
 
 def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
