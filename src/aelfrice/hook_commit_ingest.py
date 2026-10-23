@@ -233,12 +233,14 @@ def _changed_paths(rev: str, cwd: str | None) -> list[str]:
 
     A merge lists nothing under `diff-tree`, so it falls back to the diff
     against its first parent, which is what the merge brought in. Renames
-    list both the old and the new path.
+    list both the old and the new path. Both calls are plumbing, so the
+    paths are root-relative whatever the cwd and `diff.relative` say.
     """
     for args in (
         ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root",
          "--no-renames", "-z", rev, "--"],
-        ["diff", "--name-only", "--no-renames", "-z", f"{rev}^1", rev, "--"],
+        ["diff-tree", "--name-only", "-r", "--no-renames", "-z",
+         f"{rev}^1", rev, "--"],
     ):
         out = _git_out(args, cwd)
         names = [n for n in (out or "").split("\x00") if n]
