@@ -302,6 +302,22 @@ def test_a1_writes_edges_on_the_copy_and_expands(tmp_path: Path) -> None:
     assert _edges(path) == before
 
 
+def test_the_writers_edges_reach_a1s_retrieval(tmp_path: Path) -> None:
+    # Only the edges the writers add join w1 to w2 (CONTRADICTS) and w3 to
+    # w4 (SUPPORTS), so the lane reaches w2 and w4 through them alone.
+    path = _store(tmp_path)
+    assert not {e[:2] for e in _edges(path)} & {("w1", "w2"), ("w3", "w4")}
+    prompts: list[dict[str, Any]] = [{"prompt_id": "c", "text": "always", "context": []},
+                                     {"prompt_id": "s", "text": "fast", "context": []}]
+    ranked: dict[str, list[list[str]]] = {}
+    for arm in (bench.ARM_A1W, bench.ARM_A1):
+        work = tmp_path / f"reach-{arm}"
+        work.mkdir()
+        ranked[arm] = [p["ranked"] for p in bench.run_arm(path, prompts, arm, work)["prompts"]]
+    assert ranked[bench.ARM_A1W] == [["w1"], ["w3"]]
+    assert ranked[bench.ARM_A1] == [["w1", "w2"], ["w3", "w4"]]
+
+
 _MIXED = "deployment script database migration release checklist changelog version kestrel meadow"
 
 
