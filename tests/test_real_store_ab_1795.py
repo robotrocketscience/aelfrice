@@ -1056,6 +1056,41 @@ def test_bad_input_exits_1(tmp_path: Path) -> None:
     assert exc.value.code == 1
 
 
+def _run_file(tmp_path: Path, name: str, arm: str, pids: list[str]) -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps({"arm": arm, "prompts": [
+        {"prompt_id": p, "prompt": "q", "ranked": ["seed"]} for p in pids]}), encoding="utf-8")
+    return path
+
+
+def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(
+    tmp_path: Path,
+) -> None:
+    a0 = _run_file(tmp_path, "a0.json", bench.ARM_A0, ["p1", "p2"])
+    a1 = _run_file(tmp_path, "a1.json", bench.ARM_A1, ["p2", "p1"])
+    assert set(bench.read_runs([a0, a1])) == {"A0", "A1"}
+    again = _run_file(tmp_path, "a1b.json", bench.ARM_A1, ["p1", "p2"])
+    with pytest.raises(bench.InputError, match="two runs for arm A1"):
+        bench.read_runs([a0, a1, again])
+    with pytest.raises(bench.InputError, match="no A0 run"):
+        bench.read_runs([a1])
+    other = _run_file(tmp_path, "a2.json", bench.ARM_A2, ["p1", "p3"])
+    with pytest.raises(bench.InputError, match="different prompts"):
+        bench.read_runs([a0, other])
+
+
+def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
+    rows = [{"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True},
+            {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False}]
+    path = tmp_path / "key.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with pytest.raises(bench.InputError, match="no A0 item"):
+        bench.read_key(path)
+    rows[0]["arms"] = {"A0": 3, "A1": 1}
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert [i.id for i in bench.read_key(path)] == ["i1", "i2"]
+
+
 def test_score_cli_reads_a_packet_key_and_two_label_files(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
