@@ -1131,6 +1131,23 @@ def test_h6_compares_the_proxy_sign_with_each_grader() -> None:
     assert rep["hypotheses"]["H6"]["A1"]["verdict"] == bench.V_UNRELIABLE
 
 
+def test_h6_takes_each_graders_sign_from_the_top_ten_gain() -> None:
+    # A1 adds a relevant belief past rank 10 on every prompt: a packed gain
+    # of 1 but a top-10 gain of 0, the gain H2 is decided on.
+    rows: list[Row] = []
+    for p in range(4):
+        rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A1": k + 1}, True, k < 2, k < 2)
+                 for k in range(10)]
+        rows.append((f"r{p}", f"p{p}", {"A1": 11}, False, True, True))
+        rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
+    proxy = {"prompts": [{"arms": {"A0": [{"id": "a", "used": False}],
+                                   "A1": [{"id": "a", "used": True}]}}]}
+    rep = _score(rows, proxy_report=proxy)
+    assert rep["arms"]["A1"]["graders"][0]["packed_mean_gain"] == _approx(1.0)
+    assert rep["hypotheses"]["H6"]["A1"] == {
+        "proxy_sign": 1, "grader_signs": [0, 0], "verdict": bench.V_DISAGREE}
+
+
 # --- Proxy -------------------------------------------------------------------
 
 
