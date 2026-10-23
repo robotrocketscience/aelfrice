@@ -409,17 +409,47 @@ def test_a_lane_addition_past_the_top_ten_is_judged_and_counted(tmp_path: Path) 
         _rows, k = bench.build_packet(runs, work / "memory.db", seed)
         assert not {r["belief_id"] for r in k if r["arms"] is None} & set(a2)
     # Graded relevant: A2 gains `rel` on every prompt, all of it past the cut.
+    # #1795 registers the gain over the top 10, so the packed gain is only
+    # reported and H3 fails.
     rows: list[Row] = []
     for p in range(4):
         rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A2": k + 1}, True, k < 2, k < 2)
                  for k in range(10)]
         rows.append((f"r{p}", f"p{p}", {"A2": 11}, False, True, True))
         rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
-    g = _score(rows)["arms"]["A2"]["graders"][0]
-    assert g["top10_mean_gain"] == _approx(0.0)
-    assert g["mean_gain"] == _approx(1.0)
-    assert g["gain_verdict"] == bench.V_PASS
+    rep = _score(rows)
+    g = rep["arms"]["A2"]["graders"][0]
+    assert g["mean_gain"] == _approx(0.0)
+    assert g["packed_mean_gain"] == _approx(1.0)
+    assert g["packed_ci95"] == [_approx(1.0), _approx(1.0)]
+    assert g["packed_share_gaining"] == _approx(1.0)
+    assert g["gain_verdict"] == bench.V_FAIL
+    assert rep["hypotheses"]["H3"] == bench.V_FAIL
     assert g["precision_drop"] == _approx(0.0)
+
+
+def test_h4_counts_additions_to_the_top_ten() -> None:
+    # Per prompt, A3 moves A0's rank-11 belief into its top 10 and packs a
+    # bridging belief at rank 11. Only the first is a top-10 addition.
+    rows: list[Row] = []
+    for p in range(4):
+        rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A3": k + 1}, True, k < 2, k < 2)
+                 for k in range(9)]
+        rows.append((f"o{p}", f"p{p}", {"A0": 10}, True, False, False))
+        rows.append((f"m{p}", f"p{p}", {"A0": 11, "A3": 10}, True, True, True))
+        rows.append((f"b{p}", f"p{p}", {"A3": 11}, False, True, True))
+        rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
+    g = _score(rows)["arms"]["A3"]["graders"][0]
+    assert g["mean_gain"] == _approx(1.0)
+    assert (g["relevant_additions"], g["bridging"]) == (4, 0)
+
+
+def test_the_proxy_sign_counts_the_top_ten_only() -> None:
+    # A1's only used belief sits at rank 11, where the graders' gain doesn't look.
+    unused = [{"id": f"u{k}", "used": False} for k in range(bench.TOP_K)]
+    proxy = {"prompts": [{"arms": {
+        "A0": unused, "A1": [*unused, {"id": "x", "used": True}]}}]}
+    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 0}
 
 
 def test_a0_takes_the_top_ten_non_locked_beliefs(tmp_path: Path) -> None:
@@ -1081,7 +1111,7 @@ def test_the_proxy_finds_a_cited_or_restated_belief_in_a_later_turn(tmp_path: Pa
 
 
 def test_the_proxy_covers_the_whole_packed_result(tmp_path: Path) -> None:
-    # The gain counts beliefs past the top 10, so the proxy does too.
+    # The packed gain counts beliefs past the top 10, so the proxy reports them too.
     path = _store(tmp_path)
     archive, live = _session_turns()
     _write_transcripts(path, archive, live)

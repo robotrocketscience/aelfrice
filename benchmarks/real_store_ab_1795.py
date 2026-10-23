@@ -167,19 +167,21 @@ PROBE_KINDS_A2: Final[tuple[str, ...]] = (
 """Edge kinds A2 probes: the ones real stores already hold (#1795)."""
 
 TOP_K: Final[int] = 10
-"""The top 10 non-locked beliefs of the packed result: H5's precision set."""
+"""The top 10 non-locked beliefs of the packed result: the set H2 to H5 count."""
 COMPARISONS: Final[tuple[tuple[str, str], ...]] = (
     (ARM_A1, ARM_A0), (ARM_A1W, ARM_A0), (ARM_A2, ARM_A0), (ARM_A3, ARM_A0),
     (ARM_A1, ARM_A1W),
 )
 """`(arm, control)` pairs whose packed results the packet judges in full.
 
-The expand lane appends its beliefs after every L1 hit, so when L1 fills
-the top 10 an A1 or A2 addition lands past the cut, and a gain counted
-in the top 10 alone is zero by construction. The gain is counted over
-the whole packed result, which the hook injects, instead. Beliefs both
-arms packed cancel, so the packet judges only the top 10s and the
-beliefs one arm of a pair packed and the other didn't.
+#1795 registers the H2 to H4 gain over each arm's top 10, and that gain
+decides the verdicts. The expand lane appends its beliefs after every L1
+hit, so when L1 fills the top 10 an A1 or A2 addition lands past the cut
+and adds nothing to that gain. The packet also judges the beliefs one arm
+of a pair packed and the other didn't, so the scorer can report the gain
+over the whole packed result, which the hook injects, beside the
+registered one. Beliefs both arms packed cancel and stay unjudged past
+the top 10s.
 """
 DEFAULT_MAX_PROMPTS: Final[int] = 40
 """Most prompts sampled per store (#1795)."""
@@ -1119,8 +1121,24 @@ def _only(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyI
     return out
 
 
+def _top_added(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyItem]]:
+    """{prompt id: the arm's top `TOP_K` items outside `other`'s top `TOP_K`}."""
+    out: dict[str, list[KeyItem]] = {}
+    for i in items:
+        if (i.arms is not None and i.arms.get(arm, TOP_K + 1) <= TOP_K
+                and i.arms.get(other, TOP_K + 1) > TOP_K):
+            out.setdefault(i.prompt_id, []).append(i)
+    return out
+
+
 def _relevant(items: Sequence[KeyItem], labels: Labels) -> int:
     return sum(1 for i in items if labels[i.id] is True)
+
+
+def _gain_stats(gains: Sequence[float], seed: int) -> tuple[float, tuple[float, float], float]:
+    """Mean, bootstrap 95% interval, and share of prompts gaining at least one."""
+    return (sum(gains) / len(gains), paired_bootstrap_ci(gains, seed),
+            sum(1 for g in gains if g >= 1) / len(gains))
 
 
 def arm_figures(
@@ -1129,24 +1147,25 @@ def arm_figures(
 ) -> dict[str, Any]:
     """One grader's paired gain, precision share, and drop for `arm` against `control`.
 
-    The gain is counted over the whole packed result (see `COMPARISONS`):
-    relevant beliefs only `arm` packed minus those only `control` packed.
-    `top10_mean_gain` counts the top 10s alone. Precision and its drop
-    are over the top 10s, as H5 states.
+    The gain is the one #1795 registers: relevant beliefs in `arm`'s top
+    10 minus those in `control`'s, per prompt. It alone decides the gain
+    verdict. The `packed_` figures count the whole packed result instead
+    (see `COMPARISONS`), relevant beliefs only `arm` packed minus those
+    only `control` packed, and decide nothing. Precision and its drop are
+    over the top 10s, as H5 states.
     """
     top_arm, top_a0 = _top(items, arm), _top(items, control)
     gained, lost = _only(items, arm, control), _only(items, control, arm)
     gains = [
+        float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
+        for p in prompts
+    ]
+    packed_gains = [
         float(_relevant(gained.get(p, []), labels) - _relevant(lost.get(p, []), labels))
         for p in prompts
     ]
-    top10_gains = [
-        _relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels)
-        for p in prompts
-    ]
-    mean = sum(gains) / len(gains)
-    ci = paired_bootstrap_ci(gains, seed)
-    share = sum(1 for g in gains if g >= 1) / len(gains)
+    mean, ci, share = _gain_stats(gains, seed)
+    packed_mean, packed_ci, packed_share = _gain_stats(packed_gains, seed)
     fig_arm = grader_figures([i.id for p in prompts for i in top_arm.get(p, [])], labels)
     fig_a0 = grader_figures([i.id for p in prompts for i in top_a0.get(p, [])], labels)
     g_arm, g_a0 = int(fig_arm["graded"]), int(fig_a0["graded"])
@@ -1156,7 +1175,8 @@ def arm_figures(
     figures: dict[str, Any] = {
         "graded": g_arm, "graded_a0": g_a0,
         "mean_gain": mean, "ci95": list(ci), "share_gaining": share,
-        "top10_mean_gain": sum(top10_gains) / len(top10_gains),
+        "packed_mean_gain": packed_mean, "packed_ci95": list(packed_ci),
+        "packed_share_gaining": packed_share,
         "precision": precision, "precision_a0": precision_a0, "precision_drop": drop,
         "gain_verdict": gain_verdict(mean, ci, share) if sufficient else V_INSUFFICIENT,
         "h5_verdict": (
@@ -1164,7 +1184,8 @@ def arm_figures(
         ),
     }
     if arm == ARM_A3:
-        additions = [i for p in prompts for i in gained.get(p, []) if labels[i.id] is True]
+        added = _top_added(items, arm, control)
+        additions = [i for p in prompts for i in added.get(p, []) if labels[i.id] is True]
         bridging = sum(1 for i in additions if not i.shares_prompt_stem)
         share_b = bridging / len(additions) if additions else None
         figures.update({"relevant_additions": len(additions), "bridging": bridging,
@@ -1189,13 +1210,17 @@ def null_figures(items: Sequence[KeyItem], labels: Labels) -> dict[str, Any]:
 
 
 def proxy_gain_signs(proxy_report: Mapping[str, Any], arms: Sequence[str]) -> dict[str, int]:
-    """Sign of the proxy's mean paired gain in used beliefs, per arm against A0."""
+    """Sign of the proxy's mean paired gain in used beliefs, per arm against A0.
+
+    Counted over each arm's top `TOP_K`, the quantity the graders' gain
+    counts. Proxy rows list each arm's beliefs in rank order.
+    """
     rows = cast(list[dict[str, Any]], proxy_report.get("prompts", []))
     out: dict[str, int] = {}
     for arm in arms:
         gains = [
-            sum(1 for b in r["arms"].get(arm, []) if b["used"])
-            - sum(1 for b in r["arms"].get(CONTROL_ARM, []) if b["used"])
+            sum(1 for b in r["arms"].get(arm, [])[:TOP_K] if b["used"])
+            - sum(1 for b in r["arms"].get(CONTROL_ARM, [])[:TOP_K] if b["used"])
             for r in rows
         ]
         mean = sum(gains) / len(gains) if gains else 0.0
