@@ -740,6 +740,28 @@ def test_a_small_positive_gain_is_inconclusive() -> None:
     assert rep["hypotheses"]["H2"] == bench.V_INCONCLUSIVE
 
 
+def test_combine_passes_only_when_both_graders_pass() -> None:
+    p, f, i, n = bench.V_PASS, bench.V_FAIL, bench.V_INCONCLUSIVE, bench.V_INSUFFICIENT
+    assert bench.combine([p, p]) == p
+    assert bench.combine([p, f]) == f and bench.combine([f, p]) == f
+    assert bench.combine([p, i]) == i and bench.combine([i, p]) == i
+    assert bench.combine([n, f]) == n and bench.combine([p, n]) == n
+
+
+def test_an_arm_one_grader_fails_fails() -> None:
+    rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
+    # Grader B calls only A1's first 2 items per prompt relevant: no gain.
+    b_view = [(r[0], r[1], r[2], r[3], r[4], r[5] if not r[0].startswith("x")
+               else int(r[0].split("-")[1]) < 2) for r in rows]
+    swapped = [(r[0], r[1], r[2], r[3], r[5], r[4]) for r in b_view]
+    for case in (b_view, swapped):
+        rep = _score(case)
+        assert rep["hypotheses"]["H0"] == bench.V_PASS
+        verdicts = [g["gain_verdict"] for g in rep["arms"]["A1"]["graders"]]
+        assert sorted(verdicts) == [bench.V_FAIL, bench.V_PASS]
+        assert rep["hypotheses"]["H2"] == bench.V_FAIL
+
+
 def test_low_kappa_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], flip_b=6))
     assert rep["kappa"] < bench.KAPPA_BAR
