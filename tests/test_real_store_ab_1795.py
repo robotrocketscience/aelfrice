@@ -428,7 +428,19 @@ def test_a0_takes_the_top_ten_non_locked_beliefs(tmp_path: Path) -> None:
         path, [{"prompt_id": "p", "text": "always run the test suite before pushing",
                 "context": []}], bench.ARM_A0, tmp_path)["prompts"][0]["ranked"]
     assert "lock1" not in ranked
-    assert len(ranked) <= bench.TOP_K
+
+
+def test_the_judged_top_of_each_run_is_ten(tmp_path: Path) -> None:
+    # #1795: the judged set is the top 10 non-locked beliefs.
+    assert bench.TOP_K == 10
+    path = _crowded_store(tmp_path, 12)
+    work = tmp_path / "top"
+    work.mkdir()
+    run = bench.run_arm(path, _prompts(), bench.ARM_A0, work)
+    ranked = run["prompts"][0]["ranked"]
+    assert len(ranked) == 12
+    _rows, key = bench.build_packet({bench.ARM_A0: run}, work / "memory.db", 1)
+    assert {r["belief_id"] for r in key if r["arms"]} == set(ranked[:10])
 
 
 def test_the_run_mirrors_the_hook_call(
