@@ -216,7 +216,7 @@ _GIT_STORE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9.
 # parse, to tell a broken marker from a broken file that never held one.
 # A leading byte order mark is skipped.
 _STORE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
-    r"""^﻿?\s*\[\[?\s*(["']?)store\1\s*[\].]""", re.MULTILINE,
+    r"""^\ufeff?\s*\[\[?\s*(["']?)store\1\s*[\].]""", re.MULTILINE,
 )
 
 # A top-level `store` key: a dotted `store.path = ...` or an inline
@@ -224,13 +224,20 @@ _STORE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
 # header count, since the same text under another table is that table's
 # key and declares no store table.
 _STORE_KEY_RE: Final[re.Pattern[str]] = re.compile(
-    r"""^﻿?\s*(["']?)store\1\s*[.=]""",
+    r"""^\ufeff?\s*(["']?)store\1\s*[.=]""",
 )
 
-# Any table header, which ends the top level of a TOML file.
-_ANY_HEADER_RE: Final[re.Pattern[str]] = re.compile(r"^﻿?\s*\[")
+# A whole line that is a table header, which ends the top level of a TOML
+# file: one or more bare or quoted keys joined by dots, in `[...]` or
+# `[[...]]`, then an optional comment. A line that only starts with `[`,
+# such as a row of a multi-line array or a line inside a string, does not
+# end it.
+_KEY_PART: Final[str] = r"""(?:"[^"]*"|'[^']*'|[A-Za-z0-9_-]+)"""
+_ANY_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    rf"^\ufeff?\s*\[\[?\s*{_KEY_PART}(?:\s*\.\s*{_KEY_PART})*\s*\]\]?\s*(?:#.*)?$",
+)
 
-_BOM: Final[str] = "﻿"
+_BOM: Final[str] = "\ufeff"
 
 #: The rules `resolve_store()` reports, in resolution order.
 STORE_RULE_ENV: Final[str] = "env"
@@ -280,10 +287,16 @@ class StoreSelection:
 
 def _declares_store_table(raw: str) -> bool:
     """True when the text of an unparsable config declares a `store`
-    table: a header anywhere, or a top-level dotted or inline key."""
+    table: a header anywhere, or a top-level dotted or inline key.
+
+    The file can't be parsed, so this reads lines, and it errs toward
+    the error: a line inside a string that looks like a `store` table
+    counts as one. Any line ending (LF, CRLF, or CR) is accepted.
+    """
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     if _STORE_HEADER_RE.search(raw):
         return True
-    for line in raw.splitlines():
+    for line in raw.split("\n"):
         if _ANY_HEADER_RE.match(line):
             return False
         if _STORE_KEY_RE.match(line):
@@ -448,12 +461,39 @@ def _find_store_marker(start: Path | None) -> tuple[Path, str] | None:
     return None
 
 
-def _same_file(a: Path, b: Path) -> bool:
-    """True when `a` and `b` name one file once both are resolved."""
+def _same_dir(a: Path, b: Path) -> bool:
+    """True when `a` and `b` are one directory.
+
+    Compared by file identity when both exist, so a symlink or a
+    different letter case on a case-insensitive filesystem still
+    matches; by resolved path otherwise.
+    """
     try:
+        if a.is_dir() and b.is_dir():
+            return os.path.samefile(a, b)
         return a.resolve() == b.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return False
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """True when store paths `a` and `b` name one store: the same file
+    name in the same directory (`_same_dir`)."""
+    return a.name == b.name and _same_dir(a.parent, b.parent)
+
+
+def _is_git_dir(path: Path) -> bool:
+    """True when `path` looks like a git directory: a `HEAD` file that
+    holds a ref or an object id, and `objects` and `refs` directories.
+    Cheap, and needs no git call."""
+    try:
+        if not ((path / "objects").is_dir() and (path / "refs").is_dir()):
+            return False
+        head = (path / "HEAD").read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return False
+    head = head.strip()
+    return head.startswith("ref: ") or bool(re.fullmatch(r"[0-9a-f]{40,64}", head))
 
 
 def _is_global_store(path: Path) -> bool:
@@ -468,22 +508,24 @@ def _names_owned_store(path: Path) -> bool:
     Such a marker must keep that store's identity, or its first open
     would seed the store's sidecar with the marker folder's identity and
     relabel the rows every other opener stamps. A repository store is
-    `<git-dir>/aelfrice/memory.db`, recognized by the `HEAD` file and
-    `objects` directory every git directory holds, so the check needs no
-    git call and covers another repository's store too.
+    `<git-dir>/aelfrice/memory.db`, recognized by its git directory
+    (`_is_git_dir`), so the check needs no git call and covers another
+    repository's store too. The path is resolved first, and the
+    directory compared by identity, so a symlink or a different letter
+    case still counts.
     """
     if _is_global_store(path) or _same_file(path, user_db_path()):
         return True
-    if (
-        path.name != DEFAULT_DB_FILENAME
-        or path.parent.name != _REPO_STORE_PARENT_DIRNAME
-    ):
+    if path.name != DEFAULT_DB_FILENAME:
         return False
-    git_dir = path.parent.parent
     try:
-        return (git_dir / "HEAD").is_file() and (git_dir / "objects").is_dir()
-    except OSError:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
         return False
+    git_dir = resolved.parent.parent
+    return _is_git_dir(git_dir) and _same_dir(
+        resolved.parent, git_dir / _REPO_STORE_PARENT_DIRNAME,
+    )
 
 
 def resolve_store(start: Path | None = None) -> StoreSelection:
@@ -945,7 +987,15 @@ def store_identity(selection: StoreSelection, *, create: bool = False) -> str:
     ):
         return repo_identity_from_db_path(path, create=create)
     if selection.owned_store:
-        return repo_identity_from_db_path(path.resolve(), create=create)
+        resolved = path.resolve()
+        if _is_git_dir(resolved.parent.parent):
+            # The repository store under its canonical spelling, so a
+            # differently-cased path still derives the repository identity.
+            resolved = (
+                resolved.parent.parent / _REPO_STORE_PARENT_DIRNAME
+                / DEFAULT_DB_FILENAME
+            )
+        return repo_identity_from_db_path(resolved, create=create)
     if selection.git_store is not None:
         # <git-common-dir>/aelfrice/stores/<name>/memory.db
         git_dir = path.parent.parent.parent.parent
