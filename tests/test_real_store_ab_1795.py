@@ -1292,6 +1292,11 @@ def test_h1_reads_the_median_store(
         [_substrate_store(tmp_path, 200, n) for n in (0, 1, 50)], tmp_path, writers=True)
     assert starved["median_probed_per_100_beliefs"] == _approx(0.5)
     assert starved["H1"] == bench.V_FAIL
+    # With 4 stores, the median is the mean of the middle two: 0.5 and 1.5.
+    even = bench.census(
+        [_substrate_store(tmp_path, 400, n) for n in (0, 2, 6, 100)], tmp_path, writers=True)
+    assert even["median_probed_per_100_beliefs"] == _approx(1.0)
+    assert even["H1"] == bench.V_PASS
 
 
 def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
