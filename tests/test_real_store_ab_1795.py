@@ -503,6 +503,14 @@ def test_the_a1_writers_produce_each_edge_type(tmp_path: Path) -> None:
     assert again["supersedes"]["n_edges_written"] == 0
 
 
+def test_the_writers_name_the_commits_that_removed_them() -> None:
+    # 01d4dcfb and 6c630223 deleted the writer functions; c3a500fa only
+    # dropped their ingest wiring.
+    assert "01d4dcfb" in (bench.write_supports_edges.__doc__ or "")
+    assert "6c630223" in (bench.write_supersedes_edges.__doc__ or "")
+    assert "removed in c3a500fa" not in (bench.__doc__ or "")
+
+
 def test_census_counts_probed_edges_per_100_beliefs(tmp_path: Path) -> None:
     path = _store(tmp_path)
     before = bench.census([path], tmp_path, writers=False)

@@ -35,8 +35,9 @@ goes.
 
 - `A0`: defaults.
 - `A1`: on the copy, the CONTRADICTS writer from `relationship_detector`
-  plus the SUPPORTS and SUPERSEDES writers removed in c3a500fa (restored
-  below, not in `src`), then retrieval with `AELFRICE_HRR_EXPAND=1`.
+  plus the SUPPORTS and SUPERSEDES writers that #999 added and 01d4dcfb
+  and 6c630223 deleted (restored below, not in `src`), then retrieval
+  with `AELFRICE_HRR_EXPAND=1`.
 - `A1W`: A1's writers with the expand lane off. Default retrieval reads
   the new edges too (the intentional-clustering pack merges candidates
   any edge joins), so A1 against A0 mixes that reranking with the lane.
@@ -318,14 +319,18 @@ def belief_texts(db: Path, ids: Sequence[str]) -> dict[str, str]:
 
 # --- A1 writers -----------------------------------------------------------------
 #
-# The SUPPORTS and SUPERSEDES writers below are the ones #999 added and
-# c3a500fa removed from `relationship_detector` and `dedup`. The audits they
-# call are unchanged. Their per-belief cap was `DEFAULT_MAX_EDGES_PER_BELIEF`
-# in each module, 8 in both; only `relationship_detector` keeps it now.
+# The SUPPORTS and SUPERSEDES writers below are the ones #999 added.
+# c3a500fa dropped their ingest wiring, and 01d4dcfb and 6c630223 deleted
+# them from `relationship_detector` and `dedup`. The audits they call are
+# unchanged. Their per-belief cap was `DEFAULT_MAX_EDGES_PER_BELIEF` in
+# each module, 8 in both; only `relationship_detector` keeps it now.
 
 
 def write_supports_edges(store: MemoryStore) -> dict[str, int]:
-    """SUPPORTS edges for the audit's REFINES pairs, `src = min(id)`."""
+    """SUPPORTS edges for the audit's REFINES pairs, `src = min(id)`.
+
+    Restored from the `relationship_detector` writer that 01d4dcfb deleted.
+    """
     report = relationships_audit(
         store,
         jaccard_min=DEFAULT_JACCARD_MIN,
@@ -363,7 +368,10 @@ def write_supports_edges(store: MemoryStore) -> dict[str, int]:
 
 
 def write_supersedes_edges(store: MemoryStore) -> dict[str, int]:
-    """SUPERSEDES edges from each near-duplicate to its cluster's oldest member."""
+    """SUPERSEDES edges from each near-duplicate to its cluster's oldest member.
+
+    Restored from the `dedup` writer that 6c630223 deleted.
+    """
     report = dedup_audit(
         store,
         jaccard_min=DEDUP_JACCARD_MIN,
