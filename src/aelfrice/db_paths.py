@@ -211,13 +211,24 @@ STORE_FILE_SUFFIX: Final[str] = ".db"
 # under `stores/`; nothing a Windows path refuses.
 _GIT_STORE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# Any spelling of a `store` table: a `[store]` or `[store.x]` header, an
-# array header, a dotted `store.path` key, or an inline `store = {...}`.
-# Used only when the file fails to parse, to tell a broken marker from a
-# broken file that never held one. A leading byte order mark is skipped.
+# A `store` table header in any spelling: `[store]`, `[store.x]`, an
+# array header, or a quoted `["store"]`. Used only when the file fails to
+# parse, to tell a broken marker from a broken file that never held one.
+# A leading byte order mark is skipped.
 _STORE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^﻿?\s*(?:\[\[?\s*store\s*[\].]|store\s*[.=])", re.MULTILINE,
+    r"""^﻿?\s*\[\[?\s*(["']?)store\1\s*[\].]""", re.MULTILINE,
 )
+
+# A top-level `store` key: a dotted `store.path = ...` or an inline
+# `store = {...}`, bare or quoted. Only lines before the first table
+# header count, since the same text under another table is that table's
+# key and declares no store table.
+_STORE_KEY_RE: Final[re.Pattern[str]] = re.compile(
+    r"""^﻿?\s*(["']?)store\1\s*[.=]""",
+)
+
+# Any table header, which ends the top level of a TOML file.
+_ANY_HEADER_RE: Final[re.Pattern[str]] = re.compile(r"^﻿?\s*\[")
 
 _BOM: Final[str] = "﻿"
 
@@ -267,6 +278,19 @@ class StoreSelection:
         return self.rule
 
 
+def _declares_store_table(raw: str) -> bool:
+    """True when the text of an unparsable config declares a `store`
+    table: a header anywhere, or a top-level dotted or inline key."""
+    if _STORE_HEADER_RE.search(raw):
+        return True
+    for line in raw.splitlines():
+        if _ANY_HEADER_RE.match(line):
+            return False
+        if _STORE_KEY_RE.match(line):
+            return True
+    return False
+
+
 def _read_store_marker(config: Path) -> str | None:
     """The `[store] path` value in `config`, or None when it has no table.
 
@@ -284,7 +308,7 @@ def _read_store_marker(config: Path) -> str | None:
     try:
         parsed: dict[str, Any] = tomllib.loads(raw)
     except (tomllib.TOMLDecodeError, RecursionError) as exc:
-        if _STORE_HEADER_RE.search(raw):
+        if _declares_store_table(raw):
             hint = (
                 "; the file starts with a UTF-8 byte order mark, which "
                 "TOML does not allow, so save it without one"
@@ -349,7 +373,14 @@ def _marker_store_path(
             git_dir / _REPO_STORE_PARENT_DIRNAME / GIT_STORES_DIRNAME
             / name / DEFAULT_DB_FILENAME
         )
-    target = Path(value).expanduser()
+    try:
+        target = Path(value).expanduser()
+    except RuntimeError as exc:
+        # `~name` for a user that doesn't exist, or no home directory.
+        raise StoreMarkerError(
+            f"{config}: [{STORE_MARKER_SECTION}] {STORE_MARKER_KEY} = "
+            f"{value!r}: cannot expand the home directory: {exc}",
+        ) from exc
     if target.name.endswith(STORE_FILE_SUFFIX):
         raise StoreMarkerError(
             f"{config}: [{STORE_MARKER_SECTION}] {STORE_MARKER_KEY} = "
@@ -430,15 +461,16 @@ def _is_global_store(path: Path) -> bool:
     return _same_file(path, DEFAULT_DB_DIR / DEFAULT_DB_FILENAME)
 
 
-def _names_owned_store(path: Path, start: Path | None) -> bool:
+def _names_owned_store(path: Path) -> bool:
     """True when a marker's store `path` is a store another rule owns:
-    the repository store, the global store, or the user lock store.
+    any repository's store, the global store, or the user lock store.
 
     Such a marker must keep that store's identity, or its first open
     would seed the store's sidecar with the marker folder's identity and
-    relabel the rows every other opener stamps. Only a path shaped like
-    `<dir>/aelfrice/memory.db` can be the repository store, so other
-    markers never ask git for the common dir.
+    relabel the rows every other opener stamps. A repository store is
+    `<git-dir>/aelfrice/memory.db`, recognized by the `HEAD` file and
+    `objects` directory every git directory holds, so the check needs no
+    git call and covers another repository's store too.
     """
     if _is_global_store(path) or _same_file(path, user_db_path()):
         return True
@@ -447,12 +479,11 @@ def _names_owned_store(path: Path, start: Path | None) -> bool:
         or path.parent.name != _REPO_STORE_PARENT_DIRNAME
     ):
         return False
-    git_dir = _git_common_dir() if start is None else _git_common_dir(start)
-    if git_dir is None:
+    git_dir = path.parent.parent
+    try:
+        return (git_dir / "HEAD").is_file() and (git_dir / "objects").is_dir()
+    except OSError:
         return False
-    return _same_file(
-        path, git_dir / _REPO_STORE_PARENT_DIRNAME / DEFAULT_DB_FILENAME,
-    )
 
 
 def resolve_store(start: Path | None = None) -> StoreSelection:
@@ -474,13 +505,29 @@ def resolve_store(start: Path | None = None) -> StoreSelection:
     Raises `StoreMarkerError` when the nearest marker names no usable
     store. A config file that can't be found or read is no marker.
     """
+    return _resolve(start, start)
+
+
+def resolve_store_in_work_tree(folder: Path, root: Path) -> StoreSelection:
+    """`resolve_store(folder)` for a `folder` the caller knows is inside
+    the git work tree rooted at `root`, and in no nested repository.
+
+    Git is asked about `root` instead of `folder`, and that answer is
+    cached, so resolving every folder a commit changed costs one git
+    call rather than one per folder.
+    """
+    return _resolve(folder, root)
+
+
+def _resolve(start: Path | None, git_start: Path | None) -> StoreSelection:
+    """`resolve_store()`, with git lookups made from `git_start`."""
     override = os.environ.get("AELFRICE_DB")
     if override:
         return StoreSelection(Path(override), STORE_RULE_ENV)
     found = _find_store_marker(start)
     if found is not None:
         config, value = found
-        path = _marker_store_path(config, value, start)
+        path = _marker_store_path(config, value, git_start)
         if value.startswith(GIT_STORE_PREFIX):
             return StoreSelection(
                 path, STORE_RULE_MARKER, config,
@@ -488,9 +535,11 @@ def resolve_store(start: Path | None = None) -> StoreSelection:
             )
         return StoreSelection(
             path, STORE_RULE_MARKER, config,
-            owned_store=_names_owned_store(path, start),
+            owned_store=_names_owned_store(path),
         )
-    git_dir = _git_common_dir() if start is None else _git_common_dir(start)
+    git_dir = (
+        _git_common_dir() if git_start is None else _git_common_dir(git_start)
+    )
     if git_dir is not None:
         return StoreSelection(
             git_dir / _REPO_STORE_PARENT_DIRNAME / DEFAULT_DB_FILENAME,
