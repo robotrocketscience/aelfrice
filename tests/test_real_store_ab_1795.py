@@ -702,6 +702,21 @@ def test_a3_appends_the_pmi_words_to_the_query(
     assert "rel" in out["prompts"][0]["ranked"]
 
 
+def test_a3_without_pmi_words_ranks_like_a0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A3 changes one thing from A0, the PMI words. With none to add, A3 must
+    # rank like A0. The expand lane would add `con` on this store.
+    def none(_self: bench.PMIExpander, _prompt: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(bench.PMIExpander, "expand", none)
+    path = _store(tmp_path)
+    a0 = _run(path, tmp_path, bench.ARM_A0)
+    assert a0 == ["seed"]
+    assert _run(path, tmp_path, bench.ARM_A3) == a0
+
+
 # --- Packet -------------------------------------------------------------------
 
 
