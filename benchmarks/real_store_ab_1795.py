@@ -352,7 +352,7 @@ def write_supports_edges(store: MemoryStore) -> dict[str, int]:
         confidence_min=DEFAULT_CONFIDENCE_MIN,
         max_candidate_pairs=pair_cap(store),
     )
-    refines =[p for p in report.pairs if p.label == LABEL_REFINES]
+    refines = [p for p in report.pairs if p.label == LABEL_REFINES]
     per_belief: dict[str, int] = {}
     written = existing = gated = self_pairs = 0
     for pair in refines:
