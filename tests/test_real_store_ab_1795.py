@@ -791,6 +791,22 @@ def test_a_relative_packet_directory_still_keeps_the_key_out(tmp_path: Path) -> 
     assert not inside.exists()
 
 
+def test_the_key_guard_follows_the_filesystem_case_rule(tmp_path: Path) -> None:
+    # macOS folds case by default, so there `PK/key.jsonl` lands in `pk/`.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    (tmp_path / "fold").mkdir()
+    folds = (tmp_path / "FOLD").exists()
+    out, other = tmp_path / "pk", tmp_path / "PK" / "key.jsonl"
+    if folds:
+        with pytest.raises(bench.InputError, match="outside"):
+            bench.write_packet(packet, key, out, other)
+    else:
+        other.parent.mkdir()
+        bench.write_packet(packet, key, out, other)
+    assert not (out / "key.jsonl").exists()
+
+
 def test_the_packet_hides_arm_and_rank(tmp_path: Path) -> None:
     first = _runs(["seed", "con"], ["con", "rel", "seed"], ["w1", "w2"], ["w2"])
     # Same union per prompt, other arms and ranks.

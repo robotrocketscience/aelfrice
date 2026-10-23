@@ -954,9 +954,12 @@ def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str,
     The graders get `out`, so the key, which holds each row's arms and
     ranks and marks the null arm, must lie outside it.
     """
-    if key_path.resolve().is_relative_to(out.resolve()):
-        raise InputError(f"the key {key_path} must be outside the packet directory {out}")
+    # Compare directories by file identity, not by path text: a filesystem
+    # that folds case, as macOS does by default, sends `PK/` to `pk/`.
     out.mkdir(parents=True, exist_ok=True)
+    key_abs = key_path.absolute()
+    if any(d.exists() and d.samefile(out) for d in (key_abs, *key_abs.parents)):
+        raise InputError(f"the key {key_path} must be outside the packet directory {out}")
     (out / "packet.jsonl").write_text(_jsonl(packet), encoding="utf-8")
     (out / "instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
     key_path.write_text(_jsonl(key), encoding="utf-8")
