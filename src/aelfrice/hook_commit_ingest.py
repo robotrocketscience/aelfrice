@@ -26,8 +26,7 @@ Tactics:
 - Cap the message body at 4 KB before extraction.
 - `git log -1 --format=%B <hash>` fetches the just-committed message
   body. The branch and short hash come from the bracketed prefix
-  `[branch hash]` Claude Code already captured in
-  `tool_response.stdout`. Only a commit whose message yields triples
+  `[branch hash]` the payload's `tool_response.stdout` already holds. Only a commit whose message yields triples
   pays for `git rev-parse --show-toplevel` and `git diff-tree`, which
   pick the store each changed folder belongs to (#1796).
 
