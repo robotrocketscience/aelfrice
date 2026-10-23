@@ -741,6 +741,20 @@ def test_a_belief_in_any_arms_top_ten_is_judged(tmp_path: Path) -> None:
     assert by["seed"] == {"A0": 1, "A1": 12}
 
 
+def test_the_null_arm_is_sized_by_the_judged_count_not_the_packed_count(
+    tmp_path: Path,
+) -> None:
+    # Both arms pack 12 beliefs. `f10` sits past rank 10 in both and is
+    # unjudged, so 11 are judged and the null arm draws 11.
+    fill = [f"f{i:02d}" for i in range(11)]
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1)
+    assert sum(1 for r in key if r["arms"]) == 11
+    assert sum(1 for r in key if r["arms"] is None) == 11
+
+
 def test_the_null_arm_never_draws_a_retrieved_or_locked_belief(tmp_path: Path) -> None:
     path = _store(tmp_path)
     work = tmp_path / "w"
