@@ -746,7 +746,7 @@ def test_a_repository_rooted_at_home_still_passes_over_a_nearer_config(
 @pytest.mark.parametrize(
     "text",
     [
-        '﻿[store]\npath = "s"\n',
+        '\ufeff[store]\npath = "s"\n',
         'store.path = "s"\n[retrieval\n',
         'store = { path = "s"\n',
         "[store.extra]\nx = \n",
@@ -763,7 +763,7 @@ def test_a_broken_marker_in_any_spelling_is_an_error(
     monkeypatch.chdir(folder)
     with pytest.raises(StoreMarkerError) as raised:
         resolve_store()
-    if text.startswith("﻿"):
+    if text.startswith("\ufeff"):
         assert "byte order mark" in str(raised.value)
 
 
@@ -1152,4 +1152,122 @@ def test_project_warm_debounces_each_marker_folder_on_its_own(
     again = project_warm.warm_path(monorepo / "project-a", config=cfg, now=1002.0)
     assert (first, second, again) == (
         WarmResult.WARMED, WarmResult.WARMED, WarmResult.DEBOUNCED,
+    )
+
+
+# --- third review --------------------------------------------------------------
+
+
+def test_a_merge_routes_the_same_from_a_subfolder_with_diff_relative(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The merge fallback is plumbing, so `diff.relative` and a subfolder
+    cwd neither drop paths nor make them cwd-relative."""
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _git("config", "diff.relative", "true", cwd=marked_repo)
+    base = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=marked_repo, check=True,
+        capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+    _git("checkout", "-q", "-b", "side", cwd=marked_repo)
+    _stage(marked_repo, "docs/project-a/f.txt")
+    _commit_staged(marked_repo, "side work")
+    _git("checkout", "-q", base, cwd=marked_repo)
+    _stage(marked_repo, "top.txt")
+    _commit_staged(marked_repo, "mainline work")
+    _git(
+        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
+        "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "side",
+        "-m", _TRIPLE_MSG, cwd=marked_repo,
+    )
+    sub = marked_repo / "docs"
+    assert hk._commit_stores("HEAD", str(sub)) == [  # pyright: ignore[reportPrivateUsage]
+        _repo_store(marked_repo),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'x = [\n  [1, 2],\n]\nstore.path = "s"\n[broken\n',
+        'note = """\n[todo] item\n"""\nstore = { path = "s"\n',
+        '[retrieval]\r\nx = 1\r[store]\rpath = \r',
+    ],
+    ids=["array-row-before-key", "string-line-before-key", "cr-only"],
+)
+def test_a_broken_marker_after_header_like_lines_is_an_error(
+    env: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+) -> None:
+    repo = _init_repo(env / "repo")
+    folder = repo / "proj"
+    folder.mkdir()
+    (folder / CONFIG_FILENAME).write_bytes(text.encode("utf-8"))
+    monkeypatch.chdir(folder)
+    with pytest.raises(StoreMarkerError):
+        resolve_store()
+
+
+def test_a_symlink_to_a_repository_store_keeps_its_identity(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _init_repo(env / "repo")
+    store_dir = _common_dir(repo) / "aelfrice"
+    store_dir.mkdir(parents=True)
+    scratch = env / "scratch"
+    scratch.mkdir()
+    (scratch / "link").symlink_to(store_dir, target_is_directory=True)
+    _marker(scratch, "link")
+    monkeypatch.chdir(scratch)
+    assert resolve_store().owned_store
+    _write(["via-link"])
+    expected = db_paths._identity_from_git_common_dir(_common_dir(repo))
+    assert _context_of(store_dir / "memory.db", "via-link") == expected
+
+
+def test_a_differently_cased_repository_store_keeps_its_identity(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _init_repo(env / "repo")
+    store_dir = _common_dir(repo) / "aelfrice"
+    store_dir.mkdir(parents=True)
+    upper = _common_dir(repo) / "AELFRICE"
+    if not upper.is_dir():
+        pytest.skip("case-sensitive filesystem")
+    _marker(repo / "proj", str(upper))
+    monkeypatch.chdir(repo / "proj")
+    assert resolve_store().owned_store
+    _write(["cased"])
+    expected = db_paths._identity_from_git_common_dir(_common_dir(repo))
+    assert _context_of(store_dir / "memory.db", "cased") == expected
+
+
+def test_a_folder_that_only_looks_like_a_git_dir_is_not_owned(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = env / "fake"
+    (fake / "objects").mkdir(parents=True)
+    (fake / "refs").mkdir()
+    (fake / "HEAD").write_text("not a ref\n", encoding="utf-8")
+    _marker(env / "scratch", str(fake / "aelfrice"))
+    monkeypatch.chdir(env / "scratch")
+    assert not resolve_store().owned_store
+
+
+def test_project_warm_with_a_broken_marker_writes_no_sentinel(
+    monorepo: Path, env: Path,
+) -> None:
+    from aelfrice import project_warm
+    from aelfrice.project_warm import WarmConfig, WarmResult
+
+    folder = monorepo / "project-a"
+    (folder / CONFIG_FILENAME).write_text("[store]\npath = 3\n", encoding="utf-8")
+    home = env / "home" / ".aelfrice"
+    cfg = WarmConfig(deny_globs=(), aelfrice_home=home)
+    assert project_warm.warm_path(folder, config=cfg, now=1000.0) is (
+        WarmResult.BROKEN_MARKER
+    )
+    assert project_warm.warm_path(monorepo, config=cfg, now=1001.0) is (
+        WarmResult.WARMED
     )
