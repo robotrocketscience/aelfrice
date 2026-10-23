@@ -327,6 +327,27 @@ def _warm_store(project_root: Path, start: Path | None = None) -> None:
         store.close()
 
 
+def _sentinel_id(ref: ProjectRef, start: Path | None) -> str:
+    """The debounce key: `ref.id`, extended by the store's path when a
+    `[store]` marker selects the store (#1796), so each marker folder of
+    one repository is debounced on its own."""
+    if start is None:
+        return ref.id
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        STORE_RULE_MARKER,
+        StoreMarkerError,
+        resolve_store,
+    )
+
+    try:
+        selection = resolve_store(start)
+    except StoreMarkerError:
+        return ref.id
+    if selection.rule != STORE_RULE_MARKER:
+        return ref.id
+    return f"{ref.id}-{_project_id(selection.path)}"
+
+
 def warm_project(
     ref: ProjectRef,
     *,
@@ -354,7 +375,7 @@ def warm_project(
     cfg = config if config is not None else load_config()
     if _is_denied(ref.root, cfg.deny_globs):
         return WarmResult.DENIED_PATH
-    sentinel = _sentinel_path(ref.id, cfg.aelfrice_home)
+    sentinel = _sentinel_path(_sentinel_id(ref, start), cfg.aelfrice_home)
     current = now if now is not None else time.time()
     last = _read_sentinel(sentinel)
     if last is not None and (current - last) < debounce_seconds:
