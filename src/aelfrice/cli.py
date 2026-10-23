@@ -5,6 +5,7 @@ list lives in `aelf --help` and `docs/user/COMMANDS.md`; the inventory
 is too large (and changes too often) to duplicate here.
 
 DB path resolves from AELFRICE_DB environment variable when set,
+otherwise from the nearest `.aelfrice.toml` `[store]` table (#1796),
 otherwise from <git-common-dir>/aelfrice/memory.db when cwd is inside
 a git work-tree, otherwise from ~/.aelfrice/memory.db. The git-common-dir
 branch makes worktrees of one repo share a single DB; .git/ is not
@@ -215,6 +216,7 @@ from aelfrice.setup import (
 from aelfrice.db_paths import (
     DEFAULT_DB_DIR,
     DEFAULT_DB_FILENAME,
+    StoreMarkerError,
     _ensure_parent_dir,
     _git_common_dir,
     _open_store,
@@ -222,6 +224,7 @@ from aelfrice.db_paths import (
     open_store_for_read,
     open_user_store,
     open_user_store_if_present,
+    resolve_store,
     user_db_path,
 )
 from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
@@ -4997,6 +5000,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     _ = args
     from aelfrice import __version__ as _aelf_version  # noqa: PLC0415
 
+    selection = resolve_store()
     store = open_store_for_read()
     try:
         n_beliefs = store.count_beliefs()
@@ -5007,6 +5011,9 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     finally:
         store.close()
     print(f"version:           {_aelf_version}", file=out)  # type: ignore[arg-type]
+    # #1796: which store this is, and the rule that chose it.
+    print(f"store:             {selection.path}", file=out)  # type: ignore[arg-type]
+    print(f"store rule:        {selection.describe()}", file=out)  # type: ignore[arg-type]
     print(f"beliefs:           {n_beliefs}", file=out)  # type: ignore[arg-type]
     # v1.1.0 user-facing rename: "edges" -> "threads". Internal schema
     # keeps `edges`.
@@ -9461,6 +9468,11 @@ def _print_doctor_store_check(out: object) -> None:
             f"store: {n} belief(s) at {db_path()}",
             file=out,  # type: ignore[arg-type]
         )
+    # #1796: the rule that chose the store, and the marker file if one did.
+    print(
+        f"store rule: {resolve_store().describe()}",
+        file=out,  # type: ignore[arg-type]
+    )
     _print_doctor_lock_expiry(expiring, last_sweep, out)
     _print_doctor_session_ring(out)
 
@@ -12890,6 +12902,11 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
         # even `mode=ro`. One actionable line, not a traceback.
         print(f"aelf {cmd}: {exc}", file=sys.stderr)
         code = 1
+    except StoreMarkerError as exc:
+        # #1796: a `[store]` marker that names no usable store. Falling
+        # back would write this folder's beliefs to the shared store.
+        print(f"aelf {cmd}: {exc}", file=sys.stderr)
+        code = 2
     # Emitted on the failure path too: a store this binary cannot open is
     # one of the likelier moments for "a newer aelfrice is available" to
     # be the actionable next step, and suppressing the banner exactly
