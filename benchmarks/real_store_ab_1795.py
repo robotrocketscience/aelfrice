@@ -37,6 +37,10 @@ goes.
 - `A1`: on the copy, the CONTRADICTS writer from `relationship_detector`
   plus the SUPPORTS and SUPERSEDES writers removed in c3a500fa (restored
   below, not in `src`), then retrieval with `AELFRICE_HRR_EXPAND=1`.
+- `A1W`: A1's writers with the expand lane off. Default retrieval reads
+  the new edges too (the intentional-clustering pack merges candidates
+  any edge joins), so A1 against A0 mixes that reranking with the lane.
+  A1W against A0 measures the writers alone, and A1 against A1W the lane.
 - `A2`: `AELFRICE_HRR_EXPAND=1`, probing `PROBE_KINDS_A2` instead of the
   lane's default kinds.
 - `A3`: the prompt's top PMI neighbors from the copy's own belief texts,
@@ -67,8 +71,8 @@ Usage::
     uv run python -m benchmarks.real_store_ab_1795 census --store <memory.db> --writers
     uv run python -m benchmarks.real_store_ab_1795 sample --store <memory.db> --seed 1795 --out prompts.jsonl
     uv run python -m benchmarks.real_store_ab_1795 run --store <memory.db> --prompts prompts.jsonl --arm A0 --out A0.json
-    uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A2.json A3.json --store <memory.db> --seed 1795 --out <dir>
-    uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
+    uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <dir>
+    uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A1W.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
     uv run python -m benchmarks.real_store_ab_1795 score --key <dir>/key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json
 """
 
@@ -141,9 +145,12 @@ from benchmarks.graded_gate import (
 
 ARM_A0: Final[str] = "A0"
 ARM_A1: Final[str] = "A1"
+ARM_A1W: Final[str] = "A1W"
 ARM_A2: Final[str] = "A2"
 ARM_A3: Final[str] = "A3"
-ARMS: Final[tuple[str, ...]] = (ARM_A0, ARM_A1, ARM_A2, ARM_A3)
+ARMS: Final[tuple[str, ...]] = (ARM_A0, ARM_A1, ARM_A1W, ARM_A2, ARM_A3)
+WRITER_ARMS: Final[tuple[str, ...]] = (ARM_A1, ARM_A1W)
+"""Arms that run the A1 writers on the copy before retrieval."""
 CONTROL_ARM: Final[str] = ARM_A0
 
 ENV_PREFIXES: Final[tuple[str, ...]] = ("AELFRICE_", "AELF_")
@@ -151,6 +158,7 @@ ENV_PREFIXES: Final[tuple[str, ...]] = ("AELFRICE_", "AELF_")
 ARM_ENV: Final[Mapping[str, Mapping[str, str]]] = {
     ARM_A0: {},
     ARM_A1: {ENV_HRR_EXPAND: "1"},
+    ARM_A1W: {},
     ARM_A2: {ENV_HRR_EXPAND: "1"},
     ARM_A3: {},
 }
@@ -757,7 +765,7 @@ def run_arm(
         raise InputError(f"unknown arm {arm!r}")
     db = prepare_copy(src, work)
     out: dict[str, Any] = {"arm": arm, "top_k": TOP_K}
-    if arm == ARM_A1:
+    if arm in WRITER_ARMS:
         out["writers"] = apply_writers(db)
     expander = (
         PMIExpander([c for _i, c, _l in active_beliefs(db)]) if arm == ARM_A3 else None
@@ -1063,9 +1071,10 @@ def _relevant(items: Sequence[KeyItem], labels: Labels) -> int:
 
 def arm_figures(
     items: Sequence[KeyItem], arm: str, labels: Labels, prompts: Sequence[str], seed: int,
+    control: str = CONTROL_ARM,
 ) -> dict[str, Any]:
-    """One grader's paired gain, precision share, and drop for `arm` against A0."""
-    top_arm, top_a0 = _top(items, arm), _top(items, CONTROL_ARM)
+    """One grader's paired gain, precision share, and drop for `arm` against `control`."""
+    top_arm, top_a0 = _top(items, arm), _top(items, control)
     gains = [
         float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
         for p in prompts
@@ -1146,6 +1155,11 @@ def score(
     kill condition a failed H1 reports H2 as `substrate-starved`, and with
     no writers census H2 is `needs census`. The arm's own figures and
     verdict stay under `arms`.
+
+    With an A1W run, `H2_split` splits H2's gain into the writers alone
+    (A1W against A0) and the lane given the writers (A1 against A1W),
+    under the same H0 and H1 rules as H2. A1's figures against A1W are
+    under `arms["A1"]["vs_A1W"]`.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
@@ -1166,12 +1180,28 @@ def score(
         if not reliable:
             gain = h5 = V_UNRELIABLE
         per_arm[arm] = {"graders": graders, "gain_verdict": gain, "h5_verdict": h5}
+    if ARM_A1 in per_arm and ARM_A1W in per_arm:
+        lane = [arm_figures(items, ARM_A1, labels, prompts, seed, control=ARM_A1W)
+                for labels in (a, b)]
+        per_arm[ARM_A1]["vs_A1W"] = {
+            "graders": lane,
+            "gain_verdict": (combine([g["gain_verdict"] for g in lane]) if reliable
+                             else V_UNRELIABLE),
+        }
     hyp: dict[str, Any] = {"H0": V_PASS if reliable else V_FAIL}
     hyp["H1"] = (census_report or {}).get("H1", V_NOT_MEASURED)
     for h, arm in HYPOTHESIS_ARMS.items():
         hyp[h] = per_arm[arm]["gain_verdict"] if arm in per_arm else V_NOT_MEASURED
     if ARM_A1 in per_arm and reliable and hyp["H1"] != V_PASS:
         hyp["H2"] = V_STARVED if hyp["H1"] == V_FAIL else V_NEEDS_CENSUS
+    if ARM_A1 in per_arm and ARM_A1W in per_arm:
+        split = {"writers": per_arm[ARM_A1W]["gain_verdict"],
+                 "lane": per_arm[ARM_A1]["vs_A1W"]["gain_verdict"]}
+        if reliable and hyp["H1"] != V_PASS:
+            split = {k: hyp["H2"] for k in split}
+        hyp["H2_split"] = split
+    else:
+        hyp["H2_split"] = V_NOT_MEASURED
     hyp["H5"] = {arm: per_arm[arm]["h5_verdict"] for arm in arms}
     if proxy_report is None:
         hyp["H6"] = V_NOT_MEASURED

@@ -302,6 +302,27 @@ def test_a1_writes_edges_on_the_copy_and_expands(tmp_path: Path) -> None:
     assert _edges(path) == before
 
 
+_MIXED = "deployment script database migration release checklist changelog version kestrel meadow"
+
+
+def test_a1w_runs_the_writers_with_the_lane_off(tmp_path: Path) -> None:
+    # The writers' edges reorder default retrieval through the clustering
+    # pack, so A1W, not A0, is the control that isolates the lane.
+    path = _store(tmp_path)
+    prompt: list[dict[str, Any]] = [{"prompt_id": "p", "text": _MIXED, "context": []}]
+    ranked: dict[str, list[str]] = {}
+    for arm in (bench.ARM_A0, bench.ARM_A1W, bench.ARM_A1):
+        work = tmp_path / f"mix-{arm}"
+        work.mkdir()
+        out = bench.run_arm(path, prompt, arm, work)
+        ranked[arm] = out["prompts"][0]["ranked"]
+        assert ("writers" in out) is (arm != bench.ARM_A0)
+        if arm == bench.ARM_A1W:
+            assert last_lane_telemetry().hrr_expand == 0
+    assert ranked[bench.ARM_A1W] != ranked[bench.ARM_A0]
+    assert "con" not in ranked[bench.ARM_A1W] and "con" in ranked[bench.ARM_A1]
+
+
 def test_a2_probes_the_existing_edge_kinds_and_restores_the_override(tmp_path: Path) -> None:
     path = _store(tmp_path)
     ranked = _run(path, tmp_path, bench.ARM_A2)
@@ -737,6 +758,35 @@ def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
     a2 = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A2),
                 census_report={"H1": "fail"})
     assert a2["hypotheses"]["H3"] == bench.V_PASS
+
+
+def _split_rows(a0_rel: list[int], a1w_rel: list[int], a1_rel: list[int]) -> list[Row]:
+    """`_hand` for A0 and A1W, plus 10 disjoint A1 items per prompt."""
+    rows = _hand(a0_rel, a1w_rel, arm=bench.ARM_A1W)
+    for p, r in enumerate(a1_rel):
+        rows += [(f"y{p}-{k}", f"p{p}", {bench.ARM_A1: k + 1}, True, k < r, k < r)
+                 for k in range(10)]
+    return rows
+
+
+def test_h2_split_separates_the_writers_from_the_lane() -> None:
+    # A1 gains over A0 only what A1W already gains: the writers, not the lane.
+    writers_only = _score(_split_rows([2, 2, 2, 2], [3, 3, 2, 4], [3, 3, 2, 4]))
+    assert writers_only["hypotheses"]["H2"] == bench.V_PASS
+    assert writers_only["hypotheses"]["H2_split"] == {
+        "writers": bench.V_PASS, "lane": bench.V_FAIL}
+    lane = writers_only["arms"]["A1"]["vs_A1W"]["graders"][0]
+    assert lane["mean_gain"] == _approx(0.0)
+    # A1 gains over A1W, and A1W nothing over A0: the lane.
+    lane_only = _score(_split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4]))
+    assert lane_only["hypotheses"]["H2_split"] == {
+        "writers": bench.V_FAIL, "lane": bench.V_PASS}
+    starved = _score(_split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4]),
+                     census_report={"H1": "fail"})
+    assert starved["hypotheses"]["H2_split"] == {
+        "writers": bench.V_STARVED, "lane": bench.V_STARVED}
+    assert _score(_hand([2, 2, 2, 2], [3, 3, 2, 4]))["hypotheses"]["H2_split"] == (
+        bench.V_NOT_MEASURED)
 
 
 def test_the_bars_are_the_pre_registered_ones() -> None:
