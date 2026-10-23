@@ -723,6 +723,24 @@ def test_the_key_records_arms_ranks_and_a_median_sized_null_arm(tmp_path: Path) 
     assert by[("p1", "rel")]["shares_prompt_stem"] is False
 
 
+def _one_prompt_runs(a0: list[str], a1: list[str]) -> dict[str, Any]:
+    return {arm: {"arm": arm, "prompts": [
+        {"prompt_id": "p1", "prompt": "kestrel meadow", "ranked": ranked}]}
+        for arm, ranked in ((bench.ARM_A0, a0), (bench.ARM_A1, a1))}
+
+
+def test_a_belief_in_any_arms_top_ten_is_judged(tmp_path: Path) -> None:
+    # Both arms pack `seed`: A0 at rank 1, A1 at rank 12. A0's top 10 holds
+    # it, so it is judged although no compared pair differs on it.
+    fill = [f"f{i:02d}" for i in range(11)]
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1)
+    by = {r["belief_id"]: r["arms"] for r in key if r["arms"]}
+    assert by["seed"] == {"A0": 1, "A1": 12}
+
+
 def test_the_null_arm_never_draws_a_retrieved_or_locked_belief(tmp_path: Path) -> None:
     path = _store(tmp_path)
     work = tmp_path / "w"
