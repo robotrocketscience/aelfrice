@@ -199,8 +199,11 @@ GIT_STORE_PREFIX: Final[str] = "git:"
 #: Directory under `<git-common-dir>/aelfrice/` holding the named stores.
 GIT_STORES_DIRNAME: Final[str] = "stores"
 
-#: Suffix that makes a `[store] path` name the store file itself. Any
-#: other value names the directory that holds `memory.db`.
+#: Suffix a `[store] path` may not end in. Every marker names the
+#: directory that holds `memory.db`, so each store owns its folder: the
+#: identity file, the turn log, and the other files kept beside a store
+#: are keyed on that folder, and two store files in one folder would
+#: share them.
 STORE_FILE_SUFFIX: Final[str] = ".db"
 
 # A store name after `git:`. A letter or digit first, so `.`, `..` and
@@ -208,11 +211,15 @@ STORE_FILE_SUFFIX: Final[str] = ".db"
 # under `stores/`; nothing a Windows path refuses.
 _GIT_STORE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
-# A `[store]` table header. Used only when the file fails to parse, to
-# tell a broken marker from a broken file that never held one.
+# Any spelling of a `store` table: a `[store]` or `[store.x]` header, an
+# array header, a dotted `store.path` key, or an inline `store = {...}`.
+# Used only when the file fails to parse, to tell a broken marker from a
+# broken file that never held one. A leading byte order mark is skipped.
 _STORE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*\[\s*store\s*\]", re.MULTILINE,
+    r"^﻿?\s*(?:\[\[?\s*store\s*[\].]|store\s*[.=])", re.MULTILINE,
 )
+
+_BOM: Final[str] = "﻿"
 
 #: The rules `resolve_store()` reports, in resolution order.
 STORE_RULE_ENV: Final[str] = "env"
@@ -240,16 +247,16 @@ class StoreSelection:
 
     `marker` is the project-config file holding the `[store]` table, set
     only when `rule` is `STORE_RULE_MARKER`. `git_store` is the name
-    after `git:` when the marker names a shared store, and `repo_store`
-    is True when the marker names the repository's own store; both
-    decide the identity the store stamps (`store_identity`).
+    after `git:` when the marker names a shared store, and `owned_store`
+    is True when the marker names the repository store or the global
+    store; both decide the identity the store stamps (`store_identity`).
     """
 
     path: Path
     rule: str
     marker: Path | None = None
     git_store: str | None = None
-    repo_store: bool = False
+    owned_store: bool = False
 
     def describe(self) -> str:
         """The rule for `aelf status` and `aelf doctor`, in one phrase."""
@@ -278,9 +285,14 @@ def _read_store_marker(config: Path) -> str | None:
         parsed: dict[str, Any] = tomllib.loads(raw)
     except (tomllib.TOMLDecodeError, RecursionError) as exc:
         if _STORE_HEADER_RE.search(raw):
+            hint = (
+                "; the file starts with a UTF-8 byte order mark, which "
+                "TOML does not allow, so save it without one"
+                if raw.startswith(_BOM) else ""
+            )
             raise StoreMarkerError(
                 f"{config}: cannot parse the [{STORE_MARKER_SECTION}] "
-                f"marker: {exc}",
+                f"marker: {exc}{hint}",
             ) from exc
         return None
     if STORE_MARKER_SECTION not in parsed:
@@ -312,10 +324,10 @@ def _marker_store_path(
     `git:<name>` is `<git-common-dir>/aelfrice/stores/<name>/memory.db`,
     one store for every worktree. Any other value is a filesystem path:
     absolute, `~`-prefixed, or relative to the folder holding `config`,
-    so a relative store is per worktree. A value ending in `.db` names
-    the store file; any other value names the directory that holds
-    `memory.db`. The rule reads the text only, so the answer does not
-    change once the directory or file exists.
+    so a relative store is per worktree. The value names the directory
+    that holds `memory.db`; one ending in `.db` is an error, so no two
+    stores share a folder. The rule reads the text only, so the answer
+    does not change once the directory exists.
     """
     if value.startswith(GIT_STORE_PREFIX):
         name = value[len(GIT_STORE_PREFIX):]
@@ -338,19 +350,25 @@ def _marker_store_path(
             / name / DEFAULT_DB_FILENAME
         )
     target = Path(value).expanduser()
+    if target.name.endswith(STORE_FILE_SUFFIX):
+        raise StoreMarkerError(
+            f"{config}: [{STORE_MARKER_SECTION}] {STORE_MARKER_KEY} = "
+            f"{value!r} names a file; name the directory that holds "
+            f"{DEFAULT_DB_FILENAME} instead",
+        )
     if not target.is_absolute():
         target = config.parent / target
-    if target.name.endswith(STORE_FILE_SUFFIX):
-        return target
     return target / DEFAULT_DB_FILENAME
 
 
 def _in_work_tree(folder: Path) -> bool:
-    """True when `folder` or an ancestor below the home directory is a
-    git work-tree root, under the bounds `discover_config()` uses.
+    """True when `folder` or an ancestor up to the home directory is a
+    git work-tree root.
 
-    Only directory entries are probed, never a config file, so this is
-    no second discovery walk (#1582).
+    The home directory itself counts, so a repository rooted at `$HOME`
+    is a work tree; nothing above it is examined. Only directory entries
+    are probed, never a config file, so this is no second discovery walk
+    (#1582).
     """
     try:
         home: Path | None = Path.home().resolve()
@@ -358,10 +376,10 @@ def _in_work_tree(folder: Path) -> bool:
         home = None
     current = folder
     for _ in range(len(folder.parts)):
-        if current == home:
-            return False
         if (current / WORKTREE_MARKER).exists():
             return True
+        if current == home:
+            return False
         if current.parent == current:
             return False
         current = current.parent
@@ -399,15 +417,31 @@ def _find_store_marker(start: Path | None) -> tuple[Path, str] | None:
     return None
 
 
-def _names_repo_store(path: Path, start: Path | None) -> bool:
-    """True when a marker's store `path` is the repository's own store.
+def _same_file(a: Path, b: Path) -> bool:
+    """True when `a` and `b` name one file once both are resolved."""
+    try:
+        return a.resolve() == b.resolve()
+    except (OSError, RuntimeError):
+        return False
 
-    Such a marker must keep the repository identity, or its first open
-    would seed the shared store's sidecar with the marker folder's
-    identity and relabel every later opener's rows. Only a path shaped
-    like `<dir>/aelfrice/memory.db` can match, so other markers never
-    ask git for the common dir.
+
+def _is_global_store(path: Path) -> bool:
+    """True when `path` is the global store, `~/.aelfrice/memory.db`."""
+    return _same_file(path, DEFAULT_DB_DIR / DEFAULT_DB_FILENAME)
+
+
+def _names_owned_store(path: Path, start: Path | None) -> bool:
+    """True when a marker's store `path` is a store another rule owns:
+    the repository store, the global store, or the user lock store.
+
+    Such a marker must keep that store's identity, or its first open
+    would seed the store's sidecar with the marker folder's identity and
+    relabel the rows every other opener stamps. Only a path shaped like
+    `<dir>/aelfrice/memory.db` can be the repository store, so other
+    markers never ask git for the common dir.
     """
+    if _is_global_store(path) or _same_file(path, user_db_path()):
+        return True
     if (
         path.name != DEFAULT_DB_FILENAME
         or path.parent.name != _REPO_STORE_PARENT_DIRNAME
@@ -416,11 +450,9 @@ def _names_repo_store(path: Path, start: Path | None) -> bool:
     git_dir = _git_common_dir() if start is None else _git_common_dir(start)
     if git_dir is None:
         return False
-    repo_path = git_dir / _REPO_STORE_PARENT_DIRNAME / DEFAULT_DB_FILENAME
-    try:
-        return path.resolve() == repo_path.resolve()
-    except (OSError, RuntimeError):
-        return False
+    return _same_file(
+        path, git_dir / _REPO_STORE_PARENT_DIRNAME / DEFAULT_DB_FILENAME,
+    )
 
 
 def resolve_store(start: Path | None = None) -> StoreSelection:
@@ -456,7 +488,7 @@ def resolve_store(start: Path | None = None) -> StoreSelection:
             )
         return StoreSelection(
             path, STORE_RULE_MARKER, config,
-            repo_store=_names_repo_store(path, start),
+            owned_store=_names_owned_store(path, start),
         )
     git_dir = _git_common_dir() if start is None else _git_common_dir(start)
     if git_dir is not None:
@@ -827,6 +859,10 @@ def repo_identity_from_db_path(p: Path, *, create: bool = False) -> str:
     if str(p) == ":memory:":
         return ""
     if p.parent.name != _REPO_STORE_PARENT_DIRNAME:
+        # The global store never carries an identity, even if a sidecar
+        # was written beside it.
+        if _is_global_store(p):
+            return ""
         return _first_sidecar_entry(p.parent / _IDENTITY_SIDECAR_NAME) or ""
     return _durable_identity(
         p.parent, _identity_from_git_common_dir(p.parent.parent), create=create,
@@ -843,8 +879,9 @@ def store_identity(selection: StoreSelection, *, create: bool = False) -> str:
 
     - a `git:<name>` store: the git common dir and the name
       (`_identity_from_git_store`), the same from every worktree;
-    - the repository's own store: the repository identity, so the
-      marker can't relabel the rows every other opener stamps;
+    - the repository store or the global store: that store's own
+      identity, so the marker can't relabel the rows every other opener
+      stamps;
     - any other store: the marker folder (`_identity_from_marker_dir`).
 
     Every other store goes through `repo_identity_from_db_path`.
@@ -858,7 +895,7 @@ def store_identity(selection: StoreSelection, *, create: bool = False) -> str:
         or str(path) == ":memory:"
     ):
         return repo_identity_from_db_path(path, create=create)
-    if selection.repo_store:
+    if selection.owned_store:
         return repo_identity_from_db_path(path.resolve(), create=create)
     if selection.git_store is not None:
         # <git-common-dir>/aelfrice/stores/<name>/memory.db
