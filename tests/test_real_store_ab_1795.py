@@ -554,14 +554,17 @@ def test_the_a1_writers_produce_each_edge_type(tmp_path: Path) -> None:
 def test_the_restored_writers_stop_at_eight_edges_per_belief(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Ten REFINES pairs share f00, and an 11-member cluster has f00 as its
-    # oldest member. The cap lets 8 edges reach f00 and gates the other 2.
+    # Ten REFINES pairs share f00, on alternate sides, and an 11-member
+    # cluster has f00 as its oldest member. The cap lets 8 edges reach f00
+    # and gates the other 2: one with f00 on each side.
     others = [f"f{i:02d}" for i in range(1, 11)]
 
     def refines(_store: MemoryStore, **_kw: Any) -> Any:
         return SimpleNamespace(n_candidate_pairs=10, truncated=False, pairs=[
-            SimpleNamespace(label=bench.LABEL_REFINES, belief_a_id="f00", belief_b_id=b)
-            for b in others])
+            SimpleNamespace(label=bench.LABEL_REFINES,
+                            belief_a_id="f00" if k % 2 == 0 else b,
+                            belief_b_id=b if k % 2 == 0 else "f00")
+            for k, b in enumerate(others)])
 
     def cluster(_store: MemoryStore, **_kw: Any) -> Any:
         return SimpleNamespace(n_candidate_pairs=55, truncated=False,
