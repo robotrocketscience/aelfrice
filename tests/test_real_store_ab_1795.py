@@ -1235,13 +1235,14 @@ def test_h1_reads_the_median_store(
 
 
 def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
-    gains = [0.0] * 39 + [40.0]
+    gains = [float(g) for g in range(40)]
     rng = random.Random(7)
     means = sorted(sum(gains[rng.randrange(40)] for _ in range(40)) / 40
                    for _ in range(10_000))
     # Index floor(0.025 * 9999) and ceil(0.975 * 9999).
     assert bench.paired_bootstrap_ci(gains, 7) == (means[249], means[9750])
-    assert means[9750] < means[-1]
+    # A 90% interval would end at indices 499 and 9500.
+    assert means[249] < means[499] and means[9500] < means[9750]
 
 
 def test_the_bars_are_the_pre_registered_ones() -> None:
