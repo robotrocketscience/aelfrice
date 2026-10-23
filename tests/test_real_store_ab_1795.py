@@ -654,14 +654,15 @@ def _key(rows: list[Row]) -> tuple[list[bench.KeyItem], dict[str, bool | None],
 def _hand(
     a0_rel: list[int], arm_rel: list[int], *, arm: str = bench.ARM_A1,
     null_rel: int = 0, null_n: int = 10, flip_b: int = 0, bridging: int = 0,
-    unclear: int = 0,
+    unclear: int = 0, unclear_arm: int = 0,
 ) -> list[Row]:
     """Per prompt: 10 A0 items and 10 arm items, disjoint.
 
     `a0_rel[p]` and `arm_rel[p]` of them are relevant to both graders.
     `flip_b` of A0's not-relevant items per prompt are relevant to grader B
     only. `bridging` of each prompt's relevant arm items share no stem.
-    `unclear` of A0's not-relevant items per prompt are unclear to both.
+    `unclear` of A0's not-relevant items per prompt are unclear to both,
+    and `unclear_arm` of the arm's.
     """
     rows: list[Row] = []
     for p, (r0, r1) in enumerate(zip(a0_rel, arm_rel, strict=True)):
@@ -673,8 +674,9 @@ def _hand(
                          lab, b if lab is not None else None))
         for k in range(10):
             rel = k < r1
+            lab1: bool | None = None if (not rel and r1 <= k < r1 + unclear_arm) else rel
             rows.append((f"x{p}-{k}", f"p{p}", {arm: k + 1}, not (rel and k < bridging),
-                         rel, rel))
+                         lab1, lab1))
         for k in range(null_n):
             rel = k < null_rel
             rows.append((f"n{p}-{k}", f"p{p}", None, False, rel, rel))
@@ -800,6 +802,16 @@ def test_too_few_graded_items_is_insufficient() -> None:
     assert rep["hypotheses"]["H0"] == bench.V_PASS
     assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_INSUFFICIENT}
+
+
+def test_either_side_under_min_graded_is_insufficient() -> None:
+    # 7 graded per prompt on one side: 28, under 30; the other side has 40.
+    for kw in ({"unclear": 3}, {"unclear_arm": 3}):
+        rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], **kw))
+        g = rep["arms"]["A1"]["graders"][0]
+        assert sorted((g["graded"], g["graded_a0"])) == [28, 40]
+        assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
+        assert rep["hypotheses"]["H5"] == {"A1": bench.V_INSUFFICIENT}
 
 
 def test_a_failed_h0_overrides_insufficient() -> None:
