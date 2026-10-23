@@ -647,6 +647,22 @@ def test_pmi_neighbors_rank_by_pmi_then_co_count_under_the_df_cap() -> None:
     assert exp.neighbors("the") == [] and exp.neighbors("common") == []
 
 
+def _pmi_pair_texts(both: int) -> list[str]:
+    """400 beliefs: `alpha` and `beta` in 40 each, together in `both`."""
+    texts = [f"alpha beta {_filler(i)}" for i in range(both)]
+    texts += [f"alpha {_filler(i)}" for i in range(both, 40)]
+    texts += [f"beta {_filler(i)}" for i in range(40, 80 - both)]
+    return texts + [_filler(i) for i in range(80 - both, 400)]
+
+
+def test_pmi_neighbors_need_a_positive_pmi() -> None:
+    # PMI = log(400 * 4 / (40 * 40)) = log 1 = 0 exactly: no neighbor.
+    assert bench.PMIExpander(_pmi_pair_texts(4)).neighbors("alpha") == []
+    rows = bench.PMIExpander(_pmi_pair_texts(5)).neighbors("alpha")
+    assert [(r[0], r[2]) for r in rows] == [("beta", 5)]
+    assert _approx(math.log(1.25)) == rows[0][1]
+
+
 def test_pmi_expansion_writes_each_stem_as_its_commonest_surface_word() -> None:
     exp = bench.PMIExpander(_pmi_texts())
     # `falconry` and `falconries` tie at 2 beliefs each; the smaller word wins.
