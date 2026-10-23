@@ -1034,9 +1034,10 @@ def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
     assert a2["hypotheses"]["H3"] == bench.V_PASS
 
 
-def _split_rows(a0_rel: list[int], a1w_rel: list[int], a1_rel: list[int]) -> list[Row]:
+def _split_rows(a0_rel: list[int], a1w_rel: list[int], a1_rel: list[int],
+                null_rel: int = 0) -> list[Row]:
     """`_hand` for A0 and A1W, plus 10 disjoint A1 items per prompt."""
-    rows = _hand(a0_rel, a1w_rel, arm=bench.ARM_A1W)
+    rows = _hand(a0_rel, a1w_rel, arm=bench.ARM_A1W, null_rel=null_rel)
     for p, r in enumerate(a1_rel):
         rows += [(f"y{p}-{k}", f"p{p}", {bench.ARM_A1: k + 1}, True, k < r, k < r)
                  for k in range(10)]
@@ -1061,6 +1062,17 @@ def test_h2_split_separates_the_writers_from_the_lane() -> None:
         "writers": bench.V_STARVED, "lane": bench.V_STARVED}
     assert _score(_hand([2, 2, 2, 2], [3, 3, 2, 4]))["hypotheses"]["H2_split"] == (
         bench.V_NOT_MEASURED)
+
+
+def test_a_failed_h0_makes_both_halves_of_the_h2_split_unreliable() -> None:
+    # The lane half passes on these labels when H0 holds.
+    rows = _split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4], null_rel=3)
+    for census in (_H1_PASS, {"H1": "fail"}):
+        rep = _score(rows, census_report=census)
+        assert rep["hypotheses"]["H0"] == bench.V_FAIL
+        assert rep["hypotheses"]["H2_split"] == {
+            "writers": bench.V_UNRELIABLE, "lane": bench.V_UNRELIABLE}
+        assert rep["arms"]["A1"]["vs_A1W"]["gain_verdict"] == bench.V_UNRELIABLE
 
 
 def test_a_null_rate_on_the_ceiling_holds_h0() -> None:
