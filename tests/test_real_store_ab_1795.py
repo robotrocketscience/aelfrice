@@ -1236,6 +1236,26 @@ def test_the_proxy_covers_the_whole_packed_result(tmp_path: Path) -> None:
     assert len(used) == bench.TOP_K + 1 and used["seed"] is True
 
 
+def test_the_proxy_does_not_count_the_prompt_turn_as_a_later_turn(tmp_path: Path) -> None:
+    # The prompt restates `seed` word for word; only the reply comes after it.
+    text = "the kestrel hovers above the meadow before it dives"
+    turns = [
+        bench.Turn(seq=0, role="user", text=text, session_id="s1", ts="t0", turn_id="u1"),
+        bench.Turn(seq=1, role="assistant", text="done", session_id="s1", ts="t1",
+                   turn_id="u2"),
+    ]
+    prompt: dict[str, Any] = {"prompt_id": "p", "text": text, "session_id": "s1",
+                              "turn_id": "u1", "ts": "t0", "context": []}
+    runs = {bench.ARM_A0: {"arm": "A0", "prompts": [
+        {"prompt_id": "p", "prompt": text, "ranked": ["seed"]}]}}
+    work = tmp_path / "w"
+    work.mkdir()
+    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(_store(tmp_path), work))
+    row = rep["prompts"][0]
+    assert row["later_turns"] == 1
+    assert row["arms"]["A0"] == [{"id": "seed", "used": False}]
+
+
 def test_the_proxy_finds_the_prompt_by_session_turn_id_or_timestamp_and_text() -> None:
     find = bench._find_turn  # pyright: ignore[reportPrivateUsage]
     turns = [
