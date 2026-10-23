@@ -12,6 +12,7 @@ import random
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -531,6 +532,41 @@ def test_the_a1_writers_produce_each_edge_type(tmp_path: Path) -> None:
     again = bench.apply_writers(db)
     assert again["supports"]["n_edges_written"] == 0
     assert again["supersedes"]["n_edges_written"] == 0
+
+
+def test_the_restored_writers_stop_at_eight_edges_per_belief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ten REFINES pairs share f00, and an 11-member cluster has f00 as its
+    # oldest member. The cap lets 8 edges reach f00 and gates the other 2.
+    others = [f"f{i:02d}" for i in range(1, 11)]
+
+    def refines(_store: MemoryStore, **_kw: Any) -> Any:
+        return SimpleNamespace(n_candidate_pairs=10, truncated=False, pairs=[
+            SimpleNamespace(label=bench.LABEL_REFINES, belief_a_id="f00", belief_b_id=b)
+            for b in others])
+
+    def cluster(_store: MemoryStore, **_kw: Any) -> Any:
+        return SimpleNamespace(n_candidate_pairs=55, truncated=False,
+                               clusters=[SimpleNamespace(member_ids=["f00", *others])])
+
+    monkeypatch.setattr(bench, "relationships_audit", refines)
+    monkeypatch.setattr(bench, "dedup_audit", cluster)
+    assert bench.DEFAULT_MAX_EDGES_PER_BELIEF == 8
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    store = MemoryStore(str(db))
+    try:
+        supports = bench.write_supports_edges(store)
+        supersedes = bench.write_supersedes_edges(store)
+    finally:
+        store.close()
+    for report in (supports, supersedes):
+        assert (report["n_edges_written"], report["n_edges_skipped_gated"]) == (8, 2)
+    edges = _edges(db)
+    assert {b for a, b, t in edges if a == "f00" and t == EDGE_SUPPORTS} == set(others[:8])
+    assert {a for a, b, t in edges if b == "f00" and t == EDGE_SUPERSEDES} == set(others[:8])
 
 
 def test_the_writers_reach_pairs_past_the_audit_cap(tmp_path: Path) -> None:
