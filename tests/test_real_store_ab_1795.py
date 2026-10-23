@@ -451,6 +451,12 @@ def test_the_proxy_sign_counts_the_top_ten_only() -> None:
     proxy = {"prompts": [{"arms": {
         "A0": unused, "A1": [*unused, {"id": "x", "used": True}]}}]}
     assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 0}
+    # Both arms use their 10th belief, and A0 also its 11th. A0's top 10
+    # counts the 10th and leaves out the 11th, so the sign is 0.
+    nine = unused[:bench.TOP_K - 1]
+    used = [{"id": f"y{k}", "used": True} for k in range(2)]
+    proxy = {"prompts": [{"arms": {"A0": [*nine, *used], "A1": [*nine, used[0]]}}]}
+    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 0}
 
 
 def test_a0_takes_the_top_ten_non_locked_beliefs(tmp_path: Path) -> None:
