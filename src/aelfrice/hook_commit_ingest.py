@@ -24,10 +24,12 @@ Tactics:
 - Lazy imports of triple_extractor and store (cold-start dominates).
 - Skip empty / merge / amend-without-message commits up front.
 - Cap the message body at 4 KB before extraction.
-- One git subprocess at most: `git log -1 --format=%B <hash>` to
-  fetch the just-committed message body. The branch and short
-  hash come from the bracketed prefix `[branch hash]` Claude Code
-  already captured in `tool_response.stdout` — no extra git calls.
+- `git log -1 --format=%B <hash>` fetches the just-committed message
+  body. The branch and short hash come from the bracketed prefix
+  `[branch hash]` Claude Code already captured in
+  `tool_response.stdout`. Only a commit whose message yields triples
+  pays for `git rev-parse --show-toplevel` and `git diff-tree`, which
+  pick the store each changed folder belongs to (#1796).
 
 Local-only: brain-graph writes never cross the git boundary or any
 network boundary.
@@ -41,9 +43,15 @@ import re
 import subprocess
 import sys
 import traceback
-from typing import IO, Final, cast
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Final, cast
 
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from aelfrice.triple_extractor import Triple
 
 MESSAGE_BYTE_CAP: Final[int] = 4096
 """Truncate commit messages above this many bytes before extraction.
@@ -193,22 +201,74 @@ def _do_ingest(payload: dict[str, object]) -> None:
         body,
         session_id=_derive_session_id(branch, commit_hash),
         project_context=cwd or os.getcwd(),
+        stores=lambda: _commit_stores(commit_hash, cwd),
     )
 
 
-def _ingest_message(message: str, *, session_id: str, project_context: str) -> None:
+def _existing_dir(path: Path, root: Path) -> Path:
+    """The nearest directory at or above `path.parent` that exists,
+    stopping at `root`. A deleted file's folder may be gone, and the
+    store must resolve from a folder git can still run in."""
+    current = path.parent
+    for _ in range(len(path.parts)):
+        if current == root or current.is_dir():
+            return current
+        current = current.parent
+    return root
+
+
+def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
+    """The stores commit `rev`'s beliefs go to (#1796).
+
+    Each changed path resolves its store from its own folder, so a commit
+    inside a `[store]` marker folder lands in that folder's store, and a
+    commit spanning several stores lands in each. A commit with no
+    changed paths, such as a merge or an empty commit, resolves from
+    `cwd`. Returns None when a marker names no usable store: the commit
+    is skipped rather than written to the shared store.
+    """
+    from aelfrice.db_paths import StoreMarkerError, db_path  # noqa: PLC0415
+
+    top = _git_out(["rev-parse", "--show-toplevel"], cwd)
+    names = _git_out(
+        ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z",
+         rev, "--"],
+        cwd,
+    )
+    folders: set[Path] = set()
+    if top and top.strip() and names:
+        root = Path(top.strip())
+        folders = {
+            _existing_dir(root / rel, root)
+            for rel in names.split("\x00") if rel
+        }
+    try:
+        if not folders:
+            return [db_path(start=Path(cwd) if cwd else None)]
+        return sorted({db_path(start=folder) for folder in folders})
+    except StoreMarkerError:
+        return None
+
+
+def _ingest_message(
+    message: str,
+    *,
+    session_id: str,
+    project_context: str,
+    stores: Callable[[], list[Path] | None] | None = None,
+) -> None:
     """Extract triples from one commit message and record them under
-    `session_id`. Shared by the PostToolUse path and the git hook."""
+    `session_id` in each store `stores()` returns, or in `db_path()` when
+    `stores` is None. `stores` runs only when the message yields triples,
+    and returning None skips the commit. Shared by the PostToolUse path
+    and the git hook."""
     if not message.strip():
         return
     body = _truncate_for_extraction(message)
 
     # Lazy imports: cold-start cost is paid only when we actually ingest.
     from aelfrice.db_paths import db_path  # noqa: PLC0415
-    from aelfrice.store import MemoryStore  # noqa: PLC0415
-    from aelfrice.triple_extractor import (  # noqa: PLC0415
-        extract_triples, ingest_triples,
-    )
+    from aelfrice.triple_extractor import extract_triples  # noqa: PLC0415
 
     # #1376: commit bodies are the register where single-token relation
     # verbs collide with plural nouns ("Two tests that …"), and this is a
@@ -218,7 +278,20 @@ def _ingest_message(message: str, *, session_id: str, project_context: str) -> N
     if not triples:
         return  # no relations => nothing to record
 
-    p = db_path()
+    targets = [db_path()] if stores is None else stores()
+    if targets is None:
+        return
+    for p in targets:
+        _record_triples(p, triples, session_id, project_context)
+
+
+def _record_triples(
+    p: Path, triples: list[Triple], session_id: str, project_context: str,
+) -> None:
+    """Record `triples` under `session_id` in the store at `p`."""
+    from aelfrice.store import MemoryStore  # noqa: PLC0415
+    from aelfrice.triple_extractor import ingest_triples  # noqa: PLC0415
+
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -333,6 +406,7 @@ def git_hook_ingest(rev: str, cwd: str | None = None) -> None:
         message,
         session_id=_commit_session_id(first_parent, author_date),
         project_context=cwd or os.getcwd(),
+        stores=lambda: _commit_stores(rev, cwd),
     )
 
 
