@@ -445,6 +445,17 @@ def test_h4_counts_additions_to_the_top_ten() -> None:
     assert (g["relevant_additions"], g["bridging"]) == (4, 0)
 
 
+def test_a0s_tenth_belief_is_no_a3_addition() -> None:
+    # A3 moves A0's 10th belief and its 11th to the top. Only the 11th is
+    # new to the top 10.
+    rows: list[Row] = []
+    for p in range(4):
+        rows.append((f"t{p}", f"p{p}", {"A0": 10, "A3": 1}, False, True, True))
+        rows.append((f"e{p}", f"p{p}", {"A0": 11, "A3": 2}, False, True, True))
+    g = _score(rows)["arms"]["A3"]["graders"][0]
+    assert (g["relevant_additions"], g["bridging"]) == (4, 4)
+
+
 def test_the_proxy_sign_counts_the_top_ten_only() -> None:
     # A1's only used belief sits at rank 11, where the graders' gain doesn't look.
     unused = [{"id": f"u{k}", "used": False} for k in range(bench.TOP_K)]
