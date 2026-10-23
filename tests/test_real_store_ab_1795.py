@@ -717,6 +717,31 @@ def test_a3_without_pmi_words_ranks_like_a0(
     assert _run(path, tmp_path, bench.ARM_A3) == a0
 
 
+def test_only_a3_adds_pmi_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fixed(_self: bench.PMIExpander, _prompt: str) -> list[str]:
+        return ["otters"]
+
+    monkeypatch.setattr(bench.PMIExpander, "expand", fixed)
+    seen: list[str] = []
+    real = bench.retrieve
+
+    def spy(store: MemoryStore, query: str, **kw: Any) -> Any:
+        seen.append(query)
+        return real(store, query, **kw)
+
+    monkeypatch.setattr(bench, "retrieve", spy)
+    path = _store(tmp_path)
+    others = [a for a in bench.ARMS if a != bench.ARM_A3]
+    for arm in others:
+        work = tmp_path / f"only-{arm}"
+        work.mkdir()
+        row = bench.run_arm(path, _prompts(), arm, work)["prompts"][0]
+        assert "added_terms" not in row
+    assert seen == [_QUERY] * len(others)
+
+
 # --- Packet -------------------------------------------------------------------
 
 
