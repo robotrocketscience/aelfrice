@@ -247,10 +247,10 @@ def test_the_env_override_reaches_the_hrr_expand_lane_through_retrieve(
     path = _store(tmp_path)
     store = MemoryStore(str(path), read_only=True)
     try:
-        off = bench.retrieve_top(store, _QUERY)
+        off = bench.retrieve_packed(store, _QUERY)
         off_lane = last_lane_telemetry().hrr_expand
         monkeypatch.setenv(ENV_HRR_EXPAND, "1")
-        on = bench.retrieve_top(store, _QUERY)
+        on = bench.retrieve_packed(store, _QUERY)
         on_lane = last_lane_telemetry().hrr_expand
     finally:
         store.close()
@@ -261,7 +261,7 @@ def test_the_env_override_reaches_the_hrr_expand_lane_through_retrieve(
 def _direct(path: Path, query: str) -> list[str]:
     store = MemoryStore(str(path), read_only=True)
     try:
-        return bench.retrieve_top(store, query)
+        return bench.retrieve_packed(store, query)
     finally:
         store.close()
 
@@ -329,6 +329,57 @@ def test_a2_probes_the_existing_edge_kinds_and_restores_the_override(tmp_path: P
     assert "rel" in ranked and "con" not in ranked
     assert hrr_expand.probe_kinds_override is None
     assert bench.PROBE_KINDS_A2 == ("DERIVED_FROM", "RELATES_TO", "TEMPORAL_NEXT")
+
+
+def _crowded_store(tmp_path: Path, n: int) -> Path:
+    """`n` beliefs that match `_QUERY`, each with a RELATES_TO edge to `rel`."""
+    path = tmp_path / "crowd" / "memory.db"
+    path.parent.mkdir(parents=True)
+    s = MemoryStore(str(path))
+    _add(s, "rel", "otters swim in cold rivers at dawn")
+    for i in range(n):
+        _add(s, f"k{i:02d}", f"the kestrel {i} hovers above the meadow note{i}")
+        s.insert_edge(Edge(src=f"k{i:02d}", dst="rel", type=EDGE_RELATES_TO, weight=1.0))
+    for i in range(20):
+        _add(s, f"f{i:02d}", _filler(i))
+    s.close()
+    return path
+
+
+def test_a_lane_addition_past_the_top_ten_is_judged_and_counted(tmp_path: Path) -> None:
+    # L1 fills the top 10, so A2's lane appends `rel` past the cut.
+    path = _crowded_store(tmp_path, 12)
+    runs: dict[str, Any] = {}
+    for arm in (bench.ARM_A0, bench.ARM_A2):
+        work = tmp_path / f"crowd-{arm}"
+        work.mkdir()
+        runs[arm] = bench.run_arm(path, _prompts(), arm, work)
+    a0, a2 = (runs[a]["prompts"][0]["ranked"] for a in (bench.ARM_A0, bench.ARM_A2))
+    assert "rel" not in a0 and a2.index("rel") >= bench.TOP_K
+    assert a2[:bench.TOP_K] == a0[:bench.TOP_K]
+    work = tmp_path / "crowd-pk"
+    work.mkdir()
+    _packet_rows, key = bench.build_packet(runs, bench.prepare_copy(path, work), 1)
+    by = {r["belief_id"]: r for r in key if r["arms"]}
+    assert by["rel"]["arms"] == {"A2": a2.index("rel") + 1}
+    # Both arms packed the beliefs past the cut, so they cancel unjudged.
+    assert set(by) == set(a0[:bench.TOP_K]) | {"rel"}
+    # The null arm never draws a belief an arm packed, judged or not.
+    for seed in range(10):
+        _rows, k = bench.build_packet(runs, work / "memory.db", seed)
+        assert not {r["belief_id"] for r in k if r["arms"] is None} & set(a2)
+    # Graded relevant: A2 gains `rel` on every prompt, all of it past the cut.
+    rows: list[Row] = []
+    for p in range(4):
+        rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A2": k + 1}, True, k < 2, k < 2)
+                 for k in range(10)]
+        rows.append((f"r{p}", f"p{p}", {"A2": 11}, False, True, True))
+        rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
+    g = _score(rows)["arms"]["A2"]["graders"][0]
+    assert g["top10_mean_gain"] == _approx(0.0)
+    assert g["mean_gain"] == _approx(1.0)
+    assert g["gain_verdict"] == bench.V_PASS
+    assert g["precision_drop"] == _approx(0.0)
 
 
 def test_a0_takes_the_top_ten_non_locked_beliefs(tmp_path: Path) -> None:
@@ -836,6 +887,24 @@ def test_the_proxy_finds_a_cited_or_restated_belief_in_a_later_turn(tmp_path: Pa
     assert used["p1"] == {"seed": True, "w1": False}
     # t008 restates most of w5's stems; w1 isn't in s2 after t007.
     assert used["p2"] == {"w5": True, "w1": False}
+
+
+def test_the_proxy_covers_the_whole_packed_result(tmp_path: Path) -> None:
+    # The gain counts beliefs past the top 10, so the proxy does too.
+    path = _store(tmp_path)
+    archive, live = _session_turns()
+    _write_transcripts(path, archive, live)
+    turns = bench.read_turns(bench.transcript_files(path))
+    prompt: dict[str, Any] = {"prompt_id": "p1", "text": archive[4]["text"], "session_id": "s1",
+                              "turn_id": "t004", "ts": archive[4]["ts"], "context": []}
+    ranked = [f"f{i:02d}" for i in range(bench.TOP_K)] + ["seed"]
+    runs = {bench.ARM_A0: {"arm": "A0", "prompts": [
+        {"prompt_id": "p1", "prompt": prompt["text"], "ranked": ranked}]}}
+    work = tmp_path / "w"
+    work.mkdir()
+    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(path, work))
+    used = {b["id"]: b["used"] for b in rep["prompts"][0]["arms"]["A0"]}
+    assert len(used) == bench.TOP_K + 1 and used["seed"] is True
 
 
 def test_proxy_overlap_bar() -> None:

@@ -23,9 +23,9 @@ goes.
   (`transcripts/turns.jsonl` and every file under `transcripts/archive`),
   minus the prompts the production prompt-shape gate sends to locks-only,
   deduplicated on their stripped text and sampled with `--seed`.
-- `run`: one arm's top 10 non-locked belief ids per prompt, retrieved
-  through the production `retrieve()` with the arguments the
-  UserPromptSubmit hook passes it.
+- `run`: one arm's non-locked packed belief ids per prompt, in rank
+  order, retrieved through the production `retrieve()` with the
+  arguments the UserPromptSubmit hook passes it.
 - `packet`: the blind grader packet, its instructions, and the hidden key.
 - `score`: the H0 to H6 verdicts from two graders' labels.
 - `proxy`: whether a later turn of the same session cites or restates
@@ -168,7 +168,20 @@ PROBE_KINDS_A2: Final[tuple[str, ...]] = (
 """Edge kinds A2 probes: the ones real stores already hold (#1795)."""
 
 TOP_K: Final[int] = 10
-"""Judged set per prompt: the top 10 non-locked beliefs of the packed result."""
+"""The top 10 non-locked beliefs of the packed result: H5's precision set."""
+COMPARISONS: Final[tuple[tuple[str, str], ...]] = (
+    (ARM_A1, ARM_A0), (ARM_A1W, ARM_A0), (ARM_A2, ARM_A0), (ARM_A3, ARM_A0),
+    (ARM_A1, ARM_A1W),
+)
+"""`(arm, control)` pairs whose packed results the packet judges in full.
+
+The expand lane appends its beliefs after every L1 hit, so when L1 fills
+the top 10 an A1 or A2 addition lands past the cut, and a gain counted
+in the top 10 alone is zero by construction. The gain is counted over
+the whole packed result, which the hook injects, instead. Beliefs both
+arms packed cancel, so the packet judges only the top 10s and the
+beliefs one arm of a pair packed and the other didn't.
+"""
 DEFAULT_MAX_PROMPTS: Final[int] = 40
 """Most prompts sampled per store (#1795)."""
 
@@ -745,8 +758,8 @@ def hook_query(prompt: Mapping[str, Any]) -> str:
     )
 
 
-def retrieve_top(store: MemoryStore, query: str) -> list[str]:
-    """Top `TOP_K` non-locked belief ids, in rank order, from the hook's call."""
+def retrieve_packed(store: MemoryStore, query: str) -> list[str]:
+    """Every non-locked belief id the hook's call packs, in rank order."""
     hits = retrieve(
         store, query,
         token_budget=DEFAULT_HOOK_TOKEN_BUDGET,
@@ -754,13 +767,13 @@ def retrieve_top(store: MemoryStore, query: str) -> list[str]:
         belief_cost_fn=_ups_belief_line_cost,
         user_locks=(),
     )
-    return [b.id for b in hits if b.lock_level == LOCK_NONE][:TOP_K]
+    return [b.id for b in hits if b.lock_level == LOCK_NONE]
 
 
 def run_arm(
     src: Path, prompts: Sequence[Mapping[str, Any]], arm: str, work: Path,
 ) -> dict[str, Any]:
-    """One arm's ranked top 10 per prompt, from a fresh copy of `src`."""
+    """One arm's packed non-locked ids per prompt, from a fresh copy of `src`."""
     if arm not in ARMS:
         raise InputError(f"unknown arm {arm!r}")
     db = prepare_copy(src, work)
@@ -782,7 +795,7 @@ def run_arm(
                     row["added_terms"] = added
                     if added:
                         query = f"{query} {' '.join(added)}"
-                row["ranked"] = retrieve_top(store, query)
+                row["ranked"] = retrieve_packed(store, query)
                 rows.append(row)
     finally:
         store.close()
@@ -850,31 +863,42 @@ def build_packet(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """`(packet rows, key rows)`, both in item-id order.
 
-    Per prompt, the union of every arm's top 10, plus a null arm of active
-    non-locked beliefs no arm retrieved for that prompt. Each prompt gets
-    as many null beliefs as the median union size (the lower median),
-    drawn with `seed` in prompt-id order.
+    Per prompt, the union of every arm's top 10 and, for each pair in
+    `COMPARISONS`, the beliefs one arm packed and the other didn't. Each
+    judged belief's key row holds its rank in every arm that packed it,
+    past the top 10 included. A null arm of active non-locked beliefs no
+    arm packed for the prompt is mixed in: as many per prompt as the
+    median judged count (the lower median), drawn with `seed` in
+    prompt-id order.
     """
     prompts: dict[str, str] = {}
-    union: dict[str, dict[str, dict[str, int]]] = {}
+    packed: dict[str, dict[str, dict[str, int]]] = {}
     for arm in sorted(runs):
         for p in runs[arm]["prompts"]:
             pid = str(p["prompt_id"])
             prompts[pid] = str(p["prompt"])
-            slot = union.setdefault(pid, {})
-            for rank, bid in enumerate(p["ranked"][:TOP_K], 1):
+            slot = packed.setdefault(pid, {})
+            for rank, bid in enumerate(p["ranked"], 1):
                 slot.setdefault(str(bid), {})[arm] = rank
     if not prompts:
         raise InputError("the runs hold no prompts")
-    null_n = int(statistics.median_low(len(union[pid]) for pid in prompts))
+    judged: dict[str, dict[str, dict[str, int]]] = {}
+    for pid in prompts:
+        ranks = packed[pid]
+        keep = {b for b, arms in ranks.items() if min(arms.values()) <= TOP_K}
+        for x, c in COMPARISONS:
+            if x in runs and c in runs:
+                keep |= {b for b, arms in ranks.items() if (x in arms) != (c in arms)}
+        judged[pid] = {b: ranks[b] for b in keep}
+    null_n = int(statistics.median_low(len(judged[pid]) for pid in prompts))
     pool = [bid for bid, _c, lock in active_beliefs(db) if lock == LOCK_NONE]
     rng = random.Random(seed)
     entries: list[tuple[str, str, dict[str, int] | None]] = []
     for pid in sorted(prompts):
-        retrieved = union[pid]
+        retrieved = judged[pid]
         for bid in sorted(retrieved):
             entries.append((pid, bid, retrieved[bid]))
-        candidates = [b for b in pool if b not in retrieved]
+        candidates = [b for b in pool if b not in packed[pid]]
         for bid in sorted(rng.sample(candidates, min(null_n, len(candidates)))):
             entries.append((pid, bid, None))
     texts = belief_texts(db, [bid for _p, bid, _a in entries])
@@ -947,7 +971,7 @@ def proxy(
             pid = str(p["prompt_id"])
             if pid not in by_pid:
                 raise InputError(f"prompt {pid} is not in the prompts file")
-            retrieved.setdefault(pid, {})[arm] = [str(b) for b in p["ranked"][:TOP_K]]
+            retrieved.setdefault(pid, {})[arm] = [str(b) for b in p["ranked"]]
     texts = belief_texts(
         db, [b for arms in retrieved.values() for ids in arms.values() for b in ids],
     )
@@ -1058,9 +1082,19 @@ def combine(verdicts: Sequence[str]) -> str:
 
 
 def _top(items: Sequence[KeyItem], arm: str) -> dict[str, list[KeyItem]]:
+    """{prompt id: the arm's top `TOP_K` items}."""
     out: dict[str, list[KeyItem]] = {}
     for i in items:
-        if i.arms is not None and arm in i.arms:
+        if i.arms is not None and i.arms.get(arm, TOP_K + 1) <= TOP_K:
+            out.setdefault(i.prompt_id, []).append(i)
+    return out
+
+
+def _only(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyItem]]:
+    """{prompt id: the judged items `arm` packed and `other` didn't}."""
+    out: dict[str, list[KeyItem]] = {}
+    for i in items:
+        if i.arms is not None and arm in i.arms and other not in i.arms:
             out.setdefault(i.prompt_id, []).append(i)
     return out
 
@@ -1073,10 +1107,21 @@ def arm_figures(
     items: Sequence[KeyItem], arm: str, labels: Labels, prompts: Sequence[str], seed: int,
     control: str = CONTROL_ARM,
 ) -> dict[str, Any]:
-    """One grader's paired gain, precision share, and drop for `arm` against `control`."""
+    """One grader's paired gain, precision share, and drop for `arm` against `control`.
+
+    The gain is counted over the whole packed result (see `COMPARISONS`):
+    relevant beliefs only `arm` packed minus those only `control` packed.
+    `top10_mean_gain` counts the top 10s alone. Precision and its drop
+    are over the top 10s, as H5 states.
+    """
     top_arm, top_a0 = _top(items, arm), _top(items, control)
+    gained, lost = _only(items, arm, control), _only(items, control, arm)
     gains = [
-        float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
+        float(_relevant(gained.get(p, []), labels) - _relevant(lost.get(p, []), labels))
+        for p in prompts
+    ]
+    top10_gains = [
+        _relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels)
         for p in prompts
     ]
     mean = sum(gains) / len(gains)
@@ -1091,6 +1136,7 @@ def arm_figures(
     figures: dict[str, Any] = {
         "graded": g_arm, "graded_a0": g_a0,
         "mean_gain": mean, "ci95": list(ci), "share_gaining": share,
+        "top10_mean_gain": sum(top10_gains) / len(top10_gains),
         "precision": precision, "precision_a0": precision_a0, "precision_drop": drop,
         "gain_verdict": gain_verdict(mean, ci, share) if sufficient else V_INSUFFICIENT,
         "h5_verdict": (
@@ -1098,9 +1144,7 @@ def arm_figures(
         ),
     }
     if arm == ARM_A3:
-        a0_by_prompt = {p: {i.id for i in top_a0.get(p, [])} for p in prompts}
-        additions = [i for p in prompts for i in top_arm.get(p, [])
-                     if i.id not in a0_by_prompt[p] and labels[i.id] is True]
+        additions = [i for p in prompts for i in gained.get(p, []) if labels[i.id] is True]
         bridging = sum(1 for i in additions if not i.shares_prompt_stem)
         share_b = bridging / len(additions) if additions else None
         figures.update({"relevant_additions": len(additions), "bridging": bridging,
@@ -1274,7 +1318,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seed", type=int, required=True)
     s.add_argument("--max", type=int, default=DEFAULT_MAX_PROMPTS)
     s.add_argument("--out", type=Path, required=True)
-    r = sub.add_parser("run", help="one arm's top 10 per prompt")
+    r = sub.add_parser("run", help="one arm's packed beliefs per prompt")
     r.add_argument("--store", type=Path, required=True)
     r.add_argument("--prompts", type=Path, required=True)
     r.add_argument("--arm", choices=ARMS, required=True)
