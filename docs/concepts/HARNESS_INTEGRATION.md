@@ -147,7 +147,7 @@ You might have accumulated `.md` files under
 `~/.claude/projects/<slug>/memory/`. To bring them into aelfrice as beliefs, run
 the commands below.
 
-Run the command from the project root, not from the memory directory. aelfrice resolves the DB from the working directory (`$AELFRICE_DB` → the git-common-dir of the cwd → `~/.aelfrice/memory.db`), so an onboard run *from inside* `~/.claude/...` writes the beliefs into the global fallback DB instead of into the project's DB.
+Run the command from the project root, not from the memory directory. aelfrice resolves the DB from the working directory (`$AELFRICE_DB`, then a [`[store]`](../user/CONFIG.md#store-1796) table in the nearest `.aelfrice.toml`, then the git-common-dir of the cwd, then `~/.aelfrice/memory.db`), so an onboard run *from inside* `~/.claude/...` writes the beliefs into the global fallback DB instead of into the project's DB.
 
 ```bash
 cd <your-project-root>

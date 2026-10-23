@@ -213,10 +213,13 @@ Restart Claude Code. The next prompt that mentions "push" arrives with your rule
 The store is a SQLite database. The path resolution order is:
 
 1. `$AELFRICE_DB` — the explicit override. aelfrice honors `:memory:`, which is useful for tests.
-2. `<git-common-dir>/aelfrice/memory.db` — used when `cwd` is inside a git work-tree (v1.1.0+). The worktrees of one repo share a single DB through `--git-common-dir`. Git doesn't track `.git/`, so the brain graph never crosses the git boundary.
-3. `~/.aelfrice/memory.db` — the fallback for a directory that isn't in a git work-tree.
+2. The nearest `[store]` table in an `.aelfrice.toml` at or above `cwd`, up to the root of the git work tree ([#1796](https://github.com/robotrocketscience/aelfrice/issues/1796)). Use it to give a folder of a repository its own store. See [`[store]`](CONFIG.md#store-1796).
+3. `<git-common-dir>/aelfrice/memory.db` — used when `cwd` is inside a git work-tree (v1.1.0+). The worktrees of one repo share a single DB through `--git-common-dir`. Git doesn't track `.git/`, so the brain graph never crosses the git boundary.
+4. `~/.aelfrice/memory.db` — the fallback for a directory that isn't in a git work-tree.
 
-To pin a project, run `export AELFRICE_DB=/abs/path/.aelfrice.db`. This method works well with `direnv`.
+To see which store applies and which rule chose it, run `aelf status`.
+
+To pin a project, run `export AELFRICE_DB=/abs/path/.aelfrice.db`. This method works well with `direnv`. A `[store]` table needs no environment, so it also applies to sessions you didn't start from that folder.
 
 ### Migrating from v1.0.x
 
@@ -573,6 +576,7 @@ run `rm -rf ~/.aelfrice/`.
 | `aelf: command not found` | Confirm that `~/.local/bin`, the uv tool shim directory, is on `$PATH`. `uv tool update-shell` adds it for you. |
 | Hook fires but no `<aelfrice-memory>` block appears | Run `aelf doctor`. Usually the hook command points at a deleted script. |
 | `aelf doctor` says "skipped (shell metacharacters)" on a hook line | The install is stale. `aelf setup` rewrites the hook in place. |
-| Two worktrees of the same repo see the same beliefs | This is the designed behavior. The two worktrees share `--git-common-dir`. Pin one of them with `AELFRICE_DB`. |
+| Two worktrees of the same repo see the same beliefs | This is the designed behavior. The two worktrees share `--git-common-dir`. Pin one of them with `AELFRICE_DB`, or give a folder a [`[store]`](CONFIG.md#store-1796) table with a relative `path`, which gives each worktree its own store. |
+| Two folders of one repo see each other's beliefs | They share the repository's store. Give each folder a [`[store]`](CONFIG.md#store-1796) table in its own `.aelfrice.toml`. |
 | `aelf search` returns "store is empty" | Run `aelf onboard .` from the project root. |
 | `SQLite database is locked` under heavy concurrent writes | v1.1.0+ uses WAL and `busy_timeout=5000`. If you still see this error, file an issue with the repro. |

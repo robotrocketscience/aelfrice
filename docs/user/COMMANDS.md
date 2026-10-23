@@ -11,8 +11,11 @@ aelf --version
 The database (DB) path resolves in this order:
 
 1. `$AELFRICE_DB`.
-2. `<git-common-dir>/aelfrice/memory.db`, when `cwd` is inside a git work-tree.
-3. `~/.aelfrice/memory.db`, the non-git fallback.
+2. The nearest `[store]` table in an `.aelfrice.toml`, which selects a store for one folder of a repository ([#1796](https://github.com/robotrocketscience/aelfrice/issues/1796), see [`[store]`](CONFIG.md#store-1796)).
+3. `<git-common-dir>/aelfrice/memory.db`, when `cwd` is inside a git work-tree.
+4. `~/.aelfrice/memory.db`, the non-git fallback.
+
+`status` prints the store path and the rule that chose it (`env`, `marker`, `git`, or `global`), and `doctor` prints the rule. For the `marker` rule, both name the `.aelfrice.toml` file.
 
 A user-scope lock (`lock --user`, [#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)) lives in a separate store that every repository and every worktree shares. Its path resolves in this order:
 

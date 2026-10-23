@@ -85,9 +85,10 @@ This document is the reference for power users. Reach for it when your project h
 
   Flipping the switch *in the middle of a session* has one more consequence. `is_session_first_prompt` runs before aelfrice resolves the switch, so a suppressed fire consumes the session's first-prompt slot. That is deliberate, because `aelf scope-out` resolves against the `session_id` key of the same file. Flipping back to on part-way through a session therefore does not restore the #578 session-start sub-block for that session; start a new session to get it.
 - `[core_gate]` (#1638) — how the core admission gate labels the session's new core candidates. `background` (default `true`, #1741) labels them in a detached run of your `claude` CLI on its smallest model, with nothing added to your conversation; set it to `false`, or export `AELFRICE_CORE_GATE_BACKGROUND=0`, to turn it off. `session_end` (default `false`, #1740) lets the Stop hook ask the agent to label the session's new core candidates once they're ingested, at most once per transcript ingest. Each batch adds a turn to your conversation. To turn the batch on, set it to `true` or export `AELFRICE_CORE_GATE_SESSION_END=1`. See [`[core_gate]`](#core_gate-1638) below.
+- `[store]` (#1796): the store for the folder that holds the file. `path` names a directory, a `.db` file, or `git:<name>`. Without it, every folder in a git repository shares the repository's store. See [`[store]`](#store-1796) below.
 - `[user_prompt_submit_hook]` (v3.0+) — the UPS hook's keys. `prompt_shape_gate_enabled` (default `true`) controls the short-circuits for a trivial prompt and for a system envelope, which run before BM25 retrieval (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query, so a follow-up that uses a paraphrase, a pronoun, or a numeric reference still surfaces the thread that carries the answer. Two keys tune this behavior: `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
-This file doesn't affect locks, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`, and `[core_gate]`.
+This file doesn't affect locks, apart from `[store]` choosing the store they live in, and it doesn't configure the mathematics of the Bayesian update. It DOES configure hook behavior, through `[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`, and `[core_gate]`.
 
 `scan_repo` walks up from the scan root looking for `.aelfrice.toml`, and the first file it finds is the one that applies. Every other reader — the hooks, retrieval, the noise filter, and `aelf onboard` — uses the same walk.
 
@@ -1405,6 +1406,50 @@ The session-end turn is off by default because it adds a turn to your conversati
 The hook doesn't ask while the host reports that a Stop hook is already continuing the conversation (`stop_hook_active`), in a headless session (#1634), or on the Codex host, which doesn't document the output field the hook uses.
 
 Both the variable and the key apply from the next Stop.
+
+## `[store]` (#1796)
+
+This table gives a folder its own store. Use it when one git repository holds several projects that shouldn't share beliefs, locks, or feedback, such as `monorepo/project-a/` and `monorepo/project-b/`. Without it, every folder in a repository uses the repository's one store.
+
+```toml
+# monorepo/project-a/.aelfrice.toml
+[store]
+path = ".aelfrice/store"
+```
+
+The nearest `.aelfrice.toml` at or above your working directory that holds a `[store]` table applies. Inside a git work tree, aelfrice passes over a nearer `.aelfrice.toml` without a `[store]` table, or one it can't read or parse, and keeps looking up to the work-tree root. That differs from every other table, where the nearest file hides the files above it: a config you add to a subfolder for another setting can't move that subfolder's beliefs out of its folder's store. A file above the git work-tree root or in your home directory is never read. Outside a git work tree, only the nearest `.aelfrice.toml` counts. Nested markers don't merge: a marker in `project-a/inner/` applies to that folder and everything below it, and the `project-a/` marker applies to the rest of `project-a/`.
+
+The store is chosen by the first of these rules that applies:
+
+1. `env`: `AELFRICE_DB`, if that variable is set.
+2. `marker`: the nearest `[store]` table.
+3. `git`: `<git-common-dir>/aelfrice/memory.db`, inside a git work tree.
+4. `global`: `~/.aelfrice/memory.db`.
+
+`aelf status` prints the store and the rule that chose it, and `aelf doctor` prints the rule. When the rule is `marker`, both name the `.aelfrice.toml` file.
+
+### `path`
+
+String, required. A `[store]` table without a non-empty `path` is an error. The value takes one of these forms:
+
+| Form | Example | Store |
+|---|---|---|
+| Relative path | `".aelfrice/store"` | Resolved from the folder that holds the `.aelfrice.toml`. Each worktree of the repository has its own copy of that folder, so each worktree gets its own store. |
+| Absolute path | `"/data/stores/project-a"` | That path. Every worktree uses the same store. |
+| Home path | `"~/stores/project-a"` | That path under your home directory. Every worktree uses the same store. |
+| `git:<name>` | `"git:project-a"` | `<git-common-dir>/aelfrice/stores/<name>/memory.db`. Every worktree uses the same store, and git doesn't track it. |
+
+A value that ends in `.db` names the store file. Any other value names a directory, and the store is `memory.db` inside it, so `".aelfrice/store"` is `.aelfrice/store/memory.db` and `"stores/a.db"` is `stores/a.db`. aelfrice reads only the text of the value, so the answer doesn't change once the directory exists. A relative or absolute store inside your work tree is a file git can see; add it to `.gitignore` if you don't want to commit it.
+
+The `<name>` in `git:<name>` starts with a letter or a digit and holds only letters, digits, `.`, `_`, and `-`. The `git:` form needs a git repository.
+
+**A marker that names no usable store is an error, and aelfrice doesn't fall back to another store.** That covers a missing or empty `path`, a `[store]` that isn't a table, a bad `git:` name, `git:` outside a repository, and a `.aelfrice.toml` that holds a `[store]` header but fails to parse. `aelf` commands print the file and the problem and exit with status 2. A `.aelfrice.toml` that fails to parse and has no `[store]` header selects no store, as before this table existed.
+
+**Each marker store has its own identity.** aelfrice stamps the rows it writes with the store's repository identity, which is what `AELFRICE_PROJECT_CONTEXT` filters on. A marker store's identity comes from the folder that holds the `.aelfrice.toml`: the folder name, then a digest of its absolute path, such as `project-a-1a2b3c4d`. A `git:<name>` store's identity comes from the repository and the name instead, such as `monorepo-project-a-1a2b3c4d`, so every worktree stamps the same value. A marker whose `path` names the repository's own store keeps the repository identity. The first open that can write the store records the identity in an `identity` file beside it, and every later open reads that file. If you copy or move the store directory, the identity goes with it, so rows written before and after the copy carry the same project context.
+
+The transcript log for a marker store, `transcripts/turns.jsonl`, sits beside that store, and so do the hook audit log and the other files aelfrice keeps beside a store.
+
+`aelf uninstall` deletes a marker store's `memory.db`. It reports the files beside it as orphaned rather than deleting them, because only a directory named `aelfrice` or `.aelfrice` is recognized as aelfrice's own.
 
 ## User lock store: `AELFRICE_USER_DB`
 

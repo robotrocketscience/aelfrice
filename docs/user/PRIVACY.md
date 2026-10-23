@@ -133,8 +133,9 @@ git does not track `.git/`. The brain graph never crosses the git boundary.
 Resolution order:
 
 1. `$AELFRICE_DB`, if that variable is set. This value is an override, and aelfrice honors `:memory:`.
-2. `<git-common-dir>/aelfrice/memory.db` inside any git work-tree.
-3. `~/.aelfrice/memory.db` outside git. This is the legacy fallback.
+2. The store that the nearest `[store]` table in an `.aelfrice.toml` names ([#1796](https://github.com/robotrocketscience/aelfrice/issues/1796)). Use it to keep the folders of one repository apart: each folder with its own table gets its own store. A `git:<name>` store stays under `.git/`. A store at a path inside the work tree doesn't, so add that path to `.gitignore`.
+3. `<git-common-dir>/aelfrice/memory.db` inside any git work-tree.
+4. `~/.aelfrice/memory.db` outside git. This is the legacy fallback.
 
 ## You control all writes
 
