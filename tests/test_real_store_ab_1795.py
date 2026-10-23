@@ -1456,6 +1456,41 @@ def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     assert [i.id for i in bench.read_key(path)] == ["i1", "i2"]
 
 
+def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
+    rows: list[dict[str, Any]] = [
+        {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True},
+        {"id": "i2", "prompt_id": "p", "arms": {"A9": 1}, "shares_prompt_stem": True}]
+    path = tmp_path / "key.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with pytest.raises(bench.InputError, match=r"key\.jsonl:2:"):
+        bench.read_key(path)
+
+
+def test_read_prompts_rejects_a_repeated_prompt_id(tmp_path: Path) -> None:
+    path = tmp_path / "prompts.jsonl"
+    row: dict[str, Any] = {"prompt_id": "p", "text": "q", "context": []}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert len(bench.read_prompts(path)) == 1
+    path.write_text(2 * (json.dumps(row) + "\n"), encoding="utf-8")
+    with pytest.raises(bench.InputError, match="duplicate prompt ids"):
+        bench.read_prompts(path)
+
+
+def test_read_turns_keeps_only_user_and_assistant_lines(tmp_path: Path) -> None:
+    path = tmp_path / "turns.jsonl"
+    path.write_text("".join(json.dumps({"role": r, "text": "hello"}) + "\n"
+                            for r in ("system", "user", "tool", "assistant")), encoding="utf-8")
+    assert [t.role for t in bench.read_turns([path])] == ["user", "assistant"]
+
+
+def test_belief_texts_rejects_an_id_the_store_lacks(tmp_path: Path) -> None:
+    db = _store(tmp_path)
+    assert bench.belief_texts(db, ["seed"]) == {
+        "seed": "the kestrel hovers above the meadow before it dives"}
+    with pytest.raises(bench.InputError, match="belief nope is not in the store"):
+        bench.belief_texts(db, ["seed", "nope"])
+
+
 def test_score_cli_reads_a_packet_key_and_two_label_files(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
