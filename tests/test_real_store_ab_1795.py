@@ -860,8 +860,9 @@ def test_too_few_graded_items_is_insufficient() -> None:
 
 def test_either_side_under_min_graded_is_insufficient() -> None:
     # 7 graded per prompt on one side: 28, under 30; the other side has 40.
-    for kw in ({"unclear": 3}, {"unclear_arm": 3}):
-        rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], **kw))
+    for rows in (_hand([2, 2, 2, 2], [3, 3, 2, 4], unclear=3),
+                 _hand([2, 2, 2, 2], [3, 3, 2, 4], unclear_arm=3)):
+        rep = _score(rows)
         g = rep["arms"]["A1"]["graders"][0]
         assert sorted((g["graded"], g["graded_a0"])) == [28, 40]
         assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
@@ -1203,8 +1204,9 @@ def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(
 
 
 def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
-    rows = [{"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True},
-            {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False}]
+    rows: list[dict[str, Any]] = [
+        {"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True},
+        {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match="no A0 item"):
