@@ -897,6 +897,61 @@ def test_h2_split_separates_the_writers_from_the_lane() -> None:
         bench.V_NOT_MEASURED)
 
 
+def test_a_null_rate_on_the_ceiling_holds_h0() -> None:
+    on = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=2))
+    assert on["null_arm"][0]["rate"] == _approx(0.2)
+    assert on["hypotheses"]["H0"] == bench.V_PASS
+
+
+def test_a_mean_gain_on_the_kill_bar_is_not_killed() -> None:
+    assert bench.gain_verdict(0.1, (0.05, 0.2), 0.5) == bench.V_INCONCLUSIVE
+    assert bench.gain_verdict(0.09, (0.05, 0.2), 0.5) == bench.V_FAIL
+    assert bench.gain_verdict(0.3, (0.0, 0.5), 0.5) == bench.V_FAIL
+
+
+def test_a_bridging_share_on_the_bar_passes_h4() -> None:
+    # 16 relevant additions, 2 per prompt bridging: 8 of 16.
+    rep = _score(_hand([2, 2, 2, 2], [4, 4, 4, 4], arm=bench.ARM_A3, bridging=2))
+    assert rep["arms"]["A3"]["graders"][0]["bridging_share"] == _approx(0.5)
+    assert rep["hypotheses"]["H4"] == bench.V_PASS
+
+
+def _substrate_store(tmp_path: Path, beliefs: int) -> Path:
+    """`beliefs` active beliefs and one CONTRADICTS edge, a probed kind."""
+    path = tmp_path / f"sub{beliefs}" / "memory.db"
+    path.parent.mkdir(parents=True)
+    s = MemoryStore(str(path))
+    for i in range(beliefs):
+        _add(s, f"b{i:03d}", _filler(i))
+    s.insert_edge(Edge(src="b000", dst="b001", type=EDGE_CONTRADICTS, weight=1.0))
+    s.close()
+    return path
+
+
+def test_h1_passes_at_exactly_one_probed_edge_per_100_beliefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_writers(_db: Path) -> dict[str, dict[str, int]]:
+        return {}
+
+    monkeypatch.setattr(bench, "apply_writers", no_writers)
+    on = bench.census([_substrate_store(tmp_path, 100)], tmp_path, writers=True)
+    assert on["median_probed_per_100_beliefs"] == _approx(1.0)
+    assert on["H1"] == bench.V_PASS
+    under = bench.census([_substrate_store(tmp_path, 101)], tmp_path, writers=True)
+    assert under["H1"] == bench.V_FAIL
+
+
+def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
+    gains = [0.0] * 39 + [40.0]
+    rng = random.Random(7)
+    means = sorted(sum(gains[rng.randrange(40)] for _ in range(40)) / 40
+                   for _ in range(10_000))
+    # Index floor(0.025 * 9999) and ceil(0.975 * 9999).
+    assert bench.paired_bootstrap_ci(gains, 7) == (means[249], means[9750])
+    assert means[9750] < means[-1]
+
+
 def test_the_bars_are_the_pre_registered_ones() -> None:
     assert (bench.KAPPA_BAR, bench.NULL_RATE_CEILING, bench.SUBSTRATE_BAR, bench.GAIN_BAR,
             bench.GAIN_KILL, bench.GAINING_SHARE_BAR, bench.BRIDGING_SHARE_BAR,
