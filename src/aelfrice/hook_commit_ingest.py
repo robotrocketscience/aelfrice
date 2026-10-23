@@ -205,16 +205,46 @@ def _do_ingest(payload: dict[str, object]) -> None:
     )
 
 
-def _existing_dir(path: Path, root: Path) -> Path:
-    """The nearest directory at or above `path.parent` that exists,
-    stopping at `root`. A deleted file's folder may be gone, and the
-    store must resolve from a folder git can still run in."""
-    current = path.parent
-    for _ in range(len(path.parts)):
-        if current == root or current.is_dir():
-            return current
-        current = current.parent
-    return root
+def _owning_folder(root: Path, rel: str) -> Path:
+    """The deepest folder of `rel`'s parents, walking down from `root`,
+    that is a real directory of this work tree.
+
+    The walk stops before a folder that is missing (a deleted file's
+    folder), a symlink (whose target may be outside the repository or in
+    another one), or the root of a nested repository or submodule. The
+    store then resolves from a folder that belongs to the commit's own
+    work tree.
+    """
+    current = root
+    for part in Path(rel).parts[:-1]:
+        candidate = current / part
+        if (
+            candidate.is_symlink()
+            or not candidate.is_dir()
+            or (candidate / ".git").exists()
+        ):
+            break
+        current = candidate
+    return current
+
+
+def _changed_paths(rev: str, cwd: str | None) -> list[str]:
+    """Paths commit `rev` changed, relative to the work-tree root.
+
+    A merge lists nothing under `diff-tree`, so it falls back to the diff
+    against its first parent, which is what the merge brought in. Renames
+    list both the old and the new path.
+    """
+    for args in (
+        ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root",
+         "--no-renames", "-z", rev, "--"],
+        ["diff", "--name-only", "--no-renames", "-z", f"{rev}^1", rev, "--"],
+    ):
+        out = _git_out(args, cwd)
+        names = [n for n in (out or "").split("\x00") if n]
+        if names:
+            return names
+    return []
 
 
 def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
@@ -222,30 +252,31 @@ def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
 
     Each changed path resolves its store from its own folder, so a commit
     inside a `[store]` marker folder lands in that folder's store, and a
-    commit spanning several stores lands in each. A commit with no
-    changed paths, such as a merge or an empty commit, resolves from
-    `cwd`. Returns None when a marker names no usable store: the commit
-    is skipped rather than written to the shared store.
+    commit spanning several stores lands in each. Git is asked once for
+    the whole commit, however many folders it changed. A commit with no
+    changed paths resolves from `cwd`. Returns None when a marker names
+    no usable store: the commit is skipped rather than written to the
+    shared store.
     """
-    from aelfrice.db_paths import StoreMarkerError, db_path  # noqa: PLC0415
+    from aelfrice.config_discovery import config_discovery_scope  # noqa: PLC0415
+    from aelfrice.db_paths import (  # noqa: PLC0415
+        StoreMarkerError,
+        db_path,
+        resolve_store_in_work_tree,
+    )
 
     top = _git_out(["rev-parse", "--show-toplevel"], cwd)
-    names = _git_out(
-        ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z",
-         rev, "--"],
-        cwd,
-    )
-    folders: set[Path] = set()
-    if top and top.strip() and names:
-        root = Path(top.strip())
-        folders = {
-            _existing_dir(root / rel, root)
-            for rel in names.split("\x00") if rel
-        }
+    names = _changed_paths(rev, cwd)
     try:
-        if not folders:
+        if not top or not top.strip() or not names:
             return [db_path(start=Path(cwd) if cwd else None)]
-        return sorted({db_path(start=folder) for folder in folders})
+        root = Path(top.strip())
+        folders = {_owning_folder(root, rel) for rel in names}
+        with config_discovery_scope():
+            return sorted({
+                resolve_store_in_work_tree(folder, root).path
+                for folder in folders
+            })
     except StoreMarkerError:
         return None
 
