@@ -1149,12 +1149,12 @@ def arm_figures(
         share_b = bridging / len(additions) if additions else None
         figures.update({"relevant_additions": len(additions), "bridging": bridging,
                         "bridging_share": share_b})
+        # A positive gain needs a relevant addition, so a passing gain
+        # always has a bridging share.
         v = figures["gain_verdict"]
-        if v not in (V_INSUFFICIENT, V_FAIL):
-            if share_b is not None and share_b < BRIDGING_SHARE_BAR:
-                v = V_FAIL
-            elif v == V_PASS and share_b is None:
-                v = V_INCONCLUSIVE
+        if v not in (V_INSUFFICIENT, V_FAIL) and share_b is not None and (
+                share_b < BRIDGING_SHARE_BAR):
+            v = V_FAIL
         figures["gain_verdict"] = v
     return figures
 
