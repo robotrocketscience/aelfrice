@@ -589,6 +589,28 @@ def test_the_restored_writers_stop_at_eight_edges_per_belief(
     assert {a for a, b, t in edges if b == "f00" and t == EDGE_SUPERSEDES} == set(others[:8])
 
 
+def test_the_writer_reports_carry_the_audits_truncated_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `pair_cap` keeps a real pass from truncating, so stubs set the flag.
+    def refines(_store: MemoryStore, **_kw: Any) -> Any:
+        return SimpleNamespace(n_candidate_pairs=0, truncated=True, pairs=[])
+
+    def cluster(_store: MemoryStore, **_kw: Any) -> Any:
+        return SimpleNamespace(n_candidate_pairs=0, truncated=True, clusters=[])
+
+    monkeypatch.setattr(bench, "relationships_audit", refines)
+    monkeypatch.setattr(bench, "dedup_audit", cluster)
+    work = tmp_path / "w"
+    work.mkdir()
+    store = MemoryStore(str(bench.prepare_copy(_store(tmp_path), work)))
+    try:
+        assert bench.write_supports_edges(store)["truncated"] is True
+        assert bench.write_supersedes_edges(store)["truncated"] is True
+    finally:
+        store.close()
+
+
 def test_the_writers_reach_pairs_past_the_audit_cap(tmp_path: Path) -> None:
     # 110 near-duplicates hold 5995 candidate pairs, over the audits' default
     # cap of 5000. Pairs sort by id before the cut, so a capped pass gives
