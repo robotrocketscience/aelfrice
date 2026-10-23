@@ -95,6 +95,13 @@ FORWARD: Final[str] = "forward"
 REVERSE: Final[str] = "reverse"
 
 
+# Edge kinds :func:`expand_seeds` probes in place of
+# :func:`hrr_expand_edge_types` when set. ``None``, the default, leaves the
+# lane unchanged. A benchmark sets it to probe other kinds through the
+# production ``retrieve()`` path, which has no parameter for them (#1795).
+probe_kinds_override: tuple[str, ...] | None = None
+
+
 def hrr_expand_edge_types() -> tuple[str, ...]:
     """Semantic edge kinds probed by the expansion lane.
 
@@ -235,6 +242,7 @@ def expand_seeds(
     per_probe_k: int = DEFAULT_PER_PROBE_K,
     top_k: int = DEFAULT_EXPAND_TOP_K,
     sim_floor: float = DEFAULT_SIM_FLOOR,
+    kinds: tuple[str, ...] | None = None,
 ) -> list["Belief"]:
     """Single-hop HRR expansion of the FTS5 seeds into extra candidates.
 
@@ -243,11 +251,16 @@ def expand_seeds(
     soft-deleted / invalid beliefs, and returns up to ``top_k`` beliefs in
     deterministic similarity order. Empty seed list or empty index returns
     ``[]``.
+
+    ``kinds`` names the edge kinds to probe. ``None`` falls back to
+    :data:`probe_kinds_override`, and then to :func:`hrr_expand_edge_types`.
     """
     seeds = [s for s in seed_ids[:seed_cap] if s]
     if not seeds or index.struct.size == 0 or top_k <= 0:
         return []
     seed_set = set(seeds)
+    if kinds is None:
+        kinds = probe_kinds_override
 
     # Probe the index directly. Merge across seeds keeping the strongest
     # similarity per neighbour, deterministic tie-break.
@@ -256,7 +269,7 @@ def expand_seeds(
     for seed_id in seeds:
         for nid, _etype, _dir, sim in neighbor_rows(
             index, seed_id,
-            id_matrix=id_matrix,
+            id_matrix=id_matrix, kinds=kinds,
             per_probe_k=per_probe_k, sim_floor=sim_floor,
         ):
             if sim > best.get(nid, float("-inf")):
