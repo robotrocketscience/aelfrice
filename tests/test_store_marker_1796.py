@@ -337,11 +337,10 @@ def test_outside_git_only_the_nearest_config_counts(
     [
         ("stores/a", "stores/a/memory.db"),
         ("stores/a/", "stores/a/memory.db"),
-        ("stores/a.db", "stores/a.db"),
         ("../sibling", "../sibling/memory.db"),
     ],
 )
-def test_a_db_suffix_names_the_file_and_anything_else_the_directory(
+def test_a_path_names_the_directory_that_holds_the_store(
     env: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: str,
 ) -> None:
     folder = env / "repo" / "proj"
@@ -351,18 +350,32 @@ def test_a_db_suffix_names_the_file_and_anything_else_the_directory(
     assert resolve_store().path == folder.resolve() / expected
 
 
+@pytest.mark.parametrize("value", ["stores/a.db", "~/b.db", "x.db/"])
+def test_a_path_naming_a_db_file_is_an_error(
+    env: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """Each store owns its folder, so two stores never share the identity
+    file and the turn log kept beside them."""
+    folder = env / "repo" / "proj"
+    _init_repo(env / "repo")
+    _marker(folder, value)
+    monkeypatch.chdir(folder)
+    with pytest.raises(StoreMarkerError, match="names a file"):
+        resolve_store()
+
+
 def test_absolute_and_home_paths(
     env: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = _init_repo(env / "repo")
     absolute = env / "elsewhere" / "abs"
     _marker(repo / "a", str(absolute))
-    _marker(repo / "b", "~/stores/b.db")
+    _marker(repo / "b", "~/stores/b")
 
     monkeypatch.chdir(repo / "a")
     assert resolve_store().path == absolute / "memory.db"
     monkeypatch.chdir(repo / "b")
-    assert resolve_store().path == env / "home" / "stores" / "b.db"
+    assert resolve_store().path == env / "home" / "stores" / "b" / "memory.db"
 
 
 def test_a_relative_store_is_per_worktree(
@@ -624,11 +637,11 @@ def test_a_marker_naming_the_repo_store_keeps_the_repo_identity(
     store's sidecar with the marker folder's identity."""
     repo = _init_repo(env / "repo")
     repo_store = _common_dir(repo) / "aelfrice" / "memory.db"
-    _marker(repo / "project", str(repo_store))
+    _marker(repo / "project", str(repo_store.parent))
     monkeypatch.chdir(repo / "project")
     selection = resolve_store()
     assert selection.rule == STORE_RULE_MARKER
-    assert selection.repo_store
+    assert selection.owned_store
     _write(["via-marker"])
     expected = db_paths._identity_from_git_common_dir(_common_dir(repo))
     assert _context_of(repo_store, "via-marker") == expected
@@ -707,3 +720,264 @@ def test_no_marker_resolution_is_unchanged(
         db_paths._identity_from_git_common_dir(_common_dir(repo))
     )
     assert os.path.basename(path.parent) == "aelfrice"
+
+
+# --- review fixes: HOME repos, encodings, owned stores --------------------
+
+
+def test_a_repository_rooted_at_home_still_passes_over_a_nearer_config(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `$HOME` is itself a work tree, a folder under it is inside
+    git, so a nearer config without `[store]` can't hide its marker."""
+    home = env / "home"
+    _init_repo(home)
+    notes = home / "notes"
+    _marker(notes, ".aelfrice/store")
+    sub = notes / "sub"
+    sub.mkdir()
+    (sub / CONFIG_FILENAME).write_text("[retrieval]\n", encoding="utf-8")
+    monkeypatch.chdir(sub)
+    selection = resolve_store()
+    assert selection.rule == STORE_RULE_MARKER
+    assert selection.path == notes.resolve() / ".aelfrice" / "store" / "memory.db"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '﻿[store]\npath = "s"\n',
+        'store.path = "s"\n[retrieval\n',
+        'store = { path = "s"\n',
+        "[store.extra]\nx = \n",
+    ],
+    ids=["bom", "dotted", "inline", "subtable"],
+)
+def test_a_broken_marker_in_any_spelling_is_an_error(
+    env: Path, monkeypatch: pytest.MonkeyPatch, text: str,
+) -> None:
+    repo = _init_repo(env / "repo")
+    folder = repo / "proj"
+    folder.mkdir()
+    (folder / CONFIG_FILENAME).write_text(text, encoding="utf-8")
+    monkeypatch.chdir(folder)
+    with pytest.raises(StoreMarkerError) as raised:
+        resolve_store()
+    if text.startswith("﻿"):
+        assert "byte order mark" in str(raised.value)
+
+
+def test_a_marker_naming_the_global_store_seeds_no_identity(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The global store carries no identity, whoever opens it."""
+    global_dir = env / "home" / ".aelfrice"
+    _marker(env / "scratch", str(global_dir))
+    monkeypatch.chdir(env / "scratch")
+    selection = resolve_store()
+    assert selection.rule == STORE_RULE_MARKER
+    assert selection.owned_store
+    _write(["via-marker"])
+    assert not (global_dir / "identity").exists()
+    assert _context_of(global_dir / "memory.db", "via-marker") == ""
+
+    # Even a sidecar planted there doesn't label global-store rows.
+    (global_dir / "identity").write_text("planted\n", encoding="utf-8")
+    plain = env / "plain"
+    plain.mkdir()
+    monkeypatch.chdir(plain)
+    assert resolve_store().rule == STORE_RULE_GLOBAL
+    _write(["no-marker"])
+    assert _context_of(global_dir / "memory.db", "no-marker") == ""
+
+
+# --- project-warm ------------------------------------------------------------
+
+
+def test_project_warm_opens_the_marker_store(
+    monorepo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import project_warm
+    from aelfrice import store as store_mod
+
+    folder = monorepo / "project-a"
+    monkeypatch.chdir(folder)
+    _write(["a1"])
+    marker_store = resolve_store().path
+    opened: list[str] = []
+    real = store_mod.MemoryStore
+
+    def spy(path: str) -> MemoryStore:
+        opened.append(path)
+        return real(path)
+
+    monkeypatch.setattr(store_mod, "MemoryStore", spy)
+    monkeypatch.chdir(monorepo)
+    project_warm._warm_store(monorepo, folder)
+    assert opened == [str(marker_store)]
+
+    (folder / CONFIG_FILENAME).write_text("[store]\npath = 3\n", encoding="utf-8")
+    opened.clear()
+    project_warm._warm_store(monorepo, folder)
+    assert opened == []
+
+
+# --- commit ingest -----------------------------------------------------------
+
+_TRIPLE_MSG = "the spec is derived from the prior memo"
+
+
+def _commit_staged(repo: Path, message: str) -> str:
+    _git(
+        "-c", "user.email=test@example.invalid", "-c", "user.name=test",
+        "-c", "commit.gpgsign=false", "commit", "-q", "-m", message,
+        cwd=repo,
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+
+
+def _stage(repo: Path, rel: str) -> None:
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{rel}\n", encoding="utf-8")
+    _git("add", rel, cwd=repo)
+
+
+def _commit_sessions(path: Path) -> int:
+    if not path.exists():
+        return 0
+    store = MemoryStore(str(path))
+    try:
+        row = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) FROM sessions WHERE model = 'commit-ingest'",
+        ).fetchone()
+    finally:
+        store.close()
+    return int(row[0])
+
+
+@pytest.fixture()
+def marked_repo(env: Path) -> Path:
+    repo = _init_repo(env / "repo")
+    _marker(repo / "project-a", "git:project-a")
+    _marker(repo / "project-b", "git:project-b")
+    _commit_all(repo)
+    return repo
+
+
+def _named_store(repo: Path, name: str) -> Path:
+    return _common_dir(repo) / "aelfrice" / "stores" / name / "memory.db"
+
+
+def _repo_store(repo: Path) -> Path:
+    return _common_dir(repo) / "aelfrice" / "memory.db"
+
+
+def test_a_commit_in_a_marker_folder_lands_in_that_store(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _stage(marked_repo, "project-a/notes.txt")
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    hk.git_hook_ingest(rev, str(marked_repo))
+    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 1
+    assert _commit_sessions(_named_store(marked_repo, "project-b")) == 0
+    assert not _repo_store(marked_repo).exists()
+
+
+def test_a_commit_spanning_stores_lands_in_each(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _stage(marked_repo, "project-b/b.txt")
+    _stage(marked_repo, "top.txt")
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    hk.git_hook_ingest(rev, str(marked_repo))
+    assert _commit_sessions(_named_store(marked_repo, "project-b")) == 1
+    assert _commit_sessions(_repo_store(marked_repo)) == 1
+    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 0
+
+
+def test_a_broken_marker_skips_the_commit(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    (marked_repo / "project-a" / CONFIG_FILENAME).write_text(
+        "[store]\npath = 3\n", encoding="utf-8",
+    )
+    _stage(marked_repo, "project-a/notes.txt")
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    hk.git_hook_ingest(rev, str(marked_repo))
+    assert not _repo_store(marked_repo).exists()
+    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 0
+
+
+def test_a_deleted_folder_resolves_from_its_nearest_existing_parent(
+    marked_repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _stage(marked_repo, "project-a/gone/x.txt")
+    _commit_staged(marked_repo, "seed")
+    _git("rm", "-q", "-r", "project-a/gone", cwd=marked_repo)
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    hk.git_hook_ingest(rev, str(marked_repo))
+    assert _commit_sessions(_named_store(marked_repo, "project-a")) == 1
+    assert not (env / "home" / ".aelfrice" / "memory.db").exists()
+
+
+# --- hook entry points with a broken marker -----------------------------------
+
+
+_HOOKS = [
+    "aelf-hook", "aelf-transcript-logger", "aelf-pre-compact-hook",
+    "aelf-commit-ingest", "aelf-search-tool-hook", "aelf-agent-context-hook",
+    "aelf-session-start-hook", "aelf-stop-hook", "aelf-pre-issue-hook",
+    "aelf-claude-memory-mirror",
+]
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("hook", _HOOKS)
+def test_a_hook_with_a_broken_marker_exits_0_and_writes_no_store(
+    env: Path, hook: str,
+) -> None:
+    import json
+    import sys
+
+    script = Path(sys.executable).parent / hook
+    if not script.exists():
+        pytest.skip(f"{hook} is not installed next to the interpreter")
+    repo = _init_repo(env / "repo")
+    folder = repo / "proj"
+    folder.mkdir()
+    (folder / CONFIG_FILENAME).write_text("[store]\npath = 3\n", encoding="utf-8")
+    payload = {
+        "hook_event_name": "UserPromptSubmit", "session_id": "s",
+        "cwd": str(folder), "prompt": "probe the store marker",
+        "source": "startup", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m x"}, "tool_response": {},
+    }
+    child_env = {
+        k: v for k, v in os.environ.items()
+        if not k.startswith(("AELFRICE_", "AELF_", "GIT_"))
+    }
+    child_env["HOME"] = str(env / "home")
+    child_env["USERPROFILE"] = str(env / "home")
+    result = subprocess.run(
+        [str(script)], input=json.dumps(payload), capture_output=True,
+        text=True, cwd=folder, env=child_env, timeout=90,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not _repo_store(repo).exists()
+    assert not (env / "home" / ".aelfrice" / "memory.db").exists()
