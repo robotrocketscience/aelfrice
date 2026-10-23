@@ -194,6 +194,8 @@ PRECISION_DROP_BAR: Final[float] = 0.05
 """H5: largest allowed drop in an arm's precision share against A0."""
 PROXY_OVERLAP_BAR: Final[float] = 0.6
 """Usage proxy: share of a belief's stems a later turn must hold."""
+BAR_TOLERANCE: Final[float] = 1e-9
+"""Float slack for a figure that lands exactly on a bar, such as 0.8 - 0.75."""
 
 BOOTSTRAP_RESAMPLES: Final[int] = 10_000
 """Paired bootstrap resamples of the prompts for the 95% interval."""
@@ -1015,6 +1017,11 @@ def paired_bootstrap_ci(gains: Sequence[float], seed: int,
     return lo, hi
 
 
+def at_most(value: float, bar: float) -> bool:
+    """`value <= bar`, counting a value within `BAR_TOLERANCE` of the bar as on it."""
+    return value <= bar + BAR_TOLERANCE
+
+
 def gain_verdict(mean: float, ci: tuple[float, float], share: float) -> str:
     """H2/H3 bars: kill when the mean is under `GAIN_KILL` or the interval holds 0."""
     if mean < GAIN_KILL or ci[0] <= 0.0 <= ci[1]:
@@ -1071,7 +1078,7 @@ def arm_figures(
         "precision": precision, "precision_a0": precision_a0, "precision_drop": drop,
         "gain_verdict": gain_verdict(mean, ci, share) if sufficient else V_INSUFFICIENT,
         "h5_verdict": (
-            (V_PASS if drop <= PRECISION_DROP_BAR else V_FAIL) if sufficient else V_INSUFFICIENT
+            (V_PASS if at_most(drop, PRECISION_DROP_BAR) else V_FAIL) if sufficient else V_INSUFFICIENT
         ),
     }
     if arm == ARM_A3:

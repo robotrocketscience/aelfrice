@@ -621,6 +621,16 @@ def test_a_zero_gain_fails_and_a_precision_drop_blocks() -> None:
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
 
 
+def test_a_precision_drop_of_exactly_the_bar_passes_h5() -> None:
+    # #1795 H5 kills only a drop above 0.05. 0.8 - 0.75 is 0.05 plus float error.
+    on_bar = _score(_hand([8, 8, 8, 8], [7, 8, 8, 7]))
+    assert on_bar["arms"]["A1"]["graders"][0]["precision_drop"] == _approx(0.05)
+    assert on_bar["hypotheses"]["H5"] == {"A1": bench.V_PASS}
+    over = _score(_hand([8, 8, 8, 8], [7, 7, 8, 7]))
+    assert over["arms"]["A1"]["graders"][0]["precision_drop"] == _approx(0.075)
+    assert over["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
+
+
 def test_an_interval_holding_zero_kills_the_gain() -> None:
     rep = _score(_hand([2, 2, 2, 2], [6, 2, 2, 0]))
     g = rep["arms"]["A1"]["graders"][0]
