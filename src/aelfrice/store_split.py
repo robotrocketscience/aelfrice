@@ -411,6 +411,23 @@ def _belief_folders(
     }
 
 
+def _store_key(
+    selection: StoreSelection, known: list[tuple[str, StoreSelection]],
+) -> tuple[str, StoreSelection]:
+    """The target key and selection for the store `selection` names.
+
+    Two markers can name one store under two spellings, such as `a/` and
+    `b/` that both say `../shared`, so a store already seen that is the
+    same file (`same_store_file`) keeps its key and its selection.
+    """
+    for key, seen in known:
+        if same_store_file(seen.path, selection.path):
+            return key, seen
+    entry = (str(selection.path), selection)
+    known.append(entry)
+    return entry
+
+
 def _route(
     work_tree: Path,
     source: Path,
@@ -426,7 +443,8 @@ def _route(
     """
     not_copied = {reason: 0 for reason in UNROUTED_REASONS}
     targets: dict[str, tuple[StoreSelection, set[str]]] = {}
-    selections: dict[Path, StoreSelection] = {}
+    selections: dict[Path, tuple[str, StoreSelection]] = {}
+    known: list[tuple[str, StoreSelection]] = []
     for bid in ids:
         reason, folders = _belief_folders(
             work_tree, ingested.get(bid, []), anchored.get(bid, set()),
@@ -437,8 +455,11 @@ def _route(
         chosen: dict[str, StoreSelection] = {}
         for folder in sorted(folders):
             if folder not in selections:
-                selections[folder] = resolve_store_in_work_tree(folder, work_tree)
-            chosen.setdefault(str(selections[folder].path), selections[folder])
+                selections[folder] = _store_key(
+                    resolve_store_in_work_tree(folder, work_tree), known,
+                )
+            key, selection = selections[folder]
+            chosen.setdefault(key, selection)
         if len(chosen) != 1:
             not_copied[SKIP_SEVERAL_STORES] += 1
             continue

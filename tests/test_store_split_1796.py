@@ -355,6 +355,35 @@ def test_a_belief_whose_files_resolve_to_two_stores_is_skipped(
     assert not_copied["several_stores"] == 1
 
 
+def test_two_markers_that_name_one_store_are_one_target(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`c/` and `d/` both name `../shared`: one store under two spellings,
+    so a belief in both folders is copied, and an edge between them lands
+    in the dry run and in `--apply` alike."""
+    _marker(repo / "c", "../shared")
+    _marker(repo / "d", "../shared")
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        both = _ingest(src, "doc:c/x.md:p1", _text(1), "s1")
+        assert _ingest(src, "doc:d/y.md:p1", _text(1), "s1") == both
+        in_c = _ingest(src, "doc:c/z.md:p0", _text(2), "s1")
+        in_d = _ingest(src, "doc:d/w.md:p0", _text(3), "s1")
+        assert src.insert_edge(Edge(in_c, in_d, EDGE_RELATES_TO, 0.5))
+    finally:
+        src.close()
+    for flags in ((), ("--apply",)):
+        report = _report(repo, *flags, capsys=capsys)
+        target = _only_target(report)
+        assert target["copied"]["beliefs"] == 3, flags
+        assert target["copied"]["edges"] == 1, flags
+        not_copied = cast("dict[str, int]", report["not_copied"])
+        assert not_copied["several_stores"] == 0, flags
+    got = _rows(repo / "shared" / "memory.db")
+    assert {r[0] for r in got["beliefs"]} == {both, in_c, in_d}
+
+
 # --- dry run ---------------------------------------------------------------
 
 
