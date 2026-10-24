@@ -767,6 +767,21 @@ def test_a3_appends_the_pmi_words_to_the_query(
     assert "rel" in out["prompts"][0]["ranked"]
 
 
+def test_a3_expands_the_conversation_aware_query(tmp_path: Path) -> None:
+    # #1795 registers A3 as a PMI expansion of the query terms, and the
+    # query holds the earlier turns. Only the context names `kestrel`.
+    path = tmp_path / "pmi.db"
+    s = MemoryStore(str(path))
+    for i, text in enumerate(_pmi_texts()):
+        _add(s, f"b{i:02d}", text)
+    s.close()
+    prompt: dict[str, Any] = {"prompt_id": "p", "text": "where does it nest",
+                              "context": [{"role": "user", "text": "the kestrel"}]}
+    assert bench.PMIExpander(_pmi_texts()).expand(prompt["text"]) == []
+    row = bench.run_arm(path, [prompt], bench.ARM_A3, tmp_path)["prompts"][0]
+    assert row["added_terms"] == ["falconries", "aglet"]
+
+
 def test_a3_without_pmi_words_ranks_like_a0(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

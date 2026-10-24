@@ -53,8 +53,10 @@ subcommand at that copy.
   A1W against A0 measures the writers alone, and A1 against A1W the lane.
 - `A2`: `AELFRICE_HRR_EXPAND=1`, probing `PROBE_KINDS_A2` instead of the
   lane's default kinds.
-- `A3`: the prompt's top PMI neighbors from the copy's own belief texts,
-  appended to the query, then retrieval with defaults.
+- `A3`: the top PMI neighbors of the query's stems, from the copy's own
+  belief texts, appended to the query, then retrieval with defaults. The
+  query is the conversation-aware one, so the earlier turns' stems expand
+  too.
 
 Every arm runs with each `AELFRICE_*` and `AELF_*` variable removed from
 the environment, then sets only the variables the arm needs. The working
@@ -214,7 +216,7 @@ DEFAULT_MAX_PROMPTS: Final[int] = 40
 # counts once per belief. A stem, and a stem pair, must occur in at least
 # `PMI_MIN_COUNT` beliefs. A stem in more than `PMI_MAX_DF_SHARE` of the
 # beliefs neither expands nor is added, which keeps function words out. Each
-# prompt stem contributes its `PMI_TOP_N_PER_TERM` strongest positive-PMI
+# query stem contributes its `PMI_TOP_N_PER_TERM` strongest positive-PMI
 # neighbors, and the query gains at most `PMI_MAX_ADDED` words in all.
 PMI_MIN_COUNT: Final[int] = 3
 PMI_MAX_DF_SHARE: Final[float] = 0.10
@@ -694,7 +696,7 @@ def read_prompts(path: Path) -> list[dict[str, Any]]:
 
 
 class PMIExpander:
-    """Deterministic PMI neighbors of a prompt's stems over a belief corpus.
+    """Deterministic PMI neighbors of a query's stems over a belief corpus.
 
     `PMI(x, y) = log(N * c(x, y) / (c(x) * c(y)))`, where `N` is the
     number of beliefs, `c(x)` the number holding stem `x`, and `c(x, y)`
@@ -763,9 +765,9 @@ class PMIExpander:
         self._cache[stem] = out
         return out
 
-    def expand(self, prompt: str) -> list[str]:
-        """Surface words to append to the query for `prompt`, strongest first."""
-        q = set(tokenize_stemmed(prompt))
+    def expand(self, query: str) -> list[str]:
+        """Surface words to append to `query`, strongest first."""
+        q = set(tokenize_stemmed(query))
         best: dict[str, tuple[float, int]] = {}
         for stem in sorted(q):
             picked = [r for r in self.neighbors(stem) if r[0] not in q][: self.top_n_per_term]
@@ -859,7 +861,7 @@ def run_arm(
                 query = hook_query(p)
                 row: dict[str, Any] = {"prompt_id": p["prompt_id"], "prompt": p["text"]}
                 if expander is not None:
-                    added = expander.expand(str(p["text"]))
+                    added = expander.expand(query)
                     row["added_terms"] = added
                     if added:
                         query = f"{query} {' '.join(added)}"
