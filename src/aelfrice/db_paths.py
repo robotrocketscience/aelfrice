@@ -613,6 +613,30 @@ def _resolve(start: Path | None, git_start: Path | None) -> StoreSelection:
     return StoreSelection(DEFAULT_DB_DIR / DEFAULT_DB_FILENAME, STORE_RULE_GLOBAL)
 
 
+def repository_store_path(root: Path) -> Path | None:
+    """The store the `git` rule names for the work tree at `root`.
+
+    That is `<git-common-dir>/aelfrice/memory.db`, or None when `root` is
+    in no git repository. Neither `AELFRICE_DB` nor a `[store]` marker is
+    read, so this names the repository store even where either would
+    choose another. `aelf store split` copies out of this store (#1796).
+    """
+    git_dir = _git_common_dir(root)
+    if git_dir is None:
+        return None
+    return git_dir / _REPO_STORE_PARENT_DIRNAME / DEFAULT_DB_FILENAME
+
+
+def same_store_file(a: Path, b: Path) -> bool:
+    """True when store paths `a` and `b` name one store file.
+
+    Compared by file identity when both directories exist, so a symlink
+    or a different letter case on a case-insensitive filesystem still
+    matches.
+    """
+    return _same_file(a, b)
+
+
 def db_path(start: Path | None = None) -> Path:
     """Resolve the DB path. `resolve_store()` holds the resolution order.
 
