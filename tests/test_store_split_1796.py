@@ -964,6 +964,30 @@ def test_an_unreadable_folder_in_the_work_tree_is_passed_over(
             folder.chmod(0o755)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_the_marker_walk_skips_a_folder_whose_git_entry_it_cannot_check(
+    env: Path,
+) -> None:
+    """A folder it can list but not search may hide a `.git` entry, so
+    the walk doesn't enter it."""
+    walks_into = store_split._walks_into  # pyright: ignore[reportPrivateUsage]
+    plain, listable, sealed = env / "plain", env / "listable", env / "sealed"
+    for folder in (plain, listable, sealed):
+        folder.mkdir()
+    listable.chmod(0o444)
+    sealed.chmod(0)
+    try:
+        assert walks_into(plain)
+        assert not walks_into(listable)
+        assert not walks_into(sealed)
+    finally:
+        listable.chmod(0o755)
+        sealed.chmod(0o755)
+
+
 def test_apply_refuses_while_aelfrice_db_is_set(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
