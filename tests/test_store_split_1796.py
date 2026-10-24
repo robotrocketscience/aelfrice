@@ -23,6 +23,7 @@ import pytest
 from aelfrice import cli, db_paths, store_split
 from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.derivation_worker import run_worker
+from aelfrice.doc_linker_types import ANCHOR_MANUAL
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
@@ -382,6 +383,28 @@ def test_two_markers_that_name_one_store_are_one_target(
         assert not_copied["several_stores"] == 0, flags
     got = _rows(repo / "shared" / "memory.db")
     assert {r[0] for r in got["beliefs"]} == {both, in_c, in_d}
+
+
+def test_a_document_anchor_adds_its_folder(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An anchor whose path differs from the ingest row's counts too: a
+    belief ingested from `b/` and anchored in `a/` spans two stores."""
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        bid = _ingest(src, "doc:b/x.md:p0", _text(1), "s1")
+        src.link_belief_to_document(  # pyright: ignore[reportUnknownMemberType]
+            belief_id=bid, doc_uri="file:doc:a/docs/x.md:p0",
+            anchor_type=ANCHOR_MANUAL, position_hint=None,
+        )
+    finally:
+        src.close()
+    report = _report(repo, capsys=capsys)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["several_stores"] == 1
+    assert not_copied["source_store"] == 0
 
 
 # --- dry run ---------------------------------------------------------------
