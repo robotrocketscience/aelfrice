@@ -7808,7 +7808,8 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
     when the command refuses to run: `--apply` with `AELFRICE_DB` set, a
     `--path` that is no folder, a folder outside a git work tree, no
     repository store, or a broken marker anywhere in the work tree
-    (raised as `StoreMarkerError`, which `main` reports).
+    (`StoreMarkerError`, caught here so every error from this command
+    has one prefix).
     """
     from aelfrice.store_split import (  # noqa: PLC0415
         SplitError,
@@ -7826,7 +7827,7 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
         )
     try:
         report = split_store(start, apply=bool(args.apply))
-    except SplitRefused as exc:
+    except (SplitRefused, StoreMarkerError) as exc:
         print(f"aelf store split: {exc}", file=sys.stderr)
         return 2
     except SplitError as exc:

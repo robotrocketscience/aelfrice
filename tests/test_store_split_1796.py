@@ -641,6 +641,7 @@ def test_a_broken_marker_anywhere_aborts_before_writing(
     code, out, err = _run(repo, "--apply", capsys=capsys)
     assert code == 2
     assert "store.db" in err and out == ""
+    assert err.startswith("aelf store split: "), err
     assert _file_hash(_source_path(repo)) == before
     assert not _target_path(repo).parent.exists()
 
