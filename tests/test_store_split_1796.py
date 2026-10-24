@@ -413,6 +413,40 @@ def test_two_markers_that_name_one_store_are_one_target(
     assert {r[0] for r in got["beliefs"]} == {both, in_c, in_d}
 
 
+def test_a_store_seen_first_keeps_its_spelling_and_marker(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`c/` resolves first, for a belief that also spans `e/` and so lands
+    nowhere. The target that `d/`'s belief then reaches is the same file,
+    and the report names it as `c/` spelled it, with `c/`'s marker."""
+    c_marker = _marker(repo / "c", "../shared")
+    _marker(repo / "d", "../shared")
+    _marker(repo / "e", "../other")
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        for bid, text, rels in (
+            ("aaaaaaaaaaaaaa1", _text(1), ("c/x.md", "e/y.md")),
+            ("bbbbbbbbbbbbbb1", _text(2), ("d/w.md",)),
+        ):
+            src.insert_belief(_plain(bid, text))
+            for rel in rels:
+                src.record_ingest(
+                    source_kind=INGEST_SOURCE_FILESYSTEM,
+                    source_path=f"doc:{rel}:p0", raw_text=text,
+                    session_id="s1", ts=_TS, derived_belief_ids=[bid],
+                )
+    finally:
+        src.close()
+    report = _report(repo, capsys=capsys)
+    target = _only_target(report)
+    assert target["store"] == str(repo / "c" / "../shared" / "memory.db")
+    assert target["marker"] == str(c_marker)
+    assert target["copied"]["beliefs"] == 1
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["several_stores"] == 1
+
+
 def test_a_document_anchor_adds_its_folder(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
