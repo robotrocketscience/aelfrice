@@ -1390,6 +1390,18 @@ def test_a_failed_h0_makes_both_halves_of_the_h2_split_unreliable() -> None:
         assert rep["arms"]["A1"]["vs_A1W"]["gain_verdict"] == bench.V_UNRELIABLE
 
 
+def test_an_unclear_null_item_is_left_out_of_the_null_rate() -> None:
+    # 5 null items: relevant, unclear, and 3 not relevant. The rate is 1 of
+    # the 4 graded, 0.25, over the 0.20 ceiling. Counting the unclear one
+    # would give 1 of 5, on the ceiling.
+    labels: list[bool | None] = [True, None, False, False, False]
+    rows: list[Row] = [(f"n{k}", "p0", None, False, v, v) for k, v in enumerate(labels)]
+    rep = _score(rows)
+    assert rep["null_arm"][0]["graded"] == 4
+    assert rep["null_arm"][0]["rate"] == _approx(0.25)
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+
+
 def test_a_null_rate_on_the_ceiling_holds_h0() -> None:
     on = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=2))
     assert on["null_arm"][0]["rate"] == _approx(0.2)
