@@ -1453,6 +1453,42 @@ The transcript log for a marker store, `transcripts/turns.jsonl`, sits beside th
 
 `aelf uninstall` deletes a marker store's `memory.db`. It reports the files beside it as orphaned rather than deleting them, because only a directory named `aelfrice` or `.aelfrice` is recognized as aelfrice's own.
 
+### Split an existing store
+
+When you add a `[store]` marker to a folder of a repository that already has beliefs, the beliefs ingested from that folder's files stay in the repository store. `aelf store split` copies them into the folder's store:
+
+```bash
+aelf store split           # dry run: report what it would copy
+aelf store split --apply   # copy
+```
+
+The command works on the git work tree that holds the current folder, or the folder you pass with `--path DIR`. It's a dry run unless you pass `--apply`. For each marker store, the report gives the number of beliefs and other rows it copies, or would copy, and the number of beliefs it skips, by reason. It also counts the beliefs that no marker store receives. `--json` prints the same report as JSON.
+
+The command copies and doesn't move. It opens the repository store read-only and never writes to it, so a belief it copies stays in the repository store too. The source is always the repository store, `<git-common-dir>/aelfrice/memory.db`, whatever store the current folder uses.
+
+A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, or a nested repository, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
+
+| Reason | Meaning |
+|---|---|
+| `no_file_source` | The belief has no document or docstring source. |
+| `no_root` | The belief's ingest records don't name one absolute onboard folder. `/aelf:onboard` records that folder; `aelf onboard <path>` run without `--emit-candidates` doesn't, and a relative `<path>` names no absolute folder. |
+| `outside_work_tree` | The onboard folder isn't inside this work tree, such as one from another worktree. |
+| `several_stores` | The belief's files are in folders with different stores. |
+| `source_store` | The folder's store is the repository store, so the belief stays there. |
+
+A copy keeps the belief's id and gets the target store's identity in its `project_context`. It brings the belief's document anchors, feedback history, and corroborations with it. An edge or a support-evidence row comes along when both of its beliefs land in the target store, either as copies or because the target already holds them. The command doesn't copy injection events, belief touches, the deferred-feedback queue, sessions, or ingest records, so the copied beliefs have no ingest history in the target store.
+
+For each target store, the command skips these beliefs and counts them by reason:
+
+| Reason | Meaning |
+|---|---|
+| `already_present` | The target store already holds a belief with the same id or the same content. |
+| `locked` | You locked the belief. A lock keeps an empty `project_context` so it applies under every context, and a copy would restamp it. Lock the statement again from inside the folder. |
+| `retired` | The belief is retired. A copy would make it searchable again. |
+| `superseded` | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
+
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were, and the command exits with status 1. A second `--apply` copies nothing, because every belief is already present. A broken marker anywhere in the work tree stops the command with exit status 2 before it writes anything. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker; a dry run with it set prints a warning and finds no marker store.
+
 ## User lock store: `AELFRICE_USER_DB`
 
 A user-scope lock, written with `aelf lock --user`, lives in a store that every repository and every worktree shares ([#1681](https://github.com/robotrocketscience/aelfrice/issues/1681)). By default that store is `~/.aelfrice/user/memory.db`. To put it somewhere else, set `AELFRICE_USER_DB` to the file path.
