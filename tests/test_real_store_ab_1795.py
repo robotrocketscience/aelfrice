@@ -231,6 +231,17 @@ def test_sample_cli_writes_the_rows(tmp_path: Path) -> None:
     assert {"prompt_id", "text", "session_id", "turn_id", "ts", "seq", "context"} <= set(rows[0])
 
 
+def test_sample_takes_at_most_40_prompts_per_store_by_default(tmp_path: Path) -> None:
+    # #1795 registers a seeded sample of at most 40 prompts per store.
+    path = _store(tmp_path)
+    live = [_turn("user", f"question number {i} about python deps speed", "s1", i)
+            for i in range(45)]
+    _write_transcripts(path, [], live)
+    out = tmp_path / "prompts.jsonl"
+    assert bench.main(["sample", "--store", str(path), "--seed", "3", "--out", str(out)]) == 0
+    assert len(bench.read_prompts(out)) == 40
+
+
 # --- Run: arms and isolation -------------------------------------------------
 
 
