@@ -243,7 +243,7 @@ def test_only_beliefs_with_a_file_source_are_copied(
     assert target["copied"]["beliefs"] == 2
     assert report["not_copied"] == {
         "no_file_source": 2, "no_root": 0, "outside_work_tree": 0,
-        "several_stores": 0, "source_store": 0,
+        "missing_root": 0, "several_stores": 0, "source_store": 0,
     }
 
 
@@ -332,6 +332,34 @@ def test_an_onboard_root_below_a_nested_worktree_root_is_outside(
     assert not_copied["outside_work_tree"] == 1
     root_store = repo / ".aelfrice" / "store" / "memory.db"
     assert {r[0] for r in _rows(root_store)["beliefs"]} == {here}
+
+
+def test_an_onboard_root_in_a_removed_nested_worktree_is_not_copied(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`git worktree remove` deletes the folder and its `.git` entry, so
+    the root no longer looks like a worktree. Its belief must not fall to
+    the marker above it, and the root counts as missing."""
+    _marker(repo, "git:whole")
+    _git(
+        "-c", "user.name=t", "-c", "user.email=t@example.com",
+        "commit", "-q", "--allow-empty", "-m", "init", cwd=repo,
+    )
+    _git("worktree", "add", "-q", ".wt/x", cwd=repo)
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo / ".wt" / "x", "s-x")
+        _ingest(src, "doc:a/docs/x.md:p1", _text(1), "s-x")
+    finally:
+        src.close()
+    _git("worktree", "remove", "--force", ".wt/x", cwd=repo)
+    assert not (repo / ".wt" / "x").exists()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["missing_root"] == 1
+    assert not_copied["source_store"] == 0
+    assert not (repo / ".git" / "aelfrice" / "stores").exists()
 
 
 def test_the_folder_is_the_deepest_real_folder_in_the_work_tree(

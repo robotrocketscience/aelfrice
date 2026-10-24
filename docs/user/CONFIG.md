@@ -1473,6 +1473,7 @@ A belief is copied only when it has a file source: a paragraph of a document or 
 | `no_file_source` | The belief has no document or docstring source. |
 | `no_root` | The belief's ingest records don't name one absolute onboard folder. Only an onboard run through `--emit-candidates` records the folder, as `/aelf:onboard` does unless it falls back to the regex classifier. `aelf onboard <path>` run without `--emit-candidates` records none. A relative `<path>`, such as `.`, is recorded as given, so the folder isn't absolute. |
 | `outside_work_tree` | The onboard folder isn't inside this work tree, such as one from another worktree. A folder inside a linked worktree or a nested repository counts as outside, even when that worktree sits inside this one. |
+| `missing_root` | The onboard folder, or a folder above it, is gone or can't be read. `git worktree remove` deletes a worktree's folder and its `.git` entry, so the command can't tell a removed worktree from a deleted folder, and it copies neither. |
 | `several_stores` | The belief's files are in folders with different stores. |
 | `source_store` | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
 

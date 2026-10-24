@@ -15,8 +15,10 @@ A belief qualifies only when it has a file source the scanner wrote:
 Every ingest row with a file source must name the same absolute root, or
 the belief is skipped as `no_root`, and a root outside the work tree, or
 inside a linked worktree or nested repository below it, is skipped as
-`outside_work_tree`. The folder is then the deepest real
-folder of `<root>/<rel>` inside the work tree (`db_paths.owning_folder`),
+`outside_work_tree`. A root that is no longer a folder on disk is skipped
+as `missing_root`, because a removed linked worktree leaves no `.git`
+entry to tell it from a deleted folder. The folder is then the deepest
+real folder of `<root>/<rel>` inside the work tree (`db_paths.owning_folder`),
 and the belief is copied only when that folder resolves to a marker store
 other than the repository store.
 
@@ -41,6 +43,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -69,6 +72,7 @@ from aelfrice.store import MemoryStore, read_only_uri
 SKIP_NO_FILE_SOURCE: Final[str] = "no_file_source"
 SKIP_NO_ROOT: Final[str] = "no_root"
 SKIP_OUTSIDE_WORK_TREE: Final[str] = "outside_work_tree"
+SKIP_MISSING_ROOT: Final[str] = "missing_root"
 SKIP_SOURCE_STORE: Final[str] = "source_store"
 SKIP_SEVERAL_STORES: Final[str] = "several_stores"
 SKIP_ALREADY_PRESENT: Final[str] = "already_present"
@@ -81,6 +85,7 @@ UNROUTED_REASONS: Final[tuple[str, ...]] = (
     SKIP_NO_FILE_SOURCE,
     SKIP_NO_ROOT,
     SKIP_OUTSIDE_WORK_TREE,
+    SKIP_MISSING_ROOT,
     SKIP_SEVERAL_STORES,
     SKIP_SOURCE_STORE,
 )
@@ -368,20 +373,35 @@ def _read_locations(
     return ids, ingested, anchored
 
 
-def _in_other_work_tree(work_tree: Path, under: Path) -> bool:
-    """True when a folder from below `work_tree` down to `work_tree /
-    under` holds a `.git` entry.
+def _root_skip(work_tree: Path, under: Path) -> str | None:
+    """Why the onboard root `work_tree / under` can't place a belief, or
+    None when it can.
 
-    The onboard root is then in a linked worktree, a nested repository,
-    or a submodule. A linked worktree shares the repository store, but
-    its files belong to its own work tree and its own markers.
+    Each folder from below `work_tree` down to the root must be a folder
+    with no `.git` entry. A `.git` entry puts the root in a linked
+    worktree, a nested repository, or a submodule (`outside_work_tree`).
+    A linked worktree shares the repository store, but its files belong
+    to its own work tree and its own markers. A folder that is gone or
+    can't be read gives `missing_root`: `git worktree remove` deletes the
+    folder and its `.git` entry, so a removed worktree looks like any
+    deleted folder, and its beliefs must not fall to a marker above it.
     """
     current = work_tree
     for part in under.parts:
         current = current / part
-        if (current / WORKTREE_MARKER).exists():
-            return True
-    return False
+        try:
+            if not stat.S_ISDIR(os.stat(current).st_mode):
+                return SKIP_MISSING_ROOT
+        except OSError:
+            return SKIP_MISSING_ROOT
+        try:
+            os.lstat(current / WORKTREE_MARKER)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            return SKIP_MISSING_ROOT
+        return SKIP_OUTSIDE_WORK_TREE
+    return None
 
 
 def _belief_folders(
@@ -404,8 +424,9 @@ def _belief_folders(
         under = Path(*root.relative_to(work_tree).parts)
     except ValueError:
         return SKIP_OUTSIDE_WORK_TREE, set()
-    if _in_other_work_tree(work_tree, under):
-        return SKIP_OUTSIDE_WORK_TREE, set()
+    skip = _root_skip(work_tree, under)
+    if skip is not None:
+        return skip, set()
     return None, {
         owning_folder(work_tree, str(under / rel)) for rel in sorted(rels)
     }
@@ -793,6 +814,7 @@ _LABELS: Final[dict[str, str]] = {
     SKIP_NO_FILE_SOURCE: "no file source",
     SKIP_NO_ROOT: "no root",
     SKIP_OUTSIDE_WORK_TREE: "outside the work tree",
+    SKIP_MISSING_ROOT: "missing root",
     SKIP_SEVERAL_STORES: "several stores",
     SKIP_SOURCE_STORE: "stays in the repository store",
     SKIP_ALREADY_PRESENT: "already present",
