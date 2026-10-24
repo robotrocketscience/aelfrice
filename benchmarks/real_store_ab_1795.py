@@ -66,6 +66,22 @@ there are none, as in the hook). The hook reads those turns from the
 live log while the prompt is submitted, so the recorded context is an
 approximation of what it saw.
 
+**Judged sets.** The 2026-10-23 amendment to the #1795 pre-registration,
+made before any measurement, sets which beliefs each verdict counts:
+
+- H2, H3, H4, and `H2_split`: graded-relevant beliefs in each arm's whole
+  packed non-locked result, which the hook injects. The paired gain per
+  prompt, its 95% interval, and the share of prompts gaining one decide
+  them, and H4's bridging share counts A3's relevant additions to that
+  result. The gain over each arm's top 10 is reported as
+  `top10_mean_gain`, `top10_ci95`, and `top10_share_gaining`, and decides
+  nothing.
+- H5: each arm's top 10 non-locked beliefs.
+- H6: the usage proxy's gain over the packed result, against each
+  grader's packed gain.
+- H0: the null arm, drawn from active non-locked beliefs no arm packed
+  for the prompt.
+
 **Data.** Prompt files, run files, packets, keys, labels, and proxy files
 hold user text or ids from a real store. Keep them out of the repository.
 
@@ -1235,6 +1251,12 @@ def score(
     census_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """H0 to H6 from the key, two graders' labels, and the optional proxy and census.
+
+    Under the 2026-10-23 amendment to #1795, H2, H3, H4, and `H2_split`
+    decide on graded-relevant beliefs in each arm's whole packed result,
+    H4's bridging share counts A3's relevant additions to it, and H6
+    compares the proxy's gain sign with each grader's over it. H5 decides
+    on the top 10s. Each grader's `top10_` gain figures decide nothing.
 
     Each grader is scored on its own labels, and an arm passes only when
     both graders pass it. A grader with fewer than `MIN_GRADED` graded

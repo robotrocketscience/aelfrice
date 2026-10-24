@@ -1362,6 +1362,14 @@ def test_the_bars_are_the_pre_registered_ones() -> None:
     assert bench.BOOTSTRAP_RESAMPLES == 10_000
 
 
+def test_the_docstrings_cite_the_amendment_and_its_judged_sets() -> None:
+    for doc in (bench.__doc__, bench.score.__doc__):
+        text = " ".join((doc or "").split())
+        assert "2026-10-23 amendment" in text
+        assert "H2, H3, H4, and `H2_split`" in text and "whole packed" in text
+        assert "H5" in text and "top 10" in text
+
+
 def test_h6_compares_the_proxy_sign_with_each_grader() -> None:
     rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
     proxy = {"prompts": [{"arms": {
