@@ -589,6 +589,37 @@ def test_apply_skips_a_present_id_or_hash_and_a_second_apply_copies_nothing(
     assert _rows(_target_path(repo)) == after_first
 
 
+def test_a_present_belief_brings_no_feedback_or_corroboration(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rows of a belief skipped as already present stay behind."""
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        a1 = _ingest(src, "doc:a/docs/x.md:p0", _text(1), "s1")
+        src.insert_feedback_event(a1, 1.0, "test", _TS)
+        src.record_corroboration(
+            a1, source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+            session_id="s1", ts=_TS,
+        )
+        belief = src.get_belief(a1)
+    finally:
+        src.close()
+    assert belief is not None
+    t = _open_target(repo)
+    try:
+        t.insert_belief(belief)
+    finally:
+        t.close()
+    before = _rows(_target_path(repo))
+    target = _only_target(_report(repo, "--apply", capsys=capsys))
+    assert target["skipped"]["already_present"] == 1
+    assert all(n == 0 for n in target["copied"].values()), target
+    after = _rows(_target_path(repo))
+    for table in ("feedback_history", "belief_corroborations"):
+        assert after[table] == before[table], table
+
+
 def test_a_failure_mid_copy_leaves_the_target_unchanged(
     repo: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
