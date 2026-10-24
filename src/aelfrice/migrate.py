@@ -296,6 +296,18 @@ def migrate(
     )
 
 
+def copy_belief(target: MemoryStore, belief: Belief) -> None:
+    """Insert `belief` into `target` under its own id.
+
+    For a copy between two stores, such as `aelf store split` (#1796).
+    The insert runs here, in a module the write-log gate allows to call
+    `insert_belief` directly, because a copy has no ingest row of its own
+    to derive the belief from. The caller checks first that neither the
+    id nor the content hash is in `target`.
+    """
+    target.insert_belief(belief)
+
+
 IN_PLACE_BACKUP_SUFFIX: Final[str] = ".pre-v1x.bak"
 
 

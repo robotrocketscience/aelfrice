@@ -41,8 +41,8 @@ reimplements the constituent-key hash of `wonder.lifecycle` inline, and the comm
 understates how often the code works around the ordering. The converse also holds: not every deferred import
 is an inversion. `store.py` defers `federation` only for the cost of the import, and the comment at that site
 records that `federation` is a leaf module that imports nothing from `store`. That deferral keeps
-`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 33
-modules against the 141 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
+`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 34
+modules against the 142 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
 
 | Module | Responsibility |
 |---|---|
@@ -59,6 +59,7 @@ modules against the 141 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `health.py` | The v1.0 regime classifier (`supersede`, `ignore`, `mixed`, `insufficient_data`), surfaced by `aelf regime`. |
 | `auditor.py` | A read-only structural auditor. It checks orphan threads, FTS5 synchronization, locked contradictions, and corpus volume, and it backs `aelf health`. |
 | `migrate.py` | A one-shot port from the legacy global DB into the per-project DB. Reads the source with SQLite `mode=ro`. Backs `aelf migrate`. |
+| `store_split.py` | Copies the beliefs with a file source under a `[store]` marker folder from the repository store into that folder's store. Reads the source with SQLite `mode=ro`. Backs `aelf store split`. |
 | `doctor.py` | A settings linter. It walks every `command` in `settings.json`, verifies that each one resolves, and special-cases a `bash <script>` wrapper. Backs `aelf doctor`. |
 | `lifecycle.py` | The update notifier (a background check against PyPI), the uninstall code, and the archive encryption. |
 | `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). Writes one JSONL line per turn under `<git-common-dir>/aelfrice/transcripts/`. |
