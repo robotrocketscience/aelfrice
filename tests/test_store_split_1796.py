@@ -670,6 +670,20 @@ def test_a_folder_outside_a_work_tree_is_refused(
     assert "not in a git work tree" in err
 
 
+def test_a_path_that_is_a_file_or_missing_is_refused_as_such(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The refusal names the real problem, not a missing work tree."""
+    marker = repo / "a" / CONFIG_FILENAME
+    code, _, err = _run(marker, capsys=capsys)
+    assert code == 2
+    assert f"{marker} is not a folder" in err
+    missing = repo / "a" / "missing"
+    code, _, err = _run(missing, capsys=capsys)
+    assert code == 2
+    assert f"no folder at {missing}" in err
+
+
 # --- the source store ------------------------------------------------------
 
 

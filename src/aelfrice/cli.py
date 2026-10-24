@@ -7805,9 +7805,10 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
     from the repository store into that folder's store. A dry run unless
     `--apply`. Exits 0 on success, 1 when a target store can't be read
     or its copy failed, or the repository store can't be read, and 2
-    when the command refuses to run: `--apply` with `AELFRICE_DB` set, a folder outside a
-    git work tree, no repository store, or a broken marker anywhere in
-    the work tree (raised as `StoreMarkerError`, which `main` reports).
+    when the command refuses to run: `--apply` with `AELFRICE_DB` set, a
+    `--path` that is no folder, a folder outside a git work tree, no
+    repository store, or a broken marker anywhere in the work tree
+    (raised as `StoreMarkerError`, which `main` reports).
     """
     from aelfrice.store_split import (  # noqa: PLC0415
         SplitError,

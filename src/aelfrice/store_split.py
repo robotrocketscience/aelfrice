@@ -749,6 +749,12 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
             "--apply refuses to run while AELFRICE_DB is set, because it "
             "hides every [store] marker; unset it and run again",
         )
+    # git runs with `start` as its working directory, which fails for a
+    # file or a missing path, so name that problem first.
+    if not start.exists():
+        raise SplitRefused(f"no folder at {start}")
+    if not start.is_dir():
+        raise SplitRefused(f"{start} is not a folder")
     work_tree = work_tree_root(start)
     if work_tree is None:
         raise SplitRefused(f"{start} is not in a git work tree")
