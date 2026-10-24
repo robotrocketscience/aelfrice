@@ -961,6 +961,18 @@ def test_a_belief_in_any_arms_top_ten_is_judged(tmp_path: Path) -> None:
     assert by["seed"] == {"A0": 1, "A1": 12}
 
 
+def test_a_belief_only_the_control_packed_past_the_top_ten_is_judged(tmp_path: Path) -> None:
+    # A0 packs `seed` at rank 12 and A1 never packs it. The gain subtracts
+    # it, so the packet must judge it although no top 10 holds it.
+    fill = [f"f{i:02d}" for i in range(11)]
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    _rows, key = bench.build_packet(_one_prompt_runs([*fill, "seed"], fill), db, 1)
+    by = {r["belief_id"]: r["arms"] for r in key if r["arms"]}
+    assert by["seed"] == {"A0": 12}
+
+
 def test_the_null_arm_is_sized_by_the_judged_count_not_the_packed_count(
     tmp_path: Path,
 ) -> None:
