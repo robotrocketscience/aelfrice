@@ -884,6 +884,23 @@ def test_a_key_path_that_links_into_the_packet_directory_is_refused(tmp_path: Pa
     assert not (out / "key.jsonl").exists()
 
 
+def test_a_key_path_inside_the_packet_directory_that_links_out_is_refused(
+    tmp_path: Path,
+) -> None:
+    # The link stays in the directory the graders get and reads back the key.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out, elsewhere = tmp_path / "pk", tmp_path / "elsewhere"
+    out.mkdir()
+    elsewhere.mkdir()
+    (out / "key.jsonl").symlink_to(elsewhere / "key.jsonl")
+    (out / "sub").symlink_to(elsewhere, target_is_directory=True)
+    for inside in (out / "key.jsonl", out / "sub" / "key.jsonl"):
+        with pytest.raises(bench.InputError, match="outside"):
+            bench.write_packet(packet, key, out, inside)
+    assert not (elsewhere / "key.jsonl").exists()
+
+
 def test_the_key_guard_follows_the_filesystem_case_rule(tmp_path: Path) -> None:
     # macOS folds case by default, so there `PK/key.jsonl` lands in `pk/`.
     packet = [{"id": "x", "prompt": "p", "belief": "b"}]

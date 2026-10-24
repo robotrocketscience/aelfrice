@@ -1011,10 +1011,12 @@ def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str,
     """
     # Compare directories by file identity, not by path text: a filesystem
     # that folds case, as macOS does by default, sends `PK/` to `pk/`.
-    # Resolve symlinks first, since the write below follows a linked key.
+    # Check the path as given and with its symlinks resolved: a link
+    # outside `out` can send the write in, and a link inside `out` stays
+    # there for the graders to read through.
     out.mkdir(parents=True, exist_ok=True)
-    key_abs = key_path.resolve()
-    if any(d.exists() and d.samefile(out) for d in (key_abs, *key_abs.parents)):
+    spellings = (key_path.absolute(), key_path.resolve())
+    if any(d.exists() and d.samefile(out) for k in spellings for d in (k, *k.parents)):
         raise InputError(f"the key {key_path} must be outside the packet directory {out}")
     (out / "packet.jsonl").write_text(_jsonl(packet), encoding="utf-8")
     (out / "instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
