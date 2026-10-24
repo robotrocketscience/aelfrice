@@ -968,6 +968,29 @@ def test_an_unreadable_folder_in_the_work_tree_is_passed_over(
     sys.platform == "win32" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
 )
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_a_broken_marker_in_a_folder_it_cannot_list_aborts(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """aelfrice reads the marker of a folder it can search but not list,
+    so the check reads it too."""
+    _seed_pair(repo)
+    _marker(repo / "c", "store.db")
+    (repo / "c").chmod(0o111)
+    try:
+        assert store_split._walks_into(repo / "c")  # pyright: ignore[reportPrivateUsage]
+        for flags in ((), ("--apply",)):
+            code, out, err = _run(repo, *flags, capsys=capsys)
+            assert code == 2, (flags, out)
+            assert "store.db" in err and out == "", flags
+    finally:
+        (repo / "c").chmod(0o755)
+    assert not _target_path(repo).parent.exists()
+
+
 def test_the_marker_walk_skips_a_folder_whose_git_entry_it_cannot_check(
     env: Path,
 ) -> None:

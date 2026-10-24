@@ -303,8 +303,18 @@ def check_markers(work_tree: Path) -> None:
     holds the project config file. The walk skips `.git`, nested
     repositories, and symlinked folders, which belong to no folder of
     this work tree.
+
+    A folder it can search but not list still has its own config file
+    read, because aelfrice reads it there by name. The folders inside it
+    can't be named, so they go unchecked.
     """
-    for dirpath, dirnames, filenames in os.walk(work_tree):
+    unlisted: list[Path] = []
+
+    def note_unlisted(exc: OSError) -> None:
+        if exc.filename is not None:
+            unlisted.append(Path(os.fsdecode(exc.filename)))
+
+    for dirpath, dirnames, filenames in os.walk(work_tree, onerror=note_unlisted):
         here = Path(dirpath)
         dirnames[:] = sorted(
             d for d in dirnames
@@ -312,6 +322,12 @@ def check_markers(work_tree: Path) -> None:
         )
         if CONFIG_FILENAME in filenames:
             resolve_store_in_work_tree(here, work_tree)
+    for folder in sorted(unlisted):
+        try:
+            os.lstat(folder / CONFIG_FILENAME)
+        except OSError:
+            continue
+        resolve_store_in_work_tree(folder, work_tree)
 
 
 def _walks_into(folder: Path) -> bool:

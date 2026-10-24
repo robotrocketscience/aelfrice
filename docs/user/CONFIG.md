@@ -1488,7 +1488,7 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | retired | The belief is retired. A copy would make it searchable again. |
 | `superseded` | superseded | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. The check for broken markers passes over a folder you can't read, such as a container's data folder, because aelfrice reads no marker inside it.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. The check for broken markers passes over a folder you can't read, such as a container's data folder, because aelfrice reads no marker inside it. A folder you can open but not list is different: aelfrice reads its `.aelfrice.toml` by name, so the check reads it too. The check can't name the folders inside it, so it doesn't check their markers.
 
 The command exits with one of these statuses:
 
