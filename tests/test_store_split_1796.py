@@ -364,6 +364,34 @@ def test_an_onboard_root_in_a_removed_nested_worktree_is_not_copied(
     assert not (repo / ".git" / "aelfrice" / "stores").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_an_onboard_root_it_cannot_search_is_missing(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A root whose `.git` entry can't be checked may be a worktree, so
+    its belief must not fall to the marker above it."""
+    root = repo / "a" / "docs"
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, root, "s1")
+        _ingest(src, "doc:x.md:p0", _text(1), "s1")
+    finally:
+        src.close()
+    root.chmod(0o644)
+    try:
+        report = _report(repo, "--apply", capsys=capsys)
+    finally:
+        root.chmod(0o755)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["missing_root"] == 1
+    assert not_copied["source_store"] == 0
+    assert not _target_path(repo).parent.exists()
+
+
 def test_the_folder_is_the_deepest_real_folder_in_the_work_tree(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
