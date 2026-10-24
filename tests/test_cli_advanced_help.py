@@ -43,6 +43,7 @@ _ADVANCED_SUBCOMMANDS = [
     "unsetup",
     "upgrade",
     "statusline",
+    "store",
 ]
 
 

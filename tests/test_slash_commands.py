@@ -304,6 +304,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # admission gate batch. Hidden — a handshake entry point that the
     # batch instructions name, not a workflow verb.
     "core-gate",
+    # `store split` (#1796) copies file-sourced beliefs into the stores
+    # that `[store]` markers select. Hidden: a one-shot migration
+    # surface, like `migrate`, not a workflow verb.
+    "store",
 })
 
 

@@ -7797,6 +7797,46 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
         )
 
 
+
+def _cmd_store(args: argparse.Namespace, out: object) -> int:
+    """`aelf store split [--apply] [--json] [--path DIR]` (#1796).
+
+    Copies each belief with a file source under a `[store]` marker folder
+    from the repository store into that folder's store. A dry run unless
+    `--apply`. Exits 0 on success, 1 when a target store's copy failed
+    or the repository store can't be read, and 2 when the command
+    refuses to run: `--apply` with `AELFRICE_DB` set, a folder outside a
+    git work tree, no repository store, or a broken marker anywhere in
+    the work tree (raised as `StoreMarkerError`, which `main` reports).
+    """
+    from aelfrice.store_split import (  # noqa: PLC0415
+        SplitError,
+        SplitRefused,
+        format_report,
+        split_store,
+    )
+
+    start = Path(args.path) if args.path else Path.cwd()
+    if not args.apply and os.environ.get("AELFRICE_DB"):
+        print(
+            "aelf store split: AELFRICE_DB is set and hides every [store] "
+            "marker, so this dry run finds no marker store",
+            file=sys.stderr,
+        )
+    try:
+        report = split_store(start, apply=bool(args.apply))
+    except SplitRefused as exc:
+        print(f"aelf store split: {exc}", file=sys.stderr)
+        return 2
+    except SplitError as exc:
+        print(f"aelf store split: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(report.to_json(), indent=2), file=out)  # type: ignore[arg-type]
+    else:
+        print(format_report(report), file=out)  # type: ignore[arg-type]
+    return 1 if report.failed else 0
+
 def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
     """Ingest one or many JSONL turn-logs into the active project's DB.
 
@@ -11136,6 +11176,38 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_migrate.set_defaults(func=_cmd_migrate)
+
+    # Hidden (#1796): a one-shot copy for a repository that adopts
+    # `[store]` markers after its beliefs were ingested. A migration
+    # surface, like `migrate`, not a workflow verb.
+    p_store = sub.add_parser(
+        "store",
+        help=argparse.SUPPRESS,
+        description="Work with the per-folder stores that [store] markers select.",
+    )
+    store_sub = p_store.add_subparsers(dest="action", required=True)
+    p_store_split = store_sub.add_parser(
+        "split",
+        help="copy file-sourced beliefs into their folders' marker stores",
+        description=(
+            "Copy each belief whose source file is under a [store] marker "
+            "folder from the repository store into that folder's store. The "
+            "repository store is never written. A dry run unless --apply."
+        ),
+    )
+    p_store_split.add_argument(
+        "--apply", action="store_true",
+        help="write the copies (default: dry run)",
+    )
+    p_store_split.add_argument(
+        "--json", action="store_true",
+        help="print the report as JSON",
+    )
+    p_store_split.add_argument(
+        "--path", default=None, metavar="DIR",
+        help="a folder in the work tree to split (default: the current folder)",
+    )
+    p_store.set_defaults(func=_cmd_store)
 
     # Hidden: one-shot migration utility for stores that predate the
     # #1064 temporal-spine writer (the default-ON flip release invokes
