@@ -306,6 +306,34 @@ def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     assert {r[0] for r in _rows(root_store)["beliefs"]} == {here}
 
 
+def test_an_onboard_root_below_a_nested_worktree_root_is_outside(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The `.git` entry sits in a folder above the onboard root, not in
+    the root itself, so every folder on the way down is checked."""
+    _marker(repo, ".aelfrice/store")
+    _git(
+        "-c", "user.name=t", "-c", "user.email=t@example.com",
+        "commit", "-q", "--allow-empty", "-m", "init", cwd=repo,
+    )
+    _git("worktree", "add", "-q", "wt/x", cwd=repo)
+    (repo / "wt" / "x" / "docs").mkdir()
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo / "wt" / "x" / "docs", "s-x")
+        _onboard(src, repo, "s1")
+        _ingest(src, "doc:f.md:p1", _text(1), "s-x")
+        here = _ingest(src, "doc:docs/g.md:p1", _text(2), "s1")
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["outside_work_tree"] == 1
+    root_store = repo / ".aelfrice" / "store" / "memory.db"
+    assert {r[0] for r in _rows(root_store)["beliefs"]} == {here}
+
+
 def test_the_folder_is_the_deepest_real_folder_in_the_work_tree(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
