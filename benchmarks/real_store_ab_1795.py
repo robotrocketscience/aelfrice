@@ -945,7 +945,9 @@ def build_packet(
     past the top 10 included. A null arm of active non-locked beliefs no
     arm packed for the prompt is mixed in: as many per prompt as the
     median judged count (the lower median), drawn with `seed` in
-    prompt-id order.
+    prompt-id order. Every key row records `prompts_sampled`, the number
+    of prompts the runs cover, because a prompt with no judged or null
+    belief has no row of its own.
     """
     prompts: dict[str, str] = {}
     packed: dict[str, dict[str, dict[str, int]]] = {}
@@ -987,6 +989,7 @@ def build_packet(
             "id": iid, "prompt_id": pid, "prompt": prompts[pid], "belief_id": bid,
             "arms": None if arms is None else dict(sorted(arms.items())),
             "shares_prompt_stem": shares_prompt_stem(prompts[pid], texts[bid]),
+            "prompts_sampled": len(prompts),
         })
     if len({r["id"] for r in packet}) != len(packet):
         raise InputError("packet id collision; pick another seed")
@@ -1090,6 +1093,7 @@ class KeyItem:
     prompt_id: str
     arms: Mapping[str, int] | None
     shares_prompt_stem: bool
+    prompts_sampled: int
 
 
 def read_key(path: Path) -> list[KeyItem]:
@@ -1109,13 +1113,18 @@ def read_key(path: Path) -> list[KeyItem]:
                 for a, r in cast(dict[str, object], arms).items()
             )
         )
+        sampled: object = row.get("prompts_sampled")
+        ok_sampled = isinstance(sampled, int) and not isinstance(sampled, bool) and sampled > 0
         if (not isinstance(row.get("id"), str) or not isinstance(row.get("prompt_id"), str)
-                or not ok_arms or not isinstance(row.get("shares_prompt_stem"), bool)):
-            raise InputError(f"{path}:{n}: need id, prompt_id, arms, and shares_prompt_stem")
+                or not ok_arms or not isinstance(row.get("shares_prompt_stem"), bool)
+                or not ok_sampled):
+            raise InputError(
+                f"{path}:{n}: need id, prompt_id, arms, shares_prompt_stem, and prompts_sampled")
         items.append(KeyItem(
             id=row["id"], prompt_id=row["prompt_id"],
             arms=None if arms is None else dict(cast(dict[str, int], arms)),
             shares_prompt_stem=row["shares_prompt_stem"],
+            prompts_sampled=row["prompts_sampled"],
         ))
     if not items:
         raise InputError(f"{path}: empty key")
@@ -1197,7 +1206,7 @@ def _gain_stats(gains: Sequence[float], seed: int) -> tuple[float, tuple[float, 
 
 def arm_figures(
     items: Sequence[KeyItem], arm: str, labels: Labels, prompts: Sequence[str], seed: int,
-    control: str = CONTROL_ARM,
+    control: str = CONTROL_ARM, unkeyed: int = 0,
 ) -> dict[str, Any]:
     """One grader's paired gain, precision share, and drop for `arm` against `control`.
 
@@ -1207,18 +1216,19 @@ def arm_figures(
     because the beliefs both packed cancel (see `COMPARISONS`). It alone
     decides the gain verdict. The `top10_` figures count each arm's top 10
     instead and decide nothing. Precision and its drop are over the top
-    10s, as H5 states.
+    10s, as H5 states. `unkeyed` counts the sampled prompts the key holds
+    no row for. No arm packed anything for them, so each gains 0.
     """
     top_arm, top_a0 = _top(items, arm), _top(items, control)
     gained, lost = _only(items, arm, control), _only(items, control, arm)
     gains = [
         float(_relevant(gained.get(p, []), labels) - _relevant(lost.get(p, []), labels))
         for p in prompts
-    ]
+    ] + [0.0] * unkeyed
     top_gains = [
         float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
         for p in prompts
-    ]
+    ] + [0.0] * unkeyed
     mean, ci, share = _gain_stats(gains, seed)
     top_mean, top_ci, top_share = _gain_stats(top_gains, seed)
     fig_arm = grader_figures([i.id for p in prompts for i in top_arm.get(p, [])], labels)
@@ -1309,10 +1319,23 @@ def score(
     (A1W against A0) and the lane given the writers (A1 against A1W),
     under the same H0 and H1 rules as H2. A1's figures against A1W are
     under `arms["A1"]["vs_A1W"]`.
+
+    The paired gains and gaining shares count all `prompts_sampled`
+    prompts. The report's `prompts` is that count, and `keyed_prompts`
+    is the number of prompts the key holds rows for.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
     prompts = sorted({i.prompt_id for i in items})
+    # A sampled prompt where no arm packed a belief and no null belief was
+    # drawn has no key row, but it still counts in every paired gain.
+    sampled_counts = {i.prompts_sampled for i in items}
+    if len(sampled_counts) != 1:
+        raise InputError("the key rows disagree on prompts_sampled")
+    sampled = sampled_counts.pop()
+    if sampled < len(prompts):
+        raise InputError(f"the key holds {len(prompts)} prompts but prompts_sampled is {sampled}")
+    unkeyed = sampled - len(prompts)
     arms = sorted({arm for i in items if i.arms for arm in i.arms} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
     null = [null_figures(items, a), null_figures(items, b)]
@@ -1323,14 +1346,16 @@ def score(
     # `unreliable`, whatever the graded counts.
     per_arm: dict[str, Any] = {}
     for arm in arms:
-        graders = [arm_figures(items, arm, labels, prompts, seed) for labels in (a, b)]
+        graders = [arm_figures(items, arm, labels, prompts, seed, unkeyed=unkeyed)
+                   for labels in (a, b)]
         gain = combine([g["gain_verdict"] for g in graders])
         h5 = combine([g["h5_verdict"] for g in graders])
         if not reliable:
             gain = h5 = V_UNRELIABLE
         per_arm[arm] = {"graders": graders, "gain_verdict": gain, "h5_verdict": h5}
     if ARM_A1 in per_arm and ARM_A1W in per_arm:
-        lane = [arm_figures(items, ARM_A1, labels, prompts, seed, control=ARM_A1W)
+        lane = [arm_figures(items, ARM_A1, labels, prompts, seed, control=ARM_A1W,
+                            unkeyed=unkeyed)
                 for labels in (a, b)]
         per_arm[ARM_A1]["vs_A1W"] = {
             "graders": lane,
@@ -1374,7 +1399,7 @@ def score(
                        else verdict(arm, V_AGREE if agree else V_DISAGREE)}
         hyp["H6"] = h6
     return {
-        "prompts": len(prompts), "items": len(ids),
+        "prompts": sampled, "keyed_prompts": len(prompts), "items": len(ids),
         "null_items": sum(1 for i in items if i.arms is None),
         "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
         "arms": per_arm, "hypotheses": hyp,

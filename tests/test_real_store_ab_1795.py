@@ -4,6 +4,7 @@ Every store and transcript is built from synthetic text in a temp directory.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -939,6 +940,15 @@ def _one_prompt_runs(a0: list[str], a1: list[str]) -> dict[str, Any]:
         for arm, ranked in ((bench.ARM_A0, a0), (bench.ARM_A1, a1))}
 
 
+def test_the_key_counts_a_prompt_that_drew_no_row(tmp_path: Path) -> None:
+    # p2 packs nothing in either arm, and the lower median of the judged
+    # counts (2 and 0) is 0, so p2 draws no null belief and gets no row.
+    _p, k = _packet(tmp_path, _runs(["seed"], ["con"], [], []))
+    key = [json.loads(line) for line in k.splitlines()]
+    assert {r["prompt_id"] for r in key} == {"p1"}
+    assert {r["prompts_sampled"] for r in key} == {2}
+
+
 def test_a_belief_in_any_arms_top_ten_is_judged(tmp_path: Path) -> None:
     # Both arms pack `seed`: A0 at rank 1, A1 at rank 12. A0's top 10 holds
     # it, so it is judged although no compared pair differs on it.
@@ -998,9 +1008,12 @@ def test_the_instructions_define_the_three_labels(tmp_path: Path) -> None:
 Row = tuple[str, str, dict[str, int] | None, bool, bool | None, bool | None]
 
 
-def _key(rows: list[Row]) -> tuple[list[bench.KeyItem], dict[str, bool | None],
-                                   dict[str, bool | None]]:
-    items = [bench.KeyItem(id=i, prompt_id=p, arms=arms, shares_prompt_stem=s)
+def _key(rows: list[Row], sampled: int | None = None) -> tuple[
+        list[bench.KeyItem], dict[str, bool | None], dict[str, bool | None]]:
+    """Key items and both graders' labels; `sampled` defaults to the rows' prompts."""
+    n = len({r[1] for r in rows}) if sampled is None else sampled
+    items = [bench.KeyItem(id=i, prompt_id=p, arms=arms, shares_prompt_stem=s,
+                           prompts_sampled=n)
              for i, p, arms, s, _a, _b in rows]
     return items, {r[0]: r[4] for r in rows}, {r[0]: r[5] for r in rows}
 
@@ -1040,8 +1053,8 @@ def _hand(
 _H1_PASS: dict[str, Any] = {"H1": "pass"}
 
 
-def _score(rows: list[Row], **kw: Any) -> dict[str, Any]:
-    items, a, b = _key(rows)
+def _score(rows: list[Row], sampled: int | None = None, **kw: Any) -> dict[str, Any]:
+    items, a, b = _key(rows, sampled)
     kw.setdefault("census_report", _H1_PASS)
     return bench.score(items, a, b, seed=1, **kw)
 
@@ -1060,6 +1073,34 @@ def test_paired_gain_share_and_precision_on_a_hand_example() -> None:
     assert rep["hypotheses"]["H2"] == bench.V_PASS
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_PASS}
     assert rep["hypotheses"]["H3"] == bench.V_NOT_MEASURED
+
+
+def test_a_prompt_the_key_holds_no_row_for_still_counts_in_the_gain() -> None:
+    # 4 prompts sampled. Only p0 has rows: A0 packs `a`, A3 packs `a` and
+    # `x`, all relevant. p1 to p3 packed nothing and drew no null belief.
+    rows: list[Row] = [
+        ("a", "p0", {bench.ARM_A0: 1, bench.ARM_A3: 1}, True, True, True),
+        ("x", "p0", {bench.ARM_A3: 2}, True, True, True),
+    ]
+    rep = _score(rows, sampled=4)
+    g = rep["arms"]["A3"]["graders"][0]
+    assert g["mean_gain"] == _approx(0.25)  # gains 1, 0, 0, 0
+    assert g["share_gaining"] == _approx(0.25)
+    assert g["top10_mean_gain"] == _approx(0.25)
+    assert (rep["prompts"], rep["keyed_prompts"]) == (4, 1)
+
+
+def test_score_rejects_a_key_with_a_wrong_or_mixed_sampled_count() -> None:
+    rows: list[Row] = [
+        ("a", "p0", {bench.ARM_A0: 1}, True, True, True),
+        ("b", "p1", {bench.ARM_A0: 1}, True, True, True),
+    ]
+    with pytest.raises(bench.InputError, match="holds 2 prompts"):
+        _score(rows, sampled=1)
+    items, a, b = _key(rows, 3)
+    items[0] = dataclasses.replace(items[0], prompts_sampled=2)
+    with pytest.raises(bench.InputError, match="disagree"):
+        bench.score(items, a, b, seed=1)
 
 
 def test_a_zero_gain_fails_and_a_precision_drop_blocks() -> None:
@@ -1770,8 +1811,10 @@ def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(
 
 def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
-        {"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True},
-        {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False}]
+        {"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True,
+         "prompts_sampled": 1},
+        {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False,
+         "prompts_sampled": 1}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match="no A0 item"):
@@ -1781,10 +1824,25 @@ def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     assert [i.id for i in bench.read_key(path)] == ["i1", "i2"]
 
 
+def test_read_key_rejects_a_row_without_a_sampled_prompt_count(tmp_path: Path) -> None:
+    row: dict[str, Any] = {"id": "i1", "prompt_id": "p", "arms": {"A0": 1},
+                           "shares_prompt_stem": True, "prompts_sampled": 1}
+    path = tmp_path / "key.jsonl"
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert [i.prompts_sampled for i in bench.read_key(path)] == [1]
+    for bad in (None, 0, True, "1"):
+        row["prompts_sampled"] = bad
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+        with pytest.raises(bench.InputError, match="prompts_sampled"):
+            bench.read_key(path)
+
+
 def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
-        {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True},
-        {"id": "i2", "prompt_id": "p", "arms": {"A9": 1}, "shares_prompt_stem": True}]
+        {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True,
+         "prompts_sampled": 1},
+        {"id": "i2", "prompt_id": "p", "arms": {"A9": 1}, "shares_prompt_stem": True,
+         "prompts_sampled": 1}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match=r"key\.jsonl:2:"):
