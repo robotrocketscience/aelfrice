@@ -7797,7 +7797,6 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
         )
 
 
-
 def _cmd_store(args: argparse.Namespace, out: object) -> int:
     """`aelf store split [--apply] [--json] [--path DIR]` (#1796).
 
@@ -7838,6 +7837,7 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
     else:
         print(format_report(report), file=out)  # type: ignore[arg-type]
     return 1 if report.failed else 0
+
 
 def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
     """Ingest one or many JSONL turn-logs into the active project's DB.
