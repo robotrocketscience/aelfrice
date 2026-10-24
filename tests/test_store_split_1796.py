@@ -890,6 +890,60 @@ def test_the_source_store_is_only_ever_opened_read_only(
     assert _file_hash(source) == before
 
 
+def test_the_source_is_read_in_one_snapshot(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that lands after the beliefs are read, such as a hook's
+    feedback event, reaches neither the copied posterior nor the copied
+    feedback rows, so the two stay consistent."""
+    a1, _ = _seed_pair(repo)
+    source = _source_path(repo)
+    src = MemoryStore(str(source), read_only=True)
+    try:
+        belief = src.get_belief(a1)
+    finally:
+        src.close()
+    assert belief is not None
+    real_row_belief = store_split._row_belief  # pyright: ignore[reportPrivateUsage]
+    wrote: list[bool] = []
+
+    def row_belief_then_write(r: tuple[object, ...]) -> Belief:
+        got = real_row_belief(r)
+        if not wrote:
+            wrote.append(True)
+            writer = sqlite3.connect(source, timeout=5)
+            try:
+                writer.execute(
+                    "UPDATE beliefs SET alpha = alpha + 1 WHERE id = ?", (a1,),
+                )
+                writer.execute(
+                    "INSERT INTO feedback_history "
+                    "(belief_id, valence, source, created_at) "
+                    "VALUES (?, 1.0, 'hook', ?)",
+                    (a1, _TS),
+                )
+                writer.commit()
+            finally:
+                writer.close()
+        return got
+
+    monkeypatch.setattr(store_split, "_row_belief", row_belief_then_write)
+    target = _only_target(_report(repo, "--apply", capsys=capsys))
+    assert wrote
+    assert target["copied"]["beliefs"] == 1
+    assert target["copied"]["feedback"] == 0
+    got = _rows(_target_path(repo))
+    assert got["feedback_history"] == []
+    copied = MemoryStore(str(_target_path(repo)), read_only=True)
+    try:
+        copy = copied.get_belief(a1)
+    finally:
+        copied.close()
+    assert copy is not None
+    assert copy.alpha == belief.alpha
+
+
 def test_a_dry_run_with_aelfrice_db_set_finds_no_marker_store(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

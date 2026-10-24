@@ -787,10 +787,16 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
         if not store_file_present(source):
             raise SplitRefused(f"no repository store at {source}")
         try:
-            conn = sqlite3.connect(read_only_uri(str(source)), uri=True)
+            conn = sqlite3.connect(
+                read_only_uri(str(source)), uri=True, isolation_level=None,
+            )
         except sqlite3.Error as exc:
             raise SplitError(f"cannot open {source}: {exc}") from exc
         try:
+            # One read transaction for every SELECT, so a hook that writes
+            # the store mid-read can't pair a belief's old posterior with
+            # its new feedback rows. Closing the connection ends it.
+            conn.execute("BEGIN")
             ids, ingested, anchored = _read_locations(conn)
             routed, not_copied = _route(
                 work_tree, source, ids, ingested, anchored,
