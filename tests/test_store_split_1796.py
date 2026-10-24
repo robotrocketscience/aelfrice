@@ -646,6 +646,19 @@ def test_a_broken_marker_anywhere_aborts_before_writing(
     assert not _target_path(repo).parent.exists()
 
 
+def test_a_broken_marker_in_a_nested_repository_is_not_checked(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A nested repository's markers belong to its own work tree."""
+    _seed_pair(repo)
+    nested = repo / "n"
+    nested.mkdir()
+    _git("init", "-q", cwd=nested)
+    _marker(nested, "store.db")
+    code, _, err = _run(repo, capsys=capsys)
+    assert code == 0, err
+
+
 def test_apply_refuses_while_aelfrice_db_is_set(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
