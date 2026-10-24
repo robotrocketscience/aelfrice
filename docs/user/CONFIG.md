@@ -1487,7 +1487,15 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | The belief is retired. A copy would make it searchable again. |
 | `superseded` | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were, and the command exits with status 1. A second `--apply` copies nothing, because every belief is already present. A broken marker anywhere in the work tree stops the command with exit status 2 before it writes anything. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker.
+
+The command exits with one of these statuses:
+
+| Status | Meaning |
+|---|---|
+| 0 | Every target store was read, and with `--apply`, copied. |
+| 1 | A target store can't be read or its copy failed, and the report marks that target as failed. Or the repository store can't be read, and the command prints that error instead of a report. |
+| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, or `--apply` runs while `AELFRICE_DB` is set. |
 
 ## User lock store: `AELFRICE_USER_DB`
 
