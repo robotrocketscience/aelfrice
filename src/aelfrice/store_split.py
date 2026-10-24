@@ -13,7 +13,9 @@ A belief qualifies only when it has a file source the scanner wrote:
 `#...` fragment. `<rel>` is relative to the onboard root, which is the
 `repo_path` of the `onboard_sessions` row for the ingest row's session.
 Every ingest row with a file source must name the same absolute root, or
-the belief is skipped as `no_root`. The folder is then the deepest real
+the belief is skipped as `no_root`, and a root outside the work tree, or
+inside a linked worktree or nested repository below it, is skipped as
+`outside_work_tree`. The folder is then the deepest real
 folder of `<root>/<rel>` inside the work tree (`db_paths.owning_folder`),
 and the belief is copied only when that folder resolves to a marker store
 other than the repository store.
@@ -366,6 +368,22 @@ def _read_locations(
     return ids, ingested, anchored
 
 
+def _in_other_work_tree(work_tree: Path, under: Path) -> bool:
+    """True when a folder from below `work_tree` down to `work_tree /
+    under` holds a `.git` entry.
+
+    The onboard root is then in a linked worktree, a nested repository,
+    or a submodule. A linked worktree shares the repository store, but
+    its files belong to its own work tree and its own markers.
+    """
+    current = work_tree
+    for part in under.parts:
+        current = current / part
+        if (current / WORKTREE_MARKER).exists():
+            return True
+    return False
+
+
 def _belief_folders(
     work_tree: Path,
     ingested: list[tuple[Path | None, str]],
@@ -385,6 +403,8 @@ def _belief_folders(
     try:
         under = Path(*root.relative_to(work_tree).parts)
     except ValueError:
+        return SKIP_OUTSIDE_WORK_TREE, set()
+    if _in_other_work_tree(work_tree, under):
         return SKIP_OUTSIDE_WORK_TREE, set()
     return None, {
         owning_folder(work_tree, str(under / rel)) for rel in sorted(rels)
