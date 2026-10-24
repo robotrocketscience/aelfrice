@@ -1595,11 +1595,103 @@ def test_bad_input_exits_1(tmp_path: Path) -> None:
     assert exc.value.code == 1
 
 
-def _run_file(tmp_path: Path, name: str, arm: str, pids: list[str]) -> Path:
+def _run_file(tmp_path: Path, name: str, arm: str, pids: list[str],
+              snapshot: str = "s0") -> Path:
     path = tmp_path / name
-    path.write_text(json.dumps({"arm": arm, "prompts": [
+    path.write_text(json.dumps({"arm": arm, "snapshot": snapshot, "prompts": [
         {"prompt_id": p, "prompt": "q", "ranked": ["seed"]} for p in pids]}), encoding="utf-8")
     return path
+
+
+def _add_late_belief(path: Path) -> None:
+    s = MemoryStore(str(path))
+    _add(s, "late", "the kestrel meadow gained a late note")
+    s.close()
+
+
+def test_a_run_records_the_snapshot_it_read(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+
+    def run_on(arm: str, work: str) -> dict[str, Any]:
+        (tmp_path / work).mkdir()
+        return bench.run_arm(path, _prompts(), arm, tmp_path / work)
+
+    first = run_on(bench.ARM_A0, "w1")
+    again = run_on(bench.ARM_A2, "w2")
+    assert first["snapshot"] == again["snapshot"]
+    # The fingerprint is of the backup as copied, before any open can
+    # migrate it.
+    plain = tmp_path / "plain.db"
+    bench.copy_store(path, plain)
+    assert first["snapshot"] == _sha(plain)
+    _add_late_belief(path)
+    later = run_on(bench.ARM_A2, "w3")
+    assert later["snapshot"] != first["snapshot"]
+    assert "late" in later["prompts"][0]["ranked"]
+
+
+def test_the_snapshot_is_taken_before_the_copy_migrates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A migration may stamp the copy with the time it ran, so a fingerprint
+    # taken after it would differ between two copies of one source.
+    path = _store(tmp_path)
+    real = bench.MemoryStore
+    stamps = iter(range(1, 10))
+
+    def migrating(db: str, **kw: Any) -> MemoryStore:
+        if not kw.get("read_only"):
+            conn = sqlite3.connect(db)
+            conn.execute(f"PRAGMA user_version = {next(stamps)}")
+            conn.close()
+        return real(db, **kw)
+
+    monkeypatch.setattr(bench, "MemoryStore", migrating)
+    snaps: list[str] = []
+    for work in (tmp_path / "m1", tmp_path / "m2"):
+        work.mkdir()
+        snaps.append(bench.prepare_snapshot(path, work)[1])
+    assert snaps[0] == snaps[1]
+
+
+def test_read_runs_rejects_runs_of_different_snapshots(tmp_path: Path) -> None:
+    # A belief the store gains between two runs would count as one arm's gain.
+    a0 = _run_file(tmp_path, "a0.json", bench.ARM_A0, ["p1"], snapshot="s0")
+    a2 = _run_file(tmp_path, "a2.json", bench.ARM_A2, ["p1"], snapshot="s1")
+    with pytest.raises(bench.InputError, match="different snapshots"):
+        bench.read_runs([a0, a2])
+    bare = tmp_path / "bare.json"
+    bare.write_text(json.dumps({"arm": "A0", "prompts": []}), encoding="utf-8")
+    with pytest.raises(bench.InputError, match="a snapshot"):
+        bench.read_run(bare)
+
+
+def test_packet_and_proxy_refuse_a_store_that_changed_since_the_runs(
+    tmp_path: Path,
+) -> None:
+    path = _store(tmp_path)
+    archive, live = _session_turns()
+    _write_transcripts(path, archive, live)
+    d = tmp_path / "out"
+    d.mkdir()
+    prompts = d / "prompts.jsonl"
+    assert bench.main(["sample", "--store", str(path), "--seed", "1",
+                       "--out", str(prompts)]) == 0
+    runs: list[str] = []
+    for arm in (bench.ARM_A0, bench.ARM_A2):
+        runs.append(str(d / f"{arm}.json"))
+        assert bench.main(["run", "--store", str(path), "--prompts", str(prompts),
+                           "--arm", arm, "--out", runs[-1]]) == 0
+    packet = ["packet", "--runs", *runs, "--store", str(path), "--seed", "2",
+              "--out", str(d / "pk"), "--key", str(d / "key.jsonl")]
+    usage = ["proxy", "--store", str(path), "--runs", *runs, "--prompts", str(prompts),
+             "--out", str(d / "proxy.json")]
+    assert bench.main(packet) == 0 and bench.main(usage) == 0
+    _add_late_belief(path)
+    (d / "key.jsonl").unlink()
+    (d / "proxy.json").unlink()
+    assert bench.main(packet) == 1 and bench.main(usage) == 1
+    assert not (d / "key.jsonl").exists() and not (d / "proxy.json").exists()
 
 
 def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(

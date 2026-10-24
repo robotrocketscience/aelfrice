@@ -12,6 +12,13 @@ copy in a temporary directory that is deleted on exit. Nothing opens the
 source store for writing. `--work-dir` picks where the temporary copy
 goes.
 
+**One snapshot.** Each subcommand makes its own copy, so a write to the
+store between two of them would hand the arms different beliefs. `run`
+records the SHA-256 of its copy as `snapshot`, and `packet` and `proxy`
+exit 1 when the runs' snapshots differ from each other or from their own
+copy. For a store that is still in use, copy it once and point every
+subcommand at that copy.
+
 **Subcommands.** Each one is deterministic given its inputs and
 `--seed`, and exits 1 on bad input.
 
@@ -295,16 +302,37 @@ def copy_store(src: Path, dst: Path) -> None:
         source.close()
 
 
-def prepare_copy(src: Path, work: Path) -> Path:
-    """Copy the store into `work` and open the copy once read-write.
+def snapshot_digest(db: Path) -> str:
+    """SHA-256 of a fresh backup copy's bytes, which name the source's state."""
+    with db.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
-    The read-write open runs any pending migration on the copy, so every
-    arm reads the same schema and can open it read-only afterwards.
+
+def prepare_snapshot(src: Path, work: Path) -> tuple[Path, str]:
+    """Copy the store into `work`, fingerprint the copy, and open it once read-write.
+
+    The fingerprint is taken before the open, so two copies of an
+    unchanged source match. The read-write open runs any pending
+    migration on the copy, so every arm reads the same schema and can
+    open it read-only afterwards.
     """
     db = work / "memory.db"
     copy_store(src, db)
+    digest = snapshot_digest(db)
     MemoryStore(str(db)).close()
-    return db
+    return db, digest
+
+
+def prepare_copy(src: Path, work: Path) -> Path:
+    """`prepare_snapshot` without the fingerprint."""
+    return prepare_snapshot(src, work)[0]
+
+
+def require_snapshot(runs: Mapping[str, Mapping[str, Any]], digest: str) -> None:
+    """InputError unless every run read the snapshot `digest` names."""
+    if any(r["snapshot"] != digest for r in runs.values()):
+        raise InputError(
+            "the store changed since the runs; run every subcommand on one frozen copy")
 
 
 def active_beliefs(db: Path) -> list[tuple[str, str, str]]:
@@ -816,8 +844,8 @@ def run_arm(
     """One arm's packed non-locked ids per prompt, from a fresh copy of `src`."""
     if arm not in ARMS:
         raise InputError(f"unknown arm {arm!r}")
-    db = prepare_copy(src, work)
-    out: dict[str, Any] = {"arm": arm, "top_k": TOP_K}
+    db, snapshot = prepare_snapshot(src, work)
+    out: dict[str, Any] = {"arm": arm, "snapshot": snapshot, "top_k": TOP_K}
     if arm in WRITER_ARMS:
         out["writers"] = apply_writers(db)
     expander = (
@@ -850,8 +878,10 @@ def read_run(path: Path) -> dict[str, Any]:
         raise InputError(f"{path}: not a JSON object")
     run = cast(dict[str, Any], obj)
     prompts: object = run.get("prompts")
-    if run.get("arm") not in ARMS or not isinstance(prompts, list):
-        raise InputError(f"{path}: need an arm of {', '.join(ARMS)} and a prompts list")
+    if (run.get("arm") not in ARMS or not isinstance(run.get("snapshot"), str)
+            or not isinstance(prompts, list)):
+        raise InputError(
+            f"{path}: need an arm of {', '.join(ARMS)}, a snapshot, and a prompts list")
     for p in cast(list[object], prompts):
         if not isinstance(p, dict):
             raise InputError(f"{path}: a prompt row is not an object")
@@ -867,8 +897,8 @@ def read_run(path: Path) -> dict[str, Any]:
 
 
 def read_runs(paths: Sequence[Path]) -> dict[str, dict[str, Any]]:
-    """{arm: run}; InputError unless the arms are distinct, include A0, and
-    cover the same prompts."""
+    """{arm: run}; InputError unless the arms are distinct, include A0, read
+    one snapshot of the store, and cover the same prompts."""
     runs: dict[str, dict[str, Any]] = {}
     for path in paths:
         run = read_run(path)
@@ -877,6 +907,10 @@ def read_runs(paths: Sequence[Path]) -> dict[str, dict[str, Any]]:
         runs[run["arm"]] = run
     if CONTROL_ARM not in runs:
         raise InputError(f"no {CONTROL_ARM} run")
+    # A belief the store gained between two runs would count as one arm's
+    # gain, so every arm must read the same copy.
+    if len({r["snapshot"] for r in runs.values()}) > 1:
+        raise InputError("the runs read different snapshots of the store")
     ids = {a: [p["prompt_id"] for p in r["prompts"]] for a, r in runs.items()}
     ref = sorted(ids[CONTROL_ARM])
     if any(sorted(v) != ref for v in ids.values()):
@@ -1433,7 +1467,9 @@ def _dispatch(args: argparse.Namespace) -> None:
     elif cmd == "packet":
         runs = read_runs(args.runs)
         with tempfile.TemporaryDirectory(dir=args.work_dir) as work:
-            packet, key = build_packet(runs, prepare_copy(args.store, Path(work)), args.seed)
+            db, snapshot = prepare_snapshot(args.store, Path(work))
+            require_snapshot(runs, snapshot)
+            packet, key = build_packet(runs, db, args.seed)
         write_packet(packet, key, args.out, args.key)
         print(f"items={len(packet)} null={sum(1 for r in key if r['arms'] is None)}")
     elif cmd == "score":
@@ -1449,7 +1485,9 @@ def _dispatch(args: argparse.Namespace) -> None:
         prompts = read_prompts(args.prompts)
         turns = read_turns(transcript_files(args.store))
         with tempfile.TemporaryDirectory(dir=args.work_dir) as work:
-            report = proxy(runs, prompts, turns, prepare_copy(args.store, Path(work)))
+            db, snapshot = prepare_snapshot(args.store, Path(work))
+            require_snapshot(runs, snapshot)
+            report = proxy(runs, prompts, turns, db)
         _dump(report, args.out)
 
 
