@@ -1276,6 +1276,37 @@ def test_h2_split_separates_the_writers_from_the_lane() -> None:
         bench.V_NOT_MEASURED)
 
 
+def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
+    # #1795 H1: under 1 per 100, A1 is substrate-starved, not a lane
+    # verdict, on any hypothesis. A2 doesn't depend on the writers.
+    def rows(null_rel: int = 0) -> list[Row]:
+        out = _split_rows([2, 2, 2, 2], [3, 3, 2, 4], [3, 3, 2, 4], null_rel=null_rel)
+        for p, r in enumerate([3, 3, 2, 4]):
+            out += [(f"z{p}-{k}", f"p{p}", {bench.ARM_A2: k + 1}, True, k < r, k < r)
+                    for k in range(10)]
+        return out
+
+    used = [{"id": "b", "used": True}, {"id": "c", "used": True}]
+    proxy = {"prompts": [{"arms": {"A0": [{"id": "a", "used": True}], "A1": used,
+                                   "A1W": used, "A2": used}}]}
+    held = _score(rows(), proxy_report=proxy)["hypotheses"]
+    assert held["H5"] == {"A1": bench.V_PASS, "A1W": bench.V_PASS, "A2": bench.V_PASS}
+    assert {a: v["verdict"] for a, v in held["H6"].items()} == {
+        "A1": bench.V_AGREE, "A1W": bench.V_AGREE, "A2": bench.V_AGREE}
+    for census, want in (({"H1": "fail"}, bench.V_STARVED), (None, bench.V_NEEDS_CENSUS)):
+        rep = _score(rows(), census_report=census, proxy_report=proxy)
+        hyp = rep["hypotheses"]
+        assert hyp["H5"] == {"A1": want, "A1W": want, "A2": bench.V_PASS}
+        assert {a: v["verdict"] for a, v in hyp["H6"].items()} == {
+            "A1": want, "A1W": want, "A2": bench.V_AGREE}
+        assert hyp["H6"]["A1"]["grader_signs"] == [1, 1]
+        assert rep["arms"]["A1"]["h5_verdict"] == bench.V_PASS
+    # A failed H0 outranks the substrate.
+    bad = _score(rows(null_rel=3), census_report={"H1": "fail"}, proxy_report=proxy)
+    assert set(bad["hypotheses"]["H5"].values()) == {bench.V_UNRELIABLE}
+    assert {v["verdict"] for v in bad["hypotheses"]["H6"].values()} == {bench.V_UNRELIABLE}
+
+
 def test_a_failed_h0_makes_both_halves_of_the_h2_split_unreliable() -> None:
     # The lane half passes on these labels when H0 holds.
     rows = _split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4], null_rel=3)

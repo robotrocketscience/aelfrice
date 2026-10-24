@@ -1299,10 +1299,10 @@ def score(
     items in the arm's or A0's top 10 makes the result `insufficient`. A
     failed H0 makes every arm result, H6 included, `unreliable`.
 
-    H2 is a lane verdict only when the census passed H1. Under #1795's H1
-    kill condition a failed H1 reports H2 as `substrate-starved`, and with
-    no writers census H2 is `needs census`. The arm's own figures and
-    verdict stay under `arms`.
+    A1 gets a verdict only when the census passed H1. Under #1795's H1
+    kill condition a failed H1 reports H2, and A1's and A1W's H5 and H6,
+    as `substrate-starved`, and with no writers census they are `needs
+    census`. The arms' own figures and verdicts stay under `arms`.
 
     With an A1W run, `H2_split` splits H2's gain into the writers alone
     (A1W against A0) and the lane given the writers (A1 against A1W),
@@ -1340,17 +1340,25 @@ def score(
     hyp["H1"] = (census_report or {}).get("H1", V_NOT_MEASURED)
     for h, arm in HYPOTHESIS_ARMS.items():
         hyp[h] = per_arm[arm]["gain_verdict"] if arm in per_arm else V_NOT_MEASURED
-    if ARM_A1 in per_arm and reliable and hyp["H1"] != V_PASS:
-        hyp["H2"] = V_STARVED if hyp["H1"] == V_FAIL else V_NEEDS_CENSUS
+    # H1's kill condition: without the substrate, no verdict on the writer
+    # arms. A failed H0 outranks it.
+    starved: str | None = None
+    if reliable and hyp["H1"] != V_PASS:
+        starved = V_STARVED if hyp["H1"] == V_FAIL else V_NEEDS_CENSUS
+
+    def verdict(arm: str, own: str) -> str:
+        return starved if starved is not None and arm in WRITER_ARMS else own
+
+    if ARM_A1 in per_arm:
+        hyp["H2"] = verdict(ARM_A1, hyp["H2"])
     if ARM_A1 in per_arm and ARM_A1W in per_arm:
-        split = {"writers": per_arm[ARM_A1W]["gain_verdict"],
-                 "lane": per_arm[ARM_A1]["vs_A1W"]["gain_verdict"]}
-        if reliable and hyp["H1"] != V_PASS:
-            split = {k: hyp["H2"] for k in split}
-        hyp["H2_split"] = split
+        hyp["H2_split"] = {
+            "writers": verdict(ARM_A1W, per_arm[ARM_A1W]["gain_verdict"]),
+            "lane": verdict(ARM_A1, per_arm[ARM_A1]["vs_A1W"]["gain_verdict"]),
+        }
     else:
         hyp["H2_split"] = V_NOT_MEASURED
-    hyp["H5"] = {arm: per_arm[arm]["h5_verdict"] for arm in arms}
+    hyp["H5"] = {arm: verdict(arm, per_arm[arm]["h5_verdict"]) for arm in arms}
     if proxy_report is None:
         hyp["H6"] = V_NOT_MEASURED
     else:
@@ -1362,7 +1370,7 @@ def score(
             agree = all(s == signs[arm] for s in grader_signs)
             h6[arm] = {"proxy_sign": signs[arm], "grader_signs": grader_signs,
                        "verdict": V_UNRELIABLE if not reliable
-                       else V_AGREE if agree else V_DISAGREE}
+                       else verdict(arm, V_AGREE if agree else V_DISAGREE)}
         hyp["H6"] = h6
     return {
         "prompts": len(prompts), "items": len(ids),
