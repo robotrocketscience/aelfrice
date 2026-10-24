@@ -410,8 +410,8 @@ def test_a_lane_addition_past_the_top_ten_is_judged_and_counted(tmp_path: Path) 
         _rows, k = bench.build_packet(runs, work / "memory.db", seed)
         assert not {r["belief_id"] for r in k if r["arms"] is None} & set(a2)
     # Graded relevant: A2 gains `rel` on every prompt, all of it past the cut.
-    # #1795 registers the gain over the top 10, so the packed gain is only
-    # reported and H3 fails.
+    # The 2026-10-23 amendment to #1795 decides on the packed gain, so H3
+    # passes, and the top-10 gain of 0 is only reported.
     rows: list[Row] = []
     for p in range(4):
         rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A2": k + 1}, True, k < 2, k < 2)
@@ -420,13 +420,36 @@ def test_a_lane_addition_past_the_top_ten_is_judged_and_counted(tmp_path: Path) 
         rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
     rep = _score(rows)
     g = rep["arms"]["A2"]["graders"][0]
-    assert g["mean_gain"] == _approx(0.0)
-    assert g["packed_mean_gain"] == _approx(1.0)
-    assert g["packed_ci95"] == [_approx(1.0), _approx(1.0)]
-    assert g["packed_share_gaining"] == _approx(1.0)
-    assert g["gain_verdict"] == bench.V_FAIL
-    assert rep["hypotheses"]["H3"] == bench.V_FAIL
+    assert g["mean_gain"] == _approx(1.0)
+    assert g["ci95"] == [_approx(1.0), _approx(1.0)]
+    assert g["share_gaining"] == _approx(1.0)
+    assert g["top10_mean_gain"] == _approx(0.0)
+    assert g["top10_ci95"] == [_approx(0.0), _approx(0.0)]
+    assert g["top10_share_gaining"] == _approx(0.0)
+    assert g["gain_verdict"] == bench.V_PASS
+    assert rep["hypotheses"]["H3"] == bench.V_PASS
     assert g["precision_drop"] == _approx(0.0)
+    assert not any(k.startswith("packed_") for k in g)
+
+
+def test_the_top_ten_gain_decides_nothing() -> None:
+    # A2 moves A0's relevant 11th belief into its top 10 and leaves out
+    # A0's relevant 12th: a top-10 gain of 1 that clears every bar, and a
+    # packed gain of -1, which fails.
+    rows: list[Row] = []
+    for p in range(4):
+        rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A2": k + 1}, True, k < 2, k < 2)
+                 for k in range(9)]
+        rows.append((f"o{p}", f"p{p}", {"A0": 10, "A2": 11}, True, False, False))
+        rows.append((f"m{p}", f"p{p}", {"A0": 11, "A2": 10}, True, True, True))
+        rows.append((f"g{p}", f"p{p}", {"A0": 12}, True, True, True))
+        rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
+    rep = _score(rows)
+    g = rep["arms"]["A2"]["graders"][0]
+    assert g["top10_mean_gain"] == _approx(1.0)
+    assert g["top10_ci95"] == [_approx(1.0), _approx(1.0)]
+    assert g["mean_gain"] == _approx(-1.0)
+    assert rep["hypotheses"]["H3"] == bench.V_FAIL
 
 
 def test_h4_counts_additions_to_the_top_ten() -> None:
@@ -1157,7 +1180,7 @@ def test_unclear_labels_are_left_out_of_the_gain_and_the_additions() -> None:
     # Counted as relevant, it would add 1 to every prompt's gain.
     g = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], unclear_arm=1))["arms"]["A1"]["graders"][0]
     assert g["mean_gain"] == _approx(1.0)
-    assert g["packed_mean_gain"] == _approx(1.0)
+    assert g["top10_mean_gain"] == _approx(1.0)
     a3 = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A3, unclear_arm=1))
     assert a3["arms"]["A3"]["graders"][0]["relevant_additions"] == 12
 
@@ -1367,9 +1390,9 @@ def test_h6_needs_the_proxy_to_agree_with_both_graders() -> None:
         "proxy_sign": 1, "grader_signs": [1, 0], "verdict": bench.V_DISAGREE}
 
 
-def test_h6_takes_each_graders_sign_from_the_top_ten_gain() -> None:
-    # A1 adds a relevant belief past rank 10 on every prompt: a packed gain
-    # of 1 but a top-10 gain of 0, the gain H2 is decided on.
+def test_h6_takes_each_graders_sign_from_the_packed_gain() -> None:
+    # A1 adds a relevant belief past rank 10 on every prompt: a top-10 gain
+    # of 0 but a packed gain of 1, the gain H2 is decided on.
     rows: list[Row] = []
     for p in range(4):
         rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A1": k + 1}, True, k < 2, k < 2)
@@ -1379,9 +1402,9 @@ def test_h6_takes_each_graders_sign_from_the_top_ten_gain() -> None:
     proxy = {"prompts": [{"arms": {"A0": [{"id": "a", "used": False}],
                                    "A1": [{"id": "a", "used": True}]}}]}
     rep = _score(rows, proxy_report=proxy)
-    assert rep["arms"]["A1"]["graders"][0]["packed_mean_gain"] == _approx(1.0)
+    assert rep["arms"]["A1"]["graders"][0]["top10_mean_gain"] == _approx(0.0)
     assert rep["hypotheses"]["H6"]["A1"] == {
-        "proxy_sign": 1, "grader_signs": [0, 0], "verdict": bench.V_DISAGREE}
+        "proxy_sign": 1, "grader_signs": [1, 1], "verdict": bench.V_AGREE}
 
 
 # --- Proxy -------------------------------------------------------------------

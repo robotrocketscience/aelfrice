@@ -169,21 +169,20 @@ PROBE_KINDS_A2: Final[tuple[str, ...]] = (
 """Edge kinds A2 probes: the ones real stores already hold (#1795)."""
 
 TOP_K: Final[int] = 10
-"""The top 10 non-locked beliefs of the packed result: the set H2 to H5 count."""
+"""The top 10 non-locked beliefs of the packed result: the set H5 counts."""
 COMPARISONS: Final[tuple[tuple[str, str], ...]] = (
     (ARM_A1, ARM_A0), (ARM_A1W, ARM_A0), (ARM_A2, ARM_A0), (ARM_A3, ARM_A0),
     (ARM_A1, ARM_A1W),
 )
 """`(arm, control)` pairs whose packed results the packet judges in full.
 
-#1795 registers the H2 to H4 gain over each arm's top 10, and that gain
-decides the verdicts. The expand lane appends its beliefs after every L1
-hit, so when L1 fills the top 10 an A1 or A2 addition lands past the cut
-and adds nothing to that gain. The packet also judges the beliefs one arm
-of a pair packed and the other didn't, so the scorer can report the gain
-over the whole packed result, which the hook injects, beside the
-registered one. Beliefs both arms packed cancel and stay unjudged past
-the top 10s.
+Under the 2026-10-23 amendment to #1795, the H2 to H4 gain counts each
+arm's whole packed result, which the hook injects. The expand lane
+appends its beliefs after every L1 hit, so when L1 fills the top 10 an
+A1 or A2 addition lands past the cut, where a top-10 gain can't see it.
+The packet judges the beliefs one arm of a pair packed and the other
+didn't. Beliefs both arms packed cancel and stay unjudged past the top
+10s.
 """
 DEFAULT_MAX_PROMPTS: Final[int] = 40
 """Most prompts sampled per store (#1795)."""
@@ -1158,25 +1157,26 @@ def arm_figures(
 ) -> dict[str, Any]:
     """One grader's paired gain, precision share, and drop for `arm` against `control`.
 
-    The gain is the one #1795 registers: relevant beliefs in `arm`'s top
-    10 minus those in `control`'s, per prompt. It alone decides the gain
-    verdict. The `packed_` figures count the whole packed result instead
-    (see `COMPARISONS`), relevant beliefs only `arm` packed minus those
-    only `control` packed, and decide nothing. Precision and its drop are
-    over the top 10s, as H5 states.
+    The gain is the one the 2026-10-23 amendment to #1795 registers:
+    relevant beliefs only `arm` packed minus those only `control` packed,
+    per prompt, which is the difference over the two whole packed results
+    because the beliefs both packed cancel (see `COMPARISONS`). It alone
+    decides the gain verdict. The `top10_` figures count each arm's top 10
+    instead and decide nothing. Precision and its drop are over the top
+    10s, as H5 states.
     """
     top_arm, top_a0 = _top(items, arm), _top(items, control)
     gained, lost = _only(items, arm, control), _only(items, control, arm)
     gains = [
-        float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
-        for p in prompts
-    ]
-    packed_gains = [
         float(_relevant(gained.get(p, []), labels) - _relevant(lost.get(p, []), labels))
         for p in prompts
     ]
+    top_gains = [
+        float(_relevant(top_arm.get(p, []), labels) - _relevant(top_a0.get(p, []), labels))
+        for p in prompts
+    ]
     mean, ci, share = _gain_stats(gains, seed)
-    packed_mean, packed_ci, packed_share = _gain_stats(packed_gains, seed)
+    top_mean, top_ci, top_share = _gain_stats(top_gains, seed)
     fig_arm = grader_figures([i.id for p in prompts for i in top_arm.get(p, [])], labels)
     fig_a0 = grader_figures([i.id for p in prompts for i in top_a0.get(p, [])], labels)
     g_arm, g_a0 = int(fig_arm["graded"]), int(fig_a0["graded"])
@@ -1186,8 +1186,8 @@ def arm_figures(
     figures: dict[str, Any] = {
         "graded": g_arm, "graded_a0": g_a0,
         "mean_gain": mean, "ci95": list(ci), "share_gaining": share,
-        "packed_mean_gain": packed_mean, "packed_ci95": list(packed_ci),
-        "packed_share_gaining": packed_share,
+        "top10_mean_gain": top_mean, "top10_ci95": list(top_ci),
+        "top10_share_gaining": top_share,
         "precision": precision, "precision_a0": precision_a0, "precision_drop": drop,
         "gain_verdict": gain_verdict(mean, ci, share) if sufficient else V_INSUFFICIENT,
         "h5_verdict": (
