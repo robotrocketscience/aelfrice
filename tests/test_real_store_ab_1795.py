@@ -452,9 +452,9 @@ def test_the_top_ten_gain_decides_nothing() -> None:
     assert rep["hypotheses"]["H3"] == bench.V_FAIL
 
 
-def test_h4_counts_additions_to_the_top_ten() -> None:
+def test_h4_counts_additions_to_the_packed_result() -> None:
     # Per prompt, A3 moves A0's rank-11 belief into its top 10 and packs a
-    # bridging belief at rank 11. Only the first is a top-10 addition.
+    # bridging belief at rank 11. Only the second is new to the packed result.
     rows: list[Row] = []
     for p in range(4):
         rows += [(f"a{p}-{k}", f"p{p}", {"A0": k + 1, "A3": k + 1}, True, k < 2, k < 2)
@@ -465,18 +465,19 @@ def test_h4_counts_additions_to_the_top_ten() -> None:
         rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
     g = _score(rows)["arms"]["A3"]["graders"][0]
     assert g["mean_gain"] == _approx(1.0)
-    assert (g["relevant_additions"], g["bridging"]) == (4, 0)
+    assert (g["relevant_additions"], g["bridging"]) == (4, 4)
 
 
-def test_a0s_tenth_belief_is_no_a3_addition() -> None:
-    # A3 moves A0's 10th belief and its 11th to the top. Only the 11th is
-    # new to the top 10.
+def test_a_belief_a0_also_packed_is_no_a3_addition() -> None:
+    # A3 moves A0's 10th belief and its 11th to the top. Both are in A0's
+    # packed result, so neither is an addition.
     rows: list[Row] = []
     for p in range(4):
         rows.append((f"t{p}", f"p{p}", {"A0": 10, "A3": 1}, False, True, True))
         rows.append((f"e{p}", f"p{p}", {"A0": 11, "A3": 2}, False, True, True))
     g = _score(rows)["arms"]["A3"]["graders"][0]
-    assert (g["relevant_additions"], g["bridging"]) == (4, 4)
+    assert (g["relevant_additions"], g["bridging"]) == (0, 0)
+    assert g["bridging_share"] is None
 
 
 def test_the_proxy_sign_counts_the_whole_packed_result() -> None:

@@ -212,7 +212,8 @@ GAIN_KILL: Final[float] = 0.1
 GAINING_SHARE_BAR: Final[float] = 0.10
 """H2 to H4: share of prompts that gain at least one relevant belief."""
 BRIDGING_SHARE_BAR: Final[float] = 0.5
-"""H4: share of A3's relevant additions that share no stem with the prompt."""
+"""H4: share of A3's relevant additions to the packed result that share no stem
+with the prompt."""
 PRECISION_DROP_BAR: Final[float] = 0.05
 """H5: largest allowed drop in an arm's precision share against A0."""
 PROXY_OVERLAP_BAR: Final[float] = 0.6
@@ -1131,16 +1132,6 @@ def _only(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyI
     return out
 
 
-def _top_added(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyItem]]:
-    """{prompt id: the arm's top `TOP_K` items outside `other`'s top `TOP_K`}."""
-    out: dict[str, list[KeyItem]] = {}
-    for i in items:
-        if (i.arms is not None and i.arms.get(arm, TOP_K + 1) <= TOP_K
-                and i.arms.get(other, TOP_K + 1) > TOP_K):
-            out.setdefault(i.prompt_id, []).append(i)
-    return out
-
-
 def _relevant(items: Sequence[KeyItem], labels: Labels) -> int:
     return sum(1 for i in items if labels[i.id] is True)
 
@@ -1195,8 +1186,7 @@ def arm_figures(
         ),
     }
     if arm == ARM_A3:
-        added = _top_added(items, arm, control)
-        additions = [i for p in prompts for i in added.get(p, []) if labels[i.id] is True]
+        additions = [i for p in prompts for i in gained.get(p, []) if labels[i.id] is True]
         bridging = sum(1 for i in additions if not i.shares_prompt_stem)
         share_b = bridging / len(additions) if additions else None
         figures.update({"relevant_additions": len(additions), "bridging": bridging,
