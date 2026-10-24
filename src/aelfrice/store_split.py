@@ -808,7 +808,12 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
         raise SplitRefused(f"{work_tree} is not in a git repository")
     with config_discovery_scope():
         check_markers(work_tree)
-        if not store_file_present(source):
+        try:
+            present = store_file_present(source)
+        except OSError as exc:
+            # A folder it can't search: the store may be there.
+            raise SplitError(f"cannot read {source}: {exc}") from exc
+        if not present:
             raise SplitRefused(f"no repository store at {source}")
         try:
             conn = sqlite3.connect(

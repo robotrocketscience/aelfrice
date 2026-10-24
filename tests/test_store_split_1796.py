@@ -975,6 +975,29 @@ def test_an_unreadable_repository_store_exits_1(
     assert f"aelf store split: cannot read {source}" in err
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_a_repository_store_in_a_folder_it_cannot_search_exits_1(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The store may be there, so the command reports it as unreadable
+    in one line rather than as missing or with a traceback."""
+    _seed_pair(repo)
+    source = _source_path(repo)
+    source.parent.chmod(0)
+    try:
+        code, out, err = _run(repo, "--apply", capsys=capsys)
+    finally:
+        source.parent.chmod(0o755)
+    assert code == 1
+    assert out == ""
+    assert err.startswith(f"aelf store split: cannot read {source}: "), err
+    assert len(err.strip().splitlines()) == 1
+    assert not _target_path(repo).parent.exists()
+
+
 def test_the_source_store_is_only_ever_opened_read_only(
     repo: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
