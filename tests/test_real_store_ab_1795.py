@@ -38,6 +38,8 @@ from benchmarks import graded_gate
 from benchmarks import real_store_ab_1795 as bench
 
 _QUERY = "kestrel meadow"
+_SNAP = "s0"
+"""A stand-in store snapshot for key rows and packets built in memory."""
 
 
 class _approx:
@@ -401,14 +403,15 @@ def test_a_lane_addition_past_the_top_ten_is_judged_and_counted(tmp_path: Path) 
     assert a2[:bench.TOP_K] == a0[:bench.TOP_K]
     work = tmp_path / "crowd-pk"
     work.mkdir()
-    _packet_rows, key = bench.build_packet(runs, bench.prepare_copy(path, work), 1)
+    _packet_rows, key = bench.build_packet(runs, bench.prepare_copy(path, work), 1,
+                                           snapshot=_SNAP)
     by = {r["belief_id"]: r for r in key if r["arms"]}
     assert by["rel"]["arms"] == {"A2": a2.index("rel") + 1}
     # Both arms packed the beliefs past the cut, so they cancel unjudged.
     assert set(by) == set(a0[:bench.TOP_K]) | {"rel"}
     # The null arm never draws a belief an arm packed, judged or not.
     for seed in range(10):
-        _rows, k = bench.build_packet(runs, work / "memory.db", seed)
+        _rows, k = bench.build_packet(runs, work / "memory.db", seed, snapshot=_SNAP)
         assert not {r["belief_id"] for r in k if r["arms"] is None} & set(a2)
     # Graded relevant: A2 gains `rel` on every prompt, all of it past the cut.
     # The 2026-10-23 amendment to #1795 decides on the packed gain, so H3
@@ -511,7 +514,8 @@ def test_the_judged_top_of_each_run_is_ten(tmp_path: Path) -> None:
     run = bench.run_arm(path, _prompts(), bench.ARM_A0, work)
     ranked = run["prompts"][0]["ranked"]
     assert len(ranked) == 12
-    _rows, key = bench.build_packet({bench.ARM_A0: run}, work / "memory.db", 1)
+    _rows, key = bench.build_packet({bench.ARM_A0: run}, work / "memory.db", 1,
+                                    snapshot=_SNAP)
     assert {r["belief_id"] for r in key if r["arms"]} == set(ranked[:10])
 
 
@@ -841,7 +845,8 @@ def _packet(tmp_path: Path, runs: Mapping[str, Any], seed: int = 9) -> tuple[str
         tmp_path / "repo" / "aelfrice" / "memory.db")
     work = tmp_path / f"pk{len(list(tmp_path.iterdir()))}"
     work.mkdir()
-    packet, key = bench.build_packet(runs, bench.prepare_copy(path, work), seed)
+    db, snapshot = bench.prepare_snapshot(path, work)
+    packet, key = bench.build_packet(runs, db, seed, snapshot=snapshot)
     out = work / "out"
     bench.write_packet(packet, key, out, work / "key.jsonl")
     return (out / "packet.jsonl").read_text(), (work / "key.jsonl").read_text()
@@ -980,7 +985,8 @@ def test_a_belief_in_any_arms_top_ten_is_judged(tmp_path: Path) -> None:
     work = tmp_path / "w"
     work.mkdir()
     db = bench.prepare_copy(_store(tmp_path), work)
-    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1)
+    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1,
+                                    snapshot=_SNAP)
     by = {r["belief_id"]: r["arms"] for r in key if r["arms"]}
     assert by["seed"] == {"A0": 1, "A1": 12}
 
@@ -992,7 +998,8 @@ def test_a_belief_only_the_control_packed_past_the_top_ten_is_judged(tmp_path: P
     work = tmp_path / "w"
     work.mkdir()
     db = bench.prepare_copy(_store(tmp_path), work)
-    _rows, key = bench.build_packet(_one_prompt_runs([*fill, "seed"], fill), db, 1)
+    _rows, key = bench.build_packet(_one_prompt_runs([*fill, "seed"], fill), db, 1,
+                                    snapshot=_SNAP)
     by = {r["belief_id"]: r["arms"] for r in key if r["arms"]}
     assert by["seed"] == {"A0": 12}
 
@@ -1006,7 +1013,8 @@ def test_the_null_arm_is_sized_by_the_judged_count_not_the_packed_count(
     work = tmp_path / "w"
     work.mkdir()
     db = bench.prepare_copy(_store(tmp_path), work)
-    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1)
+    _rows, key = bench.build_packet(_one_prompt_runs(["seed", *fill], [*fill, "seed"]), db, 1,
+                                    snapshot=_SNAP)
     assert sum(1 for r in key if r["arms"]) == 11
     assert sum(1 for r in key if r["arms"] is None) == 11
 
@@ -1019,7 +1027,7 @@ def test_the_null_arm_never_draws_a_retrieved_or_locked_belief(tmp_path: Path) -
     many = ["seed", "con", "rel", "w1", "w2", "w3", "w4", "w5", "w6"]
     runs = _runs(many[:5], many[5:], many[4:], many[:4])
     for seed in range(40):
-        _packet_rows, key = bench.build_packet(runs, db, seed)
+        _packet_rows, key = bench.build_packet(runs, db, seed, snapshot=_SNAP)
         retrieved = {(r["prompt_id"], r["belief_id"]) for r in key if r["arms"]}
         nulls = [(r["prompt_id"], r["belief_id"]) for r in key if r["arms"] is None]
         assert len(nulls) == 18
@@ -1049,7 +1057,7 @@ def _key(rows: list[Row], sampled: int | None = None) -> tuple[
     """Key items and both graders' labels; `sampled` defaults to the rows' prompts."""
     n = len({r[1] for r in rows}) if sampled is None else sampled
     items = [bench.KeyItem(id=i, prompt_id=p, arms=arms, shares_prompt_stem=s,
-                           prompts_sampled=n)
+                           prompts_sampled=n, snapshot=_SNAP)
              for i, p, arms, s, _a, _b in rows]
     return items, {r[0]: r[4] for r in rows}, {r[0]: r[5] for r in rows}
 
@@ -1137,6 +1145,29 @@ def test_score_rejects_a_key_with_a_wrong_or_mixed_sampled_count() -> None:
     items[0] = dataclasses.replace(items[0], prompts_sampled=2)
     with pytest.raises(bench.InputError, match="disagree"):
         bench.score(items, a, b, seed=1)
+
+
+def _store_key_rows(snapshot: str, sampled: int) -> list[dict[str, Any]]:
+    """One store's key: A0 packs `a`, A3 packs `a` and `x`, all on prompt p0."""
+    return [{"id": f"{snapshot}-{b}", "prompt_id": "p0", "arms": arms,
+             "shares_prompt_stem": True, "prompts_sampled": sampled, "snapshot": snapshot}
+            for b, arms in (("a", {"A0": 1, "A3": 1}), ("x", {"A3": 2}))]
+
+
+def test_a_key_concatenated_from_several_stores_scores_them_pooled(tmp_path: Path) -> None:
+    # #1795 decides H2 to H6 over every store's prompts, and each store's
+    # key records its own sample. Both stores name their prompt p0.
+    for counts in ((4, 4), (4, 6)):
+        rows = _store_key_rows("s1", counts[0]) + _store_key_rows("s2", counts[1])
+        path = tmp_path / "key.jsonl"
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        labels: dict[str, bool | None] = {str(r["id"]): True for r in rows}
+        rep = bench.score(bench.read_key(path), labels, labels, seed=1)
+        assert (rep["prompts"], rep["keyed_prompts"]) == (sum(counts), 2)
+        assert rep["stores"] == 2
+        g = rep["arms"]["A3"]["graders"][0]
+        assert g["mean_gain"] == _approx(2 / sum(counts))  # p0 gains 1 in each store
+        assert g["share_gaining"] == _approx(2 / sum(counts))
 
 
 def test_a_zero_gain_fails_and_a_precision_drop_blocks() -> None:
@@ -1860,9 +1891,9 @@ def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(
 def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         {"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True,
-         "prompts_sampled": 1},
+         "prompts_sampled": 1, "snapshot": _SNAP},
         {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False,
-         "prompts_sampled": 1}]
+         "prompts_sampled": 1, "snapshot": _SNAP}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match="no A0 item"):
@@ -1872,23 +1903,27 @@ def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     assert [i.id for i in bench.read_key(path)] == ["i1", "i2"]
 
 
-def test_read_key_rejects_a_row_without_a_sampled_prompt_count(tmp_path: Path) -> None:
+def test_read_key_rejects_a_row_without_a_sampled_count_or_snapshot(tmp_path: Path) -> None:
     row: dict[str, Any] = {"id": "i1", "prompt_id": "p", "arms": {"A0": 1},
-                           "shares_prompt_stem": True, "prompts_sampled": 1}
+                           "shares_prompt_stem": True, "prompts_sampled": 1,
+                           "snapshot": _SNAP}
     path = tmp_path / "key.jsonl"
     path.write_text(json.dumps(row) + "\n", encoding="utf-8")
-    assert [i.prompts_sampled for i in bench.read_key(path)] == [1]
-    for bad in (None, 0, True, "1"):
-        row["prompts_sampled"] = bad
+    assert [(i.prompts_sampled, i.snapshot) for i in bench.read_key(path)] == [(1, _SNAP)]
+    for field, bad in [("prompts_sampled", b) for b in (None, 0, True, "1")] + [
+            ("snapshot", b) for b in (None, "", 1)]:
+        good = row[field]
+        row[field] = bad
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
-        with pytest.raises(bench.InputError, match="prompts_sampled"):
+        with pytest.raises(bench.InputError, match="prompts_sampled, and snapshot"):
             bench.read_key(path)
+        row[field] = good
 
 
 def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True,
-         "prompts_sampled": 1},
+         "prompts_sampled": 1, "snapshot": _SNAP},
         {"id": "i2", "prompt_id": "p", "arms": {"A9": 1}, "shares_prompt_stem": True,
          "prompts_sampled": 1}]
     path = tmp_path / "key.jsonl"

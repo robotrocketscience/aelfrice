@@ -36,7 +36,9 @@ subcommand at that copy.
 - `packet`: the blind grader packet and its instructions in `--out`, and
   the hidden key at `--key`, which must lie outside `--out`. Give each
   grader the `--out` directory only.
-- `score`: the H0 to H6 verdicts from two graders' labels.
+- `score`: the H0 to H6 verdicts from two graders' labels. To score
+  several stores together, concatenate their keys, and each grader's
+  labels, into one file each.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief. Reported beside the graders, never gating.
 
@@ -935,7 +937,7 @@ def shares_prompt_stem(prompt: str, belief: str) -> bool:
 
 
 def build_packet(
-    runs: Mapping[str, Mapping[str, Any]], db: Path, seed: int,
+    runs: Mapping[str, Mapping[str, Any]], db: Path, seed: int, *, snapshot: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """`(packet rows, key rows)`, both in item-id order.
 
@@ -947,7 +949,9 @@ def build_packet(
     median judged count (the lower median), drawn with `seed` in
     prompt-id order. Every key row records `prompts_sampled`, the number
     of prompts the runs cover, because a prompt with no judged or null
-    belief has no row of its own.
+    belief has no row of its own. It also records `snapshot`, the store
+    state the runs read, which tells one store's rows from another's in a
+    key concatenated from several stores' keys.
     """
     prompts: dict[str, str] = {}
     packed: dict[str, dict[str, dict[str, int]]] = {}
@@ -989,7 +993,7 @@ def build_packet(
             "id": iid, "prompt_id": pid, "prompt": prompts[pid], "belief_id": bid,
             "arms": None if arms is None else dict(sorted(arms.items())),
             "shares_prompt_stem": shares_prompt_stem(prompts[pid], texts[bid]),
-            "prompts_sampled": len(prompts),
+            "prompts_sampled": len(prompts), "snapshot": snapshot,
         })
     if len({r["id"] for r in packet}) != len(packet):
         raise InputError("packet id collision; pick another seed")
@@ -1089,6 +1093,9 @@ def proxy(
 # --- Score --------------------------------------------------------------------
 
 
+PromptKey = tuple[str, str]
+
+
 @dataclass(frozen=True)
 class KeyItem:
     id: str
@@ -1096,6 +1103,12 @@ class KeyItem:
     arms: Mapping[str, int] | None
     shares_prompt_stem: bool
     prompts_sampled: int
+    snapshot: str
+
+    @property
+    def prompt_key(self) -> PromptKey:
+        """The prompt's store snapshot and id, unique across pooled stores."""
+        return self.snapshot, self.prompt_id
 
 
 def read_key(path: Path) -> list[KeyItem]:
@@ -1117,16 +1130,18 @@ def read_key(path: Path) -> list[KeyItem]:
         )
         sampled: object = row.get("prompts_sampled")
         ok_sampled = isinstance(sampled, int) and not isinstance(sampled, bool) and sampled > 0
+        snapshot: object = row.get("snapshot")
         if (not isinstance(row.get("id"), str) or not isinstance(row.get("prompt_id"), str)
                 or not ok_arms or not isinstance(row.get("shares_prompt_stem"), bool)
-                or not ok_sampled):
+                or not ok_sampled or not isinstance(snapshot, str) or not snapshot):
             raise InputError(
-                f"{path}:{n}: need id, prompt_id, arms, shares_prompt_stem, and prompts_sampled")
+                f"{path}:{n}: need id, prompt_id, arms, shares_prompt_stem, prompts_sampled,"
+                " and snapshot")
         items.append(KeyItem(
             id=row["id"], prompt_id=row["prompt_id"],
             arms=None if arms is None else dict(cast(dict[str, int], arms)),
             shares_prompt_stem=row["shares_prompt_stem"],
-            prompts_sampled=row["prompts_sampled"],
+            prompts_sampled=row["prompts_sampled"], snapshot=snapshot,
         ))
     if not items:
         raise InputError(f"{path}: empty key")
@@ -1178,21 +1193,21 @@ def combine(verdicts: Sequence[str]) -> str:
     return V_INCONCLUSIVE
 
 
-def _top(items: Sequence[KeyItem], arm: str) -> dict[str, list[KeyItem]]:
-    """{prompt id: the arm's top `TOP_K` items}."""
-    out: dict[str, list[KeyItem]] = {}
+def _top(items: Sequence[KeyItem], arm: str) -> dict[PromptKey, list[KeyItem]]:
+    """{prompt key: the arm's top `TOP_K` items}."""
+    out: dict[PromptKey, list[KeyItem]] = {}
     for i in items:
         if i.arms is not None and i.arms.get(arm, TOP_K + 1) <= TOP_K:
-            out.setdefault(i.prompt_id, []).append(i)
+            out.setdefault(i.prompt_key, []).append(i)
     return out
 
 
-def _only(items: Sequence[KeyItem], arm: str, other: str) -> dict[str, list[KeyItem]]:
-    """{prompt id: the judged items `arm` packed and `other` didn't}."""
-    out: dict[str, list[KeyItem]] = {}
+def _only(items: Sequence[KeyItem], arm: str, other: str) -> dict[PromptKey, list[KeyItem]]:
+    """{prompt key: the judged items `arm` packed and `other` didn't}."""
+    out: dict[PromptKey, list[KeyItem]] = {}
     for i in items:
         if i.arms is not None and arm in i.arms and other not in i.arms:
-            out.setdefault(i.prompt_id, []).append(i)
+            out.setdefault(i.prompt_key, []).append(i)
     return out
 
 
@@ -1207,8 +1222,8 @@ def _gain_stats(gains: Sequence[float], seed: int) -> tuple[float, tuple[float, 
 
 
 def arm_figures(
-    items: Sequence[KeyItem], arm: str, labels: Labels, prompts: Sequence[str], seed: int,
-    control: str = CONTROL_ARM, unkeyed: int = 0,
+    items: Sequence[KeyItem], arm: str, labels: Labels, prompts: Sequence[PromptKey],
+    seed: int, control: str = CONTROL_ARM, unkeyed: int = 0,
 ) -> dict[str, Any]:
     """One grader's paired gain, precision share, and drop for `arm` against `control`.
 
@@ -1322,21 +1337,32 @@ def score(
     under the same H0 and H1 rules as H2. A1's figures against A1W are
     under `arms["A1"]["vs_A1W"]`.
 
-    The paired gains and gaining shares count all `prompts_sampled`
-    prompts. The report's `prompts` is that count, and `keyed_prompts`
-    is the number of prompts the key holds rows for.
+    A key concatenated from several stores' keys scores them pooled, as
+    #1795's H2 to H6 do. Its rows are grouped into stores by `snapshot`.
+    The paired gains and gaining shares count every sampled prompt, the
+    sum of each store's `prompts_sampled`. The report's `prompts` is that
+    sum, `keyed_prompts` is the number of prompts the key holds rows for,
+    and `stores` is the number of snapshots.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
-    prompts = sorted({i.prompt_id for i in items})
+    prompts = sorted({i.prompt_key for i in items})
     # A sampled prompt where no arm packed a belief and no null belief was
     # drawn has no key row, but it still counts in every paired gain.
-    sampled_counts = {i.prompts_sampled for i in items}
-    if len(sampled_counts) != 1:
-        raise InputError("the key rows disagree on prompts_sampled")
-    sampled = sampled_counts.pop()
-    if sampled < len(prompts):
-        raise InputError(f"the key holds {len(prompts)} prompts but prompts_sampled is {sampled}")
+    sampled_counts: dict[str, set[int]] = {}
+    for i in items:
+        sampled_counts.setdefault(i.snapshot, set()).add(i.prompts_sampled)
+    keyed = Counter(snap for snap, _pid in prompts)
+    sampled = 0
+    for snap, counts in sorted(sampled_counts.items()):
+        if len(counts) != 1:
+            raise InputError(f"the key rows of snapshot {snap} disagree on prompts_sampled")
+        n = min(counts)
+        if n < keyed[snap]:
+            raise InputError(
+                f"the key holds {keyed[snap]} prompts of snapshot {snap}"
+                f" but prompts_sampled is {n}")
+        sampled += n
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for i in items if i.arms for arm in i.arms} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
@@ -1401,7 +1427,8 @@ def score(
                        else verdict(arm, V_AGREE if agree else V_DISAGREE)}
         hyp["H6"] = h6
     return {
-        "prompts": sampled, "keyed_prompts": len(prompts), "items": len(ids),
+        "prompts": sampled, "keyed_prompts": len(prompts), "stores": len(sampled_counts),
+        "items": len(ids),
         "null_items": sum(1 for i in items if i.arms is None),
         "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
         "arms": per_arm, "hypotheses": hyp,
@@ -1507,7 +1534,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         with tempfile.TemporaryDirectory(dir=args.work_dir) as work:
             db, snapshot = prepare_snapshot(args.store, Path(work))
             require_snapshot(runs, snapshot)
-            packet, key = build_packet(runs, db, args.seed)
+            packet, key = build_packet(runs, db, args.seed, snapshot=snapshot)
         write_packet(packet, key, args.out, args.key)
         print(f"items={len(packet)} null={sum(1 for r in key if r['arms'] is None)}")
     elif cmd == "score":
