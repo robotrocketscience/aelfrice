@@ -1023,6 +1023,27 @@ def test_a_folder_replaced_by_a_symlink_keeps_the_commit_in_this_repository(
     ]
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_a_commit_under_a_folder_you_cannot_read_lands_in_the_folder_above(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelfrice import hook_commit_ingest as hk
+
+    monkeypatch.chdir(marked_repo)
+    _stage(marked_repo, "project-a/sealed/x.txt")
+    rev = _commit_staged(marked_repo, _TRIPLE_MSG)
+    sealed = marked_repo / "project-a" / "sealed"
+    sealed.chmod(0)
+    try:
+        stores = hk._commit_stores(rev, str(marked_repo))  # pyright: ignore[reportPrivateUsage]
+    finally:
+        sealed.chmod(0o755)
+    assert stores == [_named_store(marked_repo, "project-a")]
+
+
 def test_a_merge_lands_in_the_stores_of_the_files_it_brought_in(
     marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
