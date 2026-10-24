@@ -3473,6 +3473,36 @@ class MemoryStore:
         self._bump_belief_version(b.id)
         self._commit_mutation()
 
+    def existing_belief_keys(
+        self, belief_ids: list[str], content_hashes: list[str],
+    ) -> tuple[set[str], set[str]]:
+        """Which of `belief_ids` and `content_hashes` this store holds.
+
+        Returns `(ids, hashes)`, each the subset found. Retired rows
+        count: a tombstone still owns its id and its hash, so a copy that
+        reuses either would trip the primary key or the UNIQUE
+        constraint. `aelf store split` reads this to skip a belief that
+        is already in the target (#1796). Each list is bound as one JSON
+        array, so the SQL text stays static.
+        """
+        ids: set[str] = set()
+        hashes: set[str] = set()
+        if belief_ids:
+            cur = self._conn.execute(
+                "SELECT b.id FROM beliefs b "
+                "JOIN json_each(?) AS cand ON cand.value = b.id",
+                (json.dumps(sorted(set(belief_ids))),),
+            )
+            ids = {str(r["id"]) for r in cur.fetchall()}
+        if content_hashes:
+            cur = self._conn.execute(
+                "SELECT b.content_hash FROM beliefs b "
+                "JOIN json_each(?) AS cand ON cand.value = b.content_hash",
+                (json.dumps(sorted(set(content_hashes))),),
+            )
+            hashes = {str(r["content_hash"]) for r in cur.fetchall()}
+        return ids, hashes
+
     def get_belief_by_content_hash(
         self, content_hash: str, *, include_retired: bool = False
     ) -> Belief | None:
@@ -5629,12 +5659,16 @@ class MemoryStore:
         doc_uri: str,
         anchor_type: str,
         position_hint: str | None,
+        created_at: float | None = None,
     ) -> "DocAnchor":  # noqa: F821 — forward ref to avoid a circular import
         """Persist one anchor row and return a `DocAnchor`.
 
         Idempotent on `(belief_id, doc_uri)`: the table's PK + INSERT OR
         IGNORE turns repeats into no-op writes. Returns the canonical
         (first-write) row regardless of whether this call inserted.
+
+        `created_at` (unix seconds) defaults to now. `aelf store split`
+        passes the source row's value so a copied anchor keeps it (#1796).
         """
         from aelfrice.doc_linker_types import ANCHOR_TYPES, DocAnchor
 
@@ -5645,7 +5679,10 @@ class MemoryStore:
                 f"Unknown anchor_type {anchor_type!r}. "
                 f"Must be one of {sorted(ANCHOR_TYPES)}"
             )
-        ts = datetime.now(timezone.utc).timestamp()
+        ts = (
+            datetime.now(timezone.utc).timestamp()
+            if created_at is None else created_at
+        )
         self._conn.execute(
             """
             INSERT OR IGNORE INTO belief_documents
