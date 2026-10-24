@@ -664,6 +664,30 @@ def test_apply_copies_beliefs_with_their_rows_and_both_end_edges(
         assert set(got[table]) == want
 
 
+def test_an_edge_the_target_already_holds_is_not_copied_again(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The edges table has no foreign key, so a target can hold an edge
+    before it holds either belief. Inserting it again would fail the
+    whole target on the primary key."""
+    ids = _seed_graph(repo)
+    t = _open_target(repo)
+    try:
+        assert t.insert_edge(Edge(ids["a1"], ids["a2"], EDGE_RELATES_TO, 0.5))
+        assert t.get_belief(ids["a1"]) is None
+    finally:
+        t.close()
+    for flags in ((), ("--apply",)):
+        target = _only_target(_report(repo, *flags, capsys=capsys))
+        assert target["error"] is None, flags
+        assert target["copied"]["beliefs"] == 2, flags
+        assert target["copied"]["edges"] == 1, flags
+    got = _rows(_target_path(repo))
+    assert {(r[0], r[1]) for r in got["edges"]} == {
+        (ids["a1"], ids["a2"]), (ids["a2"], "present00000001"),
+    }
+
+
 def test_a_copy_is_restamped_with_the_target_identity(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
