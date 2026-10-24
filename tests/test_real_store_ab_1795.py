@@ -871,6 +871,18 @@ def test_a_relative_packet_directory_still_keeps_the_key_out(tmp_path: Path) -> 
     assert not inside.exists()
 
 
+def test_a_key_path_that_links_into_the_packet_directory_is_refused(tmp_path: Path) -> None:
+    # The write follows the link, so the guard must follow it too.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out = tmp_path / "pk"
+    link = tmp_path / "key.jsonl"
+    link.symlink_to(out / "key.jsonl")
+    with pytest.raises(bench.InputError, match="outside"):
+        bench.write_packet(packet, key, out, link)
+    assert not (out / "key.jsonl").exists()
+
+
 def test_the_key_guard_follows_the_filesystem_case_rule(tmp_path: Path) -> None:
     # macOS folds case by default, so there `PK/key.jsonl` lands in `pk/`.
     packet = [{"id": "x", "prompt": "p", "belief": "b"}]
