@@ -567,6 +567,16 @@ def test_a_run_leaves_only_sqlite_sidecars_beside_the_source_and_says_so(
     assert "`-wal` and `-shm`" in section
 
 
+def test_the_doc_names_every_skip_reason_by_its_key_and_its_label() -> None:
+    """The text report prints a label, not the `--json` key, so each
+    reason's table row gives both."""
+    section = _split_section()
+    labels = store_split._LABELS  # pyright: ignore[reportPrivateUsage]
+    for reason in (*store_split.UNROUTED_REASONS, *store_split.TARGET_REASONS):
+        row = f"| `{reason}` | {labels[reason]} | "
+        assert row in section, row
+
+
 def test_a_dry_run_reports_a_target_store_it_cannot_read(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

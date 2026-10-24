@@ -1468,25 +1468,25 @@ The command copies and doesn't move. It opens the repository store read-only and
 
 A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, a nested repository, or a folder you can't read, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
 
-| Reason | Meaning |
-|---|---|
-| `no_file_source` | The belief has no document or docstring source. |
-| `no_root` | The belief's ingest records don't name one absolute onboard folder. Only an onboard run through `--emit-candidates` records the folder, as `/aelf:onboard` does unless it falls back to the regex classifier. `aelf onboard <path>` run without `--emit-candidates` records none. A relative `<path>`, such as `.`, is recorded as given, so the folder isn't absolute. |
-| `outside_work_tree` | The onboard folder isn't inside this work tree, such as one from another worktree. A folder inside a linked worktree or a nested repository counts as outside, even when that worktree sits inside this one. |
-| `missing_root` | The onboard folder, or a folder above it, is gone or can't be read. `git worktree remove` deletes a worktree's folder and its `.git` entry, so the command can't tell a removed worktree from a deleted folder, and it copies neither. |
-| `several_stores` | The belief's files are in folders with different stores. |
-| `source_store` | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
+| Reason in `--json` | Reason in the text report | Meaning |
+|---|---|---|
+| `no_file_source` | no file source | The belief has no document or docstring source. |
+| `no_root` | no root | The belief's ingest records don't name one absolute onboard folder. Only an onboard run through `--emit-candidates` records the folder, as `/aelf:onboard` does unless it falls back to the regex classifier. `aelf onboard <path>` run without `--emit-candidates` records none. A relative `<path>`, such as `.`, is recorded as given, so the folder isn't absolute. |
+| `outside_work_tree` | outside the work tree | The onboard folder isn't inside this work tree, such as one from another worktree. A folder inside a linked worktree or a nested repository counts as outside, even when that worktree sits inside this one. |
+| `missing_root` | missing root | The onboard folder, or a folder above it, is gone or can't be read. `git worktree remove` deletes a worktree's folder and its `.git` entry, so the command can't tell a removed worktree from a deleted folder, and it copies neither. |
+| `several_stores` | several stores | The belief's files are in folders with different stores. |
+| `source_store` | stays in the repository store | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
 
 A copy keeps the belief's id and gets the target store's identity in its `project_context`. It brings the belief's document anchors, feedback history, and corroborations with it. An edge or a support-evidence row comes along when both of its beliefs land in the target store, either as copies or because the target already holds them. The command doesn't copy injection events, belief touches, the deferred-feedback queue, sessions, or ingest records, so the copied beliefs have no ingest history in the target store.
 
 For each target store, the command skips these beliefs and counts them by reason:
 
-| Reason | Meaning |
-|---|---|
-| `already_present` | The target store already holds a belief with the same id or the same content. |
-| `locked` | You locked the belief. A lock keeps an empty `project_context` so it applies under every context, and a copy would restamp it. Lock the statement again from inside the folder. |
-| `retired` | The belief is retired. A copy would make it searchable again. |
-| `superseded` | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
+| Reason in `--json` | Reason in the text report | Meaning |
+|---|---|---|
+| `already_present` | already present | The target store already holds a belief with the same id or the same content. |
+| `locked` | locked | You locked the belief. A lock keeps an empty `project_context` so it applies under every context, and a copy would restamp it. Lock the statement again from inside the folder. |
+| `retired` | retired | The belief is retired. A copy would make it searchable again. |
+| `superseded` | superseded | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
 Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. The check for broken markers passes over a folder you can't read, such as a container's data folder, because aelfrice reads no marker inside it.
 
