@@ -894,6 +894,12 @@ EXCLUDED_WRITERS: Final[tuple[tuple[str, str], ...]] = (
         "decision, so there is no threshold to pin",
     ),
     (
+        "aelfrice.store_split",
+        "copies existing edge rows from the repository store into a "
+        "marker store (#1796); makes no detection decision, so there is "
+        "no threshold to pin",
+    ),
+    (
         "aelfrice.benchmark",
         "builds a fixed synthetic multi-hop fixture for benchmarks, not "
         "a detector over user beliefs",
