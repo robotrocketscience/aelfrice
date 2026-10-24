@@ -692,15 +692,23 @@ def _write(target: MemoryStore, plan: _Plan, identity: str) -> dict[str, int]:
 def _dry_run_target(
     rows: _SourceRows, selection: StoreSelection, ids: set[str],
 ) -> TargetReport:
+    """Plan one target without writing; a store that can't be read is
+    reported as failed, as `_apply_target` reports it."""
     path = selection.path
-    if not store_file_present(path):
-        plan = _plan(rows, ids, None)
-    else:
-        target = MemoryStore(str(path), read_only=True)
-        try:
-            plan = _plan(rows, ids, target)
-        finally:
-            target.close()
+    try:
+        if not store_file_present(path):
+            plan = _plan(rows, ids, None)
+        else:
+            target = MemoryStore(str(path), read_only=True)
+            try:
+                plan = _plan(rows, ids, target)
+            finally:
+                target.close()
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        return TargetReport(
+            path, selection.marker, {kind: 0 for kind in COPIED_KINDS},
+            {reason: 0 for reason in TARGET_REASONS}, str(exc),
+        )
     return TargetReport(path, selection.marker, plan.counts(), plan.skipped)
 
 

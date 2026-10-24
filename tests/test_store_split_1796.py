@@ -421,6 +421,22 @@ def test_a_dry_run_writes_nothing(
     assert not (_target_path(repo).parent / "identity").exists()
 
 
+def test_a_dry_run_reports_a_target_store_it_cannot_read(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_pair(repo)
+    target = _target_path(repo)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"not a database " * 64)
+    code, out, err = _run(repo, "--json", capsys=capsys)
+    assert code == 1, err
+    report = _only_target(json.loads(out))
+    assert "not a database" in str(report["error"])
+    code, out, _ = _run(repo, capsys=capsys)
+    assert code == 1
+    assert "failed, nothing copied: file is not a database" in out
+
+
 # --- apply -------------------------------------------------------------------
 
 
