@@ -9,8 +9,11 @@ judging the result.
 **Store safety.** Every subcommand that reads a store copies it first,
 with SQLite's backup API from a `mode=ro` source URI, and works on the
 copy in a temporary directory that is deleted on exit. Nothing opens the
-source store for writing. `--work-dir` picks where the temporary copy
-goes.
+source store for writing. A store with no `-wal`, `-shm`, or `-journal`
+file beside it is read with `immutable=1` as well, so no file appears
+beside it, and the copy fails if the store changes during it. A store
+in use already has those files, and the copy reads its log. `--work-dir`
+picks where the temporary copy goes.
 
 **One snapshot.** Each subcommand makes its own copy, so a write to the
 store between two of them would hand the arms different beliefs. `run`
@@ -213,6 +216,8 @@ didn't. Beliefs both arms packed cancel and stay unjudged past the top
 """
 DEFAULT_MAX_PROMPTS: Final[int] = 40
 """Most prompts sampled per store (#1795)."""
+STORE_SIDECAR_SUFFIXES: Final[tuple[str, ...]] = ("-wal", "-shm", "-journal")
+"""Files SQLite keeps beside a store while it is open or needs recovery."""
 
 # A3: the PMI table. A belief is the co-occurrence window, and each stem
 # counts once per belief. A stem, and a stem pair, must occur in at least
@@ -292,10 +297,23 @@ class InputError(ValueError):
 
 
 def copy_store(src: Path, dst: Path) -> None:
-    """Copy `src` to `dst` through a `mode=ro` handle and SQLite's backup API."""
+    """Copy `src` to `dst` through a `mode=ro` handle and SQLite's backup API.
+
+    A `mode=ro` reader of a WAL store with no log beside it creates the
+    shared-memory file and an empty log there, and can't remove them. So
+    a store with none of its sidecar files beside it, as a clean close
+    leaves it, is read with `immutable=1`, which creates nothing. That
+    read takes no lock, so the copy fails if the store changes during it.
+    A store with a sidecar file beside it is in use or needs recovery, and
+    is read through `mode=ro` alone, which reads its log.
+    """
     if not src.is_file():
         raise InputError(f"no store at {src}")
-    source = sqlite3.connect(read_only_uri(str(src)), uri=True)
+    sidecars = [src.with_name(src.name + s) for s in STORE_SIDECAR_SUFFIXES]
+    idle = not any(p.exists() for p in sidecars)
+    before = src.stat()
+    uri = read_only_uri(str(src)) + ("&immutable=1" if idle else "")
+    source = sqlite3.connect(uri, uri=True)
     try:
         target = sqlite3.connect(str(dst))
         try:
@@ -304,6 +322,11 @@ def copy_store(src: Path, dst: Path) -> None:
             target.close()
     finally:
         source.close()
+    after = src.stat()
+    if idle and (any(p.exists() for p in sidecars)
+                 or (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns)):
+        dst.unlink()
+        raise InputError(f"{src} changed while it was copied; copy it again")
 
 
 def snapshot_digest(db: Path) -> str:

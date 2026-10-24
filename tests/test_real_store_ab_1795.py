@@ -1736,15 +1736,88 @@ def test_no_subcommand_writes_or_opens_the_source_for_writing(
     assert bench.main(["proxy", "--store", str(path), "--runs", *runs, "--prompts",
                        str(prompts), "--out", str(d / "proxy.json")]) == 0
     assert _sha(path) == before
-    # A `mode=ro` reader of a WAL store may leave the shared-memory file and
-    # an empty log beside it; neither holds data.
-    added = sorted({p.name for p in path.parent.iterdir()} - set(files))
-    assert set(added) <= {"memory.db-wal", "memory.db-shm"}
-    wal = path.parent / "memory.db-wal"
-    assert not wal.exists() or wal.stat().st_size == 0
+    # Not writing the source covers the files beside it too.
+    assert sorted(p.name for p in path.parent.iterdir()) == files
     ro = read_only_uri(str(path))
     on_source = [c for c in connect_spy if _target(c[0]) == path.resolve()]
-    assert on_source and set(on_source) == {(ro, True)}
+    assert on_source and all(uri and db.startswith(ro) for db, uri in on_source)
+
+
+def _wal_header(path: Path) -> bytes:
+    """The header's read and write format bytes, 2 and 2 in WAL mode."""
+    return path.read_bytes()[18:20]
+
+
+def test_a_copy_of_an_idle_wal_store_adds_no_file_beside_it(tmp_path: Path) -> None:
+    # A `mode=ro` reader of a WAL store with no log beside it creates the
+    # shared-memory file and an empty log, and can't remove them.
+    src = tmp_path / "src" / "memory.db"
+    src.parent.mkdir()
+    MemoryStore(str(src)).close()
+    assert _wal_header(src) == b"\x02\x02"
+    assert [p.name for p in src.parent.iterdir()] == ["memory.db"]
+    bench.copy_store(src, tmp_path / "copy.db")
+    assert [p.name for p in src.parent.iterdir()] == ["memory.db"]
+    with sqlite3.connect(tmp_path / "copy.db") as c:
+        assert c.execute("SELECT count(*) FROM beliefs").fetchone() == (0,)
+
+
+def test_a_copy_of_a_store_in_use_reads_its_log(tmp_path: Path) -> None:
+    src = tmp_path / "src" / "memory.db"
+    src.parent.mkdir()
+    MemoryStore(str(src)).close()
+    writer = sqlite3.connect(src)
+    try:
+        writer.execute("CREATE TABLE late (x)")
+        writer.execute("INSERT INTO late VALUES (1)")
+        writer.commit()
+        assert (src.parent / "memory.db-wal").stat().st_size > 0
+        bench.copy_store(src, tmp_path / "copy.db")
+    finally:
+        writer.close()
+    with sqlite3.connect(tmp_path / "copy.db") as c:
+        assert c.execute("SELECT x FROM late").fetchall() == [(1,)]
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_a_store_with_a_sidecar_file_is_not_read_as_immutable(
+    tmp_path: Path, connect_spy: list[tuple[str, bool]], suffix: str,
+) -> None:
+    src = tmp_path / "src" / "memory.db"
+    src.parent.mkdir()
+    MemoryStore(str(src)).close()
+    src.with_name(src.name + suffix).touch()
+    connect_spy.clear()
+    bench.copy_store(src, tmp_path / "copy.db")
+    assert (read_only_uri(str(src)), True) in connect_spy
+    assert not any("immutable" in db for db, _uri in connect_spy)
+
+
+@pytest.mark.parametrize("change", ["mtime", "log"])
+def test_a_store_that_changes_during_an_idle_copy_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    # The idle copy takes no lock, so a writer that starts during it must
+    # fail the copy rather than tear it.
+    src = tmp_path / "src" / "memory.db"
+    src.parent.mkdir()
+    MemoryStore(str(src)).close()
+    real: Callable[..., sqlite3.Connection] = sqlite3.connect
+
+    def touching(database: Any, *args: Any, **kw: Any) -> sqlite3.Connection:
+        conn = real(database, *args, **kw)
+        if "immutable=1" in str(database):
+            if change == "log":
+                src.with_name(src.name + "-wal").touch()
+            else:
+                st = src.stat()
+                os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", touching)
+    with pytest.raises(bench.InputError, match="changed while it was copied"):
+        bench.copy_store(src, tmp_path / "copy.db")
+    assert not (tmp_path / "copy.db").exists()
 
 
 def test_every_subcommand_has_help() -> None:
