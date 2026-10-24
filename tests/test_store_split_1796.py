@@ -536,6 +536,37 @@ def test_a_dry_run_writes_nothing(
     assert not (_target_path(repo).parent / "identity").exists()
 
 
+_REPO = Path(__file__).resolve().parents[1]
+_CONFIG_DOC = _REPO / "docs" / "user" / "CONFIG.md"
+
+
+def _split_section() -> str:
+    """The "Split an existing store" section of the configuration doc."""
+    text = _CONFIG_DOC.read_text(encoding="utf-8")
+    start = text.index("### Split an existing store")
+    return text[start:text.index("\n## ", start)]
+
+
+def test_a_run_leaves_only_sqlite_sidecars_beside_the_source_and_says_so(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The database file is never written, but a `mode=ro` open of a WAL
+    store creates its `-wal` and `-shm` files, and the doc names them."""
+    _seed_pair(repo)
+    source = _source_path(repo)
+    before = source.read_bytes()
+    names = {p.name for p in source.parent.iterdir()}
+    for flags in ((), ("--apply",)):
+        code, _, err = _run(repo, *flags, capsys=capsys)
+        assert code == 0, err
+        assert source.read_bytes() == before, flags
+        added = {p.name for p in source.parent.iterdir()} - names
+        assert added <= {"memory.db-wal", "memory.db-shm"}, added
+    section = _split_section()
+    assert "never writes to it" not in section
+    assert "`-wal` and `-shm`" in section
+
+
 def test_a_dry_run_reports_a_target_store_it_cannot_read(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
