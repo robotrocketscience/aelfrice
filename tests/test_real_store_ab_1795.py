@@ -1276,6 +1276,16 @@ def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     assert rep["hypotheses"]["H2"] == bench.V_UNRELIABLE
 
 
+def test_either_graders_null_rate_over_the_ceiling_fails_h0() -> None:
+    # #1795 H0 holds each grader to the ceiling: 7 of 40 is 0.175, 9 of 40 is 0.225.
+    for table, rates in ((_null_table(7, 0, 2, 31), [0.175, 0.225]),
+                         (_null_table(7, 2, 0, 31), [0.225, 0.175])):
+        rep = _score(table)
+        assert [n["rate"] for n in rep["null_arm"]] == [_approx(r) for r in rates]
+        assert bench.at_least(rep["kappa"], bench.KAPPA_BAR)
+        assert rep["hypotheses"]["H0"] == bench.V_FAIL
+
+
 def test_a_grader_with_no_graded_null_item_fails_h0() -> None:
     # Grader A leaves every null item unclear: a rate of 0 out of 0.
     rows = [(r[0], r[1], r[2], r[3], None if r[2] is None else r[4], r[5])
