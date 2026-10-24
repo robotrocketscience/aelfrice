@@ -1209,6 +1209,16 @@ def test_a_precision_drop_of_exactly_the_bar_passes_h5() -> None:
     assert over["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
 
 
+def test_a_precision_drop_just_over_the_bar_blocks() -> None:
+    # A0 is 320/400. One unclear arm item makes the arm 299/399, a drop of
+    # 0.0506, so a bar moved anywhere from 0.0507 up lets it pass.
+    rows = [(r[0], r[1], r[2], r[3], None, None) if r[0] == "x0-9" else r
+            for r in _hand([8] * 40, [7] * 21 + [8] * 19)]
+    rep = _score(rows)
+    assert rep["arms"]["A1"]["graders"][0]["precision_drop"] == _approx(0.8 - 299 / 399)
+    assert rep["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
+
+
 def test_an_interval_holding_zero_kills_the_gain() -> None:
     rep = _score(_hand([2, 2, 2, 2], [6, 2, 2, 0]))
     g = rep["arms"]["A1"]["graders"][0]
