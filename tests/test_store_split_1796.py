@@ -755,6 +755,27 @@ def test_a_path_that_is_a_file_or_missing_is_refused_as_such(
 # --- the source store ------------------------------------------------------
 
 
+def test_a_missing_repository_store_is_refused(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, out, err = _run(repo, capsys=capsys)
+    assert code == 2
+    assert out == ""
+    assert f"no repository store at {_source_path(repo)}" in err
+
+
+def test_an_unreadable_repository_store_exits_1(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _source_path(repo)
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"not a database " * 64)
+    code, out, err = _run(repo, capsys=capsys)
+    assert code == 1
+    assert out == ""
+    assert f"aelf store split: cannot read {source}" in err
+
+
 def test_the_source_store_is_only_ever_opened_read_only(
     repo: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
