@@ -204,29 +204,6 @@ def _do_ingest(payload: dict[str, object]) -> None:
     )
 
 
-def _owning_folder(root: Path, rel: str) -> Path:
-    """The deepest folder of `rel`'s parents, walking down from `root`,
-    that is a real directory of this work tree.
-
-    The walk stops before a folder that is missing (a deleted file's
-    folder), a symlink (whose target may be outside the repository or in
-    another one), or the root of a nested repository or submodule. The
-    store then resolves from a folder that belongs to the commit's own
-    work tree.
-    """
-    current = root
-    for part in Path(rel).parts[:-1]:
-        candidate = current / part
-        if (
-            candidate.is_symlink()
-            or not candidate.is_dir()
-            or (candidate / ".git").exists()
-        ):
-            break
-        current = candidate
-    return current
-
-
 def _changed_paths(rev: str, cwd: str | None) -> list[str]:
     """Paths commit `rev` changed, relative to the work-tree root.
 
@@ -263,6 +240,7 @@ def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
     from aelfrice.db_paths import (  # noqa: PLC0415
         StoreMarkerError,
         db_path,
+        owning_folder,
         resolve_store_in_work_tree,
     )
 
@@ -272,7 +250,7 @@ def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
         if not top or not top.strip() or not names:
             return [db_path(start=Path(cwd) if cwd else None)]
         root = Path(top.strip())
-        folders = {_owning_folder(root, rel) for rel in names}
+        folders = {owning_folder(root, rel) for rel in names}
         with config_discovery_scope():
             return sorted({
                 resolve_store_in_work_tree(folder, root).path

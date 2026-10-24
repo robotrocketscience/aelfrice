@@ -561,6 +561,29 @@ def resolve_store_in_work_tree(folder: Path, root: Path) -> StoreSelection:
     return _resolve(folder, root)
 
 
+def owning_folder(root: Path, rel: str) -> Path:
+    """The deepest folder of `rel`'s parents, walking down from `root`,
+    that is a real directory of this work tree.
+
+    The walk stops before a folder that is missing (a deleted file's
+    folder), a symlink (whose target may be outside the repository or in
+    another one), or the root of a nested repository or submodule. The
+    store then resolves from a folder that belongs to `root`'s own work
+    tree, so the result is safe to pass to `resolve_store_in_work_tree`.
+    """
+    current = root
+    for part in Path(rel).parts[:-1]:
+        candidate = current / part
+        if (
+            candidate.is_symlink()
+            or not candidate.is_dir()
+            or (candidate / WORKTREE_MARKER).exists()
+        ):
+            break
+        current = candidate
+    return current
+
+
 def _resolve(start: Path | None, git_start: Path | None) -> StoreSelection:
     """`resolve_store()`, with git lookups made from `git_start`."""
     override = os.environ.get("AELFRICE_DB")

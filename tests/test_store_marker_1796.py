@@ -989,8 +989,6 @@ def test_a_hook_with_a_broken_marker_exits_0_and_writes_no_store(
 def test_the_owning_folder_stops_at_symlinks_missing_folders_and_nested_repos(
     env: Path,
 ) -> None:
-    from aelfrice import hook_commit_ingest as hk
-
     root = env / "root"
     (root / "real" / "deep").mkdir(parents=True)
     outside = env / "outside"
@@ -998,7 +996,7 @@ def test_the_owning_folder_stops_at_symlinks_missing_folders_and_nested_repos(
     (root / "link").symlink_to(outside, target_is_directory=True)
     (root / "nested" / ".git").mkdir(parents=True)
 
-    own = hk._owning_folder  # pyright: ignore[reportPrivateUsage]
+    own = db_paths.owning_folder
     assert own(root, "real/deep/x.py") == root / "real" / "deep"
     assert own(root, "real/gone/x.py") == root / "real"
     assert own(root, "link/x.py") == root
