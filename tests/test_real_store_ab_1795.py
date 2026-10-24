@@ -1134,6 +1134,17 @@ def test_a_prompt_the_key_holds_no_row_for_still_counts_in_the_gain() -> None:
     assert (rep["prompts"], rep["keyed_prompts"]) == (4, 1)
 
 
+def test_a_prompt_the_key_holds_no_row_for_still_counts_in_the_lane_gain() -> None:
+    # H2_split's lane half is A1 against A1W over the same sampled prompts.
+    rows: list[Row] = [
+        ("a", "p0", {bench.ARM_A0: 1, bench.ARM_A1W: 1, bench.ARM_A1: 1}, True, True, True),
+        ("x", "p0", {bench.ARM_A1: 2}, True, True, True),
+    ]
+    lane = _score(rows, sampled=4)["arms"]["A1"]["vs_A1W"]["graders"][0]
+    assert lane["mean_gain"] == _approx(0.25)  # gains 1, 0, 0, 0
+    assert lane["share_gaining"] == _approx(0.25)
+
+
 def test_score_rejects_a_key_with_a_wrong_or_mixed_sampled_count() -> None:
     rows: list[Row] = [
         ("a", "p0", {bench.ARM_A0: 1}, True, True, True),
