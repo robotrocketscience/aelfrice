@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 <!-- bench-canonical-badge:start -->
-reproducibility: ⚠️ 6/11 ok · last run 2026-10-23
+reproducibility: ⚠️ 6/11 ok · last run 2026-10-24
 <!-- bench-canonical-badge:end -->
 
 **aelfrice gives an AI coding agent a local memory: before the model reads each prompt, a hook adds your locked beliefs and the best-ranked matches to it.** An agent forgets your corrections between sessions, so you repeat them.
