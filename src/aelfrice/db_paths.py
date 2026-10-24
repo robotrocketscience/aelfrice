@@ -630,10 +630,17 @@ def repository_store_path(root: Path) -> Path | None:
 def same_store_file(a: Path, b: Path) -> bool:
     """True when store paths `a` and `b` name one store file.
 
-    Compared by file identity when both directories exist, so a symlink
-    or a different letter case on a case-insensitive filesystem still
-    matches.
+    Two files that both exist are compared by file identity, so a store
+    file that is a symlink to the other matches. Otherwise the names must
+    match, and the directories are compared by identity when both exist,
+    so a symlinked directory or a different letter case on a
+    case-insensitive filesystem still matches.
     """
+    if os.path.isfile(a) and os.path.isfile(b):
+        try:
+            return os.path.samefile(a, b)
+        except OSError:
+            pass
     return _same_file(a, b)
 
 

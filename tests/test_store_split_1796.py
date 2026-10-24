@@ -935,6 +935,25 @@ def test_a_marker_that_names_the_repository_store_copies_nothing(
     assert _file_hash(_source_path(repo)) == before
 
 
+def test_a_marker_store_file_that_links_to_the_repository_store_copies_nothing(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `memory.db` that is a symlink to the repository store is that
+    store, so `--apply` never opens it for writing."""
+    _seed_pair(repo)
+    source = _source_path(repo)
+    link = _target_path(repo)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(source)
+    assert db_paths.same_store_file(link, source)
+    before = _file_hash(source)
+    report = _report(repo, "--apply", capsys=capsys)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["source_store"] == 2
+    assert _file_hash(source) == before
+
+
 def test_malformed_derived_ids_read_as_no_ids(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
