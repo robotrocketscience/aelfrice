@@ -1474,7 +1474,7 @@ A belief is copied only when it has a file source: a paragraph of a document or 
 | `no_root` | The belief's ingest records don't name one absolute onboard folder. `/aelf:onboard` records that folder; `aelf onboard <path>` run without `--emit-candidates` doesn't, and a relative `<path>` names no absolute folder. |
 | `outside_work_tree` | The onboard folder isn't inside this work tree, such as one from another worktree. A folder inside a linked worktree or a nested repository counts as outside, even when that worktree sits inside this one. |
 | `several_stores` | The belief's files are in folders with different stores. |
-| `source_store` | The folder's store is the repository store, so the belief stays there. |
+| `source_store` | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
 
 A copy keeps the belief's id and gets the target store's identity in its `project_context`. It brings the belief's document anchors, feedback history, and corroborations with it. An edge or a support-evidence row comes along when both of its beliefs land in the target store, either as copies or because the target already holds them. The command doesn't copy injection events, belief touches, the deferred-feedback queue, sessions, or ingest records, so the copied beliefs have no ingest history in the target store.
 
@@ -1487,7 +1487,7 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | The belief is retired. A copy would make it searchable again. |
 | `superseded` | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were, and the command exits with status 1. A second `--apply` copies nothing, because every belief is already present. A broken marker anywhere in the work tree stops the command with exit status 2 before it writes anything. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker; a dry run with it set prints a warning and finds no marker store.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were, and the command exits with status 1. A second `--apply` copies nothing, because every belief is already present. A broken marker anywhere in the work tree stops the command with exit status 2 before it writes anything. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker.
 
 ## User lock store: `AELFRICE_USER_DB`
 

@@ -815,6 +815,23 @@ def test_a_dry_run_with_aelfrice_db_set_finds_no_marker_store(
     assert not (env / "pinned").exists()
 
 
+def test_a_dry_run_with_aelfrice_db_set_reads_no_marker(
+    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the variable set no marker is read, so a broken one isn't
+    reported, and every placed belief counts under `source_store`, as the
+    docs say."""
+    _seed_pair(repo)
+    _marker(repo / "b", "")
+    monkeypatch.setenv("AELFRICE_DB", str(env / "pinned" / "memory.db"))
+    code, out, err = _run(repo, "--json", capsys=capsys)
+    assert code == 0, err
+    report = json.loads(out)
+    assert report["targets"] == []
+    assert report["not_copied"]["source_store"] == 2
+
+
 def test_a_marker_that_names_the_repository_store_copies_nothing(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
