@@ -307,12 +307,29 @@ def check_markers(work_tree: Path) -> None:
         here = Path(dirpath)
         dirnames[:] = sorted(
             d for d in dirnames
-            if d != WORKTREE_MARKER
-            and not (here / d).is_symlink()
-            and not (here / d / WORKTREE_MARKER).exists()
+            if d != WORKTREE_MARKER and _walks_into(here / d)
         )
         if CONFIG_FILENAME in filenames:
             resolve_store_in_work_tree(here, work_tree)
+
+
+def _walks_into(folder: Path) -> bool:
+    """True when the marker walk enters `folder`: a real folder, not a
+    symlink, with no `.git` entry, that it can read.
+
+    A folder it can't read, such as a container's data folder owned by
+    another user, is passed over: a config file that can't be read is
+    no marker, so it holds none that a store could resolve from.
+    """
+    try:
+        if stat.S_ISLNK(os.lstat(folder).st_mode):
+            return False
+        os.lstat(folder / WORKTREE_MARKER)
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _onboard_root(repo_path: object) -> Path | None:

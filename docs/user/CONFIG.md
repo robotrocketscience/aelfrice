@@ -1449,7 +1449,7 @@ The `<name>` in `git:<name>` starts with a letter or a digit and holds only lett
 
 The transcript log for a marker store, `transcripts/turns.jsonl`, sits beside that store, and so do the hook audit log and the other files aelfrice keeps beside a store.
 
-**Commits go to the store of the files they change.** The git post-commit hook that `aelf setup` installs reads the files a commit changed and ingests the commit into the store of each folder they're in. A commit that changes files only in `project-a/` lands in `project-a`'s store. A commit that spans several stores lands in each of them. A merge counts the files it brought in, compared with its first parent. A file under a symlinked folder or a nested repository counts as being in the nearest real folder of this repository above it, so a commit never lands in another repository's store or in the global store. A commit that changes no files resolves from the repository root.
+**Commits go to the store of the files they change.** The git post-commit hook that `aelf setup` installs reads the files a commit changed and ingests the commit into the store of each folder they're in. A commit that changes files only in `project-a/` lands in `project-a`'s store. A commit that spans several stores lands in each of them. A merge counts the files it brought in, compared with its first parent. A file under a symlinked folder, a nested repository, or a folder you can't read counts as being in the nearest real folder of this repository above it, so a commit never lands in another repository's store or in the global store. A commit that changes no files resolves from the repository root.
 
 `aelf uninstall` deletes a marker store's `memory.db`. It reports the files beside it as orphaned rather than deleting them, because only a directory named `aelfrice` or `.aelfrice` is recognized as aelfrice's own.
 
@@ -1466,7 +1466,7 @@ The command works on the git work tree that holds the current folder, or the fol
 
 The command copies and doesn't move. It opens the repository store read-only and never writes to it, so a belief it copies stays in the repository store too. The source is always the repository store, `<git-common-dir>/aelfrice/memory.db`, whatever store the current folder uses.
 
-A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, or a nested repository, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
+A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, a nested repository, or a folder you can't read, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
 
 | Reason | Meaning |
 |---|---|
@@ -1488,7 +1488,7 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | The belief is retired. A copy would make it searchable again. |
 | `superseded` | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. The check for broken markers passes over a folder you can't read, such as a container's data folder, because aelfrice reads no marker inside it.
 
 The command exits with one of these statuses:
 

@@ -567,18 +567,24 @@ def owning_folder(root: Path, rel: str) -> Path:
 
     The walk stops before a folder that is missing (a deleted file's
     folder), a symlink (whose target may be outside the repository or in
-    another one), or the root of a nested repository or submodule. The
-    store then resolves from a folder that belongs to `root`'s own work
-    tree, so the result is safe to pass to `resolve_store_in_work_tree`.
+    another one), the root of a nested repository or submodule, or a
+    folder it can't read. The store then resolves from a folder that
+    belongs to `root`'s own work tree, so the result is safe to pass to
+    `resolve_store_in_work_tree`.
     """
     current = root
     for part in Path(rel).parts[:-1]:
         candidate = current / part
-        if (
-            candidate.is_symlink()
-            or not candidate.is_dir()
-            or (candidate / WORKTREE_MARKER).exists()
-        ):
+        try:
+            if (
+                candidate.is_symlink()
+                or not candidate.is_dir()
+                or (candidate / WORKTREE_MARKER).exists()
+            ):
+                break
+        except OSError:
+            # Python 3.12 and 3.13 raise for a folder without search
+            # permission, where 3.14 returns False.
             break
         current = candidate
     return current

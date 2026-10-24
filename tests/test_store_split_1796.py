@@ -12,8 +12,10 @@ import dataclasses
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -801,6 +803,39 @@ def test_a_broken_marker_in_a_nested_repository_is_not_checked(
     _marker(nested, "store.db")
     code, _, err = _run(repo, capsys=capsys)
     assert code == 0, err
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_an_unreadable_folder_in_the_work_tree_is_passed_over(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A folder without read or search permission, such as a container's
+    data folder, holds no marker aelfrice can read. The marker check
+    passes over it, and a belief whose file sits below one lands in the
+    nearest folder above it."""
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        _ingest(src, "doc:a/sealed/x.md:p0", _text(1), "s1")
+    finally:
+        src.close()
+    sealed = [repo / "pgdata", repo / "a" / "sealed"]
+    for folder in sealed:
+        folder.mkdir()
+        folder.chmod(0)
+    try:
+        for flags in ((), ("--apply",)):
+            code, out, err = _run(repo, "--json", *flags, capsys=capsys)
+            assert code == 0, err
+            target = _only_target(json.loads(out))
+            assert target["store"] == str(_target_path(repo)), flags
+            assert target["copied"]["beliefs"] == 1, flags
+    finally:
+        for folder in sealed:
+            folder.chmod(0o755)
 
 
 def test_apply_refuses_while_aelfrice_db_is_set(
