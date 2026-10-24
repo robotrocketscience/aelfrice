@@ -1477,7 +1477,7 @@ A belief is copied only when it has a file source: a paragraph of a document or 
 | `several_stores` | several stores | The belief's files are in folders with different stores. |
 | `source_store` | stays in the repository store | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
 
-A copy keeps the belief's id and gets the target store's identity in its `project_context`. It brings the belief's document anchors, feedback history, and corroborations with it. An edge or a support-evidence row comes along when both of its beliefs land in the target store, either as copies or because the target already holds them. The command doesn't copy injection events, belief touches, the deferred-feedback queue, sessions, or ingest records, so the copied beliefs have no ingest history in the target store.
+A copy keeps the belief's id. A project-scope copy gets the target store's identity in its `project_context`, and a `global` or `shared:` copy keeps an empty `project_context`, as any store writes those rows, so it stays visible under every context. It brings the belief's document anchors, feedback history, and corroborations with it. An edge or a support-evidence row comes along when both of its beliefs land in the target store, either as copies or because the target already holds them. The command doesn't copy injection events, belief touches, the deferred-feedback queue, sessions, or ingest records, so the copied beliefs have no ingest history in the target store.
 
 For each target store, the command skips these beliefs and counts them by reason:
 

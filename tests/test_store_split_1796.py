@@ -689,6 +689,39 @@ def test_a_copy_is_restamped_with_the_target_identity(
     assert copied.id == a1
 
 
+def test_a_copy_of_a_shared_or_global_belief_keeps_an_empty_context(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The store stamps its identity only on project-scope rows, so a
+    federation-shared row stays visible under every context."""
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s1")
+        ids = {
+            scope: _ingest(src, f"doc:a/docs/{n}.md:p0", _text(n), "s1")
+            for n, scope in enumerate(("project", "global", "shared:team"))
+        }
+        for scope, bid in ids.items():
+            b = src.get_belief(bid)
+            assert b is not None
+            src.update_belief(dataclasses.replace(
+                b, scope=scope, project_context="",
+            ))
+    finally:
+        src.close()
+    _report(repo, "--apply", capsys=capsys)
+    selection = db_paths.resolve_store_in_work_tree(repo / "a", repo)
+    identity = db_paths.store_identity(selection)
+    conn = sqlite3.connect(_target_path(repo).as_uri() + "?mode=ro", uri=True)
+    try:
+        got = dict(conn.execute(
+            "SELECT scope, project_context FROM beliefs",
+        ).fetchall())
+    finally:
+        conn.close()
+    assert got == {"project": identity, "global": "", "shared:team": ""}
+
+
 def test_apply_skips_a_present_id_or_hash_and_a_second_apply_copies_nothing(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

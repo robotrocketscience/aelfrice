@@ -23,7 +23,8 @@ and the belief is copied only when that folder resolves to a marker store
 other than the repository store.
 
 A copy carries the belief under its own id, with `project_context`
-restamped to the target store's identity, and its `belief_documents`,
+restamped to the target store's identity for a project-scope belief and
+left empty for a `global` or `shared:` one, and its `belief_documents`,
 `feedback_history` and `belief_corroborations` rows. Edges and
 `belief_support_evidence` rows come along when both ends land in the
 target, as a copy or as a belief already there. Nothing else is copied.
@@ -689,10 +690,16 @@ def _plan(
     )
 
 
-def _write(target: MemoryStore, plan: _Plan, identity: str) -> dict[str, int]:
-    """Write `plan` into `target`; the caller holds the transaction."""
+def _write(target: MemoryStore, plan: _Plan) -> dict[str, int]:
+    """Write `plan` into `target`; the caller holds the transaction.
+
+    Each copy goes in with an empty `project_context`, so the target
+    applies its own rule: it stamps its identity on a project-scope row
+    and leaves a `global` or `shared:` row empty, visible under every
+    context.
+    """
     for b in plan.beliefs:
-        copy_belief(target, replace(b, project_context=identity))
+        copy_belief(target, replace(b, project_context=""))
     for d in plan.documents:
         # The store annotates the return as a string forward reference.
         target.link_belief_to_document(  # pyright: ignore[reportUnknownMemberType]
@@ -766,7 +773,7 @@ def _apply_target(
             with target.transaction(immediate=True):
                 plan = _plan(rows, ids, target)
                 skipped = plan.skipped
-                copied = _write(target, plan, identity)
+                copied = _write(target, plan)
         finally:
             target.close()
     except (sqlite3.Error, OSError, ValueError) as exc:
