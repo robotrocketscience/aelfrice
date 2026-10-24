@@ -934,6 +934,13 @@ def test_the_key_records_arms_ranks_and_a_median_sized_null_arm(tmp_path: Path) 
     assert by[("p1", "rel")]["shares_prompt_stem"] is False
 
 
+def test_a_belief_sharing_only_a_stemmed_word_is_not_bridging() -> None:
+    # #1795 H4: a bridging addition shares no stemmed word with the prompt.
+    # No word matches exactly here, but both stem to `deploi` and `migrat`.
+    assert bench.shares_prompt_stem("deploying migrations", "the deployed migration")
+    assert not bench.shares_prompt_stem("deploying migrations", "otters swim at dawn")
+
+
 def _one_prompt_runs(a0: list[str], a1: list[str]) -> dict[str, Any]:
     return {arm: {"arm": arm, "prompts": [
         {"prompt_id": "p1", "prompt": "kestrel meadow", "ranked": ranked}]}
