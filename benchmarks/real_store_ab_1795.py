@@ -1223,15 +1223,15 @@ def null_figures(items: Sequence[KeyItem], labels: Labels) -> dict[str, Any]:
 def proxy_gain_signs(proxy_report: Mapping[str, Any], arms: Sequence[str]) -> dict[str, int]:
     """Sign of the proxy's mean paired gain in used beliefs, per arm against A0.
 
-    Counted over each arm's top `TOP_K`, the quantity the graders' gain
-    counts. Proxy rows list each arm's beliefs in rank order.
+    Counted over each arm's whole packed result, the set the graders' gain
+    counts under the 2026-10-23 amendment to #1795.
     """
     rows = cast(list[dict[str, Any]], proxy_report.get("prompts", []))
     out: dict[str, int] = {}
     for arm in arms:
         gains = [
-            sum(1 for b in r["arms"].get(arm, [])[:TOP_K] if b["used"])
-            - sum(1 for b in r["arms"].get(CONTROL_ARM, [])[:TOP_K] if b["used"])
+            sum(1 for b in r["arms"].get(arm, []) if b["used"])
+            - sum(1 for b in r["arms"].get(CONTROL_ARM, []) if b["used"])
             for r in rows
         ]
         mean = sum(gains) / len(gains) if gains else 0.0

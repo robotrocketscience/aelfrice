@@ -479,18 +479,17 @@ def test_a0s_tenth_belief_is_no_a3_addition() -> None:
     assert (g["relevant_additions"], g["bridging"]) == (4, 4)
 
 
-def test_the_proxy_sign_counts_the_top_ten_only() -> None:
-    # A1's only used belief sits at rank 11, where the graders' gain doesn't look.
+def test_the_proxy_sign_counts_the_whole_packed_result() -> None:
+    # A1's only used belief sits at rank 11, which the graders' gain counts.
     unused = [{"id": f"u{k}", "used": False} for k in range(bench.TOP_K)]
     proxy = {"prompts": [{"arms": {
         "A0": unused, "A1": [*unused, {"id": "x", "used": True}]}}]}
-    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 0}
-    # Both arms use their 10th belief, and A0 also its 11th. A0's top 10
-    # counts the 10th and leaves out the 11th, so the sign is 0.
+    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 1}
+    # Both arms use their 10th belief, and A0 also its 11th, so A0 uses more.
     nine = unused[:bench.TOP_K - 1]
     used = [{"id": f"y{k}", "used": True} for k in range(2)]
     proxy = {"prompts": [{"arms": {"A0": [*nine, *used], "A1": [*nine, used[0]]}}]}
-    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": 0}
+    assert bench.proxy_gain_signs(proxy, ["A1"]) == {"A1": -1}
 
 
 def test_a0_takes_the_top_ten_non_locked_beliefs(tmp_path: Path) -> None:
