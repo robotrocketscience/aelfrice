@@ -200,6 +200,13 @@ MANIFEST: dict[str, tuple[str, str]] = {
         "is why the #1592 sweep reports unknown pairs rather than counting "
         "them as evidence",
     ),
+    "migrate.py::copy_belief::insert_belief": (
+        IDENTITY,
+        "`aelf store split` (#1796): copies a belief into a marker store "
+        "with alpha/beta as read from the repository store. The caller "
+        "skips a belief whose id or content hash the target already holds, "
+        "so the insert never lands on a live row",
+    ),
     "wonder/lifecycle.py::wonder_ingest::insert_belief": (
         CREATES,
         "speculative ingest at _INGEST_ALPHA/_INGEST_BETA = (0.3, 1.0) — "
