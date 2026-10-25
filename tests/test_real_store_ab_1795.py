@@ -2202,6 +2202,31 @@ def test_a_copy_of_a_store_in_use_reads_its_log(tmp_path: Path) -> None:
         assert c.execute("SELECT x FROM late").fetchall() == [(1,)]
 
 
+@pytest.mark.parametrize("link_name", ["elsewhere/memory.db", "src/other.db"])
+def test_a_copy_through_a_link_to_a_store_in_use_reads_its_log(
+    tmp_path: Path, link_name: str,
+) -> None:
+    # SQLite keeps the log beside the file a link points to, so the copy
+    # must look for it there, not beside the link.
+    src = tmp_path / "src" / "memory.db"
+    src.parent.mkdir()
+    MemoryStore(str(src)).close()
+    link = tmp_path / link_name
+    link.parent.mkdir(exist_ok=True)
+    link.symlink_to(src)
+    writer = sqlite3.connect(src)
+    try:
+        writer.execute("CREATE TABLE late (x)")
+        writer.execute("INSERT INTO late VALUES (1)")
+        writer.commit()
+        assert (src.parent / "memory.db-wal").stat().st_size > 0
+        bench.copy_store(link, tmp_path / "copy.db")
+    finally:
+        writer.close()
+    with sqlite3.connect(tmp_path / "copy.db") as c:
+        assert c.execute("SELECT x FROM late").fetchall() == [(1,)]
+
+
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
 def test_a_store_with_a_sidecar_file_is_not_read_as_immutable(
     tmp_path: Path, connect_spy: list[tuple[str, bool]], suffix: str,

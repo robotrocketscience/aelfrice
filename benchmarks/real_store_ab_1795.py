@@ -328,10 +328,13 @@ def copy_store(src: Path, dst: Path) -> None:
     leaves it, is read with `immutable=1`, which creates nothing. That
     read takes no lock, so the copy fails if the store changes during it.
     A store with a sidecar file beside it is in use or needs recovery, and
-    is read through `mode=ro` alone, which reads its log.
+    is read through `mode=ro` alone, which reads its log. SQLite keeps the
+    sidecar files beside the file a link points to, so a linked `src` is
+    resolved before they are looked for.
     """
     if not src.is_file():
         raise InputError(f"no store at {src}")
+    src = src.resolve()
     sidecars = [src.with_name(src.name + s) for s in STORE_SIDECAR_SUFFIXES]
     idle = not any(p.exists() for p in sidecars)
     before = src.stat()
