@@ -479,6 +479,105 @@ def test_a_relative_root_in_another_letter_case_keeps_the_bar(
     assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
 
 
+def _repeated_session(
+    src: MemoryStore, repo: Path, given: str, *, total: int, also: Path,
+    also_present: int,
+) -> str:
+    """A session onboarded from the relative `given`, with `total`
+    distinct paths under `docs/`, each written as a file under
+    `<repo>/<given>`, and the first `also_present` of them written under
+    `<also>/<given>` too. Returns the belief from the first."""
+    _onboard(src, given, "s-rep")
+    rels = [f"docs/s-rep-{i}.md" for i in range(total)]
+    for i, rel in enumerate(rels):
+        folders = [repo / given] + ([also / given] if i < also_present else [])
+        for folder in folders:
+            (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+            (folder / rel).write_text("text\n", encoding="utf-8")
+    bid = _ingest(src, f"doc:{rels[0]}:p0", _text(1), "s-rep")
+    for rel in rels[1:]:
+        src.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM, source_path=f"doc:{rel}:p0",
+            raw_text=rel, session_id="s-rep", ts=_TS, derived_belief_ids=[],
+        )
+    return bid
+
+
+@pytest.mark.parametrize("given", [".", "lib"], ids=["dot", "below"])
+@pytest.mark.parametrize(
+    ("also_present", "copied"), [(10, 0), (9, 0), (8, 1)],
+    ids=["all", "at-the-bar", "below-the-bar"],
+)
+def test_a_relative_session_also_present_under_a_marker_folder_is_no_root(
+    repo: Path, capsys: pytest.CaptureFixture[str], given: str,
+    also_present: int, copied: int,
+) -> None:
+    """The folder a relative onboard ran from isn't recorded. A session
+    whose files reach the 90% bar under the work-tree root and also under
+    the marker folder `a/` could have run from either, so its beliefs
+    count as `no_root`. The bar is inclusive there too."""
+    _marker(repo / given / "docs", ".aelfrice/store")
+    src = _open(_source_path(repo))
+    try:
+        bid = _repeated_session(
+            src, repo, given, total=10, also=repo / "a",
+            also_present=also_present,
+        )
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["no_root"] == 1 - copied
+    target = (repo / given / "docs" / ".aelfrice" / "store" / "memory.db").resolve()
+    if copied:
+        assert _only_target(report)["copied"]["beliefs"] == 1
+        assert {r[0] for r in _rows(target)["beliefs"]} == {bid}
+    else:
+        assert report["targets"] == []
+        assert not target.exists()
+
+
+def test_only_a_marker_folder_makes_a_relative_session_ambiguous(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`b/` has no project config file, and `a/c/` has one with no
+    `[store]` table, so its store comes from the marker in `a/`. The
+    files they repeat leave the session's root alone."""
+    _marker(repo / "docs", ".aelfrice/store")
+    plain = repo / "a" / "c"
+    (plain / "docs").mkdir(parents=True)
+    (plain / CONFIG_FILENAME).write_text("# no store table\n", encoding="utf-8")
+    src = _open(_source_path(repo))
+    try:
+        bid = _repeated_session(
+            src, repo, ".", total=2, also=repo / "b", also_present=2,
+        )
+    finally:
+        src.close()
+    for i in range(2):
+        (plain / "docs" / f"s-rep-{i}.md").write_text("text\n", encoding="utf-8")
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    target = repo / "docs" / ".aelfrice" / "store" / "memory.db"
+    assert {r[0] for r in _rows(target)["beliefs"]} == {bid}
+
+
+def test_a_marker_at_the_work_tree_root_leaves_a_dot_session_alone(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A marker folder that resolves to the session's own root is the
+    root it was scored under, not a second candidate."""
+    _marker(repo, ".aelfrice/root")
+    src = _open(_source_path(repo))
+    try:
+        bid = _relative_session(src, repo, "s-dot", total=2, present=2, n=1)
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {bid}
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

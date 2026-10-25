@@ -14,8 +14,10 @@ A belief qualifies only when it has a file source the scanner wrote:
 `repo_path` of the `onboard_sessions` row for the ingest row's session.
 A relative `repo_path`, such as `.`, resolves against the work-tree root,
 and is kept only when at least `RELATIVE_ROOT_MIN_PRESENT` of the
-session's distinct file paths exist as files under it; otherwise the
-session names no root. Every ingest row with a file source must name the
+session's distinct file paths exist as files under it, and when they
+don't reach that share under `<marker>/<repo_path>` for any marker
+folder of the work tree that resolves elsewhere; otherwise the session
+names no root. Every ingest row with a file source must name the
 same root, or the belief is skipped as `no_root`. A root is compared to
 the work tree by file identity, so another letter case on a
 case-insensitive filesystem matches. A root outside the
@@ -316,10 +318,14 @@ def work_tree_root(start: Path) -> Path | None:
     return Path(top).resolve()
 
 
-def check_markers(work_tree: Path) -> None:
-    """Raise `StoreMarkerError` for a broken marker anywhere in the work
+def check_markers(work_tree: Path) -> list[Path]:
+    """The marker folders of the work tree: each folder whose own project
+    config file holds the `[store]` table that selects its store.
+
+    Raises `StoreMarkerError` for a broken marker anywhere in the work
     tree, and `FolderAccessError` for a folder in it that can't be listed
-    or searched.
+    or searched. With `AELFRICE_DB` set no marker is read, so the list is
+    empty.
 
     Walks down from the root and resolves the store of every folder that
     holds the project config file. The walk skips `.git`, nested
@@ -337,6 +343,7 @@ def check_markers(work_tree: Path) -> None:
         )
         raise FolderAccessError(folder) from exc
 
+    markers: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(work_tree, onerror=refuse):
         here = Path(dirpath)
         dirnames[:] = sorted(
@@ -344,7 +351,10 @@ def check_markers(work_tree: Path) -> None:
             if d != WORKTREE_MARKER and _walks_into(here / d)
         )
         if CONFIG_FILENAME in filenames:
-            resolve_store_in_work_tree(here, work_tree)
+            marker = resolve_store_in_work_tree(here, work_tree).marker
+            if marker == here / CONFIG_FILENAME:
+                markers.append(here)
+    return markers
 
 
 def _walks_into(folder: Path) -> bool:
@@ -407,21 +417,39 @@ def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
     return None
 
 
+def _ambiguous(
+    root: Path, given: Path, markers: list[Path], rels: set[str],
+) -> bool:
+    """True when `rels` also reach the bar under `<marker>/<given>` for a
+    marker folder whose resolved folder isn't `root`.
+
+    The folder a relative onboard ran from isn't recorded, so a session
+    whose files are present under the work-tree root and under a marker
+    folder could have run from either one.
+    """
+    for folder in markers:
+        other = _resolved(folder / given)
+        if other is not None and other != root and _enough_present(other, rels):
+            return True
+    return False
+
+
 def _onboard_roots(
-    conn: sqlite3.Connection, work_tree: Path,
+    conn: sqlite3.Connection, work_tree: Path, markers: list[Path],
 ) -> dict[str, Path | None]:
     """Each onboard session's root, None when it names no usable one.
 
     An absolute `repo_path` is the root. A relative one, which `aelf
-    onboard .` recorded before #1798, resolves against `work_tree`. A
-    root that lands outside `work_tree` is kept, so the belief counts
-    as outside the work tree; one inside it is spelled from
-    `work_tree`. A relative root inside it is kept only when the
-    session's files are there, since the folder the onboard ran from
-    isn't recorded.
+    onboard .` records, resolves against `work_tree`. A root that lands
+    outside `work_tree` is kept, so the belief counts as outside the
+    work tree; one inside it is spelled from `work_tree`. A relative
+    root inside it is kept only when the session's files are there,
+    since the folder the onboard ran from isn't recorded, and only when
+    they aren't also there under one of the `markers` folders, which
+    `check_markers` returns.
     """
     roots: dict[str, Path | None] = {}
-    relative: dict[str, Path] = {}
+    relative: dict[str, tuple[Path, Path]] = {}
     for sid, repo_path in conn.execute(
         "SELECT session_id, repo_path FROM onboard_sessions",
     ).fetchall():
@@ -435,7 +463,7 @@ def _onboard_roots(
         if under is not None:
             root = work_tree / under
             if not given.is_absolute():
-                relative[key] = root
+                relative[key] = (given, root)
         roots[key] = root
     if not relative:
         return roots
@@ -447,14 +475,17 @@ def _onboard_roots(
         rel = file_source_rel(str(source_path))
         if rel is not None and str(sid) in relative:
             rels.setdefault(str(sid), set()).add(rel)
-    for key, root in relative.items():
-        if not _enough_present(root, rels.get(key, set())):
+    for key, (given, root) in relative.items():
+        session = rels.get(key, set())
+        if not _enough_present(root, session) or _ambiguous(
+            root, given, markers, session,
+        ):
             roots[key] = None
     return roots
 
 
 def _read_locations(
-    conn: sqlite3.Connection, work_tree: Path,
+    conn: sqlite3.Connection, work_tree: Path, markers: list[Path],
 ) -> tuple[list[str], dict[str, list[tuple[Path | None, str]]], dict[str, set[str]]]:
     """Every belief id, and each belief's file sources.
 
@@ -463,7 +494,7 @@ def _read_locations(
     when the row's session names no usable onboard root. `anchored` maps
     a belief to the `rel` of each anchor URI with a file source.
     """
-    roots = _onboard_roots(conn, work_tree)
+    roots = _onboard_roots(conn, work_tree, markers)
     ids = [str(r[0]) for r in conn.execute("SELECT id FROM beliefs ORDER BY id")]
     ingested: dict[str, list[tuple[Path | None, str]]] = {}
     # A malformed `derived_belief_ids` reads as no ids. The CASE guards
@@ -996,7 +1027,7 @@ def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
     """`split_store()` once the work tree and its repository store are
     known."""
     with config_discovery_scope():
-        check_markers(work_tree)
+        markers = check_markers(work_tree)
         try:
             present = store_file_present(source)
         except OSError as exc:
@@ -1015,7 +1046,7 @@ def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
             # the store mid-read can't pair a belief's old posterior with
             # its new feedback rows. Closing the connection ends it.
             conn.execute("BEGIN")
-            ids, ingested, anchored = _read_locations(conn, work_tree)
+            ids, ingested, anchored = _read_locations(conn, work_tree, markers)
             routed, not_copied = _route(
                 work_tree, source, ids, ingested, anchored,
             )
