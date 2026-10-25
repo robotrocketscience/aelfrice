@@ -2275,6 +2275,16 @@ def test_read_key_rejects_a_row_without_a_sampled_count_or_snapshot(tmp_path: Pa
         row[field] = good
 
 
+def test_read_key_rejects_a_repeated_item_id(tmp_path: Path) -> None:
+    # A store's key concatenated twice would double every paired gain and
+    # the kappa sample.
+    rows = _store_key_rows("s1", 1)
+    path = tmp_path / "key.jsonl"
+    path.write_text(2 * "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with pytest.raises(bench.InputError, match="repeats item s1-a"):
+        bench.read_key(path)
+
+
 def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True,

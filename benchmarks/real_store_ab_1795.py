@@ -1212,7 +1212,7 @@ def key_stores(items: Sequence[KeyItem]) -> dict[str, KeyStore]:
 
 
 def read_key(path: Path) -> list[KeyItem]:
-    """Rows of a key file; InputError on a malformed row or a key without A0."""
+    """Rows of a key file; InputError on a malformed row, a repeated item id, or no A0."""
     items: list[KeyItem] = []
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
@@ -1253,6 +1253,9 @@ def read_key(path: Path) -> list[KeyItem]:
         ))
     if not items:
         raise InputError(f"{path}: empty key")
+    repeated = sorted(iid for iid, c in Counter(i.id for i in items).items() if c > 1)
+    if repeated:
+        raise InputError(f"{path}: repeats item {repeated[0]}")
     if not any(i.arms and CONTROL_ARM in i.arms for i in items):
         raise InputError(f"{path}: no {CONTROL_ARM} item")
     return items
