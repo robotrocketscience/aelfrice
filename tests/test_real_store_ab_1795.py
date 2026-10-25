@@ -949,7 +949,20 @@ def test_the_packet_hides_arm_and_rank(tmp_path: Path) -> None:
     key = {r["id"]: r for r in map(json.loads, k1.splitlines())}
     for r in rows:
         k = key[r["id"]]
-        assert r["id"] == bench.item_id(9, k["prompt_id"], k["belief_id"])
+        assert r["id"] == bench.item_id(9, k["snapshot"], k["prompt_id"], k["belief_id"])
+
+
+def test_two_stores_give_one_prompt_and_belief_distinct_item_ids(tmp_path: Path) -> None:
+    # Belief ids hash the content and prompt ids hash the turn, so two stores
+    # can share both. In the concatenated labels, one store's label for a
+    # shared item id would overwrite the other's.
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    runs = _one_prompt_runs(["seed"], ["con"])
+    ids = [{r["id"] for r in bench.build_packet(runs, db, 1, snapshot=snap)[1]}
+           for snap in ("s1", "s2")]
+    assert ids[0] and not ids[0] & ids[1]
 
 
 def test_the_key_records_arms_ranks_and_a_median_sized_null_arm(tmp_path: Path) -> None:

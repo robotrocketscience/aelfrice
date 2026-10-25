@@ -972,9 +972,14 @@ def read_runs(paths: Sequence[Path]) -> dict[str, dict[str, Any]]:
 # --- Packet -------------------------------------------------------------------
 
 
-def item_id(seed: int, pid: str, belief_id: str) -> str:
-    """Packet row id from the seed, prompt id, and belief id only."""
-    key = f"{seed}\0{pid}\0{belief_id}"
+def item_id(seed: int, snapshot: str, pid: str, belief_id: str) -> str:
+    """Packet row id from the seed, store snapshot, prompt id, and belief id only.
+
+    Two stores can share a prompt id and a belief id, which hash the turn
+    and the content, so the snapshot keeps their rows apart in a key and
+    labels concatenated from several stores' files.
+    """
+    key = f"{seed}\0{snapshot}\0{pid}\0{belief_id}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1036,7 +1041,7 @@ def build_packet(
     packet: list[dict[str, Any]] = []
     key: list[dict[str, Any]] = []
     for pid, bid, arms in entries:
-        iid = item_id(seed, pid, bid)
+        iid = item_id(seed, snapshot, pid, bid)
         packet.append({"id": iid, "prompt": prompts[pid], "belief": texts[bid]})
         key.append({
             "id": iid, "prompt_id": pid, "prompt": prompts[pid], "belief_id": bid,
