@@ -1301,6 +1301,39 @@ def test_no_path_from_a_folder_it_cannot_search_is_refused(
 
 
 @pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+@pytest.mark.parametrize("mode", [0, 0o444], ids=["sealed", "list-only"])
+@pytest.mark.parametrize("rel", [None, "."], ids=["no-path", "dot"])
+def test_a_run_below_a_folder_it_cannot_search_names_that_folder(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, mode: int, rel: str | None,
+) -> None:
+    """macOS can't give the current folder's path from below a folder you
+    can't search, though the current folder itself is fine. The refusal
+    names the folder above it that can't be searched."""
+    _seed_pair(repo)
+    sealed = repo / "b" / "pgdata"
+    (sealed / "sub").mkdir(parents=True)
+    monkeypatch.chdir(sealed / "sub")
+    sealed.chmod(mode)
+    try:
+        runs = [
+            _run_here(*flags, capsys=capsys) if rel is None
+            else _run(Path(rel), *flags, capsys=capsys)
+            for flags in ((), ("--apply",))
+        ]
+    finally:
+        sealed.chmod(0o755)
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err == f"aelf store split: cannot list or search {sealed}\n"
+    assert not _target_path(repo).parent.exists()
+
+
+@pytest.mark.skipif(
     sys.platform == "win32", reason="Windows can't remove the current folder",
 )
 def test_no_path_from_a_removed_folder_is_refused(

@@ -54,6 +54,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
+try:  # POSIX
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    _fcntl = None  # type: ignore[assignment]
+
 from aelfrice.config_discovery import (
     CONFIG_FILENAME,
     WORKTREE_MARKER,
@@ -124,6 +129,9 @@ _AST_SOURCE_RE: Final[re.Pattern[str]] = re.compile(
 _FILE_URI_PREFIX: Final[str] = "file:"
 
 _GIT_TIMEOUT_S: Final[float] = 5.0
+
+# The buffer `fcntl(F_GETPATH)` fills on macOS: MAXPATHLEN bytes.
+_GETPATH_BUFFER: Final[int] = 1024
 
 #: The share of a relative-root onboard session's distinct file paths that
 #: must exist as files under the work-tree folder it resolves to, for that
@@ -888,17 +896,23 @@ def _check_start(start: Path) -> Path:
     `start` that is missing or a file, and `FolderAccessError` for the
     first folder on the way to `start`, or `start` itself, that can't
     be searched. A relative `start` also needs the current folder's
-    path, which the system can't give for a removed folder, or, on
-    macOS, for one you can't search; that is a `SplitRefused` too.
+    path. The system can't give it for a removed folder, or, on macOS,
+    from inside or below a folder you can't search; `_current_folder`
+    then reads it from a handle to the current folder, so the walk below
+    names the folder above it. A removed folder, or a current folder
+    that can't be searched, is a `SplitRefused`.
     """
     try:
         path = Path(os.path.realpath(start))
     except FileNotFoundError:
         raise SplitRefused("the current folder no longer exists") from None
     except OSError:
-        raise SplitRefused(
-            "cannot list or search the current folder",
-        ) from None
+        here = _current_folder()
+        if here is None:
+            raise SplitRefused(
+                "cannot list or search the current folder",
+            ) from None
+        path = Path(os.path.realpath(os.path.join(here, start)))
     reach = next(
         (
             p for p in (path, *path.parents)
@@ -920,6 +934,31 @@ def _check_start(start: Path) -> Path:
             raise SplitRefused(f"{start} is not a folder")
         raise SplitRefused(f"no folder at {start}")
     raise FolderAccessError(first)
+
+
+def _current_folder() -> str | None:
+    """The current folder's path, read with `fcntl(F_GETPATH)` from a
+    handle to it, or None where the system has no such call or the
+    folder can't be opened.
+
+    getcwd on macOS fails below a folder you can't search, though such a
+    handle still gives the path.
+    """
+    getpath = getattr(_fcntl, "F_GETPATH", None)
+    if _fcntl is None or not isinstance(getpath, int):
+        return None
+    try:
+        fd = os.open(os.curdir, getattr(os, "O_SEARCH", os.O_RDONLY))
+    except OSError:
+        return None
+    try:
+        buf = _fcntl.fcntl(fd, getpath, bytes(_GETPATH_BUFFER))
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    here = os.fsdecode(buf.split(b"\0", 1)[0])
+    return here if os.path.isabs(here) else None
 
 
 def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
