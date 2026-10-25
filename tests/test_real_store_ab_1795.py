@@ -2463,6 +2463,24 @@ def test_read_key_rejects_a_repeated_item_id(tmp_path: Path) -> None:
         bench.read_key(path)
 
 
+def test_read_key_refuses_one_stores_keys_from_two_packets(tmp_path: Path) -> None:
+    # Two packets of one store's runs, with different seeds, give every
+    # judged belief a new item id. Concatenated, their keys would double
+    # every paired gain and the graded counts MIN_GRADED checks.
+    work = tmp_path / "w"
+    work.mkdir()
+    db = bench.prepare_copy(_store(tmp_path), work)
+    runs = _one_prompt_runs(["seed"], ["seed", "con"])
+    keys = [bench.build_packet(runs, db, seed, snapshot=_SNAP)[1] for seed in (1795, 1796)]
+    assert not {r["id"] for r in _items(keys[0])} & {r["id"] for r in _items(keys[1])}
+    path = tmp_path / "key.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in keys[0] + keys[1]), encoding="utf-8")
+    with pytest.raises(bench.InputError, match=f"a second store row for snapshot {_SNAP}"):
+        bench.read_key(path)
+    path.write_text("".join(json.dumps(r) + "\n" for r in keys[0]), encoding="utf-8")
+    assert len(bench.read_key(path).items) == len(_items(keys[0]))
+
+
 def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         _store_row(["A0"]),

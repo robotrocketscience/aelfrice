@@ -45,12 +45,13 @@ transcripts beside the store they are given.
   the store's snapshot, sample size, and arms, so a store whose arms
   packed nothing for any prompt still counts its prompts when pooled.
 - `score`: the H0 to H6 verdicts from two graders' labels. To score
-  several stores together, concatenate their keys, and each grader's
-  labels, into one file each, and pass `--proxy` every store's proxy
-  report. `score` matches each proxy report to its store's key rows by
-  `snapshot`, and exits 1 when a store in the key has no proxy report, a
-  proxy report has no store in the key, or a proxy report misses an arm
-  or a sampled prompt of its store's runs.
+  several stores together, concatenate their keys, one packet's key per
+  store, and each grader's labels, into one file each, and pass
+  `--proxy` every store's proxy report. `score` matches each proxy
+  report to its store's key rows by `snapshot`, and exits 1 when the key
+  holds two store rows for one snapshot, a store in the key has no proxy
+  report, a proxy report has no store in the key, or a proxy report
+  misses an arm or a sampled prompt of its store's runs.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief, with the runs' `snapshot`. Exits 1 when a
   prompt's turn is not in the transcripts beside the store. Reported
@@ -1274,8 +1275,9 @@ def _key_item(row: Mapping[str, Any], snapshot: str) -> KeyItem | None:
 
 
 def read_key(path: Path) -> Key:
-    """A key file's rows; InputError on a malformed row, a repeated item id, no A0
-    item, or rows that don't fit together (see `make_key`)."""
+    """A key file's rows; InputError on a malformed row, a second store row for a
+    snapshot, a repeated item id, no A0 item, or rows that don't fit together
+    (see `make_key`)."""
     items: list[KeyItem] = []
     stores: dict[str, KeyStore] = {}
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -1294,6 +1296,12 @@ def read_key(path: Path) -> Key:
             if store is None:
                 raise InputError(
                     f"{path}:{n}: need the store row's prompts_sampled and arms_run with A0")
+            # Two packets of one store's runs, made with different seeds,
+            # give the same judged beliefs new item ids.
+            if snapshot in stores:
+                raise InputError(
+                    f"{path}:{n}: a second store row for snapshot {snapshot};"
+                    " pool one packet's key per store")
             stores[snapshot] = store
         elif kind == KEY_ITEM:
             item = _key_item(row, snapshot)
