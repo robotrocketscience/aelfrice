@@ -13,6 +13,7 @@ import random
 import shutil
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1425,6 +1426,21 @@ def test_a_precision_drop_just_over_the_bar_blocks() -> None:
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
 
 
+def test_a_precision_drop_a_billionth_over_the_bar_fails_h5() -> None:
+    # A0's top 10s hold 5085 relevant of 9199 graded and the arm's 4616 of
+    # 9181, a drop of 0.05 plus 5.9e-10. Pooled stores reach counts this size.
+    rows: list[Row] = [(f"a{k}", "p0", {bench.ARM_A0: 1}, True, k < 5085, k < 5085)
+                       for k in range(9199)]
+    rows += [(f"x{k}", "p0", {bench.ARM_A1: 1}, True, k < 4616, k < 4616)
+             for k in range(9181)]
+    rows += [(f"n{k}", "p0", None, False, False, False) for k in range(10)]
+    rep = _score(rows)
+    g = rep["arms"]["A1"]["graders"][0]
+    assert (g["graded_a0"], g["graded"]) == (9199, 9181)
+    assert rep["hypotheses"]["H0"] == bench.V_PASS
+    assert rep["hypotheses"]["H5"] == {"A1": bench.V_FAIL}
+
+
 def test_an_interval_holding_zero_kills_the_gain() -> None:
     rep = _score(_hand([2, 2, 2, 2], [6, 2, 2, 0]))
     g = rep["arms"]["A1"]["graders"][0]
@@ -1496,6 +1512,18 @@ def test_a_kappa_of_exactly_the_bar_holds_h0() -> None:
     assert under["hypotheses"]["H0"] == bench.V_FAIL
 
 
+def test_a_kappa_a_billionth_under_the_bar_fails_h0() -> None:
+    # The exact kappa of this table is 0.6 minus 9.8e-10, and both null
+    # rates are under the ceiling.
+    rep = _score(_null_table(3031, 1503, 1520, 20963))
+    assert rep["kappa_n"] == 27017
+    assert all(n["rate"] <= bench.NULL_RATE_CEILING for n in rep["null_arm"])
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+    # The bars compared are the decimals #1795 states, not their nearest floats.
+    assert bench.exact_bar(bench.KAPPA_BAR) == Fraction(3, 5)
+    assert bench.exact_bar(bench.PRECISION_DROP_BAR) == Fraction(1, 20)
+
+
 def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
     assert rep["null_arm"][0]["rate"] == _approx(0.3)
@@ -1509,7 +1537,7 @@ def test_either_graders_null_rate_over_the_ceiling_fails_h0() -> None:
                          (_null_table(7, 2, 0, 31), [0.225, 0.175])):
         rep = _score(table)
         assert [n["rate"] for n in rep["null_arm"]] == [_approx(r) for r in rates]
-        assert bench.at_least(rep["kappa"], bench.KAPPA_BAR)
+        assert rep["kappa"] >= bench.KAPPA_BAR
         assert rep["hypotheses"]["H0"] == bench.V_FAIL
 
 

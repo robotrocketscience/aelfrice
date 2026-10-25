@@ -140,6 +140,7 @@ from collections import Counter
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
@@ -266,8 +267,6 @@ PRECISION_DROP_BAR: Final[float] = 0.05
 """H5: largest allowed drop in an arm's precision share against A0."""
 PROXY_OVERLAP_BAR: Final[float] = 0.6
 """Usage proxy: share of a belief's stems a later turn must hold."""
-BAR_TOLERANCE: Final[float] = 1e-9
-"""Float slack for a figure that lands exactly on a bar, such as 0.8 - 0.75."""
 
 BOOTSTRAP_RESAMPLES: Final[int] = 10_000
 """Paired bootstrap resamples of the prompts for the 95% interval."""
@@ -1281,14 +1280,36 @@ def paired_bootstrap_ci(gains: Sequence[float], seed: int,
     return lo, hi
 
 
-def at_least(value: float, bar: float) -> bool:
-    """`value >= bar`, counting a value within `BAR_TOLERANCE` of the bar as on it."""
-    return value >= bar - BAR_TOLERANCE
+def exact_bar(bar: float) -> Fraction:
+    """The bar as the decimal #1795 states, such as 3/5 for 0.60, not its nearest float."""
+    return Fraction(str(bar))
 
 
-def at_most(value: float, bar: float) -> bool:
-    """`value <= bar`, counting a value within `BAR_TOLERANCE` of the bar as on it."""
-    return value <= bar + BAR_TOLERANCE
+def exact_kappa(ids: Sequence[str], a: Labels, b: Labels) -> Fraction:
+    """Cohen's kappa of `paired_kappa` as an exact fraction of the label counts.
+
+    The float kappa is off by about 1e-16, so a kappa on the H0 bar can
+    land on either side of it. Like `paired_kappa`, unclear labels are
+    left out, no item gives 0, and graders who agree on every item give 1.
+    """
+    both = [(bool(a[i]), bool(b[i])) for i in ids if a[i] is not None and b[i] is not None]
+    n = len(both)
+    if n == 0:
+        return Fraction(0)
+    if all(x == y for x, y in both):
+        return Fraction(1)
+    tt = sum(1 for x, y in both if x and y)
+    tf = sum(1 for x, y in both if x and not y)
+    ft = sum(1 for x, y in both if not x and y)
+    ff = n - tt - tf - ft
+    p_o = Fraction(tt + ff, n)
+    p_e = Fraction((tt + tf) * (tt + ft) + (ft + ff) * (tf + ff), n * n)
+    return (p_o - p_e) / (1 - p_e)
+
+
+def _exact_precision(figures: Mapping[str, Any]) -> Fraction:
+    """A grader's precision from `grader_figures`, as an exact fraction."""
+    return Fraction(int(figures["correct"]), int(figures["graded"]))
 
 
 def gain_verdict(mean: float, ci: tuple[float, float], share: float) -> str:
@@ -1380,7 +1401,9 @@ def arm_figures(
         "precision": precision, "precision_a0": precision_a0, "precision_drop": drop,
         "gain_verdict": gain_verdict(mean, ci, share) if sufficient else V_INSUFFICIENT,
         "h5_verdict": (
-            (V_PASS if at_most(drop, PRECISION_DROP_BAR) else V_FAIL) if sufficient else V_INSUFFICIENT
+            (V_PASS if _exact_precision(fig_a0) - _exact_precision(fig_arm)
+             <= exact_bar(PRECISION_DROP_BAR) else V_FAIL)
+            if sufficient else V_INSUFFICIENT
         ),
     }
     if arm == ARM_A3:
@@ -1557,7 +1580,7 @@ def score(
     arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
     null = [null_figures(items, a), null_figures(items, b)]
-    reliable = at_least(kappa, KAPPA_BAR) and all(
+    reliable = exact_kappa(ids, a, b) >= exact_bar(KAPPA_BAR) and all(
         n["graded"] > 0 and n["rate"] <= NULL_RATE_CEILING for n in null
     )
     # H0's kill condition: when either bar fails, every arm result is
