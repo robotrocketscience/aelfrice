@@ -2029,10 +2029,14 @@ def test_a_pooled_key_takes_h1_from_the_median_of_its_stores() -> None:
 
 
 def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
-    gains = [float(g) for g in range(40)]
+    # #1802: integer gains tie the sorted means around both percentile
+    # indices, so an index off by 1 or 2 passed. Random gains don't tie.
+    source = random.Random(1802)
+    gains = [source.random() for _ in range(40)]
     rng = random.Random(7)
     means = sorted(sum(gains[rng.randrange(40)] for _ in range(40)) / 40
                    for _ in range(10_000))
+    assert len(set(means[247:252])) == 5 and len(set(means[9748:9753])) == 5
     # Index floor(0.025 * 9999) and ceil(0.975 * 9999).
     assert bench.paired_bootstrap_ci(gains, 7) == (means[249], means[9750])
     # A 90% interval would end at indices 499 and 9500.
