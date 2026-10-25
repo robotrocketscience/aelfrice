@@ -1258,6 +1258,76 @@ def test_a_relative_path_from_a_removed_folder_is_refused(
     assert err == "aelf store split: the current folder no longer exists\n"
 
 
+def _run_here(
+    *flags: str, capsys: pytest.CaptureFixture[str],
+) -> tuple[int, str, str]:
+    """`_run` with no `--path`, so the command starts from the current
+    folder."""
+    capsys.readouterr()
+    buf = io.StringIO()
+    code = cli.main(["store", "split", *flags], out=buf)
+    return code, buf.getvalue(), capsys.readouterr().err
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+@pytest.mark.parametrize("mode", [0, 0o444], ids=["sealed", "list-only"])
+def test_no_path_from_a_folder_it_cannot_search_is_refused(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, mode: int,
+) -> None:
+    _seed_pair(repo)
+    before = _file_hash(_source_path(repo))
+    sealed = repo / "b" / "pgdata"
+    sealed.mkdir()
+    monkeypatch.chdir(sealed)
+    sealed.chmod(mode)
+    try:
+        runs = [_run_here(*flags, capsys=capsys) for flags in ((), ("--apply",))]
+    finally:
+        sealed.chmod(0o755)
+    named = {
+        f"aelf store split: cannot list or search {sealed}\n",
+        "aelf store split: cannot list or search the current folder\n",
+    }
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err in named
+    assert _file_hash(_source_path(repo)) == before
+    assert not _target_path(repo).parent.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows can't remove the current folder",
+)
+def test_no_path_from_a_removed_folder_is_refused(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gone = repo / "b" / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    code, out, err = _run_here(capsys=capsys)
+    assert code == 2
+    assert out == ""
+    assert err == "aelf store split: the current folder no longer exists\n"
+
+
+def test_no_path_starts_from_the_current_folder(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_pair(repo)
+    monkeypatch.chdir(repo / "b")
+    code, out, err = _run_here("--json", capsys=capsys)
+    assert code == 0, err
+    assert json.loads(out)["work_tree"] == str(repo)
+
+
 def test_apply_refuses_while_aelfrice_db_is_set(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

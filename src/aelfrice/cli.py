@@ -7817,7 +7817,9 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
         split_store,
     )
 
-    start = Path(args.path) if args.path else Path.cwd()
+    # `split_store` reads the current folder's path itself, so a folder
+    # that is gone or that it can't search gets its one-line refusal.
+    start = Path(args.path or os.curdir)
     if not args.apply and os.environ.get("AELFRICE_DB"):
         print(
             "aelf store split: AELFRICE_DB is set and hides every [store] "
