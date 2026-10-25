@@ -381,6 +381,30 @@ def test_a_relative_root_counts_the_files_under_the_folder_it_names(
     assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
 
 
+def test_the_relative_root_bar_counts_distinct_files_not_paragraphs(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nine paragraphs of one present file and one paragraph of a missing
+    file are nine of ten source paths but one of two files, under the bar."""
+    (repo / "a" / "docs" / "x.md").write_text("text\n", encoding="utf-8")
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, ".", "s-dot")
+        _ingest(src, "doc:a/docs/x.md:p0", _text(1), "s-dot")
+        sources = [f"doc:a/docs/x.md:p{i}" for i in range(1, 9)]
+        for source in [*sources, "doc:a/docs/gone.md:p0"]:
+            src.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM, source_path=source,
+                raw_text=source, session_id="s-dot", ts=_TS,
+                derived_belief_ids=[],
+            )
+    finally:
+        src.close()
+    report = _report(repo, capsys=capsys)
+    assert report["targets"] == []
+    assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
