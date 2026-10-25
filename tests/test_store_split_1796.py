@@ -358,6 +358,29 @@ def test_a_relative_root_that_resolves_outside_the_work_tree_is_outside(
     assert not_copied["no_root"] == 0
 
 
+def test_a_relative_root_counts_the_files_under_the_folder_it_names(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A session onboarded from `a` names its files relative to `a/`, so
+    the bar counts the files under `a/`, not under the work-tree root."""
+    (repo / "a" / "docs" / "x.md").write_text("text\n", encoding="utf-8")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "y.md").write_text("text\n", encoding="utf-8")
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, "a", "s-in-a")
+        routed = _ingest(src, "doc:docs/x.md:p0", _text(1), "s-in-a")
+        # Its file exists only at the top, not under `a/`.
+        _onboard(src, "a", "s-at-top")
+        _ingest(src, "doc:docs/y.md:p0", _text(2), "s-at-top")
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
