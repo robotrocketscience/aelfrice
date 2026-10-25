@@ -1583,6 +1583,19 @@ def test_graders_who_share_no_graded_item_fail_h0() -> None:
     assert rep["hypotheses"]["H0"] == bench.V_FAIL
 
 
+def test_an_item_one_grader_left_unclear_stays_out_of_kappa() -> None:
+    # The null table's kappa is exactly the bar. Each A0 item is unclear to
+    # one grader and relevant to the other: counted as not relevant, either
+    # item adds a disagreement and drops kappa under the bar.
+    rows = [*_null_table(2, 1, 1, 14), ("a0", "p0", {bench.ARM_A0: 1}, True, None, True),
+            ("a1", "p0", {bench.ARM_A0: 2}, True, True, None)]
+    key, a, b = _key(rows)
+    assert bench.exact_kappa([i.id for i in key.items], a, b) == Fraction(3, 5)
+    rep = _score(rows)
+    assert rep["kappa_n"] == 18
+    assert rep["hypotheses"]["H0"] == bench.V_PASS
+
+
 def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
     assert rep["null_arm"][0]["rate"] == _approx(0.3)
