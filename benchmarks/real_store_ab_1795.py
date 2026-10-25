@@ -16,10 +16,11 @@ in use already has those files, and the copy reads its log. `--work-dir`
 picks where the temporary copy goes.
 
 **One snapshot.** Each subcommand makes its own copy, so a write to the
-store between two of them would hand the arms different beliefs. `run`
-records the SHA-256 of its copy as `snapshot`, and `packet` and `proxy`
-exit 1 when the runs' snapshots differ from each other or from their own
-copy. For a store that is still in use, copy it once and point every
+store between two of them would hand the arms different beliefs, and so
+would a time-boxed lock that expires between them. `run` records a
+SHA-256 fingerprint of its copy and of the copy's remaining locks as
+`snapshot`, and `packet` and `proxy` exit 1 when the runs' snapshots
+differ from each other or from their own copy. For a store that is still in use, copy it once and point every
 subcommand at that copy.
 
 **Subcommands.** Each one is deterministic given its inputs and
@@ -338,25 +339,35 @@ def copy_store(src: Path, dst: Path) -> None:
         raise InputError(f"{src} changed while it was copied; copy it again")
 
 
-def snapshot_digest(db: Path) -> str:
-    """SHA-256 of a fresh backup copy's bytes, which name the source's state."""
-    with db.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
 def prepare_snapshot(src: Path, work: Path) -> tuple[Path, str]:
-    """Copy the store into `work`, fingerprint the copy, and open it once read-write.
+    """Copy the store into `work`, open the copy once read-write, and fingerprint it.
 
-    The fingerprint is taken before the open, so two copies of an
-    unchanged source match. The read-write open runs any pending
-    migration on the copy, so every arm reads the same schema and can
-    open it read-only afterwards.
+    The read-write open runs any pending migration on the copy, so every
+    arm reads the same schema and can open it read-only afterwards. A
+    migration may stamp the copy with the time it ran, so the fingerprint
+    hashes the copy's bytes from before the open, which two copies of an
+    unchanged source share. The open also expires every time-boxed lock
+    the clock says is due, so the fingerprint hashes each locked belief's
+    id and lock level after the open as well. A lock that expires between
+    two subcommands then changes the fingerprint, and `packet` and `proxy`
+    refuse runs that read it as locked.
     """
     db = work / "memory.db"
     copy_store(src, db)
-    digest = snapshot_digest(db)
+    with db.open("rb") as f:
+        digest = hashlib.file_digest(f, "sha256")
     MemoryStore(str(db)).close()
-    return db, digest
+    conn = sqlite3.connect(read_only_uri(str(db)), uri=True)
+    try:
+        locks = conn.execute(
+            "SELECT id, lock_level FROM beliefs WHERE lock_level != ? ORDER BY id",
+            (LOCK_NONE,),
+        ).fetchall()
+    finally:
+        conn.close()
+    for bid, level in locks:
+        digest.update(f"\0{bid}\0{level}".encode())
+    return db, digest.hexdigest()
 
 
 def prepare_copy(src: Path, work: Path) -> Path:

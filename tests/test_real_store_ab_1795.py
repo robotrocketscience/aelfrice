@@ -67,13 +67,14 @@ def pinned_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _add(
     s: MemoryStore, bid: str, content: str, *,
     lock: str = LOCK_NONE, created: str = "2026-10-01T00:00:00Z",
+    expires: str | None = None,
 ) -> None:
     s.insert_belief(Belief(
         id=bid, content=content,
         content_hash=hashlib.sha256(content.encode()).hexdigest(),
         alpha=1.0, beta=1.0, type=BELIEF_FACTUAL, lock_level=lock,
         locked_at=None if lock == LOCK_NONE else created,
-        created_at=created, last_retrieved_at=None,
+        created_at=created, last_retrieved_at=None, lock_expires_at=expires,
     ))
 
 
@@ -1991,11 +1992,9 @@ def test_a_run_records_the_snapshot_it_read(tmp_path: Path) -> None:
     first = run_on(bench.ARM_A0, "w1")
     again = run_on(bench.ARM_A2, "w2")
     assert first["snapshot"] == again["snapshot"]
-    # The fingerprint is of the backup as copied, before any open can
-    # migrate it.
-    plain = tmp_path / "plain.db"
-    bench.copy_store(path, plain)
-    assert first["snapshot"] == _sha(plain)
+    # `packet` and `proxy` fingerprint their own copy the same way.
+    (tmp_path / "pk").mkdir()
+    assert bench.prepare_snapshot(path, tmp_path / "pk")[1] == first["snapshot"]
     _add_late_belief(path)
     later = run_on(bench.ARM_A2, "w3")
     assert later["snapshot"] != first["snapshot"]
@@ -2024,6 +2023,37 @@ def test_the_snapshot_is_taken_before_the_copy_migrates(
         work.mkdir()
         snaps.append(bench.prepare_snapshot(path, work)[1])
     assert snaps[0] == snaps[1]
+
+
+def test_a_lock_that_expires_between_two_copies_changes_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The read-write open of each copy expires the time-boxed locks due by
+    # the clock. A lock that expires between two subcommands leaves the
+    # copies' bytes equal but hands the later arms a non-locked belief.
+    path = _store(tmp_path)
+    s = MemoryStore(str(path))
+    _add(s, "boxed", "the kestrel meadow lock ends at the new year", lock=LOCK_USER,
+         expires="2030-01-01T00:00:00+00:00")
+    s.close()
+    real = MemoryStore.sweep_expired_locks
+    clock = ["2029-12-31T00:00:00+00:00"]
+
+    def sweep(self: MemoryStore, *, now: str | None = None) -> int:
+        return real(self, now=clock[0])
+
+    monkeypatch.setattr(MemoryStore, "sweep_expired_locks", sweep)
+    snaps: list[str] = []
+    for n, now in enumerate(("2029-12-31T00:00:00+00:00", "2029-12-31T12:00:00+00:00",
+                             "2030-01-02T00:00:00+00:00")):
+        clock[0] = now
+        work = tmp_path / f"c{n}"
+        work.mkdir()
+        db, snap = bench.prepare_snapshot(path, work)
+        snaps.append(snap)
+        locked = {bid for bid, _c, lock in bench.active_beliefs(db) if lock != LOCK_NONE}
+        assert ("boxed" in locked) == (n < 2)
+    assert snaps[0] == snaps[1] != snaps[2]
 
 
 def test_read_runs_rejects_runs_of_different_snapshots(tmp_path: Path) -> None:
