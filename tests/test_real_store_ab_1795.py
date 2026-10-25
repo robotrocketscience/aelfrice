@@ -1497,6 +1497,42 @@ def test_either_side_under_min_graded_is_insufficient() -> None:
         assert rep["hypotheses"]["H5"] == {"A1": bench.V_INSUFFICIENT}
 
 
+def test_exactly_min_graded_on_each_side_is_sufficient() -> None:
+    # The 2026-10-08 ruling: a verdict needs at least MIN_GRADED graded items.
+    rows = _hand([2, 2, 2], [3, 3, 3])
+    rep = _score(rows)
+    g = rep["arms"]["A1"]["graders"][0]
+    assert (g["graded"], g["graded_a0"]) == (graded_gate.MIN_GRADED, graded_gate.MIN_GRADED)
+    assert rep["hypotheses"]["H2"] == bench.V_PASS
+    assert rep["hypotheses"]["H5"] == {"A1": bench.V_PASS}
+    # One not-relevant item turned unclear leaves its side one short.
+    for unclear in ("a0-9", "x0-9"):
+        short: list[Row] = [(r[0], r[1], r[2], r[3], None, None) if r[0] == unclear else r
+                            for r in rows]
+        rep = _score(short)
+        assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
+        assert rep["hypotheses"]["H5"] == {"A1": bench.V_INSUFFICIENT}
+
+
+def test_min_graded_counts_the_top_tens_not_the_packed_result() -> None:
+    # The 2026-10-24 ruling keeps the count on the top 10s. Each side packs
+    # 20 graded items per prompt, 10 of them past rank 10: 40 graded in the
+    # packed results, 20 in the top 10s.
+    rows: list[Row] = []
+    for p in range(2):
+        for k in range(20):
+            rows.append((f"a{p}-{k}", f"p{p}", {bench.ARM_A0: k + 1}, True, k < 2, k < 2))
+            rows.append((f"x{p}-{k}", f"p{p}", {bench.ARM_A1: k + 1}, True, k < 4, k < 4))
+        rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
+    rep = _score(rows)
+    g = rep["arms"]["A1"]["graders"][0]
+    assert (g["graded"], g["graded_a0"]) == (20, 20)
+    assert g["mean_gain"] == _approx(2.0)
+    assert rep["hypotheses"]["H0"] == bench.V_PASS
+    assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
+    assert rep["hypotheses"]["H5"] == {"A1": bench.V_INSUFFICIENT}
+
+
 def test_a_failed_h0_overrides_insufficient() -> None:
     # #1795 H0: either bar failing makes every arm result `unreliable`.
     rep = _score(_hand([2, 2], [3, 3], null_rel=5))
