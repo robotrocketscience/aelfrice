@@ -562,15 +562,21 @@ def test_only_a_marker_folder_makes_a_relative_session_ambiguous(
     assert {r[0] for r in _rows(target)["beliefs"]} == {bid}
 
 
-def test_a_marker_at_the_work_tree_root_leaves_a_dot_session_alone(
-    repo: Path, capsys: pytest.CaptureFixture[str],
+@pytest.mark.parametrize("case", ["same", "other"], ids=["dot", "other-case"])
+def test_a_marker_at_the_work_tree_root_leaves_a_relative_session_alone(
+    repo: Path, capsys: pytest.CaptureFixture[str], case: str,
 ) -> None:
     """A marker folder that resolves to the session's own root is the
-    root it was scored under, not a second candidate."""
+    root it was scored under, not a second candidate. It is compared by
+    file identity, so `../MONO` for the work tree `.../mono` is that
+    root too."""
+    given = "." if case == "same" else f"../{_other_case(repo).name}"
     _marker(repo, ".aelfrice/root")
     src = _open(_source_path(repo))
     try:
-        bid = _relative_session(src, repo, "s-dot", total=2, present=2, n=1)
+        bid = _relative_session(
+            src, repo, "s-rel", total=2, present=2, n=1, root=given,
+        )
     finally:
         src.close()
     report = _report(repo, "--apply", capsys=capsys)

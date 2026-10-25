@@ -425,13 +425,28 @@ def _ambiguous(
 
     The folder a relative onboard ran from isn't recorded, so a session
     whose files are present under the work-tree root and under a marker
-    folder could have run from either one.
+    folder could have run from either one. A resolved folder is compared
+    to `root` by file identity, since it keeps the letter case of `given`
+    and `root` is spelled from the work tree.
     """
     for folder in markers:
         other = _resolved(folder / given)
-        if other is not None and other != root and _enough_present(other, rels):
+        if (
+            other is not None and _enough_present(other, rels)
+            and not _same_folder(other, root)
+        ):
             return True
     return False
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    """True when `a` and `b` are one folder by file identity, as
+    `db_paths.same_store_file` compares folders, or by text when either
+    can't be read."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return a == b
 
 
 def _onboard_roots(
