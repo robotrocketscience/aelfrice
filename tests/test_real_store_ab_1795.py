@@ -400,6 +400,37 @@ def test_a2_probes_the_existing_edge_kinds_and_restores_the_override(tmp_path: P
     assert bench.PROBE_KINDS_A2 == ("DERIVED_FROM", "RELATES_TO", "TEMPORAL_NEXT")
 
 
+def test_every_arm_retrieves_through_a_read_only_handle_on_an_unchanged_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #1795 opens every copy `mode=ro` for retrieval, so no arm's ranking
+    # can write the copy or read posteriors rewritten before it ran.
+    path = _store(tmp_path)
+    conn = sqlite3.connect(read_only_uri(str(path)), uri=True)
+    try:
+        source = conn.execute("SELECT id, alpha, beta FROM beliefs ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    real = bench.retrieve_packed
+    seen: list[str] = []
+
+    def spy(store: MemoryStore, query: str) -> list[str]:
+        db = store._conn  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            db.execute("UPDATE beliefs SET alpha = alpha")
+        rows = db.execute("SELECT id, alpha, beta FROM beliefs ORDER BY id").fetchall()
+        assert [tuple(r) for r in rows] == source
+        seen.append(query)
+        return real(store, query)
+
+    monkeypatch.setattr(bench, "retrieve_packed", spy)
+    for arm in bench.ARMS:
+        work = tmp_path / f"work-{arm}"
+        work.mkdir()
+        bench.run_arm(path, _prompts(), arm, work)
+    assert len(seen) == len(bench.ARMS)
+
+
 def _crowded_store(tmp_path: Path, n: int) -> Path:
     """`n` beliefs that match `_QUERY`, each with a RELATES_TO edge to `rel`."""
     path = tmp_path / "crowd" / "memory.db"
