@@ -1027,21 +1027,30 @@ def test_a_folder_replaced_by_a_symlink_keeps_the_commit_in_this_repository(
     os.name == "nt" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
 )
-def test_a_commit_under_a_folder_you_cannot_read_lands_in_the_folder_above(
-    marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
+)
+def test_a_commit_under_a_folder_you_cannot_list_or_search_is_skipped(
+    marked_repo: Path, monkeypatch: pytest.MonkeyPatch, mode: int,
 ) -> None:
+    """The folder may hold a marker or a `.git` entry the hook can't
+    check, so the commit goes to no store, as for a broken marker."""
     from aelfrice import hook_commit_ingest as hk
 
     monkeypatch.chdir(marked_repo)
     _stage(marked_repo, "project-a/sealed/x.txt")
+    _stage(marked_repo, "top.txt")
     rev = _commit_staged(marked_repo, _TRIPLE_MSG)
     sealed = marked_repo / "project-a" / "sealed"
-    sealed.chmod(0)
+    sealed.chmod(mode)
     try:
         stores = hk._commit_stores(rev, str(marked_repo))  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(db_paths.FolderAccessError) as raised:
+            db_paths.owning_folder(marked_repo, "project-a/sealed/x.txt")
     finally:
         sealed.chmod(0o755)
-    assert stores == [_named_store(marked_repo, "project-a")]
+    assert stores is None
+    assert raised.value.folder == sealed
 
 
 def test_a_merge_lands_in_the_stores_of_the_files_it_brought_in(

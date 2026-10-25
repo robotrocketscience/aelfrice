@@ -233,11 +233,13 @@ def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
     commit spanning several stores lands in each. Git is asked once for
     the whole commit, however many folders it changed. A commit with no
     changed paths resolves from `cwd`. Returns None when a marker names
-    no usable store: the commit is skipped rather than written to the
-    shared store.
+    no usable store, or when a changed path's folders include one it
+    can't list or search: the commit is skipped rather than written to
+    the shared store.
     """
     from aelfrice.config_discovery import config_discovery_scope  # noqa: PLC0415
     from aelfrice.db_paths import (  # noqa: PLC0415
+        FolderAccessError,
         StoreMarkerError,
         db_path,
         owning_folder,
@@ -256,7 +258,7 @@ def _commit_stores(rev: str, cwd: str | None) -> list[Path] | None:
                 resolve_store_in_work_tree(folder, root).path
                 for folder in folders
             })
-    except StoreMarkerError:
+    except (StoreMarkerError, FolderAccessError):
         return None
 
 

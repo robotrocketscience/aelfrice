@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -579,25 +580,38 @@ def owning_folder(root: Path, rel: str) -> Path:
 
     The walk stops before a folder that is missing (a deleted file's
     folder), a symlink (whose target may be outside the repository or in
-    another one), the root of a nested repository or submodule, or a
-    folder it can't read. The store then resolves from a folder that
-    belongs to `root`'s own work tree, so the result is safe to pass to
-    `resolve_store_in_work_tree`.
+    another one), or the root of a nested repository or submodule. The
+    store then resolves from a folder that belongs to `root`'s own work
+    tree, so the result is safe to pass to `resolve_store_in_work_tree`.
+
+    Raises `FolderAccessError` for a folder on the way that it can't
+    list or search, which may hold a marker or a `.git` entry it can't
+    check.
     """
     current = root
     for part in Path(rel).parts[:-1]:
         candidate = current / part
         try:
-            if (
-                candidate.is_symlink()
-                or not candidate.is_dir()
-                or (candidate / WORKTREE_MARKER).exists()
-            ):
-                break
-        except OSError:
-            # Python 3.12 and 3.13 raise for a folder without search
-            # permission, where 3.14 returns False.
+            mode = os.lstat(candidate).st_mode
+        except (FileNotFoundError, NotADirectoryError):
             break
+        except OSError as exc:
+            raise FolderAccessError(current) from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            break
+        try:
+            os.lstat(candidate / WORKTREE_MARKER)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError as exc:
+            raise FolderAccessError(candidate) from exc
+        else:
+            break
+        try:
+            with os.scandir(candidate):
+                pass
+        except OSError as exc:
+            raise FolderAccessError(candidate) from exc
         current = candidate
     return current
 
