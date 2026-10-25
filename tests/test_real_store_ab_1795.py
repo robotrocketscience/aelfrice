@@ -1357,6 +1357,9 @@ def test_score_refuses_a_proxy_report_that_misses_an_arm_or_a_prompt(tmp_path: P
          "measured A0, A2, A3 on prompt p0, not the key's A0, A3"),
         ([], "covers 0 prompts, but the key's store sampled 3"),
         (full[:2], "covers 2 prompts, but the key's store sampled 3"),
+        # A prompt the graders never saw would join H6's proxy sign.
+        (_proxy_report("s2", [1, 1, 1, 9])["prompts"],
+         "covers 4 prompts, but the key's store sampled 3"),
         ([{**r, "prompt_id": f"q{n}"} for n, r in enumerate(full)], "has no row for prompt p0"),
         ([full[0], full[0], full[1]], "repeats prompt p0"),
         ([*full[:2], {"arms": full[2]["arms"]}], "has a malformed prompt row"),
