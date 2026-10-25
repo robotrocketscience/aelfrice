@@ -405,6 +405,22 @@ def test_the_relative_root_bar_counts_distinct_files_not_paragraphs(
     assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
 
 
+def test_a_folder_at_a_session_file_path_does_not_count_as_its_file(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """8 of 10 paths are files and a 9th is a folder, so the session is
+    under the bar; a folder would lift it to 90%."""
+    src = _open(_source_path(repo))
+    try:
+        _relative_session(src, repo, "s-dir", total=10, present=8, n=1)
+    finally:
+        src.close()
+    (repo / "a" / "docs" / "s-dir-8.md").mkdir()
+    report = _report(repo, capsys=capsys)
+    assert report["targets"] == []
+    assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
