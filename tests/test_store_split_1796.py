@@ -1513,6 +1513,43 @@ def test_a_run_below_a_folder_it_cannot_search_names_that_folder(
 
 
 @pytest.mark.skipif(
+    sys.platform != "darwin" or os.geteuid() == 0,
+    reason="needs macOS, whose getcwd fails below a folder you can't "
+    "search, and POSIX permissions that the user can't bypass",
+)
+@pytest.mark.parametrize("mode", [0, 0o444], ids=["sealed", "list-only"])
+@pytest.mark.parametrize("rel", [None, "."], ids=["no-path", "dot"])
+def test_a_run_from_a_search_only_folder_below_one_it_cannot_search(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, mode: int, rel: str | None,
+) -> None:
+    """The current folder can be searched but not listed. A handle opened
+    for search needs no read permission, so it still gives the path, and
+    the refusal names the folder above it that can't be searched."""
+    _seed_pair(repo)
+    sealed = repo / "b" / "pgdata"
+    sub = sealed / "sub"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    sub.chmod(0o111)
+    sealed.chmod(mode)
+    try:
+        runs = [
+            _run_here(*flags, capsys=capsys) if rel is None
+            else _run(Path(rel), *flags, capsys=capsys)
+            for flags in ((), ("--apply",))
+        ]
+    finally:
+        sealed.chmod(0o755)
+        sub.chmod(0o755)
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err == f"aelf store split: cannot list or search {sealed}\n"
+    assert not _target_path(repo).parent.exists()
+
+
+@pytest.mark.skipif(
     sys.platform == "win32", reason="Windows can't remove the current folder",
 )
 def test_no_path_from_a_removed_folder_is_refused(
@@ -1543,12 +1580,9 @@ def test_no_path_starts_from_the_current_folder(
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need extra rights on Windows",
 )
-def test_a_path_through_a_symlink_and_up_splits_the_folder_it_names(
-    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    """`link/..` names the folder above the link's target, as the system
-    and git read it, so the split runs in that folder's work tree."""
-    _seed_pair(repo)
+def _other_repo(env: Path) -> Path:
+    """A second repository, `other`, whose `o/` marker store receives one
+    belief, with an empty `sub/` folder."""
     other = (env / "other").resolve()
     (other / "sub").mkdir(parents=True)
     _git("init", "-q", cwd=other)
@@ -1560,10 +1594,50 @@ def test_a_path_through_a_symlink_and_up_splits_the_folder_it_names(
         _ingest(src, "doc:o/docs/z.md:p0", _text(3), "s1")
     finally:
         src.close()
+    return other
+
+
+def test_a_path_through_a_symlink_and_up_splits_the_folder_it_names(
+    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`link/..` names the folder above the link's target, as the system
+    and git read it, so the split runs in that folder's work tree."""
+    _seed_pair(repo)
+    other = _other_repo(env)
     (repo / "b" / "link").symlink_to(other / "sub")
     code, out, err = _run(
         repo / "b" / "link" / "..", "--apply", "--json", capsys=capsys,
     )
+    assert code == 0, err
+    assert json.loads(out)["work_tree"] == str(other)
+    assert (other / "o" / ".aelfrice" / "store" / "memory.db").exists()
+    assert not _target_path(repo).parent.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need extra rights on Windows",
+)
+def test_a_relative_path_through_a_symlink_and_up_without_getcwd(
+    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the system can't give the current folder's path, the path
+    read from a handle to it still resolves its symlinks, so `link/..`
+    names the folder above the link's target there too."""
+    _seed_pair(repo)
+    other = _other_repo(env)
+    (repo / "b" / "link").symlink_to(other / "sub")
+    monkeypatch.chdir(repo / "b")
+
+    def no_getcwd() -> str:
+        raise PermissionError(13, "Permission denied")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_split, "_current_folder", lambda: str(repo / "b"))
+        patch.setattr(os, "getcwd", no_getcwd)
+        code, out, err = _run(
+            Path("link") / "..", "--apply", "--json", capsys=capsys,
+        )
     assert code == 0, err
     assert json.loads(out)["work_tree"] == str(other)
     assert (other / "o" / ".aelfrice" / "store" / "memory.db").exists()
