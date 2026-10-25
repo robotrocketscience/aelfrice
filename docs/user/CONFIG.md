@@ -1490,7 +1490,7 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | retired | The belief is retired. A copy would make it searchable again. |
 | `superseded` | superseded | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. A folder in the work tree that you can't list or search, such as a container's data folder, stops the command with exit status 2 before it writes anything, in a dry run and with `--apply` alike. The error names the folder, also when you pass that folder or one below it as `--path`. The command can't check such a folder for a marker or a `.git` entry, so it can't tell which store the files below it belong to. Give yourself read and search permission on the folder, or move it out of the work tree, and run the command again.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. A folder in the work tree that you can't list or search, such as a container's data folder, stops the command with exit status 2 before it writes anything, in a dry run and with `--apply` alike. The error names the folder, also when you pass that folder or one below it as `--path`, or run the command from inside it. On macOS, a run from inside such a folder with no `--path`, or a relative one, can't learn the folder's path, so the error says `the current folder` instead. The command can't check such a folder for a marker or a `.git` entry, so it can't tell which store the files below it belong to. Give yourself read and search permission on the folder, or move it out of the work tree, and run the command again.
 
 The command exits with one of these statuses:
 
@@ -1498,7 +1498,7 @@ The command exits with one of these statuses:
 |---|---|
 | 0 | Every target store was read, and with `--apply`, copied. |
 | 1 | A target store can't be read or its copy failed, and the report marks that target as failed. Or the repository store can't be read, and the command prints that error instead of a report. |
-| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, a folder in the work tree can't be listed or searched, or `--apply` runs while `AELFRICE_DB` is set. |
+| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the current folder was removed, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, a folder in the work tree can't be listed or searched, or `--apply` runs while `AELFRICE_DB` is set. |
 
 ## User lock store: `AELFRICE_USER_DB`
 
