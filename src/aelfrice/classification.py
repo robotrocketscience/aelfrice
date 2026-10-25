@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -313,11 +314,17 @@ def start_onboard_session(
     )
     # #1798: record the resolved folder, since a relative path such as
     # `.` names nothing once the shell that typed it is gone. The
-    # extractors above still read `repo_path` as given.
+    # extractors above still read `repo_path` as given. A relative path
+    # can't be resolved from a removed current folder, where the
+    # extractors found nothing, so that run records the path as typed.
+    try:
+        recorded_root = os.path.realpath(repo_path)
+    except OSError:
+        recorded_root = str(repo_path)
     store.insert_onboard_session(
         OnboardSession(
             session_id=session_id,
-            repo_path=str(repo_path.resolve()),
+            repo_path=recorded_root,
             state=ONBOARD_STATE_PENDING,
             candidates_json=candidates_json,
             created_at=timestamp,

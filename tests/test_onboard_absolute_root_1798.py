@@ -110,3 +110,23 @@ def test_relative_run_scans_the_same_tree_as_an_absolute_run(
 
     assert relative
     assert relative == absolute
+
+
+@pytest.mark.timeout(60)
+def test_relative_run_from_a_removed_folder_exits_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A relative path can't be resolved once the current folder is
+    # gone, as in a removed worktree. The scan finds nothing there, and
+    # the run still exits 0 and records the path as typed.
+    db = tmp_path / "aelf.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+
+    payload = _emit(".")
+
+    assert payload["sentences"] == []
+    assert _stored_root(db, str(payload["session_id"])) == "."
