@@ -16,12 +16,12 @@ A relative `repo_path`, such as `.`, resolves against the work-tree root,
 and is kept only when at least `RELATIVE_ROOT_MIN_PRESENT` of the
 session's distinct file paths exist as files under it; otherwise the
 session names no root. Every ingest row with a file source must name the
-same root, or the belief is skipped as `no_root`, and a root outside the
-work tree, or
-inside a linked worktree or nested repository below it, is skipped as
-`outside_work_tree`. A root that is no longer a folder on disk is skipped
-as `missing_root`, because a removed linked worktree leaves no `.git`
-entry to tell it from a deleted folder. The folder is then the deepest
+same root, or the belief is skipped as `no_root`. A root outside the
+work tree, present or not, or inside a linked worktree or nested
+repository below it, is skipped as `outside_work_tree`. A root inside
+the work tree that is no longer a folder on disk is skipped as
+`missing_root`, because a removed linked worktree leaves no `.git` entry
+to tell it from a deleted folder. The folder is then the deepest
 real folder of `<root>/<rel>` inside the work tree (`db_paths.owning_folder`),
 and the belief is copied only when that folder resolves to a marker store
 other than the repository store.
