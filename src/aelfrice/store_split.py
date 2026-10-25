@@ -866,10 +866,10 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
             "hides every [store] marker; unset it and run again",
         )
     try:
-        _check_start(start)
-        work_tree = work_tree_root(start)
+        path = _check_start(start)
+        work_tree = work_tree_root(path)
         if work_tree is None:
-            raise SplitRefused(f"{start} is not in a git work tree")
+            raise SplitRefused(f"{path} is not in a git work tree")
         source = repository_store_path(work_tree)
         if source is None:
             raise SplitRefused(f"{work_tree} is not in a git repository")
@@ -878,16 +878,25 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
         raise SplitRefused(str(exc)) from exc
 
 
-def _check_start(start: Path) -> None:
-    """Raise unless git can run with `start` as its working directory.
+def _check_start(start: Path) -> Path:
+    """`start` as an absolute path, once git can run there.
 
     git fails there for a file, a missing path, or a folder it can't
     reach, so this names that problem first: `SplitRefused` for a
     `start` that is missing or a file, and `FolderAccessError` for the
     first folder on the way to `start`, or `start` itself, that can't
-    be searched.
+    be searched. A relative `start` also needs the current folder's
+    path, which the system can't give for a removed folder, or, on
+    macOS, for one you can't search; that is a `SplitRefused` too.
     """
-    path = Path(os.path.abspath(start))
+    try:
+        path = Path(os.path.abspath(start))
+    except FileNotFoundError:
+        raise SplitRefused("the current folder no longer exists") from None
+    except OSError:
+        raise SplitRefused(
+            "cannot list or search the current folder",
+        ) from None
     reach = next(
         (
             p for p in (path, *path.parents)
@@ -896,7 +905,7 @@ def _check_start(start: Path) -> None:
         None,
     )
     if reach == path:
-        return
+        return path
     if reach is None:
         raise SplitRefused(f"no folder at {start}")
     first = reach / path.relative_to(reach).parts[0]
