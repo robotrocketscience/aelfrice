@@ -41,7 +41,10 @@ subcommand at that copy.
   grader the `--out` directory only.
 - `score`: the H0 to H6 verdicts from two graders' labels. To score
   several stores together, concatenate their keys, and each grader's
-  labels, into one file each.
+  labels, into one file each, and pass `--proxy` every store's proxy
+  report. `score` matches each proxy report to its store's key rows by
+  `snapshot`, and exits 1 when a store in the key has no proxy report or
+  a proxy report has no store in the key.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief, with the runs' `snapshot`. Reported beside the
   graders, never gating.
@@ -108,6 +111,11 @@ Usage::
     uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <packet-dir> --key key.jsonl
     uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A1W.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
     uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json
+
+Pooled over two stores, with their keys and each grader's labels
+concatenated::
+
+    uv run python -m benchmarks.real_store_ab_1795 score --key keys.jsonl --labels a.jsonl b.jsonl --proxy proxy-1.json proxy-2.json
 """
 
 from __future__ import annotations
@@ -1337,9 +1345,37 @@ def proxy_gain_signs(proxy_report: Mapping[str, Any], arms: Sequence[str]) -> di
     return out
 
 
+def pool_proxy_reports(
+    reports: Sequence[Mapping[str, Any]], snapshots: Sequence[str],
+) -> dict[str, Any]:
+    """One proxy report holding the prompts of one report per store snapshot.
+
+    InputError when a report records no snapshot, two reports record the
+    same one, a snapshot in `snapshots` has no report, or a report's
+    snapshot is not in `snapshots`.
+    """
+    by_snapshot: dict[str, Mapping[str, Any]] = {}
+    for n, report in enumerate(reports, 1):
+        snap: object = report.get("snapshot")
+        if not isinstance(snap, str) or not snap:
+            raise InputError(f"proxy report {n} records no snapshot")
+        if snap in by_snapshot:
+            raise InputError(f"two proxy reports record snapshot {snap}")
+        by_snapshot[snap] = report
+    missing = sorted(set(snapshots) - by_snapshot.keys())
+    if missing:
+        raise InputError(f"no proxy report for the key's snapshot {', '.join(missing)}")
+    extra = sorted(by_snapshot.keys() - set(snapshots))
+    if extra:
+        raise InputError(f"no key rows for the proxy report's snapshot {', '.join(extra)}")
+    rows = [row for snap in sorted(by_snapshot)
+            for row in cast(list[dict[str, Any]], by_snapshot[snap].get("prompts", []))]
+    return {"prompts": rows}
+
+
 def score(
     items: Sequence[KeyItem], a: Labels, b: Labels, *, seed: int,
-    proxy_report: Mapping[str, Any] | None = None,
+    proxy_reports: Sequence[Mapping[str, Any]] | None = None,
     census_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """H0 to H6 from the key, two graders' labels, and the optional proxy and census.
@@ -1370,7 +1406,10 @@ def score(
     The paired gains and gaining shares count every sampled prompt, the
     sum of each store's `prompts_sampled`. The report's `prompts` is that
     sum, `keyed_prompts` is the number of prompts the key holds rows for,
-    and `stores` is the number of snapshots.
+    and `stores` is the number of snapshots. H6 pools `proxy_reports` the
+    same way: it takes one report per store, matched to the key's rows by
+    `snapshot`, so the proxy's gain counts the stores the graders labeled.
+    A store with no report, or a report with no store, is an InputError.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
@@ -1391,6 +1430,8 @@ def score(
                 f"the key holds {keyed[snap]} prompts of snapshot {snap}"
                 f" but prompts_sampled is {n}")
         sampled += n
+    pooled_proxy = (None if proxy_reports is None
+                    else pool_proxy_reports(proxy_reports, sorted(sampled_counts)))
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for i in items if i.arms for arm in i.arms} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
@@ -1441,10 +1482,10 @@ def score(
     else:
         hyp["H2_split"] = V_NOT_MEASURED
     hyp["H5"] = {arm: verdict(arm, per_arm[arm]["h5_verdict"]) for arm in arms}
-    if proxy_report is None:
+    if pooled_proxy is None:
         hyp["H6"] = V_NOT_MEASURED
     else:
-        signs = proxy_gain_signs(proxy_report, arms)
+        signs = proxy_gain_signs(pooled_proxy, arms)
         h6: dict[str, Any] = {}
         for arm in arms:
             grader_signs = [(g["mean_gain"] > 0) - (g["mean_gain"] < 0)
@@ -1531,7 +1572,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("score", help="H0 to H6 from two graders' labels")
     sc.add_argument("--key", type=Path, required=True)
     sc.add_argument("--labels", type=Path, nargs=2, required=True)
-    sc.add_argument("--proxy", type=Path)
+    sc.add_argument("--proxy", type=Path, nargs="+",
+                    help="one proxy report per store in the key, for H6")
     sc.add_argument("--census", type=Path, help="census output, for H1")
     sc.add_argument("--seed", type=int, default=1795, help="bootstrap seed")
     p = sub.add_parser("proxy", help="usage proxy from later turns")
@@ -1569,7 +1611,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         report = score(
             read_key(args.key), read_labels(args.labels[0]), read_labels(args.labels[1]),
             seed=args.seed,
-            proxy_report=_read_json(args.proxy) if args.proxy else None,
+            proxy_reports=[_read_json(p) for p in args.proxy] if args.proxy else None,
             census_report=_read_json(args.census) if args.census else None,
         )
         _dump(report, None)
