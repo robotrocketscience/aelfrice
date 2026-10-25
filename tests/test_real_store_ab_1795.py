@@ -1559,6 +1559,17 @@ def test_a_kappa_a_billionth_under_the_bar_fails_h0() -> None:
     assert bench.exact_bar(bench.PRECISION_DROP_BAR) == Fraction(1, 20)
 
 
+def test_kappa_takes_each_graders_own_marginals() -> None:
+    # One grader calls 1 of 10 relevant and the other 2: chance agreement
+    # is 0.74 and kappa 8/13, over the bar, whichever grader is which.
+    for table in (_null_table(1, 0, 1, 8), _null_table(1, 1, 0, 8)):
+        key, a, b = _key(table)
+        assert bench.exact_kappa([i.id for i in key.items], a, b) == Fraction(8, 13)
+        rep = _score(table)
+        assert rep["kappa"] == _approx(8 / 13)
+        assert rep["hypotheses"]["H0"] == bench.V_PASS
+
+
 def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
     assert rep["null_arm"][0]["rate"] == _approx(0.3)
