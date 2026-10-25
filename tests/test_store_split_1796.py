@@ -484,6 +484,26 @@ def test_a_relative_root_in_another_letter_case_keeps_the_bar(
     assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
 
 
+def test_a_missing_root_in_another_letter_case_is_missing(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`.../MONO/gone` for the work tree `.../mono` matches the work tree
+    at the folder above the one that is gone, so the root counts as
+    missing, not as outside the work tree."""
+    upper = _other_case(repo)
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, upper / "gone", "s-gone")
+        _ingest(src, "doc:docs/x.md:p0", _text(1), "s-gone")
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["missing_root"] == 1
+    assert not_copied["outside_work_tree"] == 0
+
+
 def _repeated_session(
     src: MemoryStore, repo: Path, given: str, *, total: int, also: Path,
     also_present: int,
