@@ -1652,7 +1652,8 @@ def test_the_proxy_finds_a_cited_or_restated_belief_in_a_later_turn(tmp_path: Pa
         {"prompt_id": "p2", "prompt": early["text"], "ranked": ["w5", "w1"]}]}}
     work = tmp_path / "w"
     work.mkdir()
-    rep = bench.proxy(runs, [prompt, early], turns, bench.prepare_copy(path, work))
+    rep = bench.proxy(runs, [prompt, early], turns, bench.prepare_copy(path, work),
+                      snapshot=_SNAP)
     used = {r["prompt_id"]: {b["id"]: b["used"] for b in r["arms"]["A0"]}
             for r in rep["prompts"]}
     # t005 cites `seed`; w1 is only restated in an earlier turn of s1.
@@ -1674,7 +1675,7 @@ def test_the_proxy_covers_the_whole_packed_result(tmp_path: Path) -> None:
         {"prompt_id": "p1", "prompt": prompt["text"], "ranked": ranked}]}}
     work = tmp_path / "w"
     work.mkdir()
-    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(path, work))
+    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(path, work), snapshot=_SNAP)
     used = {b["id"]: b["used"] for b in rep["prompts"][0]["arms"]["A0"]}
     assert len(used) == bench.TOP_K + 1 and used["seed"] is True
 
@@ -1693,7 +1694,8 @@ def test_the_proxy_does_not_count_the_prompt_turn_as_a_later_turn(tmp_path: Path
         {"prompt_id": "p", "prompt": text, "ranked": ["seed"]}]}}
     work = tmp_path / "w"
     work.mkdir()
-    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(_store(tmp_path), work))
+    rep = bench.proxy(runs, [prompt], turns, bench.prepare_copy(_store(tmp_path), work),
+                      snapshot=_SNAP)
     row = rep["prompts"][0]
     assert row["later_turns"] == 1
     assert row["arms"]["A0"] == [{"id": "seed", "used": False}]
@@ -1985,6 +1987,31 @@ def test_packet_and_proxy_refuse_a_store_that_changed_since_the_runs(
     (d / "proxy.json").unlink()
     assert bench.main(packet) == 1 and bench.main(usage) == 1
     assert not (d / "key.jsonl").exists() and not (d / "proxy.json").exists()
+
+
+def test_the_proxy_report_records_the_snapshot_the_key_does(tmp_path: Path) -> None:
+    # score matches a proxy report to the key rows of its store by snapshot.
+    path = _store(tmp_path)
+    archive, live = _session_turns()
+    _write_transcripts(path, archive, live)
+    d = tmp_path / "out"
+    d.mkdir()
+    prompts = d / "prompts.jsonl"
+    assert bench.main(["sample", "--store", str(path), "--seed", "1",
+                       "--out", str(prompts)]) == 0
+    runs: list[str] = []
+    for arm in (bench.ARM_A0, bench.ARM_A2):
+        runs.append(str(d / f"{arm}.json"))
+        assert bench.main(["run", "--store", str(path), "--prompts", str(prompts),
+                           "--arm", arm, "--out", runs[-1]]) == 0
+    assert bench.main(["packet", "--runs", *runs, "--store", str(path), "--seed", "2",
+                       "--out", str(d / "pk"), "--key", str(d / "key.jsonl")]) == 0
+    assert bench.main(["proxy", "--store", str(path), "--runs", *runs, "--prompts",
+                       str(prompts), "--out", str(d / "proxy.json")]) == 0
+    report = json.loads((d / "proxy.json").read_text(encoding="utf-8"))
+    run = json.loads(Path(runs[0]).read_text(encoding="utf-8"))
+    assert report["snapshot"] == run["snapshot"]
+    assert {i.snapshot for i in bench.read_key(d / "key.jsonl")} == {report["snapshot"]}
 
 
 def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(

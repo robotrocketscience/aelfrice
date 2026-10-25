@@ -43,7 +43,8 @@ subcommand at that copy.
   several stores together, concatenate their keys, and each grader's
   labels, into one file each.
 - `proxy`: whether a later turn of the same session cites or restates
-  each retrieved belief. Reported beside the graders, never gating.
+  each retrieved belief, with the runs' `snapshot`. Reported beside the
+  graders, never gating.
 
 **Arms.**
 
@@ -1079,9 +1080,13 @@ def proxy_used(belief_id: str, belief_stems: frozenset[str],
 
 def proxy(
     runs: Mapping[str, Mapping[str, Any]], prompts: Sequence[Mapping[str, Any]],
-    turns: Sequence[Turn], db: Path,
+    turns: Sequence[Turn], db: Path, *, snapshot: str,
 ) -> dict[str, Any]:
-    """Per prompt and arm, whether a later turn of the session used each belief."""
+    """Per prompt and arm, whether a later turn of the session used each belief.
+
+    The report records `snapshot`, the store fingerprint the runs read, so
+    `score` can match it to the key rows of the same store.
+    """
     by_pid = {str(p["prompt_id"]): p for p in prompts}
     retrieved: dict[str, dict[str, list[str]]] = {}
     for arm in sorted(runs):
@@ -1110,7 +1115,7 @@ def proxy(
                 for arm, ids in sorted(retrieved[pid].items())
             },
         })
-    return {"overlap_bar": PROXY_OVERLAP_BAR, "prompts": rows}
+    return {"overlap_bar": PROXY_OVERLAP_BAR, "prompts": rows, "snapshot": snapshot}
 
 
 # --- Score --------------------------------------------------------------------
@@ -1575,7 +1580,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         with tempfile.TemporaryDirectory(dir=args.work_dir) as work:
             db, snapshot = prepare_snapshot(args.store, Path(work))
             require_snapshot(runs, snapshot)
-            report = proxy(runs, prompts, turns, db)
+            report = proxy(runs, prompts, turns, db, snapshot=snapshot)
         _dump(report, args.out)
 
 
