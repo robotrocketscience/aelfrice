@@ -505,6 +505,35 @@ def test_an_onboard_root_in_a_removed_nested_worktree_is_not_copied(
     assert not (repo / ".git" / "aelfrice" / "stores").exists()
 
 
+def test_a_relative_root_from_a_removed_worktree_resolves_here(
+    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `.` session doesn't record the worktree it ran in, so with its
+    files present here its belief lands in this work tree's marker store.
+    The same belief under an absolute root in that worktree doesn't."""
+    _git(
+        "-c", "user.name=t", "-c", "user.email=t@example.com",
+        "commit", "-q", "--allow-empty", "-m", "init", cwd=repo,
+    )
+    other = env / "other"
+    _git("worktree", "add", "-q", str(other), cwd=repo)
+    (repo / "a" / "docs" / "x.md").write_text("text\n", encoding="utf-8")
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, ".", "s-rel")
+        routed = _ingest(src, "doc:a/docs/x.md:p0", _text(1), "s-rel")
+        _onboard(src, other, "s-abs")
+        _ingest(src, "doc:a/docs/x.md:p1", _text(2), "s-abs")
+    finally:
+        src.close()
+    _git("worktree", "remove", "--force", str(other), cwd=repo)
+    assert not other.exists()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    assert cast("dict[str, int]", report["not_copied"])["outside_work_tree"] == 1
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
+
+
 @pytest.mark.skipif(
     sys.platform == "win32" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
