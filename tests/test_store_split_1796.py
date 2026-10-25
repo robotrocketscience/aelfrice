@@ -422,6 +422,63 @@ def test_a_folder_at_a_session_file_path_does_not_count_as_its_file(
     assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
 
 
+def _other_case(repo: Path) -> Path:
+    """`repo` with its name in upper case, skipping the test where that
+    names no folder, as on a case-sensitive filesystem."""
+    upper = repo.with_name(repo.name.upper())
+    if upper.name == repo.name or not upper.is_dir():
+        pytest.skip("needs a case-insensitive filesystem")
+    return upper
+
+
+def test_an_absolute_root_in_another_letter_case_is_the_work_tree(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A root recorded as `.../MONO` for the folder `.../mono` is compared
+    to the work tree by file identity, so its beliefs route, and it is
+    the same root as `.../mono`."""
+    upper = _other_case(repo)
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, upper, "s-upper")
+        top = _ingest(src, "doc:a/docs/x.md:p0", _text(1), "s-upper")
+        _onboard(src, repo, "s-lower")
+        assert _ingest(src, "doc:a/docs/x.md:p0", _text(1), "s-lower") == top
+        _onboard(src, upper / "a", "s-sub")
+        sub = _ingest(src, "doc:docs/y.md:p0", _text(2), "s-sub")
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 2
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {top, sub}
+
+
+def test_a_relative_root_in_another_letter_case_keeps_the_bar(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`../MONO` resolves into the work tree `.../mono`, so the 90% bar
+    applies to it as it does to `.`."""
+    upper = _other_case(repo)
+    src = _open(_source_path(repo))
+    try:
+        routed = _relative_session(
+            src, repo, "s-here", total=1, present=1, n=1,
+            root=f"../{upper.name}",
+        )
+        _relative_session(
+            src, repo, "s-gone", total=1, present=0, n=2,
+            root=f"../{upper.name}",
+        )
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["no_root"] == 1
+    assert not_copied["outside_work_tree"] == 0
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

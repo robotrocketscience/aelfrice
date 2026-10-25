@@ -16,7 +16,9 @@ A relative `repo_path`, such as `.`, resolves against the work-tree root,
 and is kept only when at least `RELATIVE_ROOT_MIN_PRESENT` of the
 session's distinct file paths exist as files under it; otherwise the
 session names no root. Every ingest row with a file source must name the
-same root, or the belief is skipped as `no_root`. A root outside the
+same root, or the belief is skipped as `no_root`. A root is compared to
+the work tree by file identity, so another letter case on a
+case-insensitive filesystem matches. A root outside the
 work tree, present or not, or inside a linked worktree or nested
 repository below it, is skipped as `outside_work_tree`. A root inside
 the work tree that is no longer a folder on disk is skipped as
@@ -379,6 +381,32 @@ def _enough_present(root: Path, rels: set[str]) -> bool:
     return present / len(rels) >= RELATIVE_ROOT_MIN_PRESENT
 
 
+def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
+    """`root` relative to `work_tree`, or None when it is outside.
+
+    When the text doesn't match, each folder of `root` that exists is
+    compared to `work_tree` by file identity, as `db_paths._same_dir`
+    compares, so a root recorded in another letter case on a
+    case-insensitive filesystem still counts as inside.
+    """
+    try:
+        return Path(*root.relative_to(work_tree).parts)
+    except ValueError:
+        pass
+    try:
+        tree = os.stat(work_tree)
+    except OSError:
+        return None
+    for folder in (root, *root.parents):
+        try:
+            found = os.stat(folder)
+        except OSError:
+            continue
+        if os.path.samestat(found, tree):
+            return Path(*root.parts[len(folder.parts):])
+    return None
+
+
 def _onboard_roots(
     conn: sqlite3.Connection, work_tree: Path,
 ) -> dict[str, Path | None]:
@@ -387,7 +415,8 @@ def _onboard_roots(
     An absolute `repo_path` is the root. A relative one, which `aelf
     onboard .` recorded before #1798, resolves against `work_tree`. A
     root that lands outside `work_tree` is kept, so the belief counts
-    as outside the work tree. One inside it is kept only when the
+    as outside the work tree; one inside it is spelled from
+    `work_tree`. A relative root inside it is kept only when the
     session's files are there, since the folder the onboard ran from
     isn't recorded.
     """
@@ -402,11 +431,12 @@ def _onboard_roots(
             continue
         given = Path(repo_path)
         root = _resolved(given if given.is_absolute() else work_tree / given)
+        under = None if root is None else _under_work_tree(root, work_tree)
+        if under is not None:
+            root = work_tree / under
+            if not given.is_absolute():
+                relative[key] = root
         roots[key] = root
-        if root is not None and not given.is_absolute() and root.is_relative_to(
-            work_tree,
-        ):
-            relative[key] = root
     if not relative:
         return roots
     rels: dict[str, set[str]] = {}
