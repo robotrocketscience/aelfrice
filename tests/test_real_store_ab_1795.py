@@ -10,6 +10,7 @@ import json
 import math
 import os
 import random
+import shutil
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -1777,6 +1778,37 @@ def test_the_proxy_does_not_count_the_prompt_turn_as_a_later_turn(tmp_path: Path
     row = rep["prompts"][0]
     assert row["later_turns"] == 1
     assert row["arms"]["A0"] == [{"id": "seed", "used": False}]
+
+
+def test_the_proxy_refuses_a_prompt_missing_from_the_transcripts_beside_the_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A copy of the database alone has no transcripts beside it, so the
+    # proxy would find no later turn and call every belief unused.
+    path = _store(tmp_path)
+    archive, live = _session_turns()
+    _write_transcripts(path, archive, live)
+    d = tmp_path / "out"
+    d.mkdir()
+    prompts = d / "prompts.jsonl"
+    assert bench.main(["sample", "--store", str(path), "--seed", "1",
+                       "--out", str(prompts)]) == 0
+    frozen = tmp_path / "frozen" / "memory.db"
+    frozen.parent.mkdir()
+    bench.copy_store(path, frozen)
+    run = str(d / "A0.json")
+    assert bench.main(["run", "--store", str(frozen), "--prompts", str(prompts),
+                       "--arm", "A0", "--out", run]) == 0
+    usage = ["proxy", "--store", str(frozen), "--runs", run, "--prompts", str(prompts),
+             "--out", str(d / "proxy.json")]
+    capsys.readouterr()
+    assert bench.main(usage) == 1
+    assert "not in the transcripts beside the store" in capsys.readouterr().err
+    assert not (d / "proxy.json").exists()
+    shutil.copytree(path.parent / "transcripts", frozen.parent / "transcripts")
+    assert bench.main(usage) == 0
+    rows = json.loads((d / "proxy.json").read_text(encoding="utf-8"))["prompts"]
+    assert any(b["used"] for r in rows for b in r["arms"]["A0"])
 
 
 def test_the_proxy_finds_the_prompt_by_session_turn_id_or_timestamp_and_text() -> None:

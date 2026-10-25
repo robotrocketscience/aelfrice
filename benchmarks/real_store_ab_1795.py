@@ -20,8 +20,10 @@ store between two of them would hand the arms different beliefs, and so
 would a time-boxed lock that expires between them. `run` records a
 SHA-256 fingerprint of its copy and of the copy's remaining locks as
 `snapshot`, and `packet` and `proxy` exit 1 when the runs' snapshots
-differ from each other or from their own copy. For a store that is still in use, copy it once and point every
-subcommand at that copy.
+differ from each other or from their own copy. For a store that is still
+in use, copy it once, with the `transcripts` directory beside it, and
+point every subcommand at that copy. `sample` and `proxy` read the
+transcripts beside the store they are given.
 
 **Subcommands.** Each one is deterministic given its inputs and
 `--seed`, and exits 1 on bad input.
@@ -47,8 +49,9 @@ subcommand at that copy.
   `snapshot`, and exits 1 when a store in the key has no proxy report or
   a proxy report has no store in the key.
 - `proxy`: whether a later turn of the same session cites or restates
-  each retrieved belief, with the runs' `snapshot`. Reported beside the
-  graders, never gating.
+  each retrieved belief, with the runs' `snapshot`. Exits 1 when a
+  prompt's turn is not in the transcripts beside the store. Reported
+  beside the graders, never gating.
 
 **Arms.**
 
@@ -1104,7 +1107,9 @@ def proxy(
     """Per prompt and arm, whether a later turn of the session used each belief.
 
     The report records `snapshot`, the store fingerprint the runs read, so
-    `score` can match it to the key rows of the same store.
+    `score` can match it to the key rows of the same store. InputError
+    when a prompt's turn is not in `turns`: with no turn to start from,
+    every belief would count as unused.
     """
     by_pid = {str(p["prompt_id"]): p for p in prompts}
     retrieved: dict[str, dict[str, list[str]]] = {}
@@ -1122,13 +1127,17 @@ def proxy(
     for pid in sorted(retrieved):
         prompt = by_pid[pid]
         idx = _find_turn(turns, prompt)
+        if idx is None:
+            raise InputError(
+                f"prompt {pid} is not in the transcripts beside the store;"
+                " copy the store's transcripts directory with it")
         sid = prompt.get("session_id")
         later: list[tuple[str, frozenset[str]]] = []
-        if idx is not None and sid is not None:
+        if sid is not None:
             later = [(t.text, frozenset(tokenize_stemmed(t.text)))
                      for t in turns[idx + 1:] if t.session_id == sid]
         rows.append({
-            "prompt_id": pid, "found": idx is not None, "later_turns": len(later),
+            "prompt_id": pid, "later_turns": len(later),
             "arms": {
                 arm: [{"id": b, "used": proxy_used(b, stems[b], later)} for b in ids]
                 for arm, ids in sorted(retrieved[pid].items())
