@@ -1,0 +1,3 @@
+### Fixed
+
+- **`aelf onboard --emit-candidates` records the folder it scanned as an absolute path ([#1798](https://github.com/robotrocketscience/aelfrice/issues/1798)).** A run on a relative path, such as `/aelf:onboard .`, stored the path as typed in its onboard session, so the session named no folder once the shell that ran it was gone, and `aelf store split` could place its beliefs only by checking that their files existed under the work-tree root. The session now records the path resolved to an absolute folder, with symlinks followed. The scanner reads the same files as before. Sessions recorded earlier keep their relative path.

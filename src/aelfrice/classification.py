@@ -311,10 +311,13 @@ def start_onboard_session(
             for s in pending_sentences
         ]
     )
+    # #1798: record the resolved folder, since a relative path such as
+    # `.` names nothing once the shell that typed it is gone. The
+    # extractors above still read `repo_path` as given.
     store.insert_onboard_session(
         OnboardSession(
             session_id=session_id,
-            repo_path=str(repo_path),
+            repo_path=str(repo_path.resolve()),
             state=ONBOARD_STATE_PENDING,
             candidates_json=candidates_json,
             created_at=timestamp,
