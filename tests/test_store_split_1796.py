@@ -23,6 +23,11 @@ from typing import cast
 import pytest
 
 from aelfrice import cli, db_paths, store_split
+from aelfrice.classification import (
+    HostClassification,
+    accept_classifications,
+    start_onboard_session,
+)
 from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.derivation_worker import run_worker
 from aelfrice.doc_linker_types import ANCHOR_MANUAL
@@ -560,6 +565,51 @@ def test_only_a_marker_folder_makes_a_relative_session_ambiguous(
     assert _only_target(report)["copied"]["beliefs"] == 1
     target = repo / "docs" / ".aelfrice" / "store" / "memory.db"
     assert {r[0] for r in _rows(target)["beliefs"]} == {bid}
+
+
+@pytest.mark.parametrize("start", ["root", "pkg"])
+def test_an_onboard_from_the_root_is_placed_and_one_from_a_marker_is_not(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch, start: str,
+) -> None:
+    """The CONFIG.md example: `pkg/` holds a marker, and the work-tree
+    root repeats its `README.md` and `docs/index.md`. A real `onboard .`
+    from `pkg/` reaches the bar under both folders, so it names no root.
+    One from the root also reads `pkg/README.md` and `pkg/docs/index.md`,
+    which aren't under `pkg/pkg/`, so it stays under the bar there and
+    its `pkg/` beliefs are copied."""
+    _marker(repo / "pkg", ".aelfrice/pkg")
+    for base, n in ((repo, 1), (repo / "pkg", 3)):
+        (base / "docs").mkdir(exist_ok=True)
+        (base / "README.md").write_text(f"{_text(n)}\n", encoding="utf-8")
+        (base / "docs" / "index.md").write_text(
+            f"{_text(n + 1)}\n", encoding="utf-8",
+        )
+    monkeypatch.chdir(repo if start == "root" else repo / "pkg")
+    src = _open(_source_path(repo))
+    try:
+        started = start_onboard_session(src, Path("."))
+        accept_classifications(src, started.session_id, [
+            HostClassification(index=s.index, belief_type="factual", persist=True)
+            for s in started.sentences
+        ])
+    finally:
+        src.close()
+    sources = {s.source for s in started.sentences}
+    assert sources == (
+        {"doc:README.md:p0", "doc:docs/index.md:p0"}
+        | ({"doc:pkg/README.md:p0", "doc:pkg/docs/index.md:p0"}
+           if start == "root" else set())
+    ), sources
+    report = _report(repo, "--apply", capsys=capsys)
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    if start == "pkg":
+        assert not_copied["no_root"] == 2
+        assert report["targets"] == []
+    else:
+        assert not_copied["no_root"] == 0
+        assert not_copied["source_store"] == 2
+        assert _only_target(report)["copied"]["beliefs"] == 2
 
 
 @pytest.mark.parametrize("case", ["same", "other"], ids=["dot", "other-case"])
