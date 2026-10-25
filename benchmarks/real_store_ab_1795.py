@@ -997,7 +997,9 @@ def build_packet(
     of prompts the runs cover, because a prompt with no judged or null
     belief has no row of its own. It also records `snapshot`, the store
     state the runs read, which tells one store's rows from another's in a
-    key concatenated from several stores' keys.
+    key concatenated from several stores' keys, and `arms_run`, the arms
+    the runs covered, because an arm that packed nothing judged leaves no
+    other trace.
     """
     prompts: dict[str, str] = {}
     packed: dict[str, dict[str, dict[str, int]]] = {}
@@ -1039,7 +1041,7 @@ def build_packet(
             "id": iid, "prompt_id": pid, "prompt": prompts[pid], "belief_id": bid,
             "arms": None if arms is None else dict(sorted(arms.items())),
             "shares_prompt_stem": shares_prompt_stem(prompts[pid], texts[bid]),
-            "prompts_sampled": len(prompts), "snapshot": snapshot,
+            "prompts_sampled": len(prompts), "snapshot": snapshot, "arms_run": sorted(runs),
         })
     if len({r["id"] for r in packet}) != len(packet):
         raise InputError("packet id collision; pick another seed")
@@ -1160,11 +1162,49 @@ class KeyItem:
     shares_prompt_stem: bool
     prompts_sampled: int
     snapshot: str
+    arms_run: tuple[str, ...]
 
     @property
     def prompt_key(self) -> PromptKey:
         """The prompt's store snapshot and id, unique across pooled stores."""
         return self.snapshot, self.prompt_id
+
+
+@dataclass(frozen=True)
+class KeyStore:
+    """One store's part of a key."""
+
+    prompts_sampled: int
+    arms_run: tuple[str, ...]
+
+
+def key_stores(items: Sequence[KeyItem]) -> dict[str, KeyStore]:
+    """{snapshot: the store's sample size and arms}.
+
+    InputError when a store's rows disagree on either, the key holds more
+    of a store's prompts than it sampled, or two stores ran different
+    arms. A store that ran no A3, say, holds A0-only items that A3's gain
+    would count as losses.
+    """
+    stores: dict[str, KeyStore] = {}
+    for snap in sorted({i.snapshot for i in items}):
+        rows = [i for i in items if i.snapshot == snap]
+        sampled = {i.prompts_sampled for i in rows}
+        if len(sampled) != 1:
+            raise InputError(f"the key rows of snapshot {snap} disagree on prompts_sampled")
+        ran = {i.arms_run for i in rows}
+        if len(ran) != 1:
+            raise InputError(f"the key rows of snapshot {snap} disagree on arms_run")
+        keyed = len({i.prompt_id for i in rows})
+        n = min(sampled)
+        if n < keyed:
+            raise InputError(
+                f"the key holds {keyed} prompts of snapshot {snap} but prompts_sampled is {n}")
+        stores[snap] = KeyStore(prompts_sampled=n, arms_run=min(ran))
+    if len({s.arms_run for s in stores.values()}) > 1:
+        raise InputError("the key's stores ran different arms: " + "; ".join(
+            f"{snap} ran {', '.join(s.arms_run)}" for snap, s in stores.items()))
+    return stores
 
 
 def read_key(path: Path) -> list[KeyItem]:
@@ -1187,17 +1227,25 @@ def read_key(path: Path) -> list[KeyItem]:
         sampled: object = row.get("prompts_sampled")
         ok_sampled = isinstance(sampled, int) and not isinstance(sampled, bool) and sampled > 0
         snapshot: object = row.get("snapshot")
+        ran: object = row.get("arms_run")
+        ran_list = cast(list[object], ran) if isinstance(ran, list) else []
+        ok_ran = (isinstance(ran, list) and all(a in ARMS for a in ran_list)
+                  and CONTROL_ARM in ran_list and len(set(ran_list)) == len(ran_list))
         if (not isinstance(row.get("id"), str) or not isinstance(row.get("prompt_id"), str)
                 or not ok_arms or not isinstance(row.get("shares_prompt_stem"), bool)
-                or not ok_sampled or not isinstance(snapshot, str) or not snapshot):
+                or not ok_sampled or not isinstance(snapshot, str) or not snapshot
+                or not ok_ran):
             raise InputError(
                 f"{path}:{n}: need id, prompt_id, arms, shares_prompt_stem, prompts_sampled,"
-                " and snapshot")
+                " snapshot, and arms_run with A0")
+        arms_run = tuple(sorted(cast(list[str], ran)))
+        if arms is not None and not set(cast(dict[str, int], arms)) <= set(arms_run):
+            raise InputError(f"{path}:{n}: an arm outside arms_run")
         items.append(KeyItem(
             id=row["id"], prompt_id=row["prompt_id"],
             arms=None if arms is None else dict(cast(dict[str, int], arms)),
             shares_prompt_stem=row["shares_prompt_stem"],
-            prompts_sampled=row["prompts_sampled"], snapshot=snapshot,
+            prompts_sampled=row["prompts_sampled"], snapshot=snapshot, arms_run=arms_run,
         ))
     if not items:
         raise InputError(f"{path}: empty key")
@@ -1425,8 +1473,10 @@ def score(
     under `arms["A1"]["vs_A1W"]`.
 
     A key concatenated from several stores' keys scores them pooled, as
-    #1795's H2 to H6 do. Its rows are grouped into stores by `snapshot`.
-    The paired gains and gaining shares count every sampled prompt, the
+    #1795's H2 to H6 do. Its rows are grouped into stores by `snapshot`,
+    and every store must have run the same arms (see `key_stores`), which
+    are the arms scored. The paired gains and gaining shares count every
+    sampled prompt, the
     sum of each store's `prompts_sampled`. The report's `prompts` is that
     sum, `keyed_prompts` is the number of prompts the key holds rows for,
     and `stores` is the number of snapshots. H6 pools `proxy_reports` the
@@ -1437,26 +1487,14 @@ def score(
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
     prompts = sorted({i.prompt_key for i in items})
+    stores = key_stores(items)
     # A sampled prompt where no arm packed a belief and no null belief was
     # drawn has no key row, but it still counts in every paired gain.
-    sampled_counts: dict[str, set[int]] = {}
-    for i in items:
-        sampled_counts.setdefault(i.snapshot, set()).add(i.prompts_sampled)
-    keyed = Counter(snap for snap, _pid in prompts)
-    sampled = 0
-    for snap, counts in sorted(sampled_counts.items()):
-        if len(counts) != 1:
-            raise InputError(f"the key rows of snapshot {snap} disagree on prompts_sampled")
-        n = min(counts)
-        if n < keyed[snap]:
-            raise InputError(
-                f"the key holds {keyed[snap]} prompts of snapshot {snap}"
-                f" but prompts_sampled is {n}")
-        sampled += n
+    sampled = sum(s.prompts_sampled for s in stores.values())
     pooled_proxy = (None if proxy_reports is None
-                    else pool_proxy_reports(proxy_reports, sorted(sampled_counts)))
+                    else pool_proxy_reports(proxy_reports, sorted(stores)))
     unkeyed = sampled - len(prompts)
-    arms = sorted({arm for i in items if i.arms for arm in i.arms} - {CONTROL_ARM})
+    arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
     null = [null_figures(items, a), null_figures(items, b)]
     reliable = at_least(kappa, KAPPA_BAR) and all(
@@ -1519,7 +1557,7 @@ def score(
                        else verdict(arm, V_AGREE if agree else V_DISAGREE)}
         hyp["H6"] = h6
     return {
-        "prompts": sampled, "keyed_prompts": len(prompts), "stores": len(sampled_counts),
+        "prompts": sampled, "keyed_prompts": len(prompts), "stores": len(stores),
         "items": len(ids),
         "null_items": sum(1 for i in items if i.arms is None),
         "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,

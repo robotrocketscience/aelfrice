@@ -1069,8 +1069,9 @@ def _key(rows: list[Row], sampled: int | None = None) -> tuple[
         list[bench.KeyItem], dict[str, bool | None], dict[str, bool | None]]:
     """Key items and both graders' labels; `sampled` defaults to the rows' prompts."""
     n = len({r[1] for r in rows}) if sampled is None else sampled
+    ran = tuple(sorted({bench.CONTROL_ARM, *(a for r in rows if r[2] for a in r[2])}))
     items = [bench.KeyItem(id=i, prompt_id=p, arms=arms, shares_prompt_stem=s,
-                           prompts_sampled=n, snapshot=_SNAP)
+                           prompts_sampled=n, snapshot=_SNAP, arms_run=ran)
              for i, p, arms, s, _a, _b in rows]
     return items, {r[0]: r[4] for r in rows}, {r[0]: r[5] for r in rows}
 
@@ -1174,7 +1175,8 @@ def test_score_rejects_a_key_with_a_wrong_or_mixed_sampled_count() -> None:
 def _store_key_rows(snapshot: str, sampled: int) -> list[dict[str, Any]]:
     """One store's key: A0 packs `a`, A3 packs `a` and `x`, all on prompt p0."""
     return [{"id": f"{snapshot}-{b}", "prompt_id": "p0", "arms": arms,
-             "shares_prompt_stem": True, "prompts_sampled": sampled, "snapshot": snapshot}
+             "shares_prompt_stem": True, "prompts_sampled": sampled, "snapshot": snapshot,
+             "arms_run": ["A0", "A3"]}
             for b, arms in (("a", {"A0": 1, "A3": 1}), ("x", {"A3": 2}))]
 
 
@@ -1192,6 +1194,41 @@ def test_a_key_concatenated_from_several_stores_scores_them_pooled(tmp_path: Pat
         g = rep["arms"]["A3"]["graders"][0]
         assert g["mean_gain"] == _approx(2 / sum(counts))  # p0 gains 1 in each store
         assert g["share_gaining"] == _approx(2 / sum(counts))
+
+
+def test_score_refuses_a_pooled_key_whose_stores_ran_different_arms(tmp_path: Path) -> None:
+    # s2's runs had no A3, so its A0-only items would count as A3's losses.
+    s2 = [{**r, "arms": {"A0": 1}, "arms_run": ["A0"]}
+          for r in _store_key_rows("s2", 1) if r["id"].endswith("-a")]
+    rows = _store_key_rows("s1", 1) + s2
+    path = tmp_path / "key.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    labels: dict[str, bool | None] = {str(r["id"]): True for r in rows}
+    with pytest.raises(bench.InputError, match="s1 ran A0, A3; s2 ran A0"):
+        bench.score(bench.read_key(path), labels, labels, seed=1)
+    # An arm that ran on every store is scored although no row records it.
+    ran = [{**r, "arms_run": ["A0", "A2", "A3"]} for r in _store_key_rows("s1", 1)]
+    path.write_text("".join(json.dumps(r) + "\n" for r in ran), encoding="utf-8")
+    labels = {str(r["id"]): True for r in ran}
+    assert sorted(bench.score(bench.read_key(path), labels, labels, seed=1)["arms"]) == [
+        "A2", "A3"]
+    mixed = [ran[0], {**ran[1], "arms_run": ["A0", "A3"]}]
+    path.write_text("".join(json.dumps(r) + "\n" for r in mixed), encoding="utf-8")
+    with pytest.raises(bench.InputError, match="snapshot s1 disagree on arms_run"):
+        bench.score(bench.read_key(path), labels, labels, seed=1)
+    for bad in (["A3"], ["A0", "A0", "A3"], ["A0", "A9"], "A0"):
+        path.write_text(json.dumps({**ran[0], "arms": None, "arms_run": bad}) + "\n",
+                        encoding="utf-8")
+        with pytest.raises(bench.InputError, match="arms_run with A0"):
+            bench.read_key(path)
+    path.write_text(json.dumps({**ran[0], "arms_run": ["A0"]}) + "\n", encoding="utf-8")
+    with pytest.raises(bench.InputError, match="an arm outside arms_run"):
+        bench.read_key(path)
+
+
+def test_the_key_records_the_arms_the_runs_covered(tmp_path: Path) -> None:
+    _p, k = _packet(tmp_path, _runs(["seed"], ["con"], [], []))
+    assert {tuple(json.loads(line)["arms_run"]) for line in k.splitlines()} == {("A0", "A1")}
 
 
 def _proxy_report(snapshot: str, gains: list[int]) -> dict[str, Any]:
@@ -2172,9 +2209,9 @@ def test_read_runs_rejects_a_repeated_arm_a_missing_a0_and_other_prompts(
 def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         {"id": "i1", "prompt_id": "p", "arms": {"A1": 1}, "shares_prompt_stem": True,
-         "prompts_sampled": 1, "snapshot": _SNAP},
+         "prompts_sampled": 1, "snapshot": _SNAP, "arms_run": ["A0", "A1"]},
         {"id": "i2", "prompt_id": "p", "arms": None, "shares_prompt_stem": False,
-         "prompts_sampled": 1, "snapshot": _SNAP}]
+         "prompts_sampled": 1, "snapshot": _SNAP, "arms_run": ["A0", "A1"]}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match="no A0 item"):
@@ -2187,7 +2224,7 @@ def test_read_key_rejects_a_key_without_an_a0_item(tmp_path: Path) -> None:
 def test_read_key_rejects_a_row_without_a_sampled_count_or_snapshot(tmp_path: Path) -> None:
     row: dict[str, Any] = {"id": "i1", "prompt_id": "p", "arms": {"A0": 1},
                            "shares_prompt_stem": True, "prompts_sampled": 1,
-                           "snapshot": _SNAP}
+                           "snapshot": _SNAP, "arms_run": ["A0"]}
     path = tmp_path / "key.jsonl"
     path.write_text(json.dumps(row) + "\n", encoding="utf-8")
     assert [(i.prompts_sampled, i.snapshot) for i in bench.read_key(path)] == [(1, _SNAP)]
@@ -2196,7 +2233,7 @@ def test_read_key_rejects_a_row_without_a_sampled_count_or_snapshot(tmp_path: Pa
         good = row[field]
         row[field] = bad
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
-        with pytest.raises(bench.InputError, match="prompts_sampled, and snapshot"):
+        with pytest.raises(bench.InputError, match="snapshot, and arms_run"):
             bench.read_key(path)
         row[field] = good
 
@@ -2204,9 +2241,9 @@ def test_read_key_rejects_a_row_without_a_sampled_count_or_snapshot(tmp_path: Pa
 def test_read_key_rejects_an_unknown_arm(tmp_path: Path) -> None:
     rows: list[dict[str, Any]] = [
         {"id": "i1", "prompt_id": "p", "arms": {"A0": 1}, "shares_prompt_stem": True,
-         "prompts_sampled": 1, "snapshot": _SNAP},
+         "prompts_sampled": 1, "snapshot": _SNAP, "arms_run": ["A0"]},
         {"id": "i2", "prompt_id": "p", "arms": {"A9": 1}, "shares_prompt_stem": True,
-         "prompts_sampled": 1}]
+         "prompts_sampled": 1, "snapshot": _SNAP, "arms_run": ["A0"]}]
     path = tmp_path / "key.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     with pytest.raises(bench.InputError, match=r"key\.jsonl:2:"):
