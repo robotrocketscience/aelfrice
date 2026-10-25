@@ -1570,6 +1570,19 @@ def test_kappa_takes_each_graders_own_marginals() -> None:
         assert rep["hypotheses"]["H0"] == bench.V_PASS
 
 
+def test_graders_who_share_no_graded_item_fail_h0() -> None:
+    # Each grader grades one null item, under the ceiling, but the other
+    # grader left that item unclear, so no item gives a kappa.
+    rows: list[Row] = [("n0", "p0", None, False, False, None),
+                       ("n1", "p0", None, False, None, False)]
+    key, a, b = _key(rows)
+    assert bench.exact_kappa([i.id for i in key.items], a, b) == 0
+    rep = _score(rows)
+    assert rep["kappa_n"] == 0
+    assert [n["graded"] for n in rep["null_arm"]] == [1, 1]
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+
+
 def test_a_high_null_arm_rate_makes_every_verdict_unreliable() -> None:
     rep = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
     assert rep["null_arm"][0]["rate"] == _approx(0.3)
