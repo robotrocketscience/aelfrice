@@ -30,8 +30,9 @@ transcripts beside the store they are given.
 
 - `census`: edge counts by type, active beliefs, and probed-type edges
   per 100 beliefs for one or more stores, optionally after the A1
-  writers ran on the copy. With `--writers` it also reports H1 on the
-  median store.
+  writers ran on the copy. Each store's row records the store's
+  `snapshot`, as `run` does. With `--writers` it also reports H1 on
+  the median store.
 - `sample`: user prompts from the store's sibling transcripts
   (`transcripts/turns.jsonl` and every file under `transcripts/archive`),
   minus the prompts the production prompt-shape gate sends to locks-only,
@@ -46,12 +47,14 @@ transcripts beside the store they are given.
   packed nothing for any prompt still counts its prompts when pooled.
 - `score`: the H0 to H6 verdicts from two graders' labels. To score
   several stores together, concatenate their keys, one packet's key per
-  store, and each grader's labels, into one file each, and pass
-  `--proxy` every store's proxy report. `score` matches each proxy
-  report to its store's key rows by `snapshot`, and exits 1 when the key
-  holds two store rows for one snapshot, a store in the key has no proxy
-  report, a proxy report has no store in the key, or a proxy report
-  misses an arm or a sampled prompt of its store's runs.
+  store, and each grader's labels, into one file each, pass `--proxy`
+  every store's proxy report, and pass `--census` one writers census of
+  the same stores. `score` matches each proxy report and each census row
+  to its store's key rows by `snapshot`, and exits 1 when the key holds
+  two store rows for one snapshot, a store in the key has no proxy report
+  or census row, a proxy report or census row has no store in the key, or
+  a proxy report misses an arm or a sampled prompt of its store's runs.
+  H1 comes from the census rows' median, not from the census's `H1`.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief, with the runs' `snapshot`. Exits 1 when a
   prompt's turn is not in the transcripts beside the store. Reported
@@ -557,9 +560,9 @@ def apply_writers(db: Path) -> dict[str, dict[str, int]]:
 
 
 def census_store(src: Path, work: Path, *, writers: bool) -> dict[str, Any]:
-    """Edge counts by type, active beliefs, and probed-type edges per 100 beliefs."""
-    db = prepare_copy(src, work)
-    report: dict[str, Any] = {"store": str(src)}
+    """Snapshot, edge counts by type, active beliefs, and probed-type edges per 100 beliefs."""
+    db, snapshot = prepare_snapshot(src, work)
+    report: dict[str, Any] = {"store": str(src), "snapshot": snapshot}
     if writers:
         report["writers"] = apply_writers(db)
     conn = sqlite3.connect(read_only_uri(str(db)), uri=True)
@@ -593,17 +596,56 @@ def census(stores: Sequence[Path], work_dir: Path | None, *, writers: bool) -> d
     for src in stores:
         with tempfile.TemporaryDirectory(dir=work_dir) as work:
             rows.append(census_store(src, Path(work), writers=writers))
-    median = statistics.median(r["probed_per_100_beliefs"] for r in rows)
-    h1 = V_NOT_MEASURED
-    if writers:
-        h1 = V_PASS if median >= SUBSTRATE_BAR else V_FAIL
+    rates = [float(r["probed_per_100_beliefs"]) for r in rows]
+    median = statistics.median(rates)
     return {
         "writers": writers,
         "stores": rows,
         "median_probed_per_100_beliefs": median,
         "substrate_bar": SUBSTRATE_BAR,
-        "H1": h1,
+        "H1": substrate_verdict(rates) if writers else V_NOT_MEASURED,
     }
+
+
+def substrate_verdict(rates: Sequence[float]) -> str:
+    """H1 on the median of the stores' probed-type edges per 100 beliefs."""
+    return V_PASS if statistics.median(rates) >= SUBSTRATE_BAR else V_FAIL
+
+
+def census_h1(report: Mapping[str, Any] | None, key: Key) -> str:
+    """H1 from a writers census of the key's stores, matched to them by `snapshot`.
+
+    H1 is recomputed from the census rows, and is not measured without a
+    census or with one run without the writers. InputError when a row
+    records no snapshot or no probed-type rate, two rows record the same
+    snapshot, a store in `key` has no row, or a row's snapshot is not in
+    `key`.
+    """
+    if report is None:
+        return V_NOT_MEASURED
+    rows: object = report.get("stores")
+    if not isinstance(rows, list):
+        raise InputError("the census lists no store")
+    rates: dict[str, float] = {}
+    for n, obj in enumerate(cast(list[object], rows), 1):
+        row = cast(dict[str, object], obj) if isinstance(obj, dict) else {}
+        snap, rate = row.get("snapshot"), row.get("probed_per_100_beliefs")
+        if not isinstance(snap, str) or not snap:
+            raise InputError(f"census row {n} records no snapshot")
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            raise InputError(f"census row {n} records no probed_per_100_beliefs")
+        if snap in rates:
+            raise InputError(f"two census rows record snapshot {snap}")
+        rates[snap] = float(rate)
+    missing = sorted(key.stores.keys() - rates.keys())
+    if missing:
+        raise InputError(f"no census row for the key's snapshot {', '.join(missing)}")
+    extra = sorted(rates.keys() - key.stores.keys())
+    if extra:
+        raise InputError(f"no key rows for the census row's snapshot {', '.join(extra)}")
+    if report.get("writers") is not True:
+        return V_NOT_MEASURED
+    return substrate_verdict(list(rates.values()))
 
 
 # --- Transcripts and the prompt sample ----------------------------------------
@@ -1612,7 +1654,9 @@ def score(
     A1 gets a verdict only when the census passed H1. Under #1795's H1
     kill condition a failed H1 reports H2, and A1's and A1W's H5 and H6,
     as `substrate-starved`, and with no writers census they are `needs
-    census`. The arms' own figures and verdicts stay under `arms`.
+    census`. The arms' own figures and verdicts stay under `arms`. H1
+    is the median store's, over the stores the key holds: `census_h1`
+    matches the census rows to the key's store rows by `snapshot`.
 
     With an A1W run, `H2_split` splits H2's gain into the writers alone
     (A1W against A0) and the lane given the writers (A1 against A1W),
@@ -1642,6 +1686,7 @@ def score(
     sampled = sum(s.prompts_sampled for s in stores.values())
     pooled_proxy = (None if proxy_reports is None
                     else pool_proxy_reports(proxy_reports, key))
+    h1 = census_h1(census_report, key)
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
@@ -1670,7 +1715,7 @@ def score(
                              else V_UNRELIABLE),
         }
     hyp: dict[str, Any] = {"H0": V_PASS if reliable else V_FAIL}
-    hyp["H1"] = (census_report or {}).get("H1", V_NOT_MEASURED)
+    hyp["H1"] = h1
     for h, arm in HYPOTHESIS_ARMS.items():
         hyp[h] = per_arm[arm]["gain_verdict"] if arm in per_arm else V_NOT_MEASURED
     # H1's kill condition: without the substrate, no verdict on the writer

@@ -1193,7 +1193,16 @@ def _hand(
     return rows
 
 
-_H1_PASS: dict[str, Any] = {"H1": "pass"}
+def _census(*rates: float, snapshots: tuple[str, ...] = (_SNAP,),
+            writers: bool = True) -> dict[str, Any]:
+    """A census report with one row per snapshot and its probed-type rate."""
+    return {"writers": writers, "stores": [
+        {"snapshot": s, "probed_per_100_beliefs": r}
+        for s, r in zip(snapshots, rates, strict=True)]}
+
+
+_H1_PASS = _census(2.0)
+_H1_FAIL = _census(0.5)
 
 
 def _score(rows: list[Row], sampled: int | None = None, **kw: Any) -> dict[str, Any]:
@@ -1750,7 +1759,7 @@ def test_h4_fails_low_bridging_on_an_inconclusive_gain() -> None:
 def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
     # #1795 H1: under 1 per 100, A1 is substrate-starved, not a lane verdict.
     rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
-    starved = _score(rows, census_report={"H1": "fail"})
+    starved = _score(rows, census_report=_H1_FAIL)
     assert starved["hypotheses"]["H1"] == bench.V_FAIL
     assert starved["hypotheses"]["H2"] == bench.V_STARVED
     assert starved["arms"]["A1"]["gain_verdict"] == bench.V_PASS
@@ -1760,11 +1769,11 @@ def test_h2_is_a_lane_verdict_only_when_the_census_passed_h1() -> None:
     assert _score(rows)["hypotheses"]["H2"] == bench.V_PASS
     # A failed H0 outranks the substrate: the instrument comes first.
     unreliable = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3),
-                        census_report={"H1": "fail"})
+                        census_report=_H1_FAIL)
     assert unreliable["hypotheses"]["H2"] == bench.V_UNRELIABLE
     # H3 and H4 don't depend on the writers' substrate.
     a2 = _score(_hand([2, 2, 2, 2], [3, 3, 2, 4], arm=bench.ARM_A2),
-                census_report={"H1": "fail"})
+                census_report=_H1_FAIL)
     assert a2["hypotheses"]["H3"] == bench.V_PASS
 
 
@@ -1791,7 +1800,7 @@ def test_h2_split_separates_the_writers_from_the_lane() -> None:
     assert lane_only["hypotheses"]["H2_split"] == {
         "writers": bench.V_FAIL, "lane": bench.V_PASS}
     starved = _score(_split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4]),
-                     census_report={"H1": "fail"})
+                     census_report=_H1_FAIL)
     assert starved["hypotheses"]["H2_split"] == {
         "writers": bench.V_STARVED, "lane": bench.V_STARVED}
     assert _score(_hand([2, 2, 2, 2], [3, 3, 2, 4]))["hypotheses"]["H2_split"] == (
@@ -1815,7 +1824,7 @@ def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
     assert held["H5"] == {"A1": bench.V_PASS, "A1W": bench.V_PASS, "A2": bench.V_PASS}
     assert {a: v["verdict"] for a, v in held["H6"].items()} == {
         "A1": bench.V_AGREE, "A1W": bench.V_AGREE, "A2": bench.V_AGREE}
-    for census, want in (({"H1": "fail"}, bench.V_STARVED), (None, bench.V_NEEDS_CENSUS)):
+    for census, want in ((_H1_FAIL, bench.V_STARVED), (None, bench.V_NEEDS_CENSUS)):
         rep = _score(rows(), census_report=census, proxy_reports=[proxy])
         hyp = rep["hypotheses"]
         assert hyp["H5"] == {"A1": want, "A1W": want, "A2": bench.V_PASS}
@@ -1824,7 +1833,7 @@ def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
         assert hyp["H6"]["A1"]["grader_signs"] == [1, 1]
         assert rep["arms"]["A1"]["h5_verdict"] == bench.V_PASS
     # A failed H0 outranks the substrate.
-    bad = _score(rows(null_rel=3), census_report={"H1": "fail"}, proxy_reports=[proxy])
+    bad = _score(rows(null_rel=3), census_report=_H1_FAIL, proxy_reports=[proxy])
     assert set(bad["hypotheses"]["H5"].values()) == {bench.V_UNRELIABLE}
     assert {v["verdict"] for v in bad["hypotheses"]["H6"].values()} == {bench.V_UNRELIABLE}
 
@@ -1832,7 +1841,7 @@ def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
 def test_a_failed_h0_makes_both_halves_of_the_h2_split_unreliable() -> None:
     # The lane half passes on these labels when H0 holds.
     rows = _split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4], null_rel=3)
-    for census in (_H1_PASS, {"H1": "fail"}):
+    for census in (_H1_PASS, _H1_FAIL):
         rep = _score(rows, census_report=census)
         assert rep["hypotheses"]["H0"] == bench.V_FAIL
         assert rep["hypotheses"]["H2_split"] == {
@@ -1922,6 +1931,65 @@ def test_h1_reads_the_median_store(
         [_substrate_store(tmp_path, 400, n) for n in (0, 2, 6, 100)], tmp_path, writers=True)
     assert even["median_probed_per_100_beliefs"] == _approx(1.0)
     assert even["H1"] == bench.V_PASS
+
+
+def test_the_census_records_the_snapshot_run_records(tmp_path: Path) -> None:
+    path = _store(tmp_path)
+    work = tmp_path / "w"
+    work.mkdir()
+    snapshot = bench.prepare_snapshot(path, work)[1]
+    rep = bench.census([path], tmp_path, writers=True)
+    assert rep["stores"][0]["snapshot"] == snapshot
+
+
+def test_h1_is_scored_only_on_a_census_of_the_keys_stores() -> None:
+    # #1795 H1 is the median of the stores under test: a census of other
+    # stores, or a hand-written verdict, can't release the writer arms.
+    rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
+    for census, match in (
+        ({"H1": "pass"}, "lists no store"),
+        (_census(2.0, snapshots=("other",)), "no census row for the key's snapshot s0"),
+        (_census(2.0, 2.0, snapshots=(_SNAP, "other")), "no key rows for the census row's"),
+        (_census(2.0, 2.0, snapshots=(_SNAP, _SNAP)), "two census rows record snapshot s0"),
+        ({"writers": True, "stores": [{"probed_per_100_beliefs": 2.0}]}, "records no snapshot"),
+        ({"writers": True, "stores": [{"snapshot": _SNAP}]}, "no probed_per_100_beliefs"),
+        ({"writers": True, "stores": [{"snapshot": _SNAP, "probed_per_100_beliefs": True}]},
+         "no probed_per_100_beliefs"),
+    ):
+        with pytest.raises(bench.InputError, match=match):
+            _score(rows, census_report=census)
+
+
+def test_score_takes_h1_from_the_census_rows() -> None:
+    # The rows decide, not the census's own H1 field, and a census run
+    # without the writers measures no H1.
+    rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
+    for census, h1, h2 in (
+        ({**_census(0.5), "H1": "pass"}, bench.V_FAIL, bench.V_STARVED),
+        ({**_census(1.0), "H1": "fail"}, bench.V_PASS, bench.V_PASS),
+        ({**_census(2.0, writers=False), "H1": "pass"}, bench.V_NOT_MEASURED,
+         bench.V_NEEDS_CENSUS),
+    ):
+        hyp = _score(rows, census_report=census)["hypotheses"]
+        assert (hyp["H1"], hyp["H2"]) == (h1, h2)
+
+
+def test_a_pooled_key_takes_h1_from_the_median_of_its_stores() -> None:
+    def key_of(rates: tuple[float, ...]) -> tuple[bench.Key, dict[str, bool | None]]:
+        items = [bench.KeyItem(id=f"i{n}", prompt_id="p", arms={bench.ARM_A0: 1},
+                               shares_prompt_stem=True, snapshot=f"s{n}")
+                 for n in range(len(rates))]
+        stores = {f"s{n}": bench.KeyStore(prompts_sampled=1, arms_run=("A0", "A1"))
+                  for n in range(len(rates))}
+        return bench.make_key(items, stores), {i.id: True for i in items}
+
+    # The median of 0, 3, and 1 per 100 beliefs is 1, a pass, and of 0,
+    # 0.5, and 50 it is 0.5, a fail.
+    for rates, want in (((0.0, 3.0, 1.0), bench.V_PASS), ((0.0, 0.5, 50.0), bench.V_FAIL)):
+        key, labels = key_of(rates)
+        census = _census(*rates, snapshots=tuple(sorted(key.stores)))
+        rep = bench.score(key, labels, labels, seed=1, census_report=census)
+        assert rep["hypotheses"]["H1"] == want
 
 
 def test_the_interval_is_the_2_5_and_97_5_percentile_of_the_resamples() -> None:
@@ -2612,7 +2680,8 @@ def test_score_cli_reads_a_packet_key_and_two_label_files(
         json.dumps({"id": r["id"], "correct": bool(r["arms"]) and "A0" in r["arms"]}) + "\n"
         for r in _key_items(k)), encoding="utf-8")
     census = tmp_path / "census.json"
-    census.write_text(json.dumps({"H1": "pass"}), encoding="utf-8")
+    snapshot = json.loads(k.splitlines()[0])["snapshot"]
+    census.write_text(json.dumps(_census(2.0, snapshots=(snapshot,))), encoding="utf-8")
     assert bench.main(["score", "--key", str(key_path), "--labels", str(labels), str(labels),
                        "--census", str(census)]) == 0
     rep = json.loads(capsys.readouterr().out)
