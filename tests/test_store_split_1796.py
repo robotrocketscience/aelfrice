@@ -1043,6 +1043,39 @@ def test_a_folder_it_cannot_list_or_search_is_refused_before_writing(
     assert not _target_path(repo).parent.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+@pytest.mark.parametrize(
+    "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
+)
+@pytest.mark.parametrize("below", [False, True], ids=["at", "below"])
+def test_a_path_at_or_below_a_folder_it_cannot_list_or_search_is_refused(
+    repo: Path, capsys: pytest.CaptureFixture[str], mode: int, below: bool,
+) -> None:
+    """git can't run in a folder it can't search, so a `--path` at or
+    below one gets the same one-line refusal naming that folder."""
+    _seed_pair(repo)
+    before = _file_hash(_source_path(repo))
+    sealed = repo / "b" / "pgdata"
+    (sealed / "sub").mkdir(parents=True)
+    start = sealed / "sub" if below else sealed
+    sealed.chmod(mode)
+    try:
+        runs = [
+            _run(start, *flags, capsys=capsys) for flags in ((), ("--apply",))
+        ]
+    finally:
+        sealed.chmod(0o755)
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err == f"aelf store split: cannot list or search {sealed}\n"
+    assert _file_hash(_source_path(repo)) == before
+    assert not _target_path(repo).parent.exists()
+
+
 def test_apply_refuses_while_aelfrice_db_is_set(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

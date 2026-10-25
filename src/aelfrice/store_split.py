@@ -861,22 +861,50 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
             "--apply refuses to run while AELFRICE_DB is set, because it "
             "hides every [store] marker; unset it and run again",
         )
-    # git runs with `start` as its working directory, which fails for a
-    # file or a missing path, so name that problem first.
-    if not start.exists():
-        raise SplitRefused(f"no folder at {start}")
-    if not start.is_dir():
-        raise SplitRefused(f"{start} is not a folder")
-    work_tree = work_tree_root(start)
-    if work_tree is None:
-        raise SplitRefused(f"{start} is not in a git work tree")
-    source = repository_store_path(work_tree)
-    if source is None:
-        raise SplitRefused(f"{work_tree} is not in a git repository")
     try:
+        _check_start(start)
+        work_tree = work_tree_root(start)
+        if work_tree is None:
+            raise SplitRefused(f"{start} is not in a git work tree")
+        source = repository_store_path(work_tree)
+        if source is None:
+            raise SplitRefused(f"{work_tree} is not in a git repository")
         return _split(work_tree, source, apply=apply)
     except FolderAccessError as exc:
         raise SplitRefused(str(exc)) from exc
+
+
+def _check_start(start: Path) -> None:
+    """Raise unless git can run with `start` as its working directory.
+
+    git fails there for a file, a missing path, or a folder it can't
+    reach, so this names that problem first: `SplitRefused` for a
+    `start` that is missing or a file, and `FolderAccessError` for the
+    first folder on the way to `start`, or `start` itself, that can't
+    be searched.
+    """
+    path = Path(os.path.abspath(start))
+    reach = next(
+        (
+            p for p in (path, *path.parents)
+            if os.path.isdir(p) and os.access(p, os.X_OK)
+        ),
+        None,
+    )
+    if reach == path:
+        return
+    if reach is None:
+        raise SplitRefused(f"no folder at {start}")
+    first = reach / path.relative_to(reach).parts[0]
+    try:
+        mode = os.stat(first).st_mode
+    except OSError:
+        raise SplitRefused(f"no folder at {start}") from None
+    if not stat.S_ISDIR(mode):
+        if first == path:
+            raise SplitRefused(f"{start} is not a folder")
+        raise SplitRefused(f"no folder at {start}")
+    raise FolderAccessError(first)
 
 
 def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
