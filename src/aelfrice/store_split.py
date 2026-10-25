@@ -20,7 +20,8 @@ folder of the work tree that resolves elsewhere; otherwise the session
 names no root. Every ingest row with a file source must name the
 same root, or the belief is skipped as `no_root`. A root is compared to
 the work tree by file identity, so another letter case on a
-case-insensitive filesystem matches. A root outside the
+case-insensitive filesystem matches, and the part of it below the work
+tree is spelled as the folders list it. A root outside the
 work tree, present or not, or inside a linked worktree or nested
 repository below it, is skipped as `outside_work_tree`. A root inside
 the work tree that is no longer a folder on disk is skipped as
@@ -392,7 +393,8 @@ def _enough_present(root: Path, rels: set[str]) -> bool:
 
 
 def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
-    """`root` relative to `work_tree`, or None when it is outside.
+    """`root` relative to `work_tree`, spelled as the folders on disk
+    list it, or None when it is outside.
 
     When the text doesn't match, each folder of `root` that exists is
     compared to `work_tree` by file identity, as `db_paths._same_dir`
@@ -400,9 +402,11 @@ def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
     case-insensitive filesystem still counts as inside.
     """
     try:
-        return Path(*root.relative_to(work_tree).parts)
+        parts = root.relative_to(work_tree).parts
     except ValueError:
         pass
+    else:
+        return _disk_spelling(work_tree, parts)
     try:
         tree = os.stat(work_tree)
     except OSError:
@@ -413,8 +417,44 @@ def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
         except OSError:
             continue
         if os.path.samestat(found, tree):
-            return Path(*root.parts[len(folder.parts):])
+            return _disk_spelling(work_tree, root.parts[len(folder.parts):])
     return None
+
+
+def _disk_spelling(folder: Path, parts: tuple[str, ...]) -> Path:
+    """`parts`, a path below `folder`, with each existing part spelled as
+    its parent lists it.
+
+    On a case-insensitive filesystem `A` reaches the folder `a`, and the
+    two spellings would name one store as two targets. A part that its
+    parent doesn't list is replaced by the listed entry that is the same
+    file, so a symlink to that folder never counts. Parts from the first
+    one that is missing, or whose parent can't be listed, keep their
+    recorded spelling.
+    """
+    current = folder
+    for i, part in enumerate(parts):
+        try:
+            found = os.stat(current / part)
+            names = os.listdir(current)
+        except OSError:
+            return current.joinpath(*parts[i:]).relative_to(folder)
+        if part not in names:
+            part = next(
+                (name for name in names if _is_entry(current / name, found)),
+                part,
+            )
+        current = current / part
+    return current.relative_to(folder)
+
+
+def _is_entry(path: Path, found: os.stat_result) -> bool:
+    """True when the entry `path` itself, not a symlink's target, is the
+    file `found`."""
+    try:
+        return os.path.samestat(os.lstat(path), found)
+    except OSError:
+        return False
 
 
 def _ambiguous(

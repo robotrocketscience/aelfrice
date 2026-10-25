@@ -504,6 +504,50 @@ def test_a_missing_root_in_another_letter_case_is_missing(
     assert not_copied["outside_work_tree"] == 0
 
 
+@pytest.mark.parametrize("tree", ["other", "same"], ids=["MONO-A", "mono-A"])
+def test_a_root_in_another_letter_case_below_the_work_tree_is_one_target(
+    repo: Path, capsys: pytest.CaptureFixture[str], tree: str,
+) -> None:
+    """`.../MONO/A` and `.../mono/A` name the folder `.../mono/a`, so the
+    root is spelled as the folder lists it. Both sessions land in one
+    target on the first dry run and the first apply, and the store is
+    named from `a`."""
+    upper = _other_case(repo)
+    base = upper if tree == "other" else repo
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, base / "A", "s-variant")
+        first = _ingest(src, "doc:docs/x.md:p0", _text(1), "s-variant")
+        _onboard(src, repo / "a", "s-disk")
+        second = _ingest(src, "doc:docs/y.md:p0", _text(2), "s-disk")
+    finally:
+        src.close()
+    dry = _only_target(_report(repo, capsys=capsys))
+    assert dry["store"] == str(_target_path(repo))
+    applied = _only_target(_report(repo, "--apply", capsys=capsys))
+    assert applied["store"] == str(_target_path(repo))
+    assert applied["copied"]["beliefs"] == 2
+    conn = sqlite3.connect(_target_path(repo).as_uri() + "?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT id, project_context FROM beliefs").fetchall()
+    finally:
+        conn.close()
+    assert {r[0] for r in rows} == {first, second}
+    assert all(str(r[1]).startswith("a-") for r in rows), rows
+
+
+def test_only_a_name_in_another_letter_case_respells_a_root_part(
+    repo: Path,
+) -> None:
+    """The symlink `Alias` is the folder `a/` too, but not its spelling.
+    The parts from the first missing one keep their recorded spelling."""
+    _other_case(repo)
+    (repo / "Alias").symlink_to(repo / "a", target_is_directory=True)
+    spell = store_split._disk_spelling  # pyright: ignore[reportPrivateUsage]
+    assert spell(repo, ("A", "Docs")) == Path("a", "docs")
+    assert spell(repo, ("A", "Docs", "Gone", "X")) == Path("a", "docs", "Gone", "X")
+
+
 def _repeated_session(
     src: MemoryStore, repo: Path, given: str, *, total: int, also: Path,
     also_present: int,
