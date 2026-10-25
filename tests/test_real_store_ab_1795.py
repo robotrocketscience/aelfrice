@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import shlex
 import shutil
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
@@ -2394,6 +2395,38 @@ def test_every_subcommand_has_help() -> None:
         with pytest.raises(SystemExit) as exc:
             bench.main([cmd, "--help"])
         assert exc.value.code == 0
+
+
+def test_the_usage_examples_parse_and_give_score_a_census() -> None:
+    # #1802: a score example without --census leaves H1 not measured and
+    # the lane verdicts needing a census, so every one passes it, and the
+    # census example saves the file it reads.
+    marker = "-m benchmarks.real_store_ab_1795 "
+    lines = [ln.split(marker, 1)[1] for ln in (bench.__doc__ or "").splitlines()
+             if marker in ln]
+    parser = bench.build_parser()
+    seen: set[str] = set()
+    for line in lines:
+        args = parser.parse_args(shlex.split(line))
+        seen.add(args.cmd)
+        if args.cmd == "score":
+            assert args.census == Path("census.json"), line
+        if args.cmd == "census":
+            assert args.writers and args.out == Path("census.json"), line
+    assert seen == {"census", "sample", "run", "packet", "score", "proxy"}
+
+
+def test_census_out_writes_the_json_it_prints(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _store(tmp_path)
+    out = tmp_path / "census.json"
+    assert bench.main(["census", "--store", str(path), "--writers", "--out", str(out)]) == 0
+    assert capsys.readouterr().out == ""
+    assert bench.main(["census", "--store", str(path), "--writers"]) == 0
+    printed = capsys.readouterr().out
+    assert out.read_text(encoding="utf-8") == printed
+    assert json.loads(printed)["stores"]
 
 
 def test_bad_input_exits_1(tmp_path: Path) -> None:

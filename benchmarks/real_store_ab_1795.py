@@ -32,7 +32,7 @@ transcripts beside the store they are given.
   per 100 beliefs for one or more stores, optionally after the A1
   writers ran on the copy. Each store's row records the store's
   `snapshot`, as `run` does. With `--writers` it also reports H1 on
-  the median store.
+  the median store. `--out` saves the census for `score --census`.
 - `sample`: user prompts from the store's sibling transcripts
   (`transcripts/turns.jsonl` and every file under `transcripts/archive`),
   minus the prompts the production prompt-shape gate sends to locks-only,
@@ -117,17 +117,18 @@ hold user text or ids from a real store. Keep them out of the repository.
 
 Usage::
 
-    uv run python -m benchmarks.real_store_ab_1795 census --store <memory.db> --writers
+    uv run python -m benchmarks.real_store_ab_1795 census --store <memory.db> --writers --out census.json
     uv run python -m benchmarks.real_store_ab_1795 sample --store <memory.db> --seed 1795 --out prompts.jsonl
     uv run python -m benchmarks.real_store_ab_1795 run --store <memory.db> --prompts prompts.jsonl --arm A0 --out A0.json
     uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <packet-dir> --key key.jsonl
     uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A1W.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
-    uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json
+    uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json --census census.json
 
 Pooled over two stores, with their keys and each grader's labels
-concatenated::
+concatenated, and one writers census of both stores::
 
-    uv run python -m benchmarks.real_store_ab_1795 score --key keys.jsonl --labels a.jsonl b.jsonl --proxy proxy-1.json proxy-2.json
+    uv run python -m benchmarks.real_store_ab_1795 census --store <memory-1.db> <memory-2.db> --writers --out census.json
+    uv run python -m benchmarks.real_store_ab_1795 score --key keys.jsonl --labels a.jsonl b.jsonl --proxy proxy-1.json proxy-2.json --census census.json
 """
 
 from __future__ import annotations
@@ -1815,6 +1816,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("census", help="edge census of store copies")
     c.add_argument("--store", type=Path, nargs="+", required=True)
     c.add_argument("--writers", action="store_true", help="run the A1 writers on each copy first")
+    c.add_argument("--out", type=Path, help="where the census goes, for score --census"
+                   " (default: stdout)")
     work_dir(c)
     s = sub.add_parser("sample", help="seeded prompt sample from the store's transcripts")
     s.add_argument("--store", type=Path, required=True)
@@ -1855,7 +1858,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> None:
     cmd = cast(str, args.cmd)
     if cmd == "census":
-        _dump(census(args.store, args.work_dir, writers=args.writers), None)
+        _dump(census(args.store, args.work_dir, writers=args.writers), args.out)
     elif cmd == "sample":
         if not args.store.is_file():
             raise InputError(f"no store at {args.store}")
