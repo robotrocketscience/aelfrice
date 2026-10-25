@@ -1388,7 +1388,10 @@ def score(
 
     Each grader is scored on its own labels, and an arm passes only when
     both graders pass it. A grader with fewer than `MIN_GRADED` graded
-    items in the arm's or A0's top 10 makes the result `insufficient`. A
+    items in the arm's or A0's top 10 makes the result `insufficient`.
+    The count stays on the top 10s, though the gain counts the packed
+    result: the 2026-10-23 amendment says nothing about `MIN_GRADED`, and
+    the top 10s, a subset of the packed result, give the stricter count. A
     failed H0 makes every arm result, H6 included, `unreliable`.
 
     A1 gets a verdict only when the census passed H1. Under #1795's H1
