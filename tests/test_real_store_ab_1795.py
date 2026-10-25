@@ -1272,7 +1272,7 @@ def test_score_refuses_a_proxy_report_that_matches_no_store_one_to_one(
     tmp_path: Path,
 ) -> None:
     items, labels = _pooled_key(tmp_path)
-    s1, s2 = _proxy_report("s1", [1]), _proxy_report("s2", [1])
+    s1, s2 = _proxy_report("s1", [1]), _proxy_report("s2", [1, 1, 1])
     bad: list[tuple[list[dict[str, Any]], str]] = [
         ([s1], "no proxy report for the key's snapshot s2"),
         ([s1, s2, _proxy_report("s3", [1])], "no key rows for the proxy report's snapshot s3"),
@@ -1286,6 +1286,37 @@ def test_score_refuses_a_proxy_report_that_matches_no_store_one_to_one(
     # Without a proxy, H6 is not scored and nothing is matched.
     rep = bench.score(items, labels, labels, seed=1)
     assert rep["hypotheses"]["H6"] == bench.V_NOT_MEASURED
+
+
+def test_score_refuses_a_proxy_report_that_misses_an_arm_or_a_prompt(tmp_path: Path) -> None:
+    # An arm or a prompt the proxy never measured would count as packing
+    # nothing, and H6 would report a sign the proxy never saw.
+    items, labels = _pooled_key(tmp_path)
+    s1 = _proxy_report("s1", [1])
+    full = _proxy_report("s2", [1, 1, 1])["prompts"]
+    bad: list[tuple[list[dict[str, Any]], str]] = [
+        ([{**r, "arms": {"A0": r["arms"]["A0"]}} for r in full],
+         "measured A0 on prompt p0, not the key's A0, A3"),
+        ([{**r, "arms": {**r["arms"], "A2": []}} for r in full],
+         "measured A0, A2, A3 on prompt p0, not the key's A0, A3"),
+        ([], "covers 0 prompts, but the key's store sampled 3"),
+        (full[:2], "covers 2 prompts, but the key's store sampled 3"),
+        ([{**r, "prompt_id": f"q{n}"} for n, r in enumerate(full)], "has no row for prompt p0"),
+        ([full[0], full[0], full[1]], "repeats prompt p0"),
+        ([*full[:2], {"arms": full[2]["arms"]}], "has a malformed prompt row"),
+        ([*full[:2], {"prompt_id": "p2", "arms": []}], "has a malformed prompt row"),
+        ([*full[:2], {"prompt_id": "p2", "arms": {"A0": [{"id": "a"}], "A3": []}}],
+         "has a malformed prompt row"),
+        ([*full[:2], {"prompt_id": "p2", "arms": {"A0": [], "A3": {}}}],
+         "has a malformed prompt row"),
+    ]
+    for prompts, match in bad:
+        with pytest.raises(bench.InputError, match=f"proxy report for snapshot s2 {match}"):
+            bench.score(items, labels, labels, seed=1,
+                        proxy_reports=[s1, {"snapshot": "s2", "prompts": prompts}])
+    rep = bench.score(items, labels, labels, seed=1,
+                      proxy_reports=[s1, {"snapshot": "s2", "prompts": full}])
+    assert rep["hypotheses"]["H6"]["A3"]["proxy_sign"] == 1
 
 
 def test_score_cli_takes_one_proxy_report_per_store(
@@ -1565,8 +1596,8 @@ def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
         return out
 
     used = [{"id": "b", "used": True}, {"id": "c", "used": True}]
-    proxy = {"snapshot": _SNAP, "prompts": [{"arms": {
-        "A0": [{"id": "a", "used": True}], "A1": used, "A1W": used, "A2": used}}]}
+    proxy = _proxy_rows(4 * [{
+        "A0": [{"id": "a", "used": True}], "A1": used, "A1W": used, "A2": used}])
     held = _score(rows(), proxy_reports=[proxy])["hypotheses"]
     assert held["H5"] == {"A1": bench.V_PASS, "A1W": bench.V_PASS, "A2": bench.V_PASS}
     assert {a: v["verdict"] for a, v in held["H6"].items()} == {
@@ -1706,11 +1737,17 @@ def test_the_docstrings_cite_the_amendment_and_its_judged_sets() -> None:
         assert "H5" in text and "top 10" in text
 
 
+def _proxy_rows(arms: list[dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+    """A proxy report on the `_SNAP` store whose prompt p<n> measured `arms[n]`."""
+    return {"snapshot": _SNAP, "prompts": [
+        {"prompt_id": f"p{n}", "later_turns": 1, "arms": dict(a)} for n, a in enumerate(arms)]}
+
+
 def test_h6_compares_the_proxy_sign_with_each_grader() -> None:
     rows = _hand([2, 2, 2, 2], [3, 3, 2, 4])
-    proxy: dict[str, Any] = {"snapshot": _SNAP, "prompts": [{"arms": {
-        "A0": [{"id": "a", "used": True}], "A1": [{"id": "b", "used": u}]}}
-        for u in (False, False, True, False)]}
+    proxy = _proxy_rows([
+        {"A0": [{"id": "a", "used": True}], "A1": [{"id": "b", "used": u}]}
+        for u in (False, False, True, False)])
     rep = _score(rows, proxy_reports=[proxy])
     assert rep["hypotheses"]["H6"]["A1"]["verdict"] == bench.V_DISAGREE
     proxy["prompts"][0]["arms"]["A1"] = [{"id": "b", "used": True}, {"id": "c", "used": True}]
@@ -1726,8 +1763,8 @@ def test_h6_needs_the_proxy_to_agree_with_both_graders() -> None:
     # Grader B calls only A1's first 2 items per prompt relevant: no gain.
     rows = [(r[0], r[1], r[2], r[3], r[4], r[5] if not r[0].startswith("x")
              else int(r[0].split("-")[1]) < 2) for r in _hand([2, 2, 2, 2], [3, 3, 2, 4])]
-    proxy = {"snapshot": _SNAP, "prompts": [{"arms": {
-        "A0": [{"id": "a", "used": False}], "A1": [{"id": "a", "used": True}]}}]}
+    proxy = _proxy_rows(4 * [
+        {"A0": [{"id": "a", "used": False}], "A1": [{"id": "a", "used": True}]}])
     rep = _score(rows, proxy_reports=[proxy])
     assert rep["hypotheses"]["H0"] == bench.V_PASS
     assert rep["hypotheses"]["H6"]["A1"] == {
@@ -1743,8 +1780,8 @@ def test_h6_takes_each_graders_sign_from_the_packed_gain() -> None:
                  for k in range(10)]
         rows.append((f"r{p}", f"p{p}", {"A1": 11}, False, True, True))
         rows += [(f"n{p}-{k}", f"p{p}", None, False, False, False) for k in range(10)]
-    proxy = {"snapshot": _SNAP, "prompts": [{"arms": {
-        "A0": [{"id": "a", "used": False}], "A1": [{"id": "a", "used": True}]}}]}
+    proxy = _proxy_rows(4 * [
+        {"A0": [{"id": "a", "used": False}], "A1": [{"id": "a", "used": True}]}])
     rep = _score(rows, proxy_reports=[proxy])
     assert rep["arms"]["A1"]["graders"][0]["top10_mean_gain"] == _approx(0.0)
     assert rep["hypotheses"]["H6"]["A1"] == {

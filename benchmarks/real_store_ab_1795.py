@@ -46,8 +46,9 @@ transcripts beside the store they are given.
   several stores together, concatenate their keys, and each grader's
   labels, into one file each, and pass `--proxy` every store's proxy
   report. `score` matches each proxy report to its store's key rows by
-  `snapshot`, and exits 1 when a store in the key has no proxy report or
-  a proxy report has no store in the key.
+  `snapshot`, and exits 1 when a store in the key has no proxy report, a
+  proxy report has no store in the key, or a proxy report misses an arm
+  or a sampled prompt of its store's runs.
 - `proxy`: whether a later turn of the same session cites or restates
   each retrieved belief, with the runs' `snapshot`. Exits 1 when a
   prompt's turn is not in the transcripts beside the store. Reported
@@ -1176,6 +1177,8 @@ class KeyStore:
 
     prompts_sampled: int
     arms_run: tuple[str, ...]
+    prompt_ids: frozenset[str]
+    """The prompts the key holds rows for."""
 
 
 def key_stores(items: Sequence[KeyItem]) -> dict[str, KeyStore]:
@@ -1195,12 +1198,13 @@ def key_stores(items: Sequence[KeyItem]) -> dict[str, KeyStore]:
         ran = {i.arms_run for i in rows}
         if len(ran) != 1:
             raise InputError(f"the key rows of snapshot {snap} disagree on arms_run")
-        keyed = len({i.prompt_id for i in rows})
+        keyed = frozenset(i.prompt_id for i in rows)
         n = min(sampled)
-        if n < keyed:
+        if n < len(keyed):
             raise InputError(
-                f"the key holds {keyed} prompts of snapshot {snap} but prompts_sampled is {n}")
-        stores[snap] = KeyStore(prompts_sampled=n, arms_run=min(ran))
+                f"the key holds {len(keyed)} prompts of snapshot {snap}"
+                f" but prompts_sampled is {n}")
+        stores[snap] = KeyStore(prompts_sampled=n, arms_run=min(ran), prompt_ids=keyed)
     if len({s.arms_run for s in stores.values()}) > 1:
         raise InputError("the key's stores ran different arms: " + "; ".join(
             f"{snap} ran {', '.join(s.arms_run)}" for snap, s in stores.items()))
@@ -1398,14 +1402,15 @@ def proxy_gain_signs(proxy_report: Mapping[str, Any], arms: Sequence[str]) -> di
     """Sign of the proxy's mean paired gain in used beliefs, per arm against A0.
 
     Counted over each arm's whole packed result, the set the graders' gain
-    counts under the 2026-10-23 amendment to #1795.
+    counts under the 2026-10-23 amendment to #1795. Every row must hold
+    every arm in `arms` and A0, as `pool_proxy_reports` checks.
     """
-    rows = cast(list[dict[str, Any]], proxy_report.get("prompts", []))
+    rows = cast(list[dict[str, Any]], proxy_report["prompts"])
     out: dict[str, int] = {}
     for arm in arms:
         gains = [
-            sum(1 for b in r["arms"].get(arm, []) if b["used"])
-            - sum(1 for b in r["arms"].get(CONTROL_ARM, []) if b["used"])
+            sum(1 for b in r["arms"][arm] if b["used"])
+            - sum(1 for b in r["arms"][CONTROL_ARM] if b["used"])
             for r in rows
         ]
         mean = sum(gains) / len(gains) if gains else 0.0
@@ -1413,14 +1418,58 @@ def proxy_gain_signs(proxy_report: Mapping[str, Any], arms: Sequence[str]) -> di
     return out
 
 
+def _is_proxy_row(obj: object) -> bool:
+    """True for `{"prompt_id": str, "arms": {arm: [{"used": bool, ...}, ...]}}`."""
+    if not isinstance(obj, dict):
+        return False
+    row = cast(dict[str, object], obj)
+    arms = row.get("arms")
+    return isinstance(row.get("prompt_id"), str) and isinstance(arms, dict) and all(
+        isinstance(beliefs, list) and all(
+            isinstance(b, dict) and isinstance(cast(dict[str, object], b).get("used"), bool)
+            for b in cast(list[object], beliefs))
+        for beliefs in cast(dict[str, object], arms).values())
+
+
+def _check_proxy_rows(snap: str, rows: object, store: KeyStore) -> list[dict[str, Any]]:
+    """The report's prompt rows; InputError unless they are the store's sample.
+
+    Each row must measure the store's arms, and the rows must cover the
+    store's sampled prompts: as many as it sampled, every prompt the key
+    holds rows for among them.
+    """
+    where = f"proxy report for snapshot {snap}"
+    if not isinstance(rows, list) or not all(_is_proxy_row(r) for r in cast(list[object], rows)):
+        raise InputError(f"{where} has a malformed prompt row")
+    checked = cast(list[dict[str, Any]], rows)
+    pids = [str(r["prompt_id"]) for r in checked]
+    repeated = sorted(p for p, c in Counter(pids).items() if c > 1)
+    if repeated:
+        raise InputError(f"{where} repeats prompt {repeated[0]}")
+    if len(pids) != store.prompts_sampled:
+        raise InputError(f"{where} covers {len(pids)} prompts, but the key's store"
+                         f" sampled {store.prompts_sampled}")
+    missing = sorted(store.prompt_ids - set(pids))
+    if missing:
+        raise InputError(f"{where} has no row for prompt {missing[0]}")
+    for r in checked:
+        measured = tuple(sorted(cast(dict[str, object], r["arms"])))
+        if measured != store.arms_run:
+            raise InputError(
+                f"{where} measured {', '.join(measured)} on prompt {r['prompt_id']},"
+                f" not the key's {', '.join(store.arms_run)}")
+    return checked
+
+
 def pool_proxy_reports(
-    reports: Sequence[Mapping[str, Any]], snapshots: Sequence[str],
+    reports: Sequence[Mapping[str, Any]], stores: Mapping[str, KeyStore],
 ) -> dict[str, Any]:
     """One proxy report holding the prompts of one report per store snapshot.
 
     InputError when a report records no snapshot, two reports record the
-    same one, a snapshot in `snapshots` has no report, or a report's
-    snapshot is not in `snapshots`.
+    same one, a store in `stores` has no report, a report's snapshot is
+    not in `stores`, or a report's rows are not its store's sample (see
+    `_check_proxy_rows`).
     """
     by_snapshot: dict[str, Mapping[str, Any]] = {}
     for n, report in enumerate(reports, 1):
@@ -1430,14 +1479,14 @@ def pool_proxy_reports(
         if snap in by_snapshot:
             raise InputError(f"two proxy reports record snapshot {snap}")
         by_snapshot[snap] = report
-    missing = sorted(set(snapshots) - by_snapshot.keys())
+    missing = sorted(stores.keys() - by_snapshot.keys())
     if missing:
         raise InputError(f"no proxy report for the key's snapshot {', '.join(missing)}")
-    extra = sorted(by_snapshot.keys() - set(snapshots))
+    extra = sorted(by_snapshot.keys() - stores.keys())
     if extra:
         raise InputError(f"no key rows for the proxy report's snapshot {', '.join(extra)}")
     rows = [row for snap in sorted(by_snapshot)
-            for row in cast(list[dict[str, Any]], by_snapshot[snap].get("prompts", []))]
+            for row in _check_proxy_rows(snap, by_snapshot[snap].get("prompts"), stores[snap])]
     return {"prompts": rows}
 
 
@@ -1482,7 +1531,8 @@ def score(
     and `stores` is the number of snapshots. H6 pools `proxy_reports` the
     same way: it takes one report per store, matched to the key's rows by
     `snapshot`, so the proxy's gain counts the stores the graders labeled.
-    A store with no report, or a report with no store, is an InputError.
+    A store with no report, a report with no store, and a report that
+    misses one of its store's arms or sampled prompts are InputErrors.
     """
     ids = [i.id for i in items]
     require_labels(ids, a, b, "key items")
@@ -1492,7 +1542,7 @@ def score(
     # drawn has no key row, but it still counts in every paired gain.
     sampled = sum(s.prompts_sampled for s in stores.values())
     pooled_proxy = (None if proxy_reports is None
-                    else pool_proxy_reports(proxy_reports, sorted(stores)))
+                    else pool_proxy_reports(proxy_reports, stores))
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, a, b)
