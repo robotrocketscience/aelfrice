@@ -72,7 +72,7 @@ from aelfrice.db_paths import (
 )
 from aelfrice.migrate import copy_belief
 from aelfrice.models import EDGE_SUPERSEDES, LOCK_USER, Belief, Edge, SupportEvidence
-from aelfrice.store import MemoryStore, read_only_uri
+from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable, read_only_uri
 
 #: Reasons a belief is not copied, as the report keys them.
 SKIP_NO_FILE_SOURCE: Final[str] = "no_file_source"
@@ -804,7 +804,11 @@ def _dry_run_target(
     rows: _SourceRows, selection: StoreSelection, ids: set[str],
 ) -> TargetReport:
     """Plan one target without writing; a store that can't be read is
-    reported as failed, as `_apply_target` reports it."""
+    reported as failed, as `_apply_target` reports it.
+
+    A read-only open also fails with `ReadOnlyStoreUnavailable` for a WAL
+    store whose sidecars it can't create, or an old schema it can't
+    migrate."""
     path = selection.path
     try:
         if not store_file_present(path):
@@ -815,7 +819,7 @@ def _dry_run_target(
                 plan = _plan(rows, ids, target)
             finally:
                 target.close()
-    except (sqlite3.Error, OSError, ValueError) as exc:
+    except (sqlite3.Error, OSError, ValueError, ReadOnlyStoreUnavailable) as exc:
         return TargetReport(
             path, selection.marker, {kind: 0 for kind in COPIED_KINDS},
             {reason: 0 for reason in TARGET_REASONS}, str(exc),

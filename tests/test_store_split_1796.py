@@ -796,6 +796,40 @@ def test_a_dry_run_reports_a_target_store_it_cannot_read(
     assert "failed, nothing copied: file is not a database" in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_a_dry_run_reports_a_target_store_it_cannot_open_read_only(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A WAL store with no sidecars, in a folder you can't write, can't
+    be read: SQLite must create its `-shm` file first. The report marks
+    that target as failed and still reports the other target."""
+    _seed_pair(repo)
+    _marker(repo / "b", ".aelfrice/store")
+    target = _target_path(repo)
+    _open(target).close()
+    assert {p.name for p in target.parent.iterdir()} == {"memory.db"}
+    target.parent.chmod(0o555)
+    try:
+        code, out, err = _run(repo, "--json", capsys=capsys)
+        text_code, text_out, text_err = _run(repo, capsys=capsys)
+    finally:
+        target.parent.chmod(0o755)
+    assert (code, text_code) == (1, 1)
+    assert (err, text_err) == ("", "")
+    targets = {
+        str(t["store"]): t
+        for t in cast("list[dict[str, object]]", json.loads(out)["targets"])
+    }
+    assert "without write access" in str(targets[str(target)]["error"])
+    other = targets[str(repo / "b" / ".aelfrice" / "store" / "memory.db")]
+    assert other["error"] is None
+    assert cast("dict[str, int]", other["copied"])["beliefs"] == 1
+    assert "failed, nothing copied: cannot read" in text_out
+
+
 # --- apply -------------------------------------------------------------------
 
 
