@@ -1498,7 +1498,7 @@ The command exits with one of these statuses:
 |---|---|
 | 0 | Every target store was read, and with `--apply`, copied. |
 | 1 | A target store can't be read or its copy failed, and the report marks that target as failed. Or the repository store can't be read, and the command prints that error instead of a report. |
-| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the current folder was removed, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, a folder in the work tree can't be listed or searched, or `--apply` runs while `AELFRICE_DB` is set. |
+| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the current folder was removed and you gave no `--path` or a relative one, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, a folder in the work tree can't be listed or searched, or `--apply` runs while `AELFRICE_DB` is set. |
 
 ## User lock store: `AELFRICE_USER_DB`
 
