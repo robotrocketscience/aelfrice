@@ -385,10 +385,11 @@ def _onboard_roots(
     """Each onboard session's root, None when it names no usable one.
 
     An absolute `repo_path` is the root. A relative one, which `aelf
-    onboard .` records, resolves against `work_tree`. A root that lands
-    outside `work_tree` is kept, so the belief counts as outside the
-    work tree. One inside it is kept only when the session's files are
-    there, since the folder the onboard ran from isn't recorded.
+    onboard .` recorded before #1798, resolves against `work_tree`. A
+    root that lands outside `work_tree` is kept, so the belief counts
+    as outside the work tree. One inside it is kept only when the
+    session's files are there, since the folder the onboard ran from
+    isn't recorded.
     """
     roots: dict[str, Path | None] = {}
     relative: dict[str, Path] = {}
