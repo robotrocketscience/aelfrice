@@ -259,6 +259,18 @@ class StoreMarkerError(ValueError):
     """
 
 
+class FolderAccessError(Exception):
+    """A folder of the work tree that can't be listed or searched (#1796).
+
+    Such a folder may hold a marker or a `.git` entry that can't be
+    checked, so no store is chosen for the files below it.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        super().__init__(f"cannot list or search {folder}")
+        self.folder = folder
+
+
 @dataclass(frozen=True)
 class StoreSelection:
     """Which store applies, and the rule that chose it (#1796).

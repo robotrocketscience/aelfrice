@@ -57,6 +57,7 @@ from aelfrice.config_discovery import (
 )
 from aelfrice.db_paths import (
     STORE_RULE_MARKER,
+    FolderAccessError,
     StoreSelection,
     owning_folder,
     repository_store_path,
@@ -297,24 +298,27 @@ def work_tree_root(start: Path) -> Path | None:
 
 
 def check_markers(work_tree: Path) -> None:
-    """Raise `StoreMarkerError` for a broken marker anywhere in the work tree.
+    """Raise `StoreMarkerError` for a broken marker anywhere in the work
+    tree, and `FolderAccessError` for a folder in it that can't be listed
+    or searched.
 
     Walks down from the root and resolves the store of every folder that
     holds the project config file. The walk skips `.git`, nested
     repositories, and symlinked folders, which belong to no folder of
-    this work tree.
-
-    A folder it can search but not list still has its own config file
-    read, because aelfrice reads it there by name. The folders inside it
-    can't be named, so they go unchecked.
+    this work tree. A folder it can't list or search may hold a marker
+    or a `.git` entry it can't check, so the walk stops there.
     """
-    unlisted: list[Path] = []
 
-    def note_unlisted(exc: OSError) -> None:
-        if exc.filename is not None:
-            unlisted.append(Path(os.fsdecode(exc.filename)))
+    def refuse(exc: OSError) -> None:
+        # A folder removed during the walk holds nothing to check.
+        if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+            return
+        folder = work_tree if exc.filename is None else Path(
+            os.fsdecode(exc.filename),
+        )
+        raise FolderAccessError(folder) from exc
 
-    for dirpath, dirnames, filenames in os.walk(work_tree, onerror=note_unlisted):
+    for dirpath, dirnames, filenames in os.walk(work_tree, onerror=refuse):
         here = Path(dirpath)
         dirnames[:] = sorted(
             d for d in dirnames
@@ -322,21 +326,14 @@ def check_markers(work_tree: Path) -> None:
         )
         if CONFIG_FILENAME in filenames:
             resolve_store_in_work_tree(here, work_tree)
-    for folder in sorted(unlisted):
-        try:
-            os.lstat(folder / CONFIG_FILENAME)
-        except OSError:
-            continue
-        resolve_store_in_work_tree(folder, work_tree)
 
 
 def _walks_into(folder: Path) -> bool:
     """True when the marker walk enters `folder`: a real folder, not a
-    symlink, with no `.git` entry, that it can read.
+    symlink, with no `.git` entry.
 
-    A folder it can't read, such as a container's data folder owned by
-    another user, is passed over: a config file that can't be read is
-    no marker, so it holds none that a store could resolve from.
+    Raises `FolderAccessError` when it can't check for a `.git` entry,
+    which is a folder it can't search.
     """
     try:
         if stat.S_ISLNK(os.lstat(folder).st_mode):
@@ -344,8 +341,8 @@ def _walks_into(folder: Path) -> bool:
         os.lstat(folder / WORKTREE_MARKER)
     except (FileNotFoundError, NotADirectoryError):
         return True
-    except OSError:
-        return False
+    except OSError as exc:
+        raise FolderAccessError(folder) from exc
     return False
 
 
@@ -415,25 +412,28 @@ def _root_skip(work_tree: Path, under: Path) -> str | None:
     with no `.git` entry. A `.git` entry puts the root in a linked
     worktree, a nested repository, or a submodule (`outside_work_tree`).
     A linked worktree shares the repository store, but its files belong
-    to its own work tree and its own markers. A folder that is gone or
-    can't be read gives `missing_root`: `git worktree remove` deletes the
-    folder and its `.git` entry, so a removed worktree looks like any
-    deleted folder, and its beliefs must not fall to a marker above it.
+    to its own work tree and its own markers. A folder that is gone gives
+    `missing_root`: `git worktree remove` deletes the folder and its
+    `.git` entry, so a removed worktree looks like any deleted folder,
+    and its beliefs must not fall to a marker above it. A folder it can't
+    search raises `FolderAccessError`.
     """
     current = work_tree
     for part in under.parts:
-        current = current / part
+        parent, current = current, current / part
         try:
             if not stat.S_ISDIR(os.stat(current).st_mode):
                 return SKIP_MISSING_ROOT
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return SKIP_MISSING_ROOT
+        except OSError as exc:
+            raise FolderAccessError(parent) from exc
         try:
             os.lstat(current / WORKTREE_MARKER)
         except (FileNotFoundError, NotADirectoryError):
             continue
-        except OSError:
-            return SKIP_MISSING_ROOT
+        except OSError as exc:
+            raise FolderAccessError(current) from exc
         return SKIP_OUTSIDE_WORK_TREE
     return None
 
@@ -801,9 +801,10 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
     """Copy the beliefs under each marker folder of `start`'s work tree.
 
     A dry run unless `apply`. Raises `SplitRefused` when the command
-    can't run here, `StoreMarkerError` for a broken marker anywhere in
-    the work tree (before anything is written), and `SplitError` when
-    the repository store can't be read.
+    can't run here, including a folder of the work tree it can't list or
+    search, `StoreMarkerError` for a broken marker anywhere in the work
+    tree (both before anything is written), and `SplitError` when the
+    repository store can't be read.
     """
     if apply and os.environ.get("AELFRICE_DB"):
         raise SplitRefused(
@@ -822,6 +823,15 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
     source = repository_store_path(work_tree)
     if source is None:
         raise SplitRefused(f"{work_tree} is not in a git repository")
+    try:
+        return _split(work_tree, source, apply=apply)
+    except FolderAccessError as exc:
+        raise SplitRefused(str(exc)) from exc
+
+
+def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
+    """`split_store()` once the work tree and its repository store are
+    known."""
     with config_discovery_scope():
         check_markers(work_tree)
         try:

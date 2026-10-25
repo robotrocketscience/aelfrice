@@ -368,11 +368,13 @@ def test_an_onboard_root_in_a_removed_nested_worktree_is_not_copied(
     sys.platform == "win32" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
 )
-def test_an_onboard_root_it_cannot_search_is_missing(
+def test_an_onboard_root_it_cannot_search_is_refused(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A root whose `.git` entry can't be checked may be a worktree, so
-    its belief must not fall to the marker above it."""
+    the command stops and names the root instead of placing its belief.
+    The marker walk finds the root first, so the root check is also
+    called directly."""
     root = repo / "a" / "docs"
     src = _open(_source_path(repo))
     try:
@@ -380,15 +382,18 @@ def test_an_onboard_root_it_cannot_search_is_missing(
         _ingest(src, "doc:x.md:p0", _text(1), "s1")
     finally:
         src.close()
+    root_skip = store_split._root_skip  # pyright: ignore[reportPrivateUsage]
     root.chmod(0o644)
     try:
-        report = _report(repo, "--apply", capsys=capsys)
+        code, out, err = _run(repo, "--apply", capsys=capsys)
+        with pytest.raises(db_paths.FolderAccessError) as raised:
+            root_skip(repo, Path("a", "docs"))
     finally:
         root.chmod(0o755)
-    assert report["targets"] == []
-    not_copied = cast("dict[str, int]", report["not_copied"])
-    assert not_copied["missing_root"] == 1
-    assert not_copied["source_store"] == 0
+    assert raised.value.folder == root
+    assert code == 2
+    assert out == ""
+    assert err == f"aelf store split: cannot list or search {root}\n"
     assert not _target_path(repo).parent.exists()
 
 
@@ -935,80 +940,30 @@ def test_a_broken_marker_in_a_nested_repository_is_not_checked(
     sys.platform == "win32" or os.geteuid() == 0,
     reason="needs POSIX permissions that the user can't bypass",
 )
-def test_an_unreadable_folder_in_the_work_tree_is_passed_over(
-    repo: Path, capsys: pytest.CaptureFixture[str],
+@pytest.mark.parametrize(
+    "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
+)
+def test_a_folder_it_cannot_list_or_search_is_refused_before_writing(
+    repo: Path, capsys: pytest.CaptureFixture[str], mode: int,
 ) -> None:
     """A folder without read or search permission, such as a container's
-    data folder, holds no marker aelfrice can read. The marker check
-    passes over it, and a belief whose file sits below one lands in the
-    nearest folder above it."""
-    src = _open(_source_path(repo))
-    try:
-        _onboard(src, repo, "s1")
-        _ingest(src, "doc:a/sealed/x.md:p0", _text(1), "s1")
-    finally:
-        src.close()
-    sealed = [repo / "pgdata", repo / "a" / "sealed"]
-    for folder in sealed:
-        folder.mkdir()
-        folder.chmod(0)
-    try:
-        for flags in ((), ("--apply",)):
-            code, out, err = _run(repo, "--json", *flags, capsys=capsys)
-            assert code == 0, err
-            target = _only_target(json.loads(out))
-            assert target["store"] == str(_target_path(repo)), flags
-            assert target["copied"]["beliefs"] == 1, flags
-    finally:
-        for folder in sealed:
-            folder.chmod(0o755)
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="needs POSIX permissions that the user can't bypass",
-)
-@pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="needs POSIX permissions that the user can't bypass",
-)
-def test_a_broken_marker_in_a_folder_it_cannot_list_aborts(
-    repo: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    """aelfrice reads the marker of a folder it can search but not list,
-    so the check reads it too."""
+    data folder, may hold a marker or a `.git` entry the command can't
+    check. A dry run and `--apply` alike stop with one line naming it."""
     _seed_pair(repo)
-    _marker(repo / "c", "store.db")
-    (repo / "c").chmod(0o111)
+    before = _file_hash(_source_path(repo))
+    sealed = repo / "b" / "pgdata"
+    sealed.mkdir()
+    sealed.chmod(mode)
     try:
-        assert store_split._walks_into(repo / "c")  # pyright: ignore[reportPrivateUsage]
-        for flags in ((), ("--apply",)):
-            code, out, err = _run(repo, *flags, capsys=capsys)
-            assert code == 2, (flags, out)
-            assert "store.db" in err and out == "", flags
+        runs = [_run(repo, *flags, capsys=capsys) for flags in ((), ("--apply",))]
     finally:
-        (repo / "c").chmod(0o755)
-    assert not _target_path(repo).parent.exists()
-
-
-def test_the_marker_walk_skips_a_folder_whose_git_entry_it_cannot_check(
-    env: Path,
-) -> None:
-    """A folder it can list but not search may hide a `.git` entry, so
-    the walk doesn't enter it."""
-    walks_into = store_split._walks_into  # pyright: ignore[reportPrivateUsage]
-    plain, listable, sealed = env / "plain", env / "listable", env / "sealed"
-    for folder in (plain, listable, sealed):
-        folder.mkdir()
-    listable.chmod(0o444)
-    sealed.chmod(0)
-    try:
-        assert walks_into(plain)
-        assert not walks_into(listable)
-        assert not walks_into(sealed)
-    finally:
-        listable.chmod(0o755)
         sealed.chmod(0o755)
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err == f"aelf store split: cannot list or search {sealed}\n"
+    assert _file_hash(_source_path(repo)) == before
+    assert not _target_path(repo).parent.exists()
 
 
 def test_apply_refuses_while_aelfrice_db_is_set(

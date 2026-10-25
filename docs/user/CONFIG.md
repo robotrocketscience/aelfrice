@@ -1466,14 +1466,14 @@ The command works on the git work tree that holds the current folder, or the fol
 
 The command copies and doesn't move. It opens the repository store read-only and never writes its database file, so a belief it copies stays in the repository store too. SQLite can still create the `-wal` and `-shm` files beside the database when it opens it. The source is always the repository store, `<git-common-dir>/aelfrice/memory.db`, whatever store the current folder uses.
 
-A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, a nested repository, or a folder you can't read, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
+A belief is copied only when it has a file source: a paragraph of a document or a Python docstring that onboarding read. Beliefs from transcripts, commits, locks, and the other sources stay where they are. aelfrice stores no path for a belief, so the command reads the file from the belief's ingest records and its document anchors, and reads the folder those paths are relative to from the onboard session that ingested it. The command then takes the deepest real folder of that file inside the work tree, stopping at a missing folder, a symlink, or a nested repository, and copies the belief when that folder's store is a marker store other than the repository store. The report counts a belief that it can't place under one of these reasons:
 
 | Reason in `--json` | Reason in the text report | Meaning |
 |---|---|---|
 | `no_file_source` | no file source | The belief has no document or docstring source. |
 | `no_root` | no root | The belief's ingest records don't name one absolute onboard folder. Only an onboard run through `--emit-candidates` records the folder, as `/aelf:onboard` does unless it falls back to the regex classifier. `aelf onboard <path>` run without `--emit-candidates` records none. A relative `<path>`, such as `.`, is recorded as given, so the folder isn't absolute. |
 | `outside_work_tree` | outside the work tree | The onboard folder isn't inside this work tree, such as one from another worktree. A folder inside a linked worktree or a nested repository counts as outside, even when that worktree sits inside this one. |
-| `missing_root` | missing root | The onboard folder, or a folder above it, is gone or can't be read. `git worktree remove` deletes a worktree's folder and its `.git` entry, so the command can't tell a removed worktree from a deleted folder, and it copies neither. |
+| `missing_root` | missing root | The onboard folder, or a folder above it, is gone. `git worktree remove` deletes a worktree's folder and its `.git` entry, so the command can't tell a removed worktree from a deleted folder, and it copies neither. |
 | `several_stores` | several stores | The belief's files are in folders with different stores. |
 | `source_store` | stays in the repository store | The folder's store is the repository store, so the belief stays there. In a dry run with `AELFRICE_DB` set, every belief the command can place counts here. |
 
@@ -1488,7 +1488,7 @@ For each target store, the command skips these beliefs and counts them by reason
 | `retired` | retired | The belief is retired. A copy would make it searchable again. |
 | `superseded` | superseded | Another belief supersedes it, and none of its superseding beliefs lands in the target store, so the copy would lose that state. |
 
-Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. The check for broken markers passes over a folder you can't read, such as a container's data folder, because aelfrice reads no marker inside it. A folder you can open but not list is different: aelfrice reads its `.aelfrice.toml` by name, so the check reads it too. The check can't name the folders inside it, so it doesn't check their markers.
+Each target store's copy runs in one transaction, so a failure leaves that store's rows as they were. A second `--apply` copies nothing, because every belief is already present. `--apply` refuses to run while `AELFRICE_DB` is set, because that variable hides every marker. A dry run with it set prints a warning and reads no marker, so it finds no marker store and doesn't report a broken marker. A folder in the work tree that you can't list or search, such as a container's data folder, stops the command with exit status 2 before it writes anything, in a dry run and with `--apply` alike. The error names the folder. The command can't check such a folder for a marker or a `.git` entry, so it can't tell which store the files below it belong to. Give yourself read and search permission on the folder, or move it out of the work tree, and run the command again.
 
 The command exits with one of these statuses:
 
@@ -1496,7 +1496,7 @@ The command exits with one of these statuses:
 |---|---|
 | 0 | Every target store was read, and with `--apply`, copied. |
 | 1 | A target store can't be read or its copy failed, and the report marks that target as failed. Or the repository store can't be read, and the command prints that error instead of a report. |
-| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, or `--apply` runs while `AELFRICE_DB` is set. |
+| 2 | The command refuses to run and writes nothing: the `--path` folder doesn't exist or isn't a folder, the folder isn't in a git work tree, the work tree has no repository store, a marker anywhere in the work tree is broken, a folder in the work tree can't be listed or searched, or `--apply` runs while `AELFRICE_DB` is set. |
 
 ## User lock store: `AELFRICE_USER_DB`
 

@@ -7806,9 +7806,9 @@ def _cmd_store(args: argparse.Namespace, out: object) -> int:
     or its copy failed, or the repository store can't be read, and 2
     when the command refuses to run: `--apply` with `AELFRICE_DB` set, a
     `--path` that is no folder, a folder outside a git work tree, no
-    repository store, or a broken marker anywhere in the work tree
-    (`StoreMarkerError`, caught here so every error from this command
-    has one prefix).
+    repository store, a folder of the work tree it can't list or search,
+    or a broken marker anywhere in the work tree (`StoreMarkerError`,
+    caught here so every error from this command has one prefix).
     """
     from aelfrice.store_split import (  # noqa: PLC0415
         SplitError,
