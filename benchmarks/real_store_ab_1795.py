@@ -139,6 +139,7 @@ import math
 import os
 import random
 import sqlite3
+import stat
 import statistics
 import sys
 import tempfile
@@ -1144,8 +1145,19 @@ def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str,
         raise InputError(
             f"the key {key_path} has another hard link, which may lie in the packet"
             f" directory {out}; remove the old key first")
-    (out / "packet.jsonl").write_text(_jsonl(packet), encoding="utf-8")
-    (out / "instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
+    # The packet's own files are written through any link at their names,
+    # so a symlink to the key path would send the packet there and leave
+    # the graders reading the key. Refuse a link before anything is written.
+    packet_files = (out / "packet.jsonl", out / "instructions.txt")
+    for f in packet_files:
+        try:
+            st = f.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(st.st_mode) or st.st_nlink > 1:
+            raise InputError(f"{f} is a link; remove it before writing the packet")
+    packet_files[0].write_text(_jsonl(packet), encoding="utf-8")
+    packet_files[1].write_text(INSTRUCTIONS, encoding="utf-8")
     key_path.write_text(_jsonl(key), encoding="utf-8")
 
 

@@ -990,6 +990,41 @@ def test_a_key_file_with_a_hard_link_in_the_packet_directory_is_refused(
     assert (out / linked).read_text(encoding="utf-8") == "old\n"
 
 
+@pytest.mark.parametrize("name", ["packet.jsonl", "instructions.txt"])
+@pytest.mark.parametrize("link", ["symlink", "hard link"])
+def test_a_link_at_a_packet_file_name_is_refused_before_any_write(
+    tmp_path: Path, name: str, link: str,
+) -> None:
+    # #1802: a symlink at out/packet.jsonl to the key path sends the packet
+    # there, and the key write then leaves the graders reading the key.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out, key_path = tmp_path / "pk", tmp_path / "key.jsonl"
+    out.mkdir()
+    if link == "symlink":
+        (out / name).symlink_to(key_path)
+    else:
+        other = tmp_path / "other.txt"
+        other.write_text("old\n", encoding="utf-8")
+        os.link(other, out / name)
+    with pytest.raises(bench.InputError, match="is a link"):
+        bench.write_packet(packet, key, out, key_path)
+    assert not key_path.exists()
+    assert sorted(p.name for p in out.iterdir()) == [name]
+    if link == "hard link":
+        assert (out / name).read_text(encoding="utf-8") == "old\n"
+
+
+def test_a_plain_packet_file_is_rewritten(tmp_path: Path) -> None:
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out = tmp_path / "pk"
+    out.mkdir()
+    (out / "packet.jsonl").write_text("stale\n", encoding="utf-8")
+    bench.write_packet(packet, key, out, tmp_path / "key.jsonl")
+    assert json.loads((out / "packet.jsonl").read_text(encoding="utf-8"))["id"] == "x"
+
+
 def test_the_key_guard_follows_the_filesystem_case_rule(tmp_path: Path) -> None:
     # macOS folds case by default, so there `PK/key.jsonl` lands in `pk/`.
     packet = [{"id": "x", "prompt": "p", "belief": "b"}]
