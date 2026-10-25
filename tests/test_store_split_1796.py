@@ -281,6 +281,83 @@ def test_the_root_comes_from_the_onboard_session(
     assert not_copied["outside_work_tree"] == 1
 
 
+def _relative_session(
+    src: MemoryStore, repo: Path, sid: str, *, total: int, present: int,
+    n: int, root: str = ".",
+) -> str:
+    """A session onboarded from the relative `root`, with `total` distinct
+    document paths under `a/docs/`, the first `present` of them written
+    as files under the work tree. Returns the belief from the first."""
+    _onboard(src, root, sid)
+    rels = [f"a/docs/{sid}-{i}.md" for i in range(total)]
+    for rel in rels[:present]:
+        (repo / rel).write_text("text\n", encoding="utf-8")
+    bid = _ingest(src, f"doc:{rels[0]}:p0", _text(n), sid)
+    for rel in rels[1:]:
+        src.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM, source_path=f"doc:{rel}:p0",
+            raw_text=rel, session_id=sid, ts=_TS, derived_belief_ids=[],
+        )
+    return bid
+
+
+@pytest.mark.parametrize(
+    ("present", "total"), [(10, 10), (9, 10)], ids=["all", "at-the-bar"],
+)
+def test_a_relative_root_whose_files_are_there_routes(
+    repo: Path, capsys: pytest.CaptureFixture[str], present: int, total: int,
+) -> None:
+    """A session onboarded from `.` places its beliefs from the work-tree
+    root when at least 90% of its files are there; the bar is inclusive."""
+    assert store_split.RELATIVE_ROOT_MIN_PRESENT == 0.9
+    src = _open(_source_path(repo))
+    try:
+        bid = _relative_session(
+            src, repo, "s-dot", total=total, present=present, n=1,
+        )
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {bid}
+
+
+def test_a_relative_root_just_below_the_bar_is_no_root(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """8 of 9 files is just under 90%, so that session names no root,
+    while a session with all its files there still routes."""
+    src = _open(_source_path(repo))
+    try:
+        routed = _relative_session(src, repo, "s-all", total=10, present=10, n=1)
+        _relative_session(src, repo, "s-below", total=9, present=8, n=2)
+    finally:
+        src.close()
+    report = _report(repo, "--apply", capsys=capsys)
+    assert _only_target(report)["copied"]["beliefs"] == 1
+    assert cast("dict[str, int]", report["not_copied"])["no_root"] == 1
+    assert {r[0] for r in _rows(_target_path(repo))["beliefs"]} == {routed}
+
+
+def test_a_relative_root_that_resolves_outside_the_work_tree_is_outside(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`..` resolves above the work-tree root, so the belief counts as
+    outside the work tree, whether or not its files are there."""
+    src = _open(_source_path(repo))
+    try:
+        _relative_session(
+            src, repo, "s-up", total=1, present=0, n=1, root="..",
+        )
+    finally:
+        src.close()
+    report = _report(repo, capsys=capsys)
+    assert report["targets"] == []
+    not_copied = cast("dict[str, int]", report["not_copied"])
+    assert not_copied["outside_work_tree"] == 1
+    assert not_copied["no_root"] == 0
+
+
 def test_an_onboard_root_in_a_nested_worktree_is_outside_the_work_tree(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:

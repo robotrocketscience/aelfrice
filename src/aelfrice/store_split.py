@@ -12,8 +12,12 @@ A belief qualifies only when it has a file source the scanner wrote:
 `belief_documents` URI of the form `file:<source>`, with an optional
 `#...` fragment. `<rel>` is relative to the onboard root, which is the
 `repo_path` of the `onboard_sessions` row for the ingest row's session.
-Every ingest row with a file source must name the same absolute root, or
-the belief is skipped as `no_root`, and a root outside the work tree, or
+A relative `repo_path`, such as `.`, resolves against the work-tree root,
+and is kept only when at least `RELATIVE_ROOT_MIN_PRESENT` of the
+session's distinct file paths exist as files under it; otherwise the
+session names no root. Every ingest row with a file source must name the
+same root, or the belief is skipped as `no_root`, and a root outside the
+work tree, or
 inside a linked worktree or nested repository below it, is skipped as
 `outside_work_tree`. A root that is no longer a folder on disk is skipped
 as `missing_root`, because a removed linked worktree leaves no `.git`
@@ -120,6 +124,11 @@ _AST_SOURCE_RE: Final[re.Pattern[str]] = re.compile(
 _FILE_URI_PREFIX: Final[str] = "file:"
 
 _GIT_TIMEOUT_S: Final[float] = 5.0
+
+#: The share of a relative-root onboard session's distinct file paths that
+#: must exist as files under the work-tree folder it resolves to, for that
+#: folder to count as the session's root. The bar is inclusive.
+RELATIVE_ROOT_MIN_PRESENT: Final[float] = 0.9
 
 _BELIEF_COLUMNS: Final[str] = (
     "b.id, b.content, b.content_hash, b.alpha, b.beta, b.type, "
@@ -346,21 +355,67 @@ def _walks_into(folder: Path) -> bool:
     return False
 
 
-def _onboard_root(repo_path: object) -> Path | None:
-    """An onboard session's root, or None when it isn't an absolute path."""
-    if not isinstance(repo_path, str) or not repo_path:
-        return None
-    root = Path(repo_path)
-    if not root.is_absolute():
-        return None
+def _resolved(path: Path) -> Path | None:
     try:
-        return root.resolve()
+        return path.resolve()
     except (OSError, RuntimeError, ValueError):
         return None
 
 
+def _enough_present(root: Path, rels: set[str]) -> bool:
+    """True when at least `RELATIVE_ROOT_MIN_PRESENT` of `rels` are files
+    under `root`."""
+    if not rels:
+        return False
+    present = sum(1 for rel in sorted(rels) if os.path.isfile(root / rel))
+    return present / len(rels) >= RELATIVE_ROOT_MIN_PRESENT
+
+
+def _onboard_roots(
+    conn: sqlite3.Connection, work_tree: Path,
+) -> dict[str, Path | None]:
+    """Each onboard session's root, None when it names no usable one.
+
+    An absolute `repo_path` is the root. A relative one, which `aelf
+    onboard .` records, resolves against `work_tree`. A root that lands
+    outside `work_tree` is kept, so the belief counts as outside the
+    work tree. One inside it is kept only when the session's files are
+    there, since the folder the onboard ran from isn't recorded.
+    """
+    roots: dict[str, Path | None] = {}
+    relative: dict[str, Path] = {}
+    for sid, repo_path in conn.execute(
+        "SELECT session_id, repo_path FROM onboard_sessions",
+    ).fetchall():
+        key = str(sid)
+        if not isinstance(repo_path, str) or not repo_path:
+            roots[key] = None
+            continue
+        given = Path(repo_path)
+        root = _resolved(given if given.is_absolute() else work_tree / given)
+        roots[key] = root
+        if root is not None and not given.is_absolute() and root.is_relative_to(
+            work_tree,
+        ):
+            relative[key] = root
+    if not relative:
+        return roots
+    rels: dict[str, set[str]] = {}
+    for sid, source_path in conn.execute(
+        "SELECT DISTINCT session_id, source_path FROM ingest_log "
+        "WHERE session_id IS NOT NULL AND source_path IS NOT NULL",
+    ).fetchall():
+        rel = file_source_rel(str(source_path))
+        if rel is not None and str(sid) in relative:
+            rels.setdefault(str(sid), set()).add(rel)
+    for key, root in relative.items():
+        if not _enough_present(root, rels.get(key, set())):
+            roots[key] = None
+    return roots
+
+
 def _read_locations(
-    conn: sqlite3.Connection,
+    conn: sqlite3.Connection, work_tree: Path,
 ) -> tuple[list[str], dict[str, list[tuple[Path | None, str]]], dict[str, set[str]]]:
     """Every belief id, and each belief's file sources.
 
@@ -369,12 +424,7 @@ def _read_locations(
     when the row's session names no usable onboard root. `anchored` maps
     a belief to the `rel` of each anchor URI with a file source.
     """
-    roots: dict[str, Path | None] = {
-        str(sid): _onboard_root(repo_path)
-        for sid, repo_path in conn.execute(
-            "SELECT session_id, repo_path FROM onboard_sessions",
-        ).fetchall()
-    }
+    roots = _onboard_roots(conn, work_tree)
     ids = [str(r[0]) for r in conn.execute("SELECT id FROM beliefs ORDER BY id")]
     ingested: dict[str, list[tuple[Path | None, str]]] = {}
     # A malformed `derived_belief_ids` reads as no ids. The CASE guards
@@ -852,7 +902,7 @@ def _split(work_tree: Path, source: Path, *, apply: bool) -> SplitReport:
             # the store mid-read can't pair a belief's old posterior with
             # its new feedback rows. Closing the connection ends it.
             conn.execute("BEGIN")
-            ids, ingested, anchored = _read_locations(conn)
+            ids, ingested, anchored = _read_locations(conn, work_tree)
             routed, not_copied = _route(
                 work_tree, source, ids, ingested, anchored,
             )
