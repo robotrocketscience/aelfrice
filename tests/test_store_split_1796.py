@@ -252,7 +252,8 @@ def test_only_beliefs_with_a_file_source_are_copied(
 def test_the_root_comes_from_the_onboard_session(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """One absolute root for every ingest row, or the belief is skipped."""
+    """Every ingest row must name one usable root, or the belief is
+    skipped as `no_root`."""
     src = _open(_source_path(repo))
     try:
         _onboard(src, repo, "s1")
@@ -265,7 +266,7 @@ def test_the_root_comes_from_the_onboard_session(
         # The same paragraph from two roots: ambiguous.
         both = _ingest(src, "doc:a/docs/y.md:p0", _text(2), "s1")
         assert _ingest(src, "doc:a/docs/y.md:p0", _text(2), "s2") == both
-        # No onboard session, and a relative root.
+        # No onboard session, and a relative root whose file isn't there.
         _ingest(src, "doc:a/docs/z.md:p0", _text(3), "no-such-session")
         _ingest(src, "doc:a/docs/w.md:p0", _text(4), "s-rel")
         _ingest(src, "doc:a/docs/v.md:p0", _text(5), None)
