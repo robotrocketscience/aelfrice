@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import store_split
 from aelfrice.cli import main
 from aelfrice.store import MemoryStore
 
@@ -130,3 +131,21 @@ def test_relative_run_from_a_removed_folder_exits_cleanly(
 
     assert payload["sentences"] == []
     assert _stored_root(db, str(payload["session_id"])) == "."
+
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def test_the_docs_name_a_removed_folder_run_as_a_relative_root() -> None:
+    # The removed-folder run above still records `.`, so no text may say
+    # that only a session recorded before #1798 holds a relative root.
+    config = (_REPO / "docs" / "user" / "CONFIG.md").read_text(encoding="utf-8")
+    assert "A session recorded before that change can hold a relative" not in config
+    assert "and in a run from a folder that was removed" in config
+    fragment = (
+        _REPO / "CHANGELOG" / "unreleased" / "1796-store-split.md"
+    ).read_text(encoding="utf-8")
+    assert "or when the run started from a removed folder" in fragment
+    doc = store_split._onboard_roots.__doc__  # pyright: ignore[reportPrivateUsage]
+    assert doc is not None
+    assert "or from a removed current folder" in doc
