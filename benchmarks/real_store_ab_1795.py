@@ -1091,11 +1091,17 @@ def write_packet(packet: Sequence[Mapping[str, Any]], key: Sequence[Mapping[str,
     # that folds case, as macOS does by default, sends `PK/` to `pk/`.
     # Check the path as given and with its symlinks resolved: a link
     # outside `out` can send the write in, and a link inside `out` stays
-    # there for the graders to read through.
+    # there for the graders to read through. The write goes through an
+    # existing key file's inode, so a hard link to it, which can lie in
+    # `out`, is refused too.
     out.mkdir(parents=True, exist_ok=True)
     spellings = (key_path.absolute(), key_path.resolve())
     if any(d.exists() and d.samefile(out) for k in spellings for d in (k, *k.parents)):
         raise InputError(f"the key {key_path} must be outside the packet directory {out}")
+    if key_path.exists() and key_path.stat().st_nlink > 1:
+        raise InputError(
+            f"the key {key_path} has another hard link, which may lie in the packet"
+            f" directory {out}; remove the old key first")
     (out / "packet.jsonl").write_text(_jsonl(packet), encoding="utf-8")
     (out / "instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
     key_path.write_text(_jsonl(key), encoding="utf-8")

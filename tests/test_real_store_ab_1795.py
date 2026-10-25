@@ -972,6 +972,24 @@ def test_a_key_path_inside_the_packet_directory_that_links_out_is_refused(
     assert not (elsewhere / "key.jsonl").exists()
 
 
+@pytest.mark.parametrize("linked", ["packet.jsonl", "old-key.jsonl"])
+def test_a_key_file_with_a_hard_link_in_the_packet_directory_is_refused(
+    tmp_path: Path, linked: str,
+) -> None:
+    # The write goes through the key's inode, which a hard link also names:
+    # the key would land in the graders' packet.jsonl, or in an old key's
+    # second name inside the packet directory.
+    packet = [{"id": "x", "prompt": "p", "belief": "b"}]
+    key: list[dict[str, Any]] = [{"id": "x", "belief_id": "B1", "arms": None}]
+    out, key_path = tmp_path / "pk", tmp_path / "key.jsonl"
+    out.mkdir()
+    key_path.write_text("old\n", encoding="utf-8")
+    os.link(key_path, out / linked)
+    with pytest.raises(bench.InputError, match="hard link"):
+        bench.write_packet(packet, key, out, key_path)
+    assert (out / linked).read_text(encoding="utf-8") == "old\n"
+
+
 def test_the_key_guard_follows_the_filesystem_case_rule(tmp_path: Path) -> None:
     # macOS folds case by default, so there `PK/key.jsonl` lands in `pk/`.
     packet = [{"id": "x", "prompt": "p", "belief": "b"}]
