@@ -1268,17 +1268,17 @@ def _pooled_key(tmp_path: Path) -> tuple[list[bench.KeyItem], dict[str, bool | N
 
 
 def test_h6_pools_the_proxy_reports_of_every_store_in_the_key(tmp_path: Path) -> None:
-    # The graders' gain is positive. s1's proxy gains -2 on its 1 prompt and
-    # s2's +1 on each of its 3. Pooled over the 4 prompts the proxy gains
-    # +1/4 and agrees with the graders. Either store alone, or the mean of
-    # the two stores' means, -1/2, would not give the same sign in both orders.
+    # s1's proxy gains -3 on its 1 prompt and s2's +1 on each of its 3.
+    # Pooled over the 4 prompts the proxy gains 0. s1 alone gives -1, s2
+    # alone +1, and the mean of the two stores' means -1.
     items, labels = _pooled_key(tmp_path)
-    s1, s2 = _proxy_report("s1", [-2]), _proxy_report("s2", [1, 1, 1])
+    s1, s2 = _proxy_report("s1", [-3]), _proxy_report("s2", [1, 1, 1])
     assert bench.proxy_gain_signs(s1, ["A3"]) == {"A3": -1}
+    assert bench.proxy_gain_signs(s2, ["A3"]) == {"A3": 1}
     for reports in ([s1, s2], [s2, s1]):
         rep = bench.score(items, labels, labels, seed=1, proxy_reports=reports)
         assert rep["hypotheses"]["H6"]["A3"] == {
-            "proxy_sign": 1, "grader_signs": [1, 1], "verdict": bench.V_AGREE}
+            "proxy_sign": 0, "grader_signs": [1, 1], "verdict": bench.V_DISAGREE}
 
 
 def test_score_refuses_a_proxy_report_that_matches_no_store_one_to_one(
