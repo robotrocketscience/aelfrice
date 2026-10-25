@@ -1328,6 +1328,36 @@ def test_no_path_starts_from_the_current_folder(
     assert json.loads(out)["work_tree"] == str(repo)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need extra rights on Windows",
+)
+def test_a_path_through_a_symlink_and_up_splits_the_folder_it_names(
+    repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`link/..` names the folder above the link's target, as the system
+    and git read it, so the split runs in that folder's work tree."""
+    _seed_pair(repo)
+    other = (env / "other").resolve()
+    (other / "sub").mkdir(parents=True)
+    _git("init", "-q", cwd=other)
+    _marker(other / "o", ".aelfrice/store")
+    (other / "o" / "docs").mkdir()
+    src = _open(_source_path(other))
+    try:
+        _onboard(src, other, "s1")
+        _ingest(src, "doc:o/docs/z.md:p0", _text(3), "s1")
+    finally:
+        src.close()
+    (repo / "b" / "link").symlink_to(other / "sub")
+    code, out, err = _run(
+        repo / "b" / "link" / "..", "--apply", "--json", capsys=capsys,
+    )
+    assert code == 0, err
+    assert json.loads(out)["work_tree"] == str(other)
+    assert (other / "o" / ".aelfrice" / "store" / "memory.db").exists()
+    assert not _target_path(repo).parent.exists()
+
+
 def test_apply_refuses_while_aelfrice_db_is_set(
     repo: Path, env: Path, capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

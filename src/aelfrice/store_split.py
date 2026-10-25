@@ -879,7 +879,9 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
 
 
 def _check_start(start: Path) -> Path:
-    """`start` as an absolute path, once git can run there.
+    """`start` as an absolute path with its symlinks resolved, once git
+    can run there. A `..` after a symlink then leads above the link's
+    target, as it does for the system and git.
 
     git fails there for a file, a missing path, or a folder it can't
     reach, so this names that problem first: `SplitRefused` for a
@@ -890,7 +892,7 @@ def _check_start(start: Path) -> Path:
     macOS, for one you can't search; that is a `SplitRefused` too.
     """
     try:
-        path = Path(os.path.abspath(start))
+        path = Path(os.path.realpath(start))
     except FileNotFoundError:
         raise SplitRefused("the current folder no longer exists") from None
     except OSError:
