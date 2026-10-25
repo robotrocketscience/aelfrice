@@ -1053,6 +1053,36 @@ def test_a_commit_under_a_folder_you_cannot_list_or_search_is_skipped(
     assert raised.value.folder == sealed
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+@pytest.mark.parametrize(
+    "mode", [0, 0o111, 0o444], ids=["sealed", "search-only", "list-only"],
+)
+def test_a_commit_under_a_folder_you_cannot_list_or_search_is_skipped_without_markers(
+    env: Path, monkeypatch: pytest.MonkeyPatch, mode: int,
+) -> None:
+    """A repository with no `[store]` table can't rule out a marker in
+    that folder either, so the commit goes to no store there too."""
+    from aelfrice import hook_commit_ingest as hk
+
+    repo = _init_repo(env / "plain")
+    monkeypatch.chdir(repo)
+    _stage(repo, "data/x.txt")
+    _stage(repo, "top.txt")
+    rev = _commit_staged(repo, _TRIPLE_MSG)
+    readable = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
+    data = repo / "data"
+    data.chmod(mode)
+    try:
+        stores = hk._commit_stores(rev, str(repo))  # pyright: ignore[reportPrivateUsage]
+    finally:
+        data.chmod(0o755)
+    assert readable == [_repo_store(repo)]
+    assert stores is None
+
+
 def test_a_merge_lands_in_the_stores_of_the_files_it_brought_in(
     marked_repo: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
