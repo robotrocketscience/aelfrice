@@ -1258,6 +1258,29 @@ def test_a_relative_path_from_a_removed_folder_is_refused(
     assert err == "aelf store split: the current folder no longer exists\n"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows can't remove the current folder",
+)
+def test_an_absolute_path_from_a_removed_folder_runs(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absolute `--path` doesn't need the current folder's path, so a
+    removed current folder doesn't stop the command."""
+    _seed_pair(repo)
+    gone = repo / "b" / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    code, out, err = _run(repo, capsys=capsys)
+    assert code == 0, err
+    assert "would copy: beliefs 1" in out
+    assert not _target_path(repo).parent.exists()
+    code, out, err = _run(repo, "--apply", capsys=capsys)
+    assert code == 0, err
+    assert "copied: beliefs 1" in out
+
+
 def _run_here(
     *flags: str, capsys: pytest.CaptureFixture[str],
 ) -> tuple[int, str, str]:
