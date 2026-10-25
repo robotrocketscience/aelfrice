@@ -75,7 +75,8 @@ transcripts beside the store they are given.
 Every arm runs with each `AELFRICE_*` and `AELF_*` variable removed from
 the environment, then sets only the variables the arm needs. The working
 directory moves to the temporary directory, which holds an empty
-`.aelfrice.toml`, so no project config reaches the resolvers.
+project config file (`config_discovery.CONFIG_FILENAME`), so no project
+config reaches the resolvers.
 
 **Retrieval call.** The hook calls `hook_search.search_for_prompt`,
 which calls `retrieve(store, query, token_budget=DEFAULT_HOOK_TOKEN_BUDGET,
@@ -144,6 +145,7 @@ from typing import Any, Final, NoReturn, cast
 
 from aelfrice import hrr_expand
 from aelfrice.bm25 import tokenize, tokenize_stemmed
+from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.dedup import (
     DEFAULT_JACCARD_MIN as DEDUP_JACCARD_MIN,
     DEFAULT_LEVENSHTEIN_MIN,
@@ -836,14 +838,14 @@ def arm_environment(arm: str, work: Path) -> Generator[None]:
     """Run the block with only `arm`'s settings reaching retrieval.
 
     Removes every `ENV_PREFIXES` variable, sets the arm's own, moves the
-    working directory to `work` (which gets an empty `.aelfrice.toml`, so
-    config discovery stops there), and sets A2's probe kinds. Everything
-    is restored on exit.
+    working directory to `work` (which gets an empty `CONFIG_FILENAME`,
+    so config discovery stops there), and sets A2's probe kinds.
+    Everything is restored on exit.
     """
     saved = {k: v for k, v in os.environ.items() if k.startswith(ENV_PREFIXES)}
     saved_cwd = Path.cwd()
     saved_kinds = hrr_expand.probe_kinds_override
-    (work / ".aelfrice.toml").write_text("", encoding="utf-8")
+    (work / CONFIG_FILENAME).write_text("", encoding="utf-8")
     try:
         for k in saved:
             del os.environ[k]

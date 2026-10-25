@@ -22,6 +22,7 @@ import pytest
 
 import aelfrice.hook as hook_mod
 from aelfrice import hrr_expand
+from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.models import (
     BELIEF_FACTUAL,
     EDGE_CONTRADICTS,
@@ -329,6 +330,17 @@ def test_a0_ignores_a_project_config_above_the_work_dir(
     assert _direct(path, query) != clean
     monkeypatch.chdir(cwd)
     assert a0() == clean
+
+
+def test_the_arm_config_file_is_named_by_the_discovery_constant(tmp_path: Path) -> None:
+    # The repo rule keeps the config file's literal name out of a module
+    # with an upward directory loop, and write_packet walks the key path's
+    # parents.
+    work = tmp_path / "w"
+    work.mkdir()
+    with bench.arm_environment(bench.ARM_A0, work):
+        assert (work / CONFIG_FILENAME).read_text(encoding="utf-8") == ""
+    assert CONFIG_FILENAME not in Path(bench.__file__).read_text(encoding="utf-8")
 
 
 def test_a1_writes_edges_on_the_copy_and_expands(tmp_path: Path) -> None:
