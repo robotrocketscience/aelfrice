@@ -456,6 +456,24 @@ def test_a_split_input_at_a_split_file_name_is_refused(
     assert moved.read_bytes() == before
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_half_directory_linked_elsewhere_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "packet.jsonl").write_text("old\n", encoding="utf-8")
+    (out / "A").symlink_to(elsewhere)
+    assert _split(keys, packets, out) == 1
+    assert f"{out / 'A'} is a link" in capsys.readouterr().err
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["packet.jsonl"]
+    assert (elsewhere / "packet.jsonl").read_text(encoding="utf-8") == "old\n"
+    assert not (out / "key.jsonl").exists()
+
+
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"

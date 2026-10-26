@@ -372,7 +372,8 @@ def write_split(
     The graders get the half directories, so the key must lie outside
     both. A half directory that links to `out` or to the other half is
     refused, as `write_packet` of the #1795 harness refuses a key in its
-    packet directory. Every file is written through any link at its
+    packet directory, and so is a half directory that links anywhere
+    else, since the files would land where it points. Every file is written through any link at its
     name, so a symlink or a second hard link at one could send a packet
     over the key, or the key into a packet; links are refused before
     anything is written. So is a split file that is one of `sources`, the
@@ -388,6 +389,8 @@ def write_split(
     for d in dirs:
         if any(p.exists() and p.samefile(d) for k in spellings for p in (k, *k.parents)):
             raise InputError(f"the key {key_path} must be outside the packet directory {d}")
+        if d.is_symlink():
+            raise InputError(f"{d} is a link; remove it before writing the split")
     files = [f for d in dirs for f in (d / PACKET_FILE, d / INSTRUCTIONS_FILE)]
     for f in (*files, key_path):
         try:
