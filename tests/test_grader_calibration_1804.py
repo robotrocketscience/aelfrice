@@ -474,6 +474,26 @@ def test_a_half_directory_linked_elsewhere_is_refused(
     assert not (out / "key.jsonl").exists()
 
 
+@pytest.mark.parametrize("leftover", ["split into A", "old key"])
+def test_a_half_directory_holding_other_files_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], leftover: str,
+) -> None:
+    # A split run with --out set to out/A by mistake leaves a key in out/A.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    if leftover == "split into A":
+        assert _split(keys, packets, out / "A") == 0
+        name = "A"
+    else:
+        (out / "A").mkdir(parents=True)
+        (out / "A" / "old-key.jsonl").write_text("{}\n", encoding="utf-8")
+        name = "old-key.jsonl"
+    capsys.readouterr()
+    assert _split(keys, packets, out) == 1
+    assert f"{out / 'A'} holds {name}; graders get this directory" in capsys.readouterr().err
+    assert not (out / "key.jsonl").exists()
+
+
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
