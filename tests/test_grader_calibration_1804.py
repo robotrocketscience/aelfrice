@@ -847,13 +847,14 @@ def test_a_pair_with_no_eligible_cuts_is_reported_unscored_and_never_chosen() ->
     assert report["verdict"] == "no qualifying combination on half A"
 
 
-def test_a_pair_with_no_eligible_cuts_sorts_after_every_scored_pair() -> None:
-    # a scores 0 on every row, so per-grader a, b and a, c have no cuts,
-    # and b, c, scored, comes first in its rule, ahead of the a and b pair.
+def test_the_a_b_pair_keeps_first_place_without_cuts() -> None:
+    # a scores 0 on every row, so per-grader a, b and a, c have no cuts. The
+    # pre-registration puts a, b first in its rule, and amendment 1 doesn't
+    # move it; a, c without cuts comes after b, c, scored.
     items, scores = _case(_full(_rows("0000000000", "3333300000", "3333300000")))
     report = cal.score(items, scores)
     order = [(c["rule"], "".join(c["pair"]), c["rank"]) for c in report["combinations"]]
-    assert order[3:] == [("per_grader", "bc", 4), ("per_grader", "ab", 5),
+    assert order[3:] == [("per_grader", "ab", 4), ("per_grader", "bc", 5),
                          ("per_grader", "ac", 6)]
     assert _combo(report, "per_grader", "bc")["cuts"] == {"b": 2, "c": 2}
     assert _combo(report, "per_grader", "ab")["halves"] is None

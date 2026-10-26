@@ -41,11 +41,12 @@ which never reaches the bar. A grader's null-arm rate is the share of
 its scored null-arm rows at or above its cut. A rule and pair qualify on
 half A when kappa reaches `KAPPA_BAR` and each grader's null-arm rate is
 at most `NULL_RATE_CEILING`. The fixed rule is tried before the
-per-grader rule. Within a rule, the a and b pair comes first, then the
-other pairs by descending half-A kappa, and a pair without cuts comes
-after every pair with them. The first qualifying combination, with its
-half-A cuts, must meet the same bars on half B. Half B alone gives the
-verdict. Everything else in the report decides nothing.
+per-grader rule. Within a rule, the a and b pair comes first, with or
+without cuts, then the other pairs by descending half-A kappa, and a
+pair without cuts after every other pair with them. The first
+qualifying combination, with its half-A cuts, must meet the same bars on
+half B. Half B alone gives the verdict. Everything else in the report
+decides nothing.
 
 **Data.** Packets, keys, and labels hold user text or ids from a real
 store. Keep them out of the repository.
@@ -627,14 +628,12 @@ def _order_key(pair: tuple[str, str], result: Mapping[str, HalfResult] | None,
                ) -> tuple[bool, bool, bool, Fraction]:
     """Sort key among the pairs of a rule.
 
-    A pair without cuts (None) comes after every pair with them. Then the
-    first pair of `PAIRS`, then the higher half-A kappa, and an undefined
-    kappa last.
+    The first pair of `PAIRS` first, with or without cuts. Then the pairs
+    with cuts by descending half-A kappa, an undefined kappa after every
+    defined one, then the pairs without cuts (None).
     """
-    if result is None:
-        return (True, False, False, Fraction(0))
-    kappa = result[HALF_A].kappa
-    return (False, pair != PAIRS[0], kappa is None,
+    kappa = None if result is None else result[HALF_A].kappa
+    return (pair != PAIRS[0], result is None, kappa is None,
             -kappa if kappa is not None else Fraction(0))
 
 
@@ -644,9 +643,10 @@ def preference_order(
     """`(rule, pair)` in the order of preference: rule order, then within a rule
     the first pair of `PAIRS`, then the others by descending half-A kappa.
 
-    A pair without cuts (None), which never qualifies, sorts after every
-    pair with cuts, in `PAIRS` order. So does an undefined kappa among the
-    pairs with cuts. Equal kappas keep `PAIRS` order."""
+    The first pair keeps its place without cuts (None), as the
+    pre-registration puts it first. Among the others, an undefined kappa
+    sorts after every defined one, and a pair without cuts, which never
+    qualifies, after every pair with cuts. Ties keep `PAIRS` order."""
     order: list[Combo] = []
     for rule in RULES:
         ranked = sorted(PAIRS, key=lambda p: _order_key(p, combos[(rule, p)]))
