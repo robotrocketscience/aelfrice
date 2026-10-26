@@ -325,6 +325,36 @@ def test_an_item_of_a_store_the_key_lacks_is_refused(tmp_path: Path) -> None:
     assert _split(keys, packets, tmp_path / "out") == 1
 
 
+def test_a_second_store_row_in_one_key_is_refused(tmp_path: Path) -> None:
+    keys, packets = _stores(tmp_path)
+    rows = _read(keys[0])
+    keys[0].write_text("".join(json.dumps(r) + "\n" for r in [*rows, rows[0]]),
+                       encoding="utf-8")
+    assert _split(keys, packets, tmp_path / "out") == 1
+
+
+def test_a_key_without_a_store_row_is_refused(tmp_path: Path) -> None:
+    keys, packets = _stores(tmp_path)
+    # An empty key and an empty packet pair with each other and add no row,
+    # so only the missing store row is wrong.
+    empty_key = tmp_path / "empty-key.jsonl"
+    empty_key.write_text("", encoding="utf-8")
+    empty_packet = tmp_path / "empty-packet"
+    empty_packet.mkdir()
+    (empty_packet / "packet.jsonl").write_text("", encoding="utf-8")
+    assert _split([*keys, empty_key], [*packets, empty_packet], tmp_path / "out") == 1
+    assert not (tmp_path / "out" / "key.jsonl").exists()
+
+
+def test_a_repeated_row_in_a_source_packet_is_refused(tmp_path: Path) -> None:
+    keys, packets = _stores(tmp_path)
+    path = packets[0] / "packet.jsonl"
+    rows = _read(path)
+    path.write_text("".join(json.dumps(r) + "\n" for r in [*rows, rows[0]]),
+                    encoding="utf-8")
+    assert _split(keys, packets, tmp_path / "out") == 1
+
+
 @pytest.mark.parametrize("name", ["A/packet.jsonl", "B/instructions.txt", "key.jsonl"])
 @pytest.mark.parametrize("link", ["symlink", "hard link"])
 def test_a_link_at_a_split_file_name_is_refused_before_any_write(
@@ -826,6 +856,17 @@ def test_score_names_the_grader_with_a_missing_or_extra_row(change: str) -> None
     else:
         scores["c"]["r9"] = 1
     with pytest.raises(InputError, match="grader c"):
+        cal.score(items, scores)
+
+
+@pytest.mark.parametrize("change", ["no grader c", "grader d"])
+def test_score_needs_graders_a_b_and_c_exactly(change: str) -> None:
+    items, scores = _case([("A", False, 3, 3, 3), ("B", False, 0, 0, 0)])
+    if change == "no grader c":
+        del scores["c"]
+    else:
+        scores["d"] = dict(scores["c"])
+    with pytest.raises(InputError, match="need scores from graders a, b, c"):
         cal.score(items, scores)
 
 
