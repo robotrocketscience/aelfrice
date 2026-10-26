@@ -1268,12 +1268,22 @@ def test_a_repeated_session1_label_id_is_refused(
     assert f"{s1b}:{len(rows) + 1}: repeats item {rows[0]['id']}" in capsys.readouterr().err
 
 
-def test_a_null_score_is_accepted(tmp_path: Path) -> None:
+def test_a_null_score_is_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Row r0 is a half-A row every grader scored 3. Grader a's null leaves
+    # it out of a's graded rows and out of the a, b kappa; read as 0, it
+    # would count as graded and not relevant.
     key, labels = _cli_case(tmp_path)
     rows = _read(labels[0])
+    assert rows[0] == {"id": "r0", "score": 3}
     rows[0]["score"] = None
     _write_labels(labels[0], rows)
     assert cal.main(["score", "--key", str(key), "--labels", *map(str, labels)]) == 0
+    half_a = _combo(json.loads(capsys.readouterr().out), "fixed", "ab")["halves"]["A"]
+    assert half_a["relevant"]["a"] == {"graded": 9, "relevant": 4, "rate": 4 / 9}
+    assert half_a["relevant"]["b"] == {"graded": 10, "relevant": 5, "rate": 0.5}
+    assert (half_a["n"], half_a["agreed"]) == (9, 9)
 
 
 def test_score_needs_three_label_files(tmp_path: Path) -> None:
