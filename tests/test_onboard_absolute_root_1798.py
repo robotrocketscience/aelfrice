@@ -123,12 +123,12 @@ def _session_count(db: Path) -> int:
         store.close()
 
 
-# `aelf onboard` with and without `--emit-candidates`; the regex
-# classifier keeps the second one off the network.
+# `aelf onboard` with `--check`, with `--emit-candidates`, and with
+# neither; the regex classifier keeps the last one off the network.
 _MODES = pytest.mark.parametrize(
     "flags",
-    [("--emit-candidates",), ("--llm-classify=false",)],
-    ids=["emit-candidates", "scan"],
+    [("--check",), ("--emit-candidates",), ("--llm-classify=false",)],
+    ids=["check", "emit-candidates", "scan"],
 )
 
 

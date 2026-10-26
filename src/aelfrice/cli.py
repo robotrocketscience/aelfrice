@@ -619,6 +619,10 @@ def _cmd_onboard_check(args: argparse.Namespace, out: object) -> int:
             file=sys.stderr,
         )
         return 2
+    refusal = _onboard_folder_refusal(args.path)
+    if refusal is not None:
+        print(f"aelf onboard: {refusal}", file=sys.stderr)
+        return 2
     repo_path = Path(args.path)
     force = bool(getattr(args, "force", False))
     store = _open_store()
