@@ -232,6 +232,19 @@ def test_a_half_short_of_min_items_is_refused(tmp_path: Path) -> None:
     assert not (out / "key.jsonl").exists()
 
 
+@pytest.mark.parametrize("min_items", [0, -5])
+def test_a_min_items_under_one_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], min_items: int,
+) -> None:
+    # Every half holds at least zero rows, so without the refusal both halves
+    # would take no prompt and the split would write empty packets.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    assert _split(keys, packets, out, min_items=min_items) == 1
+    assert "--min-items must be at least 1" in capsys.readouterr().err
+    assert not (out / "key.jsonl").exists()
+
+
 def test_the_packets_carry_only_id_prompt_and_belief(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
