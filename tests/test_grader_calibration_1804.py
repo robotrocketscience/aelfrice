@@ -550,23 +550,25 @@ def test_a_split_that_fails_writing_keeps_the_earlier_split(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]
 
 
+@pytest.mark.parametrize("moving", ["earlier", "staged"])
 def test_a_split_that_fails_moving_into_place_keeps_the_earlier_split(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moving: str,
 ) -> None:
-    # The staged split fails to take the earlier split's place, so the
-    # earlier split moves back.
+    # The earlier split fails to move aside, or the staged split fails to
+    # take its place and the earlier split moves back. Either way nothing
+    # is left beside it.
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
     assert _split(keys, packets, out) == 0
     earlier = _split_files(out)
     rename = Path.rename
 
-    def refuse_the_staged_split(self: Path, target: Any) -> Path:
-        if self.name.startswith(".out.split-"):
+    def refuse(self: Path, target: Any) -> Path:
+        if self.name.startswith(".out.split-") if moving == "staged" else self == out:
             raise OSError(16, "Device or resource busy")
         return rename(self, target)
 
-    monkeypatch.setattr(Path, "rename", refuse_the_staged_split)
+    monkeypatch.setattr(Path, "rename", refuse)
     assert _split(keys, packets, out, seed=7) == 1
     assert _split_files(out) == earlier
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]

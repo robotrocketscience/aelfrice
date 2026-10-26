@@ -431,21 +431,25 @@ def publish_split(stage: Path, out: Path) -> None:
 
     Each step is one rename. An earlier split is first moved into a new
     `.<out name>.old-*` directory beside `out`, then `stage` takes its
-    place, then the earlier split is removed. When the second rename
-    fails, the earlier split moves back. A run stopped between the two
-    renames leaves `out` missing and both whole splits beside it.
+    place, then the earlier split is removed. When either rename fails,
+    the earlier split stays at or moves back to `out` and the new
+    directory is removed. A run stopped between the two renames leaves
+    `out` missing and both whole splits beside it.
     """
     if not out.exists():
         stage.rename(out)
         return
     aside = Path(tempfile.mkdtemp(prefix=f".{out.name}.old-", dir=out.parent))
-    os.chmod(aside, OWNER_DIR)
     old = aside / out.name
-    out.rename(old)
     try:
-        stage.rename(out)
+        os.chmod(aside, OWNER_DIR)
+        out.rename(old)
+        try:
+            stage.rename(out)
+        except BaseException:
+            old.rename(out)
+            raise
     except BaseException:
-        old.rename(out)
         aside.rmdir()
         raise
     shutil.rmtree(aside)
