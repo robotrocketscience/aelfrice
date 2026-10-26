@@ -11,12 +11,13 @@ the stores, and one confirmatory test on the other half decides.
 
 - `split`: reads session-1 keys and their packet directories, and pairs
   each key with the packet that holds exactly its row ids. The stores
-  with at least one item row, in snapshot order, are shuffled with the
-  seed; the first half, rounded down, is half A and the rest is half B.
-  In each half the prompts are shuffled with the seed, and whole prompts
-  are taken in that order until the half holds `--min-items` rows. It
-  writes `A/` and `B/` under `--out`, each with `packet.jsonl` and
-  `instructions.txt` for the graders, and the hidden key `key.jsonl`
+  with at least one item row must number `--stores`, 17 by default as
+  pre-registered. In snapshot order, they are shuffled with the seed;
+  the first half, rounded down, is half A (8 of 17) and the rest is
+  half B. In each half the prompts are shuffled with the seed, and whole
+  prompts are taken in that order until the half holds `--min-items`
+  rows. It writes `A/` and `B/` under `--out`, each with `packet.jsonl`
+  and `instructions.txt` for the graders, and the hidden key `key.jsonl`
   beside them. Give each grader the `A/` and `B/` directories only.
 - `score`: three graders' scores, fitted and chosen on half A and
   tested on half B, as the next section states. With `--session1`, it
@@ -87,6 +88,8 @@ from benchmarks.real_store_ab_1795 import (
 DEFAULT_SEED: Final[int] = 1804
 DEFAULT_MIN_ITEMS: Final[int] = 2000
 """Rows each half must hold at least, in whole prompts (#1804)."""
+DEFAULT_STORES: Final[int] = 17
+"""Stores with item rows in the session-1 keys; the first 8 go to half A (#1804)."""
 
 HALF_A: Final[str] = "A"
 HALF_B: Final[str] = "B"
@@ -295,31 +298,35 @@ def sample_prompts(items: Sequence[KeyItem], seed: int, min_items: int) -> list[
 
 
 def build_split(
-    pairs: Sequence[tuple[SourceKey, SourcePacket]], seed: int, min_items: int,
+    pairs: Sequence[tuple[SourceKey, SourcePacket]], seed: int, min_items: int, stores: int,
 ) -> tuple[dict[str, list[dict[str, str]]], list[dict[str, Any]]]:
     """`({half: packet rows}, key rows)` for the paired keys and packets.
 
-    The packet rows of each half are shuffled with `seed`, so their order
-    tells neither the store nor the arm. Key rows are in half and id order.
+    InputError unless exactly `stores` stores hold item rows. The packet
+    rows of each half are shuffled with `seed`, so their order tells
+    neither the store nor the arm. Key rows are in half and id order.
     """
     if min_items < 1:
         raise InputError("--min-items must be at least 1")
+    if stores < 2:
+        raise InputError("--stores must be at least 2")
     items: list[KeyItem] = []
-    stores: dict[str, KeyStore] = {}
+    store_rows: dict[str, KeyStore] = {}
     rows: dict[str, Mapping[str, str]] = {}
     for key, packet in pairs:
-        repeated = sorted(key.stores.keys() & stores.keys())
+        repeated = sorted(key.stores.keys() & store_rows.keys())
         if repeated:
             raise InputError(f"two keys hold a store row for snapshot {repeated[0]}")
-        stores.update(key.stores)
+        store_rows.update(key.stores)
         items.extend(key.items)
         rows.update(packet.rows)
     if len({i.id for i in items}) != len(items):
         raise InputError("two keys hold the same item id")
-    make_key(items, stores)
+    make_key(items, store_rows)
     snapshots = sorted({i.snapshot for i in items})
-    if len(snapshots) < 2:
-        raise InputError("need at least two stores with item rows to split")
+    if len(snapshots) != stores:
+        raise InputError(
+            f"the keys hold {len(snapshots)} stores with item rows, not --stores {stores}")
     halves = dict(zip(HALVES, split_stores(snapshots, seed), strict=True))
     packets: dict[str, list[dict[str, str]]] = {}
     key_rows: list[dict[str, Any]] = []
@@ -645,6 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="session-1 packet directories, one per key, in any order")
     s.add_argument("--seed", type=int, default=DEFAULT_SEED)
     s.add_argument("--min-items", type=int, default=DEFAULT_MIN_ITEMS)
+    s.add_argument("--stores", type=int, default=DEFAULT_STORES,
+                   help="stores with item rows the keys must hold")
     s.add_argument("--out", type=Path, required=True,
                    help="directory for A/, B/, and key.jsonl; give graders A/ and B/ only")
     sc = sub.add_parser("score", help="fit on half A, test on half B")
@@ -660,7 +669,8 @@ def _dispatch(args: argparse.Namespace) -> None:
     if cast(str, args.cmd) == "split":
         keys = [read_source_key(p) for p in args.keys]
         packets = [read_source_packet(p) for p in args.packets]
-        halves, key_rows = build_split(pair_sources(keys, packets), args.seed, args.min_items)
+        halves, key_rows = build_split(
+            pair_sources(keys, packets), args.seed, args.min_items, args.stores)
         write_split(halves, key_rows, args.out)
         for half in HALVES:
             rows = [r for r in key_rows if r["half"] == half]

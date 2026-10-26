@@ -70,9 +70,13 @@ def _stores(root: Path, n: int = 6) -> tuple[list[Path], list[Path]]:
 
 
 def _split(keys: Sequence[Path], packets: Sequence[Path], out: Path, *,
-           seed: int = cal.DEFAULT_SEED, min_items: int = 8) -> int:
+           seed: int = cal.DEFAULT_SEED, min_items: int = 8, stores: int | None = None) -> int:
+    """Run `split`; `stores` defaults to the count of stores with item rows in `keys`."""
+    if stores is None:
+        stores = len({r["snapshot"] for r in _source_items(keys)})
     return cal.main(["split", "--keys", *map(str, keys), "--packets", *map(str, packets),
-                     "--seed", str(seed), "--min-items", str(min_items), "--out", str(out)])
+                     "--seed", str(seed), "--min-items", str(min_items),
+                     "--stores", str(stores), "--out", str(out)])
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -89,6 +93,26 @@ def _source_items(keys: Sequence[Path]) -> list[dict[str, Any]]:
 def test_the_split_defaults_are_the_pre_registered_ones() -> None:
     assert cal.DEFAULT_SEED == 1804
     assert cal.DEFAULT_MIN_ITEMS == 2000
+    assert cal.DEFAULT_STORES == 17
+    half_a, half_b = cal.split_stores([f"snap{s}" for s in range(17)], cal.DEFAULT_SEED)
+    assert (len(half_a), len(half_b)) == (8, 9)
+
+
+@pytest.mark.parametrize("stores", [5, 7, None])
+def test_a_store_count_other_than_stores_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], stores: int | None,
+) -> None:
+    # Six stores hold item rows. None leaves --stores at its default, 17.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    argv = ["split", "--keys", *map(str, keys), "--packets", *map(str, packets),
+            "--min-items", "8", "--out", str(out)]
+    if stores is not None:
+        argv += ["--stores", str(stores)]
+    assert cal.main(argv) == 1
+    assert f"hold 6 stores with item rows, not --stores {stores or 17}" in capsys.readouterr().err
+    assert not (out / "key.jsonl").exists()
+    assert cal.main([*argv, "--stores", "6"]) == 0
 
 
 def test_the_split_is_reproducible_byte_for_byte(tmp_path: Path) -> None:
@@ -143,11 +167,15 @@ def test_a_store_row_without_item_rows_joins_neither_half(tmp_path: Path) -> Non
     assert cal.split_stores(["empty", "snap0", "snap1"], cal.DEFAULT_SEED)[0] == ["empty"]
     assert {r["snapshot"] for r in rows if r["half"] == "A"} == {"snap0"}
     assert {r["snapshot"] for r in rows if r["half"] == "B"} == {"snap1"}
+    assert _split([*keys, k], [*packets, p], tmp_path / "three", min_items=1, stores=3) == 1
 
 
-def test_fewer_than_two_stores_with_rows_is_refused(tmp_path: Path) -> None:
+def test_fewer_than_two_stores_with_rows_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
     keys, packets = _stores(tmp_path, n=1)
-    assert _split(keys, packets, tmp_path / "out", min_items=1) == 1
+    assert _split(keys, packets, tmp_path / "out", min_items=1, stores=1) == 1
+    assert "--stores must be at least 2" in capsys.readouterr().err
 
 
 def test_each_half_takes_whole_prompts_in_seeded_order_until_min_items(
