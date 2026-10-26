@@ -637,11 +637,12 @@ def test_an_onboard_from_the_root_is_placed_and_one_from_a_marker_is_not(
     monkeypatch: pytest.MonkeyPatch, start: str,
 ) -> None:
     """The CONFIG.md example: `pkg/` holds a marker, and the work-tree
-    root repeats its `README.md` and `docs/index.md`. A real `onboard .`
-    from `pkg/` reaches the bar under both folders, so it names no root.
-    One from the root also reads `pkg/README.md` and `pkg/docs/index.md`,
-    which aren't under `pkg/pkg/`, so it stays under the bar there and
-    its `pkg/` beliefs are copied."""
+    root repeats its `README.md` and `docs/index.md`. An `onboard .` from
+    `pkg/` recorded before #1798, which stored the root as `.`, reaches
+    the bar under both folders, so it names no root. One from the root
+    also reads `pkg/README.md` and `pkg/docs/index.md`, which aren't
+    under `pkg/pkg/`, so it stays under the bar there and its `pkg/`
+    beliefs are copied. The scan is real; the row is rewritten to `.`."""
     _marker(repo / "pkg", ".aelfrice/pkg")
     for base, n in ((repo, 1), (repo / "pkg", 3)):
         (base / "docs").mkdir(exist_ok=True)
@@ -659,6 +660,20 @@ def test_an_onboard_from_the_root_is_placed_and_one_from_a_marker_is_not(
         ])
     finally:
         src.close()
+    conn = sqlite3.connect(_source_path(repo))
+    try:
+        ((recorded,),) = conn.execute(
+            "SELECT repo_path FROM onboard_sessions WHERE session_id = ?",
+            (started.session_id,),
+        ).fetchall()
+        assert recorded == os.path.realpath(".")
+        conn.execute(
+            "UPDATE onboard_sessions SET repo_path = '.' WHERE session_id = ?",
+            (started.session_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     sources = {s.source for s in started.sentences}
     assert sources == (
         {"doc:README.md:p0", "doc:docs/index.md:p0"}
