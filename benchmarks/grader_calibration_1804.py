@@ -24,7 +24,8 @@ the stores, and one confirmatory test on the other half decides.
   requires, it refuses a key with a half under 2,000 rows, whatever
   `--min-items` the split ran with. With `--session1`, it also reports
   how often grader a's and grader b's score at cut 2 agrees with their
-  own session-1 label.
+  own session-1 label. It refuses one file given twice to `--labels` or
+  to `--session1`.
 
 **Procedure.** Under each rule, each pair of graders gets cuts from half
 A: the fixed rule cuts every grader at 2, and the per-grader rule fits
@@ -457,6 +458,18 @@ def read_scores(path: Path) -> dict[str, int | None]:
     return scores
 
 
+def require_distinct_files(flag: str, paths: Sequence[Path]) -> None:
+    """InputError when two of `paths` are one file, by any spelling or link.
+
+    One grader's file given for two graders would agree with itself on
+    every row.
+    """
+    for n, p in enumerate(paths):
+        for q in paths[n + 1:]:
+            if p.samefile(q):
+                raise InputError(f"{flag} {p} and {q} are one file; each grader needs its own")
+
+
 def require_scores(ids: Sequence[str], scores: Mapping[str, Scores]) -> None:
     """InputError unless each grader scored exactly the key's ids."""
     wanted = set(ids)
@@ -780,6 +793,9 @@ def _dispatch(args: argparse.Namespace) -> None:
                   f" prompts={len({(r['snapshot'], r['prompt_id']) for r in rows})}"
                   f" rows={len(rows)} null={sum(1 for r in rows if r['null_arm'])}")
     else:
+        require_distinct_files("--labels", args.labels)
+        if args.session1 is not None:
+            require_distinct_files("--session1", args.session1)
         scores = {g: read_scores(p) for g, p in zip(GRADERS, args.labels, strict=True)}
         session1 = None if args.session1 is None else [read_labels(p) for p in args.session1]
         _dump(score(read_calibration_key(args.key), scores, session1), None)

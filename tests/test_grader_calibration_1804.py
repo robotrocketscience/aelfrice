@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import sys
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
@@ -1111,11 +1112,12 @@ def test_the_score_cli_prints_the_report(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     key, labels = _cli_case(tmp_path)
-    s1 = tmp_path / "s1.jsonl"
-    _write_labels(s1, [{"id": r["id"], "correct": n % 2 == 0}
-                       for n, r in enumerate(_read(key))])
+    s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
+    for s1 in (s1a, s1b):
+        _write_labels(s1, [{"id": r["id"], "correct": n % 2 == 0}
+                           for n, r in enumerate(_read(key))])
     argv = ["score", "--key", str(key), "--labels", *map(str, labels),
-            "--session1", str(s1), str(s1)]
+            "--session1", str(s1a), str(s1b)]
     assert cal.main(argv) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["verdict"] == "pass"
@@ -1266,6 +1268,41 @@ def test_a_repeated_session1_label_id_is_refused(
             "--session1", str(s1a), str(s1b)]
     assert cal.main(argv) == 1
     assert f"{s1b}:{len(rows) + 1}: repeats item {rows[0]['id']}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("spelling", [
+    "same path",
+    "dotdot path",
+    pytest.param("symlink", marks=pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX symlinks")),
+])
+def test_one_score_file_for_two_graders_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], spelling: str,
+) -> None:
+    # Grader a's file as grader b's too would agree with itself on every row.
+    key, labels = _cli_case(tmp_path)
+    if spelling == "same path":
+        again = labels[0]
+    elif spelling == "dotdot path":
+        again = tmp_path / ".." / tmp_path.name / labels[0].name
+    else:
+        again = tmp_path / "link.jsonl"
+        again.symlink_to(labels[0])
+    argv = ["score", "--key", str(key), "--labels", str(labels[0]), str(again), str(labels[2])]
+    assert cal.main(argv) == 1
+    assert f"--labels {labels[0]} and {again} are one file" in capsys.readouterr().err
+
+
+def test_one_session1_file_for_both_graders_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    key, labels = _cli_case(tmp_path)
+    s1 = tmp_path / "s1.jsonl"
+    _write_labels(s1, [{"id": r["id"], "correct": True} for r in _read(key)])
+    argv = ["score", "--key", str(key), "--labels", *map(str, labels),
+            "--session1", str(s1), str(s1)]
+    assert cal.main(argv) == 1
+    assert f"--session1 {s1} and {s1} are one file" in capsys.readouterr().err
 
 
 def test_a_null_score_is_accepted(
