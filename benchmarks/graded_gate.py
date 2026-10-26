@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -54,23 +54,32 @@ def wilson_lower(successes: int, n: int, z: float = Z_95) -> float:
 def read_labels(path: Path) -> dict[str, bool | None]:
     """{item id: True | False | None} from a JSONL file of {"id", "correct"}.
 
-    ValueError on a line that is not a JSON object or repeats an id.
+    ValueError as `parse_labels` raises it.
+    """
+    with path.open(encoding="utf-8") as f:
+        return parse_labels(f, path)
+
+
+def parse_labels(lines: Iterable[str], source: object) -> dict[str, bool | None]:
+    """{item id: True | False | None} from JSONL lines of {"id", "correct"}.
+
+    ValueError on a line that is not a JSON object or repeats an id. The
+    message names `source` and the line number.
     """
     labels: dict[str, bool | None] = {}
-    with path.open(encoding="utf-8") as f:
-        for n, line in enumerate(f, 1):
-            if not line.strip():
-                continue
-            obj: object = json.loads(line)
-            if not isinstance(obj, dict):
-                raise ValueError(f"{path}:{n}: not a JSON object")
-            row = cast(dict[str, Any], obj)
-            correct = row.get("correct")
-            if not isinstance(row.get("id"), str) or correct not in (True, False, None):
-                raise ValueError(f"{path}:{n}: need an id and correct=true|false|null")
-            if row["id"] in labels:
-                raise ValueError(f"{path}:{n}: repeats item {row['id']}")
-            labels[row["id"]] = correct
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        obj: object = json.loads(line)
+        if not isinstance(obj, dict):
+            raise ValueError(f"{source}:{n}: not a JSON object")
+        row = cast(dict[str, Any], obj)
+        correct = row.get("correct")
+        if not isinstance(row.get("id"), str) or correct not in (True, False, None):
+            raise ValueError(f"{source}:{n}: need an id and correct=true|false|null")
+        if row["id"] in labels:
+            raise ValueError(f"{source}:{n}: repeats item {row['id']}")
+        labels[row["id"]] = correct
     return labels
 
 

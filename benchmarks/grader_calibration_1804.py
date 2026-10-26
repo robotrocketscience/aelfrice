@@ -30,9 +30,10 @@ the stores, and one confirmatory test on the other half decides.
   `--min-items` the split ran with. With `--session1`, it also reports
   how often grader a's and grader b's score at cut 2 agrees with their
   own session-1 label. It refuses one file given twice to `--labels` or
-  to `--session1`. It hashes every input file before reading and again
-  after, refuses a file that changed in between, and reports each
-  file's sha256 under `sha256`.
+  to `--session1`. It reads each input file once, so a pipe such as
+  the shell's `<(...)` works, and reports the sha256 of what it read
+  under `sha256`. After reading them all, it hashes each regular file
+  again and refuses one that changed.
 
 **Procedure.** Under each rule, each pair of graders gets cuts from half
 A: the fixed rule cuts every grader at 2, and the per-grader rule fits
@@ -69,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import random
@@ -87,7 +89,7 @@ from benchmarks.graded_gate import (
     Labels,
     grader_figures,
     paired_kappa,
-    read_labels,
+    parse_labels,
     require_labels,
 )
 from benchmarks.real_store_ab_1795 import (
@@ -531,10 +533,13 @@ class CalibrationItem:
     null_arm: bool
 
 
-def read_calibration_key(path: Path) -> list[CalibrationItem]:
-    """The split's key rows; InputError on a malformed row, a repeated id, or no row."""
+def parse_calibration_key(path: Path, data: bytes) -> list[CalibrationItem]:
+    """The key rows in `data`, read from `path`.
+
+    InputError on a malformed row, a repeated id, or no row.
+    """
     items: list[CalibrationItem] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(data.decode("utf-8").splitlines(), 1):
         if not line.strip():
             continue
         obj: object = json.loads(line)
@@ -557,10 +562,13 @@ def read_calibration_key(path: Path) -> list[CalibrationItem]:
     return items
 
 
-def read_scores(path: Path) -> dict[str, int | None]:
-    """{id: 0 to 3 or None} from a JSONL file of {"id", "score"}; InputError when malformed."""
+def parse_scores(path: Path, data: bytes) -> dict[str, int | None]:
+    """{id: 0 to 3 or None} from `data`, JSONL of {"id", "score"} read from `path`.
+
+    InputError when malformed.
+    """
     scores: dict[str, int | None] = {}
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(data.decode("utf-8").splitlines(), 1):
         if not line.strip():
             continue
         obj: object = json.loads(line)
@@ -578,9 +586,25 @@ def read_scores(path: Path) -> dict[str, int | None]:
     return scores
 
 
-def file_sha256(path: Path) -> str:
-    """The hex sha256 of the file's bytes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def file_sha256(path: Path) -> str | None:
+    """The hex sha256 of the regular file `path` from its start, or None for any other file.
+
+    A pipe can be read only once. A `/dev/fd` path to a regular file can
+    open at the offset an earlier read left, so the hash seeks to 0.
+    """
+    if not stat.S_ISREG(path.stat().st_mode):
+        return None
+    with path.open("rb") as f:
+        f.seek(0)
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def require_unchanged(inputs: Mapping[str, Path], digests: Mapping[str, str]) -> None:
+    """InputError when a regular file among `inputs` no longer has the digest score read."""
+    for name, path in inputs.items():
+        now = file_sha256(path)
+        if now is not None and now != digests[name]:
+            raise InputError(f"{path} changed while score read it; run score again")
 
 
 def score_inputs(
@@ -934,15 +958,17 @@ def _dispatch(args: argparse.Namespace) -> None:
         if args.session1 is not None:
             require_distinct_files("--session1", args.session1)
         inputs = score_inputs(args.key, args.labels, args.session1)
-        before = {name: file_sha256(p) for name, p in inputs.items()}
-        scores = {g: read_scores(p) for g, p in zip(GRADERS, args.labels, strict=True)}
-        session1 = None if args.session1 is None else [read_labels(p) for p in args.session1]
-        items = read_calibration_key(args.key)
-        for name, p in inputs.items():
-            if file_sha256(p) != before[name]:
-                raise InputError(f"{p} changed while score read it; run score again")
+        data = {name: p.read_bytes() for name, p in inputs.items()}
+        digests = {name: hashlib.sha256(d).hexdigest() for name, d in data.items()}
+        items = parse_calibration_key(args.key, data["key"])
+        scores = {g: parse_scores(inputs[f"labels {g}"], data[f"labels {g}"]) for g in GRADERS}
+        session1 = None if args.session1 is None else [
+            parse_labels(io.TextIOWrapper(io.BytesIO(data[f"session1 {g}"]), encoding="utf-8"),
+                         inputs[f"session1 {g}"])
+            for g in SESSION1_GRADERS]
+        require_unchanged(inputs, digests)
         report = score(items, scores, session1)
-        report["sha256"] = before
+        report["sha256"] = digests
         _dump(report, None)
 
 

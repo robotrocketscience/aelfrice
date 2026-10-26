@@ -11,7 +11,8 @@ import os
 import random
 import stat
 import sys
-from collections.abc import Callable, Mapping, Sequence
+import threading
+from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -1565,38 +1566,94 @@ def test_one_session1_file_for_both_graders_is_refused(
 
 
 @pytest.mark.parametrize(("changed", "after"), [
-    ("key", "labels a"), ("labels b", "labels a"), ("session1 b", "labels a"),
-    ("labels a", "key"),
+    ("key", "labels a"), ("labels a", "labels c"), ("session1 a", "session1 b"),
+    ("labels b", "labels b"),
 ])
 def test_an_input_file_changed_while_score_reads_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     changed: str, after: str,
 ) -> None:
-    # Another process rewrites one file right after score reads another, so
-    # the run would mix an old file with a new one. The key is read last.
+    # Another process rewrites a file after score read it, right after score
+    # reads the same file or a later one, so the run would use bytes the file
+    # no longer holds. Score reads the key, the labels, then session 1.
     key, labels = _cli_case(tmp_path)
     s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
     for s1 in (s1a, s1b):
         _write_labels(s1, [{"id": r["id"], "correct": True} for r in _read(key)])
-    files = {"key": key, "labels a": labels[0], "labels b": labels[1], "session1 b": s1b}
+    files = {"key": key, "labels a": labels[0], "labels b": labels[1], "labels c": labels[2],
+             "session1 a": s1a, "session1 b": s1b}
     target, trigger = files[changed], files[after]
+    read_bytes = Path.read_bytes
+    rewritten: list[Path] = []
 
-    def rewrite_after(read: Callable[[Path], Any]) -> Callable[[Path], Any]:
-        def wrapped(path: Path) -> Any:
-            result = read(path)
-            if path == trigger:
-                target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-            return result
-        return wrapped
+    def rewrite_after(self: Path) -> bytes:
+        data = read_bytes(self)
+        if self == trigger and not rewritten:
+            rewritten.append(target)
+            target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        return data
 
-    monkeypatch.setattr(cal, "read_scores", rewrite_after(cal.read_scores))
-    monkeypatch.setattr(cal, "read_calibration_key", rewrite_after(cal.read_calibration_key))
+    monkeypatch.setattr(Path, "read_bytes", rewrite_after)
     argv = ["score", "--key", str(key), "--labels", *map(str, labels),
             "--session1", str(s1a), str(s1b)]
     assert cal.main(argv) == 1
+    assert rewritten
     captured = capsys.readouterr()
     assert f"{target} changed while score read it" in captured.err
     assert captured.out == ""
+
+
+def _feed(fd: int, data: bytes) -> None:
+    """Write `data` to the pipe's write end `fd`, then close it.
+
+    Closing the read end stops a write that nothing reads.
+    """
+    try:
+        with open(fd, "wb") as f:
+            f.write(data)
+    except BrokenPipeError:
+        pass
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX /dev/fd paths")
+@pytest.mark.parametrize("given", ["key", "labels a", "session1 b"])
+@pytest.mark.parametrize("kind", ["pipe", "descriptor"])
+def test_score_reads_an_input_given_as_a_pipe_or_a_descriptor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], given: str, kind: str,
+) -> None:
+    # A shell's <(...) or /dev/stdin gives score a /dev/fd path. A pipe can
+    # be read only once. Some systems open a descriptor of a regular file
+    # at its current offset, which is its end after one read.
+    key, labels = _cli_case(tmp_path)
+    s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
+    for s1 in (s1a, s1b):
+        _write_labels(s1, [{"id": r["id"], "correct": True} for r in _read(key)])
+    files = {"key": key, "labels a": labels[0], "labels b": labels[1], "labels c": labels[2],
+             "session1 a": s1a, "session1 b": s1b}
+    data = files[given].read_bytes()
+    writer = None
+    if kind == "pipe":
+        fd, w = os.pipe()
+        writer = threading.Thread(target=_feed, args=(w, data), daemon=True)
+        writer.start()
+    else:
+        fd = os.open(files[given], os.O_RDONLY)
+    files[given] = Path(f"/dev/fd/{fd}")
+    argv = ["score", "--key", str(files["key"]),
+            "--labels", *(str(files[f"labels {g}"]) for g in cal.GRADERS),
+            "--session1", str(files["session1 a"]), str(files["session1 b"])]
+    try:
+        rc = cal.main(argv)
+    finally:
+        os.close(fd)
+        if writer is not None:
+            writer.join(60)
+    assert writer is None or not writer.is_alive()
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    report = json.loads(captured.out)
+    assert report["verdict"] == "pass"
+    assert report["sha256"][given] == hashlib.sha256(data).hexdigest()
 
 
 def test_the_report_carries_each_input_file_sha256(
