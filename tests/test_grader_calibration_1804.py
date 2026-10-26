@@ -798,6 +798,40 @@ def test_the_kappa_tie_break_reads_half_a_only() -> None:
     assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 3, "b": 3}
 
 
+def test_fit_cuts_give_none_when_a_grader_calls_nothing_relevant() -> None:
+    # y's rate is 0 at every cut, from scores of 0 and from no score at all.
+    ids = ["0", "1"]
+    x = {"0": 3, "1": 1}
+    assert cal.fit_cuts(ids, x, {"0": 0, "1": 0}) is None
+    assert cal.fit_cuts(ids, {"0": None, "1": None}, x) is None
+
+
+def test_a_pair_with_no_eligible_cuts_is_reported_unscored_and_never_chosen() -> None:
+    # Every score is 0. The fixed rule's kappa is undefined, and no
+    # per-grader cut pair is eligible.
+    items, scores = _case(_rows("0000000000", "0000000000", "0000000000"))
+    report = cal.score(items, scores)
+    for combo in report["combinations"]:
+        if combo["rule"] == "per_grader":
+            assert (combo["cuts"], combo["halves"]) == (None, None)
+        else:
+            assert combo["halves"]["A"]["kappa"] is None
+    assert report["chosen"] is None
+    assert report["verdict"] == "no qualifying combination on half A"
+
+
+def test_a_pair_with_no_eligible_cuts_sorts_after_every_scored_pair() -> None:
+    # a scores 0 on every row, so per-grader a, b and a, c have no cuts,
+    # and b, c, scored, comes first in its rule, ahead of the a and b pair.
+    items, scores = _case(_rows("0000000000", "3333300000", "3333300000"))
+    report = cal.score(items, scores)
+    order = [(c["rule"], "".join(c["pair"]), c["rank"]) for c in report["combinations"]]
+    assert order[3:] == [("per_grader", "bc", 4), ("per_grader", "ab", 5),
+                         ("per_grader", "ac", 6)]
+    assert _combo(report, "per_grader", "bc")["cuts"] == {"b": 2, "c": 2}
+    assert _combo(report, "per_grader", "ab")["halves"] is None
+
+
 def test_the_cuts_are_fitted_on_half_a_only() -> None:
     # On A, a's rate is 1/2 at every cut and b's is 1/2 at cut 1, so (2, 1).
     # Over both halves a's is 2/5 and b's 3/5, 1/5, 1/5, which ties every
