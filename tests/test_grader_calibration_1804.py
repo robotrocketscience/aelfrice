@@ -860,6 +860,22 @@ def test_the_a_b_pair_keeps_first_place_without_cuts() -> None:
     assert _combo(report, "per_grader", "ab")["halves"] is None
 
 
+def test_a_pair_without_cuts_sorts_after_a_scored_pair_with_undefined_kappa() -> None:
+    # a scores 0 on every row, so per-grader a, c has no cuts. b and c score
+    # 3 on five rows a half and leave the three null-arm rows unscored, so b,
+    # c fit (2, 2) and say yes on every row both scored: kappa is undefined.
+    rows: list[Row] = [(h, k >= 5, 0, None if k >= 5 else 3, None if k >= 5 else 3)
+                       for h in "AB" for k in range(8)]
+    items, scores = _case(_full(rows))
+    report = cal.score(items, scores)
+    order = [(c["rule"], "".join(c["pair"]), c["rank"]) for c in report["combinations"]]
+    assert order[3:] == [("per_grader", "ab", 4), ("per_grader", "bc", 5),
+                         ("per_grader", "ac", 6)]
+    assert _combo(report, "per_grader", "bc")["cuts"] == {"b": 2, "c": 2}
+    assert _combo(report, "per_grader", "bc")["halves"]["A"]["kappa"] is None
+    assert _combo(report, "per_grader", "ac")["cuts"] is None
+
+
 def test_the_cuts_are_fitted_on_half_a_only() -> None:
     # On A, a's rate is 1/2 at every cut and b's is 1/2 at cut 1, so (2, 1).
     # Over both halves a's is 2/5 and b's 3/5, 1/5, 1/5, which ties every
