@@ -628,6 +628,37 @@ def test_the_split_is_owner_only_whatever_the_umask(tmp_path: Path, umask: int) 
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks and hard links")
+@pytest.mark.parametrize("link", ["symlink", "hard link"])
+def test_a_link_planted_as_split_writes_the_key_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link: str,
+) -> None:
+    # Another process plants a link at the key's path just before the open
+    # (a symlink) or just after it (a hard link). Neither gets the key rows.
+    keys, packets = _stores(tmp_path)
+    leak = tmp_path / "leak.txt"
+    real_open = os.open
+    planted: list[str] = []
+
+    def plant(path: Any, flags: int, mode: int = 0o777, **kw: Any) -> int:
+        if Path(path).name != "key.jsonl" or planted:
+            return real_open(path, flags, mode, **kw)
+        planted.append(str(path))
+        if link == "symlink":
+            Path(path).symlink_to(leak)
+            return real_open(path, flags, mode, **kw)
+        fd = real_open(path, flags, mode, **kw)
+        os.link(path, leak)
+        return fd
+
+    monkeypatch.setattr(os, "open", plant)
+    assert _split(keys, packets, tmp_path / "out") == 1
+    monkeypatch.undo()
+    assert planted
+    assert not leak.exists() or leak.read_text(encoding="utf-8") == ""
+    assert not (tmp_path / "out").exists()
+
+
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"

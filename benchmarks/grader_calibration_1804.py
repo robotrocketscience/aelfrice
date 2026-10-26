@@ -458,8 +458,15 @@ def private_dir(path: Path) -> None:
 
 
 def write_private(path: Path, text: str) -> None:
-    """Write `text` as UTF-8 to the file `path`, readable and writable by its owner only."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+    """Write `text` as UTF-8 to the file `path`, readable and writable by its owner only.
+
+    The open doesn't follow a symlink at `path` where the platform has
+    `O_NOFOLLOW`, and a file with a second hard link after the open is
+    refused before anything is written, so a link planted at `path`
+    can't take the text elsewhere.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
                  OWNER_FILE)
     try:
         f = os.fdopen(fd, "w", encoding="utf-8")
@@ -467,6 +474,8 @@ def write_private(path: Path, text: str) -> None:
         os.close(fd)
         raise
     with f:
+        if os.fstat(f.fileno()).st_nlink > 1:
+            raise InputError(f"{path} gained a second link as split wrote it")
         if hasattr(os, "fchmod"):
             os.fchmod(f.fileno(), OWNER_FILE)
         f.write(text)
