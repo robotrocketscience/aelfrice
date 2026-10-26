@@ -718,6 +718,26 @@ def test_fit_cuts_skip_null_scores() -> None:
     assert cal.relevant_rate(ids, {"0": 3, "1": 0, "2": None}, 2) == Fraction(1, 2)
 
 
+def test_fit_cuts_skip_a_cut_pair_where_both_rates_are_zero() -> None:
+    # Both graders' rates are 1/2 at cut 1 and 0 at cuts 2 and 3. (2, 2)
+    # would match at 0 and sit on (2, 2); (1, 1) is the one eligible pair.
+    ids = ["0", "1"]
+    x = {"0": 1, "1": 0}
+    assert cal.fit_cuts(ids, x, dict(x)) == (1, 1)
+
+
+def test_fit_cuts_skip_a_cut_pair_where_one_rate_is_zero() -> None:
+    # x's rates: 1, 1/4, 1/4. y's: 1/2, 0, 0. With y at cut 1, (2, 1) differs
+    # by 1/4 at distance 1. (2, 2) also differs by 1/4, at distance 0, but
+    # y's rate there is 0. Each order of the graders puts the zero rate on
+    # the other side of the pair.
+    ids = ["0", "1", "2", "3"]
+    x = {"0": 1, "1": 1, "2": 1, "3": 3}
+    y = {"0": 1, "1": 1, "2": 0, "3": 0}
+    assert cal.fit_cuts(ids, x, y) == (2, 1)
+    assert cal.fit_cuts(ids, y, x) == (1, 2)
+
+
 def test_the_cuts_are_fitted_on_half_a_only() -> None:
     # On A, a's rate is 1/2 at every cut and b's is 1/2 at cut 1, so (2, 1).
     # Over both halves a's is 2/5 and b's 3/5, 1/5, 1/5, which ties every
