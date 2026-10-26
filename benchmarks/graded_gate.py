@@ -12,7 +12,8 @@ The verdict is `insufficient` until each grader has graded at least
 grader's precision reaches `BAR`, and `fail` otherwise.
 
 Label files are JSONL, one `{"id": str, "correct": true|false|null}`
-object per line. A line that is not such an object is refused.
+object per line. A line that is not such an object, or that repeats an
+id, is refused.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def wilson_lower(successes: int, n: int, z: float = Z_95) -> float:
 def read_labels(path: Path) -> dict[str, bool | None]:
     """{item id: True | False | None} from a JSONL file of {"id", "correct"}.
 
-    ValueError on a line that is not a JSON object.
+    ValueError on a line that is not a JSON object or repeats an id.
     """
     labels: dict[str, bool | None] = {}
     with path.open(encoding="utf-8") as f:
@@ -67,6 +68,8 @@ def read_labels(path: Path) -> dict[str, bool | None]:
             correct = row.get("correct")
             if not isinstance(row.get("id"), str) or correct not in (True, False, None):
                 raise ValueError(f"{path}:{n}: need an id and correct=true|false|null")
+            if row["id"] in labels:
+                raise ValueError(f"{path}:{n}: repeats item {row['id']}")
             labels[row["id"]] = correct
     return labels
 

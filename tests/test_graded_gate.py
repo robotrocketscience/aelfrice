@@ -71,3 +71,13 @@ def test_read_labels_refuses_a_line_that_is_not_an_object(tmp_path: Path, line: 
                     encoding="utf-8")
     with pytest.raises(ValueError, match=r"a\.jsonl:2: not a JSON object"):
         gg.read_labels(path)
+
+
+def test_read_labels_refuses_a_repeated_id(tmp_path: Path) -> None:
+    # A regraded row appended to the file would otherwise replace the first.
+    path = tmp_path / "a.jsonl"
+    rows = [{"id": "i0", "correct": True}, {"id": "i1", "correct": None},
+            {"id": "i0", "correct": False}]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"a\.jsonl:3: repeats item i0"):
+        gg.read_labels(path)
