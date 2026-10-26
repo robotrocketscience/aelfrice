@@ -457,6 +457,17 @@ def test_kappa_leaves_out_a_row_either_grader_scored_null() -> None:
     assert (fig["n"], fig["kappa"]) == (2, 1.0)
 
 
+def test_raw_agreement_counts_the_rows_both_graders_scored() -> None:
+    # Five rows, two with a null score: a and b agree on 2 of the 3 rows
+    # both scored, so 2/3, the rows kappa reads. Over all five it would be 2/5.
+    rows: list[Row] = [("A", False, 3, 3, 0), ("A", False, 0, 0, 0), ("A", False, 3, 0, 0),
+                       ("A", False, None, 3, 0), ("A", True, 0, None, 0)]
+    items, scores = _case(rows)
+    fig = cal.half_result(items, "A", ("a", "b"), (2, 2), scores).figures
+    assert (fig["rows"], fig["n"], fig["agreed"]) == (5, 3, 2)
+    assert math.isclose(fig["raw_agreement"], 2 / 3)
+
+
 def test_weighted_kappa_matches_a_hand_computed_value() -> None:
     # Scores (0,0) (1,2) (2,2) (3,3): the squared differences sum to 1, so the
     # observed mean is 1/4. Marginals x {0,1,2,3}: 1 each, y {0: 1, 2: 2, 3: 1};
