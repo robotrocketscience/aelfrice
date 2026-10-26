@@ -25,22 +25,25 @@ the stores, and one confirmatory test on the other half decides.
   agrees with their own session-1 label.
 
 **Procedure.** Under each rule, each pair of graders gets cuts from half
-A: the fixed rule cuts every grader at 2, and the per-grader rule takes
-the cuts in {1, 2, 3} whose relevant rates on half A differ least, a tie
-going to the cuts nearest (2, 2). The pre-registration breaks no tie
-past that, so when one remains and the choice reaches that pair, `score`
-refuses rather than pick. Kappa counts the rows both graders scored,
-each score read at its grader's cut. When both graders give all those
-rows one label, chance agreement is 1 and kappa is undefined, which
-never reaches the bar. A grader's null-arm rate is the share of its
-scored null-arm rows at or above its cut. A rule and pair qualify on
+A: the fixed rule cuts every grader at 2, and the per-grader rule fits
+cuts in {1, 2, 3} as amendment 1 of the pre-registration reads it. A cut
+pair is eligible when both graders' relevant rates on half A at their
+cuts are above 0. Among eligible pairs the fit takes the least rate
+difference, then the least summed distance to (2, 2), then the higher
+half-A kappa, then the lexicographically smaller cuts. A pair of graders
+with no eligible cuts is reported without cuts or figures and doesn't
+qualify under the per-grader rule. Kappa counts the rows both graders
+scored, each score read at its grader's cut. When both graders give all
+those rows one label, chance agreement is 1 and kappa is undefined,
+which never reaches the bar. A grader's null-arm rate is the share of
+its scored null-arm rows at or above its cut. A rule and pair qualify on
 half A when kappa reaches `KAPPA_BAR` and each grader's null-arm rate is
 at most `NULL_RATE_CEILING`. The fixed rule is tried before the
-per-grader rule. Within a rule, the a and b pair comes first,
-then the other pairs by descending half-A kappa. The first qualifying
-combination, with its half-A cuts, must meet the same bars on half B.
-Half B alone gives the verdict. Everything else in the report decides
-nothing.
+per-grader rule. Within a rule, the a and b pair comes first, then the
+other pairs by descending half-A kappa, and a pair without cuts comes
+after every pair with them. The first qualifying combination, with its
+half-A cuts, must meet the same bars on half B. Half B alone gives the
+verdict. Everything else in the report decides nothing.
 
 **Data.** Packets, keys, and labels hold user text or ids from a real
 store. Keep them out of the repository.
@@ -486,23 +489,41 @@ def relevant_rate(ids: Sequence[str], scores: Scores, cut: int) -> Fraction:
     return Fraction(sum(1 for s in graded if s >= cut), len(graded)) if graded else Fraction(0)
 
 
-def fit_cuts(ids: Sequence[str], x: Scores, y: Scores) -> list[tuple[int, int]]:
-    """Per-grader rule: the cuts whose relevant rates over `ids` differ least.
+def cut_kappa(
+    ids: Sequence[str], lx: Mapping[str, bool | None], ly: Mapping[str, bool | None],
+) -> Fraction | None:
+    """Exact kappa of two graders' labels over `ids`, or None when it is undefined.
 
-    A tie goes to the cuts nearest `CUT_TIE_TARGET`. Every pair still tied
-    after that is returned, in lexicographic order; more than one means
-    the pre-registration leaves the cuts open.
+    With no row both scored, or one label from both graders on every row,
+    chance agreement is 1 and kappa is 0/0. `exact_kappa` gives 0 and 1
+    there, and a 1 would pass a rule that calls no row relevant.
+    """
+    both = [i for i in ids if lx[i] is not None and ly[i] is not None]
+    values = {lx[i] for i in both} | {ly[i] for i in both}
+    return None if len(values) < 2 else exact_kappa(ids, lx, ly)
+
+
+def fit_cuts(ids: Sequence[str], x: Scores, y: Scores) -> tuple[int, int] | None:
+    """Per-grader rule: the cuts for graders `x` and `y` over `ids`, or None.
+
+    A cut pair is eligible when both graders' relevant rates at their cuts
+    are above 0. Among eligible pairs the fit takes the least rate
+    difference, then the least summed absolute distance to
+    `CUT_TIE_TARGET`, then the higher kappa, an undefined kappa ranking
+    below every defined one, then the lexicographically smaller cuts.
+    None when no cut pair is eligible.
     """
     rx = {c: relevant_rate(ids, x, c) for c in CUTS}
     ry = {c: relevant_rate(ids, y, c) for c in CUTS}
     tx, ty = CUT_TIE_TARGET
 
-    def rank(c: tuple[int, int]) -> tuple[Fraction, int]:
-        return abs(rx[c[0]] - ry[c[1]]), abs(c[0] - tx) + abs(c[1] - ty)
+    def rank(c: tuple[int, int]) -> tuple[Fraction, int, bool, Fraction, tuple[int, int]]:
+        kappa = cut_kappa(ids, binarize(x, c[0]), binarize(y, c[1]))
+        return (abs(rx[c[0]] - ry[c[1]]), abs(c[0] - tx) + abs(c[1] - ty),
+                kappa is None, -kappa if kappa is not None else Fraction(0), c)
 
-    pairs = [(cx, cy) for cx in CUTS for cy in CUTS]
-    best = min(rank(c) for c in pairs)
-    return [c for c in pairs if rank(c) == best]
+    eligible = [(cx, cy) for cx in CUTS for cy in CUTS if rx[cx] > 0 and ry[cy] > 0]
+    return min(eligible, key=rank) if eligible else None
 
 
 def weighted_kappa(pairs: Sequence[tuple[int, int]]) -> float:
@@ -547,11 +568,7 @@ def half_result(
     lx, ly = binarize(scores[gx], cx), binarize(scores[gy], cy)
     float_kappa, n, agreed = paired_kappa(ids, lx, ly)
     both = [i for i in ids if lx[i] is not None and ly[i] is not None]
-    # With no row both scored, or one label from both graders on every row,
-    # chance agreement is 1 and kappa is 0/0. `exact_kappa` gives 0 and 1
-    # there, and a 1 would pass a rule that calls no row relevant.
-    values = {lx[i] for i in both} | {ly[i] for i in both}
-    kappa = None if len(values) < 2 else exact_kappa(ids, lx, ly)
+    kappa = cut_kappa(ids, lx, ly)
     x_only = sum(1 for i in both if lx[i] and not ly[i])
     y_only = sum(1 for i in both if ly[i] and not lx[i])
     disagreed = x_only + y_only
@@ -589,16 +606,19 @@ Combo = tuple[str, tuple[str, str]]
 """A rule and a pair of graders."""
 
 
-def _order_key(result: Mapping[str, HalfResult] | None) -> tuple[bool, bool, Fraction]:
-    """Sort key among the other pairs of a rule.
+def _order_key(pair: tuple[str, str], result: Mapping[str, HalfResult] | None,
+               ) -> tuple[bool, bool, bool, Fraction]:
+    """Sort key among the pairs of a rule.
 
-    Open cuts (None) come first, since their kappa could be the highest.
-    Then the higher half-A kappa, and an undefined kappa last.
+    A pair without cuts (None) comes after every pair with them. Then the
+    first pair of `PAIRS`, then the higher half-A kappa, and an undefined
+    kappa last.
     """
     if result is None:
-        return (False, False, Fraction(0))
+        return (True, False, False, Fraction(0))
     kappa = result[HALF_A].kappa
-    return (True, kappa is None, -(kappa or Fraction(0)))
+    return (False, pair != PAIRS[0], kappa is None,
+            -kappa if kappa is not None else Fraction(0))
 
 
 def preference_order(
@@ -607,35 +627,23 @@ def preference_order(
     """`(rule, pair)` in the order of preference: rule order, then within a rule
     the first pair of `PAIRS`, then the others by descending half-A kappa.
 
-    An undefined kappa never qualifies, so where it sorts changes no choice.
-    A combination with open cuts (None) sorts ahead of the other pairs, so
-    `choose` reaches it before any pair it might outrank."""
+    A pair without cuts (None), which never qualifies, sorts after every
+    pair with cuts, in `PAIRS` order. So does an undefined kappa among the
+    pairs with cuts. Equal kappas keep `PAIRS` order."""
     order: list[Combo] = []
     for rule in RULES:
-        first, *rest = PAIRS
-        rest = sorted(rest, key=lambda p: _order_key(combos[(rule, p)]))
-        order.extend((rule, p) for p in (first, *rest))
+        ranked = sorted(PAIRS, key=lambda p: _order_key(p, combos[(rule, p)]))
+        order.extend((rule, p) for p in ranked)
     return order
 
 
 def choose(
     order: Sequence[Combo], combos: Mapping[Combo, Mapping[str, HalfResult] | None],
-    cuts_of: Mapping[Combo, Sequence[tuple[int, int]]],
 ) -> Combo | None:
-    """The first combination of `order` that qualifies on half A, or None.
-
-    InputError when the walk reaches a combination with open cuts, since
-    the pre-registration does not break that tie.
-    """
+    """The first combination of `order` with cuts that qualifies on half A, or None."""
     for combo in order:
         result = combos[combo]
-        if result is None:
-            (gx, gy), tied = combo[1], cuts_of[combo]
-            raise InputError(
-                f"the per-grader cuts of grader {gx} and grader {gy} tie at"
-                f" {', '.join(map(str, tied))}, and the pre-registration does not"
-                " say which to take")
-        if result[HALF_A].meets_bars:
+        if result is not None and result[HALF_A].meets_bars:
             return combo
     return None
 
@@ -671,41 +679,35 @@ def score(
     require_disjoint_halves(items)
     ids_a = [i.id for i in items if i.half == HALF_A]
     combos: dict[Combo, dict[str, HalfResult] | None] = {}
-    cuts_of: dict[Combo, list[tuple[int, int]]] = {}
+    cuts_of: dict[Combo, tuple[int, int] | None] = {}
     for rule in RULES:
         for pair in PAIRS:
-            tied = ([(FIXED_CUT, FIXED_CUT)] if rule == RULE_FIXED
+            cuts = ((FIXED_CUT, FIXED_CUT) if rule == RULE_FIXED
                     else fit_cuts(ids_a, scores[pair[0]], scores[pair[1]]))
-            cuts_of[(rule, pair)] = tied
-            combos[(rule, pair)] = None if len(tied) > 1 else {
-                h: half_result(items, h, pair, tied[0], scores) for h in HALVES}
+            cuts_of[(rule, pair)] = cuts
+            combos[(rule, pair)] = None if cuts is None else {
+                h: half_result(items, h, pair, cuts, scores) for h in HALVES}
     order = preference_order(combos)
-    chosen = choose(order, combos, cuts_of)
-    if chosen is None:
-        verdict = V_NONE
-    else:
-        picked = combos[chosen]
-        verdict = V_PASS if picked is not None and picked[HALF_B].meets_bars else V_FAIL
+    chosen = choose(order, combos)
+    picked = None if chosen is None else combos[chosen]
+    verdict = V_NONE if picked is None else V_PASS if picked[HALF_B].meets_bars else V_FAIL
     report_combos: list[dict[str, Any]] = []
-    for rank, (rule, pair) in enumerate(order, 1):
-        tied = cuts_of[(rule, pair)]
-        result = combos[(rule, pair)]
-        entry: dict[str, Any] = {"rank": rank, "rule": rule, "pair": list(pair)}
-        if result is None:
-            # Open cuts the choice never reached: reported, not scored.
-            entry.update(cuts=None, halves=None,
-                         tied_cuts=[dict(zip(pair, c, strict=True)) for c in tied])
-        else:
-            entry.update(cuts=dict(zip(pair, tied[0], strict=True)),
-                         halves={h: result[h].figures for h in HALVES})
-        report_combos.append(entry)
+    for rank, combo in enumerate(order, 1):
+        rule, pair = combo
+        cuts, result = cuts_of[combo], combos[combo]
+        # A pair with no eligible per-grader cuts is reported, not scored.
+        report_combos.append({
+            "rank": rank, "rule": rule, "pair": list(pair),
+            "cuts": None if cuts is None else dict(zip(pair, cuts, strict=True)),
+            "halves": None if result is None else {h: result[h].figures for h in HALVES},
+        })
     report: dict[str, Any] = {
         "rows": {h: sum(1 for i in items if i.half == h) for h in HALVES},
         "null_rows": {h: sum(1 for i in items if i.half == h and i.null_arm) for h in HALVES},
         "combinations": report_combos,
         "chosen": None if chosen is None else {
             "rule": chosen[0], "pair": list(chosen[1]),
-            "cuts": dict(zip(chosen[1], cuts_of[chosen][0], strict=True)),
+            "cuts": report_combos[order.index(chosen)]["cuts"],
         },
         "verdict": verdict,
         "bars": {"kappa": KAPPA_BAR, "null_rate_ceiling": NULL_RATE_CEILING,

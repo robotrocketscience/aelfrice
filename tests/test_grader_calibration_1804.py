@@ -648,25 +648,20 @@ def test_kappa_is_undefined_when_both_graders_give_every_row_one_label() -> None
 
 
 def test_a_rule_that_calls_no_row_relevant_never_qualifies() -> None:
-    # Nobody scores 3. a scores 2 on rows 0 to 4, b on rows 5 to 7, c scores
-    # 1 everywhere. Rates at cuts 1, 2, 3: a 1/2, 1/2, 0; b 3/10, 3/10, 0;
-    # c 1, 0, 0. Every fixed pair has kappa under 0 or exactly 0. The
-    # per-grader fit gives a, b (3, 3), and a, c and b, c (3, 2): the rates
-    # match at 0, and every label is "not relevant". Read as kappa 1, a, b
-    # would qualify on half A and pass on half B.
-    a, b, c = "2222200000", "0000022200", "1111111111"
-    rows: list[Row] = [(h, k >= 7, int(a[k]), int(b[k]), int(c[k]))
-                       for h in "AB" for k in range(10)]
-    items, scores = _case(rows)
+    # Every grader scores 1 on rows 0 to 4 and 0 elsewhere, null-arm rows
+    # included. At the fixed cut no row is relevant, so every label is "not
+    # relevant" and kappa is undefined; read as kappa 1, fixed a, b would
+    # qualify. Per-grader cuts can only be (1, 1), the one cut pair at which
+    # both rates are above 0, and there the graders agree on every row.
+    items, scores = _case(_rows("1111100000", "1111100000", "1111100000"))
     report = cal.score(items, scores)
-    assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 3, "b": 3}
-    assert _combo(report, "per_grader", "ac")["cuts"] == {"a": 3, "c": 2}
     for combo in report["combinations"]:
-        if combo["rule"] == "per_grader":
+        if combo["rule"] == "fixed":
             assert combo["halves"]["A"]["kappa"] is None
-        assert not combo["halves"]["A"]["meets_bars"]
-    assert report["chosen"] is None
-    assert report["verdict"] == "no qualifying combination on half A"
+            assert not combo["halves"]["A"]["meets_bars"]
+    assert report["chosen"] == {"rule": "per_grader", "pair": ["a", "b"],
+                                "cuts": {"a": 1, "b": 1}}
+    assert report["verdict"] == "pass"
 
 
 def test_an_undefined_kappa_sorts_after_every_defined_one() -> None:
@@ -703,7 +698,7 @@ def test_an_exact_kappa_on_the_bar_qualifies_where_the_float_falls_under() -> No
 def test_fit_cuts_takes_the_least_rate_difference() -> None:
     # a's rates at cuts 1, 2, 3: 1/2, 1/2, 1/2. b's: 1/2, 0, 0.
     ids = ["0", "1"]
-    assert cal.fit_cuts(ids, {"0": 3, "1": 0}, {"0": 1, "1": 0}) == [(2, 1)]
+    assert cal.fit_cuts(ids, {"0": 3, "1": 0}, {"0": 1, "1": 0}) == (2, 1)
 
 
 def test_fit_cuts_breaks_a_tie_toward_two_two() -> None:
@@ -712,26 +707,14 @@ def test_fit_cuts_breaks_a_tie_toward_two_two() -> None:
     ids = ["0", "1", "2", "3"]
     a = {"0": 0, "1": 1, "2": 2, "3": 3}
     b = {"0": 0, "1": 0, "2": 0, "3": 3}
-    assert cal.fit_cuts(ids, a, b) == [(3, 2)]
-    assert cal.fit_cuts(ids, a, a) == [(2, 2)]
-
-
-def test_fit_cuts_returns_every_pair_still_tied_after_the_nearest_rule() -> None:
-    # a's rates: 1, 0, 0. b's: 1, 1, 0. (1, 1), (1, 2), (2, 3), and (3, 3)
-    # match; (1, 2) and (2, 3) are both one step from (2, 2).
-    ids = ["0", "1"]
-    assert cal.fit_cuts(ids, {"0": 1, "1": 1}, {"0": 2, "1": 2}) == [(1, 2), (2, 3)]
-    # x's rates 9/10, 6/10, 2/10, y's 9/10, 3/10, 2/10: (1, 1) and (3, 3)
-    # match, both two steps from (2, 2). At (1, 1) kappa is 1, at (3, 3) -1/4,
-    # so the pick would decide the 0.60 bar.
-    x, y = _digits("0111222233"), _digits("0111331112")
-    assert cal.fit_cuts(list(x), x, y) == [(1, 1), (3, 3)]
+    assert cal.fit_cuts(ids, a, b) == (3, 2)
+    assert cal.fit_cuts(ids, a, a) == (2, 2)
 
 
 def test_fit_cuts_skip_null_scores() -> None:
     # a's null row would halve its rate if it counted as not relevant.
     ids = ["0", "1", "2"]
-    assert cal.fit_cuts(ids, {"0": 3, "1": 0, "2": None}, {"0": 3, "1": 0, "2": 0}) == [(2, 2)]
+    assert cal.fit_cuts(ids, {"0": 3, "1": 0, "2": None}, {"0": 3, "1": 0, "2": 0}) == (2, 2)
     assert cal.relevant_rate(ids, {"0": 3, "1": 0, "2": None}, 2) == Fraction(1, 2)
 
 
@@ -817,65 +800,10 @@ def test_the_fixed_cut_comes_before_per_grader_cuts() -> None:
     assert report["chosen"]["rule"] == "fixed"
 
 
-def _digits(scores: str) -> dict[str, int | None]:
-    return {str(k): int(s) for k, s in enumerate(scores)}
-
-
 def _rows(a: str, b: str, c: str, *, null: str = "0000000111") -> list[Row]:
     """The same ten rows on both halves, from one digit per score."""
     return [(h, null[k] == "1", int(a[k]), int(b[k]), int(c[k]))
             for h in "AB" for k in range(10)]
-
-
-def test_score_refuses_when_the_first_pair_has_tied_cuts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    # a and b hold the x and y scores of the fit_cuts tie test; c scores 0.
-    # No fixed pair qualifies, so the choice reaches per-grader a, b first.
-    items, scores = _case(_rows("0111222233", "0111331112", "0000000000"))
-    key = tmp_path / "key.jsonl"
-    _write_key(key, items)
-    labels: list[Path] = []
-    for g in cal.GRADERS:
-        labels.append(tmp_path / f"{g}.jsonl")
-        _write_labels(labels[-1], [{"id": i, "score": s} for i, s in scores[g].items()])
-    assert cal.main(["score", "--key", str(key), "--labels", *map(str, labels)]) == 1
-    err = capsys.readouterr().err
-    assert "the per-grader cuts of grader a and grader b tie at (1, 1), (3, 3)" in err
-
-
-def test_score_refuses_when_the_walk_reaches_tied_cuts_of_an_other_pair() -> None:
-    # No fixed pair qualifies. Per-grader a, b fits (2, 1) and fails at 7/12;
-    # b, c fits (2, 3) and qualifies at 1. a, c ties at (2, 1) and (3, 2):
-    # a's rates are 7/10, 6/10, 5/10 and c's 6/10, 5/10, 2/10. Its kappa is
-    # open, so it sorts ahead of b, c, and the walk refuses there.
-    items, scores = _case(_rows("3302300331", "2131100100", "3232100200"))
-    with pytest.raises(InputError, match=r"grader a and grader c tie at \(2, 1\), \(3, 2\)"):
-        cal.score(items, scores)
-
-
-def test_tied_cuts_the_choice_never_reaches_are_reported_unscored() -> None:
-    # Fixed a, b agree on every row and qualify. Per-grader b, c is the tie
-    # of the fit_cuts test, but the choice stops before the per-grader rule.
-    items, scores = _case(_rows("0000333333", "0111222233", "0111331112", null="1111000000"))
-    report = cal.score(items, scores)
-    assert report["chosen"] == {"rule": "fixed", "pair": ["a", "b"], "cuts": {"a": 2, "b": 2}}
-    assert report["verdict"] == "pass"
-    bc = _combo(report, "per_grader", "bc")
-    assert (bc["cuts"], bc["halves"]) == (None, None)
-    assert bc["tied_cuts"] == [{"b": 1, "c": 1}, {"b": 3, "c": 3}]
-
-
-def test_the_first_pair_is_chosen_past_an_other_pair_with_tied_cuts() -> None:
-    # No fixed pair qualifies. Per-grader a, b fits (3, 2) and qualifies at
-    # 8/13; b, c ties at (1, 2) and (2, 3), but a, b comes first.
-    items, scores = _case(_rows("3123010110", "1013001010", "2121121231"))
-    report = cal.score(items, scores)
-    assert report["chosen"] == {"rule": "per_grader", "pair": ["a", "b"],
-                                "cuts": {"a": 3, "b": 2}}
-    assert math.isclose(_combo(report, "per_grader", "ab")["halves"]["A"]["kappa"], 8 / 13)
-    assert _combo(report, "per_grader", "bc")["tied_cuts"] == [
-        {"b": 1, "c": 2}, {"b": 2, "c": 3}]
 
 
 def _per_grader_rows(half: str) -> list[Row]:
@@ -927,7 +855,11 @@ def test_half_a_alone_chooses_and_a_failed_half_a_never_reaches_half_b() -> None
                          for k in range(10)]
     items, scores = _case([*a_rows, *_pattern("B", "1111100000", "1111100000", "1111100000")])
     report = cal.score(items, scores)
-    assert all(c["halves"]["B"]["meets_bars"] for c in report["combinations"])
+    # With no score on A, c has no per-grader cuts, so only the pairs with
+    # cuts carry figures.
+    scored = [c for c in report["combinations"] if c["cuts"] is not None]
+    assert len(scored) == 4
+    assert all(c["halves"]["B"]["meets_bars"] for c in scored)
     assert report["chosen"] is None
     assert report["verdict"] == "no qualifying combination on half A"
 
