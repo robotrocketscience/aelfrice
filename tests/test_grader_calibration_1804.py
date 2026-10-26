@@ -506,6 +506,38 @@ def test_a_null_arm_rate_on_the_ceiling_meets_it_and_one_row_more_does_not() -> 
     assert not cal.half_result(items, "A", ("a", "b"), (2, 2), scores).meets_bars
 
 
+def test_the_null_arm_ceiling_divides_by_the_graded_null_arm_rows() -> None:
+    # a and b score the five null-arm rows 3, 0, 0, null, null: one of three
+    # graded rows is 1/3, over the ceiling. Over all five rows it would be
+    # 1/5, on the ceiling.
+    perfect = [("A", False, 3, 3, 3)] * 5 + [("A", False, 0, 0, 0)] * 5
+    rows: list[Row] = [*perfect, ("A", True, 3, 3, 0), *[("A", True, 0, 0, 0)] * 2,
+                       *[("A", True, None, None, 0)] * 2]
+    items, scores = _case(rows)
+    result = cal.half_result(items, "A", ("a", "b"), (2, 2), scores)
+    assert result.kappa == 1
+    assert not result.meets_bars
+
+
+def test_each_half_reads_only_its_own_null_arm_rows() -> None:
+    # Both halves agree on every row. Half A's five null-arm rows score 0;
+    # half B scores 3 on two of its five, a rate of 2/5 that fails the
+    # ceiling. Pooled over both halves it would be 2/10, on the ceiling.
+    perfect = [(3, 3, 3)] * 5 + [(0, 0, 0)] * 5
+    rows: list[Row] = [
+        *[("A", False, *s) for s in perfect], *[("A", True, 0, 0, 0)] * 5,
+        *[("B", False, *s) for s in perfect], *[("B", True, 3, 3, 3)] * 2,
+        *[("B", True, 0, 0, 0)] * 3,
+    ]
+    items, scores = _case(rows)
+    report = cal.score(items, scores)
+    ab = _combo(report, "fixed", "ab")["halves"]
+    assert ab["A"]["null_arm"]["a"] == {"graded": 5, "called_relevant": 0, "rate": 0.0}
+    assert ab["B"]["null_arm"]["a"] == {"graded": 5, "called_relevant": 2, "rate": 0.4}
+    assert report["chosen"] == {"rule": "fixed", "pair": ["a", "b"], "cuts": {"a": 2, "b": 2}}
+    assert report["verdict"] == "fail"
+
+
 def test_no_graded_null_arm_row_fails_the_ceiling() -> None:
     rows: list[Row] = [("A", False, 3, 3, 0), ("A", False, 0, 0, 0), ("A", True, None, 0, 0)]
     items, scores = _case(rows)
