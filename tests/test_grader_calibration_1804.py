@@ -464,6 +464,19 @@ def _case(
     return items, scores
 
 
+def _full(rows: Sequence[Row]) -> list[Row]:
+    """`rows`, each half topped up to the pre-registered size with rows no grader scored.
+
+    A row every grader left null, off the null arm, enters no kappa, rate,
+    or agreement, so only the row counts change.
+    """
+    pad: list[Row] = []
+    for half in cal.HALVES:
+        short = cal.DEFAULT_MIN_ITEMS - sum(1 for r in rows if r[0] == half)
+        pad += [(half, False, None, None, None)] * short
+    return [*rows, *pad]
+
+
 def _pattern(half: str, a: str, b: str, c: str, *, null: str = "0000000111") -> list[Row]:
     """Rows from 0/1 strings, 1 scored 3 and 0 scored 0; `null` marks null-arm rows."""
     return [(half, null[k] == "1", 3 * int(a[k]), 3 * int(b[k]), 3 * int(c[k]))
@@ -495,7 +508,8 @@ def test_the_bars_are_the_pre_registered_values() -> None:
 
 
 def test_kappa_matches_the_hand_computed_values() -> None:
-    items, scores = _case([*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")])
+    items, scores = _case(_full(
+        [*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")]))
     report = cal.score(items, scores)
     for half in "AB":
         assert math.isclose(_combo(report, "fixed", "bc")["halves"][half]["kappa"], 0.8)
@@ -611,7 +625,7 @@ def test_each_half_reads_only_its_own_null_arm_rows() -> None:
         *[("B", False, *s) for s in perfect], *[("B", True, 3, 3, 3)] * 2,
         *[("B", True, 0, 0, 0)] * 3,
     ]
-    items, scores = _case(rows)
+    items, scores = _case(_full(rows))
     report = cal.score(items, scores)
     ab = _combo(report, "fixed", "ab")["halves"]
     assert ab["A"]["null_arm"]["a"] == {"graded": 5, "called_relevant": 0, "rate": 0.0}
@@ -653,7 +667,7 @@ def test_a_rule_that_calls_no_row_relevant_never_qualifies() -> None:
     # relevant" and kappa is undefined; read as kappa 1, fixed a, b would
     # qualify. Per-grader cuts can only be (1, 1), the one cut pair at which
     # both rates are above 0, and there the graders agree on every row.
-    items, scores = _case(_rows("1111100000", "1111100000", "1111100000"))
+    items, scores = _case(_full(_rows("1111100000", "1111100000", "1111100000")))
     report = cal.score(items, scores)
     for combo in report["combinations"]:
         if combo["rule"] == "fixed":
@@ -801,7 +815,7 @@ def test_the_kappa_tie_break_reads_half_a_only() -> None:
         *[("B", k >= 7, 3 * int("1111100000"[k]), int("1111100000"[k]), 0)
           for k in range(10)],
     ]
-    items, scores = _case(rows)
+    items, scores = _case(_full(rows))
     every = [i.id for i in items]
     x, y = scores["a"], scores["b"]
     assert cal.cut_kappa(every, cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(16, 21)
@@ -821,7 +835,7 @@ def test_fit_cuts_give_none_when_a_grader_calls_nothing_relevant() -> None:
 def test_a_pair_with_no_eligible_cuts_is_reported_unscored_and_never_chosen() -> None:
     # Every score is 0. The fixed rule's kappa is undefined, and no
     # per-grader cut pair is eligible.
-    items, scores = _case(_rows("0000000000", "0000000000", "0000000000"))
+    items, scores = _case(_full(_rows("0000000000", "0000000000", "0000000000")))
     report = cal.score(items, scores)
     for combo in report["combinations"]:
         if combo["rule"] == "per_grader":
@@ -835,7 +849,7 @@ def test_a_pair_with_no_eligible_cuts_is_reported_unscored_and_never_chosen() ->
 def test_a_pair_with_no_eligible_cuts_sorts_after_every_scored_pair() -> None:
     # a scores 0 on every row, so per-grader a, b and a, c have no cuts,
     # and b, c, scored, comes first in its rule, ahead of the a and b pair.
-    items, scores = _case(_rows("0000000000", "3333300000", "3333300000"))
+    items, scores = _case(_full(_rows("0000000000", "3333300000", "3333300000")))
     report = cal.score(items, scores)
     order = [(c["rule"], "".join(c["pair"]), c["rank"]) for c in report["combinations"]]
     assert order[3:] == [("per_grader", "bc", 4), ("per_grader", "ab", 5),
@@ -850,13 +864,14 @@ def test_the_cuts_are_fitted_on_half_a_only() -> None:
     # cut pair at 1/5 and would fit (2, 2).
     rows: list[Row] = [("A", False, 3, 1, 0), ("A", True, 0, 0, 0),
                        ("B", False, 3, 3, 0), ("B", False, 0, 1, 0), ("B", True, 0, 0, 0)]
-    items, scores = _case(rows)
+    items, scores = _case(_full(rows))
     report = cal.score(items, scores)
     assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 2, "b": 1}
 
 
 def test_the_a_b_pair_comes_first_then_the_others_by_descending_kappa() -> None:
-    items, scores = _case([*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")])
+    items, scores = _case(_full(
+        [*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")]))
     report = cal.score(items, scores)
     order = [(c["rule"], "".join(c["pair"])) for c in report["combinations"]]
     # a, b fails (4/9); b, c (0.8) is tried before a, c (0.6).
@@ -874,7 +889,7 @@ def test_a_c_comes_before_b_c_on_equal_half_a_kappa() -> None:
     #     the bar.
     # Both a, c and b, c qualify, so the order between them picks the pair.
     rows = _pattern("A", "1111110000", "1111101000", "1111100000")
-    items, scores = _case([*rows, *_pattern("B", "1111110000", "1111101000", "1111100000")])
+    items, scores = _case(_full([*rows, *_pattern("B", "1111110000", "1111101000", "1111100000")]))
     report = cal.score(items, scores)
     for pair in ("ac", "bc"):
         assert _combo(report, "fixed", pair)["halves"]["A"]["kappa"] == pytest.approx(0.8)
@@ -890,7 +905,8 @@ def test_the_other_pairs_are_ordered_by_half_a_kappa_not_half_b() -> None:
     # Half A is _ORDER_A: b, c (0.8) before a, c (0.6). On half B a scores 3
     # on five rows, so a, c reaches 1.0 and b, c stays 0.8: ordered by half B,
     # a, c would come first and be chosen.
-    items, scores = _case([*_ORDER_A, *_pattern("B", "1111100000", "1111000000", "1111100000")])
+    items, scores = _case(_full(
+        [*_ORDER_A, *_pattern("B", "1111100000", "1111000000", "1111100000")]))
     report = cal.score(items, scores)
     assert _combo(report, "fixed", "ac")["halves"]["B"]["kappa"] == 1.0
     order = [(c["rule"], "".join(c["pair"])) for c in report["combinations"]]
@@ -914,7 +930,7 @@ def test_each_rule_orders_its_pairs_by_its_own_kappa() -> None:
     a, b, c = "3333000000", "3300300000", "2211000000"
     rows: list[Row] = [(h, k >= 7, int(a[k]), int(b[k]), int(c[k]))
                        for h in "AB" for k in range(10)]
-    items, scores = _case(rows)
+    items, scores = _case(_full(rows))
     report = cal.score(items, scores)
     assert _combo(report, "fixed", "ac")["halves"]["A"]["kappa"] == pytest.approx(6 / 11)
     assert _combo(report, "fixed", "bc")["halves"]["A"]["kappa"] == pytest.approx(14 / 19)
@@ -930,14 +946,15 @@ def test_each_rule_orders_its_pairs_by_its_own_kappa() -> None:
 def test_the_a_b_pair_is_chosen_over_a_pair_with_a_higher_kappa() -> None:
     # a, b: 0.6, qualifies. a, c: 1.0. a, b is still first.
     rows = _pattern("A", "1111100000", "1111111000", "1111100000")
-    items, scores = _case([*rows, *_pattern("B", "1111100000", "1111111000", "1111100000")])
+    items, scores = _case(_full([*rows, *_pattern("B", "1111100000", "1111111000", "1111100000")]))
     report = cal.score(items, scores)
     assert _combo(report, "fixed", "ac")["halves"]["A"]["kappa"] == 1.0
     assert report["chosen"]["pair"] == ["a", "b"]
 
 
 def test_the_fixed_cut_comes_before_per_grader_cuts() -> None:
-    items, scores = _case([*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")])
+    items, scores = _case(_full(
+        [*_ORDER_A, *_pattern("B", "1111111000", "1111000000", "1111100000")]))
     report = cal.score(items, scores)
     assert [c["rule"] for c in report["combinations"]] == ["fixed"] * 3 + ["per_grader"] * 3
     # Scores of 0 and 3 fit (2, 2), so per-grader a, b is fixed a, b again;
@@ -961,7 +978,7 @@ def _per_grader_rows(half: str) -> list[Row]:
 
 
 def test_per_grader_cuts_are_chosen_when_no_fixed_combination_qualifies() -> None:
-    items, scores = _case([*_per_grader_rows("A"), *_per_grader_rows("B")])
+    items, scores = _case(_full([*_per_grader_rows("A"), *_per_grader_rows("B")]))
     report = cal.score(items, scores)
     assert not any(c["halves"]["A"]["meets_bars"] for c in report["combinations"]
                    if c["rule"] == "fixed")
@@ -973,7 +990,7 @@ def test_per_grader_cuts_are_chosen_when_no_fixed_combination_qualifies() -> Non
 def test_half_b_decides_a_combination_that_passed_half_a() -> None:
     rows = [*_pattern("A", "1111100000", "1111100000", "1111100000"),
             *_pattern("B", "1111100000", "0000011000", "1111100000")]
-    items, scores = _case(rows)
+    items, scores = _case(_full(rows))
     report = cal.score(items, scores)
     assert report["chosen"]["pair"] == ["a", "b"]
     assert _combo(report, "fixed", "ab")["halves"]["A"]["meets_bars"]
@@ -988,7 +1005,7 @@ def test_half_b_uses_the_cuts_fitted_on_half_a() -> None:
     a_rows = _per_grader_rows("A")
     b_rows: list[Row] = [("B", k >= 7, 2 * int("1111100000"[k]), int("1111100000"[k]), 0)
                          for k in range(10)]
-    items, scores = _case([*a_rows, *b_rows])
+    items, scores = _case(_full([*a_rows, *b_rows]))
     report = cal.score(items, scores)
     assert report["chosen"]["cuts"] == {"a": 2, "b": 1}
     assert _combo(report, "per_grader", "ab")["halves"]["B"]["kappa"] == 1.0
@@ -999,7 +1016,8 @@ def test_half_a_alone_chooses_and_a_failed_half_a_never_reaches_half_b() -> None
     # c scores nothing on A, and a and b disagree there; on B all three agree.
     a_rows: list[Row] = [("A", k >= 7, 3 * int("1111100000"[k]), 3 * int("1000011000"[k]), None)
                          for k in range(10)]
-    items, scores = _case([*a_rows, *_pattern("B", "1111100000", "1111100000", "1111100000")])
+    items, scores = _case(_full(
+        [*a_rows, *_pattern("B", "1111100000", "1111100000", "1111100000")]))
     report = cal.score(items, scores)
     # With no score on A, c has no per-grader cuts, so only the pairs with
     # cuts carry figures.
@@ -1013,18 +1031,22 @@ def test_half_a_alone_chooses_and_a_failed_half_a_never_reaches_half_b() -> None
 def test_session1_agreement_reads_the_score_at_cut_2() -> None:
     rows: list[Row] = [("A", False, 3, 0, 0), ("A", False, 1, 2, 0),
                        ("A", False, 2, 3, 0), ("B", True, None, 0, 0)]
-    items, scores = _case(rows)
-    s1a = {"r0": True, "r1": True, "r2": False, "r3": True}
-    s1b = {"r0": False, "r1": True, "r2": None, "r3": False, "other": True}
+    items, scores = _case(_full(rows))
+    # The rows _full adds have no score, so their labels count for nothing.
+    pad: dict[str, bool | None] = {i.id: True for i in items[len(rows):]}
+    s1a = {**pad, "r0": True, "r1": True, "r2": False, "r3": True}
+    s1b = {**pad, "r0": False, "r1": True, "r2": None, "r3": False, "other": True}
     report = cal.score(items, scores, [s1a, s1b])
     assert report["session1"]["a"] == {"n": 3, "agreed": 1, "agreement": 1 / 3}
     assert report["session1"]["b"] == {"n": 3, "agreed": 3, "agreement": 1.0}
 
 
 def test_session1_labels_must_cover_every_key_row() -> None:
-    items, scores = _case([("A", False, 3, 0, 0), ("B", False, 0, 0, 0)])
-    with pytest.raises(ValueError, match="lack a label"):
-        cal.score(items, scores, [{"r0": True, "r1": False}, {"r0": True}])
+    items, scores = _case(_full([("A", False, 3, 0, 0), ("B", False, 0, 0, 0)]))
+    s1a: dict[str, bool | None] = {i.id: True for i in items}
+    s1b = {i: s for i, s in s1a.items() if i != "r1"}
+    with pytest.raises(ValueError, match="^1 key rows lack a label"):
+        cal.score(items, scores, [s1a, s1b])
 
 
 # --- Score CLI ------------------------------------------------------------------
@@ -1041,8 +1063,8 @@ def _write_labels(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
 
 
 def _cli_case(tmp_path: Path) -> tuple[Path, list[Path]]:
-    items, scores = _case([*_pattern("A", "1111100000", "1111100000", "1111100000"),
-                           *_pattern("B", "1111100000", "1111100000", "1111100000")])
+    items, scores = _case(_full([*_pattern("A", "1111100000", "1111100000", "1111100000"),
+                                 *_pattern("B", "1111100000", "1111100000", "1111100000")]))
     key = tmp_path / "key.jsonl"
     _write_key(key, items)
     labels: list[Path] = []
@@ -1058,13 +1080,14 @@ def test_the_score_cli_prints_the_report(
 ) -> None:
     key, labels = _cli_case(tmp_path)
     s1 = tmp_path / "s1.jsonl"
-    _write_labels(s1, [{"id": f"r{n}", "correct": n % 2 == 0} for n in range(20)])
+    _write_labels(s1, [{"id": r["id"], "correct": n % 2 == 0}
+                       for n, r in enumerate(_read(key))])
     argv = ["score", "--key", str(key), "--labels", *map(str, labels),
             "--session1", str(s1), str(s1)]
     assert cal.main(argv) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["verdict"] == "pass"
-    assert report["rows"] == {"A": 10, "B": 10}
+    assert report["rows"] == {"A": cal.DEFAULT_MIN_ITEMS, "B": cal.DEFAULT_MIN_ITEMS}
     assert report["null_rows"] == {"A": 3, "B": 3}
     assert set(report["session1"]) == {"a", "b"}
 
@@ -1172,9 +1195,16 @@ def test_score_needs_three_label_files(tmp_path: Path) -> None:
 def test_split_then_score_end_to_end(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    keys, packets = _stores(tmp_path)
+    # Four stores of five prompts, each prompt 499 judged rows and one null
+    # row: each half takes four whole prompts, 2,000 rows.
+    keys: list[Path] = []
+    packets: list[Path] = []
+    for s in range(4):
+        k, p = _source(tmp_path / "s1", f"snap{s}", {f"p{s}{j}": 499 for j in range(5)})
+        keys.append(k)
+        packets.append(p)
     out = tmp_path / "out"
-    assert _split(keys, packets, out) == 0
+    assert _split(keys, packets, out, min_items=cal.DEFAULT_MIN_ITEMS) == 0
     capsys.readouterr()
     rows = _read(out / "key.jsonl")
     labels: list[Path] = []
@@ -1185,6 +1215,7 @@ def test_split_then_score_end_to_end(
     assert cal.main(["score", "--key", str(out / "key.jsonl"),
                      "--labels", *map(str, labels)]) == 0
     report = json.loads(capsys.readouterr().out)
+    assert report["rows"] == {"A": 2000, "B": 2000}
     assert report["chosen"]["pair"] == ["a", "b"]
     assert report["verdict"] == "pass"
 
