@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
@@ -599,6 +600,32 @@ def test_an_out_that_is_a_link_is_refused(
     assert _split(keys, packets, out) == 1
     assert f"{out} is a link" in capsys.readouterr().err
     assert list(real.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
+@pytest.mark.parametrize("umask", [0o022, 0o277])
+def test_the_split_is_owner_only_whatever_the_umask(tmp_path: Path, umask: int) -> None:
+    # An earlier split left open to others becomes owner-only as well. A
+    # umask of 0o277 takes the owner's write bit off every new directory.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    (out / "A").mkdir(parents=True, mode=0o755)
+    (out / "A" / "packet.jsonl").write_text("stale\n", encoding="utf-8")
+    for p in (out, out / "A"):
+        p.chmod(0o755)
+    (out / "A" / "packet.jsonl").chmod(0o644)
+    old_umask = os.umask(umask)
+    try:
+        assert _split(keys, packets, out) == 0
+    finally:
+        os.umask(old_umask)
+    modes = {str(p.relative_to(tmp_path)): stat.S_IMODE(p.stat().st_mode)
+             for p in (out, *out.rglob("*"))}
+    assert modes == {
+        "out": 0o700, "out/A": 0o700, "out/B": 0o700, "out/key.jsonl": 0o600,
+        "out/A/packet.jsonl": 0o600, "out/A/instructions.txt": 0o600,
+        "out/B/packet.jsonl": 0o600, "out/B/instructions.txt": 0o600,
+    }
 
 
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:

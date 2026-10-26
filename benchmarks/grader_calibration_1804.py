@@ -23,7 +23,7 @@ the stores, and one confirmatory test on the other half decides.
   The files are written to a directory beside `--out` and moved into
   place, so `--out` holds the earlier split or the new one, never a mix.
   It refuses an `--out` where a split file would replace one of its
-  inputs.
+  inputs. Only the owner can read or write the directories and files.
 - `score`: three graders' scores, fitted and chosen on half A and
   tested on half B, as the next section states. As amendment 1
   requires, it refuses a key with a half under 2,000 rows, whatever
@@ -156,6 +156,9 @@ PACKET_FILE: Final[str] = "packet.jsonl"
 INSTRUCTIONS_FILE: Final[str] = "instructions.txt"
 KEY_FILE: Final[str] = "key.jsonl"
 PACKET_FIELDS: Final[tuple[str, ...]] = ("id", "prompt", "belief")
+OWNER_DIR: Final[int] = 0o700
+OWNER_FILE: Final[int] = 0o600
+"""Modes of the split's directories and files: the packets and key hold store text."""
 
 SCALE: Final[tuple[tuple[str, str], ...]] = (
     ("3", ("Needed: without the note, the answer would be wrong or would miss a rule,"
@@ -436,6 +439,7 @@ def publish_split(stage: Path, out: Path) -> None:
         stage.rename(out)
         return
     aside = Path(tempfile.mkdtemp(prefix=f".{out.name}.old-", dir=out.parent))
+    os.chmod(aside, OWNER_DIR)
     old = aside / out.name
     out.rename(old)
     try:
@@ -445,6 +449,27 @@ def publish_split(stage: Path, out: Path) -> None:
         aside.rmdir()
         raise
     shutil.rmtree(aside)
+
+
+def private_dir(path: Path) -> None:
+    """Make the directory `path`, readable and writable by its owner only."""
+    path.mkdir(mode=OWNER_DIR)
+    os.chmod(path, OWNER_DIR)
+
+
+def write_private(path: Path, text: str) -> None:
+    """Write `text` as UTF-8 to the file `path`, readable and writable by its owner only."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+                 OWNER_FILE)
+    try:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+    with f:
+        if hasattr(os, "fchmod"):
+            os.fchmod(f.fileno(), OWNER_FILE)
+        f.write(text)
 
 
 def write_split(
@@ -457,19 +482,21 @@ def write_split(
     The five files go to a new `.<out name>.split-*` directory beside
     `out`, which `publish_split` then moves into place, so `out` holds
     either the earlier split or this one, never a mix of the two. The
-    staging directory is removed when a step fails.
+    staging directory is removed when a step fails. Every directory is
+    `OWNER_DIR` and every file `OWNER_FILE`, whatever the umask.
     """
     out = Path(os.path.abspath(out))
     check_split_out(out, sources)
     out.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.split-", dir=out.parent))
     try:
+        os.chmod(stage, OWNER_DIR)
         for half in HALVES:
             d = stage / half
-            d.mkdir()
-            (d / PACKET_FILE).write_text(_jsonl(packets[half]), encoding="utf-8")
-            (d / INSTRUCTIONS_FILE).write_text(INSTRUCTIONS, encoding="utf-8")
-        (stage / KEY_FILE).write_text(_jsonl(key_rows), encoding="utf-8")
+            private_dir(d)
+            write_private(d / PACKET_FILE, _jsonl(packets[half]))
+            write_private(d / INSTRUCTIONS_FILE, INSTRUCTIONS)
+        write_private(stage / KEY_FILE, _jsonl(key_rows))
         publish_split(stage, out)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
