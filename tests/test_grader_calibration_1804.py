@@ -711,6 +711,18 @@ def test_fit_cuts_breaks_a_tie_toward_two_two() -> None:
     assert cal.fit_cuts(ids, a, a) == (2, 2)
 
 
+def test_fit_cuts_break_a_tie_by_distance_before_kappa() -> None:
+    # x scores 1, 2, 2, 3 and y 1, 0, 2, 3. x's rates: 1, 3/4, 1/4. y's: 3/4,
+    # 1/2, 1/4. (2, 1) and (3, 3) match, at distance 1 and 2. At (2, 1) both
+    # say yes on 2 rows and each alone on 1: p_o = 1/2, p_e = 5/8, kappa
+    # -1/3. At (3, 3) they agree on every row, kappa 1. Read before distance,
+    # kappa would pick (3, 3).
+    x, y = _digits("1223"), _digits("1023")
+    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(-1, 3)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == 1
+    assert cal.fit_cuts(list(x), x, y) == (2, 1)
+
+
 def test_fit_cuts_skip_null_scores() -> None:
     # a's null row would halve its rate if it counted as not relevant.
     ids = ["0", "1", "2"]
