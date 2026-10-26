@@ -805,6 +805,20 @@ def test_fit_cuts_take_the_smaller_cuts_when_kappa_ties_too() -> None:
     assert cal.fit_cuts(list(x), x, y) == (1, 1)
 
 
+def test_the_kappa_tie_break_reads_each_grader_at_its_own_cut() -> None:
+    # x's rates: 3/4, 3/8, 1/4. y's: 7/8, 5/8, 1/2. (1, 2) and (2, 3) differ
+    # by 1/8, one step from (2, 2); (1, 1) also differs by 1/8, two steps
+    # away. With x at its cut and y at its own, kappa is 1/7 at (1, 2) and 1/4
+    # at (2, 3). With the cuts swapped, x at 2 and y at 1 gives 3/19 and x at
+    # 3 and y at 2 gives -1/9, which would pick (1, 2).
+    x, y = _digits("03012113"), _digits("33013321")
+    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 2)) == Fraction(1, 7)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 3)) == Fraction(1, 4)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(3, 19)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 2)) == Fraction(-1, 9)
+    assert cal.fit_cuts(list(x), x, y) == (2, 3)
+
+
 def test_the_kappa_tie_break_reads_half_a_only() -> None:
     # Half A holds the kappa tie: a and b fit (3, 3) at 3/8 over (1, 1) at
     # -1/9. On half B a scores 3 and b 1 on rows 0 to 4: they agree at (1, 1)
