@@ -302,13 +302,20 @@ V_DISAGREE: Final[str] = "disagree"
 INSTRUCTIONS: Final[str] = """\
 Each row of packet.jsonl pairs a prompt a user typed to a coding assistant
 with one note from that project's memory. For each row, decide whether the
-note is relevant to the prompt: whether an assistant answering the prompt
-would be better off having read it.
+note is relevant to the prompt: whether reading it would change or directly
+inform what the assistant does for this prompt.
 
-  true   relevant: the note bears on what the prompt asks or on how to do it
-  false  not relevant: the note is about something else, or only shares words
-         with the prompt
-  null   unclear: you can't tell from the prompt and the note
+  true   relevant: the note gives a fact the answer needs, a rule or
+         preference the assistant must follow for this task, or an earlier
+         decision about this same task
+  false  not relevant: anything else, including a note about the same
+         project, file, tool, or topic that wouldn't change the answer,
+         background the assistant wouldn't use, and a note that only shares
+         words with the prompt
+  null   unclear: you can't tell what the prompt asks or what the note means
+
+Before you call a note relevant, ask whether the answer would be worse
+without it. If it wouldn't, label it false.
 
 Write one JSON object per line to your own labels file:
   {"id": "<row id>", "correct": true}

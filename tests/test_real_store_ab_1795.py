@@ -1179,6 +1179,15 @@ def test_the_instructions_define_the_three_labels(tmp_path: Path) -> None:
         assert word in bench.INSTRUCTIONS
 
 
+def test_the_instructions_rule_out_a_note_that_only_shares_the_topic() -> None:
+    # Amendment 2 to the #1795 pre-registration: the graders split on
+    # same-topic notes, so the rubric names them as not relevant.
+    text = " ".join(bench.INSTRUCTIONS.split())
+    assert "would change or directly inform what the assistant does" in text
+    assert "same project, file, tool, or topic that wouldn't change the answer" in text
+    assert "If it wouldn't, label it false." in text
+
+
 # --- Score --------------------------------------------------------------------
 
 
