@@ -738,6 +738,66 @@ def test_fit_cuts_skip_a_cut_pair_where_one_rate_is_zero() -> None:
     assert cal.fit_cuts(ids, y, x) == (1, 2)
 
 
+def _digits(scores: str) -> dict[str, int | None]:
+    return {str(k): int(s) for k, s in enumerate(scores)}
+
+
+# x's rates at cuts 1, 2, 3 are 9/10, 1/2, 1/5 and y's 9/10, 3/10, 1/5, so
+# (1, 1) and (3, 3) match, both two steps from (2, 2), and no other pair
+# matches. At (1, 1) both say yes on 8 rows and each alone on 1: p_o = 0.8,
+# p_e = 0.82, kappa = -1/9. At (3, 3) both say yes on row 5 and each alone
+# on 1: p_o = 0.8, p_e = 0.68, kappa = 3/8.
+_KAPPA_TIE = ("0121332211", "1111031312")
+
+
+def test_fit_cuts_break_a_remaining_tie_by_the_higher_kappa() -> None:
+    x, y = map(_digits, _KAPPA_TIE)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(-1, 9)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
+    assert cal.fit_cuts(list(x), x, y) == (3, 3)
+
+
+def test_fit_cuts_rank_an_undefined_kappa_below_a_negative_one() -> None:
+    # x's rates: 1, 4/5, 2/5. y's: 1, 7/10, 2/5. (1, 1) and (3, 3) match at
+    # distance 2. At (1, 1) both say yes on every row, so kappa is
+    # undefined; at (3, 3) they say yes on disjoint rows, kappa -2/3.
+    x, y = _digits("1332223132"), _digits("3113332122")
+    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) is None
+    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(-2, 3)
+    assert cal.fit_cuts(list(x), x, y) == (3, 3)
+
+
+def test_fit_cuts_take_the_smaller_cuts_when_kappa_ties_too() -> None:
+    # x's rates: 4/5, 2/5, 1/5. y's: 4/5, 1/2, 1/5. (1, 1) and (3, 3) match
+    # at distance 2. Both yes, x alone, y alone, and both no count 7, 1, 1, 1
+    # at (1, 1) and 1, 1, 1, 7 at (3, 3): p_o = 0.8 and p_e = 0.68 at both,
+    # so kappa is 3/8 at both.
+    x, y = _digits("2010112133"), _digits("2032120131")
+    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(3, 8)
+    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
+    assert cal.fit_cuts(list(x), x, y) == (1, 1)
+
+
+def test_the_kappa_tie_break_reads_half_a_only() -> None:
+    # Half A holds the kappa tie: a and b fit (3, 3) at 3/8 over (1, 1) at
+    # -1/9. On half B a scores 3 and b 1 on rows 0 to 4: they agree at (1, 1)
+    # and disagree at (3, 3). Over both halves (1, 1) has kappa 16/21 and
+    # (3, 3) 3/38, so kappa read over every row would pick (1, 1).
+    a, b = _KAPPA_TIE
+    rows: list[Row] = [
+        *[("A", k >= 7, int(a[k]), int(b[k]), 0) for k in range(10)],
+        *[("B", k >= 7, 3 * int("1111100000"[k]), int("1111100000"[k]), 0)
+          for k in range(10)],
+    ]
+    items, scores = _case(rows)
+    every = [i.id for i in items]
+    x, y = scores["a"], scores["b"]
+    assert cal.cut_kappa(every, cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(16, 21)
+    assert cal.cut_kappa(every, cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 38)
+    report = cal.score(items, scores)
+    assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 3, "b": 3}
+
+
 def test_the_cuts_are_fitted_on_half_a_only() -> None:
     # On A, a's rate is 1/2 at every cut and b's is 1/2 at cut 1, so (2, 1).
     # Over both halves a's is 2/5 and b's 3/5, 1/5, 1/5, which ties every
