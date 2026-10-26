@@ -10,7 +10,7 @@ import math
 import os
 import random
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -1303,6 +1303,64 @@ def test_one_session1_file_for_both_graders_is_refused(
             "--session1", str(s1), str(s1)]
     assert cal.main(argv) == 1
     assert f"--session1 {s1} and {s1} are one file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("changed", "after"), [
+    ("key", "labels a"), ("labels b", "labels a"), ("session1 b", "labels a"),
+    ("labels a", "key"),
+])
+def test_an_input_file_changed_while_score_reads_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    changed: str, after: str,
+) -> None:
+    # Another process rewrites one file right after score reads another, so
+    # the run would mix an old file with a new one. The key is read last.
+    key, labels = _cli_case(tmp_path)
+    s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
+    for s1 in (s1a, s1b):
+        _write_labels(s1, [{"id": r["id"], "correct": True} for r in _read(key)])
+    files = {"key": key, "labels a": labels[0], "labels b": labels[1], "session1 b": s1b}
+    target, trigger = files[changed], files[after]
+
+    def rewrite_after(read: Callable[[Path], Any]) -> Callable[[Path], Any]:
+        def wrapped(path: Path) -> Any:
+            result = read(path)
+            if path == trigger:
+                target.write_text(target.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return result
+        return wrapped
+
+    monkeypatch.setattr(cal, "read_scores", rewrite_after(cal.read_scores))
+    monkeypatch.setattr(cal, "read_calibration_key", rewrite_after(cal.read_calibration_key))
+    argv = ["score", "--key", str(key), "--labels", *map(str, labels),
+            "--session1", str(s1a), str(s1b)]
+    assert cal.main(argv) == 1
+    captured = capsys.readouterr()
+    assert f"{target} changed while score read it" in captured.err
+    assert captured.out == ""
+
+
+def test_the_report_carries_each_input_file_sha256(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    key, labels = _cli_case(tmp_path)
+    s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
+    for s1, correct in ((s1a, True), (s1b, False)):
+        _write_labels(s1, [{"id": r["id"], "correct": correct} for r in _read(key)])
+    argv = ["score", "--key", str(key), "--labels", *map(str, labels),
+            "--session1", str(s1a), str(s1b)]
+    assert cal.main(argv) == 0
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert json.loads(capsys.readouterr().out)["sha256"] == {
+        "key": digest(key), "labels a": digest(labels[0]), "labels b": digest(labels[1]),
+        "labels c": digest(labels[2]), "session1 a": digest(s1a), "session1 b": digest(s1b),
+    }
+    assert cal.main(["score", "--key", str(key), "--labels", *map(str, labels)]) == 0
+    assert set(json.loads(capsys.readouterr().out)["sha256"]) == {
+        "key", "labels a", "labels b", "labels c"}
 
 
 def test_a_null_score_is_accepted(

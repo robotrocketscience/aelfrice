@@ -25,7 +25,9 @@ the stores, and one confirmatory test on the other half decides.
   `--min-items` the split ran with. With `--session1`, it also reports
   how often grader a's and grader b's score at cut 2 agrees with their
   own session-1 label. It refuses one file given twice to `--labels` or
-  to `--session1`.
+  to `--session1`. It hashes every input file before reading and again
+  after, refuses a file that changed in between, and reports each
+  file's sha256 under `sha256`.
 
 **Procedure.** Under each rule, each pair of graders gets cuts from half
 A: the fixed rule cuts every grader at 2, and the per-grader rule fits
@@ -61,6 +63,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import stat
@@ -458,6 +461,22 @@ def read_scores(path: Path) -> dict[str, int | None]:
     return scores
 
 
+def file_sha256(path: Path) -> str:
+    """The hex sha256 of the file's bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def score_inputs(
+    key: Path, labels: Sequence[Path], session1: Sequence[Path] | None,
+) -> dict[str, Path]:
+    """`score`'s input files by name: `key`, `labels <grader>`, and `session1 <grader>`."""
+    inputs = {"key": key, **{f"labels {g}": p for g, p in zip(GRADERS, labels, strict=True)}}
+    if session1 is not None:
+        inputs.update(
+            {f"session1 {g}": p for g, p in zip(SESSION1_GRADERS, session1, strict=True)})
+    return inputs
+
+
 def require_distinct_files(flag: str, paths: Sequence[Path]) -> None:
     """InputError when two of `paths` are one file, by any spelling or link.
 
@@ -796,9 +815,17 @@ def _dispatch(args: argparse.Namespace) -> None:
         require_distinct_files("--labels", args.labels)
         if args.session1 is not None:
             require_distinct_files("--session1", args.session1)
+        inputs = score_inputs(args.key, args.labels, args.session1)
+        before = {name: file_sha256(p) for name, p in inputs.items()}
         scores = {g: read_scores(p) for g, p in zip(GRADERS, args.labels, strict=True)}
         session1 = None if args.session1 is None else [read_labels(p) for p in args.session1]
-        _dump(score(read_calibration_key(args.key), scores, session1), None)
+        items = read_calibration_key(args.key)
+        for name, p in inputs.items():
+            if file_sha256(p) != before[name]:
+                raise InputError(f"{p} changed while score read it; run score again")
+        report = score(items, scores, session1)
+        report["sha256"] = before
+        _dump(report, None)
 
 
 def main(argv: list[str] | None = None) -> int:
