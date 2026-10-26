@@ -20,9 +20,11 @@ the stores, and one confirmatory test on the other half decides.
   and `instructions.txt` for the graders, and the hidden key `key.jsonl`
   beside them. Give each grader the `A/` and `B/` directories only.
 - `score`: three graders' scores, fitted and chosen on half A and
-  tested on half B, as the next section states. With `--session1`, it
-  also reports how often grader a's and grader b's score at cut 2
-  agrees with their own session-1 label.
+  tested on half B, as the next section states. As amendment 1
+  requires, it refuses a key with a half under 2,000 rows, whatever
+  `--min-items` the split ran with. With `--session1`, it also reports
+  how often grader a's and grader b's score at cut 2 agrees with their
+  own session-1 label.
 
 **Procedure.** Under each rule, each pair of graders gets cuts from half
 A: the fixed rule cuts every grader at 2, and the per-grader rule fits
@@ -92,8 +94,10 @@ from benchmarks.real_store_ab_1795 import (
 )
 
 DEFAULT_SEED: Final[int] = 1804
-DEFAULT_MIN_ITEMS: Final[int] = 2000
-"""Rows each half must hold at least, in whole prompts (#1804)."""
+MIN_HALF_ROWS: Final[int] = 2000
+"""Rows each half must hold at least; `score` refuses a smaller half (#1804 amendment 1)."""
+DEFAULT_MIN_ITEMS: Final[int] = MIN_HALF_ROWS
+"""Rows `split` takes for each half at least, in whole prompts (#1804)."""
 DEFAULT_STORES: Final[int] = 17
 """Stores with item rows in the session-1 keys; the first 8 go to half A (#1804)."""
 
@@ -478,6 +482,19 @@ def require_disjoint_halves(items: Sequence[CalibrationItem]) -> None:
         raise InputError(f"store {shared[0]} has rows in both halves")
 
 
+def require_half_rows(items: Sequence[CalibrationItem]) -> None:
+    """InputError when a half holds fewer than `MIN_HALF_ROWS` rows.
+
+    Amendment 1 refuses such a half. `split` stops at `--min-items`, which
+    a caller can set lower, and `score` reads any key file, so it checks
+    the count itself.
+    """
+    for half in HALVES:
+        rows = sum(1 for i in items if i.half == half)
+        if rows < MIN_HALF_ROWS:
+            raise InputError(f"half {half} holds {rows} rows, fewer than {MIN_HALF_ROWS}")
+
+
 def binarize(scores: Scores, cut: int) -> dict[str, bool | None]:
     """{id: score at or above `cut`}, a null score staying None."""
     return {i: None if s is None else s >= cut for i, s in scores.items()}
@@ -667,6 +684,7 @@ def score(
 ) -> dict[str, Any]:
     """The calibration report: every rule and pair on both halves, and the verdict.
 
+    InputError when a half holds fewer than `MIN_HALF_ROWS` rows.
     `scores` maps each of `GRADERS` to its scores. Cuts are fitted on half
     A, the combination is chosen on half A, and the verdict is half B's
     alone. `session1`, when given, is grader a's and grader b's session-1
@@ -677,6 +695,7 @@ def score(
         raise InputError(f"need scores from graders {', '.join(GRADERS)}")
     require_scores(ids, scores)
     require_disjoint_halves(items)
+    require_half_rows(items)
     ids_a = [i.id for i in items if i.half == HALF_A]
     combos: dict[Combo, dict[str, HalfResult] | None] = {}
     cuts_of: dict[Combo, tuple[int, int] | None] = {}

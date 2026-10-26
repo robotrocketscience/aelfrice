@@ -93,6 +93,7 @@ def _source_items(keys: Sequence[Path]) -> list[dict[str, Any]]:
 def test_the_split_defaults_are_the_pre_registered_ones() -> None:
     assert cal.DEFAULT_SEED == 1804
     assert cal.DEFAULT_MIN_ITEMS == 2000
+    assert cal.MIN_HALF_ROWS == 2000
     assert cal.DEFAULT_STORES == 17
     half_a, half_b = cal.split_stores([f"snap{s}" for s in range(17)], cal.DEFAULT_SEED)
     assert (len(half_a), len(half_b)) == (8, 9)
@@ -472,7 +473,7 @@ def _full(rows: Sequence[Row]) -> list[Row]:
     """
     pad: list[Row] = []
     for half in cal.HALVES:
-        short = cal.DEFAULT_MIN_ITEMS - sum(1 for r in rows if r[0] == half)
+        short = cal.MIN_HALF_ROWS - sum(1 for r in rows if r[0] == half)
         pad += [(half, False, None, None, None)] * short
     return [*rows, *pad]
 
@@ -1087,7 +1088,7 @@ def test_the_score_cli_prints_the_report(
     assert cal.main(argv) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["verdict"] == "pass"
-    assert report["rows"] == {"A": cal.DEFAULT_MIN_ITEMS, "B": cal.DEFAULT_MIN_ITEMS}
+    assert report["rows"] == {"A": 2000, "B": 2000}
     assert report["null_rows"] == {"A": 3, "B": 3}
     assert set(report["session1"]) == {"a", "b"}
 
@@ -1136,6 +1137,37 @@ def test_score_refuses_a_key_with_one_store_in_both_halves(
     _write_labels(key, rows)
     assert cal.main(argv) == 1
     assert "store sA has rows in both halves" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("half", ["A", "B"])
+def test_score_refuses_a_half_under_2000_rows(half: str) -> None:
+    # _full makes each half 2,000 rows, which score takes. One row fewer in
+    # either half is refused.
+    rows = _full([r for h in "AB" for r in _pattern(h, "1111100000", "1111100000", "1111100000")])
+    assert cal.score(*_case(rows))["verdict"] == "pass"
+    short = list(rows)
+    short.remove((half, False, None, None, None))
+    with pytest.raises(InputError, match=f"half {half} holds 1999 rows, fewer than 2000"):
+        cal.score(*_case(short))
+
+
+def test_score_refuses_a_split_made_with_a_lower_min_items(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    assert _split(keys, packets, out, min_items=10) == 0
+    capsys.readouterr()
+    rows = _read(out / "key.jsonl")
+    labels: list[Path] = []
+    for g in cal.GRADERS:
+        p = tmp_path / f"{g}.jsonl"
+        _write_labels(p, [{"id": r["id"], "score": 0 if r["null_arm"] else 3} for r in rows])
+        labels.append(p)
+    argv = ["score", "--key", str(out / "key.jsonl"), "--labels", *map(str, labels)]
+    assert cal.main(argv) == 1
+    rows_a = sum(1 for r in rows if r["half"] == "A")
+    assert f"half A holds {rows_a} rows, fewer than 2000" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("change", ["no grader c", "grader d"])
