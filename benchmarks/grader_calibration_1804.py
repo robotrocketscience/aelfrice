@@ -29,8 +29,10 @@ A: the fixed rule cuts every grader at 2, and the per-grader rule takes
 the cuts in {1, 2, 3} whose relevant rates on half A differ least, a tie
 going to the cuts nearest (2, 2), then to the lexicographically smaller
 pair. Kappa counts the rows both graders scored, each score read at its
-grader's cut, and a grader's null-arm rate is the share of its scored
-null-arm rows at or above its cut. A rule and pair qualify on half A
+grader's cut. When both graders give all those rows one label, chance
+agreement is 1 and kappa is undefined, which never reaches the bar. A
+grader's null-arm rate is the share of its scored null-arm rows at or
+above its cut. A rule and pair qualify on half A
 when kappa reaches `KAPPA_BAR` and each grader's null-arm rate is at
 most `NULL_RATE_CEILING`. The fixed rule is tried
 before the per-grader rule. Within a rule, the a and b pair comes first,
@@ -515,11 +517,14 @@ def weighted_kappa(pairs: Sequence[tuple[int, int]]) -> float:
 
 @dataclass(frozen=True)
 class HalfResult:
-    """One rule and pair on one half: the report, whether it meets the bars, and kappa."""
+    """One rule and pair on one half: the report, whether it meets the bars, and kappa.
+
+    `kappa` is None when it is undefined.
+    """
 
     figures: dict[str, Any]
     meets_bars: bool
-    kappa: Fraction
+    kappa: Fraction | None
 
 
 def half_result(
@@ -531,9 +536,13 @@ def half_result(
     null_ids = [i.id for i in items if i.half == half and i.null_arm]
     (gx, gy), (cx, cy) = pair, cuts
     lx, ly = binarize(scores[gx], cx), binarize(scores[gy], cy)
-    kappa, n, agreed = paired_kappa(ids, lx, ly)
-    exact = exact_kappa(ids, lx, ly)
+    float_kappa, n, agreed = paired_kappa(ids, lx, ly)
     both = [i for i in ids if lx[i] is not None and ly[i] is not None]
+    # With no row both scored, or one label from both graders on every row,
+    # chance agreement is 1 and kappa is 0/0. `exact_kappa` gives 0 and 1
+    # there, and a 1 would pass a rule that calls no row relevant.
+    values = {lx[i] for i in both} | {ly[i] for i in both}
+    kappa = None if len(values) < 2 else exact_kappa(ids, lx, ly)
     x_only = sum(1 for i in both if lx[i] and not ly[i])
     y_only = sum(1 for i in both if ly[i] and not lx[i])
     disagreed = x_only + y_only
@@ -552,7 +561,8 @@ def half_result(
     raw = [(cast(int, scores[gx][i]), cast(int, scores[gy][i])) for i in both]
     figures: dict[str, Any] = {
         "rows": len(ids), "null_rows": len(null_ids),
-        "kappa": kappa, "n": n, "agreed": agreed, "raw_agreement": agreed / n if n else 0.0,
+        "kappa": None if kappa is None else float_kappa,
+        "n": n, "agreed": agreed, "raw_agreement": agreed / n if n else 0.0,
         "null_arm": null, "relevant": relevant,
         "disagreements": {
             f"{gx}_only": x_only, f"{gy}_only": y_only,
@@ -561,20 +571,27 @@ def half_result(
         },
         "weighted_kappa": weighted_kappa(raw),
     }
-    meets = exact >= exact_bar(KAPPA_BAR) and nulls_ok
+    meets = kappa is not None and kappa >= exact_bar(KAPPA_BAR) and nulls_ok
     figures["meets_bars"] = meets
-    return HalfResult(figures=figures, meets_bars=meets, kappa=exact)
+    return HalfResult(figures=figures, meets_bars=meets, kappa=kappa)
+
+
+def _descending_kappa(kappa: Fraction | None) -> tuple[bool, Fraction]:
+    """Sort key: the higher kappa first, an undefined kappa after every defined one."""
+    return (kappa is None, -(kappa or Fraction(0)))
 
 
 def preference_order(
     combos: Mapping[tuple[str, tuple[str, str]], Mapping[str, HalfResult]],
 ) -> list[tuple[str, tuple[str, str]]]:
     """`(rule, pair)` in the order of preference: rule order, then within a rule
-    the first pair of `PAIRS`, then the others by descending half-A kappa."""
+    the first pair of `PAIRS`, then the others by descending half-A kappa.
+
+    An undefined kappa never qualifies, so where it sorts changes no choice."""
     order: list[tuple[str, tuple[str, str]]] = []
     for rule in RULES:
         first, *rest = PAIRS
-        rest = sorted(rest, key=lambda p: -combos[(rule, p)][HALF_A].kappa)
+        rest = sorted(rest, key=lambda p: _descending_kappa(combos[(rule, p)][HALF_A].kappa))
         order.extend((rule, p) for p in (first, *rest))
     return order
 

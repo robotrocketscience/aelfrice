@@ -626,6 +626,60 @@ def test_no_graded_null_arm_row_fails_the_ceiling() -> None:
     assert not cal.half_result(items, "A", ("a", "b"), (2, 2), scores).meets_bars
 
 
+def test_kappa_is_undefined_when_both_graders_give_every_row_one_label() -> None:
+    # At cut 3 neither grader calls any row relevant, so chance agreement is
+    # 1 and kappa is 0/0. The null-arm rates are 0, so a kappa read as 1
+    # would meet both bars.
+    rows: list[Row] = [("A", False, 2, 1, 0), ("A", False, 0, 2, 0),
+                       ("A", False, 0, 1, 0), ("A", True, 0, 1, 0)]
+    items, scores = _case(rows)
+    result = cal.half_result(items, "A", ("a", "b"), (3, 3), scores)
+    assert result.kappa is None
+    assert result.figures["kappa"] is None
+    assert result.figures["null_arm"]["a"]["rate"] == 0.0
+    assert not result.meets_bars
+    # At (3, 1) a calls no row relevant and b every row: one label per
+    # grader, but opposite ones, so chance agreement is 0 and kappa is 0.
+    result = cal.half_result(items, "A", ("a", "b"), (3, 1), scores)
+    assert (result.kappa, result.figures["kappa"]) == (0, 0.0)
+    # No row both graders scored.
+    items, scores = _case([("A", True, None, 0, 0), ("A", False, 3, None, 0)])
+    assert cal.half_result(items, "A", ("a", "b"), (2, 2), scores).kappa is None
+
+
+def test_a_rule_that_calls_no_row_relevant_never_qualifies() -> None:
+    # Nobody scores 3. a scores 2 on rows 0 to 4, b on rows 5 to 7, c scores
+    # 1 everywhere. Rates at cuts 1, 2, 3: a 1/2, 1/2, 0; b 3/10, 3/10, 0;
+    # c 1, 0, 0. Every fixed pair has kappa under 0 or exactly 0. The
+    # per-grader fit gives a, b (3, 3), and a, c and b, c (3, 2): the rates
+    # match at 0, and every label is "not relevant". Read as kappa 1, a, b
+    # would qualify on half A and pass on half B.
+    a, b, c = "2222200000", "0000022200", "1111111111"
+    rows: list[Row] = [(h, k >= 7, int(a[k]), int(b[k]), int(c[k]))
+                       for h in "AB" for k in range(10)]
+    items, scores = _case(rows)
+    report = cal.score(items, scores)
+    assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 3, "b": 3}
+    assert _combo(report, "per_grader", "ac")["cuts"] == {"a": 3, "c": 2}
+    for combo in report["combinations"]:
+        if combo["rule"] == "per_grader":
+            assert combo["halves"]["A"]["kappa"] is None
+        assert not combo["halves"]["A"]["meets_bars"]
+    assert report["chosen"] is None
+    assert report["verdict"] == "no qualifying combination on half A"
+
+
+def test_an_undefined_kappa_sorts_after_every_defined_one() -> None:
+    def result(kappa: Fraction | None) -> dict[str, cal.HalfResult]:
+        return {h: cal.HalfResult(figures={}, meets_bars=False, kappa=kappa) for h in "AB"}
+
+    combos = {(rule, pair): result(Fraction(-1) if pair == ("b", "c") else None)
+              for rule in cal.RULES for pair in cal.PAIRS}
+    order = [(rule, "".join(pair)) for rule, pair in cal.preference_order(combos)]
+    assert order == [("fixed", "ab"), ("fixed", "bc"), ("fixed", "ac"),
+                     ("per_grader", "ab"), ("per_grader", "bc"), ("per_grader", "ac")]
+
+
 def test_a_kappa_on_the_bar_qualifies_and_one_under_does_not() -> None:
     items, scores = _case(_ORDER_A)
     assert cal.half_result(items, "A", ("a", "c"), (2, 2), scores).meets_bars
