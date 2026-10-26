@@ -440,21 +440,28 @@ def test_a_split_file_name_that_is_not_a_regular_file_is_refused(
     assert (out / name).exists()
 
 
-def test_a_half_directory_linked_to_the_output_is_refused(tmp_path: Path) -> None:
+def test_a_half_directory_linked_to_the_output_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
     out.mkdir()
     (out / "A").symlink_to(out)
     assert _split(keys, packets, out) == 1
+    assert (f"the key {out / 'key.jsonl'} must be outside the packet directory {out / 'A'}"
+            in capsys.readouterr().err)
     assert not (out / "key.jsonl").exists()
 
 
-def test_half_directories_linked_together_are_refused(tmp_path: Path) -> None:
+def test_half_directories_linked_together_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
     (out / "A").mkdir(parents=True)
     (out / "B").symlink_to(out / "A")
     assert _split(keys, packets, out) == 1
+    assert f"{out / 'A'} and {out / 'B'} are one directory" in capsys.readouterr().err
     assert not (out / "A" / "packet.jsonl").exists()
 
 
