@@ -570,6 +570,47 @@ def test_the_a_b_pair_comes_first_then_the_others_by_descending_kappa() -> None:
     assert report["verdict"] == "pass"
 
 
+def test_the_other_pairs_are_ordered_by_half_a_kappa_not_half_b() -> None:
+    # Half A is _ORDER_A: b, c (0.8) before a, c (0.6). On half B a scores 3
+    # on five rows, so a, c reaches 1.0 and b, c stays 0.8: ordered by half B,
+    # a, c would come first and be chosen.
+    items, scores = _case([*_ORDER_A, *_pattern("B", "1111100000", "1111000000", "1111100000")])
+    report = cal.score(items, scores)
+    assert _combo(report, "fixed", "ac")["halves"]["B"]["kappa"] == 1.0
+    order = [(c["rule"], "".join(c["pair"])) for c in report["combinations"]]
+    assert order[:3] == [("fixed", "ab"), ("fixed", "bc"), ("fixed", "ac")]
+    assert report["chosen"] == {"rule": "fixed", "pair": ["b", "c"], "cuts": {"b": 2, "c": 2}}
+    assert report["verdict"] == "pass"
+
+
+def test_each_rule_orders_its_pairs_by_its_own_kappa() -> None:
+    # c scores one step below a: 2 on rows 0 and 1, 1 on rows 2 and 3, where
+    # a scores 3. b scores 3 on rows 0, 1, and 4.
+    #   Fixed cut: a, c agree on 8 rows, a says yes 4, c 2. p_e = 0.4*0.2 +
+    #     0.6*0.8 = 0.56, kappa = 0.24 / 0.44 = 6/11. b, c agree on 9, b says
+    #     yes 3: p_e = 0.3*0.2 + 0.7*0.8 = 0.62, kappa = 0.28 / 0.38 = 14/19.
+    #   Per-grader cuts: a's rate is 0.4 at every cut and c's is 0.4 at cut 1,
+    #     so a, c fit (2, 1) and agree on every row, kappa 1. b's rate is 0.3
+    #     at every cut, as near c's 0.4 as its 0.2, so b, c fit (2, 2) and
+    #     keep 14/19.
+    # So the fixed rule tries b, c before a, c, and the per-grader rule a, c
+    # before b, c.
+    a, b, c = "3333000000", "3300300000", "2211000000"
+    rows: list[Row] = [(h, k >= 7, int(a[k]), int(b[k]), int(c[k]))
+                       for h in "AB" for k in range(10)]
+    items, scores = _case(rows)
+    report = cal.score(items, scores)
+    assert _combo(report, "fixed", "ac")["halves"]["A"]["kappa"] == pytest.approx(6 / 11)
+    assert _combo(report, "fixed", "bc")["halves"]["A"]["kappa"] == pytest.approx(14 / 19)
+    assert _combo(report, "per_grader", "ac")["cuts"] == {"a": 2, "c": 1}
+    assert _combo(report, "per_grader", "ac")["halves"]["A"]["kappa"] == 1.0
+    assert _combo(report, "per_grader", "bc")["cuts"] == {"b": 2, "c": 2}
+    assert _combo(report, "per_grader", "bc")["halves"]["A"]["kappa"] == pytest.approx(14 / 19)
+    order = [(c["rule"], "".join(c["pair"])) for c in report["combinations"]]
+    assert order == [("fixed", "ab"), ("fixed", "bc"), ("fixed", "ac"),
+                     ("per_grader", "ab"), ("per_grader", "ac"), ("per_grader", "bc")]
+
+
 def test_the_a_b_pair_is_chosen_over_a_pair_with_a_higher_kappa() -> None:
     # a, b: 0.6, qualifies. a, c: 1.0. a, b is still first.
     rows = _pattern("A", "1111100000", "1111111000", "1111100000")
