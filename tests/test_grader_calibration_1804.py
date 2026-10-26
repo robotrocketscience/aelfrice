@@ -1240,6 +1240,20 @@ def test_a_bad_calibration_key_is_refused(
     assert str(key) in capsys.readouterr().err
 
 
+def test_a_session1_line_that_is_not_an_object_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    key, labels = _cli_case(tmp_path)
+    s1a, s1b = tmp_path / "s1a.jsonl", tmp_path / "s1b.jsonl"
+    rows = [{"id": r["id"], "correct": True} for r in _read(key)]
+    _write_labels(s1a, rows)
+    s1b.write_text("[1]\n", encoding="utf-8")
+    argv = ["score", "--key", str(key), "--labels", *map(str, labels),
+            "--session1", str(s1a), str(s1b)]
+    assert cal.main(argv) == 1
+    assert f"{s1b}:1: not a JSON object" in capsys.readouterr().err
+
+
 def test_a_null_score_is_accepted(tmp_path: Path) -> None:
     key, labels = _cli_case(tmp_path)
     rows = _read(labels[0])

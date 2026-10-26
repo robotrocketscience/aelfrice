@@ -62,3 +62,12 @@ def test_read_labels_refuses_a_label_outside_true_false_null(tmp_path: Path) -> 
     path.write_text(json.dumps({"id": "i0", "correct": "yes"}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="a.jsonl:1"):
         gg.read_labels(path)
+
+
+@pytest.mark.parametrize("line", ["[1]", "null", '"i0"', "3"])
+def test_read_labels_refuses_a_line_that_is_not_an_object(tmp_path: Path, line: str) -> None:
+    path = tmp_path / "a.jsonl"
+    path.write_text(json.dumps({"id": "i0", "correct": True}) + "\n" + line + "\n",
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match=r"a\.jsonl:2: not a JSON object"):
+        gg.read_labels(path)
