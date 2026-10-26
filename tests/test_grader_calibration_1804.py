@@ -836,6 +836,27 @@ def test_a_repeated_label_id_is_refused(tmp_path: Path) -> None:
     assert cal.main(["score", "--key", str(key), "--labels", *map(str, labels)]) == 1
 
 
+@pytest.mark.parametrize("bad", ["half C", "null_arm string", "null_arm 0", "empty", "repeat"])
+def test_a_bad_calibration_key_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    key, labels = _cli_case(tmp_path)
+    rows = _read(key)
+    if bad == "half C":
+        rows[0]["half"] = "C"
+    elif bad == "null_arm string":
+        rows[0]["null_arm"] = "false"
+    elif bad == "null_arm 0":
+        rows[0]["null_arm"] = 0
+    elif bad == "empty":
+        rows = []
+    else:
+        rows.append(rows[0])
+    _write_labels(key, rows)
+    assert cal.main(["score", "--key", str(key), "--labels", *map(str, labels)]) == 1
+    assert str(key) in capsys.readouterr().err
+
+
 def test_a_null_score_is_accepted(tmp_path: Path) -> None:
     key, labels = _cli_case(tmp_path)
     rows = _read(labels[0])
