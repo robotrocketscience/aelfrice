@@ -253,6 +253,10 @@ def start_onboard_session(
     rejected candidates are re-emitted for the host to re-classify.
     Already-present beliefs are still filtered — `force` only opts back
     in to noise the host already saw, not to duplicate-stored content.
+
+    Raises `OSError`, before it scans or writes, when a relative
+    `repo_path` can't be resolved because the current folder was
+    removed or can't be searched (#1798).
     """
     # Lazy import: scanner imports classification at module-load (it
     # calls `classify_sentence`); importing scanner at top-level here
@@ -265,6 +269,12 @@ def start_onboard_session(
         extract_git_log,
     )
 
+    # #1798: record the resolved folder, since a relative path such as
+    # `.` names nothing once the shell that typed it is gone. The
+    # extractors below still read `repo_path` as given. realpath raises
+    # OSError for a relative path when the current folder was removed or
+    # can't be searched, so that run records no session.
+    recorded_root = os.path.realpath(repo_path)
     timestamp = now if now is not None else _utc_now_iso()
     # #1609: mirror scan_repo's git-recency wiring so doc/ast candidates
     # carry commit_date too, not only git:commit:* ones (which the
@@ -312,15 +322,6 @@ def start_onboard_session(
             for s in pending_sentences
         ]
     )
-    # #1798: record the resolved folder, since a relative path such as
-    # `.` names nothing once the shell that typed it is gone. The
-    # extractors above still read `repo_path` as given. A relative path
-    # can't be resolved from a removed current folder, where the
-    # extractors found nothing, so that run records the path as typed.
-    try:
-        recorded_root = os.path.realpath(repo_path)
-    except OSError:
-        recorded_root = str(repo_path)
     store.insert_onboard_session(
         OnboardSession(
             session_id=session_id,

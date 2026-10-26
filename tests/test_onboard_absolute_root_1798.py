@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from aelfrice import store_split
+from aelfrice.classification import start_onboard_session
 from aelfrice.cli import main
 from aelfrice.store import MemoryStore
 
@@ -113,24 +116,102 @@ def test_relative_run_scans_the_same_tree_as_an_absolute_run(
     assert relative == absolute
 
 
+def _session_count(db: Path) -> int:
+    store = MemoryStore(str(db))
+    try:
+        return store.count_onboard_sessions()
+    finally:
+        store.close()
+
+
+# `aelf onboard` with and without `--emit-candidates`; the regex
+# classifier keeps the second one off the network.
+_MODES = pytest.mark.parametrize(
+    "flags",
+    [("--emit-candidates",), ("--llm-classify=false",)],
+    ids=["emit-candidates", "scan"],
+)
+
+
 @pytest.mark.timeout(60)
-def test_relative_run_from_a_removed_folder_exits_cleanly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@_MODES
+def test_a_relative_run_from_a_removed_folder_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
 ) -> None:
     # A relative path can't be resolved once the current folder is
-    # gone, as in a removed worktree. The scan finds nothing there, and
-    # the run still exits 0 and records the path as typed.
+    # gone, as in a removed worktree, so the run stops before it
+    # records an onboard session.
     db = tmp_path / "aelf.db"
     monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
     gone = tmp_path / "gone"
     gone.mkdir()
     monkeypatch.chdir(gone)
     gone.rmdir()
 
-    payload = _emit(".")
+    buf = io.StringIO()
+    code = main(argv=["onboard", ".", *flags], out=buf)
 
-    assert payload["sentences"] == []
-    assert _stored_root(db, str(payload["session_id"])) == "."
+    assert code == 2
+    assert buf.getvalue() == ""
+    err = capsys.readouterr().err
+    assert err == "aelf onboard: the current folder no longer exists\n"
+    assert _session_count(db) == 0
+
+
+@pytest.mark.timeout(60)
+def test_start_onboard_session_raises_for_a_removed_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A caller other than the CLI gets the error too, and no session row
+    # holds the path as typed.
+    db = tmp_path / "aelf.db"
+    store = MemoryStore(str(db))
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    try:
+        with pytest.raises(FileNotFoundError):
+            start_onboard_session(store, Path("."))
+        assert store.count_onboard_sessions() == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.skipif(
+    sys.platform != "darwin" or os.geteuid() == 0,
+    reason="macOS can't give the path of a folder you can't search",
+)
+@_MODES
+def test_a_relative_run_from_a_folder_it_cannot_search_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
+) -> None:
+    db = tmp_path / "aelf.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    monkeypatch.chdir(sealed)
+    sealed.chmod(0)
+    try:
+        buf = io.StringIO()
+        code = main(argv=["onboard", ".", *flags], out=buf)
+    finally:
+        sealed.chmod(0o755)
+
+    assert code == 2
+    assert buf.getvalue() == ""
+    err = capsys.readouterr().err
+    assert err == "aelf onboard: cannot list or search the current folder\n"
+    assert _session_count(db) == 0
 
 
 _REPO = Path(__file__).resolve().parents[1]

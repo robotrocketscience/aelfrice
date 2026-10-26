@@ -433,6 +433,24 @@ def _resolve_llm_flag(args: argparse.Namespace) -> bool | None:
     return True  # any other value: opt-in
 
 
+def _onboard_folder_refusal(path: str) -> str | None:
+    """Why `path` can't be resolved to an absolute folder, or None (#1798).
+
+    A relative path needs the current folder's path, which the system
+    can't give for a removed folder or, on macOS, from inside or below a
+    folder you can't search. `aelf onboard` then refuses to run, as
+    `aelf store split` does, so no onboard session records a relative
+    folder.
+    """
+    try:
+        os.path.realpath(path)
+    except FileNotFoundError:
+        return "the current folder no longer exists"
+    except OSError:
+        return "cannot list or search the current folder"
+    return None
+
+
 def _cmd_onboard_emit_candidates(args: argparse.Namespace, out: object) -> int:
     """Run the scanner+filter pipeline, persist a PENDING onboard session,
     and print a JSON payload the host can hand to a classifier subagent.
@@ -443,6 +461,10 @@ def _cmd_onboard_emit_candidates(args: argparse.Namespace, out: object) -> int:
             "aelf onboard --emit-candidates: <path> is required.",
             file=sys.stderr,
         )
+        return 2
+    refusal = _onboard_folder_refusal(args.path)
+    if refusal is not None:
+        print(f"aelf onboard: {refusal}", file=sys.stderr)
         return 2
     repo_path = Path(args.path)
     force = bool(getattr(args, "force", False))
@@ -684,6 +706,11 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
         return 0
+
+    refusal = _onboard_folder_refusal(args.path)
+    if refusal is not None:
+        print(f"aelf onboard: {refusal}", file=sys.stderr)
+        return 2
 
     cfg = _load_llm_config(path)
     flag = _resolve_llm_flag(args)
