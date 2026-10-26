@@ -495,7 +495,8 @@ def _onboard_roots(
     """Each onboard session's root, None when it names no usable one.
 
     An absolute `repo_path` is the root. A relative one, which `aelf
-    onboard .` records, resolves against `work_tree`. A root that lands
+    onboard .` recorded before #1798, resolves against `work_tree`. A
+    root that lands
     outside `work_tree` is kept, so the belief counts as outside the
     work tree; one inside it is spelled from `work_tree`. A relative
     root inside it is kept only when the session's files are there,
