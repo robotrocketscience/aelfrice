@@ -550,6 +550,20 @@ def test_a_kappa_on_the_bar_qualifies_and_one_under_does_not() -> None:
     assert not cal.half_result(items, "A", ("a", "b"), (2, 2), scores).meets_bars
 
 
+def test_an_exact_kappa_on_the_bar_qualifies_where_the_float_falls_under() -> None:
+    # Both say yes on 2 rows, each alone on 1, both no on 14: p_o = 16/18,
+    # p_e = (3*3 + 15*15) / 18**2 = 13/18, kappa = (3/18) / (5/18) = 3/5.
+    # In floating point the same table gives just under 0.6.
+    rows: list[Row] = [*[("A", False, 3, 3, 0)] * 2, ("A", False, 3, 0, 0),
+                       ("A", False, 0, 3, 0), *[("A", False, 0, 0, 0)] * 9,
+                       *[("A", True, 0, 0, 0)] * 5]
+    items, scores = _case(rows)
+    result = cal.half_result(items, "A", ("a", "b"), (2, 2), scores)
+    assert result.kappa == Fraction(3, 5)
+    assert result.figures["kappa"] < cal.KAPPA_BAR
+    assert result.meets_bars
+
+
 def test_fit_cuts_takes_the_least_rate_difference() -> None:
     # a's rates at cuts 1, 2, 3: 1/2, 1/2, 1/2. b's: 1/2, 0, 0.
     ids = ["0", "1"]
