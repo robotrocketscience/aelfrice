@@ -900,6 +900,23 @@ def test_score_names_the_grader_with_a_missing_or_extra_row(change: str) -> None
         cal.score(items, scores)
 
 
+def test_score_refuses_a_key_with_one_store_in_both_halves(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The key of _cli_case passes. Moving one half-B row into half A's store
+    # sA, under a prompt id of its own, puts sA in both halves.
+    key, labels = _cli_case(tmp_path)
+    argv = ["score", "--key", str(key), "--labels", *map(str, labels)]
+    assert cal.main(argv) == 0
+    capsys.readouterr()
+    rows = _read(key)
+    moved = next(r for r in rows if r["half"] == "B")
+    moved["snapshot"] = "sA"
+    _write_labels(key, rows)
+    assert cal.main(argv) == 1
+    assert "store sA has rows in both halves" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("change", ["no grader c", "grader d"])
 def test_score_needs_graders_a_b_and_c_exactly(change: str) -> None:
     items, scores = _case([("A", False, 3, 3, 3), ("B", False, 0, 0, 0)])

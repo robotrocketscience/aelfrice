@@ -456,6 +456,18 @@ def require_scores(ids: Sequence[str], scores: Mapping[str, Scores]) -> None:
                              f" {extra[0]} among them")
 
 
+def require_disjoint_halves(items: Sequence[CalibrationItem]) -> None:
+    """InputError when one store has rows in both halves.
+
+    The pre-registration puts no store in both halves, and `split` keeps
+    to it, but `score` reads any key file, so it checks again.
+    """
+    half_a, half_b = ({i.snapshot for i in items if i.half == h} for h in HALVES)
+    shared = sorted(half_a & half_b)
+    if shared:
+        raise InputError(f"store {shared[0]} has rows in both halves")
+
+
 def binarize(scores: Scores, cut: int) -> dict[str, bool | None]:
     """{id: score at or above `cut`}, a null score staying None."""
     return {i: None if s is None else s >= cut for i, s in scores.items()}
@@ -595,6 +607,7 @@ def score(
     if sorted(scores) != sorted(GRADERS):
         raise InputError(f"need scores from graders {', '.join(GRADERS)}")
     require_scores(ids, scores)
+    require_disjoint_halves(items)
     ids_a = [i.id for i in items if i.half == HALF_A]
     combos: dict[tuple[str, tuple[str, str]], dict[str, HalfResult]] = {}
     cuts_of: dict[tuple[str, tuple[str, str]], tuple[int, int]] = {}
