@@ -18,7 +18,8 @@ the stores, and one confirmatory test on the other half decides.
   prompts are taken in that order until the half holds `--min-items`
   rows. It writes `A/` and `B/` under `--out`, each with `packet.jsonl`
   and `instructions.txt` for the graders, and the hidden key `key.jsonl`
-  beside them. Give each grader the `A/` and `B/` directories only.
+  beside them. Give each grader the `A/` and `B/` directories only. It
+  refuses an `--out` where a split file would replace one of its inputs.
 - `score`: three graders' scores, fitted and chosen on half A and
   tested on half B, as the next section states. As amendment 1
   requires, it refuses a key with a half under 2,000 rows, whatever
@@ -364,7 +365,7 @@ def build_split(
 
 def write_split(
     packets: Mapping[str, Sequence[Mapping[str, str]]], key_rows: Sequence[Mapping[str, Any]],
-    out: Path,
+    out: Path, sources: Sequence[Path] = (),
 ) -> None:
     """Write each half's packet and instructions to `out/<half>`, and the key to `out`.
 
@@ -374,7 +375,8 @@ def write_split(
     packet directory. Every file is written through any link at its
     name, so a symlink or a second hard link at one could send a packet
     over the key, or the key into a packet; links are refused before
-    anything is written.
+    anything is written. So is a split file that is one of `sources`, the
+    files the split was read from.
     """
     key_path = out / KEY_FILE
     dirs = [out / h for h in HALVES]
@@ -394,6 +396,8 @@ def write_split(
             continue
         if stat.S_ISLNK(st.st_mode) or st.st_nlink > 1:
             raise InputError(f"{f} is a link; remove it before writing the split")
+        if any(f.samefile(src) for src in sources):
+            raise InputError(f"{f} is a split input; choose another --out")
     for half, d in zip(HALVES, dirs, strict=True):
         (d / PACKET_FILE).write_text(_jsonl(packets[half]), encoding="utf-8")
         (d / INSTRUCTIONS_FILE).write_text(INSTRUCTIONS, encoding="utf-8")
@@ -805,7 +809,8 @@ def _dispatch(args: argparse.Namespace) -> None:
         packets = [read_source_packet(p) for p in args.packets]
         halves, key_rows = build_split(
             pair_sources(keys, packets), args.seed, args.min_items, args.stores)
-        write_split(halves, key_rows, args.out)
+        write_split(halves, key_rows, args.out,
+                    [*args.keys, *(p / PACKET_FILE for p in args.packets)])
         for half in HALVES:
             rows = [r for r in key_rows if r["half"] == half]
             print(f"{half}: stores={len({r['snapshot'] for r in rows})}"

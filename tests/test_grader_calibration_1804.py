@@ -437,6 +437,25 @@ def test_half_directories_linked_together_are_refused(tmp_path: Path) -> None:
     assert not (out / "A" / "packet.jsonl").exists()
 
 
+@pytest.mark.parametrize("source", ["key", "packet"])
+def test_a_split_input_at_a_split_file_name_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], source: str,
+) -> None:
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    if source == "key":
+        moved = out / "key.jsonl"
+        keys[0] = keys[0].rename(moved)
+    else:
+        packets[0] = packets[0].rename(out / "A")
+        moved = packets[0] / "packet.jsonl"
+    before = moved.read_bytes()
+    assert _split(keys, packets, out) == 1
+    assert f"{moved} is a split input" in capsys.readouterr().err
+    assert moved.read_bytes() == before
+
+
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"
