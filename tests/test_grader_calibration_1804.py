@@ -419,6 +419,26 @@ def test_a_link_at_a_split_file_name_is_refused_before_any_write(
     assert written == [name]
 
 
+@pytest.mark.parametrize("name", ["A/packet.jsonl", "key.jsonl"])
+@pytest.mark.parametrize("kind", [
+    "directory",
+    pytest.param("fifo", marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFOs")),
+])
+def test_a_split_file_name_that_is_not_a_regular_file_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str, kind: str,
+) -> None:
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    (out / "A").mkdir(parents=True)
+    if kind == "directory":
+        (out / name).mkdir()
+    else:
+        os.mkfifo(out / name)
+    assert _split(keys, packets, out) == 1
+    assert f"{out / name} is not a regular file" in capsys.readouterr().err
+    assert (out / name).exists()
+
+
 def test_a_half_directory_linked_to_the_output_is_refused(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"

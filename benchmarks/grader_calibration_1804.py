@@ -378,10 +378,10 @@ def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
     instructions: the graders get the half directories, and a split run
     with `--out` set to a half directory by mistake leaves a key there.
     A half directory that links to `out` or to the other half, which
-    would put the key in a packet directory, is named as such. A symlink
-    or a second hard link at a split file name is refused, and so is a
-    split file that is one of `sources`, the files the split was read
-    from.
+    would put the key in a packet directory, is named as such. A symlink,
+    a second hard link, or anything but a regular file at a split file
+    name is refused, and so is a split file that is one of `sources`, the
+    files the split was read from.
     """
     if out.is_symlink():
         raise InputError(f"{out} is a link; remove it before writing the split")
@@ -415,6 +415,8 @@ def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
             st = f.lstat()
         except FileNotFoundError:
             continue
+        if not stat.S_ISLNK(st.st_mode) and not stat.S_ISREG(st.st_mode):
+            raise InputError(f"{f} is not a regular file; remove it before writing the split")
         if stat.S_ISLNK(st.st_mode) or st.st_nlink > 1:
             raise InputError(f"{f} is a link; remove it before writing the split")
         if any(f.samefile(src) for src in sources):
