@@ -494,6 +494,93 @@ def test_a_half_directory_holding_other_files_is_refused(
     assert not (out / "key.jsonl").exists()
 
 
+def _split_files(out: Path) -> dict[str, bytes]:
+    return {rel: (out / rel).read_bytes() for rel in (
+        "key.jsonl", "A/packet.jsonl", "A/instructions.txt", "B/packet.jsonl",
+        "B/instructions.txt")}
+
+
+def test_a_split_that_fails_writing_keeps_the_earlier_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The second split, with another seed, fails as it writes the key, after
+    # both packets: the earlier split stays whole and no staging is left.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    earlier = _split_files(out)
+    jsonl = cal._jsonl  # pyright: ignore[reportPrivateUsage]
+
+    def full_at_the_key(rows: Sequence[Mapping[str, Any]]) -> str:
+        if rows and "half" in rows[0]:
+            raise OSError(28, "No space left on device")
+        return jsonl(rows)
+
+    monkeypatch.setattr(cal, "_jsonl", full_at_the_key)
+    assert _split(keys, packets, out, seed=7) == 1
+    assert _split_files(out) == earlier
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]
+
+
+def test_a_split_that_fails_moving_into_place_keeps_the_earlier_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The staged split fails to take the earlier split's place, so the
+    # earlier split moves back.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    earlier = _split_files(out)
+    rename = Path.rename
+
+    def refuse_the_staged_split(self: Path, target: Any) -> Path:
+        if self.name.startswith(".out.split-"):
+            raise OSError(16, "Device or resource busy")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refuse_the_staged_split)
+    assert _split(keys, packets, out, seed=7) == 1
+    assert _split_files(out) == earlier
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]
+
+
+def test_a_second_split_replaces_the_first_whole(tmp_path: Path) -> None:
+    keys, packets = _stores(tmp_path)
+    assert _split(keys, packets, tmp_path / "fresh", seed=7) == 0
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    assert _split(keys, packets, out, seed=7) == 0
+    assert _split_files(out) == _split_files(tmp_path / "fresh")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh", "out", "s1"]
+
+
+def test_an_out_holding_other_files_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Replacing the earlier split would remove anything else in --out.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "notes.txt").write_text("mine\n", encoding="utf-8")
+    assert _split(keys, packets, out) == 1
+    assert f"{out} holds notes.txt, which split does not write" in capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == ["notes.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_an_out_that_is_a_link_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys, packets = _stores(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir()
+    out = tmp_path / "out"
+    out.symlink_to(real)
+    assert _split(keys, packets, out) == 1
+    assert f"{out} is a link" in capsys.readouterr().err
+    assert list(real.iterdir()) == []
+
+
 def test_plain_split_files_are_rewritten(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     out = tmp_path / "out"

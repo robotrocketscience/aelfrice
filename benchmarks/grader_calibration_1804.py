@@ -18,8 +18,12 @@ the stores, and one confirmatory test on the other half decides.
   prompts are taken in that order until the half holds `--min-items`
   rows. It writes `A/` and `B/` under `--out`, each with `packet.jsonl`
   and `instructions.txt` for the graders, and the hidden key `key.jsonl`
-  beside them. Give each grader the `A/` and `B/` directories only. It
-  refuses an `--out` where a split file would replace one of its inputs.
+  beside them. Give each grader the `A/` and `B/` directories only.
+  `--out` must be new or hold only an earlier split, which is replaced.
+  The files are written to a directory beside `--out` and moved into
+  place, so `--out` holds the earlier split or the new one, never a mix.
+  It refuses an `--out` where a split file would replace one of its
+  inputs.
 - `score`: three graders' scores, fitted and chosen on half A and
   tested on half B, as the next section states. As amendment 1
   requires, it refuses a key with a half under 2,000 rows, whatever
@@ -66,9 +70,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
+import shutil
 import stat
 import sys
+import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -363,37 +370,40 @@ def build_split(
     return packets, key_rows
 
 
-def write_split(
-    packets: Mapping[str, Sequence[Mapping[str, str]]], key_rows: Sequence[Mapping[str, Any]],
-    out: Path, sources: Sequence[Path] = (),
-) -> None:
-    """Write each half's packet and instructions to `out/<half>`, and the key to `out`.
+def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
+    """InputError unless `out` is new or holds only an earlier split, safe to replace.
 
-    The graders get the half directories, so the key must lie outside
-    both. A half directory that links to `out` or to the other half is
-    refused, as `write_packet` of the #1795 harness refuses a key in its
-    packet directory, and so is a half directory that links anywhere
-    else, since the files would land where it points. A half directory
-    that holds anything but its packet and instructions is refused too:
-    a split run with `--out` set to a half directory by mistake leaves a
-    key there. Every file is written through any link at its
-    name, so a symlink or a second hard link at one could send a packet
-    over the key, or the key into a packet; links are refused before
-    anything is written. So is a split file that is one of `sources`, the
-    files the split was read from.
+    `out` and its half directories must not be links. `out` may hold only
+    `A/`, `B/`, and the key, and each half directory only its packet and
+    instructions: the graders get the half directories, and a split run
+    with `--out` set to a half directory by mistake leaves a key there.
+    A half directory that links to `out` or to the other half, which
+    would put the key in a packet directory, is named as such. A symlink
+    or a second hard link at a split file name is refused, and so is a
+    split file that is one of `sources`, the files the split was read
+    from.
     """
+    if out.is_symlink():
+        raise InputError(f"{out} is a link; remove it before writing the split")
+    if not out.exists():
+        return
+    extra = sorted(p.name for p in out.iterdir() if p.name not in (*HALVES, KEY_FILE))
+    if extra:
+        raise InputError(f"{out} holds {extra[0]}, which split does not write;"
+                         " choose a new or empty --out")
     key_path = out / KEY_FILE
     dirs = [out / h for h in HALVES]
-    for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
-    if dirs[0].samefile(dirs[1]):
+    if all(d.exists() for d in dirs) and dirs[0].samefile(dirs[1]):
         raise InputError(f"{dirs[0]} and {dirs[1]} are one directory")
     spellings = (key_path.absolute(), key_path.resolve())
     for d in dirs:
-        if any(p.exists() and p.samefile(d) for k in spellings for p in (k, *k.parents)):
+        if d.exists() and any(
+                p.exists() and p.samefile(d) for k in spellings for p in (k, *k.parents)):
             raise InputError(f"the key {key_path} must be outside the packet directory {d}")
         if d.is_symlink():
             raise InputError(f"{d} is a link; remove it before writing the split")
+        if not d.exists():
+            continue
         extra = sorted(
             p.name for p in d.iterdir() if p.name not in (PACKET_FILE, INSTRUCTIONS_FILE))
         if extra:
@@ -409,10 +419,59 @@ def write_split(
             raise InputError(f"{f} is a link; remove it before writing the split")
         if any(f.samefile(src) for src in sources):
             raise InputError(f"{f} is a split input; choose another --out")
-    for half, d in zip(HALVES, dirs, strict=True):
-        (d / PACKET_FILE).write_text(_jsonl(packets[half]), encoding="utf-8")
-        (d / INSTRUCTIONS_FILE).write_text(INSTRUCTIONS, encoding="utf-8")
-    key_path.write_text(_jsonl(key_rows), encoding="utf-8")
+
+
+def publish_split(stage: Path, out: Path) -> None:
+    """Move the staged split directory `stage` to `out`, replacing any earlier split.
+
+    Each step is one rename. An earlier split is first moved into a new
+    `.<out name>.old-*` directory beside `out`, then `stage` takes its
+    place, then the earlier split is removed. When the second rename
+    fails, the earlier split moves back. A run stopped between the two
+    renames leaves `out` missing and both whole splits beside it.
+    """
+    if not out.exists():
+        stage.rename(out)
+        return
+    aside = Path(tempfile.mkdtemp(prefix=f".{out.name}.old-", dir=out.parent))
+    old = aside / out.name
+    out.rename(old)
+    try:
+        stage.rename(out)
+    except BaseException:
+        old.rename(out)
+        aside.rmdir()
+        raise
+    shutil.rmtree(aside)
+
+
+def write_split(
+    packets: Mapping[str, Sequence[Mapping[str, str]]], key_rows: Sequence[Mapping[str, Any]],
+    out: Path, sources: Sequence[Path] = (),
+) -> None:
+    """Write each half's packet and instructions to `out/<half>`, and the key to `out`.
+
+    `check_split_out` refuses an unsafe `out` before anything is written.
+    The five files go to a new `.<out name>.split-*` directory beside
+    `out`, which `publish_split` then moves into place, so `out` holds
+    either the earlier split or this one, never a mix of the two. The
+    staging directory is removed when a step fails.
+    """
+    out = Path(os.path.abspath(out))
+    check_split_out(out, sources)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{out.name}.split-", dir=out.parent))
+    try:
+        for half in HALVES:
+            d = stage / half
+            d.mkdir()
+            (d / PACKET_FILE).write_text(_jsonl(packets[half]), encoding="utf-8")
+            (d / INSTRUCTIONS_FILE).write_text(INSTRUCTIONS, encoding="utf-8")
+        (stage / KEY_FILE).write_text(_jsonl(key_rows), encoding="utf-8")
+        publish_split(stage, out)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
 
 
 # --- Score --------------------------------------------------------------------
