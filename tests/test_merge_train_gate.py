@@ -1332,3 +1332,26 @@ def test_the_workflow_comments_quote_the_current_wait() -> None:
     mentions = re.findall(r"(\d+)-minute (?:wait|timeout)", _WORKFLOW.read_text())
     assert mentions, "the workflow no longer explains the wait in minutes"
     assert {int(m) for m in mentions} == {minutes}
+
+
+def _fail_and_unlabel_body() -> str:
+    text = _WORKFLOW.read_text()
+    start = text.index("fail_and_unlabel() {")
+    return text[start: text.index("\n          }\n", start)]
+
+
+def test_every_block_path_emits_a_warning_annotation() -> None:
+    """CI-05. A blocked train used to leave only a PR comment and a green
+    run, so the Actions summary said nothing had happened. Every block path
+    goes through `fail_and_unlabel`, which now annotates the run before it
+    exits; no other `exit` exists in the step for a path to bypass it."""
+    body = _fail_and_unlabel_body()
+    warning = re.search(r'^\s+echo "::warning[^\n]*\$\{reason\}', body, re.M)
+    assert warning is not None, "fail_and_unlabel emits no ::warning annotation"
+    assert warning.start() < body.index("exit 0")
+
+    run = _WORKFLOW.read_text()
+    run = run[run.index("        run: |"):]
+    code = "\n".join(ln.split("#")[0] for ln in run.splitlines())
+    exits = re.findall(r"\bexit \d+\b", code)
+    assert len(exits) == 1, f"a block path can bypass fail_and_unlabel: {exits}"

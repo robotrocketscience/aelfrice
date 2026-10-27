@@ -102,6 +102,11 @@ jobs:
 
           fail_and_unlabel() {
               local reason="$1"
+              # First, before anything that can fail under `set -e`: the run
+              # itself stays green, so without this the Actions summary says
+              # nothing happened (#1786). An annotation is one line; a
+              # multi-line reason is folded onto it.
+              echo "::warning::merge-train blocked PR #${PR_NUMBER}: $(printf '%s' "${reason}" | tr '\n' ' ')"
               # Use the comment marker so repeat-bumps can be detected
               # / de-duped by anyone reading the PR thread later.
               cat > /tmp/comment.md <<EOF
