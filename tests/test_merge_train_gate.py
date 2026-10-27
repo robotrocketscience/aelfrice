@@ -1392,18 +1392,103 @@ def _fail_and_unlabel_body() -> str:
     return text[start: text.index("\n          }\n", start)]
 
 
+_HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+_EXIT = re.compile(r"(?<![\w$-])exit(?![\w-])")
+
+
+def _shell_code(script: str) -> str:
+    """`script` with its comments and heredoc bodies removed.
+
+    A `#` starts a comment only outside quotes and at the start of a word,
+    so `echo "PR #1"; exit 1` keeps its `exit`. Quote state carries across
+    lines, because a single-quoted GraphQL query spans several. Heredoc
+    bodies are prose, and an apostrophe in one would derail the quote state.
+    """
+    out: list[str] = []
+    lines = script.split("\n")
+    quote: str | None = None
+    n = 0
+    while n < len(lines):
+        line = lines[n]
+        n += 1
+        kept: list[str] = []
+        j = 0
+        while j < len(line):
+            c = line[j]
+            if quote == "'":
+                quote = None if c == "'" else quote
+            elif c == "\\":
+                kept.append(line[j: j + 2])
+                j += 2
+                continue
+            elif quote == '"':
+                quote = None if c == '"' else quote
+            elif c in "'\"":
+                quote = c
+            elif c == "#" and (j == 0 or line[j - 1] in " \t;|&()"):
+                break
+            kept.append(c)
+            j += 1
+        code = "".join(kept)
+        out.append(code)
+        if quote is None:
+            for m in _HEREDOC.finditer(code):
+                while n < len(lines) and lines[n].strip() != m.group(2):
+                    n += 1
+                n += 1
+    return "\n".join(out)
+
+
+def _merge_step_script() -> str:
+    """The merge step's `run: |` block, de-indented."""
+    lines = _WORKFLOW.read_text().splitlines()
+    start = lines.index("        run: |") + 1
+    body: list[str] = []
+    for ln in lines[start:]:
+        if ln.strip() and not ln.startswith("          "):
+            break
+        body.append(ln[10:])
+    return "\n".join(body)
+
+
+@pytest.mark.parametrize(
+    ("script", "count"),
+    [
+        ("exit 1", 1),
+        ("[ -n \"$x\" ] && exit", 1),
+        ('rc=1; exit "$rc"', 1),
+        ('echo "[6/6] FF push #"; exit 1', 1),
+        ("echo 'it is # here'; exit 2", 1),
+        ('echo "a\\" # b"; exit 1', 1),
+        ("# exit 1\necho done  # then exit", 0),
+        ("q='a\nb'  # exit 1", 0),
+        ("q='a\n#b'; exit 1", 1),
+        ("cat <<EOF\nexit 1 is prose, it's here\nEOF\nexit 0", 1),
+        ("echo $# ${#x}; exit 3", 1),
+        ("echo exits; my-exit; exit_code=1", 0),
+    ],
+)
+def test_the_exit_scanner_finds_every_exit_statement(script: str, count: int) -> None:
+    assert len(_EXIT.findall(_shell_code(script))) == count
+
+
 def test_every_block_path_emits_a_warning_annotation() -> None:
     """CI-05. A blocked train used to leave only a PR comment and a green
     run, so the Actions summary said nothing had happened. Every block path
-    goes through `fail_and_unlabel`, which now annotates the run before it
-    exits; no other `exit` exists in the step for a path to bypass it."""
+    goes through `fail_and_unlabel`, which annotates the run before it
+    exits. The step's only `exit` statement, in any form, is the one inside
+    that function, so no path leaves the step around it."""
     body = _fail_and_unlabel_body()
     warning = re.search(r'^\s+echo "::warning[^\n]*\$\{reason\}', body, re.M)
     assert warning is not None, "fail_and_unlabel emits no ::warning annotation"
     assert warning.start() < body.index("exit 0")
 
-    run = _WORKFLOW.read_text()
-    run = run[run.index("        run: |"):]
-    code = "\n".join(ln.split("#")[0] for ln in run.splitlines())
-    exits = re.findall(r"\bexit \d+\b", code)
-    assert len(exits) == 1, f"a block path can bypass fail_and_unlabel: {exits}"
+    code = _shell_code(_merge_step_script())
+    start = code.index("fail_and_unlabel() {")
+    end = code.index("\n}\n", start)
+    exits = [m.start() for m in _EXIT.finditer(code)]
+    assert len(exits) == 1, (
+        "a block path can bypass fail_and_unlabel: "
+        f"{[code[i - 40: i + 12] for i in exits]}"
+    )
+    assert start < exits[0] < end, "the step's only exit is outside fail_and_unlabel"
