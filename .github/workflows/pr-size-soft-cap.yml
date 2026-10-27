@@ -25,6 +25,12 @@ jobs:
   size-check:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    # The merge train does not wait on this job while it runs (#1786,
+    # `NONGATING_WHILE_PENDING` in scripts/merge_train_gate.py), so a
+    # failure reported after the train has moved is never read. Job-level
+    # `continue-on-error` keeps the conclusion off `failure`, and
+    # tests/test_merge_train_gate.py ties the exemption to this line.
+    continue-on-error: true
     # Skip drafts — they're work-in-progress and the author already knows.
     if: github.event.pull_request.draft == false
     steps:

@@ -311,22 +311,59 @@ def test_a_failed_mutation_job_still_blocks() -> None:
     assert evaluate(runs, REQUIRED)["failing"] == [_MUTATION]
 
 
-def _job_bodies(workflow: Path) -> dict[str, list[str]]:
-    """`{job name: its own key lines}` for every job with a `name:` key.
+_SIZE_CHECK = "size-check"
 
-    A job is a two-space-indented key under `jobs:`; its own keys are the
-    lines indented exactly four spaces, so a step's `continue-on-error`
-    (indented further) never counts, and a commented line never matches.
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "pending"])
+def test_a_running_size_check_does_not_hold_the_train(status: str) -> None:
+    """#1786: `pr-size-soft-cap.yml` triggers on `labeled`, so adding
+    `ready-to-merge` starts a fresh advisory run on the head at the moment
+    the train begins polling, and the train waited on it every time."""
+    runs = [r for r in _all_floor_green() if r["name"] != _SIZE_CHECK]
+    runs.append(_run(_SIZE_CHECK, None, status=status))
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["pending"] == []
+    assert verdict["missing"] == []
+    assert verdict["pending_not_gating"] == [_SIZE_CHECK]
+
+
+def test_a_failed_size_check_still_blocks() -> None:
+    """Only its running state is exempt; the result still gates."""
+    runs = [r for r in _all_floor_green() if r["name"] != _SIZE_CHECK]
+    runs.append(_run(_SIZE_CHECK, "failure"))
+    assert evaluate(runs, REQUIRED)["failing"] == [_SIZE_CHECK]
+
+
+def test_a_size_check_that_never_reported_is_still_missing() -> None:
+    """It stays in the floor: exempt from the wait once it has a row,
+    missing until it does."""
+    runs = [r for r in _all_floor_green() if r["name"] != _SIZE_CHECK]
+    assert evaluate(runs, REQUIRED)["missing"] == [_SIZE_CHECK]
+
+
+def test_the_nongating_set_is_exactly_the_two_advisory_jobs() -> None:
+    """A literal list, so widening it is a visible edit here."""
+    assert NONGATING_WHILE_PENDING == {_MUTATION, _SIZE_CHECK}
+
+
+def _job_bodies(workflow: Path) -> dict[str, list[str]]:
+    """`{check-run name: its own key lines}` for every job.
+
+    The check-run name is the job's `name:` key when it has one and its id
+    otherwise, which is how GitHub names the row. A job is a two-space-
+    indented key under `jobs:`; its own keys are the lines indented exactly
+    four spaces, so a step's `continue-on-error` (indented further) never
+    counts, and a commented line never matches.
     """
     jobs: dict[str, list[str]] = {}
     body: list[str] | None = None
+    job_id = ""
     in_jobs = False
 
     def flush() -> None:
-        if body:
+        if body is not None:
             names = [ln[len("    name: "):] for ln in body if ln.startswith("    name: ")]
-            if names:
-                jobs[names[0].strip()] = body
+            jobs[(names[0] if names else job_id).strip()] = body
 
     for line in workflow.read_text().splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
@@ -339,6 +376,7 @@ def _job_bodies(workflow: Path) -> dict[str, list[str]]:
         if in_jobs and re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
             flush()
             body = []
+            job_id = line.strip()[:-1]
             continue
         if body is not None and line.startswith("    ") and line[4] != " ":
             body.append(line.rstrip())

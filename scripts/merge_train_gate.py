@@ -123,10 +123,17 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 # train moves, and a later result is never read. That is acceptable only
 # because job-level `continue-on-error` keeps the job's conclusion off
 # `failure`; a test ties every name here to that line in its workflow.
-# `tests/test_merge_train_gate.py` pins the name against `mutation.yml`, since
+# `tests/test_merge_train_gate.py` pins each name against its workflow, since
 # a rename would silently restore the wait.
+#
+# `size-check` (#1786) posts an advisory comment and exits 0 on its own. Its
+# workflow triggers on `labeled`, so adding `ready-to-merge` starts a fresh
+# run on the head at the moment the train begins polling, and the train
+# waited on it every time. It stays in `FLOOR_NAMES`: a head it never
+# reported on is still `missing`, and a lone `cancelled` row still fails.
 NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
     "mutation (advisory, PR diff)",
+    "size-check",
 })
 
 # The presence floor (#1458). Check-run names emitted by every workflow that
