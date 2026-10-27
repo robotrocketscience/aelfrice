@@ -11,7 +11,10 @@ from aelfrice.hosts import (
     CLAUDE_HOST,
     CODEX_HOST,
     DEFAULT_HOST,
+    GEMINI_HOST,
+    HOST_ENV,
     SUPPORTED_HOSTS,
+    host_from_env,
     host_of,
 )
 
@@ -37,6 +40,32 @@ def test_host_of_reads_the_namespace() -> None:
 @pytest.mark.timeout(30)
 def test_host_of_falls_back_to_the_default_without_a_host() -> None:
     assert host_of(argparse.Namespace()) == DEFAULT_HOST
+
+
+@pytest.mark.timeout(30)
+def test_the_host_marker_names_gemini() -> None:
+    assert GEMINI_HOST == "gemini"
+    assert HOST_ENV == "AELFRICE_HOST"
+    assert host_from_env({HOST_ENV: "gemini"}) == "gemini"
+    assert host_from_env({HOST_ENV: "codex"}) == "codex"
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("env", [{}, {HOST_ENV: ""}, {HOST_ENV: "other"}])
+def test_an_absent_or_unknown_marker_reads_as_the_default(
+    env: dict[str, str],
+) -> None:
+    assert host_from_env(env) == DEFAULT_HOST
+
+
+@pytest.mark.timeout(30)
+def test_host_from_env_reads_the_process_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(HOST_ENV, "gemini")
+    assert host_from_env() == "gemini"
+    monkeypatch.delenv(HOST_ENV)
+    assert host_from_env() == DEFAULT_HOST
 
 
 @pytest.mark.timeout(60)
