@@ -297,6 +297,12 @@ def _describe(before: str | None, after: str | None) -> str:
     return f"{before or 'absent'} -> {after or 'absent'}"
 
 
+def _table_cell(text: str) -> str:
+    """`text` with each `|` escaped. A GFM table splits a row on every
+    unescaped `|`, inside a code span too, and some test ids hold one."""
+    return text.replace("|", "\\|")
+
+
 def render_summary(
     diffs: list[LegDiff],
     baseline: dict[str, Any] | None,
@@ -338,7 +344,7 @@ def render_summary(
         if d.violations:
             lines.append("| Test | Outcome |")
             lines.append("|---|---|")
-            lines.extend(f"| `{t.test}` | {_describe(t.before, t.after)} |" for t in d.violations)
+            lines.extend(f"| `{_table_cell(t.test)}` | {_describe(t.before, t.after)} |" for t in d.violations)
             lines.append("")
         if d.recovered:
             lines.append("Recovered:")

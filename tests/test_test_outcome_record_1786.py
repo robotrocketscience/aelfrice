@@ -401,6 +401,23 @@ def test_the_summary_names_the_mode_the_baseline_and_each_violation() -> None:
     assert "## Test outcomes (blocking)" in tor.render_summary(diffs, baseline, None, block=True)
 
 
+def _unescaped_pipes(line: str) -> int:
+    return len(re.findall(r"(?<!\\)\|", line))
+
+
+def test_a_pipe_in_a_test_id_keeps_the_violation_row_at_two_cells() -> None:
+    """GFM splits a table cell on `|` even inside a code span unless it is `\\|`."""
+    test = "tests.test_conflict_markers_1491::test_diff3_style_base_marker_is_caught[||||||| main]"
+    current = _record(**{"3.13": {test: tor.SKIPPED}})
+    baseline = _record(**{"3.13": {test: tor.PASSED}})
+    text = tor.render_summary(tor.diff_records(current, baseline), baseline, None, block=False)
+    escaped = test.replace("|", "\\|")
+    assert f"| `{escaped}` | passed -> skipped |" in text
+    rows = [line for line in text.splitlines() if line.startswith("|")]
+    table = rows[rows.index("| Test | Outcome |"):]
+    assert len(table) == 3 and all(_unescaped_pipes(row) == 3 for row in table)
+
+
 def test_the_summary_without_a_baseline_carries_the_notice() -> None:
     current = _record(**{"3.13": {"t::a": tor.SKIPPED}})
     diffs = tor.diff_records(current, None)
