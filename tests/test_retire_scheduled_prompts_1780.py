@@ -10,6 +10,7 @@ transcript or store.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import io
 import json
@@ -585,6 +586,46 @@ _WRITER_CALLS = frozenset({"apply_feedback", "insert_feedback_event"})
 _INSERT_SQL = re.compile(
     r"\b(insert|replace)(\s+or\s+\w+)?\s+into\s+feedback_history\b", re.I,
 )
+# Where a positional valence sits: apply_feedback(store, belief_id,
+# valence, ...) and store.insert_feedback_event(belief_id, valence, ...).
+_VALENCE_POSITION = {"apply_feedback": 2, "insert_feedback_event": 1}
+_SQL_COLUMNS = re.compile(r"\(([^)]*)\)\s*values\s*\(([^)]*)\)", re.I)
+_NUMBER = re.compile(r"-?\d+(\.\d+)?")
+# A note that ends with one of these keys says what valence the site
+# writes; test_every_feedback_writer_is_classified checks it.
+_VALENCE_RULES = {", 0": lambda v: v == 0.0, ", negative": lambda v: v < 0.0}
+
+
+def _call_valence(node: ast.Call, name: str) -> str | None:
+    for kw in node.keywords:
+        if kw.arg == "valence":
+            return ast.unparse(kw.value)
+    pos = _VALENCE_POSITION[name]
+    return ast.unparse(node.args[pos]) if len(node.args) > pos else None
+
+
+def _sql_valence(sql: str) -> str | None:
+    m = _SQL_COLUMNS.search(sql)
+    if m is None:
+        return None
+    cols = [c.strip() for c in m.group(1).split(",")]
+    vals = [v.strip() for v in m.group(2).split(",")]
+    if "valence" not in cols or len(cols) != len(vals):
+        return None
+    return vals[cols.index("valence")]
+
+
+def _valence_value(module: str, expr: str | None) -> float | None:
+    """The valence a site writes, when a literal or a module constant fixes it."""
+    if expr is None:
+        return None
+    if _NUMBER.fullmatch(expr):
+        return float(expr)
+    mod = importlib.import_module(
+        "aelfrice." + module.removesuffix(".py").replace("/", "."),
+    )
+    value = getattr(mod, expr, None)
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _call_name(func: ast.expr) -> str | None:
@@ -607,7 +648,13 @@ class _FeedbackWriterScan(ast.NodeVisitor):
         self.module = module
         self.scope: list[str] = []
         self.sites: list[tuple[str, str]] = []
+        self.valences: list[tuple[tuple[str, str], str | None]] = []
         self.retrieval_sources: list[str] = []
+
+    def _site(self, valence: str | None) -> None:
+        site = (self.module, ".".join(self.scope))
+        self.sites.append(site)
+        self.valences.append((site, valence))
 
     def _enter(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
         self.scope.append(node.name)
@@ -621,7 +668,7 @@ class _FeedbackWriterScan(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         name = _call_name(node.func)
         if name in _WRITER_CALLS:
-            self.sites.append((self.module, ".".join(self.scope)))
+            self._site(_call_valence(node, name))
         if name == "record_retrieval" and any(
             k.arg == "source" for k in node.keywords
         ):
@@ -630,7 +677,7 @@ class _FeedbackWriterScan(ast.NodeVisitor):
 
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str) and _INSERT_SQL.search(node.value):
-            self.sites.append((self.module, ".".join(self.scope)))
+            self._site(_sql_valence(node.value))
 
 
 @pytest.mark.source_scan
@@ -638,11 +685,13 @@ def test_every_feedback_writer_is_classified() -> None:
     src_root = Path(inspect.getfile(hook_search)).parent
     found: Counter[tuple[str, str]] = Counter()
     retrieval_sources: list[str] = []
+    valences: list[tuple[tuple[str, str], str | None]] = []
     for py in sorted(src_root.rglob("*.py")):
         scan = _FeedbackWriterScan(py.relative_to(src_root).as_posix())
         scan.visit(ast.parse(py.read_text(encoding="utf-8")))
         found.update(scan.sites)
         retrieval_sources.extend(scan.retrieval_sources)
+        valences.extend(scan.valences)
     expected = Counter({k: len(v) for k, v in _FEEDBACK_WRITERS.items()})
     assert found == expected, (
         "feedback_history writers changed; classify each new one in "
@@ -653,6 +702,19 @@ def test_every_feedback_writer_is_classified() -> None:
     )
     # record_retrieval writes `hook` unless a caller passes another source.
     assert retrieval_sources == []
+    # An audit row keeps nothing only because its valence is 0, so a
+    # site's notes must state the valence it writes.
+    checked = 0
+    for site, expr in valences:
+        for suffix, holds in _VALENCE_RULES.items():
+            if all(n.endswith(suffix) for n in _FEEDBACK_WRITERS[site]):
+                value = _valence_value(site[0], expr)
+                assert value is not None and holds(value), (site, expr)
+                checked += 1
+    assert checked == sum(
+        len(notes) for notes in _FEEDBACK_WRITERS.values()
+        if any(n.endswith(tuple(_VALENCE_RULES)) for n in notes)
+    )
 
 
 def test_positive_feedback_exclusion_matches_exactly(
