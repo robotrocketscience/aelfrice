@@ -25,6 +25,7 @@ import pytest
 import aelfrice.cli as cli_module
 from aelfrice import clamp_ghosts, deferred_feedback, hook_search, sentiment_feedback
 from aelfrice.claude_memory_reconcile import ingest_memory_text
+from aelfrice.doctor import FEEDBACK_SOURCE_RETENTION_PROMOTION
 from aelfrice.feedback import (
     ENV_VALENCE_PROPAGATION,
     PROPAGATION_SOURCE_PREFIX,
@@ -35,6 +36,8 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_SUPPORTS,
+    FEEDBACK_SOURCE_LOCK_EXPIRE,
+    FEEDBACK_SOURCE_REASSERT_REVIVE,
     LOCK_USER,
     ORIGIN_USER_VALIDATED,
     Edge,
@@ -502,6 +505,25 @@ def test_apply_retires_a_belief_a_hook_retrieval_showed(
     assert hook_search.record_retrieval(store, [belief]) == 1
     report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
     assert bid in {c for c, _ in report.candidates}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [FEEDBACK_SOURCE_LOCK_EXPIRE, FEEDBACK_SOURCE_REASSERT_REVIVE,
+     FEEDBACK_SOURCE_RETENTION_PROMOTION, "review:remove"],
+)
+def test_apply_retires_a_belief_only_an_audit_row_touched(
+    store: MemoryStore, tmp_path: Path, source: str,
+) -> None:
+    # Audit rows carry valence 0 under a source that isn't automatic, so
+    # the valence alone keeps them from counting as an affirmation.
+    assert not _is_automatic(source)
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    store.insert_feedback_event(bid, 0.0, source, "2026-10-12T00:00:00Z")
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid in {c for c, _ in report.candidates}
+    assert bid not in _active_ids(store)
 
 
 def test_automatic_sources_match_their_writers() -> None:
