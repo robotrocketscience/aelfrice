@@ -1680,18 +1680,26 @@ def test_graders_who_share_no_graded_item_fail_h0() -> None:
     assert rep["hypotheses"]["H0"] == bench.V_FAIL
 
 
-@pytest.mark.parametrize(("a_score", "c_score"), [(1, 0), (0, 0), (3, 3)])
+@pytest.mark.parametrize(("a_score", "c_score"), [(1, 0), (3, 2)])
 def test_graders_who_put_every_item_on_one_side_of_the_cut_fail_h0(
     a_score: int, c_score: int,
 ) -> None:
     # As in the #1804 calibration, kappa is then undefined and never meets
-    # the bar, though the graders never disagree at the cut.
+    # the bar, though the graders never disagree at the cut. Each grader
+    # scores half the null items 0 and leaves the other half unclear, so no
+    # null item is scored by both, both null rates are 0, and only the
+    # undefined kappa can fail H0.
     key, a, c = _key(_hand([2, 2, 2, 2], [3, 3, 2, 4]))
     one_side: tuple[Scores, Scores] = (
         dict.fromkeys(a, a_score), dict.fromkeys(c, c_score))
+    nulls = [i.id for i in key.items if i.arms is None]
+    for k, i in enumerate(nulls):
+        one_side[k % 2][i], one_side[1 - k % 2][i] = 0, None
     assert bench.exact_kappa([i.id for i in key.items], *map(_cut, one_side)) is None
     rep = bench.score(key, *one_side, seed=1, census_report=_H1_PASS)
-    assert (rep["kappa"], rep["kappa_n"], rep["agreed"]) == (None, len(a), len(a))
+    joint = len(a) - len(nulls)
+    assert (rep["kappa"], rep["kappa_n"], rep["agreed"]) == (None, joint, joint)
+    assert [(n["graded"], n["rate"]) for n in rep["null_arm"]] == [(len(nulls) // 2, 0.0)] * 2
     assert rep["hypotheses"]["H0"] == bench.V_FAIL
     assert rep["hypotheses"]["H5"] == {"A1": bench.V_UNRELIABLE}
 
