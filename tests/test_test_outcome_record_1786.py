@@ -318,6 +318,13 @@ def test_diff_records_walks_the_current_legs_and_tolerates_a_null_leg() -> None:
     assert tor.has_violations(diffs)
 
 
+def test_diff_records_passes_the_allowlist_to_every_leg() -> None:
+    current = _record(**{"3.12": {"t::a": tor.SKIPPED}, "3.13": {"t::a": tor.SKIPPED}})
+    baseline = _record(**{"3.12": {"t::a": tor.PASSED}, "3.13": {"t::a": tor.PASSED}})
+    assert tor.has_violations(tor.diff_records(current, baseline))
+    assert not tor.has_violations(tor.diff_records(current, baseline, ["t::*"]))
+
+
 def test_diff_records_with_no_baseline_has_no_violations() -> None:
     current = _record(**{"3.13": {"t::a": tor.SKIPPED}})
     diffs = tor.diff_records(current, None)
@@ -524,6 +531,30 @@ def test_record_then_diff_through_main(tmp_path: Path, capsys: pytest.CaptureFix
 
     rc = tor.main(["diff", "--current", str(current), "--baseline", str(baseline), "--block"])
     assert rc == 1, "blocking mode fails on a violation"
+
+
+def test_the_allowlist_flag_reaches_the_ratchet(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The operator's one exemption path, from `--allowlist` to each leg's diff."""
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{
+        "3.12": {"tests.test_win_x::t": tor.SKIPPED, "tests.test_posix::t": tor.PASSED},
+        "3.13": {"tests.test_win_x::t": tor.SKIPPED, "tests.test_posix::t": tor.PASSED},
+    })))
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(_record(**{
+        "3.12": {"tests.test_win_x::t": tor.PASSED, "tests.test_posix::t": tor.PASSED},
+        "3.13": {"tests.test_win_x::t": tor.PASSED, "tests.test_posix::t": tor.PASSED},
+    })))
+    allowlist = tmp_path / "allow.txt"
+    allowlist.write_text("# windows-only\ntests.test_win*::*\n", encoding="utf-8")
+    base_args = ["diff", "--current", str(current), "--baseline", str(baseline), "--block"]
+
+    assert tor.main(base_args) == 1
+    capsys.readouterr()
+    assert tor.main([*base_args, "--allowlist", str(allowlist)]) == 0
+    out = capsys.readouterr().out
+    assert "::warning::" not in out and "::error::" not in out
+    assert out.count("0 ratchet violation(s)") == 2
 
 
 def test_block_mode_passes_without_violations_and_with_no_baseline(tmp_path: Path) -> None:
