@@ -65,8 +65,8 @@ jobs:
     timeout-minutes: 30
     # The branch ruleset requires the two `pytest` legs and not
     # `derived-figures`, so the legs carry that job's result: each leg waits
-    # for it and fails in the step after harden-runner, before checkout,
-    # unless it passed. A merge through the UI, `gh pr merge` or
+    # for it and fails in its first step, before checkout, unless it
+    # passed. A merge through the UI, `gh pr merge` or
     # auto-merge then cannot land a red figure.
     # `!cancelled()` runs the legs after a failed `derived-figures`. Without
     # it they report `skipped`, and the ruleset counts a skipped check as a
@@ -80,9 +80,6 @@ jobs:
       matrix:
         python-version: ['3.12', '3.13']
     steps:
-      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
-        with:
-          egress-policy: audit
       # No `if:`, so a docs-only PR fails here too. `needs` reports
       # `success`, `failure`, `cancelled` or `skipped`, and only `success`
       # passes. `derived-figures` is a matrix job with one job ID, so this
@@ -222,8 +219,8 @@ jobs:
       # producers over the same tree on every PR, with no path filter, on the
       # same Python versions as these legs, so each leg ran the producers a
       # second time. The branch ruleset does not require that job, so the
-      # step after harden-runner fails unless every leg of it passed, and a
-      # red producer check still turns both required legs red. That job
+      # first step fails unless every leg of it passed, and a red producer
+      # check still turns both required legs red. That job
       # passes `--producer-timeout 120`, the 120 s the test's timeout marker
       # sets, so a producer still running at 120 s fails it. The marker timed
       # the text scan and the producers together. The flag times each
@@ -292,9 +289,6 @@ jobs:
       matrix:
         python-version: ['3.12', '3.13']
     steps:
-      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
-        with:
-          egress-policy: audit
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -318,9 +312,6 @@ jobs:
   posterior-writers:
     runs-on: ubuntu-latest
     steps:
-      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
-        with:
-          egress-policy: audit
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false

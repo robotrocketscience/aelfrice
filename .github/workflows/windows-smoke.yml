@@ -55,11 +55,11 @@ jobs:
   smoke:
     runs-on: windows-latest
     steps:
-      # No `step-security/harden-runner` here, unlike every other workflow:
-      # its egress policy is implemented with Linux networking primitives
-      # and it is a no-op-or-failure on Windows runners. This is the first
-      # non-Linux job in the repo, so it is also the first place that
-      # distinction has had to be made.
+      # No `step-security/harden-runner` here. Its egress policy is
+      # implemented with Linux networking primitives and it is a
+      # no-op-or-failure on Windows runners. Since #1786 the step runs only
+      # in jobs that hold a write token or a secret, and these jobs hold
+      # neither, so the Windows distinction no longer matters here.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # zizmor artipacked: nothing here pushes, so the token has no
