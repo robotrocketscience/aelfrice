@@ -116,6 +116,8 @@ from benchmarks.relevance_scale import (
     Scores,
     binarize,
     parse_scores,
+    require_distinct_files,
+    require_scores,
 )
 
 DEFAULT_SEED: Final[int] = 1804
@@ -590,32 +592,6 @@ def score_inputs(
         inputs.update(
             {f"session1 {g}": p for g, p in zip(SESSION1_GRADERS, session1, strict=True)})
     return inputs
-
-
-def require_distinct_files(flag: str, paths: Sequence[Path]) -> None:
-    """InputError when two of `paths` are one file, by any spelling or link.
-
-    One grader's file given for two graders would agree with itself on
-    every row.
-    """
-    for n, p in enumerate(paths):
-        for q in paths[n + 1:]:
-            if p.samefile(q):
-                raise InputError(f"{flag} {p} and {q} are one file; each grader needs its own")
-
-
-def require_scores(ids: Sequence[str], scores: Mapping[str, Scores]) -> None:
-    """InputError unless each grader scored exactly the key's ids."""
-    wanted = set(ids)
-    for grader, s in scores.items():
-        missing = sorted(wanted - s.keys())
-        if missing:
-            raise InputError(f"grader {grader} has no score for {len(missing)} key rows,"
-                             f" {missing[0]} among them")
-        extra = sorted(s.keys() - wanted)
-        if extra:
-            raise InputError(f"grader {grader} scored {len(extra)} rows the key lacks,"
-                             f" {extra[0]} among them")
 
 
 def require_disjoint_halves(items: Sequence[CalibrationItem]) -> None:

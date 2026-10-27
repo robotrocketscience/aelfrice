@@ -7,13 +7,14 @@ harness, `real_store_ab_1795` (#1809), hand the graders these
 instructions and read their score files here.
 
 A score file is JSONL, one `{"id": str, "score": 0|1|2|3|null}` object
-per line.
+per line. Each grader's file is its own and scores exactly the key's
+rows; `require_distinct_files` and `require_scores` check both.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, cast
 
@@ -83,3 +84,29 @@ def parse_scores(path: Path, data: bytes) -> dict[str, int | None]:
 def binarize(scores: Scores, cut: int) -> dict[str, bool | None]:
     """{id: score at or above `cut`}, a null score staying None."""
     return {i: None if s is None else s >= cut for i, s in scores.items()}
+
+
+def require_distinct_files(flag: str, paths: Sequence[Path]) -> None:
+    """InputError when two of `paths` are one file, by any spelling or link.
+
+    One grader's file given for two graders would agree with itself on
+    every row.
+    """
+    for n, p in enumerate(paths):
+        for q in paths[n + 1:]:
+            if p.samefile(q):
+                raise InputError(f"{flag} {p} and {q} are one file; each grader needs its own")
+
+
+def require_scores(ids: Sequence[str], scores: Mapping[str, Scores]) -> None:
+    """InputError unless each grader scored exactly the key's ids."""
+    wanted = set(ids)
+    for grader, s in scores.items():
+        missing = sorted(wanted - s.keys())
+        if missing:
+            raise InputError(f"grader {grader} has no score for {len(missing)} key rows,"
+                             f" {missing[0]} among them")
+        extra = sorted(s.keys() - wanted)
+        if extra:
+            raise InputError(f"grader {grader} scored {len(extra)} rows the key lacks,"
+                             f" {extra[0]} among them")
