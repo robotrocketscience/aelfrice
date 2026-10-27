@@ -1,0 +1,8 @@
+# Tests the outcome ratchet in ci.yml leaves alone (#1786).
+#
+# One test id glob per line, as `scripts/test_outcome_record.py` names a
+# test: `<classname>::<name>`, for example
+# `tests.test_store.TestOpen::test_readonly[a]`. A test listed here may be
+# skipped, xfailed or never executed without the diff calling it a ratchet
+# violation. Say why on a `#` line above each entry; a comment after the
+# glob on the same line becomes part of the glob, which then matches nothing.
