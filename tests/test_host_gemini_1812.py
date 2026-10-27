@@ -454,6 +454,29 @@ def test_every_slash_command_becomes_one_toml_command() -> None:
         assert re.sub(r"\{\{args\}\}", "", prompt).count("{{") == 0, name
 
 
+def _source_front_matter(text: str) -> list[str]:
+    """The lines between a source's two `---` fences, read without the module."""
+    lines = text.splitlines()
+    assert lines[0] == "---"
+    return lines[1:lines.index("---", 1)]
+
+
+def test_front_matter_is_the_description_and_not_the_prompt() -> None:
+    """Killed by: keeping the front matter, which empties every description
+    and sends the raw YAML to the model as the start of the prompt."""
+    bundle = hgm.bundled_gemini_commands()
+    for filename, text in bundled_slash_files().items():
+        stem = filename.removesuffix(".md")
+        front = _source_front_matter(text)
+        parsed = tomllib.loads(bundle[stem + ".toml"])
+        if stem != "setup":
+            (line,) = [ln for ln in front if ln.startswith("description:")]
+            assert parsed["description"] == line.removeprefix("description:").strip()
+            assert parsed["description"], filename
+        prompt_lines = set(parsed["prompt"].splitlines())
+        assert not prompt_lines & {ln for ln in front if ln.strip()}, filename
+
+
 def test_arguments_become_the_gemini_placeholder() -> None:
     sources = bundled_slash_files()
     bundle = hgm.bundled_gemini_commands()
