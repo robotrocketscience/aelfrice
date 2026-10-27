@@ -126,6 +126,7 @@ def _n_commands() -> int:
 def test_setup_writes_the_hooks_and_commands(sb: Sandbox) -> None:
     rc, lines = _run(["setup", "--host", "gemini"], sb)
     assert rc == 0
+    *lines, note = lines
     assert lines == [
         f"wrote <TMP>/userhome/.gemini/settings.json (events: {EVENTS})",
         "  next: restart Gemini CLI to load the hooks. Gemini runs them "
@@ -133,10 +134,11 @@ def test_setup_writes_the_hooks_and_commands(sb: Sandbox) -> None:
         "is the default.",
         f"installed {_n_commands()} Gemini command(s) in "
         "<TMP>/userhome/.gemini/commands/aelf: invoke as /aelf:<name>",
-        "  note: opted the claude host out of auto-install (#1053) — aelf "
-        "will no longer rewrite ~/.claude/settings.json at CLI entry. Undo "
-        "with `aelf setup` (default claude host).",
     ]
+    # The #1053 tests own the wording of the consent note.
+    assert note.startswith(
+        "  note: opted the claude host out of auto-install (#1053)",
+    )
     assert _read(sb.settings) == {
         "hooks": host_gemini.desired_gemini_hooks(str(sb.hook)),
     }
@@ -351,7 +353,7 @@ def test_doctor_fails_on_an_edited_command(
     assert rc == 1
     assert any(
         line.startswith("[FAIL] installed /aelf:* command(s) do not match")
-        and "search.toml" in line
+        and line.endswith("search.toml; re-run `aelf setup --host gemini`")
         for line in lines
     )
 
@@ -413,6 +415,7 @@ def test_an_inapplicable_option_exits_2_before_any_write(
     assert lines == []
     err = capsys.readouterr().err
     assert f"{argv[0]} --host gemini: refusing {argv[3]}" in err
+    assert "; the gemini host path never reads these options" in err
     assert "#1429" in err
     assert not sb.settings.exists()
     assert not sb.commands.exists()

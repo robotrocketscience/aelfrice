@@ -6631,13 +6631,13 @@ def _cmd_doctor_gemini(
                 "installed /aelf:* command(s) do not match what this build "
                 "writes (edited, or left stale by an upgrade): "
                 + ", ".join(modified)
-                + " — re-run `aelf setup --host gemini`",
+                + "; re-run `aelf setup --host gemini`",
             )
         if orphaned:
             faults.append(
                 "installed /aelf:* command(s) are no longer part of this "
                 "build: " + ", ".join(orphaned)
-                + " — re-run `aelf setup --host gemini`",
+                + "; re-run `aelf setup --host gemini`",
             )
         from aelfrice import launcher
 
@@ -13391,7 +13391,7 @@ def _host_option_rejection(
     refused = set(inapplicable.values())
     accepted = sorted(opt for opt in every if opt not in refused)
     return (
-        f"{cmd} --host {host}: refusing {', '.join(offenders)} — the {host} "
+        f"{cmd} --host {host}: refusing {', '.join(offenders)}; the {host} "
         f"host path never reads these options, so accepting them would "
         f"discard them silently (#1429). Nothing was changed. "
         f"`aelf {cmd} --host {host}` accepts only {', '.join(accepted)}; "
@@ -13477,8 +13477,8 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     args = parser.parse_args(effective_argv)
     cmd = getattr(args, "cmd", None)
     # #1429: an option the codex or gemini host path never reads must fail
-    # here — ahead of the auto-installer, the update check, and every
-    # executor — so the refusal is provably before any filesystem mutation.
+    # here, ahead of the auto-installer, the update check, and every
+    # executor, so the refusal is provably before any filesystem mutation.
     host_rejection = _host_option_rejection(parser, cmd, args, effective_argv)
     if host_rejection is not None:
         print(host_rejection, file=sys.stderr)
