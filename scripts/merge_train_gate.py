@@ -109,7 +109,9 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 # `continue-on-error`, which sets its conclusion only once it finishes. While
 # it runs it read as pending, and its 60-minute cap is six times the train's
 # 10-minute wait, so a PR with every gate green was bounced whenever the job
-# was slow (always, when `cli.py` changes: #1632).
+# was slow (always, when `cli.py` changes: #1632). Since #1786 the job starts
+# on the same `labeled` event as the train, so it is pending during every
+# poll; this exemption is what lets it run on that event at all.
 #
 # This is not ADVISORY_NAMES: a `failure` conclusion still gates, but only if
 # it arrives while the train is polling. Once everything else has settled the
