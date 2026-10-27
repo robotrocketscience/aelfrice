@@ -7,7 +7,7 @@ docstring says #1526 measured the header and left it uncharged, and the budget
 the UserPromptSubmit hook hands `retrieve()` is the bare constant: in
 `user_prompt_submit`, `budget` is the caller's `token_budget` or
 `DEFAULT_HOOK_TOKEN_BUDGET`, and `_retrieve` passes it on unchanged. The
-paragraph now says that. Three tests hold it there.
+paragraph now says that. Four tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
@@ -36,6 +36,14 @@ which leaves no `<locked>` or `<core>` at all. Each fire asserts the hint
 is emitted with no `_retrieve` call and records the sub-blocks ahead of it.
 The paragraph then has to say `_retrieve` never runs there and name every
 one of those sub-blocks.
+
+The fourth covers the retrieving path. It wraps `_retrieve`, prices the
+hits it returns with `_ups_belief_line_cost`, the cost the packer charges
+on this lane, and asserts the hint is appended although the hits priced
+under `DEFAULT_HOOK_TOKEN_BUDGET`. The paragraph then must not say
+that budget was spent before the hint, and must cite
+`docs/design/budget_discriminability_k0_result.md`, where `binds_on` is
+`pool` on 7 of 7 queries on every lane.
 """
 from __future__ import annotations
 
@@ -353,3 +361,90 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
             "<core> ahead of it, and the MEMORY_BLOCK_HINT docstring does "
             "not say so (#1546)"
         )
+
+
+_K0_RESULT = "docs/design/budget_discriminability_k0_result.md"
+"""The measurement the paragraph cites for where retrieval stops."""
+
+
+@pytest.mark.source_scan
+def test_a_retrieving_fire_appends_the_hint_under_an_unspent_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hint follows `_retrieve` whatever share of the budget the hits used.
+
+    One unlocked belief matches the prompt, so the pool prices far below
+    `DEFAULT_HOOK_TOKEN_BUDGET` and retrieval ends on the pool. The wrapper
+    prices the returned hits with `_ups_belief_line_cost`, the cost the
+    packer charges on this lane. The arity and nonzero asserts are the
+    distinguishing arm: a fire that skipped `_retrieve` or returned no hits
+    would make "under budget" true of nothing. Only then is the paragraph
+    read; it is marked `source_scan` (#1746) for that read and for the
+    citation's existence check.
+    """
+    spent: list[int] = []
+    real = hook._retrieve
+
+    def pricing(*args: Any, **kwargs: Any) -> Any:
+        hits = real(*args, **kwargs)
+        spent.append(sum(hook._ups_belief_line_cost(b) for b in hits))
+        return hits
+
+    monkeypatch.setattr(hook, "_retrieve", pricing)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            Belief(
+                id="F1",
+                content="banana is a yellow fruit",
+                content_hash="h_F1",
+                alpha=1.0,
+                beta=1.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+            )
+        )
+    finally:
+        store.close()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    sout = io.StringIO()
+    serr = io.StringIO()
+
+    rc = hook.user_prompt_submit(
+        stdin=io.StringIO(_payload(tmp_path)), stdout=sout, stderr=serr,
+    )
+
+    assert rc == 0
+    assert "Traceback" not in serr.getvalue(), serr.getvalue()
+    assert len(spent) == 1, (
+        f"_retrieve ran {len(spent)} times, not once, so this test measured "
+        "nothing about the retrieving path"
+    )
+    assert 0 < spent[0] < hook.DEFAULT_HOOK_TOKEN_BUDGET, (
+        f"the hits priced {spent[0]} tokens against "
+        f"DEFAULT_HOOK_TOKEN_BUDGET={hook.DEFAULT_HOOK_TOKEN_BUDGET}; the "
+        "fixture no longer retrieves a pool that ends under the budget"
+    )
+    assert hook.MEMORY_BLOCK_HINT in sout.getvalue(), (
+        "a retrieving fire with hits emitted no hint: "
+        f"{sout.getvalue()!r}"
+    )
+    doc = " ".join(_hint_docstring().split())
+    assert "spent that budget" not in doc, (
+        f"retrieval priced {spent[0]} of {hook.DEFAULT_HOOK_TOKEN_BUDGET} "
+        "tokens and the hint was still appended, yet the MEMORY_BLOCK_HINT "
+        "docstring says the budget was spent before the hint (#1546)"
+    )
+    assert f"`{_K0_RESULT}`" in doc, (
+        "the MEMORY_BLOCK_HINT docstring no longer cites the K0 result for "
+        "where retrieval stops (#1546)"
+    )
+    root = Path(__file__).resolve().parents[1]
+    assert (root / _K0_RESULT).is_file(), (
+        f"the MEMORY_BLOCK_HINT docstring cites {_K0_RESULT}, which is gone"
+    )
