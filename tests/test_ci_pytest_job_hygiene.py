@@ -10,8 +10,10 @@ job-level `name:` or a matrix change would rename both.
 
 The job deselects one test, the live-tree producer check, because the
 `derived-figures` job runs the same producers on every PR. The tests at the
-bottom pin the legs' test selection and that job's gate command verbatim,
-and reject the keys that skip the job or let it fail green.
+bottom pin the legs' `run:` line and reject the `PYTEST_` variables that
+add to it. They pin that job's gate command verbatim, run its arguments
+through the script, and reject the keys that skip the job or let it fail
+green.
 
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
@@ -280,6 +282,20 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
     assert re.search(rf"^def {re.escape(func)}\(", source, re.M), (
         f"{func} is not defined in {path}, so the deselect skips nothing"
     )
+
+
+def test_no_pytest_variable_is_set_anywhere_in_the_workflow() -> None:
+    """pytest adds `PYTEST_ADDOPTS` to the command line, so a `-k` or a
+    `--deselect` in it hides tests from the required legs while the `run:`
+    line above stays pinned. It applies from a workflow, job or step `env:`
+    and from an earlier step's write to `$GITHUB_ENV`, and pytest reads
+    `PYTEST_PLUGINS` the same way, so no line outside a comment names one."""
+    found = [
+        line.strip()
+        for line in _CI.read_text(encoding="utf-8").splitlines()
+        if "PYTEST_" in line and not line.lstrip().startswith("#")
+    ]
+    assert found == [], found
 
 
 def _gate_step() -> list[str]:
