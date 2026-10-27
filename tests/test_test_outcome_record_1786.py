@@ -283,6 +283,38 @@ def test_the_allowlist_exempts_by_glob_and_ignores_comments() -> None:
     assert [t.test for t in d.violations] == ["tests.test_posix::test_x"]
 
 
+_LITERAL_IDS = [
+    "tests.test_store.TestOpen::test_readonly[a]",
+    "tests.t::test_x[p-1]",
+    "tests.t::test_x[!a]",
+    "tests.t::test_x[/tmp/a b]",
+    "tests.t::test_x[Owner | 3 +]",
+    "tests.t::test_x[||||||| main]",
+    "tests.t::test_x[a?b]",
+    "tests.t::test_x[a.*b]",
+    "tests.t::test_x[^$\\d+]",
+]
+
+
+@pytest.mark.parametrize("test", _LITERAL_IDS)
+def test_an_allowlist_entry_that_is_a_test_id_matches_that_id(test: str) -> None:
+    """The allowlist header tells the operator to write the id as the record names it."""
+    assert tor.is_allowlisted(test, [test])
+    d = tor.diff_leg("3.12", {test: tor.SKIPPED}, {test: tor.PASSED}, [test])
+    assert d.violations == []
+
+
+def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
+    assert not tor.is_allowlisted("tests.test_store.TestOpen::test_readonlya", ["tests.test_store.TestOpen::test_readonly[a]"])
+    assert not tor.is_allowlisted("tests.t::test_x[ab]", ["tests.t::test_x[a?]"])
+    assert not tor.is_allowlisted("tests.t::test_x[a]", ["tests.t::test_x"])
+    assert not tor.is_allowlisted("tests.t::test_x", ["tests.t::test_x[a]"])
+    assert tor.is_allowlisted("tests.t::test_x[p-1]", ["tests.t::test_x[*]"])
+    assert tor.is_allowlisted("tests.t::test_x[p-12]", ["tests.t::test_x[*]"])
+    assert tor.is_allowlisted("tests.t::test_x[]", ["tests.t::test_x[*]"])
+    assert not tor.is_allowlisted("tests.t::test_y[p-1]", ["tests.t::test_x[*]"])
+
+
 def test_every_checked_in_allowlist_entry_is_one_test_id_glob() -> None:
     """A trailing comment or a bare module name would parse and match nothing."""
     for entry in tor.parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8")):

@@ -1,8 +1,12 @@
 # Tests the outcome ratchet in ci.yml leaves alone (#1786).
 #
-# One test id glob per line, as `scripts/test_outcome_record.py` names a
-# test: `<classname>::<name>`, for example
-# `tests.test_store.TestOpen::test_readonly[a]`. A test listed here may be
-# skipped, xfailed or never executed without the diff calling it a ratchet
-# violation. Say why on a `#` line above each entry; a comment after the
-# glob on the same line becomes part of the glob, which then matches nothing.
+# One test id per line, as `scripts/test_outcome_record.py` names a test:
+# `<classname>::<name>`, for example
+# `tests.test_store.TestOpen::test_readonly[a]`. Copy the id from the step
+# summary as it is. `*` matches any run of characters, so
+# `tests.test_store.TestOpen::test_readonly[*]` names every parameter of
+# that test; every other character, `[` and `?` included, matches itself.
+# A test listed here may be skipped, xfailed or never executed without the
+# diff calling it a ratchet violation. Say why on a `#` line above each
+# entry; a comment after the id on the same line becomes part of the id,
+# which then matches nothing.

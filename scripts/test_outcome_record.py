@@ -32,7 +32,9 @@ records as a plain pass, does not occur in this suite.
 The ratchet. A test whose outcome moves to `skipped`, `xfailed` or `never
 executed` from any other outcome, or that is new with one of those
 outcomes, is a violation unless the allowlist names it. The allowlist file
-holds one test id glob per line; blank lines and `#` comments are ignored.
+holds one test id per line, in which `*` matches any run of characters and
+every other character, `[` and `?` included, matches itself; blank lines
+and `#` comments are ignored.
 Failures, errors and xpasses are reported but are not violations: the
 pytest leg itself is red on those. Without `--block` the exit status is 0
 whatever the diff says and each violation is a `::warning::`; with it the
@@ -61,7 +63,6 @@ usage error or an unreadable input.
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import io
 import json
 import re
@@ -219,8 +220,15 @@ def parse_allowlist(text: str) -> list[str]:
     return patterns
 
 
+def allowlist_regex(entry: str) -> re.Pattern[str]:
+    """An allowlist entry as a regex: `*` matches any run of characters and
+    every other character matches itself. Test ids hold `[`, `?` and `|` in
+    their parameters, so no other glob syntax applies."""
+    return re.compile(".*".join(re.escape(part) for part in entry.split("*")))
+
+
 def is_allowlisted(test: str, allowlist: Iterable[str]) -> bool:
-    return any(fnmatch.fnmatchcase(test, pattern) for pattern in allowlist)
+    return any(allowlist_regex(entry).fullmatch(test) for entry in allowlist)
 
 
 def is_violation(before: str | None, after: str | None) -> bool:
