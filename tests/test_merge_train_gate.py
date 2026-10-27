@@ -1179,6 +1179,38 @@ def test_the_floor_is_exactly_what_its_sources_emit() -> None:
     assert frozenset().union(*_FLOOR_SOURCES.values()) == FLOOR_NAMES
 
 
+_FLOOR_ENTRY = re.compile(r'^\s+"(?P<name>[^"]+)",\s+#\s*(?P<file>\S+\.yml)\s*$')
+
+
+def _floor_comment_attributions() -> dict[str, str]:
+    """`{name: workflow file}` from the trailing comment on each FLOOR_NAMES
+    entry in the gate's source."""
+    source = (_REPO / "scripts" / "merge_train_gate.py").read_text()
+    block = source[source.index("FLOOR_NAMES: frozenset[str] = frozenset({"):]
+    block = block[: block.index("})")]
+    found = {
+        m.group("name"): m.group("file")
+        for m in (_FLOOR_ENTRY.match(ln) for ln in block.splitlines())
+        if m
+    }
+    assert set(found) == FLOOR_NAMES, "every floor entry carries a source comment"
+    return found
+
+
+def test_every_floor_comment_names_the_workflow_that_emits_the_row() -> None:
+    """The comments are what a reader checks a missing row against (#1786).
+
+    `pr-title-prefix` and `pr-body-issue-link` were attributed to
+    `staging-gate.yml` after they moved to `pr-metadata.yml` in #1436, so a
+    recovery that dispatched staging-gate looked complete while the two rows
+    a dispatch cannot produce were still absent.
+    """
+    expected = {
+        name: file for file, names in _FLOOR_SOURCES.items() for name in names
+    }
+    assert _floor_comment_attributions() == expected
+
+
 def test_the_floor_excludes_advisory_bots_and_the_trains_own_jobs() -> None:
     """Flooring on either is a deadlock, not a gate.
 

@@ -173,8 +173,8 @@ FLOOR_NAMES: frozenset[str] = frozenset({
     "migration-policy-check",   # migration-policy-check.yml
     "pattern-scan",             # staging-gate.yml
     "posterior-writers",        # ci.yml
-    "pr-body-issue-link",       # staging-gate.yml
-    "pr-title-prefix",          # staging-gate.yml
+    "pr-body-issue-link",       # pr-metadata.yml
+    "pr-title-prefix",          # pr-metadata.yml
     "pytest (3.12)",            # ci.yml
     "pytest (3.13)",            # ci.yml
     "release-docs-check",       # staging-gate.yml
