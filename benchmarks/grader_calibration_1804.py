@@ -109,6 +109,13 @@ from benchmarks.real_store_ab_1795 import (
     exact_kappa,
     make_key,
 )
+from benchmarks.relevance_scale import (
+    INSTRUCTIONS,
+    SCORES,
+    Scores,
+    binarize,
+    parse_scores,
+)
 
 DEFAULT_SEED: Final[int] = 1804
 MIN_HALF_ROWS: Final[int] = 2000
@@ -127,7 +134,6 @@ PAIRS: Final[tuple[tuple[str, str], ...]] = (("a", "b"), ("a", "c"), ("b", "c"))
 """Every pair, the a and b pair first, as the order of preference starts."""
 SESSION1_GRADERS: Final[tuple[str, ...]] = ("a", "b")
 
-SCORES: Final[tuple[int, ...]] = (0, 1, 2, 3)
 FIXED_CUT: Final[int] = 2
 """Fixed rule: a row is relevant when its score is 2 or higher, for every grader."""
 CUTS: Final[tuple[int, ...]] = (1, 2, 3)
@@ -163,31 +169,6 @@ PACKET_FIELDS: Final[tuple[str, ...]] = ("id", "prompt", "belief")
 OWNER_DIR: Final[int] = 0o700
 OWNER_FILE: Final[int] = 0o600
 """Modes of the split's directories and files: the packets and key hold store text."""
-
-SCALE: Final[tuple[tuple[str, str], ...]] = (
-    ("3", ("Needed: without the note, the answer would be wrong or would miss a rule,"
-           " a preference, or an earlier decision about this exact task.")),
-    ("2", ("Would help: reading the note would change or directly inform what the"
-           " assistant does for this prompt.")),
-    ("1", ("Same topic only: the note is about the same project, file, tool, or topic,"
-           " but wouldn't change the answer.")),
-    ("0", "Unrelated, or it only shares words with the prompt."),
-    ("null", "You can't tell what the prompt asks or what the note means."),
-)
-"""The pre-registration's scale table, one `(score, meaning)` row per score."""
-
-INSTRUCTIONS: Final[str] = (
-    "Each row of packet.jsonl pairs a prompt a user typed to a coding assistant\n"
-    "with one note from that project's memory. Score each row from 0 to 3, or\n"
-    "null:\n\n"
-    + "".join(f"  {score:<5} {meaning}\n" for score, meaning in SCALE)
-    + "\nWrite one JSON object per line to your own labels file:\n"
-    '  {"id": "<row id>", "score": 2}\n'
-    "The score is 0, 1, 2, 3, or null. Score every row. Rows come in no\n"
-    "particular order. Don't discuss the rows with the other graders.\n"
-)
-
-Scores = Mapping[str, int | None]
 
 
 # --- Split --------------------------------------------------------------------
@@ -578,30 +559,6 @@ def parse_calibration_key(path: Path, data: bytes) -> list[CalibrationItem]:
     return items
 
 
-def parse_scores(path: Path, data: bytes) -> dict[str, int | None]:
-    """{id: 0 to 3 or None} from `data`, JSONL of {"id", "score"} read from `path`.
-
-    InputError when malformed.
-    """
-    scores: dict[str, int | None] = {}
-    for n, line in enumerate(data.decode("utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        obj: object = json.loads(line)
-        if not isinstance(obj, dict):
-            raise InputError(f"{path}:{n}: not a JSON object")
-        row = cast(dict[str, object], obj)
-        rid, score = row.get("id"), row.get("score")
-        # `True == 1` in Python, so a boolean is refused by type, not by value.
-        valid = score is None or (type(score) is int and score in SCORES)
-        if not isinstance(rid, str) or "score" not in row or not valid:
-            raise InputError(f"{path}:{n}: need an id and a score of 0, 1, 2, 3, or null")
-        if rid in scores:
-            raise InputError(f"{path}:{n}: repeats row {rid}")
-        scores[rid] = cast(int | None, score)
-    return scores
-
-
 def file_sha256(path: Path) -> str | None:
     """The hex sha256 of the regular file `path` from its start, or None for any other file.
 
@@ -683,11 +640,6 @@ def require_half_rows(items: Sequence[CalibrationItem]) -> None:
         rows = sum(1 for i in items if i.half == half)
         if rows < MIN_HALF_ROWS:
             raise InputError(f"half {half} holds {rows} rows, fewer than {MIN_HALF_ROWS}")
-
-
-def binarize(scores: Scores, cut: int) -> dict[str, bool | None]:
-    """{id: score at or above `cut`}, a null score staying None."""
-    return {i: None if s is None else s >= cut for i, s in scores.items()}
 
 
 def relevant_rate(ids: Sequence[str], scores: Scores, cut: int) -> Fraction:

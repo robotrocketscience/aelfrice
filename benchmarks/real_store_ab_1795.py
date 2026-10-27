@@ -198,6 +198,7 @@ from benchmarks.graded_gate import (
     require_labels,
     wilson_interval,
 )
+from benchmarks.relevance_scale import InputError
 
 ARM_A0: Final[str] = "A0"
 ARM_A1: Final[str] = "A1"
@@ -322,10 +323,6 @@ Write one JSON object per line to your own labels file:
 Label every row. Rows come in no particular order. Don't discuss the rows
 with the other grader.
 """
-
-
-class InputError(ValueError):
-    """Bad input: a malformed file, a missing field, or a bad argument."""
 
 
 # --- Store copies -------------------------------------------------------------
