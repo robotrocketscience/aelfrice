@@ -2925,6 +2925,28 @@ def test_score_cli_refuses_a_binary_label_file(
         assert f'{binary}:1: a binary "correct" label' in capsys.readouterr().err
 
 
+def test_score_cli_reads_grader_a_then_grader_c(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Grader a's file scores the first item null and the rest 3, and grader
+    # c's scores every item 0, so each count names the grader of its file.
+    rows = _store_key_rows("s1", 1)
+    key = tmp_path / "key.jsonl"
+    key.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    ids = [r["id"] for r in _items(rows)]
+    a, c = tmp_path / "a.jsonl", tmp_path / "c.jsonl"
+    a.write_text("".join(json.dumps({"id": i, "score": None if n == 0 else 3}) + "\n"
+                         for n, i in enumerate(ids)), encoding="utf-8")
+    c.write_text("".join(json.dumps({"id": i, "score": 0}) + "\n" for i in ids),
+                 encoding="utf-8")
+    assert bench.main(["score", "--key", str(key), "--labels", str(a), str(c)]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["score_counts"] == {
+        "a": {"0": 0, "1": 0, "2": 0, "3": len(ids) - 1, "null": 1},
+        "c": {"0": len(ids), "1": 0, "2": 0, "3": 0, "null": 0},
+    }
+
+
 def test_score_cli_refuses_one_file_for_both_graders(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
