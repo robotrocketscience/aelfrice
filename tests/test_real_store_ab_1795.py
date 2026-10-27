@@ -1515,14 +1515,15 @@ def test_score_cli_takes_one_proxy_report_per_store(
     rows = _store_key_rows("s1", 1) + _store_key_rows("s2", 3)
     key = tmp_path / "key.jsonl"
     key.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    labels = tmp_path / "labels.jsonl"
-    labels.write_text("".join(json.dumps({"id": r["id"], "score": 3}) + "\n"
-                              for r in _items(rows)), encoding="utf-8")
+    labels = [tmp_path / "a.jsonl", tmp_path / "c.jsonl"]
+    for path in labels:
+        path.write_text("".join(json.dumps({"id": r["id"], "score": 3}) + "\n"
+                                for r in _items(rows)), encoding="utf-8")
     proxies: list[str] = []
     for report in (_proxy_report("s1", [-2]), _proxy_report("s2", [1, 1, 1])):
         proxies.append(str(tmp_path / f"proxy-{report['snapshot']}.json"))
         Path(proxies[-1]).write_text(json.dumps(report), encoding="utf-8")
-    usage = ["score", "--key", str(key), "--labels", str(labels), str(labels), "--proxy"]
+    usage = ["score", "--key", str(key), "--labels", *map(str, labels), "--proxy"]
     assert bench.main([*usage, *proxies]) == 0
     assert json.loads(capsys.readouterr().out)["hypotheses"]["H6"]["A3"]["proxy_sign"] == 1
     assert bench.main([*usage, proxies[0]]) == 1
@@ -2798,15 +2799,16 @@ def test_score_cli_reads_a_packet_key_and_two_label_files(
     _p, k = _packet(tmp_path, runs)
     key_path = tmp_path / "key.jsonl"
     key_path.write_text(k, encoding="utf-8")
-    labels = tmp_path / "labels.jsonl"
+    labels = [tmp_path / "a.jsonl", tmp_path / "c.jsonl"]
     # Relevant: everything A0 retrieved. The null arm is all not relevant.
-    labels.write_text("".join(
-        json.dumps({"id": r["id"], "score": 2 if r["arms"] and "A0" in r["arms"] else 1})
-        + "\n" for r in _key_items(k)), encoding="utf-8")
+    for path in labels:
+        path.write_text("".join(
+            json.dumps({"id": r["id"], "score": 2 if r["arms"] and "A0" in r["arms"] else 1})
+            + "\n" for r in _key_items(k)), encoding="utf-8")
     census = tmp_path / "census.json"
     snapshot = json.loads(k.splitlines()[0])["snapshot"]
     census.write_text(json.dumps(_census(2.0, snapshots=(snapshot,))), encoding="utf-8")
-    assert bench.main(["score", "--key", str(key_path), "--labels", str(labels), str(labels),
+    assert bench.main(["score", "--key", str(key_path), "--labels", *map(str, labels),
                        "--census", str(census)]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["hypotheses"]["H0"] == bench.V_PASS
@@ -2869,11 +2871,10 @@ def test_a_null_score_is_left_out_as_in_the_calibration() -> None:
 
 def test_the_report_counts_each_graders_scores_and_nulls() -> None:
     # Grader a's 18 null-arm items start as three 2s and fifteen 1s, and
-    # c's as three 2s and fifteen 1s. A score for an id outside the key
-    # is not counted.
+    # c's as three 2s and fifteen 1s.
     key, a, c = _key(_null_table(2, 1, 1, 14))
     a = {**a, "n0": 3, "n4": 0, "n5": None, "n6": None}
-    c = {**c, "n7": None, "elsewhere": 3}
+    c = {**c, "n7": None}
     rep = bench.score(key, a, c, seed=1, census_report=_H1_PASS)
     assert rep["graders"] == ["a", "c"]
     assert rep["score_counts"] == {
@@ -2896,7 +2897,41 @@ def test_score_cli_refuses_a_binary_label_file(
     for pair in ((binary, scores), (scores, binary)):
         assert bench.main(["score", "--key", str(key), "--labels", *map(str, pair)]) == 1
         assert f'{binary}:1: a binary "correct" label' in capsys.readouterr().err
-    assert bench.main(["score", "--key", str(key), "--labels", str(scores), str(scores)]) == 0
+
+
+def test_score_cli_refuses_one_file_for_both_graders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = _store_key_rows("s1", 1)
+    key = tmp_path / "key.jsonl"
+    key.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    scores, copy = tmp_path / "scores.jsonl", tmp_path / "copy.jsonl"
+    for path in (scores, copy):
+        path.write_text("".join(json.dumps({"id": r["id"], "score": 2}) + "\n"
+                                for r in _items(rows)), encoding="utf-8")
+    for other in (scores, tmp_path / "." / scores.name):
+        assert bench.main(["score", "--key", str(key), "--labels", str(scores),
+                           str(other)]) == 1
+        assert "are one file; each grader needs its own" in capsys.readouterr().err
+    assert bench.main(["score", "--key", str(key), "--labels", str(scores), str(copy)]) == 0
+
+
+@pytest.mark.parametrize(("grader", "extra", "drop", "error"), [
+    ("a", {"elsewhere": 3}, None, "grader a scored 1 rows the key lacks, elsewhere among them"),
+    ("c", {"elsewhere": None}, None,
+     "grader c scored 1 rows the key lacks, elsewhere among them"),
+    ("c", {}, "n3", "grader c has no score for 1 key rows, n3 among them"),
+])
+def test_score_refuses_a_score_file_that_is_not_the_keys_rows(
+    grader: str, extra: dict[str, int | None], drop: str | None, error: str,
+) -> None:
+    key, a, c = _key(_null_table(2, 1, 1, 14))
+    scores = {"a": a, "c": c}
+    scores[grader].update(extra)
+    if drop is not None:
+        del scores[grader][drop]
+    with pytest.raises(bench.InputError, match=f"^{error}$"):
+        bench.score(key, scores["a"], scores["c"], seed=1, census_report=_H1_PASS)
 
 
 def test_the_docstring_and_help_name_graders_a_and_c(

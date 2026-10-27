@@ -46,11 +46,11 @@ transcripts beside the store they are given.
   the store's snapshot, sample size, and arms, so a store whose arms
   packed nothing for any prompt still counts its prompts when pooled.
 - `score`: the H0 to H6 verdicts from grader a's and grader c's scores
-  (see **Grading**), in that order after `--labels`. To score
-  several stores together, concatenate their keys, one packet's key per
-  store, and each grader's score files, into one file each, pass `--proxy`
-  every store's proxy report, and pass `--census` one writers census of
-  the same stores. `score` matches each proxy report and each census row
+  (see **Grading**), in that order after `--labels`, each in its own
+  file. To score several stores together, concatenate their keys, one
+  packet's key per store, and each grader's score files, into one file
+  each, pass `--proxy` every store's proxy report, and pass `--census`
+  one writers census of the same stores. `score` matches each proxy report and each census row
   to its store's key rows by `snapshot`, and exits 1 when the key holds
   two store rows for one snapshot, a store in the key has no proxy report
   or census row, a proxy report or census row has no store in the key, or
@@ -125,8 +125,10 @@ calibration: kappa counts only the items both graders scored, precision
 and the null-arm rate only the items the grader scored, and a null item
 never counts as relevant in a gain. The report's `score_counts` gives
 each grader's count of every score, null included, so a jump in one
-grader's nulls shows. A label file of the binary rubric that session 1
-used, `{"id", "correct"}`, is refused.
+grader's nulls shows. As in the calibration, `score` refuses one file
+given for both graders, a file that misses a key item or scores an id
+the key lacks, and a label file of the binary rubric that session 1
+used, `{"id", "correct"}`.
 
 **Data.** Prompt files, run files, packets, keys, labels, and proxy files
 hold user text or ids from a real store. Keep them out of the repository.
@@ -210,7 +212,6 @@ from benchmarks.graded_gate import (
     Labels,
     grader_figures,
     paired_kappa,
-    require_labels,
     wilson_interval,
 )
 from benchmarks.relevance_scale import (
@@ -220,6 +221,8 @@ from benchmarks.relevance_scale import (
     Scores,
     binarize,
     parse_scores,
+    require_distinct_files,
+    require_scores,
 )
 
 ARM_A0: Final[str] = "A0"
@@ -1650,9 +1653,9 @@ def pool_proxy_reports(reports: Sequence[Mapping[str, Any]], key: Key) -> dict[s
     return {"prompts": rows}
 
 
-def score_counts(ids: Sequence[str], scores: Scores) -> dict[str, int]:
-    """How many of `ids` the grader scored 0, 1, 2, and 3, and how many null."""
-    counts = Counter(scores[i] for i in ids)
+def score_counts(scores: Scores) -> dict[str, int]:
+    """How many items the grader scored 0, 1, 2, and 3, and how many null."""
+    counts = Counter(scores.values())
     return {**{str(s): counts[s] for s in SCORES}, "null": counts[None]}
 
 
@@ -1667,7 +1670,8 @@ def score(
     `RELEVANT_CUT` or higher, and every figure below counts that cut. A
     null score is left out of kappa, of precision, and of the null-arm
     rate, and never counts as relevant. The report's `score_counts` gives
-    each grader's count of every score and of nulls over the key's items.
+    each grader's count of every score and of nulls. Each grader must
+    score exactly the key's items (`require_scores`), or InputError.
 
     Under the 2026-10-23 amendment to #1795, H2, H3, H4, and `H2_split`
     decide on graded-relevant beliefs in each arm's whole packed result,
@@ -1711,8 +1715,8 @@ def score(
     """
     items, stores = key.items, key.stores
     ids = [i.id for i in items]
+    require_scores(ids, dict(zip(GRADERS, (a, c), strict=True)))
     la, lc = binarize(a, RELEVANT_CUT), binarize(c, RELEVANT_CUT)
-    require_labels(ids, la, lc, "key items")
     prompts = sorted({i.prompt_key for i in items})
     # A sampled prompt where no arm packed a belief and no null belief was
     # drawn has no item row, but it still counts in every paired gain.
@@ -1788,7 +1792,7 @@ def score(
         "items": len(ids),
         "null_items": sum(1 for i in items if i.arms is None),
         "graders": list(GRADERS),
-        "score_counts": {g: score_counts(ids, s) for g, s in zip(GRADERS, (a, c), strict=True)},
+        "score_counts": {g: score_counts(s) for g, s in zip(GRADERS, (a, c), strict=True)},
         "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
         "arms": per_arm, "hypotheses": hyp,
         "bars": {
@@ -1903,6 +1907,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         print(f"items={len(packet)} null={nulls}")
     elif cmd == "score":
         key = read_key(args.key)
+        require_distinct_files("--labels", args.labels)
         a, c = (parse_scores(p, p.read_bytes()) for p in args.labels)
         report = score(
             key, a, c, seed=args.seed,
