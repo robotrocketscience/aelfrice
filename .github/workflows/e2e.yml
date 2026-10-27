@@ -22,9 +22,11 @@ name: E2E
 # which is why `ci.yml` deliberately has no `paths` and filters inside the job
 # instead. Do not copy this pattern into a required workflow.
 #
-# The path list mirrors `ci.yml`'s `code` filter. Keep them in sync: a path
-# that can change installed behaviour but is missing here is an e2e regression
-# nobody sees until it is on main.
+# The path list mirrors the directory globs and build inputs of `ci.yml`'s
+# `code` filter. Keep them in sync: a path that can change installed behaviour
+# but is missing here is an e2e regression nobody sees until it is on main.
+# The exact document entries in `ci.yml` are not mirrored: they exist because
+# a unit test reads the file, and a page cannot change the installed package.
 
 on:
   pull_request:

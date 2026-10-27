@@ -93,7 +93,39 @@ jobs:
               - 'scripts/**'
               - 'pyproject.toml'
               - 'uv.lock'
-              - '.github/workflows/ci.yml'
+              # Tests read the merge-train, mutation, publish and
+              # staging-gate workflows as well as this file, so a change
+              # to any of them runs the suite (#1786 CI-07).
+              - '.github/**'
+              # Files outside the directories above that a test opens,
+              # one exact entry per file. A PR that changed only one of
+              # these took the `echo` branch and reported a pass without
+              # running the test that reads it (#1786 CI-07). The list is
+              # derived, not maintained: tests/test_ci_path_filter.py
+              # scans tests/ for the repo paths it builds and fails when a
+              # file read there is missing here, or when an entry here is
+              # read by no test. `docs/**` and `CHANGELOG/**` stay out on
+              # purpose, so a PR that touches no listed file still skips
+              # the suite (#413/#427).
+              - '.githooks/pre-push'
+              - '.gitignore'
+              - 'CHANGELOG.md'
+              - 'CHANGELOG/unreleased/README.md'
+              - 'CHANGELOG/v4.md'
+              - 'CONTRIBUTING.md'
+              - 'README.md'
+              - 'SECURITY.md'
+              - 'docs/concepts/ARCHITECTURE.md'
+              - 'docs/concepts/RELEASING.md'
+              - 'docs/concepts/ROADMAP.md'
+              - 'docs/design/derived_figure_markers.md'
+              - 'docs/user/COMMANDS.md'
+              - 'docs/user/CONFIG.md'
+              - 'docs/user/INSTALL.md'
+              - 'docs/user/LIMITATIONS.md'
+              - 'docs/user/PRIVACY.md'
+              - 'docs/user/SLASH_COMMANDS.md'
+              - 'pyright_baseline.json'
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
