@@ -465,6 +465,40 @@ diff, such as a refactor, a removal, or generated code.
 
 Both workflows shipped as part of #602.
 
+### Dependency updates from Dependabot
+
+`.github/dependabot.yml` asks Dependabot for weekly updates in two
+ecosystems: the actions the workflows run (`github-actions`) and the Python
+dependencies in `pyproject.toml` and `uv.lock` (`uv`). Minor and patch bumps
+arrive grouped, one PR per ecosystem. A major bump arrives as its own PR.
+Every PR title and commit subject starts with `build(deps):`, so the
+`pr-title-prefix` and `commit-msg-prefix` checks pass without an edit.
+
+A Dependabot PR reaches `main` the same way as every other PR: through the
+merge train, after a person reads the diff and adds `ready-to-merge`. Nothing
+merges it on its own. The Dependabot configuration has no auto-merge rule, no
+workflow calls `gh pr merge --auto`, and the repository setting that would
+let someone enable auto-merge on a PR is off. On these PRs, expect the
+following:
+
+- `pattern-scan` skips when the actor is `dependabot[bot]`. The other
+  staging-gate jobs run. `history-scan` reads `SCAN_RULES_B64` from the
+  Dependabot secret store, which holds a copy of the Actions secret. If that
+  copy is missing, `history-scan` fails rather than scanning nothing.
+- `pr-body-issue-link` warns, because the body has no issue link. The job
+  never blocks.
+- Dependabot signs its commits with GitHub's key, so the signature check in
+  the train passes, and the train's author check accepts `dependabot[bot]`.
+
+For an action bump, Dependabot rewrites the commit sha on the `uses:` line
+and the version comment beside it. Keep both: Dependabot reads the comment to
+tell a patch bump from a major one, and
+`tests/test_workflow_supply_chain_1786.py` fails on any `uses:` line that
+names a tag instead of a sha or has no `# vX.Y.Z` comment. The same test
+holds the `uvx` tool versions in the workflows to an exact pin, keeps the
+`zizmor` check blocking at high severity, and allows `harden-runner` only in
+jobs that hold a write token or read a secret.
+
 ### When a check never reports — how to re-run it by hand
 
 Occasionally a required check never appears on a PR. The causes are:
