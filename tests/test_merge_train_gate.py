@@ -920,59 +920,93 @@ _WORKFLOW_DIR = _REPO / ".github" / "workflows"
 # `pull_request_target` so it can label fork PRs, and a guard that knew only
 # `pull_request` silently dropped it out of the derived set — which is the
 # drift this guard exists to catch, so it must know every spelling.
-_PR_TRIGGER = re.compile(r"\s{2}(pull_request|pull_request_target):\s*(#.*)?$")
+_PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
+_ON_KEY = re.compile(r"""(on|"on"|'on'):(.*)""")
+_FLOW_PATHS = re.compile(r"[{,]\s*paths(-ignore)?\s*:")
+_FLOW_TYPES = re.compile(r"[{,]\s*types\s*:\s*(\[[^\]]*\]|[^,}]*)")
+
+
+def _uncommented(raw: str) -> str:
+    """An unquoted YAML value without its trailing comment."""
+    return re.sub(r"(?:^|\s)#.*$", "", raw).strip()
+
+
+def _flow_list(raw: str, what: str) -> list[str]:
+    """The items of a one-line flow sequence such as `[opened, 'closed']`."""
+    assert raw.startswith("[") and raw.endswith("]"), f"{what} shape not supported: {raw!r}"
+    return [_scalar(v) for v in raw[1:-1].split(",") if v.strip()]
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _trigger(value: str, sub: list[str]) -> tuple[bool, list[str]]:
+    """`(has_path_filter, types)` for one PR trigger, from its inline flow
+    mapping `value` or, when that is empty, its indented block `sub`."""
+    if value in {"", "{}", "null", "~"}:
+        has_paths = any(re.match(r"\s+paths(-ignore)?:", s) for s in sub)
+        typed = [m.group(1) for m in (re.match(r"\s+types:(.*)$", s) for s in sub) if m]
+        return has_paths, _flow_list(_uncommented(typed[-1]), "types") if typed else []
+    assert value.startswith("{") and value.endswith("}"), (
+        f"pull_request shape not supported: {value!r}"
+    )
+    typed = _FLOW_TYPES.search(value)
+    return bool(_FLOW_PATHS.search(value)), _flow_list(typed.group(1), "types") if typed else []
 
 
 def _pull_request_triggers(text: str) -> list[tuple[bool, list[str]]]:
-    """`(has_path_filter, types)` per PR trigger in the workflow's `on:` block.
+    """`(has_path_filter, types)` per PR trigger in the workflow's `on:` key.
 
-    Empty when the workflow has no PR trigger at all. Parsed textually on
-    purpose: PyYAML is not a dependency of this repo and is not importable in
-    CI, so a guard that imported it would not run where it matters.
+    Empty when the workflow has no PR trigger at all. Reads every way GitHub
+    accepts a trigger: an event name or a list of them on the `on:` line, a
+    quoted `on` key, a block list of event names, and a block mapping whose
+    PR entry is empty, an inline flow mapping, or an indented block. A shape
+    outside those fails here, because reading it as no trigger would drop
+    the workflow out of the drift guard. Parsed textually on purpose: PyYAML
+    is not a dependency of this repo and is not importable in CI, so a guard
+    that imported it would not run where it matters.
 
-    Only the trigger's own sub-block is inspected. A `paths:` under `push:`
+    Only the trigger's own entry is inspected. A `paths:` under `push:`
     does not path-filter the PR trigger, and reading the whole file would
     conflate the two.
     """
     lines = text.splitlines()
-    start = next(
-        (i + 1 for i, ln in enumerate(lines) if re.fullmatch(r"on:\s*", ln)), None
-    )
-    if start is None:
-        return []
-    end = next(
-        (
-            i
-            for i in range(start, len(lines))
-            if lines[i][:1].strip() and not lines[i].lstrip().startswith("#")
-        ),
-        len(lines),
-    )
-    block = lines[start:end]
+    on = next(((i, m) for i, ln in enumerate(lines) if (m := _ON_KEY.fullmatch(ln))), None)
+    assert on is not None, "no top-level `on:` key was read"
+    at, on_line = on
+    inline = _uncommented(on_line.group(2))
+    if inline:
+        events = _flow_list(inline, "on") if inline.startswith("[") else [_scalar(inline)]
+        return [(False, []) for event in events if event in _PR_EVENTS]
+
+    block: list[str] = []
+    for ln in lines[at + 1:]:
+        if ln[:1].strip() and not ln.startswith("#"):
+            break
+        if ln.strip() and not ln.lstrip().startswith("#"):
+            block.append(ln)
+    assert block, "the `on:` key holds nothing"
+    indent = _indent(block[0])
 
     found: list[tuple[bool, list[str]]] = []
     for i, ln in enumerate(block):
-        if not _PR_TRIGGER.fullmatch(ln):
+        if _indent(ln) != indent:
+            continue
+        entry = ln.strip()
+        if entry.startswith("- "):
+            if _scalar(entry[2:]) in _PR_EVENTS:
+                found.append((False, []))
+            continue
+        key, sep, value = entry.partition(":")
+        assert sep, f"`on:` entry shape not supported: {entry!r}"
+        if _scalar(key) not in _PR_EVENTS:
             continue
         sub_end = next(
-            (
-                j
-                for j in range(i + 1, len(block))
-                if block[j].strip() and not block[j].startswith("    ")
-            ),
+            (j for j in range(i + 1, len(block)) if _indent(block[j]) <= indent),
             len(block),
         )
-        sub = block[i + 1 : sub_end]
-
-        has_paths = any(re.match(r"\s+paths(-ignore)?:", s) for s in sub)
-        types: list[str] = []
-        for s in sub:
-            m = re.match(r"\s+types:\s*\[(.*)\]", s)
-            if m:
-                types = [
-                    t.strip().strip("'\"") for t in m.group(1).split(",") if t.strip()
-                ]
-        found.append((has_paths, types))
+        found.append(_trigger(_uncommented(value), block[i + 1 : sub_end]))
     return found
 
 
@@ -1093,7 +1127,7 @@ def _derived_floor_sources(
     `merge-train.yml` contributes nothing. A workflow that emits a row but
     yields no job name fails here instead of dropping out of the comparison."""
     sources: dict[str, frozenset[str]] = {}
-    for path in sorted(workflow_dir.glob("*.yml")):
+    for path in sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")]):
         text = path.read_text()
         if not _emits_a_row_on_every_pr_head(text):
             continue
@@ -1217,9 +1251,69 @@ def test_the_name_parser_refuses_a_name_it_cannot_read(line: str) -> None:
 _UNFILTERED_PR_WORKFLOW = "on:\n  pull_request:\n    branches: [main]\n"
 
 
+@pytest.mark.parametrize(
+    "on",
+    [
+        "on: [pull_request]",
+        "on: [push, 'pull_request']",
+        "on: pull_request",
+        "on: pull_request_target  # labels fork PRs",
+        '"on":\n  pull_request:',
+        "'on':\n  pull_request:",
+        "on:  # every PR head\n  pull_request:",
+        "on:\n  - push\n  - pull_request",
+        "on:\n  pull_request: {branches: [main]}",
+        "on:\n  pull_request: {types: [opened, synchronize]}",
+        "on:\n    pull_request:\n      branches: [main]",
+    ],
+)
+def test_every_spelling_of_an_unfiltered_pr_trigger_emits_a_row(on: str) -> None:
+    """GitHub accepts each of these, so a new always-run workflow written
+    any of these ways must reach the drift guard."""
+    assert _emits_a_row_on_every_pr_head(on + "\n")
+
+
+@pytest.mark.parametrize(
+    "on",
+    [
+        "on: [push]",
+        "on: push",
+        "on:\n  - push\n  - workflow_dispatch",
+        "on:\n  pull_request: {paths: ['docs/**']}",
+        "on:\n  pull_request: {types: [opened]}",
+        "on:\n    pull_request:\n      paths-ignore: ['**.md']",
+    ],
+)
+def test_a_filtered_or_absent_pr_trigger_emits_no_row(on: str) -> None:
+    assert not _emits_a_row_on_every_pr_head(on + "\n")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "on: {pull_request: {}}\n",
+        "on:\n  pull_request:\n    types:\n      - opened\n",
+        "on:\n  pull_request: [main]\n",
+        "jobs: {}\n",
+    ],
+)
+def test_the_trigger_parser_refuses_a_shape_it_cannot_read(text: str) -> None:
+    """Fail rather than read the workflow as having no PR trigger, which
+    would drop it out of the drift guard."""
+    with pytest.raises(AssertionError, match="shape not supported|no top-level"):
+        _pull_request_triggers(text)
+
+
+def test_a_new_workflow_saved_as_yaml_is_derived(tmp_path: Path) -> None:
+    (tmp_path / "lint.yaml").write_text(
+        "on: [pull_request]\njobs:\n  lint:\n    runs-on: ubuntu-latest\n"
+    )
+    assert _derived_floor_sources(tmp_path) == {"lint.yaml": frozenset({"lint"})}
+
+
 def test_a_new_workflow_with_a_commented_job_key_is_derived(tmp_path: Path) -> None:
-    """The drift guard sees a new unfiltered workflow whatever its key looks
-    like, so leaving it out of FLOOR_NAMES fails the guard."""
+    """The drift guard sees a new unfiltered workflow whose job key carries
+    a comment, so leaving it out of FLOOR_NAMES fails the guard."""
     (tmp_path / "lint.yml").write_text(
         _UNFILTERED_PR_WORKFLOW
         + "jobs:\n  lint: # zizmor: ignore[unpinned-uses]\n    runs-on: ubuntu-latest\n"
