@@ -57,10 +57,6 @@ env:
   # runner and a looser budget is slower hang detection, not headroom.
   AELF_TEST_TIMEOUT_SCALE: "1"
 
-concurrency:
-  group: mutation-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   # --- weekly, whole tree in shards, fails on a broken harness -----------
   # #1747. One job over the whole tree never got past mutant generation: it
@@ -359,6 +355,18 @@ jobs:
         (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
       )
+    # #1786: job-level, as in merge-train.yml. A workflow-level group is
+    # joined before any job's `if` runs, and `types: [labeled]` starts a
+    # run on every label add, so a label other than ready-to-merge added
+    # during the hour this job takes cancelled the run and then skipped
+    # its own job: the head kept a cancelled row and no result. A run
+    # whose `if` skips the job never joins a job-level group.
+    # `cancel-in-progress` stays so that a push while the label is on
+    # replaces the running result. The weekly jobs have no group: the
+    # cron and a dispatch each run to completion.
+    concurrency:
+      group: mutation-diff-${{ github.ref }}
+      cancel-in-progress: true
     # NOTE: job-level, not step-level. Every other `continue-on-error` in
     # `.github/workflows/` is on a step, where it only spares that step; the
     # property needed here is that the *job's* check-run conclusion is
