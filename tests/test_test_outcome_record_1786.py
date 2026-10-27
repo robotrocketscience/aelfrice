@@ -646,17 +646,19 @@ def test_record_then_diff_through_main(tmp_path: Path, capsys: pytest.CaptureFix
     junit = tmp_path / "junit-3.13.xml"
     junit.write_text(_MIXED, encoding="utf-8")
     current = tmp_path / "current.json"
+    missing = tmp_path / "missing.xml"
+    capsys.readouterr()
     assert tor.main([
-        "record", "--junit", f"3.13={junit}", "--junit", f"3.12={tmp_path / 'missing.xml'}",
+        "record", "--junit", f"3.13={junit}", "--junit", f"3.12={missing}",
         "--sha", "head", "--out", str(current),
     ]) == 0
+    assert capsys.readouterr().err.splitlines() == [f"::notice::no JUnit report for leg 3.12 at {missing}"]
     data = json.loads(current.read_text(encoding="utf-8"))
     assert data["legs"]["3.12"] is None and data["legs"]["3.13"]["counts"]["total"] == 10
 
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(_record(**{"3.13": {"tests.test_a::test_skip": tor.PASSED}})))
     summary = tmp_path / "summary.md"
-    capsys.readouterr()
     rc = tor.main(["diff", "--current", str(current), "--baseline", str(baseline), "--summary", str(summary)])
     assert rc == 0, "advisory mode never fails the step"
     out = capsys.readouterr().out
