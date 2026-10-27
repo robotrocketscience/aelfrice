@@ -45,6 +45,13 @@ from aelfrice.health import (
     compute_features,
     regime_description,
 )
+from aelfrice.hosts import (
+    CLAUDE_HOST,
+    CODEX_HOST,
+    DEFAULT_HOST,
+    SUPPORTED_HOSTS,
+    host_of,
+)
 from aelfrice.models import (
     CORROBORATION_MIN_EPISODES,
     CORROBORATION_SOURCE_CLI_REMEMBER,
@@ -5546,13 +5553,13 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
-    if getattr(args, "host", "claude") == "codex":
+    if host_of(args) == CODEX_HOST:
         return _cmd_setup_codex(args, out)
     # #1053: an explicit claude-host setup is explicit re-consent —
     # clear any persistent claude auto-install opt-out.
     from aelfrice.auto_install import remove_host_opt_out
 
-    if remove_host_opt_out("claude"):
+    if remove_host_opt_out(CLAUDE_HOST):
         print(
             "cleared claude host auto-install opt-out (#1053)",
             file=out,  # type: ignore[arg-type]
@@ -6175,8 +6182,8 @@ def _cmd_setup_codex(
             "Claude auto-install enabled (dual-host).",
             file=out,  # type: ignore[arg-type]
         )
-    elif "claude" not in read_host_opt_outs():
-        add_host_opt_out("claude")
+    elif CLAUDE_HOST not in read_host_opt_outs():
+        add_host_opt_out(CLAUDE_HOST)
         print(
             "  note: opted the claude host out of auto-install "
             "(#1053) — aelf will no longer rewrite "
@@ -6433,7 +6440,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
-    if getattr(args, "host", "claude") == "codex":
+    if host_of(args) == CODEX_HOST:
         return _cmd_unsetup_codex(args, out)
     path = _resolve_settings_path(args)
     # #1161: same single-lock, single-write transaction as setup.
@@ -7031,9 +7038,9 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
 
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
     cleaned: list[Path] = []
-    host = getattr(args, "host", "claude")
+    host = host_of(args)
     if not args.keep_hook:
-        if host != "claude":
+        if host != CLAUDE_HOST:
             # The sibling branch sweeps *Claude* settings files.
             # `_cmd_unsetup` routes a non-claude host to its own
             # teardown (`_cmd_unsetup_codex` for codex), which discards
@@ -7076,7 +7083,7 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
                     func=_cmd_unsetup,
                     # #1136: `aelf uninstall --host codex` routes the unsetup
                     # half to the codex host (hooks.json + $aelf-* skills).
-                    host=getattr(args, "host", "claude"),
+                    host=host_of(args),
                     # #1173: `aelf unsetup --rebuilder` is opt-in because
                     # unsetup is a surgical command, but uninstall means
                     # "remove all of it". Omitting this left the PreCompact
@@ -7112,7 +7119,7 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
         # while leaving its hooks installed and unrepairable.
         # `_cmd_setup_codex` states the same rule from the other side
         # (#1053): a dual-host user keeps Claude auto-install.
-        if host == "claude":
+        if host == CLAUDE_HOST:
             _write_uninstall_opt_out(out)
 
     _print_uninstall_remaining(
@@ -7175,8 +7182,8 @@ def _write_uninstall_opt_out(out: object) -> None:
     from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
 
     try:
-        if "claude" not in read_host_opt_outs():
-            add_host_opt_out("claude")
+        if CLAUDE_HOST not in read_host_opt_outs():
+            add_host_opt_out(CLAUDE_HOST)
         print(
             "opted this host out of auto-install — `aelf` will no longer "
             "reinstall hooks at CLI entry (undo with `aelf setup`).",
@@ -7192,7 +7199,7 @@ def _write_uninstall_opt_out(out: object) -> None:
 
 
 def _print_uninstall_remaining(
-    cleaned: list[Path], *, keep_hook: bool, host: str = "claude", out: object
+    cleaned: list[Path], *, keep_hook: bool, host: str = DEFAULT_HOST, out: object
 ) -> None:
     """Say what is still on the machine (#1332 AC3).
 
@@ -7212,7 +7219,7 @@ def _print_uninstall_remaining(
         # even when absent, and claiming a cleanup that found nothing
         # would be the same kind of overclaim this issue is about.
         print(f"\nhook cleanup ran on: {listed}", file=out)  # type: ignore[arg-type]
-    elif host != "claude":
+    elif host != CLAUDE_HOST:
         # Reachable, and the only way to reach it: a non-claude teardown
         # edits no settings.json at all, so `cleaned` is empty by
         # construction rather than by nothing having been found. Saying
@@ -8193,7 +8200,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     `aelf health` routes here with scope='graph' implicitly via
     `_cmd_health`.
     """
-    if getattr(args, "host", "claude") == "codex":
+    if host_of(args) == CODEX_HOST:
         return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
@@ -11455,7 +11462,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=SUPPORTED_HOSTS, default=DEFAULT_HOST,
         help=(
             "host to diagnose. 'codex' scans the Codex home's hooks.json "
             "shape ($CODEX_HOME, else ~/.codex), "
@@ -12127,7 +12134,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     _add_hook_scope_args(p_setup)
     p_setup.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=SUPPORTED_HOSTS, default=DEFAULT_HOST,
         help=(
             "host to install hooks for. 'claude' (default) targets "
             "settings.json; 'codex' writes the portable aelfrice hook "
@@ -12354,7 +12361,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_uninstall.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=SUPPORTED_HOSTS, default=DEFAULT_HOST,
         help=(
             "host whose hook wiring the unsetup half removes. 'codex' "
             "removes the aelfrice entries from $CODEX_HOME/hooks.json "
@@ -12402,7 +12409,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_unsetup = sub.add_parser("unsetup", help=argparse.SUPPRESS)
     _add_hook_scope_args(p_unsetup)
     p_unsetup.add_argument(
-        "--host", choices=("claude", "codex"), default="claude",
+        "--host", choices=SUPPORTED_HOSTS, default=DEFAULT_HOST,
         help=(
             "host to remove hooks from. 'codex' removes only "
             "aelfrice-owned entries from $CODEX_HOME/hooks.json (#1052)."
@@ -13060,7 +13067,7 @@ def _codex_option_rejection(
     """
     if cmd not in _CODEX_APPLICABLE_DESTS:
         return None
-    if getattr(args, "host", "claude") != "codex":
+    if host_of(args) != CODEX_HOST:
         return None
     inapplicable = codex_inapplicable_options(parser, cmd)
     supplied = _explicitly_supplied_dests(argv)
