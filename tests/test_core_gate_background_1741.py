@@ -437,6 +437,7 @@ def test_label_batch_accepts_a_fenced_reply(db: Path) -> None:
         (0, "The widgetbg w1 setting is stable."), (1, "The widgetbg w2 setting is stable."),
     ])
     assert call["timeout"] == bg.RUNNER_TIMEOUT_SECONDS
+    assert call["encoding"] == "utf-8"
     assert call["env"]["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
 
 

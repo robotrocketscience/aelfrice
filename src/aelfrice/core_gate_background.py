@@ -351,9 +351,11 @@ def _label_batch(
     started = time.monotonic()
     try:
         with settings_file() as settings:
+            # `encoding`: the CLI writes UTF-8; `text=True` alone would
+            # decode it through the ANSI code page on Windows (#1441).
             proc = runner(
                 runner_argv(claude, settings), input=prompt, capture_output=True,
-                text=True, timeout=RUNNER_TIMEOUT_SECONDS,
+                text=True, encoding="utf-8", timeout=RUNNER_TIMEOUT_SECONDS,
                 env=runner_env(dict(env if env is not None else os.environ)),
             )
     except (OSError, subprocess.SubprocessError) as exc:
