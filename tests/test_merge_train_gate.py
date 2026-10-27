@@ -1026,7 +1026,8 @@ def _check_run_names(text: str) -> frozenset[str]:
     without quotes or a trailing comment, or after its id when there is none. A job with a `strategy.matrix` of inline lists and no
     `name:` emits one row per combination, named `<id> (<v1>, <v2>, ...)`
     in axis order, which is how `pytest` becomes `pytest (3.12)`. Any other
-    matrix shape, a `name:` holding an expression, or a two-space line that
+    matrix shape, including an inline `strategy:` or `matrix:` value such as
+    an expression, a `name:` holding an expression, or a two-space line that
     is not a job key fails here so the parser is extended rather than
     deriving a wrong name or skipping a job.
     """
@@ -1068,8 +1069,12 @@ def _check_run_names(text: str) -> frozenset[str]:
         assert ln.startswith("   "), f"job key shape not supported: {ln.strip()}"
         if ln.startswith("    name:"):
             display = _scalar(ln[len("    name:"):])
-        elif ln.rstrip() == "      matrix:":
-            in_matrix = True
+        elif ln.startswith(("    strategy:", "      matrix:")):
+            key, _, value = ln.strip().partition(":")
+            assert re.fullmatch(r"\s*(#.*)?", value), (
+                f"{job_id}: {key} shape not supported: {ln.strip()}"
+            )
+            in_matrix = key == "matrix"
         elif in_matrix and ln.startswith("        "):
             axis = _MATRIX_AXIS.match(ln)
             assert axis is not None, f"{job_id}: matrix shape not supported: {ln.strip()}"
@@ -1169,6 +1174,34 @@ def test_the_name_parser_unquotes_matrix_values() -> None:
         "",
     ])
     assert _check_run_names(text) == {"legs (3.12)", "legs (3.13)", "legs (3.14)"}
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        ["    strategy:", "      matrix: ${{ fromJSON(needs.plan.outputs.legs) }}"],
+        ["    strategy:", '      matrix: {python-version: ["3.12", "3.13"]}'],
+        ["    strategy: {matrix: {python-version: ['3.12', '3.13']}}"],
+    ],
+)
+def test_the_name_parser_refuses_a_matrix_it_cannot_expand(strategy: list[str]) -> None:
+    """Read as no matrix, these give the bare job id, a row GitHub never
+    emits; it emits `legs (3.12)` and `legs (3.13)`."""
+    text = "\n".join(["jobs:", "  legs:", *strategy, "    runs-on: ubuntu-latest", ""])
+    with pytest.raises(AssertionError, match="(matrix|strategy) shape not supported"):
+        _check_run_names(text)
+
+
+def test_the_name_parser_reads_a_matrix_key_with_a_trailing_comment() -> None:
+    text = "\n".join([
+        "jobs:",
+        "  legs:",
+        "    strategy:  # one leg per supported Python",
+        "      matrix:  # axis order names the row",
+        "        python-version: ['3.12']",
+        "",
+    ])
+    assert _check_run_names(text) == {"legs (3.12)"}
 
 
 @pytest.mark.parametrize(
