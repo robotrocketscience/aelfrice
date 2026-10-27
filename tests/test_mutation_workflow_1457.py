@@ -503,12 +503,8 @@ def _pr_trigger_lines() -> list[str]:
     return block
 
 
-def _diff_job_condition() -> str:
-    """The `if:` expression of the `diff` job, folded onto one line.
-
-    The expression is a `|` block scalar, so its lines are indented past the
-    job's own keys; the fold stops at the next four-space key.
-    """
+def _diff_job_body() -> list[str]:
+    """The lines of the `diff` job, up to the next two-space key."""
     lines = _workflow_text().splitlines()
     job_at = next(i for i, line in enumerate(lines) if line.rstrip() == "  diff:")
     body: list[str] = []
@@ -516,6 +512,16 @@ def _diff_job_condition() -> str:
         if line.strip() and not line.startswith("    "):
             break
         body.append(line)
+    return body
+
+
+def _diff_job_condition() -> str:
+    """The `if:` expression of the `diff` job, folded onto one line.
+
+    The expression is a `|` block scalar, so its lines are indented past the
+    job's own keys; the fold stops at the next four-space key.
+    """
+    body = _diff_job_body()
     if_at = next(i for i, line in enumerate(body) if line.startswith("    if:"))
     parts = [body[if_at][len("    if:"):].strip().lstrip("|").strip()]
     for line in body[if_at + 1:]:
@@ -540,20 +546,46 @@ def test_the_pr_trigger_fires_on_labeled_and_synchronize_only() -> None:
     assert listed == ["labeled", "synchronize"], listed
 
 
+# The whole `if`, folded. Both arms are needed: without the `labeled` arm
+# the job never starts on the operator's add; without the `synchronize`
+# arm a push while the label is on leaves the stale result standing.
+_DIFF_JOB_GATE = (
+    "github.event_name == 'pull_request' && ( "
+    "(github.event.action == 'labeled' && "
+    "github.event.label.name == 'ready-to-merge') || "
+    "(github.event.action == 'synchronize' && "
+    "contains(github.event.pull_request.labels.*.name, 'ready-to-merge')) "
+    ")"
+)
+
+
 def test_the_diff_job_runs_only_for_the_ready_to_merge_label() -> None:
     """`types: [labeled]` fires on any label; the job's `if` picks the one.
 
-    Both arms are needed. Without the `labeled` arm the job never starts on
-    the operator's add; without the `synchronize` arm a push while the label
-    is on leaves the stale result standing.
+    The expression is compared whole. A check on its parts passed with the
+    arms joined by `&&`, which is false on every event, and with the arms
+    hung off the event-name check by `||`, which is true on every
+    pull_request event: the job that never runs, and the job that runs on
+    every push, the regression #1786 removes.
     """
-    expr = _diff_job_condition()
-    assert "github.event_name == 'pull_request'" in expr
-    assert (
-        "github.event.action == 'labeled' && "
-        "github.event.label.name == 'ready-to-merge'"
-    ) in expr
-    assert (
-        "github.event.action == 'synchronize' && "
-        "contains(github.event.pull_request.labels.*.name, 'ready-to-merge')"
-    ) in expr
+    assert _diff_job_condition() == _DIFF_JOB_GATE
+
+
+def test_the_diff_job_owns_its_concurrency_group() -> None:
+    """#1786: job-level concurrency, as in `merge-train.yml`.
+
+    A workflow-level group is joined before any job's `if` runs. With
+    `types: [labeled]` every label add starts a run, so a label other than
+    ready-to-merge, added while the diff job was running, cancelled that
+    run and then skipped its own job: the head kept a cancelled row and no
+    result. A run whose `if` skips the job never joins a job-level group.
+    `cancel-in-progress` stays, so a push while the label is on replaces
+    the running result instead of queueing behind it.
+    """
+    assert "concurrency:" not in [line.rstrip() for line in _workflow_text().splitlines()]
+    body = [line for line in _diff_job_body() if not line.lstrip().startswith("#")]
+    assert "    concurrency:" in body
+    at = body.index("    concurrency:")
+    group, cancel = body[at + 1], body[at + 2]
+    assert group.startswith("      group: ") and "${{ github.ref }}" in group, group
+    assert cancel == "      cancel-in-progress: true", cancel
