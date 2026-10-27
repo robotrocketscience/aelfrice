@@ -1149,6 +1149,10 @@ def test_the_repo_passes_the_producer_checks() -> None:
     laptop on the disk-bound axis this check leans on. What the marker is for
     is a producer that hangs; 120s catches that and nothing else.
 
+    The required `pytest` legs in ci.yml deselect this test (#1786): the
+    `derived-figures` job runs the same producers over the same tree on
+    every PR. It still runs in a local `uv run pytest`.
+
     Price a new producer before you add one, not at the release cut:
 
         uv run python scripts/check_derived_figures.py --time-producers

@@ -8,6 +8,11 @@ JUnit file that runs on failure. They also pin the check names, because the
 branch ruleset and `scripts/merge_train_gate.py` match them as strings and a
 job-level `name:` or a matrix change would rename both.
 
+The job deselects one test, the live-tree producer check, because the
+`derived-figures` job runs the same producers on every PR. The tests at the
+bottom tie that deselect to the job that carries the check, so the check
+cannot be dropped from both without a red suite.
+
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
 """
@@ -30,15 +35,20 @@ _REQUIRED_NAMES = {"pytest (3.12)", "pytest (3.13)"}
 _UPLOAD_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 _CHECKOUT_SHA = "34e114876b0b11c390a56381ad16ebd13914f8d5"
 
+# The one test the required legs skip. `derived-figures` runs its producers.
+_DESELECTED = (
+    "tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks"
+)
+
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
-def _job_lines() -> list[str]:
-    """The body of `jobs.pytest`, whole-line comments and blanks dropped."""
+def _job_lines(job: str = "pytest") -> list[str]:
+    """The body of `jobs.<job>`, whole-line comments and blanks dropped."""
     lines = _CI.read_text(encoding="utf-8").splitlines()
-    start = lines.index("  pytest:")
+    start = lines.index(f"  {job}:")
     body: list[str] = []
     for line in lines[start + 1 :]:
         if not line.strip() or line.lstrip().startswith("#"):
@@ -46,7 +56,7 @@ def _job_lines() -> list[str]:
         if _indent(line) <= 2:
             break
         body.append(line)
-    assert body, "found `pytest:` under jobs but no body; the parser has rotted"
+    assert body, f"found `{job}:` under jobs but no body; the parser has rotted"
     return body
 
 
@@ -119,6 +129,28 @@ def _upload_step() -> list[str]:
     ]
     assert len(found) == 1, f"expected one upload-artifact step, found {len(found)}"
     return found[0]
+
+
+def _deselected() -> list[str]:
+    """Every node id the pytest step passes to `--deselect`, in either form."""
+    tokens = (_field(_pytest_step(), "run") or "").split()
+    out: list[str] = []
+    for i, token in enumerate(tokens):
+        if token == "--deselect" and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+        elif token.startswith("--deselect="):
+            out.append(token.removeprefix("--deselect="))
+    return out
+
+
+def _derived_figures_run_lines() -> list[str]:
+    """The `run:` values of `jobs.derived-figures`, stripped."""
+    out: list[str] = []
+    for line in _job_lines("derived-figures"):
+        m = re.fullmatch(r"\s*-\s+run:\s*(.*?)\s*", line)
+        if m:
+            out.append(m.group(1))
+    return out
 
 
 def _junit_name() -> str:
@@ -217,3 +249,31 @@ def test_no_continue_on_error_anywhere_in_the_job() -> None:
     """On the job or on a step, it turns a red suite into a green required check."""
     found = [line.strip() for line in _job_lines() if "continue-on-error:" in line]
     assert found == [], found
+
+
+def test_the_legs_deselect_exactly_the_producer_check() -> None:
+    """A second `--deselect` would hide a test from the required legs with
+    nothing else running it; a renamed test turns this one into a no-op."""
+    assert _deselected() == [_DESELECTED]
+    path, _, func = _DESELECTED.partition("::")
+    source = (_REPO / path).read_text(encoding="utf-8")
+    assert re.search(rf"^def {re.escape(func)}\(", source, re.M), (
+        f"{func} is not defined in {path}, so the deselect skips nothing"
+    )
+
+
+def test_the_deselected_check_runs_in_the_derived_figures_job() -> None:
+    """The deselect holds only while `derived-figures` runs the producers on
+    every PR and the merge train requires that job. Narrowing it to
+    `--mode text`, or dropping it from the floor, would leave the producers
+    unchecked on a PR with nothing red to show for it."""
+    runs = _derived_figures_run_lines()
+    gate = [r for r in runs if "scripts/check_derived_figures.py" in r]
+    assert len(gate) == 1, f"expected one gate step in derived-figures, got {runs!r}"
+    tokens = gate[0].split()
+    mode = tokens[tokens.index("--mode") + 1]
+    assert mode in {"all", "producers"}, (
+        f"derived-figures runs `--mode {mode}`, which skips the producers "
+        f"the pytest legs deselect"
+    )
+    assert "derived-figures" in FLOOR_NAMES
