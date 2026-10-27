@@ -194,6 +194,11 @@ def test_zizmor_blocks_at_high_severity() -> None:
     gates = [s for s in steps if "uvx zizmor@" in s and "--min-severity high" in s]
     assert len(gates) == 1, steps
     assert "--format" not in gates[0], gates[0]
+    # The gate's `run:` is the zizmor command alone: `|| true`, `; exit 0`
+    # or a block script around it would swallow the exit status.
+    gate_run = [line.strip() for line in gates[0].splitlines() if line.strip().startswith("run:")]
+    assert len(gate_run) == 1, gates[0]
+    assert re.fullmatch(r"run:\s*uvx zizmor@\S+ --min-severity high \.", gate_run[0]), gate_run[0]
     sarif = [s for s in steps if "--format sarif" in s]
     assert len(sarif) == 1, steps
     assert "--no-exit-codes" in sarif[0], sarif[0]
