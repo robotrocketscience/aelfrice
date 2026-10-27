@@ -646,7 +646,7 @@ def test_find_claude_returns_the_cmd_shim_on_windows(monkeypatch: pytest.MonkeyP
     (the #1741 guard that #1761 removed). `which` is replaced here because
     its own `PATHEXT` branch needs `_winapi`; the real resolution runs on
     the windows-smoke leg in test_core_gate_background_windows_1761."""
-    shim = r"C:\Users\widget\AppData\Roaming\npm\claude.CMD"
+    shim = r"C:\Users\user\AppData\Roaming\npm\claude.CMD"
     asked: list[str] = []
 
     def fake_which(cmd: str) -> str:
