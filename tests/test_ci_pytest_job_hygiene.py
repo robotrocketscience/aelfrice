@@ -18,15 +18,27 @@ dependency set CI installs (#1436).
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_gate import FLOOR_NAMES  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "_cdf_hygiene", _REPO / "scripts" / "check_derived_figures.py"
+)
+assert _spec and _spec.loader
+cdf: Any = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cdf)
 
 # The required contexts this job must produce. They live in a branch ruleset
 # outside the tree, so they are stated here rather than derived.
@@ -270,20 +282,58 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
     )
 
 
+def _gate_step() -> list[str]:
+    steps = _steps("derived-figures", minimum=1)
+    gate = [s for s in steps if "scripts/check_derived_figures.py" in "\n".join(s)]
+    assert len(gate) == 1, f"expected one gate step in derived-figures, got {steps!r}"
+    return gate[0]
+
+
 def test_the_deselected_check_runs_in_the_derived_figures_job() -> None:
     """The deselect holds only while `derived-figures` runs the producers
     over the default roots on every PR. A step-level key such as `if:`,
     `shell:` or `continue-on-error:` can skip the gate or let it fail green,
     so the gate step carries `run:` and nothing else."""
-    steps = _steps("derived-figures", minimum=1)
-    gate = [s for s in steps if "scripts/check_derived_figures.py" in "\n".join(s)]
-    assert len(gate) == 1, f"expected one gate step in derived-figures, got {steps!r}"
-    assert len(gate[0]) == 1, f"the gate step carries more than `run:`: {gate[0]!r}"
-    assert _field(gate[0], "run") in _GATE_RUNS, (
-        f"derived-figures runs {_field(gate[0], 'run')!r}, not one of "
+    gate = _gate_step()
+    assert len(gate) == 1, f"the gate step carries more than `run:`: {gate!r}"
+    assert _field(gate, "run") in _GATE_RUNS, (
+        f"derived-figures runs {_field(gate, 'run')!r}, not one of "
         f"{sorted(_GATE_RUNS)!r}, so it may skip the producers the pytest "
         "legs deselect"
     )
+
+
+def test_the_gate_command_reaches_the_producers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The test above pins the gate's arguments as a string. This one runs
+    them through `main`, so a mode dispatch that stops sending them to
+    `check_producers` turns red here instead of making the job text-only.
+    `--mode text` must not reach the stub, or the stub proves nothing."""
+    markers = [SimpleNamespace(store_backed=False)]
+    calls: list[object] = []
+
+    def iter_files(roots: list[str]) -> list[Path]:
+        return [Path("stub.md")]
+
+    def check_text(files: list[Path], report: object) -> list[SimpleNamespace]:
+        return markers
+
+    def check_producers(found: object, report: object, **_: object) -> None:
+        calls.append(found)
+
+    monkeypatch.setattr(cdf, "iter_files", iter_files)
+    monkeypatch.setattr(cdf, "check_text", check_text)
+    monkeypatch.setattr(cdf, "check_producers", check_producers)
+
+    tokens = (_field(_gate_step(), "run") or "").split()
+    argv = tokens[tokens.index("scripts/check_derived_figures.py") + 1 :]
+    assert cdf.main(argv) == 0
+    assert calls == [markers], f"`{' '.join(argv)}` never ran the producers"
+
+    calls.clear()
+    assert cdf.main(["--mode", "text"]) == 0
+    assert calls == []
 
 
 def test_the_derived_figures_job_cannot_be_skipped_or_fail_green() -> None:
