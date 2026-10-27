@@ -432,6 +432,75 @@ def test_remove_with_nothing_of_ours_changes_nothing(gdir: Path) -> None:
     assert path.read_bytes() == before
 
 
+# --- a competing writer ------------------------------------------------------------
+
+
+def _arm_interleaved_write(
+    monkeypatch: pytest.MonkeyPatch, target: Path, newer: dict[str, object],
+    *, times: int = 1,
+) -> None:
+    """Rewrite `target` from inside its own read, `times` times.
+
+    A competing writer that lands after the snapshot and before the
+    commit, deterministic and in one process, as in the codex host test
+    (#1428). Each injected document differs from the one before.
+    """
+    real = Path.read_bytes
+    remaining = {"n": times}
+
+    def interleaved(self: Path) -> bytes:
+        data = real(self)
+        if self == target and remaining["n"] > 0:
+            remaining["n"] -= 1
+            _write(target, {**newer, "seq": remaining["n"]})
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", interleaved)
+
+
+def test_install_keeps_a_write_that_lands_before_its_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: committing without re-checking the content hash."""
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _arm_interleaved_write(monkeypatch, path, {"theme": "widget", "ui": {"x": 1}})
+    result = _install(path, cmd)
+    assert result.error is None
+    doc = _read(path)
+    assert doc["ui"] == {"x": 1}
+    assert set(EVENTS) <= set(doc["hooks"])  # type: ignore[arg-type]
+
+
+def test_remove_keeps_a_write_that_lands_before_its_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _install(path, cmd)
+    newer = _read(path)
+    newer["ui"] = {"x": 1}
+    _arm_interleaved_write(monkeypatch, path, newer)
+    result = hgm.remove_gemini_hooks(path)
+    assert result.error is None
+    doc = _read(path)
+    assert doc["ui"] == {"x": 1}
+    assert "hooks" not in doc
+
+
+def test_a_writer_that_never_stops_aborts_the_commit(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    _arm_interleaved_write(monkeypatch, path, {"theme": "other"}, times=1000)
+    result = _install(path, cmd)
+    assert result.error is not None
+    assert "modified by another process" in result.error
+    assert result.changed is False
+    assert "hooks" not in _read(path)
+
+
 # --- custom commands ---------------------------------------------------------------
 
 
