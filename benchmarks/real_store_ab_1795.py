@@ -123,7 +123,9 @@ figure counts that cut: H0's kappa and null-arm rates, the gains,
 precision, and H2 to H6. A null score is left out as in the
 calibration: kappa counts only the items both graders scored, precision
 and the null-arm rate only the items the grader scored, and a null item
-never counts as relevant in a gain. The report's `score_counts` gives
+never counts as relevant in a gain. Kappa is undefined, and fails H0,
+when no item has both graders' scores or both graders put every such
+item on one side of the cut. The report's `score_counts` gives
 each grader's count of every score, null included, so a jump in one
 grader's nulls shows. As in the calibration, `score` refuses one file
 given for both graders, a file that misses a key item or scores an id
@@ -1413,19 +1415,20 @@ def exact_bar(bar: float) -> Fraction:
     return Fraction(str(bar))
 
 
-def exact_kappa(ids: Sequence[str], a: Labels, b: Labels) -> Fraction:
-    """Cohen's kappa of `paired_kappa` as an exact fraction of the label counts.
+def exact_kappa(ids: Sequence[str], a: Labels, b: Labels) -> Fraction | None:
+    """Cohen's kappa of `paired_kappa` as an exact fraction of the label counts, or None.
 
     The float kappa is off by about 1e-16, so a kappa on the H0 bar can
-    land on either side of it. Like `paired_kappa`, unclear labels are
-    left out, no item gives 0, and graders who agree on every item give 1.
+    land on either side of it. Unclear labels are left out. As in the
+    #1804 calibration, kappa is undefined, None, when no item has both
+    graders' labels or both graders give every such item one label:
+    chance agreement is then 1 and kappa 0/0. `paired_kappa` gives 0 and
+    1 there, and a 1 would pass H0 on graders who call nothing relevant.
     """
     both = [(bool(a[i]), bool(b[i])) for i in ids if a[i] is not None and b[i] is not None]
+    if len({x for x, _ in both} | {y for _, y in both}) < 2:
+        return None
     n = len(both)
-    if n == 0:
-        return Fraction(0)
-    if all(x == y for x, y in both):
-        return Fraction(1)
     tt = sum(1 for x, y in both if x and y)
     tf = sum(1 for x, y in both if x and not y)
     ft = sum(1 for x, y in both if not x and y)
@@ -1669,7 +1672,10 @@ def score(
     Under #1809, each grader's score of 0 to 3 is read as relevant at
     `RELEVANT_CUT` or higher, and every figure below counts that cut. A
     null score is left out of kappa, of precision, and of the null-arm
-    rate, and never counts as relevant. The report's `score_counts` gives
+    rate, and never counts as relevant. As in the calibration, kappa is
+    undefined, `None` in the report, and fails H0 when no item has both
+    graders' scores or both graders put every such item on one side of
+    the cut (`exact_kappa`). The report's `score_counts` gives
     each grader's count of every score and of nulls. Each grader must
     score exactly the key's items (`require_scores`), or InputError.
 
@@ -1727,8 +1733,9 @@ def score(
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
     kappa, kappa_n, agreed = paired_kappa(ids, la, lc)
+    defined = exact_kappa(ids, la, lc)
     null = [null_figures(items, la), null_figures(items, lc)]
-    reliable = exact_kappa(ids, la, lc) >= exact_bar(KAPPA_BAR) and all(
+    reliable = defined is not None and defined >= exact_bar(KAPPA_BAR) and all(
         n["graded"] > 0 and n["rate"] <= NULL_RATE_CEILING for n in null
     )
     # H0's kill condition: when either bar fails, every arm result is
@@ -1793,7 +1800,7 @@ def score(
         "null_items": sum(1 for i in items if i.arms is None),
         "graders": list(GRADERS),
         "score_counts": {g: score_counts(s) for g, s in zip(GRADERS, (a, c), strict=True)},
-        "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
+        "kappa": None if defined is None else kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
         "arms": per_arm, "hypotheses": hyp,
         "bars": {
             "relevant_cut": RELEVANT_CUT, "kappa": KAPPA_BAR, "null_rate_ceiling": NULL_RATE_CEILING,

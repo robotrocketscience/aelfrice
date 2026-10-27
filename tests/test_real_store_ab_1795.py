@@ -1672,11 +1672,37 @@ def test_graders_who_share_no_graded_item_fail_h0() -> None:
     rows: list[Row] = [("n0", "p0", None, False, False, None),
                        ("n1", "p0", None, False, None, False)]
     key, a, b = _key(rows)
-    assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) == 0
+    assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) is None
     rep = _score(rows)
-    assert rep["kappa_n"] == 0
+    assert (rep["kappa"], rep["kappa_n"]) == (None, 0)
     assert [n["graded"] for n in rep["null_arm"]] == [1, 1]
     assert rep["hypotheses"]["H0"] == bench.V_FAIL
+
+
+@pytest.mark.parametrize(("a_score", "c_score"), [(1, 0), (0, 0), (3, 3)])
+def test_graders_who_put_every_item_on_one_side_of_the_cut_fail_h0(
+    a_score: int, c_score: int,
+) -> None:
+    # As in the #1804 calibration, kappa is then undefined and never meets
+    # the bar, though the graders never disagree at the cut.
+    key, a, c = _key(_hand([2, 2, 2, 2], [3, 3, 2, 4]))
+    one_side: tuple[Scores, Scores] = (
+        dict.fromkeys(a, a_score), dict.fromkeys(c, c_score))
+    assert bench.exact_kappa([i.id for i in key.items], *map(_cut, one_side)) is None
+    rep = bench.score(key, *one_side, seed=1, census_report=_H1_PASS)
+    assert (rep["kappa"], rep["kappa_n"], rep["agreed"]) == (None, len(a), len(a))
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+    assert rep["hypotheses"]["H5"] == {"A1": bench.V_UNRELIABLE}
+
+
+def test_a_kappa_of_1_needs_both_sides_of_the_cut() -> None:
+    # One item both graders call relevant and the rest neither: kappa is 1.
+    rows = _null_table(1, 0, 0, 17)
+    key, a, b = _key(rows)
+    assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) == 1
+    rep = _score(rows)
+    assert rep["kappa"] == _approx(1.0)
+    assert rep["hypotheses"]["H0"] == bench.V_PASS
 
 
 def test_an_item_one_grader_left_unclear_stays_out_of_kappa() -> None:
