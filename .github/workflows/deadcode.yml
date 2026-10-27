@@ -36,7 +36,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uvx deptry src
+      - run: uvx deptry@0.25.1 src
 
   vulture:
     runs-on: ubuntu-latest
@@ -49,5 +49,5 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uvx vulture src --min-confidence 80
+      - run: uvx vulture@2.16 src --min-confidence 80
         continue-on-error: true
