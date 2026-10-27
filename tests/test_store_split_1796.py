@@ -578,6 +578,56 @@ def test_a_file_path_in_another_letter_case_is_one_target(
     assert all(str(r[1]).startswith("a-") for r in rows), rows
 
 
+class _CaseInsensitiveOs:
+    """`os` as `store_split` sees it on a case-insensitive filesystem,
+    such as the macOS default: a name reaches the entry its folder lists
+    in another letter case. A letter-case test then runs on Linux too."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(os, name)
+
+    @staticmethod
+    def _on_disk(path: str | os.PathLike[str]) -> Path:
+        given = Path(path)
+        current = Path(given.anchor)
+        for i, part in enumerate(given.parts[1:], 1):
+            try:
+                names = os.listdir(current)
+            except OSError:
+                return current.joinpath(*given.parts[i:])
+            if part not in names:
+                part = next(
+                    (n for n in sorted(names) if n.lower() == part.lower()),
+                    part,
+                )
+            current = current / part
+        return current
+
+    def stat(self, path: str | os.PathLike[str]) -> os.stat_result:
+        return os.stat(self._on_disk(path))
+
+    def lstat(self, path: str | os.PathLike[str]) -> os.stat_result:
+        return os.lstat(self._on_disk(path))
+
+
+@pytest.mark.parametrize("under", [".", "a"], ids=["at-root", "below-root"])
+def test_a_file_path_is_spelled_from_disk_below_the_onboard_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, under: str,
+) -> None:
+    """On a case-insensitive filesystem the folders of the recorded file
+    path `Docs/x.md` are spelled from the onboard root's folder on disk,
+    so they name `<root>/docs`, at the work-tree root or below it
+    (#1806)."""
+    work_tree = tmp_path.resolve()
+    root = work_tree / under
+    (root / "docs").mkdir(parents=True)
+    monkeypatch.setattr(store_split, "os", _CaseInsensitiveOs())
+    folders = store_split._belief_folders(  # pyright: ignore[reportPrivateUsage]
+        work_tree, [(root, "Docs/x.md")], set(),
+    )
+    assert folders == (None, {root / "docs"})
+
+
 def test_folders_it_cannot_read_compare_by_their_text(tmp_path: Path) -> None:
     """`_same_folder` falls back to the paths' text when a folder can't
     be read, as when it was removed after the 90% bar counted its files
