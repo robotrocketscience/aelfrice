@@ -5443,9 +5443,13 @@ module's constant is `_CORE_CHARS_PER_TOKEN = 4`; the float spelling
 a block. The budget to read that cost against is
 `DEFAULT_HOOK_TOKEN_BUDGET`, the budget the UPS hook actually passes, not
 the CLI default, which `resolve_token_budget` ranks below an explicit
-caller kwarg. The hint is appended after `_retrieve` has spent that
-budget, so the packer never charges it; it shows up where the assembled
-block is measured, such as the audited `tokens` (the +24/+25 rule above).
+caller kwarg. The packer never charges the hint, because the hint is
+appended outside retrieval. On a fire that retrieves, `_retrieve` has
+spent that budget before the hint is appended. On a session's first
+prompt that the #674 shape gate refuses, `_retrieve` never runs, and the
+hint follows the `<locked>` and `<core>` sub-block alone. Either way the
+hint shows up where the assembled block is measured, such as the audited
+`tokens` (the +24/+25 rule above).
 #1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing
 header uncharged too (the `_SPECULATIVE_FRAMING_SENTENCE` docstring says
 why). The share of the budget the hint represents is not quoted here,
