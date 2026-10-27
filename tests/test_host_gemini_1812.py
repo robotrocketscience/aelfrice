@@ -349,6 +349,7 @@ def test_remove_drops_a_hooks_object_it_empties(gdir: Path, cmd: str) -> None:
 def test_no_lock_file_is_left_in_the_gemini_dir(gdir: Path, cmd: str) -> None:
     """Killed by: locking a sibling `settings.json.lock` again."""
     path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
     _install(path, cmd)
     hgm.remove_gemini_hooks(path)
     assert sorted(p.name for p in gdir.iterdir()) == ["settings.json"]
@@ -394,6 +395,15 @@ def test_the_lock_is_held_across_the_read_modify_write(
     monkeypatch.setattr(Path, "read_bytes", probing)
     assert _install(path, cmd).error is None
     assert observed and all(observed)
+
+
+def test_remove_deletes_the_file_setup_created(gdir: Path, cmd: str) -> None:
+    """Killed by: leaving `{}` where there was no settings.json."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    result = hgm.remove_gemini_hooks(path)
+    assert (result.changed, result.error) == (True, None)
+    assert not path.exists()
 
 
 def test_remove_without_a_file_creates_nothing(tmp_path: Path) -> None:
@@ -501,8 +511,16 @@ def test_install_and_remove_commands(gdir: Path) -> None:
     assert (second.written, len(second.already)) == ((), len(first.written))
     removed = hgm.remove_gemini_commands(gdir)
     assert sorted(removed.pruned) == sorted(first.written)
-    assert not target.exists()
-    assert (gdir / "commands").is_dir()
+    assert not (gdir / "commands").exists()
+
+
+def test_remove_keeps_a_commands_dir_that_holds_user_files(gdir: Path) -> None:
+    mine = gdir / "commands" / "mine.toml"
+    mine.parent.mkdir()
+    mine.write_text('prompt = "mine"\n', encoding="utf-8")
+    hgm.install_gemini_commands(gdir)
+    hgm.remove_gemini_commands(gdir)
+    assert sorted(p.name for p in (gdir / "commands").iterdir()) == ["mine.toml"]
 
 
 def test_a_user_command_is_never_overwritten_or_removed(gdir: Path) -> None:
