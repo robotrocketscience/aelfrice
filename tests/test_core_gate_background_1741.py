@@ -15,6 +15,7 @@ import stat
 import time
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -944,9 +945,14 @@ class SettingsWatchingRun(FakeRun):
         return super().__call__(argv, **kw)
 
 
-def test_the_settings_file_holds_the_json_during_the_run_and_is_gone_after(db: Path) -> None:
+def test_the_settings_file_holds_the_json_during_the_run_and_is_gone_after(
+    db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Killed by: not writing the file, writing anything but the hooks-off
-    JSON, or leaving the file behind after the run returns."""
+    JSON, writing it outside the temp folder (such as in the hook's working
+    directory, the user's project), dropping its `.json` suffix, or leaving
+    the file behind after the run returns."""
+    monkeypatch.chdir(tmp_path)
     _seed(db, [_belief("w1")])
     store, batch_id = _open_batch(db, ["w1"])
     run = SettingsWatchingRun(stdout=_reply([(0, "A")]))
@@ -961,6 +967,8 @@ def test_the_settings_file_holds_the_json_during_the_run_and_is_gone_after(db: P
     assert json.loads(content) == {"disableAllHooks": True}
     path = Path(_settings_arg(run.calls[0]["argv"]))
     assert path.name.startswith(bg.RUNNER_SETTINGS_PREFIX)
+    assert path.suffix == ".json"
+    assert path.parent.resolve() == Path(tempfile.gettempdir()).resolve()
     assert not path.exists()
     if sys.platform != "win32":
         # `mkstemp` creates the file for its owner only.
