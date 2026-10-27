@@ -4,8 +4,9 @@
 legs upload, writes one record of every test's outcome, finds the record
 of the last green run on main and diffs the two. These tests run its pure
 functions on synthetic JUnit XML, in the shapes pytest writes (checked
-against a pytest run with a failing, erroring, skipping, xfailing and
-strict-xpassing test), drive the baseline walk with a fake API, and pin
+against a pytest 9 run with a failing, erroring, skipping, xfailing and
+strict-xpassing test, each also with a fixture that raises in teardown),
+drive the baseline walk with a fake API, and pin
 the `test-outcomes` job in ci.yml as text, the way the neighboring
 workflow tests do.
 
@@ -111,12 +112,30 @@ def test_every_classified_outcome_is_a_declared_one() -> None:
         assert outcome in tor.OUTCOMES
 
 
-def test_a_failure_outranks_a_teardown_error_and_an_error_outranks_a_skip() -> None:
-    both = tor.parse_junit(_report(
-        _case("t", "fail_then_error", _FAIL + _ERROR),
-        _case("t", "skip_then_error", _SKIP_PLAIN + _ERROR),
-    ))
-    assert both == {"t::fail_then_error": tor.FAILED, "t::skip_then_error": tor.ERROR}
+_TEARDOWN_ERROR = '<error message="failed on teardown with &quot;RuntimeError: boom&quot;">boom</error>'
+
+
+@pytest.mark.parametrize(
+    ("entries", "outcome"),
+    [
+        ([_FAIL, _TEARDOWN_ERROR], tor.FAILED),
+        ([_TEARDOWN_ERROR, _FAIL], tor.FAILED),
+        ([_TEARDOWN_ERROR], tor.ERROR),
+        ([_SKIP_PLAIN + _TEARDOWN_ERROR], tor.ERROR),
+        ([_XFAIL + _XFAIL], tor.XFAILED),
+        ([_XPASS_STRICT + _XFAIL], tor.XPASSED),
+    ],
+    ids=["fail-two-entries", "fail-two-entries-reversed", "pass", "skip", "xfail", "xpass-strict"],
+)
+def test_a_teardown_error_in_each_shape_pytest_writes(entries: list[str], outcome: str) -> None:
+    """pytest 9 writes a failed call and its teardown error as two
+    `<testcase>` entries with one id, and every other call outcome with its
+    teardown error as one entry. A failure outranks the error in either
+    order; an error outranks a skip."""
+    report = _report(*(_case("tests.test_a", "test_x", body) for body in entries))
+    outcomes = tor.parse_junit(report)
+    assert outcomes == {"tests.test_a::test_x": outcome}
+    assert tor.count_outcomes(outcomes)["total"] == 1
 
 
 @pytest.mark.parametrize("reason", [
@@ -139,17 +158,16 @@ def test_an_ordinary_skip_reason_is_not_never_executed(reason: str) -> None:
     assert not tor.is_never_executed_reason(reason)
 
 
-def test_the_test_id_is_classname_and_name_and_a_repeated_id_keeps_the_last() -> None:
+def test_the_test_id_is_classname_and_name() -> None:
     outcomes = tor.parse_junit(_report(
         _case("tests.test_a.TestGroup", "test_in_class"),
         _case("tests.test_a", "test_param[c::d]"),
-        _case("tests.test_a", "test_rerun", _FAIL),
-        _case("tests.test_a", "test_rerun"),
+        _case("tests.test_b", "test_param[c::d]", _FAIL),
     ))
     assert outcomes == {
         "tests.test_a.TestGroup::test_in_class": tor.PASSED,
         "tests.test_a::test_param[c::d]": tor.PASSED,
-        "tests.test_a::test_rerun": tor.PASSED,
+        "tests.test_b::test_param[c::d]": tor.FAILED,
     }
 
 

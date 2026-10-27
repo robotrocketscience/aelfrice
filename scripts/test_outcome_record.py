@@ -107,7 +107,7 @@ _API_TIMEOUT_SECONDS = 60
 # ---------------------------------------------------------------- record
 
 def classify_testcase(testcase: ElementTree.Element) -> str:
-    """One outcome for a `<testcase>` element.
+    """One outcome for the children of a test's `<testcase>` entries.
 
     A failure outranks an error, so a test that failed and then errored in
     teardown reads as failed. An error outranks a skip, so a test that
@@ -143,12 +143,19 @@ def test_id(testcase: ElementTree.Element) -> str:
 
 
 def parse_junit(text: str) -> dict[str, str]:
-    """Test id to outcome for one JUnit report. A repeated id keeps its last entry."""
+    """Test id to outcome for one JUnit report.
+
+    pytest writes a test whose call failed and whose teardown then raised
+    as two `<testcase>` entries with one id, the first holding `<failure>`
+    and the second `<error>`. The children of every entry with one id are
+    classified together, so the precedence in `classify_testcase` holds
+    across entries.
+    """
     root = ElementTree.fromstring(text)
-    outcomes: dict[str, str] = {}
+    merged: dict[str, ElementTree.Element] = {}
     for testcase in root.iter("testcase"):
-        outcomes[test_id(testcase)] = classify_testcase(testcase)
-    return outcomes
+        merged.setdefault(test_id(testcase), ElementTree.Element("testcase")).extend(list(testcase))
+    return {tid: classify_testcase(entry) for tid, entry in merged.items()}
 
 
 def count_outcomes(outcomes: dict[str, str]) -> dict[str, int]:
