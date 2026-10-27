@@ -548,6 +548,17 @@ def test_only_a_name_in_another_letter_case_respells_a_root_part(
     assert spell(repo, ("A", "Docs", "Gone", "X")) == Path("a", "docs", "Gone", "X")
 
 
+def test_folders_it_cannot_read_compare_by_their_text(tmp_path: Path) -> None:
+    """`_same_folder` falls back to the paths' text when a folder can't
+    be read, as when it was removed after the 90% bar counted its files
+    (#1806)."""
+    same = store_split._same_folder  # pyright: ignore[reportPrivateUsage]
+    gone = tmp_path / "gone"
+    assert same(gone, tmp_path / "gone")
+    assert not same(gone, tmp_path / "other")
+    assert not same(gone, tmp_path)
+
+
 def _repeated_session(
     src: MemoryStore, repo: Path, given: str, *, total: int, also: Path,
     also_present: int,
