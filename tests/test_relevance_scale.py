@@ -21,6 +21,13 @@ def test_scores_and_null_are_read() -> None:
     assert parse_scores(_SRC, data) == {"r0": 0, "r1": 1, "r2": 2, "r3": 3, "rn": None}
 
 
+@pytest.mark.parametrize("score", [2.0, 1e0, 0.0, 3.0, True, False])
+def test_a_float_or_boolean_score_is_refused(score: object) -> None:
+    # 2.0 == 2 and True == 1 in Python, so only the type tells them apart.
+    with pytest.raises(InputError, match="1: need an id and a score of 0, 1, 2, 3, or null"):
+        parse_scores(_SRC, _data({"id": "r1", "score": score}))
+
+
 @pytest.mark.parametrize("correct", [True, False, None])
 def test_a_binary_label_file_is_refused_by_name(correct: bool | None) -> None:
     with pytest.raises(InputError, match=r'labels\.jsonl:1: a binary "correct" label'):
