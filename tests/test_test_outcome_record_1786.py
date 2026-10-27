@@ -689,6 +689,47 @@ def test_the_job_keeps_the_records_as_an_artifact() -> None:
     assert "retention-days: 30" in steps[0]
 
 
+def _one_step(marker: str) -> str:
+    steps = [s for s in _steps("test-outcomes") if marker in s]
+    assert len(steps) == 1, marker
+    return steps[0]
+
+
+def _flag(step: str, flag: str) -> str:
+    values = re.findall(rf"{re.escape(flag)} (\S+)", step)
+    assert len(values) == 1, (flag, step)
+    return values[0]
+
+
+def _block_lines(step: str, key: str) -> list[str]:
+    """The lines of a `key: |` block scalar in a step."""
+    lines = step.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == f"{key}: |")
+    out: list[str] = []
+    for line in lines[start + 1:]:
+        if _indent(line) <= _indent(lines[start]):
+            break
+        out.append(line.strip())
+    return out
+
+
+def test_each_step_reads_the_files_the_step_before_it_wrote() -> None:
+    """The job is advisory, so a broken handoff would stay green in CI."""
+    download = _one_step("actions/download-artifact@")
+    record = _one_step("test_outcome_record.py record")
+    baseline = _one_step("test_outcome_record.py baseline")
+    diff = _one_step("test_outcome_record.py diff")
+    upload = _one_step("actions/upload-artifact@")
+    path = re.search(r"^ +path: (\S+)$", download, re.MULTILINE)
+    assert path, "without `path` the reports land in the workspace root"
+    for leg in ("3.12", "3.13"):
+        assert f"--junit {leg}={path.group(1)}/junit-{leg}.xml" in record
+    assert _flag(diff, "--current") == _flag(record, "--out")
+    assert _flag(diff, "--baseline") == _flag(baseline, "--out")
+    assert sorted(_block_lines(upload, "path")) == sorted([_flag(record, "--out"), _flag(baseline, "--out")])
+    assert _flag(baseline, "--repo") == '"$GITHUB_REPOSITORY"'
+
+
 def test_no_expression_is_interpolated_into_a_run_script() -> None:
     """zizmor template-injection: values reach shell through `env:`, never inline."""
     for step in _steps("test-outcomes"):
