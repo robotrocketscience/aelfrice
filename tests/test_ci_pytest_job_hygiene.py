@@ -103,9 +103,10 @@ def _matrix() -> tuple[str, list[str]]:
 
 
 def _pytest_step() -> list[str]:
+    """The step that runs the suite, as opposed to the docs-only partial run."""
     found = [
         s for s in _steps()
-        if (_field(s, "run") or "").startswith("uv run pytest ")
+        if (_field(s, "run") or "").startswith("uv run pytest tests/ ")
     ]
     assert len(found) == 1, f"expected one pytest step, found {len(found)}"
     return found[0]

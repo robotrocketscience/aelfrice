@@ -81,19 +81,19 @@ _DUPES_INVOCATION_RE = re.compile(
 )
 
 
-def _code_filter_globs() -> list[str]:
-    """Return the glob list under the `code:` key of the paths-filter."""
+def _filter_entries(key: str) -> list[str]:
+    """Return the glob list under one key of the paths-filter."""
     lines = _CI_WORKFLOW.read_text(encoding="utf-8").splitlines()
-    starts = [i for i, line in enumerate(lines) if line.strip() == "code:"]
+    starts = [i for i, line in enumerate(lines) if line.strip() == f"{key}:"]
     assert len(starts) == 1, (
-        f"expected exactly one `code:` filter key in {_CI_WORKFLOW.name}, "
+        f"expected exactly one `{key}:` filter key in {_CI_WORKFLOW.name}, "
         f"found {len(starts)} — the parser below cannot be trusted, and a "
         f"parser that silently finds nothing turns every assertion in this "
         f"module green for free."
     )
     start = starts[0]
     indent = len(lines[start]) - len(lines[start].lstrip())
-    globs: list[str] = []
+    entries: list[str] = []
     for line in lines[start + 1 :]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -101,11 +101,20 @@ def _code_filter_globs() -> list[str]:
         if len(line) - len(line.lstrip()) <= indent:
             break
         matched = re.fullmatch(r"-\s*'([^']+)'", stripped)
-        assert matched, f"unparsed entry in the code filter: {stripped!r}"
-        entry = matched.group(1)
+        assert matched, f"unparsed entry in the {key} filter: {stripped!r}"
+        entries.append(matched.group(1))
+    assert entries, f"the `{key}` filter parsed empty"
+    return entries
+
+
+def _code_filter_globs() -> list[str]:
+    """Return the glob list under the `code:` key of the paths-filter."""
+    globs: list[str] = []
+    for entry in _filter_entries("code"):
         # `_entry_covers` below knows two shapes: a whole directory
         # (`dir/**`) and an exact path. Any other wildcard would make it
         # guess, and a guess in a coverage predicate is a pass for free.
+        # Globs a test reads every match of go under `tree_reads`.
         assert entry.endswith("/**") or "*" not in entry, (
             f"unsupported glob shape in the code filter: {entry!r}; use "
             f"'<dir>/**' for a directory or the exact path for a file"
@@ -598,6 +607,46 @@ def _suite_dependencies() -> set[str]:
     return found | (code_reads & _IN_REPO_PACKAGES)
 
 
+_TREE_READS_MATCH = "steps.filter.outputs.tree_reads == 'true'"
+
+
+def _pytest_job_steps() -> list[list[str]]:
+    """The lines of each step of ci.yml's first job, `pytest`."""
+    steps: list[list[str]] = []
+    for line in _CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if re.match(r"\s{6}- ", line):
+            steps.append([line])
+        elif steps and (not line.strip() or line.startswith(" " * 8)):
+            steps[-1].append(line)
+        elif steps and line.strip() and not line.startswith(" " * 6):
+            break
+    assert len(steps) >= 5, f"parsed only {len(steps)} steps of the pytest job"
+    return steps
+
+
+def _tree_read_step_modules() -> list[str]:
+    """The test modules the pytest job runs when only `tree_reads` matches.
+
+    Read from the one step gated on `tree_reads == 'true'` whose command
+    runs pytest, so a second such step, or a renamed output, fails here
+    instead of leaving the modules unread.
+    """
+    runs = [
+        step
+        for step in _pytest_job_steps()
+        if any(_TREE_READS_MATCH in line for line in step)
+        and any(line.strip().startswith("run: uv run pytest ") for line in step)
+    ]
+    assert len(runs) == 1, (
+        f"expected one pytest step gated on `tree_reads` in {_CI_WORKFLOW.name}, "
+        f"found {len(runs)}"
+    )
+    command = next(line for line in runs[0] if line.strip().startswith("run: "))
+    modules = re.findall(r"tests/\S+\.py\b", command)
+    assert modules, f"the `tree_reads` step names no test module: {command.strip()!r}"
+    return modules
+
+
 def _release_docs_check_paths() -> list[str]:
     """The CHANGELOG paths `release-docs-check` scans on every PR."""
     found = _DUPES_INVOCATION_RE.search(_STAGING_GATE_WORKFLOW.read_text(encoding="utf-8"))
@@ -959,6 +1008,62 @@ def test_every_exact_entry_in_the_code_filter_is_read_by_a_test() -> None:
     )
 
 
+def test_every_glob_the_suite_reads_runs_its_readers_when_a_match_changes() -> None:
+    """#1786 CI-07: a test that reads every match of a glob runs on any match.
+
+    `test_docs_cross_file_anchors_1511.py` reads every tracked Markdown
+    file. Listing them all under `code` would put the full matrix on
+    every docs-only PR (#413/#427), and leaving them out let a PR break
+    an anchor in an unlisted page with the required check green. So the
+    glob sits under the filter's `tree_reads` key, and a PR that matches
+    it but no `code` path runs exactly the modules that declare it.
+    Both lists come from the modules' `# path-filter:` comments.
+    """
+    patterns = _suite_pattern_reads()
+    assert "**/*.md" in patterns, (
+        f"the scan found no module declaring `**/*.md`; found {patterns}. The "
+        f"anchor test lost its comment, or the scan stopped reading comments."
+    )
+    globs = _filter_entries("tree_reads")
+    missing = sorted(set(patterns) - set(globs))
+    assert not missing, (
+        f"globs declared by tests/ but absent from the `tree_reads` filter in "
+        f"{_CI_WORKFLOW.name}: {missing}"
+    )
+    stale = sorted(set(globs) - set(patterns))
+    assert not stale, (
+        f"`tree_reads` entries in {_CI_WORKFLOW.name} that no test declares: "
+        f"{stale}. A PR matching only those runs tests that read nothing it changed."
+    )
+    readers = sorted(set().union(*patterns.values()))
+    step = sorted(_tree_read_step_modules())
+    assert step == readers, (
+        f"the `tree_reads` step runs {step}, but the modules that declare a "
+        f"glob are {readers}. A module left out never runs on the PR that "
+        f"changes only the files it reads."
+    )
+
+
+def test_a_tree_reads_match_installs_first_and_skips_the_echo() -> None:
+    """The partial run needs uv and the lockfile, and is not a docs-only pass."""
+    steps = _pytest_job_steps()
+    installs = [
+        step for step in steps
+        if any("astral-sh/setup-uv@" in line or line.strip() == "run: uv sync --frozen --group dev --extra archive" for line in step)
+    ]
+    assert len(installs) == 2, f"expected the setup-uv and uv sync steps, found {len(installs)}"
+    for step in installs:
+        assert _TREE_READS_MATCH in step[0], (
+            f"an install step does not run on a `tree_reads` match, so the "
+            f"partial run finds no uv: {step[0].strip()!r}"
+        )
+    echoes = [step for step in steps if any(line.strip().startswith("run: echo ") for line in step)]
+    assert len(echoes) == 1, f"expected one echo step, found {len(echoes)}"
+    assert "steps.filter.outputs.tree_reads != 'true'" in echoes[0][0], (
+        f"the docs-only echo also fires on a `tree_reads` match: {echoes[0][0].strip()!r}"
+    )
+
+
 def test_benchmarks_and_scripts_are_in_the_code_filter() -> None:
     """Pin the #1160 regression by name, not only by derivation."""
     globs = _code_filter_globs()
@@ -1009,9 +1114,9 @@ def test_docs_only_changes_still_skip_the_suite() -> None:
 
     The filter names the exact pages tests read (the test above derives
     them), and nothing wider: a PR that changes any other page, or adds a
-    CHANGELOG fragment, still takes the `echo` branch (#413/#427). Widen
-    to `docs/**` only on an operator ruling, and move this expectation
-    first.
+    CHANGELOG fragment, does not run the suite (#413/#427). A Markdown
+    change runs only the `tree_reads` modules. Widen to `docs/**` only on
+    an operator ruling, and move this expectation first.
     """
     globs = _code_filter_globs()
     for directory in ("docs", "CHANGELOG"):
