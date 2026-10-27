@@ -1,4 +1,7 @@
-# Dependabot version updates for the Python dependencies (#1542, #1786).
+# Dependabot version updates (#1542, #1786).
+#
+# Two ecosystems, both weekly: the actions the workflows run, and the Python
+# dependencies in pyproject.toml and uv.lock.
 #
 # The `uv` ecosystem reads pyproject.toml and rewrites uv.lock in the same
 # PR. A `pip` updater bumps pyproject.toml and leaves uv.lock at the old
@@ -6,20 +9,37 @@
 # then each plain `uv run` step re-locks in the runner and installs the
 # new ones. The tests run on the new versions, and the stale uv.lock
 # merges.
-# Updates arrive weekly: minor and patch bumps grouped into one PR, a major
-# bump as its own PR, at most five open PRs at a time. Dependabot waits
-# seven days after a release before it proposes that version, the shortest
-# cooldown zizmor's dependabot-cooldown audit accepts. The cooldown covers
-# version updates only, so a security update still opens once an alert has
-# a patched version. Each PR carries the
-# `dependencies` and `python:uv` labels, the ones Dependabot's security
-# updates already apply, and a `build(deps):` subject, which the
-# commit-msg-prefix and pr-title-prefix checks accept. Nothing here merges
-# a PR: a person reads the diff and adds `ready-to-merge`, and the merge
-# train takes it from there. See the `ready-to-merge` section of
-# CONTRIBUTING.md.
+#
+# For a sha-pinned action, Dependabot reads the `# vX.Y.Z` comment beside
+# the sha to tell a patch from a major, so every `uses:` line carries one.
+#
+# Updates arrive weekly: minor and patch bumps grouped into one PR per
+# ecosystem, a major bump as its own PR. The `uv` item holds at most five
+# open PRs at a time. Dependabot waits seven days after a `uv` release
+# before it proposes that version, the shortest cooldown zizmor's
+# dependabot-cooldown audit accepts. The cooldown covers version updates
+# only, so a security update still opens once an alert has a patched
+# version. Each `uv` PR carries the `dependencies` and `python:uv` labels,
+# the ones Dependabot's security updates already apply.
+#
+# `build(deps): ...` is the subject the commit-msg-prefix and
+# pr-title-prefix checks accept. Nothing here merges a PR: a person reads
+# the diff and adds `ready-to-merge`, and the merge train takes it from
+# there. See CONTRIBUTING.md § Dependency updates from Dependabot.
 version: 2
 updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    groups:
+      actions-minor-and-patch:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
