@@ -1,0 +1,29 @@
+# Dependabot version updates for the Python dependencies (#1542, #1786).
+#
+# The `uv` ecosystem reads pyproject.toml and rewrites uv.lock. `pip` would
+# leave the lockfile stale, and `uv sync --frozen` fails on a stale lock.
+# Updates arrive weekly: minor and patch bumps grouped into one PR, a major
+# bump as its own PR, at most five open PRs at a time. Each PR carries the
+# `dependencies` and `python:uv` labels, the ones Dependabot's security
+# updates already apply, and a `build(deps):` subject, which the
+# commit-msg-prefix and pr-title-prefix checks accept. Nothing here merges
+# a PR: a person reads the diff and adds `ready-to-merge`, and the merge
+# train takes it from there. See the `ready-to-merge` section of
+# CONTRIBUTING.md.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python:uv"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    groups:
+      python-minor-and-patch:
+        update-types: ["minor", "patch"]
