@@ -30,10 +30,13 @@ _PINNED = re.compile(
     r"^[\w.-]+/[\w.-]+(?:/[\w./-]+)?@[0-9a-f]{40}$"
 )
 _VERSION_COMMENT = re.compile(r"^\s+#\s*v\d+\.\d+\.\d+\s*$")
-# `uvx [flags] tool[@version]`. Flags that take a value are rare in this
-# repository and would be read as the tool; the assertion then names them.
-_UVX = re.compile(r"\buvx\s+(?:--?[\w-]+\s+)*(?P<tool>[A-Za-z0-9_.-]+)(?P<ver>@\S+)?")
-_EXACT_VERSION = re.compile(r"^@\d+(?:\.\d+)+$")
+# Every `uvx` word, then its first argument after any flags, whatever that
+# argument looks like. A quoted or variable argument is still captured, so it
+# fails the pin check below rather than dropping out of the scan. Flags that
+# take a value are rare in this repository and would be read as the tool;
+# the assertion then names them.
+_UVX = re.compile(r"\buvx\b(?:\s+--?[\w-]+)*(?:\s+(?P<arg>\S+))?")
+_PINNED_TOOL = re.compile(r"^[A-Za-z0-9_.-]+@\d+(?:\.\d+)+$")
 _HARDEN = "step-security/harden-runner@"
 
 
@@ -159,22 +162,25 @@ def test_every_uses_names_a_commit_sha_and_its_tag(path: Path) -> None:
 # --- uvx ---------------------------------------------------------------------
 
 
-def _uvx_calls() -> list[tuple[str, str, str]]:
-    """(location, tool, version-suffix) for every `uvx` call in a workflow."""
-    calls: list[tuple[str, str, str]] = []
+def _uvx_calls() -> list[tuple[str, str]]:
+    """(location, first argument) for every `uvx` word in a workflow.
+
+    The argument is empty when nothing follows `uvx` on the line.
+    """
+    calls: list[tuple[str, str]] = []
     for path in _WORKFLOW_FILES:
         for n, line in _code_lines(path.read_text(encoding="utf-8")):
             code = line.split(" #")[0]
             for match in _UVX.finditer(code):
-                calls.append((f"{path.name}:{n}", match.group("tool"), match.group("ver") or ""))
+                calls.append((f"{path.name}:{n}", match.group("arg") or ""))
     return calls
 
 
 def test_every_uvx_call_pins_an_exact_version() -> None:
     calls = _uvx_calls()
     assert len(calls) >= 3, calls
-    bad = [f"{where}: uvx {tool}{ver}" for where, tool, ver in calls if not _EXACT_VERSION.match(ver)]
-    assert not bad, "\n".join(["uvx calls without `tool@X.Y.Z`:", *bad])
+    bad = [f"{where}: uvx {arg}" for where, arg in calls if not _PINNED_TOOL.match(arg)]
+    assert not bad, "\n".join(["uvx calls whose tool is not a bare `tool@X.Y.Z`:", *bad])
 
 
 # --- zizmor ------------------------------------------------------------------
@@ -212,6 +218,60 @@ def test_zizmor_blocks_at_high_severity() -> None:
     assert len(sarif) == 1, steps
     assert "--no-exit-codes" in sarif[0], sarif[0]
     assert "upload-sarif@" in "".join(steps), steps
+
+
+def _trigger_paths(text: str, event: str) -> list[str]:
+    """The `paths:` globs under `on: <event>:`, in order; empty if none."""
+    lines = text.splitlines()
+    paths: list[str] = []
+    in_event = False
+    in_paths = False
+    for line in lines[lines.index("on:") + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = _indent(line)
+        if indent == 0:
+            break
+        if indent == 2:
+            in_event = stripped == f"{event}:"
+            in_paths = False
+        elif in_event and indent == 4:
+            in_paths = stripped == "paths:"
+        elif in_paths and stripped.startswith("- "):
+            paths.append(stripped[2:].split(" #")[0].strip().strip("'\""))
+    return paths
+
+
+def _glob_matches(pattern: str, path: str) -> bool:
+    """GitHub's `paths:` glob: `**` crosses `/`, `*` does not."""
+    regex = ".*".join(
+        "[^/]*".join(re.escape(part) for part in chunk.split("*"))
+        for chunk in pattern.split("**")
+    )
+    return re.fullmatch(regex, path) is not None
+
+
+def test_zizmor_runs_on_every_pr_that_changes_a_file_it_audits() -> None:
+    """zizmor audits workflows, composite actions and dependabot.yml. A
+    `paths:` filter that misses one of them lets a PR change that file with
+    no `zizmor` check at all, and an absent check does not block the train.
+    The example action path stands in for a directory that does not exist
+    yet, so the rule holds before the first composite action lands."""
+    text = _ZIZMOR.read_text(encoding="utf-8")
+    audited = [
+        *(f".github/workflows/{p.name}" for p in _WORKFLOW_FILES),
+        ".github/actions/example/action.yml",
+        ".github/dependabot.yml",
+    ]
+    assert _DEPENDABOT.is_file(), _DEPENDABOT
+    code = "\n".join(line for _n, line in _code_lines(text))
+    assert "paths-ignore" not in code, code
+    for event in ("pull_request", "push"):
+        globs = _trigger_paths(text, event)
+        assert globs, (event, text)
+        missed = [p for p in audited if not any(_glob_matches(g, p) for g in globs)]
+        assert not missed, (event, globs, missed)
 
 
 # --- harden-runner -----------------------------------------------------------
