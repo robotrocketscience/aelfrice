@@ -390,12 +390,19 @@ def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
 
     The two start on the same event, so the job is pending during every poll
     the train makes, and NONGATING_WHILE_PENDING is what lets it run then
-    without holding the train. The label name is read from both files, so a
-    rename in one of them fails here instead of leaving a job that never runs.
+    without holding the train. The label names and the trigger types are
+    read from both files, so a rename or a dropped event in one of them
+    fails here instead of leaving a job that never runs, or one that runs
+    on pushes the train ignores.
     """
     assert _MUTATION in NONGATING_WHILE_PENDING
-    train = _label_gate(_WORKFLOW.read_text())
+    train_text = _WORKFLOW.read_text()
+    train = _label_gate(train_text)
     assert train == ({"ready-to-merge"}, {"ready-to-merge"})
+    train_types = {
+        frozenset(types) for _, types in _pull_request_triggers(train_text)
+    }
+    assert train_types == {frozenset({"labeled", "synchronize"})}, train_types
     for name in NONGATING_WHILE_PENDING:
         source = next(
             path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
@@ -403,10 +410,8 @@ def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
         )
         text = source.read_text()
         assert _label_gate(text) == train, source.name
-        assert any(
-            set(types) == {"labeled", "synchronize"}
-            for _, types in _pull_request_triggers(text)
-        ), f"{source.name} does not trigger on labeled and synchronize"
+        types = {frozenset(types) for _, types in _pull_request_triggers(text)}
+        assert types == train_types, f"{source.name} triggers on {types}"
 
 
 def test_a_slow_required_check_does_hold_the_train() -> None:
