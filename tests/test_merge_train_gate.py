@@ -358,6 +358,51 @@ def test_every_nongating_name_is_a_continue_on_error_job() -> None:
         assert "    continue-on-error: true" in jobs[name], name
 
 
+_LABEL_ADDED = re.compile(
+    r"github\.event\.action == 'labeled' && github\.event\.label\.name == '([^']+)'"
+)
+_LABEL_PRESENT = re.compile(
+    r"github\.event\.action == 'synchronize' && "
+    r"contains\(github\.event\.pull_request\.labels\.\*\.name, '([^']+)'\)"
+)
+
+
+def _label_gate(text: str) -> tuple[set[str], set[str]]:
+    """The labels a workflow's `if` expressions fire on.
+
+    Returns `(added by this event, present on a push)`. Comment lines are
+    dropped first, so a comment that quotes the expression never counts.
+    """
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    return set(_LABEL_ADDED.findall(code)), set(_LABEL_PRESENT.findall(code))
+
+
+def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
+    """#1786: the mutation diff job fires on `ready-to-merge`, as the train does.
+
+    The two start on the same event, so the job is pending during every poll
+    the train makes, and NONGATING_WHILE_PENDING is what lets it run then
+    without holding the train. The label name is read from both files, so a
+    rename in one of them fails here instead of leaving a job that never runs.
+    """
+    assert _MUTATION in NONGATING_WHILE_PENDING
+    train = _label_gate(_WORKFLOW.read_text())
+    assert train == ({"ready-to-merge"}, {"ready-to-merge"})
+    for name in NONGATING_WHILE_PENDING:
+        source = next(
+            path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
+            if name in _job_bodies(path)
+        )
+        text = source.read_text()
+        assert _label_gate(text) == train, source.name
+        assert any(
+            set(types) == {"labeled", "synchronize"}
+            for _, types in _pull_request_triggers(text)
+        ), f"{source.name} does not trigger on labeled and synchronize"
+
+
 def test_a_slow_required_check_does_hold_the_train() -> None:
     runs = [r for r in _all_required_green() if r["name"] != "pytest (3.13)"]
     runs.append(_run("pytest (3.13)", None, status="in_progress"))
