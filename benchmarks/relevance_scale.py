@@ -51,7 +51,10 @@ class InputError(ValueError):
 def parse_scores(path: Path, data: bytes) -> dict[str, int | None]:
     """{id: 0 to 3 or None} from `data`, JSONL of {"id", "score"} read from `path`.
 
-    InputError when malformed.
+    InputError when malformed. A row with a `correct` field is refused,
+    with or without a score, and the error says so: the field holds a
+    binary label of the rubric the scale replaced, and a row that holds
+    both leaves unclear which label the grader meant.
     """
     scores: dict[str, int | None] = {}
     for n, line in enumerate(data.decode("utf-8").splitlines(), 1):
@@ -61,6 +64,10 @@ def parse_scores(path: Path, data: bytes) -> dict[str, int | None]:
         if not isinstance(obj, dict):
             raise InputError(f"{path}:{n}: not a JSON object")
         row = cast(dict[str, object], obj)
+        if "correct" in row:
+            raise InputError(
+                f"{path}:{n}: a binary \"correct\" label; score each row 0, 1, 2, 3,"
+                " or null with the 0 to 3 instructions")
         rid, score = row.get("id"), row.get("score")
         # `True == 1` in Python, so a boolean is refused by type, not by value.
         valid = score is None or (type(score) is int and score in SCORES)
