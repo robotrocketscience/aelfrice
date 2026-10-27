@@ -50,6 +50,7 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
@@ -74,7 +75,7 @@ jobs:
           elif [ "$EVENT_NAME" = "issues" ]; then
             content_number="$ISSUE_NUMBER"
             content_type="issue"
-            action_event="${{ github.event.action }}"
+            action_event="${EVENT_ACTION}"
             if [ "$action_event" = "closed" ]; then
               action="set_done"
               echo "Issue #${ISSUE_NUMBER} closed — will set Status=Done."
