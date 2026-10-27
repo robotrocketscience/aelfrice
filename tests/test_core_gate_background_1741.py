@@ -518,7 +518,13 @@ def test_spawn_detaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
     # for the whole CLI run; measured 8.4 s instead of 0.3 s.
     for stream in ("stdin", "stdout", "stderr"):
         assert seen["kw"][stream] is subprocess.DEVNULL, stream
-    assert seen["kw"]["start_new_session"] is True
+    if sys.platform == "win32":
+        # The flag set itself is pinned in test_core_gate_background_windows_1761.
+        assert "creationflags" in seen["kw"]
+        assert "start_new_session" not in seen["kw"]
+    else:
+        assert seen["kw"]["start_new_session"] is True
+        assert "creationflags" not in seen["kw"]
 
 
 @pytest.mark.timeout(60)

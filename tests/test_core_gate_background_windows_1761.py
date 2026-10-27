@@ -189,3 +189,94 @@ def test_the_reply_decodes_as_utf8_under_a_non_utf8_locale(tmp_path: Path) -> No
     record = json.loads(proc.stdout)
     assert record["outcome"] == bg.OUTCOME_ACCEPTED, record
     assert _labels(db) == {"hash-w1": "A"}
+
+
+# --- the spawn flags ------------------------------------------------------------
+
+
+class FakePopen:
+    seen: dict[str, Any] = {}
+
+    def __init__(self, argv: list[str], **kw: Any) -> None:
+        FakePopen.seen = {"argv": argv, "kw": kw}
+
+
+def test_spawn_detaches_without_a_console_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: passing `start_new_session` on Windows, where Popen ignores
+    it; dropping any of the three flags, which would leave a console window,
+    a shared process group, or an attached child; or resolving the flags
+    through a name `subprocess` has only on Windows without the fallback."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
+    kw = FakePopen.seen["kw"]
+    assert kw["creationflags"] == DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    assert "start_new_session" not in kw
+    for stream in ("stdin", "stdout", "stderr"):
+        assert kw[stream] is subprocess.DEVNULL, stream
+
+
+def test_spawn_starts_a_new_session_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: passing `creationflags` on POSIX, where a non-zero value
+    makes Popen raise and the hook report a failed spawn."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: False)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
+    kw = FakePopen.seen["kw"]
+    assert kw["start_new_session"] is True
+    assert "creationflags" not in kw
+
+
+def test_the_flags_resolve_through_subprocess_when_it_has_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: reading only the module's own table and never `subprocess`,
+    so a platform whose values differ would get the wrong bits."""
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x40, raising=False)
+    assert bg._creationflags("CREATE_NO_WINDOW") == 0x40  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.delattr(subprocess, "CREATE_NO_WINDOW", raising=False)
+    assert bg._creationflags("CREATE_NO_WINDOW") == CREATE_NO_WINDOW  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_platform_probe_reads_sys_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: a probe that never reports Windows, which would turn the
+    flags above off on the one host they are for. The tests above replace
+    the probe, so only this one reaches it on a POSIX runner."""
+    monkeypatch.setattr(bg.sys, "platform", "win32")
+    assert bg._is_win32() is True  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(bg.sys, "platform", "linux")
+    assert bg._is_win32() is False  # pyright: ignore[reportPrivateUsage]
+
+
+class FakeRun:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        self.calls.append({"argv": argv, **kw})
+        reply = json.dumps({"type": "result", "result": json.dumps([{"index": 0, "label": "A"}])})
+        return subprocess.CompletedProcess(argv, 0, reply, "")
+
+
+@pytest.mark.parametrize("win32", [True, False])
+def test_the_cli_run_hides_its_window_on_windows_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, win32: bool,
+) -> None:
+    """Killed by: running the CLI without `CREATE_NO_WINDOW` on Windows,
+    where a detached parent's console child gets a new visible console; or
+    passing `creationflags` on POSIX, where Popen rejects it."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: win32)
+    db = tmp_path / "memory.db"
+    batch_id = _open_batch(db)
+    run = FakeRun()
+    store = MemoryStore(str(db))
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_ACCEPTED
+    (call,) = run.calls
+    if win32:
+        assert call["creationflags"] == CREATE_NO_WINDOW
+    else:
+        assert "creationflags" not in call

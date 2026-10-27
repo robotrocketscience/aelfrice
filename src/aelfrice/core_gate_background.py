@@ -119,6 +119,26 @@ OUTCOME_STORE_ERROR: Final[str] = "store_error"
 _ON: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _OFF: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
+#: Windows `CreateProcess` flags by value (processthreadsapi.h), used when
+#: `subprocess` lacks the name, which it does on every other platform.
+_WIN32_CREATION_FLAGS: Final[dict[str, int]] = {
+    "DETACHED_PROCESS": 0x00000008,
+    "CREATE_NEW_PROCESS_GROUP": 0x00000200,
+    "CREATE_NO_WINDOW": 0x08000000,
+}
+
+
+def _is_win32() -> bool:
+    return sys.platform == "win32"
+
+
+def _creationflags(*names: str) -> int:
+    """The named Windows flags, combined, resolved through `subprocess`."""
+    flags = 0
+    for name in names:
+        flags |= int(getattr(subprocess, name, _WIN32_CREATION_FLAGS[name]))
+    return flags
+
 
 def _env_override(env: dict[str, str] | None) -> bool | None:
     raw = (env if env is not None else os.environ).get(BACKGROUND_ENV)
@@ -348,6 +368,11 @@ def _label_batch(
         snippets.append((item.index, belief.content))
     prompt = core_gate.build_prompt(snippets)
     runner = run if run is not None else subprocess.run
+    platform_kwargs: dict[str, Any] = {}
+    if _is_win32():
+        # This process has no console (`spawn`), so a console program it
+        # starts would get a new, visible one without this flag.
+        platform_kwargs["creationflags"] = _creationflags("CREATE_NO_WINDOW")
     started = time.monotonic()
     try:
         with settings_file() as settings:
@@ -357,6 +382,7 @@ def _label_batch(
                 runner_argv(claude, settings), input=prompt, capture_output=True,
                 text=True, encoding="utf-8", timeout=RUNNER_TIMEOUT_SECONDS,
                 env=runner_env(dict(env if env is not None else os.environ)),
+                **platform_kwargs,
             )
     except (OSError, subprocess.SubprocessError) as exc:
         record["outcome"] = OUTCOME_RUN_FAILED
@@ -425,9 +451,15 @@ def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
         "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL, "close_fds": True, "env": env,
     }
-    # POSIX only: `find_claude` reports no CLI on Windows, so the hook
-    # never gets here there.
-    kwargs["start_new_session"] = True
+    if _is_win32():
+        # Popen ignores `start_new_session` on Windows. Detached: no
+        # console, so no window; its own process group, so the host's
+        # Ctrl+C doesn't reach it (#1761).
+        kwargs["creationflags"] = _creationflags(
+            "DETACHED_PROCESS", "CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP",
+        )
+    else:
+        kwargs["start_new_session"] = True
     try:
         subprocess.Popen(  # noqa: S603 - args are package-internal
             # `-P`: `python -m` would otherwise put the working directory,
