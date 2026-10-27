@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import stat
 import time
 import subprocess
 import sys
@@ -305,10 +306,11 @@ def test_overflow_never_takes_the_opt_in_turn(
 
 
 def test_runner_argv_is_the_measured_configuration() -> None:
-    """Killed by: dropping or changing any measured flag."""
-    assert bg.runner_argv(CLAUDE) == [
+    """Killed by: dropping or changing any measured flag, or passing the
+    settings inline instead of the file (#1761)."""
+    assert bg.runner_argv(CLAUDE, "/x/settings.json") == [
         CLAUDE, "-p", "--model", bg.RUNNER_MODEL, "--tools", "", "--setting-sources", "",
-        "--settings", '{"disableAllHooks": true}', "--no-session-persistence",
+        "--settings", "/x/settings.json", "--no-session-persistence",
         "--output-format", "json", "--max-budget-usd", "0.10",
         "--system-prompt", bg.RUNNER_SYSTEM_PROMPT,
         "--strict-mcp-config", "--disable-slash-commands",
@@ -403,6 +405,11 @@ def _reply(labels: list[tuple[int, str]], *, fence: bool = True, cost: float = 0
     return json.dumps({"type": "result", "result": body, "total_cost_usd": cost})
 
 
+def _settings_arg(argv: list[str]) -> str:
+    """The value after `--settings`: the per-run file's path (#1761)."""
+    return argv[argv.index("--settings") + 1]
+
+
 def _labels(db: Path) -> dict[str, str]:
     conn = sqlite3.connect(str(db))
     try:
@@ -425,7 +432,7 @@ def test_label_batch_accepts_a_fenced_reply(db: Path) -> None:
     assert record["cost_usd"] == 0.04
     assert _labels(db) == {"hash-w1": "A", "hash-w2": "C"}
     (call,) = run.calls
-    assert call["argv"] == bg.runner_argv(CLAUDE)
+    assert call["argv"] == bg.runner_argv(CLAUDE, _settings_arg(call["argv"]))
     assert call["input"] == build_prompt([
         (0, "The widgetbg w1 setting is stable."), (1, "The widgetbg w2 setting is stable."),
     ])
@@ -875,3 +882,82 @@ def test_candidates_are_read_inside_the_transaction(
     assert raced == [True]
     assert calls == []
     assert len(_batches(db)) == 1
+
+
+# --- #1761: the settings file ----------------------------------------------------
+
+
+class SettingsWatchingRun(FakeRun):
+    """A fake run that reads the `--settings` file while the run is live."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.seen: list[tuple[bool, str | None, int | None]] = []
+
+    def __call__(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        path = Path(_settings_arg(argv))
+        if path.exists():
+            mode = stat.S_IMODE(path.stat().st_mode)
+            self.seen.append((True, path.read_text(encoding="utf-8"), mode))
+        else:
+            self.seen.append((False, None, None))
+        return super().__call__(argv, **kw)
+
+
+def test_the_settings_file_holds_the_json_during_the_run_and_is_gone_after(db: Path) -> None:
+    """Killed by: not writing the file, writing anything but the hooks-off
+    JSON, or leaving the file behind after the run returns."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    run = SettingsWatchingRun(stdout=_reply([(0, "A")]))
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_ACCEPTED
+    ((existed, content, mode),) = run.seen
+    assert existed is True
+    assert content == bg.RUNNER_SETTINGS_JSON
+    assert json.loads(content) == {"disableAllHooks": True}
+    path = Path(_settings_arg(run.calls[0]["argv"]))
+    assert path.name.startswith(bg.RUNNER_SETTINGS_PREFIX)
+    assert not path.exists()
+    if sys.platform != "win32":
+        # `mkstemp` creates the file for its owner only.
+        assert mode == 0o600
+
+
+def test_the_settings_file_is_removed_when_the_run_times_out(db: Path) -> None:
+    """Killed by: removing the file only after a run that returned."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+    run = SettingsWatchingRun(exc=subprocess.TimeoutExpired("claude", 300))
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_RUN_FAILED
+    assert run.seen[0][0] is True
+    assert not Path(_settings_arg(run.calls[0]["argv"])).exists()
+
+
+def test_an_unwritable_temp_directory_is_a_failed_run(
+    db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: letting an `OSError` from the settings file escape as a
+    store error, or running the CLI without the file."""
+    _seed(db, [_belief("w1")])
+    store, batch_id = _open_batch(db, ["w1"])
+
+    def refuse(**_k: Any) -> tuple[int, str]:
+        raise PermissionError("widget temp")
+
+    monkeypatch.setattr(bg.tempfile, "mkstemp", refuse)
+    run = FakeRun(stdout=_reply([(0, "A")]))
+    try:
+        record = bg.label_batch(store, batch_id, claude=CLAUDE, run=run, env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_RUN_FAILED
+    assert record["error"] == "PermissionError"
+    assert run.calls == []

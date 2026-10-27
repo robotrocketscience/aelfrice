@@ -17,8 +17,12 @@ The runner's flags were measured on #1741 before it was built:
   settings files, so no hook, `apiKeyHelper`, or settings `env` block
   reaches the run (verified: the login still authenticates). Managed
   settings an organization deploys still apply.
-- `--settings '{"disableAllHooks": true}'` turns hooks off as well, so
-  the run can't fire aelfrice's hooks and recurse.
+- `--settings <file>` turns hooks off as well, so the run can't fire
+  aelfrice's hooks and recurse. The file holds `{"disableAllHooks":
+  true}` and nothing else; it is written per run (`settings_file`) and
+  removed when the run returns. The JSON was passed inline before #1761;
+  a file keeps it out of the quoting that an npm `claude.cmd` shim on
+  Windows passes its arguments through.
 - `--no-session-persistence` keeps the run out of the session history.
 - Thinking stays on: with it off, agreement with the reference labels fell
   by about 19 points.
@@ -42,10 +46,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, Callable, Final, cast
+from typing import IO, TYPE_CHECKING, Any, Callable, Final, Generator, cast
 
 from aelfrice.print_mode import ENV_HOST_ENTRYPOINT
 
@@ -68,6 +74,10 @@ RUNNER_SYSTEM_PROMPT: Final[str] = (
     "You label short text snippets. Follow the user's instructions exactly."
 )
 LOG_FILENAME: Final[str] = "core_gate_background.jsonl"
+
+#: The whole content of the per-run `--settings` file (see `settings_file`).
+RUNNER_SETTINGS_JSON: Final[str] = '{"disableAllHooks": true}'
+RUNNER_SETTINGS_PREFIX: Final[str] = "aelfrice-core-gate-"
 
 #: Removed from the child's environment (see `runner_env`).
 RUNNER_DROPPED_ENV: Final[tuple[str, ...]] = (
@@ -196,14 +206,42 @@ def find_claude() -> str | None:
     return shutil.which(CLAUDE_BIN)
 
 
-def runner_argv(claude: str) -> list[str]:
-    """The measured classifier invocation (see the module docstring)."""
+@contextmanager
+def settings_file() -> Generator[str, None, None]:
+    """A file holding `RUNNER_SETTINGS_JSON`, removed on exit.
+
+    One file per run, in the temp directory, created by `mkstemp`, so on
+    POSIX it is readable by its owner only. It holds no belief text. The
+    `finally` removes it on every exit the child's completion path can
+    take: a normal return, a timeout, or a failed start. Only a child
+    killed outright leaves it behind, as a 25-byte file whose name starts
+    with `RUNNER_SETTINGS_PREFIX`.
+    """
+    fd, name = tempfile.mkstemp(prefix=RUNNER_SETTINGS_PREFIX, suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(RUNNER_SETTINGS_JSON)
+        yield name
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            # Already gone, or the temp directory refused: nothing to do,
+            # and the run's outcome must not depend on it.
+            pass
+
+
+def runner_argv(claude: str, settings: str) -> list[str]:
+    """The measured classifier invocation (see the module docstring).
+
+    `settings` is the path `settings_file` yields.
+    """
     return [
         claude, "-p",
         "--model", RUNNER_MODEL,
         "--tools", "",
         "--setting-sources", "",
-        "--settings", '{"disableAllHooks": true}',
+        "--settings", settings,
         "--no-session-persistence",
         "--output-format", "json",
         "--max-budget-usd", RUNNER_BUDGET_USD,
@@ -312,11 +350,12 @@ def _label_batch(
     runner = run if run is not None else subprocess.run
     started = time.monotonic()
     try:
-        proc = runner(
-            runner_argv(claude), input=prompt, capture_output=True, text=True,
-            timeout=RUNNER_TIMEOUT_SECONDS,
-            env=runner_env(dict(env if env is not None else os.environ)),
-        )
+        with settings_file() as settings:
+            proc = runner(
+                runner_argv(claude, settings), input=prompt, capture_output=True,
+                text=True, timeout=RUNNER_TIMEOUT_SECONDS,
+                env=runner_env(dict(env if env is not None else os.environ)),
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         record["outcome"] = OUTCOME_RUN_FAILED
         record["error"] = type(exc).__name__
