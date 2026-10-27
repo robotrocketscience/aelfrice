@@ -515,6 +515,19 @@ def _diff_job_body() -> list[str]:
     return body
 
 
+def _top_level_keys() -> list[str]:
+    """The workflow's top-level keys, quotes stripped.
+
+    Read from every column-0 line, so a key whose value sits on the same
+    line, a scalar or a flow map, counts as much as a block one.
+    """
+    keys: list[str] = []
+    for line in _workflow_text().splitlines():
+        if line[:1].strip() and not line.startswith("#"):
+            keys.append(line.split(":", 1)[0].strip().strip("'\""))
+    return keys
+
+
 def _diff_job_condition() -> str:
     """The `if:` expression of the `diff` job, folded onto one line.
 
@@ -582,7 +595,9 @@ def test_the_diff_job_owns_its_concurrency_group() -> None:
     `cancel-in-progress` stays, so a push while the label is on replaces
     the running result instead of queueing behind it.
     """
-    assert "concurrency:" not in [line.rstrip() for line in _workflow_text().splitlines()]
+    # Any form: `concurrency: <group>` and a one-line flow map are
+    # workflow-level groups as much as a block map is.
+    assert "concurrency" not in _top_level_keys(), _top_level_keys()
     body = [line for line in _diff_job_body() if not line.lstrip().startswith("#")]
     assert "    concurrency:" in body
     at = body.index("    concurrency:")
