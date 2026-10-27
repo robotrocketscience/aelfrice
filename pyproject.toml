@@ -140,6 +140,13 @@ strict_markers = true
 # default here means a future marker added without an explicit `strict=`
 # inherits the loud behaviour rather than the silent one.
 xfail_strict = true
+# A `parametrize` over an empty list collects as one test and skips it.
+# A skip is a non-failing outcome nothing gates on, so a helper that
+# builds the case list from a fixture file or a filter and comes back
+# empty turns every test it feeds green without running an assertion.
+# Fail at collection instead, in the file that produced the empty set
+# (#1786).
+empty_parameter_set_mark = "fail_at_collect"
 markers = [
     "regression: cumulative integration scenarios run alongside the unit suite",
     "uat: v1.0 acceptance-criteria tests, run as the final pre-tag gate",
