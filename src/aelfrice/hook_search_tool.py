@@ -64,8 +64,9 @@ from aelfrice.hook_payload import (
 )
 from aelfrice.render_cost import chars_to_tokens
 from aelfrice.hosts import DEFAULT_HOST
-# The claude names stay importable here for the matcher binding test (#1626).
-from aelfrice.search_tool_names import SEARCH_TOOL_NAMES  # noqa: F401
+# Re-exported for the matcher binding test (#1626), which reads the claude
+# names from this module. The `as` form marks the re-export for pyright.
+from aelfrice.search_tool_names import SEARCH_TOOL_NAMES as SEARCH_TOOL_NAMES
 from aelfrice.search_tool_names import (
     SEARCH_TOOL_NAMES_BY_HOST,
     SHELL_TOOL_NAME_BY_HOST,
