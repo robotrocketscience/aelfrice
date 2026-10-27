@@ -95,7 +95,8 @@ archive = [
 ]
 benchmarks = [
     # Sentence tokenization for MAB / LoCoMo adapters
-    "nltk>=3.9",
+    # 3.10.4 is the first release outside GHSA-8mgp-746c-j5xp (#1542).
+    "nltk>=3.10.4",
     # GPT-4o-compatible token counting for MAB chunking parity
     "tiktoken>=0.7",
     # HuggingFace dataset loading for MAB / LongMemEval / AMA-Bench

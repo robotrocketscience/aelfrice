@@ -48,7 +48,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'archive'", specifier = ">=50.0" },
     { name = "datasets", marker = "extra == 'benchmarks'", specifier = ">=2.14" },
     { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=0.20" },
-    { name = "nltk", marker = "extra == 'benchmarks'", specifier = ">=3.9" },
+    { name = "nltk", marker = "extra == 'benchmarks'", specifier = ">=3.10.4" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "snowballstemmer", specifier = ">=2.2" },
