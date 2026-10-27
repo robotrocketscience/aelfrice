@@ -587,5 +587,10 @@ def test_the_diff_job_owns_its_concurrency_group() -> None:
     assert "    concurrency:" in body
     at = body.index("    concurrency:")
     group, cancel = body[at + 1], body[at + 2]
-    assert group.startswith("      group: ") and "${{ github.ref }}" in group, group
+    # Compared whole. `cancel-in-progress` only cancels a run in the same
+    # group, and on a pull_request event `github.ref` is the PR's merge ref,
+    # the same on every push. A key that adds `github.sha`, `github.run_id`
+    # or the head sha gives each push its own group, so nothing is cancelled
+    # and the superseded head's job runs out its hour.
+    assert group == "      group: mutation-diff-${{ github.ref }}", group
     assert cancel == "      cancel-in-progress: true", cancel
