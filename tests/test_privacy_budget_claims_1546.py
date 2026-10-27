@@ -21,32 +21,17 @@ callable the lane actually resolves and asserts both halves at once -- that
 `token_budget` is absent from the kwargs, and that the resolver fed exactly
 what the caller passed lands on the value in the file.
 
-**The page itself is deliberately not read here, and that is a gap with a
-number.** A test that reads `docs/user/PRIVACY.md` makes documentation
-load-bearing for the suite, and `tests/test_ci_path_filter.py` forbids that:
-`test_code_filter_covers_every_in_repo_package_the_suite_uses` fails the moment
-a test under `tests/` reads `docs/` with the path spelled inline, because
-`docs/**` is not in `ci.yml`'s `code` filter.
+**The page itself is not read here.** When this file was written, reading
+`docs/user/PRIVACY.md` from a test was the #1160 failure mode: `ci.yml`'s
+`code` filter did not list the page, so the suite was skipped on exactly the
+docs-only pull request that changed it, and a guard on the page would have
+reported a pass from an `echo`. The filter now lists every file a test reads
+outside the package directories (#1786 CI-07), `PRIVACY.md` among them, and
+`tests/test_ci_path_filter.py` derives that list from the tests' own path
+expressions, name-bound or inline, so a new page read is either in the filter
+or fails that module on the PR that adds it. A test here can read the page.
 
-That guard is spelling-dependent, and the spelling it misses is not the way
-out. Its scanner is two literal regexes, one anchored on `parents[1]` and one
-on `parent.parent`, each requiring a quoted first component immediately after
-the slash. Binding the repo root to a name first and joining the directory
-onto that name -- which is how `test_ci_path_filter.py` writes its own `_REPO`
--- therefore reads the page with the module green. What that would buy is
-nothing: the same filter decides whether the suite runs at all, so a guard on
-the page hidden from it would be skipped on exactly the docs-only pull request
-that changes the page. That is the #1160 failure mode -- a required check
-reporting success from an `echo`, having run nothing.
-
-So the way out is the filter, and it is an operator call rather than a side
-effect of this branch. Putting `docs/**` in it fails
-`test_docs_only_changes_still_skip_the_suite`, and `e2e.yml`'s `paths` list
-mirrors that filter (`test_e2e_paths_cover_the_ci_code_filter`), so widening
-also puts the pytest matrix and e2e's three-leg install matrix on every
-user-doc pull request -- reversing #413/#427 and #1420 §1 AC2.
-
-Until it is made, the page's two published figures are guarded by review rather
+None does yet. The page's two published figures are guarded by review rather
 than by CI. The #1469 derived-figure marker is the mechanism that would guard
 them, and it does not work in this file: `scripts/check_derived_figures.py`
 pairs backticks across the whole file, `PRIVACY.md` carries six fence lines, and
