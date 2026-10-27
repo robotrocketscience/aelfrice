@@ -1,0 +1,3 @@
+### Security
+
+- **The `benchmarks` extra no longer locks an `nltk` release with an open advisory ([#1542](https://github.com/robotrocketscience/aelfrice/issues/1542)).** `uv.lock` now pins `nltk` 3.10.4 (was 3.10.3, [GHSA-8mgp-746c-j5xp](https://github.com/advisories/GHSA-8mgp-746c-j5xp), CVE-2026-81726, high). The 3.10.4 release declares the same dependencies as 3.10.3, so no other package moves. `nltk` is in the `benchmarks` extra and nothing under `src/aelfrice` imports it; the core install is unchanged. The LoCoMo scorer oracle fixtures and the MAB micro-fixture smoke run pass under 3.10.4, and `nltk.download("punkt_tab")` still populates a fresh `~/nltk_data`.
