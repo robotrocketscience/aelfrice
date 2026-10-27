@@ -28,6 +28,7 @@ the work tree that is no longer a folder on disk is skipped as
 `missing_root`, because a removed linked worktree leaves no `.git` entry
 to tell it from a deleted folder. The folder is then the deepest
 real folder of `<root>/<rel>` inside the work tree (`db_paths.owning_folder`),
+with the folders of `<rel>` spelled as the folders on disk list them too,
 and the belief is copied only when that folder resolves to a marker store
 other than the repository store.
 
@@ -638,8 +639,23 @@ def _belief_folders(
     if skip is not None:
         return skip, set()
     return None, {
-        owning_folder(work_tree, str(under / rel)) for rel in sorted(rels)
+        owning_folder(
+            work_tree, str(under / _spelled_rel(work_tree / under, rel)),
+        )
+        for rel in sorted(rels)
     }
+
+
+def _spelled_rel(folder: Path, rel: str) -> Path:
+    """`rel`, a file path below `folder`, with its folders spelled from
+    disk as the root is (`_disk_spelling`), so a folder renamed in letter
+    case only between two ingests names one folder (#1806).
+
+    `owning_folder` doesn't read the file name, so the name keeps its
+    recorded spelling and the file's own folder is never listed.
+    """
+    path = Path(rel)
+    return _disk_spelling(folder, path.parent.parts) / path.name
 
 
 def _store_key(

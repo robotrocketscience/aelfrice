@@ -548,6 +548,36 @@ def test_only_a_name_in_another_letter_case_respells_a_root_part(
     assert spell(repo, ("A", "Docs", "Gone", "X")) == Path("a", "docs", "Gone", "X")
 
 
+def test_a_file_path_in_another_letter_case_is_one_target(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A folder renamed in letter case only, `A/` to `a/`, between two
+    ingests leaves `A/Docs/x.md` and `a/docs/y.md` in one session's
+    records. Both name the folder `a/docs`, so the beliefs land in one
+    target, named from `a`, on the first dry run and the first apply
+    (#1806)."""
+    _other_case(repo)
+    src = _open(_source_path(repo))
+    try:
+        _onboard(src, repo, "s-rename")
+        before = _ingest(src, "doc:A/Docs/x.md:p0", _text(1), "s-rename")
+        after = _ingest(src, "doc:a/docs/y.md:p0", _text(2), "s-rename")
+    finally:
+        src.close()
+    dry = _only_target(_report(repo, capsys=capsys))
+    assert dry["store"] == str(_target_path(repo))
+    applied = _only_target(_report(repo, "--apply", capsys=capsys))
+    assert applied["store"] == str(_target_path(repo))
+    assert applied["copied"]["beliefs"] == 2
+    conn = sqlite3.connect(_target_path(repo).as_uri() + "?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT id, project_context FROM beliefs").fetchall()
+    finally:
+        conn.close()
+    assert {r[0] for r in rows} == {before, after}
+    assert all(str(r[1]).startswith("a-") for r in rows), rows
+
+
 def test_folders_it_cannot_read_compare_by_their_text(tmp_path: Path) -> None:
     """`_same_folder` falls back to the paths' text when a folder can't
     be read, as when it was removed after the 90% bar counted its files

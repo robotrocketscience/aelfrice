@@ -1,0 +1,3 @@
+### Fixed
+
+- **`aelf store split` spells the folders in a belief's file path as the folders on disk list them ([#1806](https://github.com/robotrocketscience/aelfrice/issues/1806)).** The command spelled the part of an onboard folder below the work tree from disk, but each file path from the ingest records kept the letter case it was recorded in. On a case-insensitive filesystem, a folder renamed in letter case only between two ingests, such as `A/` to `a/`, left one session's records naming `A/docs/x.md` and `a/docs/y.md`, and the first dry run and the first `--apply` named one store as two targets. The folders in each file path are now spelled from disk too, so those beliefs land in one target, named from `a`.
