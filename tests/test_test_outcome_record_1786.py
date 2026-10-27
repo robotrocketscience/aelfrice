@@ -256,6 +256,17 @@ def test_diff_leg_sorts_transitions_into_violations_recovered_red_added_removed(
     assert d.baseline_present and d.notice is None
 
 
+@pytest.mark.parametrize("after", [*tor.OUTCOMES, None])
+@pytest.mark.parametrize("before", tor.OUTCOMES)
+def test_only_a_ratcheted_outcome_that_now_passes_is_recovered(before: str, after: str | None) -> None:
+    """A skipped test that now fails has not recovered; the red list names it."""
+    current = {} if after is None else {"t::x": after}
+    d = tor.diff_leg("3.13", current, {"t::x": before})
+    recovered = [(t.test, t.before, t.after) for t in d.recovered]
+    expected = before in tor.RATCHETED_OUTCOMES and after == tor.PASSED
+    assert recovered == ([("t::x", before, after)] if expected else [])
+
+
 def test_the_allowlist_exempts_by_glob_and_ignores_comments() -> None:
     text = "# windows-only tests skip on the linux legs\n\ntests.test_win*::*\n"
     allow = tor.parse_allowlist(text)
