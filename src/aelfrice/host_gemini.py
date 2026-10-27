@@ -22,8 +22,9 @@ key, group, and handler. A file that is not a JSON object, or that holds a
 non-object `hooks` or a non-list value at an event setup writes, is
 refused unless `--force` is given. Gemini settings may hold comments,
 which this JSON reader cannot parse, so such a file is refused too.
-Writes take an advisory lock on a sibling `settings.json.lock`, re-check a
-content hash before committing, and replace the file atomically.
+Writes take an advisory lock kept in the temporary directory, so no lock
+file is left in Gemini's directory, re-check a content hash before
+committing, and replace the file atomically.
 Generated commands carry a marker line, and only files with the marker
 are replaced or removed.
 """
@@ -434,12 +435,28 @@ def _atomic_replace(path: Path, text: str, expected: str) -> bool:
 _Plan = Callable[[str | None], tuple[str | None, GeminiSettingsResult]]
 
 
+def settings_lock_anchor(settings_path: Path) -> Path:
+    """The path whose `.lock` sibling serializes writes to `settings_path`.
+
+    It is in the temporary directory, named for a hash of the resolved
+    settings path, so every aelfrice process that writes one settings
+    file takes one lock, and neither Gemini's directory nor aelfrice's
+    keeps a lock file after unsetup.
+    """
+    key = hashlib.sha256(
+        str(settings_path.resolve()).encode("utf-8"),
+    ).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"aelfrice-gemini-settings-{key}"
+
+
 def _commit(path: Path, plan: _Plan) -> GeminiSettingsResult:
     """Run `plan` against `path` under the lock and commit atomically."""
     from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
 
     try:
-        with exclusive_file_lock(path, timeout=_LOCK_TIMEOUT):
+        with exclusive_file_lock(
+            settings_lock_anchor(path), timeout=_LOCK_TIMEOUT,
+        ):
             for _ in range(_COMMIT_ATTEMPTS):
                 text, fingerprint = _read_snapshot(path)
                 serialized, result = plan(text)
@@ -494,8 +511,7 @@ def remove_gemini_hooks(
 ) -> GeminiSettingsResult:
     """Remove every aelfrice handler from `settings_path`.
 
-    A missing file is not opened, locked, or created: taking the lock
-    would create the directory and a lock file, and unsetup must not
+    A missing file is not opened, locked, or created: unsetup must not
     create the configuration it removes from.
     """
     if not settings_path.is_file():

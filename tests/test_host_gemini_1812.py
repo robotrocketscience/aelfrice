@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -17,11 +18,20 @@ import pytest
 
 import aelfrice.host_gemini as hgm
 from aelfrice import launcher
+from aelfrice.file_lock import HAVE_ADVISORY_LOCKS, try_lock_exclusive
 from aelfrice.setup import bundled_slash_files
 
 pytestmark = pytest.mark.timeout(60)
 
 EVENTS = ["AfterAgent", "AfterTool", "BeforeAgent", "PreCompress", "SessionStart"]
+
+
+@pytest.fixture(autouse=True)
+def _scratch_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settings lock goes to the temporary directory; keep it here."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
 
 
 @pytest.fixture
@@ -306,11 +316,63 @@ def test_remove_drops_a_hooks_object_it_empties(gdir: Path, cmd: str) -> None:
     assert _read(path) == {"theme": "widget"}
 
 
+def test_no_lock_file_is_left_in_the_gemini_dir(gdir: Path, cmd: str) -> None:
+    """Killed by: locking a sibling `settings.json.lock` again."""
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    hgm.remove_gemini_hooks(path)
+    assert sorted(p.name for p in gdir.iterdir()) == ["settings.json"]
+
+
+def test_the_lock_is_keyed_by_the_settings_path(tmp_path: Path) -> None:
+    one = hgm.settings_lock_anchor(tmp_path / "a" / ".gemini" / "settings.json")
+    two = hgm.settings_lock_anchor(tmp_path / "b" / ".gemini" / "settings.json")
+    assert one != two
+    assert one.parent == Path(tempfile.gettempdir())
+
+
+@pytest.mark.skipif(
+    not HAVE_ADVISORY_LOCKS, reason="no advisory locking on this filesystem",
+)
+def test_the_lock_is_held_across_the_read_modify_write(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second opener can't take the lock while the plan runs.
+
+    `flock` is held per open file description, so a re-open in this
+    process contends as another process would.
+    """
+    path = gdir / "settings.json"
+    _write(path, {"theme": "widget"})
+    anchor = hgm.settings_lock_anchor(path)
+    lock_path = anchor.with_name(anchor.name + ".lock")
+    observed: list[bool] = []
+    real = Path.read_bytes
+
+    def probing(self: Path) -> bytes:
+        if self == path:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                try_lock_exclusive(fd)
+                observed.append(False)
+            except OSError:
+                observed.append(True)
+            finally:
+                os.close(fd)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", probing)
+    assert _install(path, cmd).error is None
+    assert observed and all(observed)
+
+
 def test_remove_without_a_file_creates_nothing(tmp_path: Path) -> None:
     gdir = tmp_path / "absent" / ".gemini"
     result = hgm.remove_gemini_hooks(gdir / "settings.json")
     assert (result.changed, result.error) == (False, None)
     assert not (tmp_path / "absent").exists()
+    # Not even a lock file in the temporary directory.
+    assert list(Path(tempfile.gettempdir()).iterdir()) == []
 
 
 def test_remove_leaves_an_unparseable_file_alone(gdir: Path) -> None:

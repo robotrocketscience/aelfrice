@@ -11,6 +11,7 @@ import inspect
 import io
 import json
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,6 +92,9 @@ def sb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sandbox:
     monkeypatch.setattr(
         host_gemini, "resolve_gemini_hook_command", lambda _scope: str(hook),
     )
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     return Sandbox(root=tmp_path, home=home, hook=hook)
 
 
@@ -158,10 +162,7 @@ def test_a_second_setup_changes_nothing(sb: Sandbox) -> None:
     assert lines[2] == (
         "Gemini commands already up to date in <TMP>/userhome/.gemini/commands/aelf"
     )
-    after = _files(sb.gemini)
-    after.pop("settings.json.lock", None)
-    before.pop("settings.json.lock", None)
-    assert after == before
+    assert _files(sb.gemini) == before
 
 
 def test_setup_leaves_claude_auto_install_on_a_dual_host_machine(sb: Sandbox) -> None:
