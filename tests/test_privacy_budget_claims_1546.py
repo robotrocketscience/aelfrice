@@ -25,11 +25,12 @@ what the caller passed lands on the value in the file.
 `docs/user/PRIVACY.md` from a test was the #1160 failure mode: `ci.yml`'s
 `code` filter did not list the page, so the suite was skipped on exactly the
 docs-only pull request that changed it, and a guard on the page would have
-reported a pass from an `echo`. The filter now lists every file a test reads
-outside the package directories (#1786 CI-07), `PRIVACY.md` among them, and
-`tests/test_ci_path_filter.py` derives that list from the tests' own path
-expressions, name-bound or inline, so a new page read is either in the filter
-or fails that module on the PR that adds it. A test here can read the page.
+reported a pass from an `echo`. The filter now lists each file outside the
+package directories that a test builds a path to (#1786 CI-07), `PRIVACY.md`
+among them. `tests/test_ci_path_filter.py` derives that list from the tests'
+own path expressions and fails on a path on the repo root that it cannot
+resolve, so a new page read through such a path is either in the filter or
+fails that module on the PR that adds it. A test here can read the page.
 
 None does yet. The page's two published figures are guarded by review rather
 than by CI. The #1469 derived-figure marker is the mechanism that would guard
