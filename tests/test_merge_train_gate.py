@@ -993,7 +993,10 @@ def _emits_a_row_on_every_pr_head(text: str) -> bool:
     )
 
 
-_JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+# A trailing comment is legal YAML and this repo writes one on two-space keys
+# (`pull_request_target: # zizmor: ignore[...]`). A key regex without it read
+# such a job as no job at all, and the workflow dropped out of the drift guard.
+_JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$")
 _MATRIX_AXIS = re.compile(r"^        ([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$")
 
 
@@ -1004,8 +1007,9 @@ def _check_run_names(text: str) -> frozenset[str]:
     there is none. A job with a `strategy.matrix` of inline lists and no
     `name:` emits one row per combination, named `<id> (<v1>, <v2>, ...)`
     in axis order, which is how `pytest` becomes `pytest (3.12)`. Any other
-    matrix shape, or a `name:` holding an expression, fails here so the
-    parser is extended rather than deriving a wrong name.
+    matrix shape, a `name:` holding an expression, or a two-space line that
+    is not a job key fails here so the parser is extended rather than
+    deriving a wrong name or skipping a job.
     """
     import itertools
 
@@ -1042,6 +1046,7 @@ def _check_run_names(text: str) -> frozenset[str]:
             flush()
             job_id, display, axes, in_matrix = m.group(1), None, [], False
             continue
+        assert ln.startswith("   "), f"job key shape not supported: {ln.strip()}"
         if ln.startswith("    name: "):
             display = ln[len("    name: "):].strip()
         elif ln.rstrip() == "      matrix:":
@@ -1056,16 +1061,21 @@ def _check_run_names(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
-def _derived_floor_sources() -> dict[str, frozenset[str]]:
+def _derived_floor_sources(
+    workflow_dir: Path = _WORKFLOW_DIR,
+) -> dict[str, frozenset[str]]:
     """`{workflow file: check-run names}` for every workflow that emits a row
     on every PR head. The train's own job (SELF_NAMES) is dropped, so
-    `merge-train.yml` contributes nothing."""
+    `merge-train.yml` contributes nothing. A workflow that emits a row but
+    yields no job name fails here instead of dropping out of the comparison."""
     sources: dict[str, frozenset[str]] = {}
-    for path in sorted(_WORKFLOW_DIR.glob("*.yml")):
+    for path in sorted(workflow_dir.glob("*.yml")):
         text = path.read_text()
         if not _emits_a_row_on_every_pr_head(text):
             continue
-        names = _check_run_names(text) - SELF_NAMES
+        emitted = _check_run_names(text)
+        assert emitted, f"{path.name} runs on every PR head but no job name was read"
+        names = emitted - SELF_NAMES
         if names:
             sources[path.name] = names
     return sources
@@ -1092,6 +1102,48 @@ def test_the_name_parser_expands_a_matrix_and_prefers_the_name_key() -> None:
     assert _check_run_names(text) == {
         "plain", "Shown Name", "legs (3.12)", "legs (3.13)",
     }
+
+
+def test_the_name_parser_reads_a_job_key_with_a_trailing_comment() -> None:
+    """A commented key is still a job, and the job after it is its own."""
+    text = "\n".join([
+        "jobs:",
+        "  lint: # zizmor: ignore[unpinned-uses]",
+        "    runs-on: ubuntu-latest",
+        "  newjob:  # always runs",
+        "    runs-on: ubuntu-latest",
+        "",
+    ])
+    assert _check_run_names(text) == {"lint", "newjob"}
+
+
+def test_the_name_parser_refuses_a_job_key_it_cannot_read() -> None:
+    text = "jobs:\n  lint: {runs-on: ubuntu-latest}\n"
+    with pytest.raises(AssertionError, match="job key shape not supported"):
+        _check_run_names(text)
+
+
+_UNFILTERED_PR_WORKFLOW = "on:\n  pull_request:\n    branches: [main]\n"
+
+
+def test_a_new_workflow_with_a_commented_job_key_is_derived(tmp_path: Path) -> None:
+    """The drift guard sees a new unfiltered workflow whatever its key looks
+    like, so leaving it out of FLOOR_NAMES fails the guard."""
+    (tmp_path / "lint.yml").write_text(
+        _UNFILTERED_PR_WORKFLOW
+        + "jobs:\n  lint: # zizmor: ignore[unpinned-uses]\n    runs-on: ubuntu-latest\n"
+    )
+    assert _derived_floor_sources(tmp_path) == {"lint.yml": frozenset({"lint"})}
+
+
+def test_a_workflow_whose_jobs_cannot_be_read_fails_the_derivation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "lint.yml").write_text(
+        _UNFILTERED_PR_WORKFLOW + "jobs: {lint: {runs-on: ubuntu-latest}}\n"
+    )
+    with pytest.raises(AssertionError, match="no job name was read"):
+        _derived_floor_sources(tmp_path)
 
 
 def test_a_rollup_of_only_the_required_contexts_is_not_mergeable() -> None:
