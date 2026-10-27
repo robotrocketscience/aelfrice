@@ -65,7 +65,11 @@ jobs:
       group: merge-train
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Must outlast CHECK_TIMEOUT_SECONDS below (#1786): a job cap at or under
+    # the check wait lets the runner kill the job mid-poll, with no comment
+    # and no unlabel. 20 minutes of wait plus the steps around it; the test
+    # test_the_job_timeout_outlasts_the_check_wait pins the relation.
+    timeout-minutes: 25
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -88,7 +92,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          CHECK_TIMEOUT_SECONDS: '600'
+          # 20 minutes (#1786). The required pytest legs take 11 to 14
+          # minutes, so a label added right after a push outlived the earlier
+          # wait of 10 minutes and bounced a green PR. The job's
+          # timeout-minutes above is the only bound that must exceed this one.
+          CHECK_TIMEOUT_SECONDS: '1200'
         run: |
           set -euo pipefail
 
@@ -118,7 +126,7 @@ jobs:
 
           # [0/6] Base check, first because it is the cheapest refusal and
           # because a stacked PR has no required checks to wait for — folding
-          # it into the poll loop below would stall to the 30-minute timeout
+          # it into the poll loop below would stall for the full 20-minute wait
           # instead of refusing in the first seconds (#1424).
           BASE_REF=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" \
               --json baseRefName --jq .baseRefName || echo "")
@@ -155,7 +163,7 @@ jobs:
           # Query the PR's review threads via GraphQL and collect any that are
           # neither resolved nor outdated. Must run before the expensive CI
           # poll so unresolved threads short-circuit cheaply (avoids hitting
-          # the push gate with a GH006 rejection after a full 10-minute wait).
+          # the push gate with a GH006 rejection after a full 20-minute wait).
           unresolved=$(gh api graphql -F pr="${PR_NUMBER}" -f query='
             query($pr:Int!) {
               repository(owner:"robotrocketscience", name:"aelfrice") {

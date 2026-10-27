@@ -854,7 +854,7 @@ def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
     """Placement is the point, not merely presence.
 
     A stacked PR has no required checks to wait for, so a base check placed
-    inside the poll loop would stall to the 30-minute timeout instead of
+    inside the poll loop would stall for the whole check wait instead of
     refusing immediately. Assert it precedes the wait step in the file.
     """
     text = _WORKFLOW.read_text(encoding="utf-8")
@@ -1297,3 +1297,38 @@ def test_the_head_ref_is_fetched_by_explicit_refspec() -> None:
     text = _WORKFLOW.read_text()
     assert '"+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"' in text
     assert 'git fetch origin main "${HEAD_REF}"' not in text
+
+
+# --- #1786: the check wait fits inside the job, and every block is visible ---
+
+
+def _check_timeout_seconds() -> int:
+    match = re.search(r"^\s+CHECK_TIMEOUT_SECONDS: '(\d+)'\s*$", _WORKFLOW.read_text(), re.M)
+    assert match is not None, "merge-train.yml no longer sets CHECK_TIMEOUT_SECONDS"
+    return int(match.group(1))
+
+
+def _job_timeout_minutes() -> int:
+    match = re.search(r"^    timeout-minutes:\s*(\d+)\s*$", _WORKFLOW.read_text(), re.M)
+    assert match is not None, "merge-train.yml no longer bounds the job"
+    return int(match.group(1))
+
+
+def test_the_job_timeout_outlasts_the_check_wait() -> None:
+    """CI-14. The wait is the longest step. A job cap at or under it lets the
+    runner kill the job mid-poll, with no comment and no unlabel, so the PR
+    sits labeled with no feedback. The values are the 2026-10-21 ruling."""
+    wait = _check_timeout_seconds()
+    assert wait == 1200
+    assert _job_timeout_minutes() == 25
+    assert _job_timeout_minutes() * 60 > wait
+
+
+def test_the_workflow_comments_quote_the_current_wait() -> None:
+    """A comment that names a stale number sends a reader to the wrong
+    deadline. Every `N-minute` wait or timeout the file mentions is the
+    check wait."""
+    minutes = _check_timeout_seconds() // 60
+    mentions = re.findall(r"(\d+)-minute (?:wait|timeout)", _WORKFLOW.read_text())
+    assert mentions, "the workflow no longer explains the wait in minutes"
+    assert {int(m) for m in mentions} == {minutes}

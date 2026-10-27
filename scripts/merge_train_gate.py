@@ -107,16 +107,16 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 # Checks whose *running* state never gates, though their result still does
 # (#1633). The mutation diff job is advisory through job-level
 # `continue-on-error`, which sets its conclusion only once it finishes. While
-# it runs it read as pending, and its 60-minute cap is six times the train's
-# 10-minute wait, so a PR with every gate green was bounced whenever the job
-# was slow (always, when `cli.py` changes: #1632). Since #1786 the job starts
-# on the same `labeled` event as the train, so a run that reaches mutmut can
-# be pending at every poll; this exemption is what lets it run on that event
-# at all. Two cases never reach mutmut. A PR whose diff misses the workflow's
-# `paths:` filter starts no run, so the train sees no row. A PR with no
-# mutable change writes `skip=true` at the scope step and finishes in
-# minutes, which can be inside the train's wait, so the train reads its
-# conclusion like any other check's.
+# it runs it read as pending, and its 60-minute cap is far past the train's
+# check wait (10 minutes then, 20 since #1786), so a PR with every gate green
+# was bounced whenever the job was slow (always, when `cli.py` changes: #1632).
+# Since #1786 the job starts on the same `labeled` event as the train, so a
+# run that reaches mutmut can be pending at every poll; this exemption is what
+# lets it run on that event at all. Two cases never reach mutmut. A PR whose
+# diff misses the workflow's `paths:` filter starts no run, so the train sees
+# no row. A PR with no mutable change writes `skip=true` at the scope step and
+# finishes in minutes, which can be inside the train's wait, so the train
+# reads its conclusion like any other check's.
 #
 # This is not ADVISORY_NAMES: a `failure` conclusion still gates, but only if
 # it arrives while the train is polling. Once everything else has settled the
