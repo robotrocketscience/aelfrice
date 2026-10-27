@@ -190,10 +190,19 @@ def test_zizmor_blocks_at_high_severity() -> None:
     text = _ZIZMOR.read_text(encoding="utf-8")
     code = "\n".join(line for _n, line in _code_lines(text))
     assert "continue-on-error" not in code, code
-    steps = _steps(_jobs(text)["zizmor"])
+    job = _jobs(text)["zizmor"]
+    steps = _steps(job)
     gates = [s for s in steps if "uvx zizmor@" in s and "--min-severity high" in s]
     assert len(gates) == 1, steps
     assert "--format" not in gates[0], gates[0]
+    # An `if:` on the job or on the gate step can skip the gate, and a
+    # skipped step reports success.
+    job_if = [line for line in job if re.match(r"^    if:", line)]
+    assert not job_if, job_if
+    gate_if = [
+        line for line in gates[0].splitlines() if re.match(r"^(?:-\s+)?if:", line.strip())
+    ]
+    assert not gate_if, gates[0]
     # The gate's `run:` is the zizmor command alone: `|| true`, `; exit 0`
     # or a block script around it would swallow the exit status.
     gate_run = [line.strip() for line in gates[0].splitlines() if line.strip().startswith("run:")]
