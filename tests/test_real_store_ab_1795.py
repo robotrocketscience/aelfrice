@@ -12,6 +12,7 @@ import random
 import shlex
 import shutil
 import sqlite3
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -2947,8 +2948,13 @@ def test_score_cli_reads_grader_a_then_grader_c(
     }
 
 
+@pytest.mark.parametrize("spelling", [
+    "same path", "dotdot path",
+    pytest.param("symlink", marks=pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX symlinks")),
+])
 def test_score_cli_refuses_one_file_for_both_graders(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], spelling: str,
 ) -> None:
     rows = _store_key_rows("s1", 1)
     key = tmp_path / "key.jsonl"
@@ -2957,10 +2963,16 @@ def test_score_cli_refuses_one_file_for_both_graders(
     for path in (scores, copy):
         path.write_text("".join(json.dumps({"id": r["id"], "score": 2}) + "\n"
                                 for r in _items(rows)), encoding="utf-8")
-    for other in (scores, tmp_path / "." / scores.name):
-        assert bench.main(["score", "--key", str(key), "--labels", str(scores),
-                           str(other)]) == 1
-        assert "are one file; each grader needs its own" in capsys.readouterr().err
+    if spelling == "same path":
+        other = scores
+    elif spelling == "dotdot path":
+        other = tmp_path / ".." / tmp_path.name / scores.name
+    else:
+        other = tmp_path / "link.jsonl"
+        other.symlink_to(scores)
+    assert bench.main(["score", "--key", str(key), "--labels", str(scores), str(other)]) == 1
+    assert (f"--labels {scores} and {other} are one file; each grader needs its own"
+            in capsys.readouterr().err)
     assert bench.main(["score", "--key", str(key), "--labels", str(scores), str(copy)]) == 0
 
 
