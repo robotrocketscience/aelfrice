@@ -86,19 +86,76 @@ def _uv_item() -> list[str]:
     return uv[0]
 
 
-def test_uv_updates_are_weekly_grouped_and_capped() -> None:
-    """The `uv` updater, weekly, minor and patch in one group, five PRs open
-    at most, and the `build(deps):` subject the commit checks accept."""
+def _scalars(raw: str) -> list[str]:
+    """The values of a scalar or a flow list such as `["minor", "patch"]`."""
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        parts = raw[1:-1].split(",")
+    else:
+        parts = [raw]
+    return [part.strip().strip("\"'") for part in parts if part.strip()]
+
+
+def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
+    """Each group under `groups:`, as its keys and their values. A key's
+    values come from a flow list on its line or from `- value` lines below."""
+    groups: dict[str, dict[str, list[str]]] = {}
+    depth: int | None = None
+    name_depth: int | None = None
+    rules: dict[str, list[str]] = {}
+    key: str | None = None
+    for line in item:
+        if depth is None:
+            if re.match(r"^\s*groups:\s*$", line):
+                depth = _indent(line)
+            continue
+        if _indent(line) <= depth:
+            break
+        if name_depth is None:
+            name_depth = _indent(line)
+        stripped = line.strip()
+        if _indent(line) == name_depth:
+            assert stripped.endswith(":"), line
+            rules = groups.setdefault(stripped[:-1].strip("\"'"), {})
+            key = None
+            continue
+        entry = re.match(r"^-\s+(.+)$", stripped)
+        if entry:
+            assert key is not None, line
+            rules[key].extend(_scalars(entry.group(1)))
+            continue
+        pair = re.match(r"^([A-Za-z-]+):\s*(.*)$", stripped)
+        assert pair, line
+        name: str = pair.group(1)
+        rules[name] = _scalars(pair.group(2))
+        key = name
+    return groups
+
+
+def test_uv_updates_are_weekly_and_capped() -> None:
+    """The `uv` updater, weekly, five PRs open at most, and the
+    `build(deps):` subject the commit checks accept."""
     item = _uv_item()
     assert _value(item, "directory") == "/", item
     assert _value(item, "interval") == "weekly", item
     assert _value(item, "open-pull-requests-limit") == "5", item
     assert _value(item, "prefix") == "build", item
     assert _value(item, "include") == "scope", item
-    groups = [line for line in item if "update-types:" in line]
-    assert len(groups) == 1, item
-    update_types = re.findall(r"[\"']([a-z]+)[\"']", groups[0].split(":", 1)[1])
-    assert sorted(update_types) == ["minor", "patch"], groups
+
+
+def test_uv_group_takes_every_minor_and_patch_version_update() -> None:
+    """One group holds the minor and patch version updates of every
+    package. `applies-to: security-updates` moves the group off version
+    updates, and `patterns`, `exclude-patterns`, `dependency-type`, or
+    `group-by` limit or split what it holds. The schema accepts each of
+    them, and each leaves weekly bumps outside the group, one PR per
+    package."""
+    groups = _groups(_uv_item())
+    assert len(groups) == 1, groups
+    (rules,) = groups.values()
+    assert sorted(rules.get("update-types", [])) == ["minor", "patch"], rules
+    assert rules.get("applies-to", ["version-updates"]) == ["version-updates"], rules
+    assert set(rules) <= {"update-types", "applies-to"}, rules
 
 
 def test_uv_updates_carry_the_dependency_labels_and_wait_for_the_train() -> None:
