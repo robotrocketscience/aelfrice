@@ -2793,3 +2793,96 @@ def test_score_cli_reads_a_packet_key_and_two_label_files(
     assert rep["hypotheses"]["H2"] == bench.V_INSUFFICIENT
     # A1 holds both of A0's beliefs on p1 (gain 0) and 1 of 2 on p2 (gain -1).
     assert rep["arms"]["A1"]["graders"][0]["mean_gain"] == _approx(-0.5)
+
+
+# --- Calibrated grading (#1809) -----------------------------------------------
+
+
+@pytest.mark.parametrize(("score", "relevant"), [(0, False), (1, False), (2, True), (3, True)])
+def test_an_item_is_relevant_at_a_score_of_2_or_more(score: int, relevant: bool) -> None:
+    # Both graders give `score` to each arm item they called relevant. The
+    # arm's 3, 3, 2, and 4 a prompt against A0's 2 gain 1 a prompt when
+    # read as relevant, and lose A0's 2 when not.
+    key, a, c = _key(_hand([2, 2, 2, 2], [3, 3, 2, 4]))
+    moved = dict.fromkeys((i for i, s in a.items() if i.startswith("x") and s == 2), score)
+    rep = bench.score(key, {**a, **moved}, {**c, **moved}, seed=1, census_report=_H1_PASS)
+    want = 1.0 if relevant else -2.0
+    assert [g["mean_gain"] for g in rep["arms"]["A1"]["graders"]] == [_approx(want)] * 2
+    assert rep["bars"]["relevant_cut"] == 2
+
+
+@pytest.mark.parametrize(("score", "h0"), [(1, bench.V_PASS), (2, bench.V_FAIL)])
+def test_the_null_arm_rate_reads_each_score_at_the_cut(score: int, h0: str) -> None:
+    # 3 of each prompt's 10 null items get `score` from both graders.
+    key, a, c = _key(_hand([2, 2, 2, 2], [3, 3, 2, 4], null_rel=3))
+    moved = dict.fromkeys((i for i, s in a.items() if i.startswith("n") and s == 2), score)
+    rep = bench.score(key, {**a, **moved}, {**c, **moved}, seed=1, census_report=_H1_PASS)
+    rate = 0.3 if score >= 2 else 0.0
+    assert [n["rate"] for n in rep["null_arm"]] == [_approx(rate)] * 2
+    assert rep["hypotheses"]["H0"] == h0
+
+
+def test_kappa_compares_the_graders_at_the_cut_not_their_raw_scores() -> None:
+    # The null table's kappa is exactly the bar, with 16 of 18 items agreed.
+    # Grader a moving every 2 to 3 and every 1 to 0 keeps each item on its
+    # side of the cut. Moving one 2 to 1 crosses it.
+    key, a, c = _key(_null_table(2, 1, 1, 14))
+    far = {i: 3 if s == 2 else 0 for i, s in a.items()}
+    rep = bench.score(key, far, c, seed=1, census_report=_H1_PASS)
+    assert (rep["kappa"], rep["agreed"], rep["hypotheses"]["H0"]) == (
+        _approx(0.6), 16, bench.V_PASS)
+    rep = bench.score(key, {**a, "n0": 1}, c, seed=1, census_report=_H1_PASS)
+    assert rep["agreed"] == 15
+    assert rep["hypotheses"]["H0"] == bench.V_FAIL
+
+
+def test_a_null_score_is_left_out_as_in_the_calibration() -> None:
+    # Grader a scores null on n0, which both graders otherwise call
+    # relevant: kappa counts the 17 items both scored, and a's null-arm
+    # rate the 17 items a scored, 2 of them relevant.
+    key, a, c = _key(_null_table(2, 1, 1, 14))
+    rep = bench.score(key, {**a, "n0": None}, c, seed=1, census_report=_H1_PASS)
+    assert (rep["kappa_n"], rep["agreed"]) == (17, 15)
+    assert [(n["graded"], n["called_relevant"]) for n in rep["null_arm"]] == [(17, 2), (18, 3)]
+    assert rep["score_counts"]["a"]["null"] == 1
+
+
+def test_the_report_counts_each_graders_scores_and_nulls() -> None:
+    # Grader a's 18 null-arm items start as three 2s and fifteen 1s, and
+    # c's as three 2s and fifteen 1s. A score for an id outside the key
+    # is not counted.
+    key, a, c = _key(_null_table(2, 1, 1, 14))
+    a = {**a, "n0": 3, "n4": 0, "n5": None, "n6": None}
+    c = {**c, "n7": None, "elsewhere": 3}
+    rep = bench.score(key, a, c, seed=1, census_report=_H1_PASS)
+    assert rep["graders"] == ["a", "c"]
+    assert rep["score_counts"] == {
+        "a": {"0": 1, "1": 12, "2": 2, "3": 1, "null": 2},
+        "c": {"0": 0, "1": 14, "2": 3, "3": 0, "null": 1},
+    }
+
+
+def test_score_cli_refuses_a_binary_label_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = _store_key_rows("s1", 1)
+    key = tmp_path / "key.jsonl"
+    key.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    scores, binary = tmp_path / "scores.jsonl", tmp_path / "binary.jsonl"
+    scores.write_text("".join(json.dumps({"id": r["id"], "score": 2}) + "\n"
+                              for r in _items(rows)), encoding="utf-8")
+    binary.write_text("".join(json.dumps({"id": r["id"], "correct": True}) + "\n"
+                              for r in _items(rows)), encoding="utf-8")
+    for pair in ((binary, scores), (scores, binary)):
+        assert bench.main(["score", "--key", str(key), "--labels", *map(str, pair)]) == 1
+        assert f'{binary}:1: a binary "correct" label' in capsys.readouterr().err
+    assert bench.main(["score", "--key", str(key), "--labels", str(scores), str(scores)]) == 0
+
+
+def test_the_docstring_and_help_name_graders_a_and_c(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert "grader a and grader c" in " ".join((bench.__doc__ or "").split())
+    with pytest.raises(SystemExit):
+        bench.main(["score", "--help"])
+    assert "grader a's and grader c's score files" in " ".join(capsys.readouterr().out.split())
