@@ -181,6 +181,45 @@ def test_start_onboard_session_raises_for_a_removed_folder(
         store.close()
 
 
+def _current_folder_unsearchable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make `os.path.realpath(".")` fail as it does on macOS from inside
+    a folder you can't search, on any system (#1806)."""
+    real = os.path.realpath
+
+    def realpath(path: str | os.PathLike[str], *, strict: bool = False) -> str:
+        if os.fspath(path) == ".":
+            raise PermissionError(13, "Permission denied", ".")
+        return real(path, strict=strict)
+
+    monkeypatch.setattr(os.path, "realpath", realpath)
+
+
+@pytest.mark.timeout(60)
+@_MODES
+def test_a_relative_run_whose_folder_cannot_be_resolved_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: tuple[str, ...],
+) -> None:
+    # The macOS test below needs a real folder you can't search; this
+    # one checks the same refusal on every system.
+    db = tmp_path / "aelf.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
+    monkeypatch.chdir(_repo(tmp_path))
+    _current_folder_unsearchable(monkeypatch)
+
+    buf = io.StringIO()
+    code = main(argv=["onboard", ".", *flags], out=buf)
+
+    assert code == 2
+    assert buf.getvalue() == ""
+    err = capsys.readouterr().err
+    assert err == "aelf onboard: cannot list or search the current folder\n"
+    assert _session_count(db) == 0
+
+
 @pytest.mark.timeout(60)
 @pytest.mark.skipif(
     sys.platform != "darwin" or os.geteuid() == 0,
