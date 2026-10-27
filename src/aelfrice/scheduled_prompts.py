@@ -15,10 +15,12 @@ every `ingest_log` row that derived or corroborated it carries a flagged
 key. Some evidence never reaches `ingest_log`, so a belief is also kept
 when it is locked, when its origin is no longer `user_transcript` (a
 promotion to `user_validated`, say), when the user affirmed it (`aelf
-confirm`, under any `--source` label), restored it (`aelf restore`) or
-kept it in `aelf review`, or when a source other than transcript ingest
-corroborated it (the host memory mirror, say). Positive feedback that
-aelfrice writes on its own, such as a retrieval exposure, keeps nothing.
+confirm`), restored it (`aelf restore`) or kept it in `aelf review`, or
+when a source other than transcript ingest corroborated it (the host
+memory mirror, say). Positive feedback under a source that aelfrice
+writes on its own, such as a retrieval exposure, keeps nothing. The pass
+reads only the label, so `aelf confirm --source hook` keeps nothing
+either.
 
 `aelf doctor --retire-scheduled-prompts PATH...` runs the pass. It is a
 dry run unless `--apply` is given.
@@ -51,7 +53,8 @@ TurnKey = tuple[str, str]
 # (`sentiment_inferred`), and the reversal row of `aelf clamp-ghosts`
 # (`clamp_ghosts`). A positive row from any other source keeps a belief.
 # `aelf confirm` and `aelf feedback` take any `--source` label, so a list
-# of the labels a person writes can't be complete (#1782). `aelf restore`
+# of the labels a person writes can't be complete (#1782). A person who
+# passes one of these labels gets no protection either. `aelf restore`
 # writes `user_restored`, so a belief restored after `--apply` stays.
 # These are literals so that this module doesn't import the retrieval
 # stack; a test pins each one to the constant its writer uses.

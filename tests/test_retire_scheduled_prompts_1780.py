@@ -957,6 +957,47 @@ def test_cli_apply_keeps_a_belief_confirmed_with_a_custom_source(
         s.close()
 
 
+@pytest.mark.parametrize("source", ["hook", "propagation:me"])
+def test_cli_apply_retires_a_belief_confirmed_under_an_automatic_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str,
+) -> None:
+    # The pass reads only the label, as the help says.
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        host = _seed(s, tmp_path)
+        target = _belief_id(s, SCHEDULED_ONLY)
+    finally:
+        s.close()
+    code, _ = _run_cli(monkeypatch, db, "confirm", target, "--source", source)
+    assert code == 0
+    code, out = _run_cli(
+        monkeypatch, db, "doctor", "--retire-scheduled-prompts", str(host),
+        "--apply",
+    )
+    assert code == 0
+    assert "retired 1 belief(s)." in out
+    s = MemoryStore(str(db))
+    try:
+        assert target not in _active_ids(s)
+    finally:
+        s.close()
+
+
+def test_doctor_help_names_every_automatic_source(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A confirmation under one of these labels keeps nothing, so the help
+    # has to say which labels they are.
+    with pytest.raises(SystemExit) as exc:
+        cli_module.build_parser().parse_args(["doctor", "--help"])
+    assert exc.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    for label in [*sorted(AUTOMATIC_FEEDBACK_SOURCES),
+                  *AUTOMATIC_FEEDBACK_SOURCE_PREFIXES]:
+        assert label in text
+
+
 def test_cli_missing_path_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

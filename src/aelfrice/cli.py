@@ -11086,7 +11086,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default="user_confirmed",
         help=(
             "source label written to feedback_history. "
-            "Defaults to 'user_confirmed'."
+            "Defaults to 'user_confirmed'. A label aelfrice writes on its "
+            "own, such as 'hook', doesn't keep the belief from doctor "
+            "--retire-scheduled-prompts."
         ),
     )
     p_confirm.add_argument(
@@ -11493,9 +11495,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "read host session files (a directory is searched for *.jsonl), "
             "and list the beliefs that only scheduled or meta prompts "
             "produced (issue #1780). A belief that a typed prompt also "
-            "produced is kept, as is a locked, promoted, confirmed (under "
-            "any --source label) or restored belief, one kept in aelf "
-            "review, and one another source corroborated. Bypasses the "
+            "produced is kept, as is a locked, promoted, confirmed or "
+            "restored belief, one kept in aelf review, and one another "
+            "source corroborated. Feedback under a source aelfrice writes "
+            "on its own keeps nothing, even from aelf confirm --source: "
+            "hook, retrieval_driven_feedback, sentiment_inferred, "
+            "clamp_ghosts, or one that starts with propagation:. Bypasses the "
             "hooks/graph checks. Combine with --apply to retire them; "
             "aelf restore <id> brings one back. Default is dry-run."
         ),
