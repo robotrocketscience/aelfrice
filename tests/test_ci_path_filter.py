@@ -510,6 +510,21 @@ def test_benchmarks_and_scripts_are_in_the_code_filter() -> None:
         )
 
 
+def test_the_build_inputs_are_in_the_code_filter() -> None:
+    """`uv sync --frozen` installs from these files, so a change to one runs the suite.
+
+    No test reads `uv.lock`, so the read scan cannot demand it, and the
+    reverse test exempts the build inputs rather than requiring them.
+    Without this assertion, deleting the entry failed nothing.
+    """
+    missing = sorted(_BUILD_INPUTS - set(_code_filter_globs()))
+    assert not missing, (
+        f"{missing} dropped out of the code filter in {_CI_WORKFLOW.name}; a "
+        f"PR that changes only the dependency set takes the `echo` branch and "
+        f"never runs the suite against what it installs"
+    )
+
+
 def test_workflow_changes_run_the_suite() -> None:
     """Pin #1786 CI-07 by name: `.github/**`, not one workflow file.
 
