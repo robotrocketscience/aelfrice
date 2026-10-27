@@ -559,7 +559,7 @@ jobs:
       # an unpinned `uses:` in *changed* code as a new error-severity
       # alert, so a job added today has to meet the blanket policy even
       # where the surrounding file does not yet.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && steps.scope.outputs.skip != 'true'
         with:
           name: mutation-report-diff
