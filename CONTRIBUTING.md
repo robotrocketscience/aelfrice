@@ -497,7 +497,9 @@ tell a patch bump from a major one, and
 names a tag instead of a sha or has no `# vX.Y.Z` comment. The same test
 holds the `uvx` tool versions in the workflows to an exact pin, keeps the
 `zizmor` check blocking at high severity, and allows `harden-runner` only in
-jobs that hold a write token or read a secret.
+jobs that hold a write token or read a secret. The `zizmor` check also runs
+on a PR that changes only `.github/dependabot.yml`, since zizmor audits that
+file too.
 
 ### When a check never reports — how to re-run it by hand
 
