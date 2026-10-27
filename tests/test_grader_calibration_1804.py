@@ -1059,8 +1059,8 @@ def test_fit_cuts_break_a_tie_by_distance_before_kappa() -> None:
     # -1/3. At (3, 3) they agree on every row, kappa 1. Read before distance,
     # kappa would pick (3, 3).
     x, y = _digits("1223"), _digits("1023")
-    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(-1, 3)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == 1
+    assert cal.exact_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(-1, 3)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == 1
     assert cal.fit_cuts(list(x), x, y) == (2, 1)
 
 
@@ -1105,8 +1105,8 @@ _KAPPA_TIE = ("0121332211", "1111031312")
 
 def test_fit_cuts_break_a_remaining_tie_by_the_higher_kappa() -> None:
     x, y = map(_digits, _KAPPA_TIE)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(-1, 9)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(-1, 9)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
     assert cal.fit_cuts(list(x), x, y) == (3, 3)
 
 
@@ -1115,8 +1115,8 @@ def test_fit_cuts_rank_an_undefined_kappa_below_a_negative_one() -> None:
     # distance 2. At (1, 1) both say yes on every row, so kappa is
     # undefined; at (3, 3) they say yes on disjoint rows, kappa -2/3.
     x, y = _digits("1332223132"), _digits("3113332122")
-    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) is None
-    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(-2, 3)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) is None
+    assert cal.exact_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(-2, 3)
     assert cal.fit_cuts(list(x), x, y) == (3, 3)
 
 
@@ -1126,8 +1126,8 @@ def test_fit_cuts_take_the_smaller_cuts_when_kappa_ties_too() -> None:
     # at (1, 1) and 1, 1, 1, 7 at (3, 3): p_o = 0.8 and p_e = 0.68 at both,
     # so kappa is 3/8 at both.
     x, y = _digits("2010112133"), _digits("2032120131")
-    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(3, 8)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(3, 8)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 8)
     assert cal.fit_cuts(list(x), x, y) == (1, 1)
 
 
@@ -1138,10 +1138,10 @@ def test_the_kappa_tie_break_reads_each_grader_at_its_own_cut() -> None:
     # at (2, 3). With the cuts swapped, x at 2 and y at 1 gives 3/19 and x at
     # 3 and y at 2 gives -1/9, which would pick (1, 2).
     x, y = _digits("03012113"), _digits("33013321")
-    assert cal.cut_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 2)) == Fraction(1, 7)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 3)) == Fraction(1, 4)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(3, 19)
-    assert cal.cut_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 2)) == Fraction(-1, 9)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 1), cal.binarize(y, 2)) == Fraction(1, 7)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 3)) == Fraction(1, 4)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 2), cal.binarize(y, 1)) == Fraction(3, 19)
+    assert cal.exact_kappa(list(x), cal.binarize(x, 3), cal.binarize(y, 2)) == Fraction(-1, 9)
     assert cal.fit_cuts(list(x), x, y) == (2, 3)
 
 
@@ -1159,8 +1159,8 @@ def test_the_kappa_tie_break_reads_half_a_only() -> None:
     items, scores = _case(_full(rows))
     every = [i.id for i in items]
     x, y = scores["a"], scores["b"]
-    assert cal.cut_kappa(every, cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(16, 21)
-    assert cal.cut_kappa(every, cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 38)
+    assert cal.exact_kappa(every, cal.binarize(x, 1), cal.binarize(y, 1)) == Fraction(16, 21)
+    assert cal.exact_kappa(every, cal.binarize(x, 3), cal.binarize(y, 3)) == Fraction(3, 38)
     report = cal.score(items, scores)
     assert _combo(report, "per_grader", "ab")["cuts"] == {"a": 3, "b": 3}
 

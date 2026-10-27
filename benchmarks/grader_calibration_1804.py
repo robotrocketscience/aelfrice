@@ -625,20 +625,6 @@ def relevant_rate(ids: Sequence[str], scores: Scores, cut: int) -> Fraction:
     return Fraction(sum(1 for s in graded if s >= cut), len(graded)) if graded else Fraction(0)
 
 
-def cut_kappa(
-    ids: Sequence[str], lx: Mapping[str, bool | None], ly: Mapping[str, bool | None],
-) -> Fraction | None:
-    """Exact kappa of two graders' labels over `ids`, or None when it is undefined.
-
-    With no row both scored, or one label from both graders on every row,
-    chance agreement is 1 and kappa is 0/0. `exact_kappa` gives 0 and 1
-    there, and a 1 would pass a rule that calls no row relevant.
-    """
-    both = [i for i in ids if lx[i] is not None and ly[i] is not None]
-    values = {lx[i] for i in both} | {ly[i] for i in both}
-    return None if len(values) < 2 else exact_kappa(ids, lx, ly)
-
-
 def fit_cuts(ids: Sequence[str], x: Scores, y: Scores) -> tuple[int, int] | None:
     """Per-grader rule: the cuts for graders `x` and `y` over `ids`, or None.
 
@@ -654,7 +640,7 @@ def fit_cuts(ids: Sequence[str], x: Scores, y: Scores) -> tuple[int, int] | None
     tx, ty = CUT_TIE_TARGET
 
     def rank(c: tuple[int, int]) -> tuple[Fraction, int, bool, Fraction, tuple[int, int]]:
-        kappa = cut_kappa(ids, binarize(x, c[0]), binarize(y, c[1]))
+        kappa = exact_kappa(ids, binarize(x, c[0]), binarize(y, c[1]))
         return (abs(rx[c[0]] - ry[c[1]]), abs(c[0] - tx) + abs(c[1] - ty),
                 kappa is None, -kappa if kappa is not None else Fraction(0), c)
 
@@ -704,7 +690,7 @@ def half_result(
     lx, ly = binarize(scores[gx], cx), binarize(scores[gy], cy)
     float_kappa, n, agreed = paired_kappa(ids, lx, ly)
     both = [i for i in ids if lx[i] is not None and ly[i] is not None]
-    kappa = cut_kappa(ids, lx, ly)
+    kappa = exact_kappa(ids, lx, ly)
     x_only = sum(1 for i in both if lx[i] and not ly[i])
     y_only = sum(1 for i in both if ly[i] and not lx[i])
     disagreed = x_only + y_only
