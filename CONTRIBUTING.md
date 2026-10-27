@@ -476,10 +476,10 @@ Every PR title and commit subject starts with `build(deps):`, so the
 
 A Dependabot PR reaches `main` the same way as every other PR: through the
 merge train, after a person reads the diff and adds `ready-to-merge`. Nothing
-merges it on its own. The Dependabot configuration has no auto-merge rule, no
-workflow calls `gh pr merge --auto`, and the repository setting that would
-let someone enable auto-merge on a PR is off. On these PRs, expect the
-following:
+merges it on its own. The Dependabot configuration has no auto-merge rule,
+and no workflow calls `gh pr merge --auto`. Don't enable auto-merge on a
+Dependabot PR, even if the repository settings allow it. On these PRs, expect
+the following:
 
 - `pattern-scan` skips when the actor is `dependabot[bot]`. The other
   staging-gate jobs run. `history-scan` reads `SCAN_RULES_B64` from the
