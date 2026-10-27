@@ -66,6 +66,7 @@ HOOK_SCRIPTS = (
     "aelf-stop-hook",
     "aelf-pre-issue-hook",
     "aelf-claude-memory-mirror",
+    "aelf-gemini-hook",
 )
 
 
@@ -618,6 +619,7 @@ HOOK_MODULES = (
     "hook_search_tool.py",
     "pre_issue_create_hook.py",
     "context_rebuilder.py",
+    "hook_gemini.py",
 )
 
 

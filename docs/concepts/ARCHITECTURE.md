@@ -41,8 +41,8 @@ reimplements the constituent-key hash of `wonder.lifecycle` inline, and the comm
 understates how often the code works around the ordering. The converse also holds: not every deferred import
 is an inversion. `store.py` defers `federation` only for the cost of the import, and the comment at that site
 records that `federation` is a leaf module that imports nothing from `store`. That deferral keeps
-`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 35
-modules against the 146 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
+`subprocess` and `json` out of every consumer of the store. The table is also a curated subset: it holds 37
+modules against the 148 `.py` files under `src/aelfrice/`, so it isn't an exhaustive map.
 
 | Module | Responsibility |
 |---|---|
@@ -79,6 +79,8 @@ modules against the 146 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `working_state.py` | (v3.0+, #587) The projector that writes `<working-state>` after compaction. It reports the current branch, a bounded `git status`, the last HEAD log entries, the last K user prompts, and the session's commits. Each git invocation has a 1.5s timeout and returns empty when that timeout fires. |
 | `setup.py` | Idempotent install and uninstall of every hook and of the statusline. Writes atomically with a tempfile and `os.replace`. |
 | `hosts.py` | The supported agent hosts and the default host, `claude`, that every `--host` option reads, plus `host_of`, which reads the host off a parsed command line. A leaf module, so a hook entry point can import it without loading the installer (#1812). |
+| `gemini_paths.py` | The Gemini CLI event names and the resolution of Gemini's user directory, `$GEMINI_CLI_HOME/.gemini` or `~/.gemini`, shared by `hook_gemini.py` and `host_gemini.py`. A leaf module, so neither of them joins an import cycle through `hook.py` and `cli.py` (#1812). |
+| `hook_gemini.py` | The Gemini CLI hook adapter, entry point `aelf-gemini-hook`. It runs the `SessionStart`, `BeforeAgent`, `AfterAgent`, and `PreCompress` events through the `hook.py` and `transcript_logger.py` handlers as `SessionStart`, `UserPromptSubmit`, `Stop`, and `PreCompact`, prints one JSON object that carries `additionalContext`, and sets `AELFRICE_HOST=gemini` for the call. After a `save_memory` tool call it adds the facts saved in `GEMINI.md` to the store (#1812). |
 | `hook.py` | `aelfrice.hook:main`, the process Claude Code spawns on each prompt. Reads stdin, calls `retrieve()`, and emits `<aelfrice-memory>` on stdout. Non-blocking. Entry point: `aelf-hook`. |
 | `slash_commands/` | One markdown file per CLI subcommand that `/aelf:*` surfaces. |
 

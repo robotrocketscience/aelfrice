@@ -650,14 +650,17 @@ _AMBIENT_LAYOUT_ENV_VARS: tuple[str, ...] = (
 # #1812: the same goes for `AELFRICE_HOST`, which the Gemini hook adapter
 # sets to tell the shared handlers which host they run under. Inherited
 # from a shell, it would switch the Stop hook's host checks for the whole
-# run.
+# run. `GEMINI_CLI_HOME` moves the Gemini settings directory away from the
+# sandbox `HOME`, so an inherited value would point Gemini setup tests at a
+# real one.
 @pytest.fixture(scope="session", autouse=True)
 def _clear_ambient_host_entrypoint() -> Iterator[None]:
-    """Unset the host's entrypoint (#1634) and host marker (#1812)."""
+    """Unset the host's entrypoint (#1634), host marker, and Gemini home."""
     mp = pytest.MonkeyPatch()
     try:
         mp.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
         mp.delenv("AELFRICE_HOST", raising=False)
+        mp.delenv("GEMINI_CLI_HOME", raising=False)
         yield
     finally:
         mp.undo()
