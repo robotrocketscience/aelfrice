@@ -502,13 +502,15 @@ def test_label_batch_refuses_a_changed_belief(db: Path) -> None:
 
 def test_spawn_detaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
     """Killed by: not detaching, not passing the store path, or a wrong
-    child command."""
+    child command. The POSIX arm on every host; the Windows flag set is
+    pinned in test_core_gate_background_windows_1761."""
     seen: dict[str, Any] = {}
 
     class FakePopen:
         def __init__(self, argv: list[str], **kw: Any) -> None:
             seen["argv"], seen["kw"] = argv, kw
 
+    monkeypatch.setattr(bg, "_is_win32", lambda: False)
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
     assert seen["argv"] == [
@@ -519,13 +521,8 @@ def test_spawn_detaches_the_child(monkeypatch: pytest.MonkeyPatch) -> None:
     # for the whole CLI run; measured 8.4 s instead of 0.3 s.
     for stream in ("stdin", "stdout", "stderr"):
         assert seen["kw"][stream] is subprocess.DEVNULL, stream
-    if sys.platform == "win32":
-        # The flag set itself is pinned in test_core_gate_background_windows_1761.
-        assert "creationflags" in seen["kw"]
-        assert "start_new_session" not in seen["kw"]
-    else:
-        assert seen["kw"]["start_new_session"] is True
-        assert "creationflags" not in seen["kw"]
+    assert seen["kw"]["start_new_session"] is True
+    assert "creationflags" not in seen["kw"]
 
 
 @pytest.mark.timeout(60)
@@ -622,18 +619,16 @@ def test_main_logs_one_record_without_text(
 # --- review additions ---------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the claude.cmd lookup runs in test_core_gate_background_windows_1761",
+)
 def test_find_claude_reads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Killed by: a wrong binary name, which would turn the feature off with
-    a green suite. On Windows the CLI is the npm shim `claude.cmd`, which
-    `shutil.which` resolves through `PATHEXT` (#1761)."""
-    if sys.platform == "win32":
-        exe = tmp_path / "claude.cmd"
-        exe.write_text("@echo off\r\n", encoding="utf-8")
-        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    else:
-        exe = tmp_path / "claude"
-        exe.write_text("#!/bin/sh\n", encoding="utf-8")
-        exe.chmod(0o755)
+    a green suite."""
+    exe = tmp_path / "claude"
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     found = _REAL_FIND_CLAUDE()
     assert found is not None
