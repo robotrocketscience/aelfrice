@@ -22,8 +22,10 @@ the stores, and one confirmatory test on the other half decides.
   `--out` must be new or hold only an earlier split, which is replaced.
   The files are written to a directory beside `--out` and moved into
   place, so `--out` holds the earlier split or the new one, never a mix.
-  It refuses an `--out` where a split file would replace one of its
-  inputs. Only the owner can read or write the directories and files.
+  An existing `--out` can't be the working directory or hold it, so run
+  `split` from outside it. It refuses an `--out` where a split file would
+  replace one of its inputs. Only the owner can read or write the
+  directories and files.
 - `score`: three graders' scores, fitted and chosen on half A and
   tested on half B, as the next section states. As amendment 1
   requires, it refuses a key with a half under 2,000 rows, whatever
@@ -378,7 +380,9 @@ def build_split(
 def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
     """InputError unless `out` is new or holds only an earlier split, safe to replace.
 
-    `out` and its half directories must not be links. `out` may hold only
+    `out` and its half directories must not be links. An existing `out`
+    must not be the working directory or hold it, as replacing `out`
+    would leave the caller in a removed directory. `out` may hold only
     `A/`, `B/`, and the key, and each half directory only its packet and
     instructions: the graders get the half directories, and a split run
     with `--out` set to a half directory by mistake leaves a key there.
@@ -392,6 +396,10 @@ def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
         raise InputError(f"{out} is a link; remove it before writing the split")
     if not out.exists():
         return
+    cwd = Path.cwd()
+    if any(p.samefile(out) for p in (cwd, *cwd.parents)):
+        raise InputError(f"{out} is the working directory or holds it;"
+                         " run split from outside it")
     extra = sorted(p.name for p in out.iterdir() if p.name not in (*HALVES, KEY_FILE))
     if extra:
         raise InputError(f"{out} holds {extra[0]}, which split does not write;"

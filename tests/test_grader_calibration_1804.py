@@ -585,19 +585,35 @@ def test_a_second_split_replaces_the_first_whole(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh", "out", "s1"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows can't rename the working directory")
-def test_an_out_of_dot_writes_the_split_in_the_working_directory(
+@pytest.mark.parametrize(("cwd", "arg"), [(".", "."), ("A", "..")])
+def test_an_out_holding_the_working_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    cwd: str, arg: str,
+) -> None:
+    # Replacing --out would leave the caller in a removed directory: the
+    # earlier split and the working directory stay as they were.
+    keys, packets = _stores(tmp_path)
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    earlier = _split_files(out)
+    monkeypatch.chdir(out / cwd)
+    capsys.readouterr()
+    assert _split(keys, packets, Path(arg), seed=7) == 1
+    assert f"{out} is the working directory or holds it" in capsys.readouterr().err
+    assert os.path.samefile(".", out / cwd)
+    assert _split_files(out) == earlier
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]
+
+
+def test_a_new_out_under_the_working_directory_is_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The staged split moves to `.` by its absolute name; `.` itself has no
-    # name to stage beside.
     keys, packets = _stores(tmp_path)
     assert _split(keys, packets, tmp_path / "one") == 0
-    (tmp_path / "here").mkdir()
-    monkeypatch.chdir(tmp_path / "here")
-    assert _split(keys, packets, Path(".")) == 0
-    assert _split_files(tmp_path / "here") == _split_files(tmp_path / "one")
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["here", "one", "s1"]
+    monkeypatch.chdir(tmp_path)
+    assert _split(keys, packets, Path("two")) == 0
+    assert _split(keys, packets, Path("two")) == 0
+    assert _split_files(tmp_path / "two") == _split_files(tmp_path / "one")
 
 
 def test_an_out_holding_other_files_is_refused(
