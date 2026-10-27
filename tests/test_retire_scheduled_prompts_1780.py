@@ -19,18 +19,26 @@ from pathlib import Path
 import pytest
 
 import aelfrice.cli as cli_module
+from aelfrice import clamp_ghosts, deferred_feedback, hook_search, sentiment_feedback
 from aelfrice.claude_memory_reconcile import ingest_memory_text
-from aelfrice.feedback import apply_feedback
+from aelfrice.feedback import (
+    ENV_VALENCE_PROPAGATION,
+    PROPAGATION_SOURCE_PREFIX,
+    apply_feedback,
+)
 from aelfrice.ingest import ingest_jsonl, turn_sha, user_turn_key
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    EDGE_SUPPORTS,
     LOCK_USER,
     ORIGIN_USER_VALIDATED,
+    Edge,
 )
 from aelfrice.promotion import promote
 from aelfrice.scheduled_prompts import (
-    USER_AFFIRMED_FEEDBACK_SOURCES,
+    AUTOMATIC_FEEDBACK_SOURCE_PREFIXES,
+    AUTOMATIC_FEEDBACK_SOURCES,
     format_scheduled_prompt_report,
     retire_scheduled_prompt_beliefs,
     scan_host_sessions,
@@ -406,13 +414,123 @@ def test_apply_keeps_a_belief_the_user_affirmed(
     assert (bid in _active_ids(store)) is kept
 
 
-def test_affirmed_sources_hold_the_cli_defaults() -> None:
+def _is_automatic(source: str) -> bool:
+    return source in AUTOMATIC_FEEDBACK_SOURCES or source.startswith(
+        AUTOMATIC_FEEDBACK_SOURCE_PREFIXES,
+    )
+
+
+def test_cli_default_sources_are_not_automatic() -> None:
     parser = cli_module.build_parser()
     defaults = {
         parser.parse_args(["confirm", "x"]).source,
         parser.parse_args(["feedback", "x", "used"]).source,
+        "user_restored",
     }
-    assert defaults <= USER_AFFIRMED_FEEDBACK_SOURCES
+    assert not any(_is_automatic(s) for s in defaults)
+
+
+@pytest.mark.parametrize(
+    "source", ["me", "Hook", "propagation", "hook:me", "user_confirmed:me"],
+)
+def test_apply_keeps_a_belief_confirmed_under_a_custom_label(
+    store: MemoryStore, tmp_path: Path, source: str,
+) -> None:
+    # #1782: `aelf confirm --source` takes any label. Exact names and
+    # prefixes only: a near miss on an automatic source is a person's label.
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    apply_feedback(store, bid, 1.0, source, respect_lock=False)
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert report.other_evidence == [bid]
+    assert bid in _active_ids(store)
+
+
+@pytest.mark.parametrize(
+    "source",
+    # The writers' own constants, so a source dropped from the module's
+    # list still has its case here.
+    [
+        hook_search.HOOK_FEEDBACK_SOURCE,
+        deferred_feedback.RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
+        sentiment_feedback.SENTIMENT_INFERRED_SOURCE,
+        clamp_ghosts.CLAMP_SOURCE,
+        PROPAGATION_SOURCE_PREFIX + "user_confirmed",
+    ],
+)
+def test_apply_retires_a_belief_only_automatic_feedback_touched(
+    store: MemoryStore, tmp_path: Path, source: str,
+) -> None:
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    apply_feedback(store, bid, 1.0, source, respect_lock=False)
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid in {c for c, _ in report.candidates}
+    assert bid not in _active_ids(store)
+
+
+def test_apply_retires_a_belief_a_neighbors_confirmation_reached(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Confirming one belief writes a `propagation:` row on its neighbor.
+    # That row says nothing about the neighbor.
+    monkeypatch.delenv(ENV_VALENCE_PROPAGATION, raising=False)
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    neighbor = _belief_id(store, TYPED_ONLY)
+    store.insert_edge(Edge(src=neighbor, dst=bid, type=EDGE_SUPPORTS, weight=1.0))
+    apply_feedback(store, neighbor, 1.0, "user_confirmed", respect_lock=False)
+    rows = [(e.source, e.valence) for e in store.list_feedback_events(bid)]
+    assert [s for s, _ in rows] == [f"{PROPAGATION_SOURCE_PREFIX}user_confirmed"]
+    assert rows[0][1] > 0
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid in {c for c, _ in report.candidates}
+    assert neighbor in _active_ids(store)
+
+
+def test_apply_retires_a_belief_a_hook_retrieval_showed(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    host = _seed(store, tmp_path)
+    bid = _belief_id(store, SCHEDULED_ONLY)
+    belief = store.get_belief(bid)
+    assert belief is not None
+    assert hook_search.record_retrieval(store, [belief]) == 1
+    report = retire_scheduled_prompt_beliefs(store, [host], dry_run=False)
+    assert bid in {c for c, _ in report.candidates}
+
+
+def test_automatic_sources_match_their_writers() -> None:
+    # The module holds literals; this keeps them in step with the writers.
+    assert AUTOMATIC_FEEDBACK_SOURCES == {
+        hook_search.HOOK_FEEDBACK_SOURCE,
+        deferred_feedback.RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
+        sentiment_feedback.SENTIMENT_INFERRED_SOURCE,
+        clamp_ghosts.CLAMP_SOURCE,
+    }
+    assert AUTOMATIC_FEEDBACK_SOURCE_PREFIXES == (PROPAGATION_SOURCE_PREFIX,)
+
+
+def test_positive_feedback_exclusion_matches_exactly(
+    store: MemoryStore, tmp_path: Path,
+) -> None:
+    _seed(store, tmp_path)
+    ids = sorted(_active_ids(store))
+    assert len(ids) >= 6
+    labels = ["hook", "Hook", "a_b:x", "axb:x", "user"]
+    for bid, label in zip(ids, labels, strict=False):
+        store.insert_feedback_event(bid, 1.0, label, "2026-10-12T00:00:00Z")
+    store.insert_feedback_event(ids[-1], -1.0, "me", "2026-10-12T00:00:00Z")
+    got = store.list_beliefs_with_positive_feedback(
+        exclude_sources=["hook"], exclude_prefixes=["a_b:"],
+    )
+    assert got == {ids[1], ids[3], ids[4]}
+    assert store.list_beliefs_with_positive_feedback() == set(ids[:5])
+
+
+def test_positive_feedback_refuses_an_empty_prefix(store: MemoryStore) -> None:
+    with pytest.raises(ValueError, match="empty prefix"):
+        store.list_beliefs_with_positive_feedback(exclude_prefixes=[""])
 
 
 def test_apply_keeps_a_belief_another_source_corroborated(
@@ -592,6 +710,33 @@ def test_cli_apply_keeps_a_belief_kept_in_review(
     assert (code, out) == (
         0, "review applied: 1 kept, 0 removed, 0 locked, 0 skipped\n",
     )
+    code, out = _run_cli(
+        monkeypatch, db, "doctor", "--retire-scheduled-prompts", str(host),
+        "--apply",
+    )
+    assert code == 0
+    assert "retired 0 belief(s)." in out
+    assert f"another source, kept: 1\n  {target}" in out
+    s = MemoryStore(str(db))
+    try:
+        assert target in _active_ids(s)
+    finally:
+        s.close()
+
+
+def test_cli_apply_keeps_a_belief_confirmed_with_a_custom_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The #1782 report, step for step.
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        host = _seed(s, tmp_path)
+        target = _belief_id(s, SCHEDULED_ONLY)
+    finally:
+        s.close()
+    code, _ = _run_cli(monkeypatch, db, "confirm", target, "--source", "me")
+    assert code == 0
     code, out = _run_cli(
         monkeypatch, db, "doctor", "--retire-scheduled-prompts", str(host),
         "--apply",

@@ -15,9 +15,10 @@ every `ingest_log` row that derived or corroborated it carries a flagged
 key. Some evidence never reaches `ingest_log`, so a belief is also kept
 when it is locked, when its origin is no longer `user_transcript` (a
 promotion to `user_validated`, say), when the user affirmed it (`aelf
-confirm`), restored it (`aelf restore`) or kept it in `aelf review`,
-or when a source other than transcript ingest corroborated it (the host
-memory mirror, say).
+confirm`, under any `--source` label), restored it (`aelf restore`) or
+kept it in `aelf review`, or when a source other than transcript ingest
+corroborated it (the host memory mirror, say). Positive feedback that
+aelfrice writes on its own, such as a retrieval exposure, keeps nothing.
 
 `aelf doctor --retire-scheduled-prompts PATH...` runs the pass. It is a
 dry run unless `--apply` is given.
@@ -43,12 +44,24 @@ if TYPE_CHECKING:
 
 TurnKey = tuple[str, str]
 
-# Feedback sources a person writes: the defaults of `aelf confirm` and
-# `aelf feedback`, and the row `aelf restore` writes. A positive row from
-# any of them keeps a belief, so a belief restored after `--apply` stays.
-USER_AFFIRMED_FEEDBACK_SOURCES: frozenset[str] = frozenset({
-    "user_confirmed", "user", "user_restored",
+# Feedback sources that aelfrice writes on its own, with no person picking
+# the belief: a hook retrieval (`hook`), the deferred-feedback sweep that
+# #1162 made read-only (`retrieval_driven_feedback`, still in older
+# stores), a prompt's sentiment spread over the beliefs it was shown
+# (`sentiment_inferred`), and the reversal row of `aelf clamp-ghosts`
+# (`clamp_ghosts`). A positive row from any other source keeps a belief.
+# `aelf confirm` and `aelf feedback` take any `--source` label, so a list
+# of the labels a person writes can't be complete (#1782). `aelf restore`
+# writes `user_restored`, so a belief restored after `--apply` stays.
+# These are literals so that this module doesn't import the retrieval
+# stack; a test pins each one to the constant its writer uses.
+AUTOMATIC_FEEDBACK_SOURCES: frozenset[str] = frozenset({
+    "hook", "retrieval_driven_feedback", "sentiment_inferred", "clamp_ghosts",
 })
+# A source that starts with one of these is automatic too. `propagation:`
+# marks the share of a feedback event that reaches a neighboring belief,
+# whatever the source of the event itself.
+AUTOMATIC_FEEDBACK_SOURCE_PREFIXES: tuple[str, ...] = ("propagation:",)
 
 
 @dataclass
@@ -184,7 +197,8 @@ def _select(
         CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     )
     user_affirmed = store.list_beliefs_with_positive_feedback(
-        USER_AFFIRMED_FEEDBACK_SOURCES,
+        exclude_sources=AUTOMATIC_FEEDBACK_SOURCES,
+        exclude_prefixes=AUTOMATIC_FEEDBACK_SOURCE_PREFIXES,
     )
     candidates: list[tuple[str, str]] = []
     locked: list[str] = []

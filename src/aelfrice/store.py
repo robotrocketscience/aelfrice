@@ -6125,23 +6125,41 @@ class MemoryStore:
         return {str(r[0]) for r in cur.fetchall()}
 
     def list_beliefs_with_positive_feedback(
-        self, sources: Iterable[str],
+        self,
+        *,
+        exclude_sources: Iterable[str] = (),
+        exclude_prefixes: Iterable[str] = (),
     ) -> set[str]:
         """Ids of beliefs with a feedback_history row of positive valence
-        whose `source` is one of `sources`.
+        whose `source` is not in `exclude_sources` and starts with none
+        of `exclude_prefixes`.
+
+        Both match case-sensitively. An empty prefix would exclude every
+        row, so it raises `ValueError`.
 
         #1780 reads it to keep a belief the user affirmed with `aelf
-        confirm` or `aelf feedback <id> used`.
+        confirm` or `aelf feedback <id> used`. Those commands take any
+        `--source` label, so #1782 names the sources to leave out rather
+        than the ones to count.
         """
-        wanted = sorted(set(sources))
-        if not wanted:
-            return set()
-        marks = ",".join("?" * len(wanted))
-        cur = self._conn.execute(
+        names = sorted(set(exclude_sources))
+        prefixes = sorted(set(exclude_prefixes))
+        if "" in prefixes:
+            raise ValueError("exclude_prefixes holds an empty prefix")
+        sql = (
             "SELECT DISTINCT belief_id FROM feedback_history "
-            f"WHERE valence > 0 AND source IN ({marks})",
-            wanted,
+            "WHERE valence > 0"
         )
+        params: list[object] = []
+        if names:
+            sql += f" AND source NOT IN ({','.join('?' * len(names))})"
+            params.extend(names)
+        for prefix in prefixes:
+            # substr, not LIKE: LIKE folds ASCII case and reads `_` and
+            # `%` in the prefix as wildcards.
+            sql += " AND substr(source, 1, ?) != ?"
+            params.extend((len(prefix), prefix))
+        cur = self._conn.execute(sql, params)
         return {str(r[0]) for r in cur.fetchall()}
     # --- Deferred feedback queue (v1.6+, #191) ---------------------------
 
