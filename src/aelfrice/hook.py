@@ -5440,13 +5440,17 @@ three) = 25 estimated tokens under `_audit_tokens_from_block`, the
 4-chars-per-token estimator that produces the audited count (this
 module's constant is `_CORE_CHARS_PER_TOKEN = 4`; the float spelling
 `_CHARS_PER_TOKEN = 4.0` lives in retrieval), on every fire that emits
-a block. It is charged against `DEFAULT_HOOK_TOKEN_BUDGET`, the budget
-the UPS hook actually passes — not against the CLI default, which
-`resolve_token_budget` ranks below an explicit caller kwarg. The share
-that cost represents is not quoted here any more: #1526 re-denominated
-`DEFAULT_HOOK_TOKEN_BUDGET` and reserved the framing header out of it, so
-a percentage written beside the constant went stale the moment the
-constant moved. Read the two constants.
+a block. The budget to read that cost against is
+`DEFAULT_HOOK_TOKEN_BUDGET`, the budget the UPS hook actually passes, not
+the CLI default, which `resolve_token_budget` ranks below an explicit
+caller kwarg. The hint is appended after `_retrieve` has spent that
+budget, so the packer never charges it; it shows up where the assembled
+block is measured, such as the audited `tokens` (the +24/+25 rule above).
+#1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing
+header uncharged too (the `_SPECULATIVE_FRAMING_SENTENCE` docstring says
+why). The share of the budget the hint represents is not quoted here,
+because a percentage written beside one constant goes stale when either
+constant changes. Read the two constants.
 """
 
 
