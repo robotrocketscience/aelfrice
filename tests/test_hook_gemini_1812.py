@@ -167,6 +167,18 @@ def test_render_output_is_an_empty_object_otherwise(
 # --- the entry point, per event ----------------------------------------------
 
 
+def test_the_handler_table_runs_each_event_in_order() -> None:
+    """The fixture below replaces the table, so this pins the real one.
+    Retrieval reads the turn log before the logger appends this prompt,
+    and the logger records the reply before the Stop hook runs."""
+    assert dict(hg.HANDLERS) == {
+        "SessionStart": (hg._run_session_start,),  # noqa: SLF001
+        "BeforeAgent": (hg._run_retrieval, hg._run_logger),  # noqa: SLF001
+        "AfterAgent": (hg._run_logger, hg._run_stop),  # noqa: SLF001
+        "PreCompress": (hg._run_logger,),  # noqa: SLF001
+    }
+
+
 def test_session_start_injects_the_handler_context(
     recorded: list[tuple[str, dict[str, object]]],
 ) -> None:
