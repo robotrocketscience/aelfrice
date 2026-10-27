@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import aelfrice.host_gemini as hgm
+from aelfrice import launcher
 from aelfrice.setup import bundled_slash_files
 
 pytestmark = pytest.mark.timeout(60)
@@ -83,6 +84,30 @@ def test_the_hook_set_covers_five_events_in_milliseconds(cmd: str) -> None:
             "name": groups[0]["hooks"][0]["name"],  # type: ignore[index]
             "timeout": groups[0]["hooks"][0]["timeout"],  # type: ignore[index]
         }]
+
+
+def _commands(path: Path) -> set[str]:
+    hooks = _read(path)["hooks"]
+    assert isinstance(hooks, dict)
+    return {
+        handler["command"]
+        for groups in hooks.values()
+        for group in groups
+        for handler in group["hooks"]
+    }
+
+
+def test_setup_writes_the_path_it_resolves_at_install_time(
+    gdir: Path, cmd: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: writing the bare script name instead of resolving it."""
+    monkeypatch.setattr(
+        launcher, "which_on_path",
+        lambda name: Path(cmd) if name == "aelf-gemini-hook" else None,
+    )
+    path = gdir / "settings.json"
+    hgm.install_gemini_hooks(path)
+    assert _commands(path) == {cmd}
 
 
 # --- install -------------------------------------------------------------------
