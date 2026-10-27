@@ -3,8 +3,8 @@
 The HRR expand lane, the semantic-edge writers, and the vocabulary-bridge
 work were kept off or declined on LoCoMo10 and synthetic graphs. This
 harness reruns those decisions on copies of real project stores, with
-prompts sampled from each store's own transcripts and blind graders
-judging the result.
+prompts sampled from each store's own transcripts and two blind graders,
+grader a and grader c, scoring the result.
 
 **Store safety.** Every subcommand that reads a store copies it first,
 with SQLite's backup API from a `mode=ro` source URI, and works on the
@@ -45,9 +45,10 @@ transcripts beside the store they are given.
   grader the `--out` directory only. The key opens with a store row of
   the store's snapshot, sample size, and arms, so a store whose arms
   packed nothing for any prompt still counts its prompts when pooled.
-- `score`: the H0 to H6 verdicts from two graders' labels. To score
+- `score`: the H0 to H6 verdicts from grader a's and grader c's scores
+  (see **Grading**), in that order after `--labels`. To score
   several stores together, concatenate their keys, one packet's key per
-  store, and each grader's labels, into one file each, pass `--proxy`
+  store, and each grader's score files, into one file each, pass `--proxy`
   every store's proxy report, and pass `--census` one writers census of
   the same stores. `score` matches each proxy report and each census row
   to its store's key rows by `snapshot`, and exits 1 when the key holds
@@ -112,6 +113,21 @@ made before any measurement, sets which beliefs each verdict counts:
 - H0: the null arm, drawn from active non-locked beliefs no arm packed
   for the prompt.
 
+**Grading.** The graders follow the procedure #1804 calibrated (#1809).
+The packet's instructions are the #1804 instructions and scale table,
+`relevance_scale.INSTRUCTIONS`, and each grader writes one
+`{"id": "<row id>", "score": 0|1|2|3|null}` object per row. The two
+graders are a and c, the pair that passed #1804. An item is relevant to
+a grader when its score is `RELEVANT_CUT`, 2, or higher, and every
+figure counts that cut: H0's kappa and null-arm rates, the gains,
+precision, and H2 to H6. A null score is left out as in the
+calibration: kappa counts only the items both graders scored, precision
+and the null-arm rate only the items the grader scored, and a null item
+never counts as relevant in a gain. The report's `score_counts` gives
+each grader's count of every score, null included, so a jump in one
+grader's nulls shows. A label file of the binary rubric that session 1
+used, `{"id", "correct"}`, is refused.
+
 **Data.** Prompt files, run files, packets, keys, labels, and proxy files
 hold user text or ids from a real store. Keep them out of the repository.
 
@@ -122,13 +138,13 @@ Usage::
     uv run python -m benchmarks.real_store_ab_1795 run --store <memory.db> --prompts prompts.jsonl --arm A0 --out A0.json
     uv run python -m benchmarks.real_store_ab_1795 packet --runs A0.json A1.json A1W.json A2.json A3.json --store <memory.db> --seed 1795 --out <packet-dir> --key key.jsonl
     uv run python -m benchmarks.real_store_ab_1795 proxy --store <memory.db> --runs A0.json A1.json A1W.json A2.json A3.json --prompts prompts.jsonl --out proxy.json
-    uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl b.jsonl --proxy proxy.json --census census.json
+    uv run python -m benchmarks.real_store_ab_1795 score --key key.jsonl --labels a.jsonl c.jsonl --proxy proxy.json --census census.json
 
 Pooled over two stores, with their keys and each grader's labels
 concatenated, and one writers census of both stores::
 
     uv run python -m benchmarks.real_store_ab_1795 census --store <memory-1.db> <memory-2.db> --writers --out census.json
-    uv run python -m benchmarks.real_store_ab_1795 score --key keys.jsonl --labels a.jsonl b.jsonl --proxy proxy-1.json proxy-2.json --census census.json
+    uv run python -m benchmarks.real_store_ab_1795 score --key keys.jsonl --labels a.jsonl c.jsonl --proxy proxy-1.json proxy-2.json --census census.json
 """
 
 from __future__ import annotations
@@ -194,11 +210,17 @@ from benchmarks.graded_gate import (
     Labels,
     grader_figures,
     paired_kappa,
-    read_labels,
     require_labels,
     wilson_interval,
 )
-from benchmarks.relevance_scale import InputError
+from benchmarks.relevance_scale import (
+    INSTRUCTIONS,
+    SCORES,
+    InputError,
+    Scores,
+    binarize,
+    parse_scores,
+)
 
 ARM_A0: Final[str] = "A0"
 ARM_A1: Final[str] = "A1"
@@ -256,6 +278,11 @@ PMI_MAX_DF_SHARE: Final[float] = 0.10
 PMI_TOP_N_PER_TERM: Final[int] = 2
 PMI_MAX_ADDED: Final[int] = 6
 
+GRADERS: Final[tuple[str, str]] = ("a", "c")
+"""The graders #1804 calibrated, in the order `score` takes their scores (#1809)."""
+RELEVANT_CUT: Final[int] = 2
+"""A grader calls an item relevant when its score is this or higher (#1804, #1809)."""
+
 # Pre-registered bars, from the #1795 hypothesis table.
 KAPPA_BAR: Final[float] = 0.60
 """H0: the two graders' agreement must reach this."""
@@ -299,30 +326,6 @@ V_STARVED: Final[str] = "substrate-starved"
 V_NEEDS_CENSUS: Final[str] = "needs census"
 V_AGREE: Final[str] = "agree"
 V_DISAGREE: Final[str] = "disagree"
-
-INSTRUCTIONS: Final[str] = """\
-Each row of packet.jsonl pairs a prompt a user typed to a coding assistant
-with one note from that project's memory. For each row, decide whether the
-note is relevant to the prompt: whether reading it would change or directly
-inform what the assistant does for this prompt.
-
-  true   relevant: the note gives a fact the answer needs, a rule or
-         preference the assistant must follow for this task, or an earlier
-         decision about this same task
-  false  not relevant: anything else, including a note about the same
-         project, file, tool, or topic that wouldn't change the answer,
-         background the assistant wouldn't use, and a note that only shares
-         words with the prompt
-  null   unclear: you can't tell what the prompt asks or what the note means
-
-Before you call a note relevant, ask whether the answer would be worse
-without it. If it wouldn't, label it false.
-
-Write one JSON object per line to your own labels file:
-  {"id": "<row id>", "correct": true}
-Label every row. Rows come in no particular order. Don't discuss the rows
-with the other grader.
-"""
 
 
 # --- Store copies -------------------------------------------------------------
@@ -1647,12 +1650,24 @@ def pool_proxy_reports(reports: Sequence[Mapping[str, Any]], key: Key) -> dict[s
     return {"prompts": rows}
 
 
+def score_counts(ids: Sequence[str], scores: Scores) -> dict[str, int]:
+    """How many of `ids` the grader scored 0, 1, 2, and 3, and how many null."""
+    counts = Counter(scores[i] for i in ids)
+    return {**{str(s): counts[s] for s in SCORES}, "null": counts[None]}
+
+
 def score(
-    key: Key, a: Labels, b: Labels, *, seed: int,
+    key: Key, a: Scores, c: Scores, *, seed: int,
     proxy_reports: Sequence[Mapping[str, Any]] | None = None,
     census_report: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """H0 to H6 from the key, two graders' labels, and the optional proxy and census.
+    """H0 to H6 from the key, grader a's and c's scores, and the optional proxy and census.
+
+    Under #1809, each grader's score of 0 to 3 is read as relevant at
+    `RELEVANT_CUT` or higher, and every figure below counts that cut. A
+    null score is left out of kappa, of precision, and of the null-arm
+    rate, and never counts as relevant. The report's `score_counts` gives
+    each grader's count of every score and of nulls over the key's items.
 
     Under the 2026-10-23 amendment to #1795, H2, H3, H4, and `H2_split`
     decide on graded-relevant beliefs in each arm's whole packed result,
@@ -1696,7 +1711,8 @@ def score(
     """
     items, stores = key.items, key.stores
     ids = [i.id for i in items]
-    require_labels(ids, a, b, "key items")
+    la, lc = binarize(a, RELEVANT_CUT), binarize(c, RELEVANT_CUT)
+    require_labels(ids, la, lc, "key items")
     prompts = sorted({i.prompt_key for i in items})
     # A sampled prompt where no arm packed a belief and no null belief was
     # drawn has no item row, but it still counts in every paired gain.
@@ -1706,9 +1722,9 @@ def score(
     h1 = census_h1(census_report, key)
     unkeyed = sampled - len(prompts)
     arms = sorted({arm for s in stores.values() for arm in s.arms_run} - {CONTROL_ARM})
-    kappa, kappa_n, agreed = paired_kappa(ids, a, b)
-    null = [null_figures(items, a), null_figures(items, b)]
-    reliable = exact_kappa(ids, a, b) >= exact_bar(KAPPA_BAR) and all(
+    kappa, kappa_n, agreed = paired_kappa(ids, la, lc)
+    null = [null_figures(items, la), null_figures(items, lc)]
+    reliable = exact_kappa(ids, la, lc) >= exact_bar(KAPPA_BAR) and all(
         n["graded"] > 0 and n["rate"] <= NULL_RATE_CEILING for n in null
     )
     # H0's kill condition: when either bar fails, every arm result is
@@ -1716,7 +1732,7 @@ def score(
     per_arm: dict[str, Any] = {}
     for arm in arms:
         graders = [arm_figures(items, arm, labels, prompts, seed, unkeyed=unkeyed)
-                   for labels in (a, b)]
+                   for labels in (la, lc)]
         gain = combine([g["gain_verdict"] for g in graders])
         h5 = combine([g["h5_verdict"] for g in graders])
         if not reliable:
@@ -1725,7 +1741,7 @@ def score(
     if ARM_A1 in per_arm and ARM_A1W in per_arm:
         lane = [arm_figures(items, ARM_A1, labels, prompts, seed, control=ARM_A1W,
                             unkeyed=unkeyed)
-                for labels in (a, b)]
+                for labels in (la, lc)]
         per_arm[ARM_A1]["vs_A1W"] = {
             "graders": lane,
             "gain_verdict": (combine([g["gain_verdict"] for g in lane]) if reliable
@@ -1771,10 +1787,12 @@ def score(
         "prompts": sampled, "keyed_prompts": len(prompts), "stores": len(stores),
         "items": len(ids),
         "null_items": sum(1 for i in items if i.arms is None),
+        "graders": list(GRADERS),
+        "score_counts": {g: score_counts(ids, s) for g, s in zip(GRADERS, (a, c), strict=True)},
         "kappa": kappa, "kappa_n": kappa_n, "agreed": agreed, "null_arm": null,
         "arms": per_arm, "hypotheses": hyp,
         "bars": {
-            "kappa": KAPPA_BAR, "null_rate_ceiling": NULL_RATE_CEILING,
+            "relevant_cut": RELEVANT_CUT, "kappa": KAPPA_BAR, "null_rate_ceiling": NULL_RATE_CEILING,
             "substrate_per_100": SUBSTRATE_BAR, "gain": GAIN_BAR, "gain_kill": GAIN_KILL,
             "gaining_share": GAINING_SHARE_BAR, "bridging_share": BRIDGING_SHARE_BAR,
             "precision_drop": PRECISION_DROP_BAR, "min_graded": MIN_GRADED,
@@ -1843,9 +1861,10 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--key", type=Path, required=True,
                    help="where the hidden key goes, outside --out")
     work_dir(k)
-    sc = sub.add_parser("score", help="H0 to H6 from two graders' labels")
+    sc = sub.add_parser("score", help="H0 to H6 from grader a's and grader c's 0 to 3 scores")
     sc.add_argument("--key", type=Path, required=True)
-    sc.add_argument("--labels", type=Path, nargs=2, required=True)
+    sc.add_argument("--labels", type=Path, nargs=2, required=True,
+                    help="grader a's and grader c's score files, in that order")
     sc.add_argument("--proxy", type=Path, nargs="+",
                     help="one proxy report per store in the key, for H6")
     sc.add_argument("--census", type=Path, help="census output, for H1")
@@ -1883,9 +1902,10 @@ def _dispatch(args: argparse.Namespace) -> None:
         nulls = sum(1 for r in key if r["kind"] == KEY_ITEM and r["arms"] is None)
         print(f"items={len(packet)} null={nulls}")
     elif cmd == "score":
+        key = read_key(args.key)
+        a, c = (parse_scores(p, p.read_bytes()) for p in args.labels)
         report = score(
-            read_key(args.key), read_labels(args.labels[0]), read_labels(args.labels[1]),
-            seed=args.seed,
+            key, a, c, seed=args.seed,
             proxy_reports=[_read_json(p) for p in args.proxy] if args.proxy else None,
             census_report=_read_json(args.census) if args.census else None,
         )

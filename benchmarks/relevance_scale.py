@@ -2,8 +2,9 @@
 
 #1804 has graders score how relevant a note from a project's memory is
 to a prompt, from 0 to 3 or null, with the instructions below. The
-calibration harness, `grader_calibration_1804`, hands the graders these
-instructions and reads their score files here.
+calibration harness, `grader_calibration_1804`, and the real-store A/B
+harness, `real_store_ab_1795` (#1809), hand the graders these
+instructions and read their score files here.
 
 A score file is JSONL, one `{"id": str, "score": 0|1|2|3|null}` object
 per line.

@@ -37,7 +37,7 @@ from aelfrice.models import (
 )
 from aelfrice.retrieval import ENV_HRR_EXPAND, last_lane_telemetry
 from aelfrice.store import MemoryStore, read_only_uri
-from benchmarks import graded_gate
+from benchmarks import graded_gate, relevance_scale
 from benchmarks import real_store_ab_1795 as bench
 
 _QUERY = "kestrel meadow"
@@ -1174,18 +1174,18 @@ def test_the_packet_is_reproducible_from_the_seed(tmp_path: Path) -> None:
     assert _packet(tmp_path, runs, 3)[0] != _packet(tmp_path, runs, 4)[0]
 
 
-def test_the_instructions_define_the_three_labels(tmp_path: Path) -> None:
-    for word in ("relevant", "not relevant", "unclear", '"correct"'):
-        assert word in bench.INSTRUCTIONS
-
-
-def test_the_instructions_rule_out_a_note_that_only_shares_the_topic() -> None:
-    # Amendment 2 to the #1795 pre-registration: the graders split on
-    # same-topic notes, so the rubric names them as not relevant.
-    text = " ".join(bench.INSTRUCTIONS.split())
-    assert "would change or directly inform what the assistant does" in text
-    assert "same project, file, tool, or topic that wouldn't change the answer" in text
-    assert "If it wouldn't, label it false." in text
+def test_the_packet_hands_the_graders_the_1804_instructions(tmp_path: Path) -> None:
+    # #1809: the graders score 0 to 3 with the scale and wording #1804
+    # calibrated, not the binary rubric of session 1.
+    out = tmp_path / "packet"
+    bench.write_packet([{"id": "x", "prompt": "p", "belief": "b"}], [], out,
+                       tmp_path / "key.jsonl")
+    text = (out / "instructions.txt").read_text(encoding="utf-8")
+    assert text == relevance_scale.INSTRUCTIONS
+    for score, meaning in relevance_scale.SCALE:
+        assert f"  {score:<5} {meaning}" in text.splitlines()
+    assert '  {"id": "<row id>", "score": 2}' in text.splitlines()
+    assert '"correct"' not in text
 
 
 # --- Score --------------------------------------------------------------------
@@ -1194,16 +1194,39 @@ def test_the_instructions_rule_out_a_note_that_only_shares_the_topic() -> None:
 Row = tuple[str, str, dict[str, int] | None, bool, bool | None, bool | None]
 
 
+def _graded(labels: Mapping[str, bool | None]) -> dict[str, int | None]:
+    """Scores that read as `labels` at the cut of 2: relevant 2, not relevant 1.
+
+    Each sits next to the cut, so a cut of 1 or 3 changes the figures the
+    score tests check.
+    """
+    return {i: None if v is None else 2 if v else 1 for i, v in labels.items()}
+
+
+Scores = dict[str, int | None]
+
+
+def _cut(scores: Scores) -> dict[str, bool | None]:
+    """A grader's scores read at the harness's cut."""
+    return bench.binarize(scores, bench.RELEVANT_CUT)
+
+
+def _both(labels: Mapping[str, bool | None]) -> tuple[Scores, Scores]:
+    """Grader a's and c's scores, both `_graded(labels)`."""
+    return _graded(labels), _graded(labels)
+
+
 def _key(rows: list[Row], sampled: int | None = None) -> tuple[
-        bench.Key, dict[str, bool | None], dict[str, bool | None]]:
-    """A one-store key and both graders' labels; `sampled` defaults to the rows' prompts."""
+        bench.Key, dict[str, int | None], dict[str, int | None]]:
+    """A one-store key and grader a's and c's scores, from each row's labels through
+    `_graded`; `sampled` defaults to the rows' prompts."""
     n = len({r[1] for r in rows}) if sampled is None else sampled
     ran = tuple(sorted({bench.CONTROL_ARM, *(a for r in rows if r[2] for a in r[2])}))
     items = [bench.KeyItem(id=i, prompt_id=p, arms=arms, shares_prompt_stem=s,
                            snapshot=_SNAP)
              for i, p, arms, s, _a, _b in rows]
     key = bench.make_key(items, {_SNAP: bench.KeyStore(prompts_sampled=n, arms_run=ran)})
-    return key, {r[0]: r[4] for r in rows}, {r[0]: r[5] for r in rows}
+    return key, _graded({r[0]: r[4] for r in rows}), _graded({r[0]: r[5] for r in rows})
 
 
 def _hand(
@@ -1339,7 +1362,7 @@ def test_a_store_whose_arms_packed_nothing_still_counts_when_pooled(tmp_path: Pa
     proxies: list[dict[str, Any]] = [{"snapshot": snap, "prompts": [
         {"prompt_id": pid, "arms": {"A0": [], "A1": []}} for pid in pids]}
         for snap, pids in (("sa", ["p1"]), ("sb", ["p0", "p1", "p2"]))]
-    rep = bench.score(bench.read_key(path), labels, labels, seed=1, proxy_reports=proxies)
+    rep = bench.score(bench.read_key(path), *_both(labels), seed=1, proxy_reports=proxies)
     assert (rep["prompts"], rep["keyed_prompts"], rep["stores"]) == (4, 1, 2)
     # A1 gains `con` on sa's one prompt and nothing on sb's three.
     assert rep["arms"]["A1"]["graders"][0]["mean_gain"] == _approx(0.25)
@@ -1354,7 +1377,7 @@ def test_a_key_concatenated_from_several_stores_scores_them_pooled(tmp_path: Pat
         path = tmp_path / "key.jsonl"
         path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         labels: dict[str, bool | None] = {str(r["id"]): True for r in _items(rows)}
-        rep = bench.score(bench.read_key(path), labels, labels, seed=1)
+        rep = bench.score(bench.read_key(path), *_both(labels), seed=1)
         assert (rep["prompts"], rep["keyed_prompts"]) == (sum(counts), 2)
         assert rep["stores"] == 2
         g = rep["arms"]["A3"]["graders"][0]
@@ -1371,12 +1394,12 @@ def test_score_refuses_a_pooled_key_whose_stores_ran_different_arms(tmp_path: Pa
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     labels: dict[str, bool | None] = {str(r["id"]): True for r in _items(rows)}
     with pytest.raises(bench.InputError, match="s1 ran A0, A3; s2 ran A0"):
-        bench.score(bench.read_key(path), labels, labels, seed=1)
+        bench.score(bench.read_key(path), *_both(labels), seed=1)
     # An arm that ran on every store is scored although no row records it.
     ran = _store_key_rows("s1", 1, ("A0", "A2", "A3"))
     path.write_text("".join(json.dumps(r) + "\n" for r in ran), encoding="utf-8")
     labels = {str(r["id"]): True for r in _items(ran)}
-    assert sorted(bench.score(bench.read_key(path), labels, labels, seed=1)["arms"]) == [
+    assert sorted(bench.score(bench.read_key(path), *_both(labels), seed=1)["arms"]) == [
         "A2", "A3"]
     for bad in (["A3"], ["A0", "A0", "A3"], ["A0", "A9"], "A0"):
         path.write_text(json.dumps({**ran[0], "arms_run": bad}) + "\n", encoding="utf-8")
@@ -1427,7 +1450,7 @@ def test_h6_pools_the_proxy_reports_of_every_store_in_the_key(tmp_path: Path) ->
     assert bench.proxy_gain_signs(s1, ["A3"]) == {"A3": -1}
     assert bench.proxy_gain_signs(s2, ["A3"]) == {"A3": 1}
     for reports in ([s1, s2], [s2, s1]):
-        rep = bench.score(items, labels, labels, seed=1, proxy_reports=reports)
+        rep = bench.score(items, *_both(labels), seed=1, proxy_reports=reports)
         assert rep["hypotheses"]["H6"]["A3"] == {
             "proxy_sign": 0, "grader_signs": [1, 1], "verdict": bench.V_DISAGREE}
 
@@ -1446,9 +1469,9 @@ def test_score_refuses_a_proxy_report_that_matches_no_store_one_to_one(
     ]
     for reports, match in bad:
         with pytest.raises(bench.InputError, match=match):
-            bench.score(items, labels, labels, seed=1, proxy_reports=reports)
+            bench.score(items, *_both(labels), seed=1, proxy_reports=reports)
     # Without a proxy, H6 is not scored and nothing is matched.
-    rep = bench.score(items, labels, labels, seed=1)
+    rep = bench.score(items, *_both(labels), seed=1)
     assert rep["hypotheses"]["H6"] == bench.V_NOT_MEASURED
 
 
@@ -1479,9 +1502,9 @@ def test_score_refuses_a_proxy_report_that_misses_an_arm_or_a_prompt(tmp_path: P
     ]
     for prompts, match in bad:
         with pytest.raises(bench.InputError, match=f"proxy report for snapshot s2 {match}"):
-            bench.score(items, labels, labels, seed=1,
+            bench.score(items, *_both(labels), seed=1,
                         proxy_reports=[s1, {"snapshot": "s2", "prompts": prompts}])
-    rep = bench.score(items, labels, labels, seed=1,
+    rep = bench.score(items, *_both(labels), seed=1,
                       proxy_reports=[s1, {"snapshot": "s2", "prompts": full}])
     assert rep["hypotheses"]["H6"]["A3"]["proxy_sign"] == 1
 
@@ -1493,7 +1516,7 @@ def test_score_cli_takes_one_proxy_report_per_store(
     key = tmp_path / "key.jsonl"
     key.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     labels = tmp_path / "labels.jsonl"
-    labels.write_text("".join(json.dumps({"id": r["id"], "correct": True}) + "\n"
+    labels.write_text("".join(json.dumps({"id": r["id"], "score": 3}) + "\n"
                               for r in _items(rows)), encoding="utf-8")
     proxies: list[str] = []
     for report in (_proxy_report("s1", [-2]), _proxy_report("s2", [1, 1, 1])):
@@ -1636,7 +1659,7 @@ def test_kappa_takes_each_graders_own_marginals() -> None:
     # is 0.74 and kappa 8/13, over the bar, whichever grader is which.
     for table in (_null_table(1, 0, 1, 8), _null_table(1, 1, 0, 8)):
         key, a, b = _key(table)
-        assert bench.exact_kappa([i.id for i in key.items], a, b) == Fraction(8, 13)
+        assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) == Fraction(8, 13)
         rep = _score(table)
         assert rep["kappa"] == _approx(8 / 13)
         assert rep["hypotheses"]["H0"] == bench.V_PASS
@@ -1648,7 +1671,7 @@ def test_graders_who_share_no_graded_item_fail_h0() -> None:
     rows: list[Row] = [("n0", "p0", None, False, False, None),
                        ("n1", "p0", None, False, None, False)]
     key, a, b = _key(rows)
-    assert bench.exact_kappa([i.id for i in key.items], a, b) == 0
+    assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) == 0
     rep = _score(rows)
     assert rep["kappa_n"] == 0
     assert [n["graded"] for n in rep["null_arm"]] == [1, 1]
@@ -1662,7 +1685,7 @@ def test_an_item_one_grader_left_unclear_stays_out_of_kappa() -> None:
     rows = [*_null_table(2, 1, 1, 14), ("a0", "p0", {bench.ARM_A0: 1}, True, None, True),
             ("a1", "p0", {bench.ARM_A0: 2}, True, True, None)]
     key, a, b = _key(rows)
-    assert bench.exact_kappa([i.id for i in key.items], a, b) == Fraction(3, 5)
+    assert bench.exact_kappa([i.id for i in key.items], _cut(a), _cut(b)) == Fraction(3, 5)
     rep = _score(rows)
     assert rep["kappa_n"] == 18
     assert rep["hypotheses"]["H0"] == bench.V_PASS
@@ -2033,7 +2056,7 @@ def test_a_pooled_key_takes_h1_from_the_median_of_its_stores() -> None:
     for rates, want in (((0.0, 3.0, 1.0), bench.V_PASS), ((0.0, 0.5, 50.0), bench.V_FAIL)):
         key, labels = key_of(rates)
         census = _census(*rates, snapshots=tuple(sorted(key.stores)))
-        rep = bench.score(key, labels, labels, seed=1, census_report=census)
+        rep = bench.score(key, *_both(labels), seed=1, census_report=census)
         assert rep["hypotheses"]["H1"] == want
 
 
@@ -2758,8 +2781,8 @@ def test_score_cli_reads_a_packet_key_and_two_label_files(
     labels = tmp_path / "labels.jsonl"
     # Relevant: everything A0 retrieved. The null arm is all not relevant.
     labels.write_text("".join(
-        json.dumps({"id": r["id"], "correct": bool(r["arms"]) and "A0" in r["arms"]}) + "\n"
-        for r in _key_items(k)), encoding="utf-8")
+        json.dumps({"id": r["id"], "score": 2 if r["arms"] and "A0" in r["arms"] else 1})
+        + "\n" for r in _key_items(k)), encoding="utf-8")
     census = tmp_path / "census.json"
     snapshot = json.loads(k.splitlines()[0])["snapshot"]
     census.write_text(json.dumps(_census(2.0, snapshots=(snapshot,))), encoding="utf-8")

@@ -1,10 +1,11 @@
 """Grader calibration for real-store relevance on the #1795 session-1 rows (#1804).
 
-The #1795 harness asks two graders for a binary relevance label. This
-harness runs the calibration that #1804 pre-registered before any of it
-was graded: three graders, a, b, and c, score the session-1 rows from 0
-to 3, the cut that turns a score into "relevant" is fitted on half of
-the stores, and one confirmatory test on the other half decides.
+In session 1, the #1795 harness asked two graders for a binary relevance
+label. This harness runs the calibration that #1804 pre-registered
+before any of it was graded: three graders, a, b, and c, score the
+session-1 rows from 0 to 3, the cut that turns a score into "relevant"
+is fitted on half of the stores, and one confirmatory test on the other
+half decides.
 
 **Subcommands.** Each one is deterministic given its inputs and
 `--seed`, and exits 1 on bad input.
