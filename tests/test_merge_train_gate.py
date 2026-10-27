@@ -358,12 +358,16 @@ def test_every_nongating_name_is_a_continue_on_error_job() -> None:
         assert "    continue-on-error: true" in jobs[name], name
 
 
-_LABEL_ADDED = re.compile(
-    r"github\.event\.action == 'labeled' && github\.event\.label\.name == '([^']+)'"
-)
-_LABEL_PRESENT = re.compile(
-    r"github\.event\.action == 'synchronize' && "
-    r"contains\(github\.event\.pull_request\.labels\.\*\.name, '([^']+)'\)"
+# One `||` expression behind an `&&`, over the file folded onto one line.
+# Matched as two separate arms, an `if` that joined them with `&&` (never
+# true) or hung them off its guard with `||` (true on every pull_request
+# event) read as the same gate.
+_LABEL_GATE = re.compile(
+    r"&& \( "
+    r"\(github\.event\.action == 'labeled' && github\.event\.label\.name == '([^']+)'\) "
+    r"\|\| \(github\.event\.action == 'synchronize' && "
+    r"contains\(github\.event\.pull_request\.labels\.\*\.name, '([^']+)'\)\) "
+    r"\)"
 )
 
 
@@ -373,10 +377,12 @@ def _label_gate(text: str) -> tuple[set[str], set[str]]:
     Returns `(added by this event, present on a push)`. Comment lines are
     dropped first, so a comment that quotes the expression never counts.
     """
-    code = "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    code = " ".join(
+        line.strip() for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
     )
-    return set(_LABEL_ADDED.findall(code)), set(_LABEL_PRESENT.findall(code))
+    hits = _LABEL_GATE.findall(code)
+    return {added for added, _ in hits}, {present for _, present in hits}
 
 
 def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
