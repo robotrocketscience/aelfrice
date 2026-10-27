@@ -142,16 +142,17 @@ def _labels(db: Path) -> dict[str, str]:
 # --- the decode boundary --------------------------------------------------------
 
 
+# Asks the codec directly, not `subprocess`: a failed text-mode decode raises
+# on POSIX, but on Windows it kills the reader thread and `run` returns
+# `stdout=None`, so a probe through `subprocess` can't tell the cases apart.
 _PROBE = """\
-import subprocess, sys
+import locale
+encoding = locale.getpreferredencoding(False)
 try:
-    subprocess.run(
-        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes.fromhex('e69db1e4baac'))"],
-        capture_output=True, text=True, timeout=60,
-    )
-    print("decodes")
+    bytes.fromhex("e69db1e4baac").decode(encoding)
+    print("decodes", encoding)
 except UnicodeDecodeError:
-    print("raises")
+    print("raises", encoding)
 """
 
 _CHILD = """\
@@ -171,17 +172,19 @@ sys.stdout.write(json.dumps(record))
 @pytest.mark.timeout(120)  # #1307: two interpreter spawns, one of them nested
 def test_the_reply_decodes_as_utf8_under_a_non_utf8_locale(tmp_path: Path) -> None:
     """Killed by: dropping `encoding="utf-8"` from the runner call. The stub's
-    reply carries bytes the locale can't decode; without the pin the decode
-    raises `UnicodeDecodeError`, a `ValueError` the run guard doesn't catch,
-    and `label_batch` reports `store_error` instead of caching the label."""
+    reply carries bytes the locale encoding can't decode. Without the pin,
+    on POSIX the decode raises `UnicodeDecodeError`, a `ValueError` the run
+    guard doesn't catch, and `label_batch` reports `store_error`; on Windows
+    the decode error ends the reader thread, `stdout` is None, and the run is
+    `run_failed`. Either way no label is cached."""
     env = {**os.environ, **_LOCALE_ENV}
     probe = subprocess.run(
         [sys.executable, "-c", _PROBE], env=env, capture_output=True,
         text=True, encoding="utf-8", check=False, timeout=60,
     )
-    assert probe.stdout.strip() == "raises", (
-        "the child's text mode decodes the reply bytes, so this test exercises "
-        f"nothing the fix affects: {probe.stdout!r} {probe.stderr!r}"
+    assert probe.stdout.split()[:1] == ["raises"], (
+        "the child's locale encoding decodes the reply bytes, so this test "
+        f"exercises nothing the fix affects: {probe.stdout!r} {probe.stderr!r}"
     )
     db = tmp_path / "memory.db"
     batch_id = _open_batch(db)
