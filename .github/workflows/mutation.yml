@@ -22,7 +22,10 @@ name: mutation
 # The per-PR job is advisory by ratified design (2026-08-09): a surviving mutant
 # is reported, never blocking, until the equivalent-mutant rate has data behind
 # it. It is scoped to the functions the PR changed, because mutmut across the
-# whole tree is a multi-hour job and nothing that slow belongs on a PR.
+# whole tree is a multi-hour job and nothing that slow belongs on a PR. It runs
+# when the `ready-to-merge` label goes on, and on a push while the label is on,
+# not on every push (#1786): an hour of mutmut per push bought a result for a
+# head that the next push replaced.
 #
 # The asymmetry is deliberate. "Advisory" is what makes a step that cannot fail
 # acceptable here, and it is only acceptable because the weekly job does fail on
@@ -34,6 +37,11 @@ on:
     - cron: '0 8 * * 0'
   workflow_dispatch:
   pull_request:
+    # #1786: the same two events as merge-train.yml. `labeled` is the
+    # operator's ready-to-merge add; `synchronize` is a push while the label
+    # is on. The `diff` job's `if` checks the label, since `types` can't.
+    # The path filter below applies to both events.
+    types: [labeled, synchronize]
     paths:
       - 'src/aelfrice/**'
       - 'pyproject.toml'
@@ -344,7 +352,13 @@ jobs:
   # `merge_train_gate.ADVISORY_NAMES`, which drops its result from the gate.
   diff:
     name: mutation (advisory, PR diff)
-    if: github.event_name == 'pull_request'
+    # #1786: the label gate merge-train.yml's `merge` job uses, so the two
+    # fire on the same events. A test pins the label name to that file.
+    if: |
+      github.event_name == 'pull_request' && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+      )
     # NOTE: job-level, not step-level. Every other `continue-on-error` in
     # `.github/workflows/` is on a step, where it only spares that step; the
     # property needed here is that the *job's* check-run conclusion is
@@ -358,7 +372,8 @@ jobs:
     # executes a single mutant, and only then starts the per-mutant runs — a
     # 30-minute cap spends a large fraction of its budget before the first
     # mutant and then dies partway through them. This is a cap, not a target;
-    # the job is advisory and `concurrency` cancels it on the next push.
+    # the job is advisory and `concurrency` cancels it on the next push while
+    # the label is on.
     timeout-minutes: 60
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
