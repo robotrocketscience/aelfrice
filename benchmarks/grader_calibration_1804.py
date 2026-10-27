@@ -439,16 +439,20 @@ def check_split_out(out: Path, sources: Sequence[Path] = ()) -> None:
 def publish_split(stage: Path, out: Path) -> None:
     """Move the staged split directory `stage` to `out`, replacing any earlier split.
 
-    Each step is one rename. An earlier split is first moved into a new
-    `.<out name>.old-*` directory beside `out`, then `stage` takes its
-    place, then the earlier split is removed. When either rename fails,
-    the earlier split stays at or moves back to `out` and the new
+    Each step is one rename. The earlier split's directories are first
+    made `OWNER_DIR`, so its owner can move and remove them. It is then
+    moved into a new `.<out name>.old-*` directory beside `out`, `stage`
+    takes its place, and the earlier split is removed. When either rename
+    fails, the earlier split stays at or moves back to `out` and the new
     directory is removed. A run stopped between the two renames leaves
     `out` missing and both whole splits beside it.
     """
     if not out.exists():
         stage.rename(out)
         return
+    for d in (out, *(out / h for h in HALVES)):
+        if d.exists():
+            os.chmod(d, OWNER_DIR)
     aside = Path(tempfile.mkdtemp(prefix=f".{out.name}.old-", dir=out.parent))
     old = aside / out.name
     try:

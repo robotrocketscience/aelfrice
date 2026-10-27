@@ -575,6 +575,28 @@ def test_a_split_that_fails_moving_into_place_keeps_the_earlier_split(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["out", "s1"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
+@pytest.mark.parametrize("locked", ["out", "out/A"])
+def test_an_earlier_split_without_its_write_bit_is_replaced_whole(
+    tmp_path: Path, locked: str,
+) -> None:
+    # The earlier directory can't be moved or emptied as it is, so split
+    # makes it owner-only first and leaves nothing beside --out.
+    keys, packets = _stores(tmp_path)
+    assert _split(keys, packets, tmp_path / "fresh", seed=7) == 0
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    (tmp_path / locked).chmod(0o555)
+    try:
+        assert _split(keys, packets, out, seed=7) == 0
+    finally:
+        for p in (out, out / "A"):
+            if p.exists():
+                p.chmod(0o700)
+    assert _split_files(out) == _split_files(tmp_path / "fresh")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh", "out", "s1"]
+
+
 def test_a_second_split_replaces_the_first_whole(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     assert _split(keys, packets, tmp_path / "fresh", seed=7) == 0
