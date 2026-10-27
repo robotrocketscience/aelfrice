@@ -998,13 +998,32 @@ def _emits_a_row_on_every_pr_head(text: str) -> bool:
 # such a job as no job at all, and the workflow dropped out of the drift guard.
 _JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$")
 _MATRIX_AXIS = re.compile(r"^        ([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$")
+_SINGLE_QUOTED = re.compile(r"'((?:[^']|'')*)'\s*(?:#.*)?")
+_DOUBLE_QUOTED = re.compile(r'"([^"\\]*)"\s*(?:#.*)?')
+
+
+def _scalar(raw: str) -> str:
+    """A one-line YAML scalar as YAML reads it: quotes removed, `''` inside
+    single quotes read as `'`, and a trailing comment dropped. A shape this
+    does not read, such as an escape inside double quotes, a block scalar,
+    an anchor, or no value at all, fails rather than come back with its
+    syntax still in it."""
+    raw = raw.strip()
+    m = _SINGLE_QUOTED.fullmatch(raw)
+    if m:
+        return m.group(1).replace("''", "'")
+    m = _DOUBLE_QUOTED.fullmatch(raw)
+    if m:
+        return m.group(1)
+    assert raw and raw[0] not in "'\"[]{}|>&*!%@`#", f"scalar shape not supported: {raw!r}"
+    return re.split(r"\s#", raw, maxsplit=1)[0].rstrip()
 
 
 def _check_run_names(text: str) -> frozenset[str]:
     """The check-run names a workflow's jobs emit, read from its `jobs:` block.
 
-    GitHub names a row after the job's `name:` key, or after its id when
-    there is none. A job with a `strategy.matrix` of inline lists and no
+    GitHub names a row after the job's `name:` value as YAML reads it, so
+    without quotes or a trailing comment, or after its id when there is none. A job with a `strategy.matrix` of inline lists and no
     `name:` emits one row per combination, named `<id> (<v1>, <v2>, ...)`
     in axis order, which is how `pytest` becomes `pytest (3.12)`. Any other
     matrix shape, a `name:` holding an expression, or a two-space line that
@@ -1047,14 +1066,14 @@ def _check_run_names(text: str) -> frozenset[str]:
             job_id, display, axes, in_matrix = m.group(1), None, [], False
             continue
         assert ln.startswith("   "), f"job key shape not supported: {ln.strip()}"
-        if ln.startswith("    name: "):
-            display = ln[len("    name: "):].strip()
+        if ln.startswith("    name:"):
+            display = _scalar(ln[len("    name:"):])
         elif ln.rstrip() == "      matrix:":
             in_matrix = True
         elif in_matrix and ln.startswith("        "):
             axis = _MATRIX_AXIS.match(ln)
             assert axis is not None, f"{job_id}: matrix shape not supported: {ln.strip()}"
-            axes.append([v.strip().strip("'\"") for v in axis.group(2).split(",") if v.strip()])
+            axes.append([_scalar(v) for v in axis.group(2).split(",") if v.strip()])
         elif in_matrix and not ln.startswith("        "):
             in_matrix = False
     flush()
@@ -1120,6 +1139,45 @@ def test_the_name_parser_reads_a_job_key_with_a_trailing_comment() -> None:
 def test_the_name_parser_refuses_a_job_key_it_cannot_read() -> None:
     text = "jobs:\n  lint: {runs-on: ubuntu-latest}\n"
     with pytest.raises(AssertionError, match="job key shape not supported"):
+        _check_run_names(text)
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        ('    name: "Extra Job"', "Extra Job"),
+        ("    name: 'Extra Job'", "Extra Job"),
+        ("    name: 'it''s green'", "it's green"),
+        ("    name: Extra Job  # shown in the checks list", "Extra Job"),
+        ('    name: "Extra Job"  # quoted', "Extra Job"),
+    ],
+)
+def test_the_name_parser_reads_a_name_the_way_yaml_does(line: str, name: str) -> None:
+    """GitHub names the row after the parsed scalar, so quotes and a trailing
+    comment are not part of it. `replay-soak-gate.yml` already quotes one."""
+    text = f"jobs:\n  job:\n{line}\n    runs-on: ubuntu-latest\n"
+    assert _check_run_names(text) == {name}
+
+
+def test_the_name_parser_unquotes_matrix_values() -> None:
+    text = "\n".join([
+        "jobs:",
+        "  legs:",
+        "    strategy:",
+        "      matrix:",
+        "        python-version: [\"3.12\", '3.13', 3.14]",
+        "",
+    ])
+    assert _check_run_names(text) == {"legs (3.12)", "legs (3.13)", "legs (3.14)"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['    name: "a\\tb"', "    name: >", "    name: &id lint", "    name:"],
+)
+def test_the_name_parser_refuses_a_name_it_cannot_read(line: str) -> None:
+    text = f"jobs:\n  job:\n{line}\n    runs-on: ubuntu-latest\n"
+    with pytest.raises(AssertionError, match="scalar shape not supported"):
         _check_run_names(text)
 
 
