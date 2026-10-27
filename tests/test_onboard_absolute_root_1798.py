@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import scanner
 from aelfrice.classification import start_onboard_session
 from aelfrice.cli import main
 from aelfrice.store import MemoryStore
@@ -218,6 +219,36 @@ def test_a_relative_run_whose_folder_cannot_be_resolved_is_refused(
     err = capsys.readouterr().err
     assert err == "aelf onboard: cannot list or search the current folder\n"
     assert _session_count(db) == 0
+
+
+@pytest.mark.timeout(60)
+def test_start_onboard_session_raises_before_it_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The error comes before any extractor reads the tree, so a folder
+    # that can't be resolved costs no scan.
+    calls: list[str] = []
+
+    def spy(name: str, result: object) -> None:
+        def record(*args: object, **kwargs: object) -> object:
+            calls.append(name)
+            return result
+
+        monkeypatch.setattr(scanner, name, record)
+
+    spy("_build_file_recency_map", {})
+    for name in ("extract_filesystem", "extract_git_log", "extract_ast"):
+        spy(name, [])
+    store = MemoryStore(str(tmp_path / "aelf.db"))
+    monkeypatch.chdir(_repo(tmp_path))
+    _current_folder_unsearchable(monkeypatch)
+    try:
+        with pytest.raises(PermissionError):
+            start_onboard_session(store, Path("."))
+        assert calls == []
+        assert store.count_onboard_sessions() == 0
+    finally:
+        store.close()
 
 
 @pytest.mark.timeout(60)
