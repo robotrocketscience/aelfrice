@@ -24,6 +24,7 @@ on:
       - 'tests/test_doctor_windows_prune_1412.py'
       - 'tests/test_stdin_encoding_1426.py'
       - 'tests/test_lock_gaps_platform_1622.py'
+      - 'tests/test_core_gate_background_windows_1761.py'
       - '.github/workflows/windows-smoke.yml'
       - 'pyproject.toml'
       # #1493 — the wheel job packages the tree, so a lock change can move
@@ -104,6 +105,14 @@ jobs:
           tests/test_codex_windows_ownership_1412.py
           tests/test_doctor_windows_prune_1412.py
           tests/test_lock_gaps_platform_1622.py -q
+
+      # #1761. Background core-gate labeling on Windows, against a stub
+      # `claude.cmd` that records the argv it receives: the `--settings`
+      # file path arrives intact through cmd.exe, Popen accepts the
+      # detached flag set, and the reply decodes under the ANSI code page.
+      # No login and no network; a console window can't be observed here.
+      - name: background labeling suite
+        run: uv run pytest tests/test_core_gate_background_windows_1761.py -q
 
       # #1412 AC1. Those suites drive the Windows branch through the
       # `windows=` seam, which is exactly as good as the seam's fidelity to
