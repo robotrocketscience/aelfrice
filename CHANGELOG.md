@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`CHANGELOG/unreleased/`](CHANGELOG/unreleased/), named `<issue>-<slug>.md`.
   One entry per file: two PRs adding entries touch two different paths, so
   they cannot conflict. Do **not** edit the `[Unreleased]` block of the
-  current major's file ([`CHANGELOG/v4.md`](CHANGELOG/v4.md) at present) —
+  current major's file ([`CHANGELOG/v5.md`](CHANGELOG/v5.md) at present) —
   every open PR collides in it.
 - On release, `scripts/collate_changelog.py` folds both surfaces — any
   remaining `[Unreleased]` block content and every entry file — into a dated

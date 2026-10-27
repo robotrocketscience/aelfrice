@@ -244,7 +244,7 @@ rather than from a green CI run.
 ### Changelog entries — one file per entry
 
 **Add a file under `CHANGELOG/unreleased/`. Do not edit the
-`[Unreleased]` block of `CHANGELOG/v4.md`.**
+`[Unreleased]` block of `CHANGELOG/v5.md`.**
 
 ```
 CHANGELOG/unreleased/<issue>-<slug>.md

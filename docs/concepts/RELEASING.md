@@ -4,7 +4,7 @@ This page is the maintainer's reference for cutting a new version.
 
 ## Versioning
 
-aelfrice uses semantic versioning (semver), and the current line is v4.x. The project no longer cuts the historical `0.x.y` milestones on the v1.0 path. The pre-v1.0 surface guarantees do not apply. For the historical record, see `CHANGELOG/v0.md`.
+aelfrice uses semantic versioning (semver), and the current line is v5.x. The project no longer cuts the historical `0.x.y` milestones on the v1.0 path. The pre-v1.0 surface guarantees do not apply. For the historical record, see `CHANGELOG/v0.md`.
 
 ## Cut a release
 
@@ -17,7 +17,7 @@ aelfrice uses semantic versioning (semver), and the current line is v4.x. The pr
    python3 scripts/collate_changelog.py --version X.Y.Z --date YYYY-MM-DD
    ```
 
-   The script folds **both** unreleased surfaces into a new `## [X.Y.Z] - YYYY-MM-DD` section of `CHANGELOG/v<major>.md`, then deletes the entry files. For a v3.x release, that file is `CHANGELOG/v3.md`. The two surfaces are:
+   The script folds **both** unreleased surfaces into a new `## [X.Y.Z] - YYYY-MM-DD` section of `CHANGELOG/v<major>.md`, then deletes the entry files. For a v5.x release, that file is `CHANGELOG/v5.md`. The two surfaces are:
 
    - the `[Unreleased]` block of `CHANGELOG/v<major>.md`. The script emits this block **first** within each category, so a pull request (PR) that predates the file convention still releases correctly, and nobody had to rebase such a PR onto the convention.
    - `CHANGELOG/unreleased/<issue>-<slug>.md`, with one file for each entry. The script appends these entries after the block, sorted by file name.
@@ -27,7 +27,7 @@ aelfrice uses semantic versioning (semver), and the current line is v4.x. The pr
    Then **add the compare-link footnote by hand** at the bottom of the same file. The script does not add the footnote, and `release-docs-check` requires it. If the release needs an opening summary paragraph, write it by hand into the dated section at the same time. Do not draft the summary into `[Unreleased]`: collation has no place for a line that is neither a category heading, an entry, nor the continuation of an entry, so it refuses such a line by name instead of dropping it. The top-level `CHANGELOG.md` is a thin index, so don't edit it for a routine release. A new major version (`vN+1.0.0`) needs both a new `CHANGELOG/v<N+1>.md` file and a new row in the index.
 
    `release-docs-check` refuses a release PR that leaves either surface undrained: content still under `[Unreleased]`, or any path other than `README.md` still in `CHANGELOG/unreleased/`, at any depth and with any suffix. That scan is deliberately broader than what collation collects (top-level `*.md`), so a `notes.txt` file, or an `old/1475-slug.md` file, cannot be invisible to both checks at the same time. Collation and the duplicate check refuse the same path by name. The check exists because a stranded entry file is *silent*: nothing renders such a file, so it would appear only as a duplicate in the next release. `tests/test_collate_changelog.py` pins collation and both drain assertions.
-5. Update the roadmap status in the README.
+5. Update the roadmap in `docs/concepts/ROADMAP.md`: add the release's row to the "Versions at a glance" table, and update the sentence that names the current line.
 6. Run these commands on your machine:
    ```bash
    uv sync --all-groups --all-extras   # extras, not only groups — see below
