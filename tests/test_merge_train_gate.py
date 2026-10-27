@@ -1660,13 +1660,18 @@ def test_the_exit_scanner_finds_every_exit_statement(script: str, count: int) ->
 def test_every_block_path_emits_a_warning_annotation() -> None:
     """CI-05. A blocked train used to leave only a PR comment and a green
     run, so the Actions summary said nothing had happened. Every block path
-    goes through `fail_and_unlabel`, which annotates the run before it
-    exits. The step's only `exit` statement, in any form, is the one inside
-    that function, so no path leaves the step around it."""
-    body = _fail_and_unlabel_body()
-    warning = re.search(r'^\s+echo "::warning[^\n]*\$\{reason\}', body, re.M)
-    assert warning is not None, "fail_and_unlabel emits no ::warning annotation"
-    assert warning.start() < body.index("exit 0")
+    goes through `fail_and_unlabel`, which annotates the run as its first
+    command, so no `gh` or `jq` call failing under `set -e` can end the step
+    before the annotation. The step's only `exit` statement, in any form, is
+    the one inside that function, so no path leaves the step around it."""
+    statements = [
+        ln.strip() for ln in _shell_code(_fail_and_unlabel_body()).splitlines() if ln.strip()
+    ]
+    commands = [s for s in statements[1:] if not s.startswith("local ")]
+    assert re.match(r'echo "::warning[^\n]*\$\{reason\}', commands[0]), (
+        "the ::warning annotation is not fail_and_unlabel's first command: "
+        f"{commands[:2]}"
+    )
 
     code = _shell_code(_merge_step_script())
     start = code.index("fail_and_unlabel() {")
