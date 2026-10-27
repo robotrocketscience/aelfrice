@@ -785,6 +785,9 @@ class GeminiDoctorReport:
     settings_present: bool = False
     settings_valid: bool = False
     parse_error: str | None = None
+    #: The unparseable file still names `aelf-gemini-hook`, so wiring may
+    #: be installed in it, and its hooks can't be checked.
+    unparseable_names_hook: bool = False
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
@@ -798,11 +801,18 @@ class GeminiDoctorReport:
 
         Gated on aelfrice handlers being present, as on the codex host
         (#1430): a machine that never ran `aelf setup --host gemini` is a
-        normal machine.
+        normal machine. A settings.json that can't be parsed counts as
+        installed wiring only when its text names the hook script.
         """
-        if not self.owned_handler_count:
-            return []
         reasons: list[str] = []
+        if self.unparseable_names_hook:
+            reasons.append(
+                f"settings.json can't be read as JSON ({self.parse_error}) "
+                f"but names {GEMINI_HOOK_SCRIPT_NAME}, so aelfrice can't "
+                "check the aelfrice hooks in it; make it plain JSON again",
+            )
+        if not self.owned_handler_count:
+            return reasons
         if self.stale_commands:
             reasons.append(
                 "hook command(s) configured but not present on disk: "
@@ -865,8 +875,10 @@ def doctor_gemini(
     report.settings_present = path.is_file()
     doc: dict[str, object] = {}
     if report.settings_present:
+        text = ""
         try:
-            parsed: object = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            parsed: object = json.loads(text)
         except (OSError, json.JSONDecodeError) as exc:
             report.parse_error = str(exc)
         else:
@@ -875,6 +887,9 @@ def doctor_gemini(
                 doc = cast(dict[str, object], parsed)
             else:
                 report.parse_error = "top-level JSON is not an object"
+        report.unparseable_names_hook = (
+            not report.settings_valid and GEMINI_HOOK_SCRIPT_NAME in text
+        )
         if not report.settings_valid:
             report.warnings.append(
                 f"{path} could not be read as JSON ({report.parse_error}); "

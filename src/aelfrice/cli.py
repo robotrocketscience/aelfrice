@@ -6581,13 +6581,15 @@ def _cmd_doctor_gemini(
 ) -> int:
     """`aelf doctor --host gemini`: scan Gemini's user settings (#1812).
 
-    Exit 1 on a settings.json that is present but not readable as JSON, or
-    on wiring that is installed and broken: a hook command not on disk, a
-    partly installed hook set, hooks turned off in settings.json, a
-    generated command that differs from what this build writes or that
-    this build no longer ships, or an `aelf` that does not resolve on
-    PATH, which the commands run by name. Exit 0 when the wiring is
-    absent, as on the codex host (#1430).
+    Exit 1 on wiring that is installed and broken: a hook command not on
+    disk or not quoted for Gemini's shell, a partly installed hook set,
+    hooks turned off in settings.json, a settings.json that can't be read
+    as JSON but names the hook script, a generated command that differs
+    from what this build writes or that this build no longer ships, or an
+    `aelf` that does not resolve on PATH, which the commands run by name.
+    Exit 0 when the wiring is absent, as on the codex host (#1430), and a
+    settings.json that can't be read but names no aelfrice hook is only a
+    warning.
     """
     from aelfrice.gemini_paths import GeminiHomeError, resolve_gemini_dir
     from aelfrice.host_gemini import (
@@ -6648,8 +6650,6 @@ def _cmd_doctor_gemini(
             )
     for fault in faults:
         print(f"[FAIL] {fault}", file=out)  # type: ignore[arg-type]
-    if report.settings_present and not report.settings_valid:
-        return 1
     return 1 if faults else 0
 
 

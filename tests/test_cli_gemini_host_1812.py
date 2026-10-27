@@ -338,9 +338,29 @@ def test_doctor_fails_on_an_edited_command(
     )
 
 
-def test_doctor_fails_on_an_unreadable_settings_file(sb: Sandbox) -> None:
-    sb.settings.write_text("{ nope", encoding="utf-8")
-    assert _run(["doctor", "--host", "gemini"], sb)[0] == 1
+def test_doctor_passes_a_commented_settings_file_without_aelfrice(sb: Sandbox) -> None:
+    """A machine that never ran setup exits 0, even when Gemini's own file
+    holds a comment aelfrice can't parse."""
+    sb.settings.write_text('{\n  // my theme\n  "theme": "Dracula"\n}', encoding="utf-8")
+    rc, lines = _run(["doctor", "--host", "gemini"], sb)
+    assert rc == 0
+    assert lines[1] == (
+        "[-] gemini settings.json: present=True valid=False aelfrice_handlers=0"
+    )
+    assert any(line.startswith("[warn] ") and "as JSON" in line for line in lines)
+    assert not any(line.startswith("[FAIL]") for line in lines)
+
+
+def test_doctor_fails_on_an_unparseable_file_that_names_the_hook(sb: Sandbox) -> None:
+    _run(["setup", "--host", "gemini"], sb)
+    text = sb.settings.read_text(encoding="utf-8")
+    sb.settings.write_text(text.replace("{", "{\n  // mine", 1), encoding="utf-8")
+    rc, lines = _run(["doctor", "--host", "gemini"], sb)
+    assert rc == 1
+    assert any(
+        line.startswith("[FAIL] ") and "can't check the aelfrice hooks" in line
+        for line in lines
+    )
 
 
 def test_doctor_skips_the_graph_checks(

@@ -528,7 +528,20 @@ def test_doctor_reports_a_disabled_hook_name_without_failing(
 
 
 def test_doctor_reports_an_unparseable_file(gdir: Path) -> None:
+    """Not a fault: nothing in the file says aelfrice was installed."""
     (gdir / "settings.json").write_text("{ nope", encoding="utf-8")
     report = hgm.doctor_gemini(gdir)
     assert report.settings_present and not report.settings_valid
     assert report.parse_error
+    assert report.faults() == []
+
+
+def test_doctor_faults_an_unparseable_file_that_names_the_hook(
+    gdir: Path, cmd: str,
+) -> None:
+    path = gdir / "settings.json"
+    _install(path, cmd)
+    path.write_text("// mine\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 0
+    assert any("can't check the aelfrice hooks" in f for f in report.faults())
