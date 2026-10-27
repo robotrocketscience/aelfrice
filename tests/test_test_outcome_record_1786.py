@@ -315,10 +315,32 @@ def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
     assert not tor.is_allowlisted("tests.t::test_y[p-1]", ["tests.t::test_x[*]"])
 
 
-def test_every_checked_in_allowlist_entry_is_one_test_id_glob() -> None:
-    """A trailing comment or a bare module name would parse and match nothing."""
+def _is_one_test_id(entry: str) -> bool:
+    classname, sep, _ = entry.partition("::")
+    return bool(sep) and not re.search(r"\s", classname)
+
+
+@pytest.mark.parametrize(
+    ("entry", "ok"),
+    [
+        ("tests.test_store.TestOpen::test_readonly[a]", True),
+        ("tests.test_ingest_pasted_output_1691::test_prose_that_opens_like_output_is_kept[Owner | 3 +]", True),
+        ("tests.t::test_x[/tmp/a b]", True),
+        ("tests.test_win*::*", True),
+        ("tests.test_store", False),
+        ("tests.test_store test_readonly", False),
+        ("tests.test_store # why::test_readonly", False),
+    ],
+)
+def test_the_entry_shape_check(entry: str, ok: bool) -> None:
+    """Parameters may hold spaces; the classname never does, and `::` must be there."""
+    assert _is_one_test_id(entry) is ok
+
+
+def test_every_checked_in_allowlist_entry_is_one_test_id() -> None:
+    """A bare module name would parse and match nothing."""
     for entry in tor.parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8")):
-        assert "::" in entry and not re.search(r"\s", entry), entry
+        assert _is_one_test_id(entry), entry
 
 
 def test_a_leg_without_a_baseline_reports_a_notice_and_no_violations() -> None:
