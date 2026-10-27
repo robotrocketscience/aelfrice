@@ -893,7 +893,12 @@ def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
 # here without adding its names to FLOOR_NAMES fails too.
 _FLOOR_SOURCES: dict[str, frozenset[str]] = {
     "bench-smoke.yml": frozenset({"bench-smoke"}),
-    "ci.yml": frozenset({"derived-figures", "pytest (3.12)", "pytest (3.13)"}),
+    "ci.yml": frozenset({
+        "derived-figures",
+        "posterior-writers",
+        "pytest (3.12)",
+        "pytest (3.13)",
+    }),
     "label-docs.yml": frozenset({"label"}),
     "migration-policy-check.yml": frozenset({"migration-policy-check"}),
     "pr-metadata.yml": frozenset({"pr-body-issue-link", "pr-title-prefix"}),
@@ -988,6 +993,107 @@ def _emits_a_row_on_every_pr_head(text: str) -> bool:
     )
 
 
+_JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+_MATRIX_AXIS = re.compile(r"^        ([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$")
+
+
+def _check_run_names(text: str) -> frozenset[str]:
+    """The check-run names a workflow's jobs emit, read from its `jobs:` block.
+
+    GitHub names a row after the job's `name:` key, or after its id when
+    there is none. A job with a `strategy.matrix` of inline lists and no
+    `name:` emits one row per combination, named `<id> (<v1>, <v2>, ...)`
+    in axis order, which is how `pytest` becomes `pytest (3.12)`. Any other
+    matrix shape, or a `name:` holding an expression, fails here so the
+    parser is extended rather than deriving a wrong name.
+    """
+    import itertools
+
+    lines = text.splitlines()
+    start = next(
+        (i + 1 for i, ln in enumerate(lines) if ln.rstrip() == "jobs:"), None
+    )
+    if start is None:
+        return frozenset()
+    names: set[str] = set()
+    job_id: str | None = None
+    display: str | None = None
+    axes: list[list[str]] = []
+    in_matrix = False
+
+    def flush() -> None:
+        if job_id is None:
+            return
+        base = display if display is not None else job_id
+        assert "${{" not in base, f"{job_id}: a `name:` expression is not expanded here"
+        if not axes:
+            names.add(base)
+            return
+        for combo in itertools.product(*axes):
+            names.add(f"{base} ({', '.join(combo)})")
+
+    for ln in lines[start:]:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        if ln[:1].strip():
+            break
+        m = _JOB_KEY.match(ln)
+        if m:
+            flush()
+            job_id, display, axes, in_matrix = m.group(1), None, [], False
+            continue
+        if ln.startswith("    name: "):
+            display = ln[len("    name: "):].strip()
+        elif ln.rstrip() == "      matrix:":
+            in_matrix = True
+        elif in_matrix and ln.startswith("        "):
+            axis = _MATRIX_AXIS.match(ln)
+            assert axis is not None, f"{job_id}: matrix shape not supported: {ln.strip()}"
+            axes.append([v.strip().strip("'\"") for v in axis.group(2).split(",") if v.strip()])
+        elif in_matrix and not ln.startswith("        "):
+            in_matrix = False
+    flush()
+    return frozenset(names)
+
+
+def _derived_floor_sources() -> dict[str, frozenset[str]]:
+    """`{workflow file: check-run names}` for every workflow that emits a row
+    on every PR head. The train's own job (SELF_NAMES) is dropped, so
+    `merge-train.yml` contributes nothing."""
+    sources: dict[str, frozenset[str]] = {}
+    for path in sorted(_WORKFLOW_DIR.glob("*.yml")):
+        text = path.read_text()
+        if not _emits_a_row_on_every_pr_head(text):
+            continue
+        names = _check_run_names(text) - SELF_NAMES
+        if names:
+            sources[path.name] = names
+    return sources
+
+
+def test_the_name_parser_expands_a_matrix_and_prefers_the_name_key() -> None:
+    """The three shapes the floor's workflows use, on a synthetic file."""
+    text = "\n".join([
+        "on:",
+        "  pull_request:",
+        "jobs:",
+        "  plain:",
+        "    runs-on: ubuntu-latest",
+        "  titled:",
+        "    name: Shown Name",
+        "    runs-on: ubuntu-latest",
+        "  legs:",
+        "    strategy:",
+        "      matrix:",
+        "        python-version: ['3.12', '3.13']",
+        "    runs-on: ubuntu-latest",
+        "",
+    ])
+    assert _check_run_names(text) == {
+        "plain", "Shown Name", "legs (3.12)", "legs (3.13)",
+    }
+
+
 def test_a_rollup_of_only_the_required_contexts_is_not_mergeable() -> None:
     """AC3 — the #1458 defect itself, at the level the gate can see it.
 
@@ -1044,20 +1150,27 @@ def test_every_unfiltered_pr_workflow_is_in_the_floor() -> None:
 
     An explicit list is the only mechanism that names *which* check is absent,
     and the cost of an explicit list is that it goes stale silently. This
-    re-derives the set from the workflow directory, so adding an unfiltered
+    re-derives the check-run names per workflow, so adding an unfiltered
     `pull_request` workflow fails here until its names are in FLOOR_NAMES.
+
+    Compared by job name, not by workflow file (#1786). The file-level
+    comparison this replaces passed while `ci.yml` had gained a third
+    always-run job, `posterior-writers`, that the floor did not carry: the
+    file was already in the mapping, so nothing noticed the new row.
     """
-    derived = {
-        path.name
-        for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
-        if _emits_a_row_on_every_pr_head(path.read_text())
+    derived = _derived_floor_sources()
+    files = set(derived) | set(_FLOOR_SOURCES)
+    drift = {
+        name: (
+            sorted(derived.get(name, frozenset()) - _FLOOR_SOURCES.get(name, frozenset())),
+            sorted(_FLOOR_SOURCES.get(name, frozenset()) - derived.get(name, frozenset())),
+        )
+        for name in sorted(files)
+        if derived.get(name) != _FLOOR_SOURCES.get(name)
     }
-    # merge-train's own job is excluded by SELF_NAMES — waiting on it deadlocks.
-    derived.discard("merge-train.yml")
-    assert derived == set(_FLOOR_SOURCES), (
-        "the floor and .github/workflows/ have drifted; "
-        f"only in workflows: {sorted(derived - set(_FLOOR_SOURCES))}; "
-        f"only in the floor: {sorted(set(_FLOOR_SOURCES) - derived)}"
+    assert not drift, (
+        "the floor and .github/workflows/ have drifted; per workflow "
+        f"(only in the workflow's jobs, only in the floor): {drift}"
     )
 
 

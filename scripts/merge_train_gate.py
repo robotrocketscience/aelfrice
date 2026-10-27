@@ -150,18 +150,20 @@ NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
 # PR's diff never runs, so it emits no row, so a floor containing its names would
 # block every docs-only PR — the constraint that makes #1458 AC1 hard. Excluding
 # path-filtered workflows makes AC2 hold *by construction* rather than by
-# argument. Verified empirically over the 14 PRs open on 2026-08-10: all 14 names
-# below are present on every one of them.
+# argument. Verified empirically over the 14 PRs open on 2026-08-10: every name
+# then in this list was present on every one of them.
 #
 # Deliberately excluded, though also unfiltered, because they do not emit a row
 # on every PR head: `auto-add-to-board` (`types: [opened]` only),
 # `auto-status-board` (`types: [closed]`), `replay-soak` (`schedule:` only), and
 # merge-train's own `merge` job (SELF_NAMES — waiting on it would deadlock).
 #
-# This list drifts when a workflow is added.
+# This list drifts when a workflow or a job is added.
 # `tests/test_merge_train_gate.py::test_every_unfiltered_pr_workflow_is_in_the_floor`
-# is what closes that: it re-derives the set from `.github/workflows/` and fails
-# if a workflow contributes no name here.
+# is what closes that: it re-derives the check-run names per workflow from
+# `.github/workflows/` and fails on any name missing here. Comparing by file
+# was not enough: `ci.yml` gained `posterior-writers` and the floor did not
+# notice until #1786.
 FLOOR_NAMES: frozenset[str] = frozenset({
     "bench-smoke",              # bench-smoke.yml
     "commit-msg-prefix",        # staging-gate.yml
@@ -170,6 +172,7 @@ FLOOR_NAMES: frozenset[str] = frozenset({
     "label",                    # label-docs.yml
     "migration-policy-check",   # migration-policy-check.yml
     "pattern-scan",             # staging-gate.yml
+    "posterior-writers",        # ci.yml
     "pr-body-issue-link",       # staging-gate.yml
     "pr-title-prefix",          # staging-gate.yml
     "pytest (3.12)",            # ci.yml
