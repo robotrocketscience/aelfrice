@@ -307,6 +307,36 @@ def test_remove_undoes_install_exactly(gdir: Path, cmd: str) -> None:
     assert _read(path) == original
 
 
+_USER_DOC = {"theme": "Dracula", "hooks": {"AfterAgent": [
+    {"matcher": "*", "hooks": [{"type": "command", "command": "/opt/x/mine"}]},
+]}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps(_USER_DOC, indent=4),
+        json.dumps(_USER_DOC) + "\n",
+        json.dumps(_USER_DOC, indent="\t") + "\n",
+        json.dumps({"theme": "\u00e9t\u00e9"}, indent=2, ensure_ascii=False).replace(
+            "\n", "\r\n",
+        ) + "\r\n",
+        json.dumps({"theme": "\u00e9t\u00e9"}, indent=2) + "\n",
+    ],
+    ids=["four-spaces-no-final-newline", "one-line", "tabs", "crlf-literal", "escaped"],
+)
+def test_install_then_remove_gives_back_the_same_bytes(
+    gdir: Path, cmd: str, text: str,
+) -> None:
+    """Killed by: writing the user's file back in one fixed layout."""
+    path = gdir / "settings.json"
+    path.write_bytes(text.encode("utf-8"))
+    _install(path, cmd)
+    assert path.read_bytes() != text.encode("utf-8")
+    hgm.remove_gemini_hooks(path)
+    assert path.read_bytes() == text.encode("utf-8")
+
+
 def test_remove_drops_a_hooks_object_it_empties(gdir: Path, cmd: str) -> None:
     """Killed by: leaving `"hooks": {}` behind in a file that had none."""
     path = gdir / "settings.json"

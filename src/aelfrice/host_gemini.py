@@ -265,6 +265,29 @@ def _json_type_name(value: object) -> str:
     return type(value).__name__
 
 
+def _serialize(doc: dict[str, object], original: str | None) -> str:
+    """`doc` as JSON, laid out like `original`, the text it was read from.
+
+    Keeps the indent of the first indented line (none for a one-line
+    file), the line ending, the final newline or its absence, and whether
+    non-ASCII characters are escaped. A file in a standard JSON layout so
+    gets its bytes back when unsetup undoes setup. A new file gets two
+    spaces and a final newline.
+    """
+    if original is None:
+        return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    indented = re.search(r"\n([ \t]+)\S", original)
+    text = json.dumps(
+        doc,
+        indent=indented.group(1) if indented else None,
+        ensure_ascii=original.isascii(),
+    )
+    newline = "\r\n" if "\r\n" in original else "\n"
+    if newline != "\n":
+        text = text.replace("\n", newline)
+    return text + (newline if original.endswith("\n") else "")
+
+
 def _plan_install(
     text: str | None, *, force: bool, path: Path, command: str | None,
     windows: bool | None = None,
@@ -330,7 +353,7 @@ def _plan_install(
     )
     if not changed:
         return None, result
-    return json.dumps(doc, indent=2) + "\n", result
+    return _serialize(doc, text), result
 
 
 def _plan_remove(
@@ -379,7 +402,7 @@ def _plan_remove(
         return None, GeminiSettingsResult(path=path, changed=False)
     if not hooks_map:
         del doc["hooks"]
-    return json.dumps(doc, indent=2) + "\n", GeminiSettingsResult(
+    return _serialize(doc, text), GeminiSettingsResult(
         path=path, changed=True, events=sorted(removed),
     )
 
