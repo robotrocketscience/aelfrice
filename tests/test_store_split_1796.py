@@ -639,6 +639,46 @@ def test_a_name_in_another_letter_case_is_respelled_as_the_entry_it_names(
     assert folders == (None, {repo})
 
 
+class _CountingOs(_CaseInsensitiveOs):
+    """`_CaseInsensitiveOs` that records the folders `store_split` lists
+    and the paths it reads with `lstat`."""
+
+    def __init__(self) -> None:
+        self.listed: list[Path] = []
+        self.read: list[Path] = []
+
+    def listdir(self, path: str | os.PathLike[str]) -> list[str]:
+        self.listed.append(Path(path))
+        return os.listdir(self._on_disk(path))
+
+    def lstat(self, path: str | os.PathLike[str]) -> os.stat_result:
+        self.read.append(Path(path))
+        return super().lstat(path)
+
+
+def test_a_split_run_reads_each_folder_once(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spelling the file paths of many beliefs from disk lists each
+    folder once in a run, and reads each listed entry once, so a folder
+    shared by every belief isn't read once per belief (#1806)."""
+    ingested: dict[str, list[tuple[Path | None, str]]] = {}
+    for i in range(3):
+        (repo / "a" / "docs" / f"d{i}").mkdir()
+        ingested[f"b{i}"] = [(repo, f"A/Docs/D{i}/f.md")]
+    counting = _CountingOs()
+    monkeypatch.setattr(store_split, "os", counting)
+    targets, _ = store_split._route(  # pyright: ignore[reportPrivateUsage]
+        repo, _source_path(repo), sorted(ingested), ingested, {},
+    )
+    assert [sorted(ids) for _, ids in targets.values()] == [sorted(ingested)]
+    assert repo / "a" / "docs" in counting.listed
+    assert len(counting.listed) == len(set(counting.listed))
+    entries = [p for p in counting.read if p.name == p.name.lower()]
+    assert repo / "a" / "docs" / "d0" in entries
+    assert len(entries) == len(set(entries))
+
+
 def test_folders_it_cannot_read_compare_by_their_text(tmp_path: Path) -> None:
     """`_same_folder` falls back to the paths' text when a folder can't
     be read, as when it was removed after the 90% bar counted its files

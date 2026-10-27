@@ -422,9 +422,44 @@ def _under_work_tree(root: Path, work_tree: Path) -> Path | None:
     return None
 
 
-def _disk_spelling(folder: Path, parts: tuple[str, ...]) -> Path:
+class _Listings:
+    """Folder listings for `_disk_spelling`, each read once, so a split
+    run that spells the file paths of many beliefs reads a folder they
+    share once, not once per belief (#1806)."""
+
+    def __init__(self) -> None:
+        self._names: dict[Path, frozenset[str]] = {}
+        self._entries: dict[Path, dict[tuple[int, int], str]] = {}
+
+    def names(self, folder: Path) -> frozenset[str]:
+        """The names `folder` lists. Raises `OSError` when it can't be
+        listed."""
+        names = self._names.get(folder)
+        if names is None:
+            names = self._names[folder] = frozenset(os.listdir(folder))
+        return names
+
+    def entry(self, folder: Path, found: os.stat_result) -> str | None:
+        """The name of the entry of `folder` that is `found`, compared
+        without following symlinks, as `os.path.samestat` compares, or
+        None. The first name in sorted order wins a tie."""
+        index = self._entries.get(folder)
+        if index is None:
+            index = self._entries[folder] = {}
+            for name in sorted(self.names(folder)):
+                try:
+                    entry = os.lstat(folder / name)
+                except OSError:
+                    continue
+                index.setdefault((entry.st_dev, entry.st_ino), name)
+        return index.get((found.st_dev, found.st_ino))
+
+
+def _disk_spelling(
+    folder: Path, parts: tuple[str, ...], listings: _Listings | None = None,
+) -> Path:
     """`parts`, a path below `folder`, with each existing part spelled as
-    its parent lists it.
+    its parent lists it, read through `listings` when given.
 
     On a case-insensitive filesystem `A` reaches the folder `a`, and the
     two spellings would name one store as two targets. A part that its
@@ -435,29 +470,18 @@ def _disk_spelling(folder: Path, parts: tuple[str, ...]) -> Path:
     Parts from the first one that is missing, or whose parent can't be
     listed, keep their recorded spelling.
     """
+    listed = _Listings() if listings is None else listings
     current = folder
     for i, part in enumerate(parts):
         try:
             found = os.lstat(current / part)
-            names = os.listdir(current)
+            names = listed.names(current)
         except OSError:
             return current.joinpath(*parts[i:]).relative_to(folder)
         if part not in names:
-            part = next(
-                (name for name in names if _is_entry(current / name, found)),
-                part,
-            )
+            part = listed.entry(current, found) or part
         current = current / part
     return current.relative_to(folder)
-
-
-def _is_entry(path: Path, found: os.stat_result) -> bool:
-    """True when the entry `path` itself, not a symlink's target, is the
-    file `found`."""
-    try:
-        return os.path.samestat(os.lstat(path), found)
-    except OSError:
-        return False
 
 
 def _ambiguous(
@@ -621,9 +645,11 @@ def _belief_folders(
     work_tree: Path,
     ingested: list[tuple[Path | None, str]],
     anchored: set[str],
+    listings: _Listings | None = None,
 ) -> tuple[str | None, set[Path]]:
     """`(reason, folders)`: the folders a belief's files are in, or why
-    none can be named."""
+    none can be named. A split run passes one `listings` for every
+    belief."""
     rels = {rel for _, rel in ingested} | anchored
     if not rels:
         return SKIP_NO_FILE_SOURCE, set()
@@ -642,13 +668,16 @@ def _belief_folders(
         return skip, set()
     return None, {
         owning_folder(
-            work_tree, str(under / _spelled_rel(work_tree / under, rel)),
+            work_tree,
+            str(under / _spelled_rel(work_tree / under, rel, listings)),
         )
         for rel in sorted(rels)
     }
 
 
-def _spelled_rel(folder: Path, rel: str) -> Path:
+def _spelled_rel(
+    folder: Path, rel: str, listings: _Listings | None,
+) -> Path:
     """`rel`, a file path below `folder`, with its folders spelled from
     disk as the root is (`_disk_spelling`), so a folder renamed in letter
     case only between two ingests names one folder (#1806).
@@ -657,7 +686,7 @@ def _spelled_rel(folder: Path, rel: str) -> Path:
     recorded spelling and the file's own folder is never listed.
     """
     path = Path(rel)
-    return _disk_spelling(folder, path.parent.parts) / path.name
+    return _disk_spelling(folder, path.parent.parts, listings) / path.name
 
 
 def _store_key(
@@ -694,9 +723,11 @@ def _route(
     targets: dict[str, tuple[StoreSelection, set[str]]] = {}
     selections: dict[Path, tuple[str, StoreSelection]] = {}
     known: list[tuple[str, StoreSelection]] = []
+    listings = _Listings()
     for bid in ids:
         reason, folders = _belief_folders(
             work_tree, ingested.get(bid, []), anchored.get(bid, set()),
+            listings,
         )
         if reason is not None:
             not_copied[reason] += 1
