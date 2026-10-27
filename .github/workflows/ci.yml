@@ -194,8 +194,16 @@ jobs:
       # summary, skips with their reason, so a skip that hides a missing
       # dependency shows in the log. `--durations=25` names the slowest tests
       # against the job's timeout. The upload step below keeps the JUnit file.
+      #
+      # `--deselect` drops the one test that re-runs the store-free producers
+      # over the live tree. The `derived-figures` job below runs the same
+      # producers over the same tree on every PR, with no path filter, and
+      # the merge train requires it, so each leg ran the producers a second
+      # time. That job runs Python 3.13 only, so the 3.12 leg no longer runs
+      # the producers. The test still runs locally.
+      # tests/test_ci_pytest_job_hygiene.py ties the deselect to that job.
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --junitxml=junit-${{ matrix.python-version }}.xml
+        run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks --junitxml=junit-${{ matrix.python-version }}.xml
       # A PR that matches `tree_reads` and no `code` path runs the modules
       # that read every match of a glob or a CHANGELOG directory, not the
       # whole suite. No JUnit report: a partial run is not a record of the
