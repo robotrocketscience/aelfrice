@@ -10,8 +10,8 @@ job-level `name:` or a matrix change would rename both.
 
 The job deselects one test, the live-tree producer check, because the
 `derived-figures` job runs the same producers on every PR. The tests at the
-bottom pin that job's gate command verbatim and reject the keys that skip
-the job or let it fail green.
+bottom pin the legs' test selection and that job's gate command verbatim,
+and reject the keys that skip the job or let it fail green.
 
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
@@ -39,6 +39,11 @@ _CHECKOUT_SHA = "34e114876b0b11c390a56381ad16ebd13914f8d5"
 _DESELECTED = (
     "tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks"
 )
+
+# The pytest command's test selection, in order. Every other token must be a
+# report flag, which changes what the log shows and not what runs.
+_SELECTION = ["tests/", "--ignore=tests/e2e", "--deselect", _DESELECTED]
+_REPORT_FLAGS = {"-q", "-rfEsxX", "--durations=25"}
 
 # The `derived-figures` gate command, verbatim. A path argument replaces the
 # scanned roots, `--restamp` or `--list-unmarked` returns before the producers
@@ -146,18 +151,6 @@ def _upload_step() -> list[str]:
     return found[0]
 
 
-def _deselected() -> list[str]:
-    """Every node id the pytest step passes to `--deselect`, in either form."""
-    tokens = (_field(_pytest_step(), "run") or "").split()
-    out: list[str] = []
-    for i, token in enumerate(tokens):
-        if token == "--deselect" and i + 1 < len(tokens):
-            out.append(tokens[i + 1])
-        elif token.startswith("--deselect="):
-            out.append(token.removeprefix("--deselect="))
-    return out
-
-
 def _junit_name() -> str:
     run = _field(_pytest_step(), "run") or ""
     # An expression holds spaces, so a bare `\S+` would stop inside it.
@@ -257,9 +250,19 @@ def test_no_continue_on_error_anywhere_in_the_job() -> None:
 
 
 def test_the_legs_deselect_exactly_the_producer_check() -> None:
-    """A second `--deselect` would hide a test from the required legs with
-    nothing else running it; a renamed test turns this one into a no-op."""
-    assert _deselected() == [_DESELECTED]
+    """`-k`, `-m`, a second `--ignore` or `--deselect`, `--collect-only` or
+    `|| true` would hide tests from the required legs with nothing else
+    running them, so every token outside the report flags is pinned. A
+    renamed test turns the deselect into a no-op."""
+    run = (_field(_pytest_step(), "run") or "").replace(
+        f"--junitxml={_junit_name()}", ""
+    )
+    tokens = run.split()
+    assert tokens[:3] == ["uv", "run", "pytest"], tokens
+    selection = [t for t in tokens[3:] if t not in _REPORT_FLAGS]
+    assert selection == _SELECTION, (
+        f"the pytest legs select {selection!r}, not {_SELECTION!r}"
+    )
     path, _, func = _DESELECTED.partition("::")
     source = (_REPO / path).read_text(encoding="utf-8")
     assert re.search(rf"^def {re.escape(func)}\(", source, re.M), (
