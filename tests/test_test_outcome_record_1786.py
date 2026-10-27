@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -493,15 +494,38 @@ def test_fetch_baseline_degrades_when_the_artifact_is_not_a_zip() -> None:
     assert "artifact 50 of run 5 could not be read" in marker["notice"]
 
 
-def test_junit_from_zip_requires_exactly_one_xml() -> None:
+def _zip(*names: str) -> bytes:
     import io
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.xml", "<a />")
-        zf.writestr("b.xml", "<b />")
+        for name in names:
+            zf.writestr(name, "<a />")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("names", [(), ("notes.txt",), ("a.xml", "b.xml")], ids=["empty", "no-xml", "two-xml"])
+def test_junit_from_zip_requires_exactly_one_xml(names: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
-        tor.junit_from_zip(buf.getvalue())
+        tor.junit_from_zip(_zip(*names))
+    assert tor.junit_from_zip(_zip("notes.txt", "junit.xml")) == "<a />"
+
+
+def test_fetch_baseline_degrades_when_the_artifact_holds_no_report() -> None:
+    class _NoXml(_FakeApi):
+        def bytes(self, path: str) -> bytes:
+            return _zip("notes.txt")
+
+    api = _NoXml(["green"], {"green": [{"id": 5}]}, {5: [_artifact(50, "junit-3.12-m0")]})
+    marker = tor.fetch_baseline(api, "o/r", "green", "ci.yml", ["3.12"], 30)  # type: ignore[arg-type]
+    assert marker["found"] is False
+    assert "artifact 50 of run 5 could not be read" in marker["notice"]
+
+
+def test_fetch_baseline_asks_for_max_commits_of_history() -> None:
+    api = _FakeApi(["base"], {}, {})
+    tor.fetch_baseline(api, "o/r", "base", "ci.yml", ["3.12"], 7)  # type: ignore[arg-type]
+    assert api.paths[0] == "/repos/o/r/commits?sha=base&per_page=7"
 
 
 # ------------------------------------------------------------------ CLI
@@ -580,6 +604,51 @@ def test_baseline_with_no_base_commit_writes_a_marker_without_the_api(tmp_path: 
     marker = json.loads(out.read_text(encoding="utf-8"))
     assert marker["found"] is False
     assert "no base commit" in marker["notice"]
+
+
+def test_baseline_passes_its_flags_to_the_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    api = _FakeApi(
+        ["base"],
+        {"base": [{"id": 7}]},
+        {7: [_artifact(70, "junit-3.12-m1"), _artifact(71, "junit-3.13-m1")]},
+    )
+    monkeypatch.setattr(tor, "GhApi", lambda: api)
+    out = tmp_path / "baseline.json"
+    assert tor.main([
+        "baseline", "--repo", "o/r", "--base-sha", "base", "--workflow", "w.yml",
+        "--legs", "3.13", "--max-commits", "7", "--out", str(out),
+    ]) == 0
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["sha"] == "base" and list(record["legs"]) == ["3.13"]
+    assert api.paths[0] == "/repos/o/r/commits?sha=base&per_page=7"
+    assert "/repos/o/r/actions/workflows/w.yml/runs?head_sha=base&status=success&per_page=5" in api.paths
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("gh api failed: HTTP 502"),
+        ValueError("bad value"),
+        KeyError("sha"),
+        json.JSONDecodeError("Expecting value", "", 0),
+        subprocess.TimeoutExpired(["gh", "api"], 60),
+    ],
+    ids=["gh-failed", "value", "key", "json", "timeout"],
+)
+def test_a_failed_baseline_lookup_writes_a_marker_and_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], exc: Exception,
+) -> None:
+    class _Failing(_FakeApi):
+        def json(self, path: str) -> Any:
+            raise exc
+
+    monkeypatch.setattr(tor, "GhApi", lambda: _Failing([], {}, {}))
+    out = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 0
+    marker = json.loads(out.read_text(encoding="utf-8"))
+    assert marker["found"] is False
+    assert marker["notice"].startswith("the baseline lookup failed: ")
+    assert "::notice::the baseline lookup failed" in capsys.readouterr().err
 
 
 def test_an_unreadable_junit_is_a_usage_error(tmp_path: Path) -> None:
