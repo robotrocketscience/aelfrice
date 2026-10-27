@@ -597,6 +597,33 @@ def test_an_earlier_split_without_its_write_bit_is_replaced_whole(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh", "out", "s1"]
 
 
+def test_an_earlier_split_that_cannot_be_removed_is_named_and_the_run_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The new split is already in place when the earlier one is removed, so
+    # a failed removal can't fail the run; a warning names what is left.
+    keys, packets = _stores(tmp_path)
+    assert _split(keys, packets, tmp_path / "fresh", seed=7) == 0
+    out = tmp_path / "out"
+    assert _split(keys, packets, out) == 0
+    rmtree = cal.shutil.rmtree
+
+    def refuse(path: Any, *args: Any, **kw: Any) -> None:
+        if Path(path).name.startswith(".out.old-"):
+            raise OSError(13, "Permission denied")
+        rmtree(path, *args, **kw)
+
+    monkeypatch.setattr(cal.shutil, "rmtree", refuse)
+    capsys.readouterr()
+    assert _split(keys, packets, out, seed=7) == 0
+    monkeypatch.undo()
+    assert _split_files(out) == _split_files(tmp_path / "fresh")
+    aside = [p for p in tmp_path.iterdir() if p.name.startswith(".out.old-")]
+    assert len(aside) == 1
+    err = capsys.readouterr().err
+    assert f"warning: the split is in {out}, but the earlier split is left in {aside[0]}" in err
+
+
 def test_a_second_split_replaces_the_first_whole(tmp_path: Path) -> None:
     keys, packets = _stores(tmp_path)
     assert _split(keys, packets, tmp_path / "fresh", seed=7) == 0

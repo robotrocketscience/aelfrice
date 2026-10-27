@@ -445,7 +445,9 @@ def publish_split(stage: Path, out: Path) -> None:
     takes its place, and the earlier split is removed. When either rename
     fails, the earlier split stays at or moves back to `out` and the new
     directory is removed. A run stopped between the two renames leaves
-    `out` missing and both whole splits beside it.
+    `out` missing and both whole splits beside it. When the removal
+    fails, the new split stays in place and a warning names what is left
+    of the earlier one.
     """
     if not out.exists():
         stage.rename(out)
@@ -466,7 +468,11 @@ def publish_split(stage: Path, out: Path) -> None:
     except BaseException:
         aside.rmdir()
         raise
-    shutil.rmtree(aside)
+    try:
+        shutil.rmtree(aside)
+    except OSError as exc:
+        print(f"warning: the split is in {out}, but the earlier split is left in {aside},"
+              f" so remove it: {exc}", file=sys.stderr)
 
 
 def private_dir(path: Path) -> None:
