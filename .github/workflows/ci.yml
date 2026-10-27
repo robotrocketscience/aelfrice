@@ -202,3 +202,107 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
       - run: uv run python scripts/check_posterior_writers.py
+
+  # #1786 shape A: the per-PR test outcome record. Turns the JUnit reports
+  # the two `pytest` legs upload into one record of every test's outcome
+  # (passed, failed, error, skipped, xfailed, xpassed, or never executed for
+  # the perf and bench-gate tests that skip by design), finds the record of
+  # the last green run on main, and writes the diff to the step summary. A
+  # test that moves to skipped, xfailed or never executed, or arrives new
+  # with one of those, is a ratchet violation.
+  #
+  # Advisory, by the 2026-10-21 ruling: a violation is a `::warning::`, the
+  # diff step passes no `--block`, and job-level `continue-on-error` keeps
+  # the check-run `success`, so the merge train's "nothing failing" test
+  # holds whatever the diff says. The blocking form is the same job with
+  # `--block` on the diff step and without `continue-on-error`.
+  # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
+  # alone.
+  #
+  # The baseline. This workflow runs on `pull_request` only, so no run is
+  # "on main". The train fast-forwards, so a merged PR's head commit is the
+  # commit on main and the run that tested it has that commit as its
+  # `head_sha`. The script walks main back from the PR's base commit through
+  # the runs API and takes the first commit with a green run that still
+  # holds a JUnit artifact. The artifact name carries `github.sha`, the
+  # merge commit of the PR, which never lands on main, so the lookup matches
+  # the `junit-<leg>-` prefix only. Artifacts expire after 30 days; when the
+  # walk finds none, or the base is a docs-only PR chain with no report,
+  # the summary says "no baseline" and the job stays green. Shape B's
+  # nightly on main will write records to a `test-results` branch, which
+  # then replaces this walk as the baseline source.
+  test-outcomes:
+    needs: pytest
+    # `!cancelled()` so a red leg still gets its record: the diff of a
+    # failing run is the one that explains what changed. Not `always()`,
+    # which would still start this job after `concurrency` cancels the run
+    # for a newer push. Not guarded to `pull_request`: a dispatched run must
+    # emit a real row under this name, not a `skipped` one (#1436 AC5,
+    # tests/test_ci_manual_dispatch.py). A dispatch carries no base commit,
+    # so its summary says "no baseline".
+    if: ${{ !cancelled() }}
+    # Job-level, as in mutation.yml: the property needed is that the job's
+    # check-run conclusion is `success` when a step fails.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    # Three API walks and two small downloads; a green run takes under two
+    # minutes.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Listing another run's artifacts and downloading them.
+      actions: read
+    # No harden-runner: by the 2026-10-21 ruling it goes only on jobs that
+    # hold a write token or a secret, and this job holds neither.
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # The two legs' reports from this run. `pattern` with no match is not
+      # an error in v4 (a docs-only PR uploads none), and `merge-multiple`
+      # puts `junit-3.12.xml` and `junit-3.13.xml` side by side.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: junit-*-${{ github.sha }}
+          merge-multiple: true
+          path: current
+      # The script is standard library only and runs on the image's own
+      # python3, so the job does not pay for `uv sync`. A test pins that.
+      - name: Build this run's record
+        env:
+          # On a dispatch the first field is empty and `github.sha` is the
+          # tested commit (#1436).
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 scripts/test_outcome_record.py record \
+              --junit 3.12=current/junit-3.12.xml \
+              --junit 3.13=current/junit-3.13.xml \
+              --sha "$HEAD_SHA" --out current-record.json
+      - name: Find the last green record on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # An empty base is a dispatch; the script then writes the no-baseline
+        # marker without calling the API, and the notice says why.
+        run: |
+          if [ -z "${BASE_SHA}" ]; then
+              echo "::notice::${GITHUB_EVENT_NAME} run: no base commit, so no baseline"
+          fi
+          python3 scripts/test_outcome_record.py baseline \
+              --repo "$GITHUB_REPOSITORY" --base-sha "$BASE_SHA" \
+              --out baseline-record.json
+      - name: Diff against the baseline
+        run: |
+          python3 scripts/test_outcome_record.py diff \
+              --current current-record.json --baseline baseline-record.json \
+              --allowlist .github/test-outcome-allowlist.txt \
+              --summary "$GITHUB_STEP_SUMMARY"
+      # Both records, so a reader can rerun the diff and shape B can reuse
+      # the format. Named by `github.sha` like the JUnit artifacts.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-outcome-record-${{ github.sha }}
+          path: |
+            current-record.json
+            baseline-record.json
+          retention-days: 30
