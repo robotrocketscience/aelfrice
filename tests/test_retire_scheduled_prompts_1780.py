@@ -9,10 +9,14 @@ transcript or store.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import io
 import json
 import os
+import re
 import sys
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -509,6 +513,124 @@ def test_automatic_sources_match_their_writers() -> None:
         clamp_ghosts.CLAMP_SOURCE,
     }
     assert AUTOMATIC_FEEDBACK_SOURCE_PREFIXES == (PROPAGATION_SOURCE_PREFIX,)
+
+
+# Every place under src/aelfrice that writes a feedback_history row, by
+# file and enclosing function, with one note per write. A writer that
+# adds feedback without a person picking the belief needs its source in
+# AUTOMATIC_FEEDBACK_SOURCES or AUTOMATIC_FEEDBACK_SOURCE_PREFIXES, or
+# `--retire-scheduled-prompts` reads its rows as the user's (#1782).
+_FEEDBACK_WRITERS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("clamp_ghosts.py", "clamp_ghost_alphas"): ("automatic: clamp_ghosts",),
+    ("cli.py", "_apply_scope_change"): ("audit: scope:<old>-><new>, 0",),
+    ("cli.py", "_cmd_confirm"): ("person: any --source label",),
+    ("cli.py", "_cmd_delete"): ("person: user_deleted, negative",),
+    ("cli.py", "_cmd_feedback"): ("person: any --source label",),
+    ("cli.py", "_cmd_restore"): ("person: user_restored",),
+    ("cli.py", "_cmd_retire"): ("person: user_retired, negative",),
+    ("contradiction.py", "resolve_contradiction"): (
+        "audit: contradiction_tiebreaker:<rule>, 0",
+    ),
+    ("derivation_worker.py", "_write_derived_row"): (
+        "audit: onboard.llm.fallback:<reason>, 0",
+    ),
+    ("doctor.py", "promote_retention"): ("audit: retention_promotion, 0",),
+    ("feedback.py", "apply_feedback"): (
+        "the caller's source", "automatic: propagation:<source>",
+    ),
+    ("hook_search.py", "record_retrieval"): ("automatic: hook",),
+    ("promotion.py", "devalidate"): ("audit: promotion label, 0",),
+    ("promotion.py", "promote"): ("audit: promotion label, 0",),
+    ("promotion.py", "promote_on_evidence"): ("audit: promotion:evidence, 0",),
+    ("promotion.py", "revert_evidence_promotion"): (
+        "audit: promotion:revert_evidence, 0",
+    ),
+    ("promotion.py", "unlock"): ("audit: lock:unlock, 0",),
+    ("review.py", "apply_decisions"): (
+        "audit: review:remove, 0", "audit: review:lock, 0",
+    ),
+    ("sentiment_feedback.py", "apply_sentiment_to_pending"): (
+        "automatic: sentiment_inferred",
+    ),
+    ("store.py", "MemoryStore.insert_feedback_event"): ("the caller's source",),
+    ("store.py", "MemoryStore.insert_or_corroborate"): (
+        "audit: reassert:revive, 0",
+    ),
+    ("store.py", "MemoryStore.sweep_expired_locks"): ("audit: lock:expire, 0",),
+    ("store_split.py", "_write"): ("copy: the copied row's source",),
+}
+_WRITER_CALLS = frozenset({"apply_feedback", "insert_feedback_event"})
+_INSERT_SQL = re.compile(
+    r"\b(insert|replace)(\s+or\s+\w+)?\s+into\s+feedback_history\b", re.I,
+)
+
+
+def _call_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    # hook.py resolves some helpers by name: `_lazy("record_retrieval")(...)`.
+    if (
+        isinstance(func, ast.Call) and func.args
+        and isinstance(func.args[0], ast.Constant)
+        and isinstance(func.args[0].value, str)
+    ):
+        return func.args[0].value
+    return None
+
+
+class _FeedbackWriterScan(ast.NodeVisitor):
+    def __init__(self, module: str) -> None:
+        self.module = module
+        self.scope: list[str] = []
+        self.sites: list[tuple[str, str]] = []
+        self.retrieval_sources: list[str] = []
+
+    def _enter(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    visit_FunctionDef = _enter
+    visit_AsyncFunctionDef = _enter
+    visit_ClassDef = _enter
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = _call_name(node.func)
+        if name in _WRITER_CALLS:
+            self.sites.append((self.module, ".".join(self.scope)))
+        if name == "record_retrieval" and any(
+            k.arg == "source" for k in node.keywords
+        ):
+            self.retrieval_sources.append(f"{self.module}:{node.lineno}")
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, str) and _INSERT_SQL.search(node.value):
+            self.sites.append((self.module, ".".join(self.scope)))
+
+
+@pytest.mark.source_scan
+def test_every_feedback_writer_is_classified() -> None:
+    src_root = Path(inspect.getfile(hook_search)).parent
+    found: Counter[tuple[str, str]] = Counter()
+    retrieval_sources: list[str] = []
+    for py in sorted(src_root.rglob("*.py")):
+        scan = _FeedbackWriterScan(py.relative_to(src_root).as_posix())
+        scan.visit(ast.parse(py.read_text(encoding="utf-8")))
+        found.update(scan.sites)
+        retrieval_sources.extend(scan.retrieval_sources)
+    expected = Counter({k: len(v) for k, v in _FEEDBACK_WRITERS.items()})
+    assert found == expected, (
+        "feedback_history writers changed; classify each new one in "
+        "_FEEDBACK_WRITERS and add an automatic source to "
+        "scheduled_prompts.AUTOMATIC_FEEDBACK_SOURCES",
+        sorted((found - expected).elements()),
+        sorted((expected - found).elements()),
+    )
+    # record_retrieval writes `hook` unless a caller passes another source.
+    assert retrieval_sources == []
 
 
 def test_positive_feedback_exclusion_matches_exactly(
