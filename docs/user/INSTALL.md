@@ -142,7 +142,7 @@ Restart Gemini CLI after setup so it loads the hooks.
 
 Setup writes two things there, and nothing into your project:
 
-- **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. Gemini reads each hook `timeout` in milliseconds.
+- **Hooks in `settings.json`.** Each hook runs `aelf-gemini-hook` at the absolute path setup resolves on your machine. Gemini runs a hook command under `bash -c` on macOS and Linux and under PowerShell on Windows, so setup quotes a path that holds a space for that shell. Gemini reads each hook `timeout` in milliseconds.
 - **Commands under `commands/aelf/`.** Each `/aelf:*` slash command becomes a TOML file that Gemini runs as `/aelf:<name>`, for example `/aelf:search`. aelfrice generates them from the same source as the Claude commands and the Codex skills. A first-line marker, `AELFRICE-GEMINI-COMMAND`, controls replacement and removal, so a command file of your own in that directory is never overwritten or removed.
 
 The hooks map Gemini's events onto the aelfrice handlers:
@@ -165,7 +165,7 @@ On a machine whose Claude settings carry no aelfrice hook, setup also opts the C
 
 `settings.json` belongs to Gemini, and to you. Setup and unsetup change only the handlers that run `aelf-gemini-hook` and keep every other key, group, and handler. They take an advisory lock on a sibling `settings.json.lock`, check the file's content hash again just before they write, and replace the file atomically, as on the Codex host. Unsetup also drops an event or a `hooks` object that it leaves empty. aelfrice reads `settings.json` as plain JSON. A file it can't parse, such as one with comments, is refused and left unchanged; pass `--force` to replace it.
 
-`aelf doctor --host gemini` exits 1 when installed wiring is broken: a hook command that isn't on disk, a partial hook set, hooks turned off with `tools.enableHooks` or `hooksConfig.enabled` set to `false`, a generated command that differs from what this build writes, or an `aelf` that isn't on `PATH`, which the commands run by name. A machine that never ran `aelf setup --host gemini` exits 0.
+`aelf doctor --host gemini` exits 1 when installed wiring is broken: a hook command that isn't on disk, a hook path with a space that isn't quoted, a partial hook set, hooks turned off with `tools.enableHooks` or `hooksConfig.enabled` set to `false`, a generated command that differs from what this build writes, or an `aelf` that isn't on `PATH`, which the commands run by name. A machine that never ran `aelf setup --host gemini` exits 0.
 
 ## 3. Verify wiring
 

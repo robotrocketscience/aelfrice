@@ -7,7 +7,9 @@ install.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -108,6 +110,63 @@ def test_setup_writes_the_path_it_resolves_at_install_time(
     path = gdir / "settings.json"
     hgm.install_gemini_hooks(path)
     assert _commands(path) == {cmd}
+
+
+def _spaced_hook(tmp_path: Path) -> Path:
+    name = "aelf-gemini-hook.exe" if os.name == "nt" else "aelf-gemini-hook"
+    exe = tmp_path / "my bin" / name
+    exe.parent.mkdir()
+    exe.write_text("", encoding="utf-8")
+    return exe
+
+
+def test_a_spaced_hook_path_is_one_word_to_gemini_shell(
+    gdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: writing the resolved path unquoted.
+
+    Gemini runs the command under `bash -c`, which splits a bare path at
+    the space and runs `.../my`.
+    """
+    exe = _spaced_hook(tmp_path)
+    monkeypatch.setattr(
+        launcher, "which_on_path",
+        lambda name: exe if name == "aelf-gemini-hook" else None,
+    )
+    path = gdir / "settings.json"
+    hgm.install_gemini_hooks(path)
+    (command,) = _commands(path)
+    if os.name == "nt":
+        assert command == f"& '{exe}'"
+    else:
+        assert shlex.split(command) == [str(exe)]
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 5
+    assert report.faults() == []
+
+
+def test_a_spaced_windows_path_is_quoted_for_powershell() -> None:
+    exe = "C:\\Users\\First Last\\.local\\bin\\aelf-gemini-hook.exe"
+    command = hgm.gemini_hook_command(exe, windows=True)
+    assert command == f"& '{exe}'"
+    assert hgm.shell_program(command, windows=True) == exe
+    assert hgm._handler_is_owned({"command": command}, windows=True)  # noqa: SLF001
+    odd = "C:\\tools\\it's\\bin\\aelf-gemini-hook.exe"
+    quoted = hgm.gemini_hook_command(odd, windows=True)
+    # PowerShell reads two single quotes inside a single-quoted string as one.
+    assert quoted == "& 'C:\\tools\\it''s\\bin\\aelf-gemini-hook.exe'"
+    assert hgm.shell_program(quoted, windows=True) == odd
+
+
+@pytest.mark.parametrize(
+    ("program", "windows"),
+    [
+        ("/usr/local/bin/aelf-gemini-hook", False),
+        ("C:\\Users\\w\\.local\\bin\\aelf-gemini-hook.exe", True),
+    ],
+)
+def test_a_plain_hook_path_is_written_unchanged(program: str, windows: bool) -> None:
+    assert hgm.gemini_hook_command(program, windows=windows) == program
 
 
 # --- install -------------------------------------------------------------------
@@ -426,6 +485,17 @@ def test_doctor_faults_a_command_not_on_disk(gdir: Path, tmp_path: Path) -> None
     report = hgm.doctor_gemini(gdir)
     assert report.stale_commands == [gone]
     assert any("not present on disk" in f for f in report.faults())
+
+
+def test_doctor_faults_an_unquoted_spaced_command(gdir: Path, tmp_path: Path) -> None:
+    """Killed by: accepting a command because some rejoined reading of it
+    exists, when the shell splits it at the space."""
+    exe = str(_spaced_hook(tmp_path))
+    _install(gdir / "settings.json", exe)
+    report = hgm.doctor_gemini(gdir)
+    assert report.owned_handler_count == 5
+    assert (report.unquoted_commands, report.stale_commands) == ([exe], [])
+    assert any("is not quoted" in f for f in report.faults())
 
 
 @pytest.mark.parametrize(

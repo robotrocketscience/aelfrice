@@ -7,9 +7,9 @@ Writes, checks, and removes two things under Gemini's user directory,
 - **Hooks in `settings.json`.** One handler per Gemini event aelfrice uses,
   each running `aelf-gemini-hook` (see `aelfrice.hook_gemini` for what it
   runs). The command is the absolute path resolved on this machine when
-  setup runs, and it goes into the user settings file only, so no machine
-  path is written into a project. Gemini reads hook `timeout` in
-  milliseconds. Each handler carries a `name`, which Gemini's `/hooks
+  setup runs, quoted for the shell Gemini runs it under, and it goes into
+  the user settings file only, so no machine path is written into a
+  project. Gemini reads hook `timeout` in milliseconds. Each handler carries a `name`, which Gemini's `/hooks
   disable` takes.
 - **Custom commands as TOML.** Every bundled `/aelf:*` slash command is
   generated into `commands/aelf/<name>.toml`, which Gemini invokes as
@@ -32,6 +32,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shlex
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -49,9 +51,10 @@ from aelfrice.gemini_paths import (
 )
 from aelfrice.launcher import (
     command_program_keys,
+    command_tokens,
+    launcher_key,
     owned_keys,
     program_exists,
-    program_token,
 )
 from aelfrice.setup import (
     GEMINI_HOOK_SCRIPT_NAME,
@@ -91,11 +94,66 @@ def gemini_commands_dir(gemini_dir: Path | None = None) -> Path:
     return gdir / COMMANDS_DIRNAME / COMMAND_NAMESPACE
 
 
+# --- the hook command as Gemini's shell reads it ----------------------------------
+
+#: A path made only of these characters is one bare word to PowerShell.
+_POWERSHELL_BARE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_.:\\/~+-]+")
+
+#: PowerShell runs a quoted path only after its call operator.
+_POWERSHELL_CALL: Final[str] = "& "
+
+
+def _is_windows(windows: bool | None) -> bool:
+    return os.name == "nt" if windows is None else windows
+
+
+def gemini_hook_command(program: str, *, windows: bool | None = None) -> str:
+    """`program` as a hook command for the shell Gemini runs it under.
+
+    Gemini runs a hook's command string under `bash -c` on macOS and Linux
+    and under PowerShell on Windows, so a path with a space, written bare,
+    runs only the part before the space. A path the shell would split is
+    quoted for that shell: in single quotes on POSIX, and in single quotes
+    after the call operator on Windows. Any other path is written as is.
+    """
+    if not _is_windows(windows):
+        return shlex.quote(program)
+    if _POWERSHELL_BARE.fullmatch(program):
+        return program
+    return _POWERSHELL_CALL + "'" + program.replace("'", "''") + "'"
+
+
+def shell_program(command: str, *, windows: bool | None = None) -> str:
+    """The program Gemini's shell runs for `command`; '' when there is none.
+
+    Reads `gemini_hook_command` back. It does not rejoin an unquoted path
+    that a space splits, since the shell does not either.
+    """
+    stripped = command.strip()
+    if not _is_windows(windows):
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            return ""
+        return tokens[0] if tokens else ""
+    opener = _POWERSHELL_CALL + "'"
+    if stripped.startswith(opener) and stripped.endswith("'") and len(stripped) > len(opener):
+        return stripped[len(opener):-1].replace("''", "'")
+    tokens = command_tokens(stripped, windows=True)
+    return tokens[0] if tokens else ""
+
+
 def desired_gemini_hooks(
-    command: str | None = None,
+    command: str | None = None, *, windows: bool | None = None,
 ) -> dict[str, list[dict[str, object]]]:
-    """The aelfrice hook set in Gemini's settings shape, keyed by event."""
-    cmd = command if command is not None else resolve_gemini_hook_command("user")
+    """The aelfrice hook set in Gemini's settings shape, keyed by event.
+
+    `command` is written as given. Without it, the hook path is resolved
+    on this machine and quoted for Gemini's shell.
+    """
+    cmd = command if command is not None else gemini_hook_command(
+        resolve_gemini_hook_command("user"), windows=windows,
+    )
     return {
         event: [{
             "matcher": matcher,
@@ -123,16 +181,19 @@ def _handler_command(handler: object) -> str:
 def _handler_is_owned(handler: object, *, windows: bool | None = None) -> bool:
     """True iff `handler` runs `aelf-gemini-hook`.
 
-    Every reading of the command is offered (#1482), but membership is the
-    closed owned set, so a foreign handler is never claimed.
+    Every reading of the command is offered (#1482), including the program
+    a quoted command names, but membership is the closed owned set, so a
+    foreign handler is never claimed.
     """
     cmd = _handler_command(handler)
     if not cmd.strip():
         return False
     owned = owned_keys(_OWNED_BASENAMES, windows=windows)
-    return any(
-        k in owned for k in command_program_keys(cmd, windows=windows)
-    )
+    keys = command_program_keys(cmd, windows=windows)
+    program = shell_program(cmd, windows=windows)
+    if program:
+        keys.append(launcher_key(program, windows=windows))
+    return any(k in owned for k in keys)
 
 
 def _without_owned_handlers(
@@ -243,7 +304,7 @@ def _plan_install(
             "--force to replace it"
         )
 
-    desired = desired_gemini_hooks(command)
+    desired = desired_gemini_hooks(command, windows=windows)
     if not force:
         for event in desired:
             current = hooks_map.get(event, _ABSENT)
@@ -727,6 +788,7 @@ class GeminiDoctorReport:
     owned_handler_count: int = 0
     missing_events: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
+    unquoted_commands: list[str] = field(default_factory=list[str])
     hooks_turned_off_by: list[str] = field(default_factory=list[str])
     disabled_hook_names: list[str] = field(default_factory=list[str])
     warnings: list[str] = field(default_factory=list[str])
@@ -745,6 +807,13 @@ class GeminiDoctorReport:
             reasons.append(
                 "hook command(s) configured but not present on disk: "
                 + ", ".join(self.stale_commands),
+            )
+        if self.unquoted_commands:
+            reasons.append(
+                "hook command(s) hold a path with a space that is not "
+                "quoted, so Gemini's shell runs only the part before the "
+                "space: " + ", ".join(self.unquoted_commands)
+                + "; re-run `aelf setup --host gemini`",
             )
         if self.missing_events:
             reasons.append(
@@ -765,6 +834,22 @@ def _setting(doc: Mapping[str, object], section: str, key: str) -> object:
     if not isinstance(block, dict):
         return None
     return cast(dict[str, object], block).get(key)
+
+
+def _check_command(
+    report: GeminiDoctorReport, cmd: str, *, windows: bool | None,
+) -> None:
+    """File `cmd` as stale or unquoted when Gemini's shell can't run it."""
+    if cmd in report.stale_commands or cmd in report.unquoted_commands:
+        return
+    exe = Path(shell_program(cmd, windows=windows))
+    if not exe.is_absolute() or exe.is_file():
+        return
+    if program_exists(cmd, windows=windows):
+        # The file is there, at a path the shell splits at a space.
+        report.unquoted_commands.append(cmd)
+    else:
+        report.stale_commands.append(cmd)
 
 
 def doctor_gemini(
@@ -812,14 +897,9 @@ def doctor_gemini(
                     continue
                 report.owned_handler_count += 1
                 covered.add(event)
-                cmd = _handler_command(handler)
-                exe = Path(program_token(cmd, windows=windows))
-                if (
-                    exe.is_absolute()
-                    and not program_exists(cmd, windows=windows)
-                    and cmd not in report.stale_commands
-                ):
-                    report.stale_commands.append(cmd)
+                _check_command(
+                    report, _handler_command(handler), windows=windows,
+                )
     report.missing_events = sorted(set(HOOK_SPECS) - covered)
     for setting in (("tools", "enableHooks"), ("hooksConfig", "enabled")):
         if _setting(doc, *setting) is False:
