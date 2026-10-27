@@ -11,11 +11,14 @@ ignored, and no test failed.
 Neither module imports the other. `setup` importing `hook_search_tool`
 would put `setup` on the import cycle through `aelfrice.hook` (#1631),
 and `hook_search_tool` importing `setup` would load the installer on
-every hook fire. This module imports only `typing`.
+every hook fire. This module imports only `typing` and the leaf
+`aelfrice.hosts`.
 """
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Mapping
+
+from aelfrice.hosts import CLAUDE_HOST, CODEX_HOST
 
 # #1626: every tool that performs a search, not just the local ones.
 #
@@ -40,3 +43,20 @@ SEARCH_TOOL_MATCHER: Final[str] = "|".join(SEARCH_TOOL_NAMES)
 The matcher is a `|`-separated alternation of tool names, so joining the
 names is the whole derivation. That holds only while no name contains a
 regex metacharacter, which the binding test asserts."""
+
+SHELL_TOOL_NAME: Final[str] = "Bash"
+"""The tool name a shell command arrives under, which the Bash lane reads."""
+
+# #1812: the tool names the search-tool hook acts on, per host. The hook
+# process reads the host from its caller, and the console script passes
+# the default, so a Codex payload is read with the claude names. That is
+# also correct for Codex, which reports shell commands as `Bash` (#1055)
+# and installs no search-tool matcher.
+SEARCH_TOOL_NAMES_BY_HOST: Final[Mapping[str, tuple[str, ...]]] = {
+    CLAUDE_HOST: SEARCH_TOOL_NAMES,
+    CODEX_HOST: SEARCH_TOOL_NAMES,
+}
+SHELL_TOOL_NAME_BY_HOST: Final[Mapping[str, str]] = {
+    CLAUDE_HOST: SHELL_TOOL_NAME,
+    CODEX_HOST: SHELL_TOOL_NAME,
+}

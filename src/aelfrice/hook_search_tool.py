@@ -63,7 +63,13 @@ from aelfrice.hook_payload import (
     lock_overflow_line,
 )
 from aelfrice.render_cost import chars_to_tokens
-from aelfrice.search_tool_names import SEARCH_TOOL_NAMES
+from aelfrice.hosts import DEFAULT_HOST
+# The claude names stay importable here for the matcher binding test (#1626).
+from aelfrice.search_tool_names import SEARCH_TOOL_NAMES  # noqa: F401
+from aelfrice.search_tool_names import (
+    SEARCH_TOOL_NAMES_BY_HOST,
+    SHELL_TOOL_NAME_BY_HOST,
+)
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 QUERY_TOKEN_LIMIT: Final[int] = 5
@@ -353,6 +359,7 @@ def _parse_bash_command(command: str) -> tuple[str, str] | None:
 
 def _extract_bash_query(
     payload: dict[str, object],
+    host: str = DEFAULT_HOST,
 ) -> tuple[str, str, str] | None:
     """Return `(fts5_query, command_name, raw_cmd_truncated)` for a
     Bash payload, or `None` to silent-skip.
@@ -362,7 +369,7 @@ def _extract_bash_query(
     Bash matcher's downstream `retrieve()` call sees the same
     shape of query the v1.2.x matcher emits.
     """
-    if payload.get("tool_name") != "Bash":
+    if payload.get("tool_name") != SHELL_TOOL_NAME_BY_HOST[host]:
         return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -585,13 +592,15 @@ def _read_payload(
     return cast(dict[str, object], parsed)
 
 
-# `SEARCH_TOOL_NAMES` (imported above): #1626 widened it to the web
+# `SEARCH_TOOL_NAMES` (read per host above): #1626 widened it to the web
 # tools; #1628 moved it to a leaf module so the installed matcher in
 # `setup` derives from the same tuple instead of copying it.
 
 
-def _is_search_tool_call(payload: dict[str, object]) -> bool:
-    return payload.get("tool_name") in SEARCH_TOOL_NAMES
+def _is_search_tool_call(
+    payload: dict[str, object], host: str = DEFAULT_HOST,
+) -> bool:
+    return payload.get("tool_name") in SEARCH_TOOL_NAMES_BY_HOST[host]
 
 
 def _extract_query(payload: dict[str, object]) -> str | None:
@@ -921,6 +930,8 @@ def _do_search(
     payload: dict[str, object],
     stdout: IO[str],
     stderr: IO[str] | None = None,
+    *,
+    host: str = DEFAULT_HOST,
 ) -> None:
     """Core hook body. Returns silently on any non-budget failure.
 
@@ -936,11 +947,11 @@ def _do_search(
     # Bash; extract eagerly so both lanes can consult the session ring.
     session_obj = payload.get("session_id")
     session_id = session_obj if isinstance(session_obj, str) else None
-    if _is_search_tool_call(payload):
+    if _is_search_tool_call(payload, host):
         query = _extract_query(payload)
         if query is None:
             return
-    elif payload.get("tool_name") == "Bash":
+    elif payload.get("tool_name") == SHELL_TOOL_NAME_BY_HOST[host]:
         # v1.5.0 #155 Bash matcher path. Per-turn fire cap applies
         # only to this lane; the search-tool lane (Grep, Glob,
         # WebSearch, WebFetch) fires once per direct tool call and is
@@ -960,7 +971,7 @@ def _do_search(
         # two statements: `test_search_tool_hook_bash_cap_1522.py
         # ::test_a_non_search_bash_call_does_not_import_the_session_ring`
         # fails if you do.
-        bash_extracted = _extract_bash_query(payload)
+        bash_extracted = _extract_bash_query(payload, host)
         if bash_extracted is None:
             return
         if _bash_fire_cap_reached(session_id):
@@ -1121,8 +1132,13 @@ def main(
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    host: str = DEFAULT_HOST,
 ) -> int:
-    """Hook entry point. Always returns 0 (non-blocking contract)."""
+    """Hook entry point. Always returns 0 (non-blocking contract).
+
+    `host` selects the tool names the payload is read with (#1812). The
+    console script passes none, so every installed hook reads the default.
+    """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
@@ -1131,7 +1147,7 @@ def main(
         payload = _read_payload(sin, serr)
         if payload is None:
             return 0
-        _do_search(payload, sout, stderr=serr)
+        _do_search(payload, sout, stderr=serr, host=host)
     except Exception:  # non-blocking: surface but never raise
         traceback.print_exc(file=serr)
     return 0

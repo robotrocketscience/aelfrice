@@ -57,12 +57,20 @@ from __future__ import annotations
 import json
 import sys
 import traceback
-from typing import IO, Final, cast
+from typing import IO, Final, Mapping, cast
 
+from aelfrice.hosts import CLAUDE_HOST, DEFAULT_HOST
 from aelfrice.stream_encoding import ensure_utf8_streams, read_payload_text
 
 # Tools whose successful invocation can land a memory fact file on disk.
 _WRITE_TOOLS: Final[frozenset[str]] = frozenset({"Write", "Edit", "MultiEdit"})
+
+# #1812: the write tools per host. Only the claude host installs this hook
+# and keeps claude-memory fact files, so a host with no entry has nothing
+# to mirror and the hook does nothing for it.
+_WRITE_TOOLS_BY_HOST: Final[Mapping[str, frozenset[str]]] = {
+    CLAUDE_HOST: _WRITE_TOOLS,
+}
 
 def _read_payload(
     stdin: IO[str],
@@ -80,7 +88,9 @@ def _read_payload(
     return cast("dict[str, object]", parsed)
 
 
-def _file_path_for_memory_write(payload: dict[str, object]) -> str | None:
+def _file_path_for_memory_write(
+    payload: dict[str, object], host: str = DEFAULT_HOST,
+) -> str | None:
     """Return the written file path when ``payload`` is a successful
     Write/Edit of a claude-memory fact file, else None.
 
@@ -88,7 +98,9 @@ def _file_path_for_memory_write(payload: dict[str, object]) -> str | None:
     Write/Edit in every session — close to free when the write is not a
     memory file or the mirror is disabled.
     """
-    if payload.get("tool_name") not in _WRITE_TOOLS:
+    if payload.get("tool_name") not in _WRITE_TOOLS_BY_HOST.get(
+        host, frozenset(),
+    ):
         return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -111,9 +123,11 @@ def _file_path_for_memory_write(payload: dict[str, object]) -> str | None:
     return path
 
 
-def _do_mirror(payload: dict[str, object]) -> None:
+def _do_mirror(
+    payload: dict[str, object], *, host: str = DEFAULT_HOST,
+) -> None:
     """Core hook body. Returns silently on any failure."""
-    path = _file_path_for_memory_write(payload)
+    path = _file_path_for_memory_write(payload, host)
     if path is None:
         return
 
@@ -159,8 +173,13 @@ def main(
     *,
     stdin: IO[str] | None = None,
     stderr: IO[str] | None = None,
+    host: str = DEFAULT_HOST,
 ) -> int:
-    """Hook entry point. Always returns 0 (non-blocking contract)."""
+    """Hook entry point. Always returns 0 (non-blocking contract).
+
+    `host` selects the write tools the payload is read with (#1812). The
+    console script passes none, so the installed hook reads the default.
+    """
     sin = stdin if stdin is not None else sys.stdin
     serr = stderr if stderr is not None else sys.stderr
     ensure_utf8_streams((serr,))
@@ -168,7 +187,7 @@ def main(
         payload = _read_payload(sin, serr)
         if payload is None:
             return 0
-        _do_mirror(payload)
+        _do_mirror(payload, host=host)
     except Exception:  # non-blocking: surface but never raise
         traceback.print_exc(file=serr)
     return 0
