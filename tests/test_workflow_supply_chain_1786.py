@@ -315,7 +315,10 @@ def test_dependabot_covers_actions_and_uv_weekly_with_grouped_minor_and_patch() 
         assert _value(item, "include") == "scope", (name, item)
         groups = [line for line in item if "update-types:" in line]
         assert len(groups) == 1, (name, item)
-        assert "minor" in groups[0] and "patch" in groups[0], (name, groups)
+        # Exactly minor and patch: a grouped major would hide a breaking
+        # bump inside a routine PR.
+        types = re.findall(r"\w+", _value(groups, "update-types") or "")
+        assert sorted(types) == ["minor", "patch"], (name, groups)
 
 
 def test_nothing_under_github_enables_auto_merge() -> None:
