@@ -23,7 +23,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Final, Sequence, cast
+from typing import Any, Callable, Final, Mapping, Sequence, cast
 
 from aelfrice.config_discovery import discover_config
 from aelfrice.doc_linker import ANCHOR_MANUAL, link_belief_to_document
@@ -5553,8 +5553,11 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
-    if host_of(args) == CODEX_HOST:
-        return _cmd_setup_codex(args, out)
+    return _host_command(_SETUP_BY_HOST, "setup", args)(args, out)
+
+
+def _cmd_setup_claude(args: argparse.Namespace, out: object) -> int:
+    """`aelf setup` for the claude host: settings.json and slash commands."""
     # #1053: an explicit claude-host setup is explicit re-consent —
     # clear any persistent claude auto-install opt-out.
     from aelfrice.auto_install import remove_host_opt_out
@@ -6440,8 +6443,11 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
-    if host_of(args) == CODEX_HOST:
-        return _cmd_unsetup_codex(args, out)
+    return _host_command(_UNSETUP_BY_HOST, "unsetup", args)(args, out)
+
+
+def _cmd_unsetup_claude(args: argparse.Namespace, out: object) -> int:
+    """`aelf unsetup` for the claude host: settings.json and slash commands."""
     path = _resolve_settings_path(args)
     # #1161: same single-lock, single-write transaction as setup.
     # Removal is a read-modify-write too, so an unsetup interleaved
@@ -6638,6 +6644,43 @@ def _cmd_unsetup_locked(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
     return 0
+
+
+_HostCommand = Callable[[argparse.Namespace, object], int]
+
+# #1812: the per-host executors. A host is added by naming it in
+# `aelfrice.hosts` and giving it an entry in each table; the guard test
+# fails while a supported host has none.
+_SETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
+    CLAUDE_HOST: _cmd_setup_claude,
+    CODEX_HOST: _cmd_setup_codex,
+}
+_UNSETUP_BY_HOST: Final[Mapping[str, _HostCommand]] = {
+    CLAUDE_HOST: _cmd_unsetup_claude,
+    CODEX_HOST: _cmd_unsetup_codex,
+}
+# Doctor differs: the claude host runs the full `_cmd_doctor`, whose
+# brain-graph checks are host-independent. A host listed here replaces
+# that run with a scan of its own wiring.
+_DOCTOR_BY_HOST: Final[Mapping[str, _HostCommand]] = {
+    CODEX_HOST: _cmd_doctor_codex,
+}
+
+
+def _host_command(
+    table: Mapping[str, _HostCommand], cmd: str, args: argparse.Namespace,
+) -> _HostCommand:
+    """The executor `table` holds for the host `args` names.
+
+    The `--host` choices are `SUPPORTED_HOSTS`, so argparse rejects an
+    unknown host before this runs. A hand-built namespace naming one fails
+    here rather than falling through to another host's executor.
+    """
+    host = host_of(args)
+    handler = table.get(host)
+    if handler is None:
+        raise ValueError(f"aelf {cmd}: no executor for host {host!r}")
+    return handler
 
 
 def _read_password(args: argparse.Namespace) -> str | None:
@@ -8200,8 +8243,9 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     `aelf health` routes here with scope='graph' implicitly via
     `_cmd_health`.
     """
-    if host_of(args) == CODEX_HOST:
-        return _cmd_doctor_codex(args, out)
+    host_doctor = _DOCTOR_BY_HOST.get(host_of(args))
+    if host_doctor is not None:
+        return host_doctor(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
     if getattr(args, "scope", None) == "core-gate":
