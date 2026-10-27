@@ -651,6 +651,65 @@ def test_a_failed_baseline_lookup_writes_a_marker_and_exits_0(
     assert "::notice::the baseline lookup failed" in capsys.readouterr().err
 
 
+def test_dry_run_record_prints_the_counts_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    junit = tmp_path / "junit-3.13.xml"
+    junit.write_text(_MIXED, encoding="utf-8")
+    out = tmp_path / "current.json"
+    assert tor.main([
+        "record", "--junit", f"3.13={junit}", "--junit", f"3.12={tmp_path / 'missing.xml'}",
+        "--out", str(out), "--dry-run",
+    ]) == 0
+    assert not out.exists()
+    text = capsys.readouterr().out
+    assert f"dry run: would write {out}" in text
+    assert "leg 3.12: no JUnit report" in text
+    assert "leg 3.13: passed 3, failed 1, error 1, skipped 1, xfailed 1, xpassed 1, never executed 2, total 10" in text
+
+
+@pytest.mark.parametrize("base_sha", ["base", ""], ids=["pull-request", "dispatch"])
+def test_dry_run_baseline_calls_no_api_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], base_sha: str,
+) -> None:
+    def _no_api() -> None:
+        raise AssertionError("a dry run built an API client")
+
+    monkeypatch.setattr(tor, "GhApi", _no_api)
+    out = tmp_path / "baseline.json"
+    assert tor.main([
+        "baseline", "--repo", "o/r", "--base-sha", base_sha, "--max-commits", "7", "--out", str(out), "--dry-run",
+    ]) == 0
+    assert not out.exists()
+    text = capsys.readouterr().out
+    assert f"dry run: would write {out}" in text
+    if base_sha:
+        assert "gh api /repos/o/r/commits?sha=base&per_page=7" in text
+    else:
+        assert "no base commit" in text
+
+
+def test_dry_run_diff_prints_the_summary_appends_nothing_and_keeps_the_exit_status(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.SKIPPED}})))
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.PASSED}})))
+    summary = tmp_path / "summary.md"
+    summary.write_text("earlier step\n", encoding="utf-8")
+    rc = tor.main([
+        "diff", "--current", str(current), "--baseline", str(baseline),
+        "--summary", str(summary), "--block", "--dry-run",
+    ])
+    assert rc == 1
+    assert summary.read_text(encoding="utf-8") == "earlier step\n"
+    text = capsys.readouterr().out
+    assert f"dry run: would append the summary to {summary}" in text
+    assert "## Test outcomes (blocking)" in text
+    assert "::error::test outcome ratchet, leg 3.13: t::a passed -> skipped" in text
+
+
 def test_an_unreadable_junit_is_a_usage_error(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
     junit.write_text("<testsuites><testsuite>", encoding="utf-8")

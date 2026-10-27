@@ -8,11 +8,16 @@ The `test-outcomes` job in `ci.yml` runs the three subcommands in order.
 
 Usage:
     test_outcome_record.py record --junit LEG=PATH [--junit LEG=PATH ...]
-        [--sha SHA] --out RECORD.json
+        [--sha SHA] --out RECORD.json [--dry-run]
     test_outcome_record.py baseline --repo OWNER/NAME --base-sha SHA
         [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30] --out RECORD.json
+        [--dry-run]
     test_outcome_record.py diff --current RECORD.json --baseline RECORD.json
-        [--allowlist FILE] [--summary FILE] [--block]
+        [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
+
+`--dry-run` writes no file and calls no API. `record` prints each leg's
+counts, `baseline` prints the first request of its walk, and `diff` prints
+the summary instead of appending it, with the exit status a real run gives.
 
 Outcomes. Each test case in the report is one of `passed`, `failed`,
 `error`, `skipped`, `xfailed`, `xpassed` or `never executed`. The last one
@@ -427,6 +432,11 @@ class GhApi:
         return r.stdout
 
 
+def commits_path(repo: str, base_sha: str, max_commits: int) -> str:
+    """The first request of the walk: main's history below the base commit."""
+    return f"/repos/{repo}/commits?sha={base_sha}&per_page={max_commits}"
+
+
 def fetch_baseline(
     api: GhApi,
     repo: str,
@@ -436,7 +446,7 @@ def fetch_baseline(
     max_commits: int,
 ) -> dict[str, Any]:
     """The baseline record, or a no-baseline marker saying why."""
-    commits_json = api.json(f"/repos/{repo}/commits?sha={base_sha}&per_page={max_commits}")
+    commits_json = api.json(commits_path(repo, base_sha, max_commits))
     commits = [c["sha"] for c in commits_json]
 
     def runs_for(sha: str) -> list[dict[str, Any]]:
@@ -496,12 +506,29 @@ def cmd_record(args: argparse.Namespace) -> int:
         else:
             print(f"::notice::no JUnit report for leg {leg} at {path}", file=sys.stderr)
             legs[leg] = None
-    _write_json(args.out, build_record(legs, args.sha))
+    record = build_record(legs, args.sha)
+    if args.dry_run:
+        print(f"dry run: would write {args.out}")
+        for leg, data in record["legs"].items():
+            if data is None:
+                print(f"leg {leg}: no JUnit report")
+                continue
+            counts = data["counts"]
+            print(f"leg {leg}: " + ", ".join(f"{o} {counts[o]}" for o in (*OUTCOMES, "total")))
+        return 0
+    _write_json(args.out, record)
     return 0
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     legs = [leg for leg in args.legs.split(",") if leg]
+    if args.dry_run:
+        if args.base_sha:
+            print(f"dry run: would walk main with gh api {commits_path(args.repo, args.base_sha, args.max_commits)}")
+        else:
+            print("dry run: no base commit, so no API call")
+        print(f"dry run: would write {args.out}")
+        return 0
     if not args.base_sha:
         # A `workflow_dispatch` run carries no pull request, so there is no
         # base commit to walk from.
@@ -534,10 +561,12 @@ def cmd_diff(args: argparse.Namespace) -> int:
     allowlist = parse_allowlist(args.allowlist.read_text(encoding="utf-8")) if args.allowlist else []
     diffs = diff_records(current, baseline, allowlist)
     summary = render_summary(diffs, baseline, baseline_notice, args.block)
-    if args.summary is not None:
+    if args.summary is not None and not args.dry_run:
         with args.summary.open("a", encoding="utf-8") as fh:
             fh.write(summary)
     else:
+        if args.summary is not None:
+            print(f"dry run: would append the summary to {args.summary}")
         sys.stdout.write(summary)
     for line in render_annotations(diffs, baseline_notice, args.block):
         print(line)
@@ -547,14 +576,16 @@ def cmd_diff(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--dry-run", action="store_true", help="write no file, call no API, print what would happen")
 
-    p = sub.add_parser("record", help="build a record from JUnit reports")
+    p = sub.add_parser("record", parents=[common], help="build a record from JUnit reports")
     p.add_argument("--junit", action="append", required=True, type=_parse_leg_arg, metavar="LEG=PATH")
     p.add_argument("--sha", default=None)
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_record)
 
-    p = sub.add_parser("baseline", help="fetch the last green main record through gh api")
+    p = sub.add_parser("baseline", parents=[common], help="fetch the last green main record through gh api")
     p.add_argument("--repo", required=True)
     p.add_argument("--base-sha", required=True)
     p.add_argument("--workflow", default="ci.yml")
@@ -563,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_baseline)
 
-    p = sub.add_parser("diff", help="diff a record against a baseline record")
+    p = sub.add_parser("diff", parents=[common], help="diff a record against a baseline record")
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--baseline", default=None, type=Path)
     p.add_argument("--allowlist", default=None, type=Path)
