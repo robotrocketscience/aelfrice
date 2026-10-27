@@ -5447,9 +5447,14 @@ caller kwarg. The packer never charges the hint, because the hint is
 appended outside retrieval. On a fire that retrieves, `_retrieve` has
 spent that budget before the hint is appended. On a session's first
 prompt that the #674 shape gate refuses, `_retrieve` never runs, and the
-hint follows the `<locked>` and `<core>` sub-block alone. Either way the
-hint shows up where the assembled block is measured, such as the audited
-`tokens` (the +24/+25 rule above).
+hint follows what the session-start build returned: a `<cadence-resume>`
+block when a fresh cadence-resume cache exists, then the
+`<session-start>` sub-block, which holds `<locked>` and `<core>` and,
+when the payload cwd is a git checkout on a branch, `<recent-work>`. The
+two are built independently, so the hint can follow a `<cadence-resume>`
+block with no `<locked>` or `<core>` at all. Either way the hint shows
+up where the assembled block is measured, such as the audited `tokens`
+(the +24/+25 rule above).
 #1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing
 header uncharged too (the `_SPECULATIVE_FRAMING_SENTENCE` docstring says
 why). The share of the budget the hint represents is not quoted here,
