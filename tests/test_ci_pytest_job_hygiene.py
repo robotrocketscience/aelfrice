@@ -10,8 +10,8 @@ job-level `name:` or a matrix change would rename both.
 
 The job deselects one test, the live-tree producer check, because the
 `derived-figures` job runs the same producers on every PR. The tests at the
-bottom tie that deselect to the job that carries the check, so the check
-cannot be dropped from both without a red suite.
+bottom pin that job's gate command verbatim and reject the keys that skip
+the job or let it fail green.
 
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
@@ -40,6 +40,19 @@ _DESELECTED = (
     "tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks"
 )
 
+# The `derived-figures` gate command, verbatim. A path argument replaces the
+# scanned roots, `--restamp` or `--list-unmarked` returns before the producers
+# run, and `|| true` turns a hard failure into a pass.
+_GATE_RUNS = {
+    f"uv run python scripts/check_derived_figures.py --mode {mode} --github"
+    for mode in ("all", "producers")
+}
+
+# The job-level keys `derived-figures` may carry. `if`, `needs` and `strategy`
+# can skip the job, and the merge train does not count `skipped` as failing.
+# `continue-on-error` turns a red job green, and `name` renames the check.
+_DERIVED_FIGURES_KEYS = {"runs-on", "steps", "timeout-minutes", "permissions"}
+
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
@@ -60,18 +73,18 @@ def _job_lines(job: str = "pytest") -> list[str]:
     return body
 
 
-def _job_keys() -> dict[str, str]:
+def _job_keys(job: str = "pytest") -> dict[str, str]:
     """Job-level scalar keys, at four spaces."""
     out: dict[str, str] = {}
-    for line in _job_lines():
+    for line in _job_lines(job):
         m = re.fullmatch(r"    ([A-Za-z-]+):\s*(.*?)\s*", line)
         if m:
             out[m.group(1)] = m.group(2)
     return out
 
 
-def _block(key: str, at_indent: int) -> list[str]:
-    lines = _job_lines()
+def _block(key: str, at_indent: int, job: str = "pytest") -> list[str]:
+    lines = _job_lines(job)
     want = " " * at_indent + key + ":"
     start = next(i for i, line in enumerate(lines) if line.rstrip() == want)
     out: list[str] = []
@@ -82,15 +95,17 @@ def _block(key: str, at_indent: int) -> list[str]:
     return out
 
 
-def _steps() -> list[list[str]]:
+def _steps(job: str = "pytest", minimum: int = 5) -> list[list[str]]:
     """Each step of the job as its own list of lines."""
     steps: list[list[str]] = []
-    for line in _block("steps", 4):
+    for line in _block("steps", 4, job):
         if _indent(line) == 6 and line.lstrip().startswith("- "):
             steps.append([line])
         elif steps:
             steps[-1].append(line)
-    assert len(steps) >= 5, f"parsed only {len(steps)} steps; the parser has rotted"
+    assert len(steps) >= minimum, (
+        f"parsed only {len(steps)} steps; the parser has rotted"
+    )
     return steps
 
 
@@ -140,16 +155,6 @@ def _deselected() -> list[str]:
             out.append(tokens[i + 1])
         elif token.startswith("--deselect="):
             out.append(token.removeprefix("--deselect="))
-    return out
-
-
-def _derived_figures_run_lines() -> list[str]:
-    """The `run:` values of `jobs.derived-figures`, stripped."""
-    out: list[str] = []
-    for line in _job_lines("derived-figures"):
-        m = re.fullmatch(r"\s*-\s+run:\s*(.*?)\s*", line)
-        if m:
-            out.append(m.group(1))
     return out
 
 
@@ -263,17 +268,30 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
 
 
 def test_the_deselected_check_runs_in_the_derived_figures_job() -> None:
-    """The deselect holds only while `derived-figures` runs the producers on
-    every PR and the merge train requires that job. Narrowing it to
-    `--mode text`, or dropping it from the floor, would leave the producers
-    unchecked on a PR with nothing red to show for it."""
-    runs = _derived_figures_run_lines()
-    gate = [r for r in runs if "scripts/check_derived_figures.py" in r]
-    assert len(gate) == 1, f"expected one gate step in derived-figures, got {runs!r}"
-    tokens = gate[0].split()
-    mode = tokens[tokens.index("--mode") + 1]
-    assert mode in {"all", "producers"}, (
-        f"derived-figures runs `--mode {mode}`, which skips the producers "
-        f"the pytest legs deselect"
+    """The deselect holds only while `derived-figures` runs the producers
+    over the default roots on every PR. A step-level key such as `if:`,
+    `shell:` or `continue-on-error:` can skip the gate or let it fail green,
+    so the gate step carries `run:` and nothing else."""
+    steps = _steps("derived-figures", minimum=1)
+    gate = [s for s in steps if "scripts/check_derived_figures.py" in "\n".join(s)]
+    assert len(gate) == 1, f"expected one gate step in derived-figures, got {steps!r}"
+    assert len(gate[0]) == 1, f"the gate step carries more than `run:`: {gate[0]!r}"
+    assert _field(gate[0], "run") in _GATE_RUNS, (
+        f"derived-figures runs {_field(gate[0], 'run')!r}, not one of "
+        f"{sorted(_GATE_RUNS)!r}, so it may skip the producers the pytest "
+        "legs deselect"
     )
+
+
+def test_the_derived_figures_job_cannot_be_skipped_or_fail_green() -> None:
+    """A skipped job, or one whose failure is green, leaves the producers
+    unchecked on every PR with nothing red to show for it."""
+    keys = set(_job_keys("derived-figures"))
+    assert keys <= _DERIVED_FIGURES_KEYS, sorted(keys - _DERIVED_FIGURES_KEYS)
+    found = [
+        line.strip()
+        for line in _job_lines("derived-figures")
+        if re.match(r"\s*(?:-\s+)?(?:if|continue-on-error):", line)
+    ]
+    assert found == [], found
     assert "derived-figures" in FLOOR_NAMES
