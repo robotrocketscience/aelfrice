@@ -735,7 +735,7 @@ def test_a_link_planted_as_split_writes_the_key_is_refused(
     real_open = os.open
     planted: list[str] = []
 
-    def plant(path: Any, flags: int, mode: int = 0o777, **kw: Any) -> int:
+    def plant(path: Any, flags: int, mode: int = 0o600, **kw: Any) -> int:
         if Path(path).name != "key.jsonl" or planted:
             return real_open(path, flags, mode, **kw)
         planted.append(str(path))
@@ -1677,6 +1677,7 @@ def _feed(fd: int, data: bytes) -> None:
         with open(fd, "wb") as f:
             f.write(data)
     except BrokenPipeError:
+        # The reader closed its end first, so the rest of `data` has no reader.
         pass
 
 
