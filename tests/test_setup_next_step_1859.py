@@ -577,5 +577,5 @@ def test_project_root_store_is_the_one_counted(
 
 def test_another_host_is_refused_before_setup_runs() -> None:
     with pytest.raises(SystemExit) as exc:
-        build_parser().parse_args(["setup", "--host", "gemini"])
+        build_parser().parse_args(["setup", "--host", "cursor"])
     assert exc.value.code == 2

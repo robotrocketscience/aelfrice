@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Final, Mapping
 
-from aelfrice.hosts import CLAUDE_HOST, CODEX_HOST
+from aelfrice.hosts import CLAUDE_HOST, CODEX_HOST, GEMINI_HOST
 
 # #1626: every tool that performs a search, not just the local ones.
 #
@@ -51,12 +51,21 @@ SHELL_TOOL_NAME: Final[str] = "Bash"
 # process reads the host from its caller, and the console script passes
 # the default, so a Codex payload is read with the claude names. That is
 # also correct for Codex, which reports shell commands as `Bash` (#1055)
-# and installs no search-tool matcher.
+# and installs no search-tool matcher. The gemini entries are the Gemini
+# CLI tool names; `aelf setup --host gemini` installs no tool hook yet,
+# because the input fields of its tool payloads are not documented.
 SEARCH_TOOL_NAMES_BY_HOST: Final[Mapping[str, tuple[str, ...]]] = {
     CLAUDE_HOST: SEARCH_TOOL_NAMES,
     CODEX_HOST: SEARCH_TOOL_NAMES,
+    GEMINI_HOST: (
+        "search_file_content",
+        "glob",
+        "google_web_search",
+        "web_fetch",
+    ),
 }
 SHELL_TOOL_NAME_BY_HOST: Final[Mapping[str, str]] = {
     CLAUDE_HOST: SHELL_TOOL_NAME,
     CODEX_HOST: SHELL_TOOL_NAME,
+    GEMINI_HOST: "run_shell_command",
 }

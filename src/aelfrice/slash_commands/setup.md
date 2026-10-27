@@ -36,6 +36,10 @@ On the `codex` host, `aelf setup --host codex` accepts only `--force` and
 flags above, so it refuses any of them with exit 2 and changes nothing
 (#1429). `aelf unsetup --host codex` accepts no flag but `--host`. Run
 both commands with no other options on this host.
+
+On the `gemini` host, `aelf setup --host gemini` accepts only `--force`,
+and `aelf unsetup --host gemini` accepts no flag but `--host`. Both
+refuse every other option with exit 2 and change nothing.
 </objective>
 
 <process>
@@ -48,8 +52,8 @@ directory has a `.venv` matching the active interpreter, else `user`
 of the corresponding script entry-point (project venv for project scope,
 `$PATH` resolution for user scope). To force a scope, pass `--scope user`
 or `--scope project`; to write to an explicit location, pass
-`--settings-path PATH`. These are claude-host flags: the `codex` host
-refuses them (see the objective above). The command is idempotent:
+`--settings-path PATH`. These are claude-host flags: the `codex` and
+`gemini` hosts refuse them (see the objective above). The command is idempotent:
 running it twice results in exactly one matching entry per lane.
 
 Display the output verbatim. Do not add commentary.

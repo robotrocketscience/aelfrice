@@ -23,7 +23,7 @@ DEFAULT_HOST: Final[str] = CLAUDE_HOST
 """The host every `--host` option defaults to. Changing it changes what a
 bare `aelf setup` installs, so it stays `claude`."""
 
-SUPPORTED_HOSTS: Final[tuple[str, ...]] = (CLAUDE_HOST, CODEX_HOST)
+SUPPORTED_HOSTS: Final[tuple[str, ...]] = (CLAUDE_HOST, CODEX_HOST, GEMINI_HOST)
 """Every value `--host` accepts, in the order help text lists them."""
 
 
@@ -45,10 +45,6 @@ host can tell. The value is set in the process and not in the hook
 command string: Gemini runs a hook command under PowerShell on Windows,
 where a leading `NAME=value` assignment is not valid syntax."""
 
-_KNOWN_HOSTS: Final[frozenset[str]] = frozenset(
-    {CLAUDE_HOST, CODEX_HOST, GEMINI_HOST},
-)
-
 
 def host_from_env(env: Mapping[str, str] | None = None) -> str:
     """The host `HOST_ENV` names, or the default when it names none.
@@ -59,4 +55,4 @@ def host_from_env(env: Mapping[str, str] | None = None) -> str:
     """
     source = env if env is not None else os.environ
     value = source.get(HOST_ENV, "")
-    return value if value in _KNOWN_HOSTS else DEFAULT_HOST
+    return value if value in SUPPORTED_HOSTS else DEFAULT_HOST

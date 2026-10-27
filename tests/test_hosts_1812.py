@@ -27,8 +27,8 @@ def test_the_default_host_is_claude() -> None:
 
 
 @pytest.mark.timeout(30)
-def test_supported_hosts_lists_claude_then_codex() -> None:
-    assert SUPPORTED_HOSTS == ("claude", "codex")
+def test_supported_hosts_lists_claude_codex_then_gemini() -> None:
+    assert SUPPORTED_HOSTS == ("claude", "codex", "gemini")
 
 
 @pytest.mark.timeout(30)
