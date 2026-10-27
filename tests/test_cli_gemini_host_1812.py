@@ -313,6 +313,14 @@ def test_doctor_on_a_clean_install(
     ]
 
 
+@pytest.fixture
+def no_aelf_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No `aelf` on PATH, so a doctor check that ignores the #1430 gate
+    fails here whatever the machine running the test has installed."""
+    monkeypatch.setattr(launcher, "which_on_path", lambda name: None)
+
+
+@pytest.mark.usefixtures("no_aelf_on_path")
 def test_doctor_without_wiring_exits_0(sb: Sandbox) -> None:
     rc, lines = _run(["doctor", "--host", "gemini"], sb)
     assert rc == 0
@@ -348,6 +356,7 @@ def test_doctor_fails_on_an_edited_command(
     )
 
 
+@pytest.mark.usefixtures("no_aelf_on_path")
 def test_doctor_passes_a_commented_settings_file_without_aelfrice(sb: Sandbox) -> None:
     """A machine that never ran setup exits 0, even when Gemini's own file
     holds a comment aelfrice can't parse."""
@@ -373,6 +382,7 @@ def test_doctor_fails_on_an_unparseable_file_that_names_the_hook(sb: Sandbox) ->
     )
 
 
+@pytest.mark.usefixtures("no_aelf_on_path")
 def test_doctor_skips_the_graph_checks(
     sb: Sandbox, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
