@@ -956,7 +956,7 @@ def test_the_report_job_runs_after_failed_shards_and_merges_them() -> None:
 def test_every_excluded_unit_exists_in_the_real_tree(sh: Any) -> None:
     """Caught here in the ordinary suite, not by the weekly plan failing."""
     for path, units in sh.EXCLUDED.items():
-        source = (_REPO / path).read_text(encoding="utf-8")
+        source = (_REPO / path).read_text(encoding="utf-8")  # path-filter: src/**
         names = {
             n.name for n in ast.parse(source).body
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))

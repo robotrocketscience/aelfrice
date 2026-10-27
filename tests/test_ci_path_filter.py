@@ -30,18 +30,25 @@ The read scan walks each module's AST for paths built from the module's
 own location (`Path(__file__)`, `os.path.dirname(__file__)`). It follows
 names, string constants, literal tuples and the loops over them,
 `joinpath`, `Path(root, ...)`, `os.path.join` and `..`, so each spelling
-the suite uses resolves the same as an inline path. A new test that reads
-a new file outside the filter fails
-`test_every_file_the_suite_reads_is_in_the_code_filter`; an entry nobody
-reads any more fails the reverse test beside it.
+the suite uses resolves the same as an inline path. A path built on the
+repo root that the scan still cannot resolve, such as `REPO / p` over
+`git ls-files` output, fails `test_every_repo_path_a_test_builds_is_resolved`
+until its line carries a `# path-filter:` comment naming what it reads.
+So a new test that reads a new file outside the filter through such a
+path fails here, and an entry nobody reads any more fails the reverse
+test. A path handed to a subprocess, or spelled relative to the working
+directory, is outside the scan.
 """
 from __future__ import annotations
 
 import ast
 import functools
+import io
 import re
 import shlex
+import tokenize
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -55,7 +62,7 @@ _STAGING_GATE_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
 # on working-tree state.
 _IN_REPO_PACKAGES = frozenset(
     p.name
-    for p in _REPO.iterdir()
+    for p in _REPO.iterdir()  # path-filter: none
     if p.is_dir() and not p.name.startswith(".") and any(p.rglob("*.py"))
 )
 
@@ -140,11 +147,13 @@ def _is_covered(directory: str, globs: list[str]) -> bool:
 # What the scan knows an expression may denote, as a set of tagged items:
 # ("p", segments) is a repo path as its segments below the repo root, so
 # the root itself is ("p", ()); ("s", text) is a string; ("c", items) is a
-# literal tuple, list or set of such items. The empty set means the scan
-# cannot tell. A set rather than one value lets a name bound in several
-# places, or a loop over a tuple of paths, yield one path per binding.
+# literal tuple, list or set of such items; `_MAYBE` marks a binding or
+# part the scan cannot follow. The empty set means the scan cannot tell at
+# all. A set rather than one value lets a name bound in several places, or
+# a loop over a tuple of paths, yield one path per binding.
 _Value = frozenset[tuple]
 _UNKNOWN: _Value = frozenset()
+_MAYBE = ("?",)
 
 # Calls that build a path from a base and string segments.
 _CONSTRUCTORS = frozenset({"Path", "pathlib.Path", "os.path.join"})
@@ -156,6 +165,12 @@ _PASS_THROUGH = frozenset({
 # Attribute steps that consume a path to build another one.
 _PATH_STEPS = frozenset({"parent", "parents", "joinpath", "resolve", "absolute"})
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+# Ways to list a directory. On the repo root they read files that no
+# path in the source names.
+_LISTING_METHODS = frozenset({"glob", "rglob", "iterdir", "walk"})
+_LISTING_CALLS = frozenset({"os.walk", "os.listdir", "os.scandir"})
+# The comment that says what a line the scan cannot resolve reads.
+_PRAGMA = "path-filter:"
 
 
 def _dotted(node: ast.AST) -> str | None:
@@ -187,19 +202,19 @@ def _step(segments: tuple[str, ...], text: str) -> tuple[str, ...] | None:
 
 
 def _join(base: _Value, parts: list[_Value]) -> _Value:
-    """Every path `base / part / part ...` may denote."""
+    """Every path `base / part / part ...` may denote, marked when a part is unknown."""
     paths = {item[1] for item in base if item[0] == "p"}
+    unknown = _MAYBE in base
     for part in parts:
         texts = [item[1] for item in part if item[0] == "s"]
-        if not texts:
-            return _UNKNOWN
+        unknown = unknown or _MAYBE in part or not texts
         paths = {
             joined
             for segments in paths
             for text in texts
             if (joined := _step(segments, text)) is not None
         }
-    return frozenset(("p", segments) for segments in paths)
+    return frozenset({("p", segments) for segments in paths} | ({_MAYBE} if unknown else set()))
 
 
 def _up(value: _Value, levels: int) -> _Value:
@@ -208,12 +223,18 @@ def _up(value: _Value, levels: int) -> _Value:
         ("p", item[1][:-levels])
         for item in value
         if item[0] == "p" and len(item[1]) >= levels
-    )
+    ) | (frozenset({_MAYBE}) if _MAYBE in value else _UNKNOWN)
 
 
 def _elements(value: _Value) -> _Value:
     """What a loop over `value` binds its target to."""
-    return frozenset(e for item in value if item[0] == "c" for e in item[1])
+    found = frozenset(e for item in value if item[0] == "c" for e in item[1])
+    known = value and _MAYBE not in value and all(item[0] == "c" for item in value)
+    return found if known else found | {_MAYBE}
+
+
+def _paths(value: _Value) -> set[tuple[str, ...]]:
+    return {item[1] for item in value if item[0] == "p"}
 
 
 def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> _Value:
@@ -225,9 +246,7 @@ def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> 
             return frozenset({("p", here)})
         return names.get(node.id, _UNKNOWN)
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        elements = [_resolve(e, names, here) for e in node.elts]
-        if not elements or not all(elements):
-            return _UNKNOWN
+        elements = [_resolve(e, names, here) or frozenset({_MAYBE}) for e in node.elts]
         return frozenset({("c", frozenset().union(*elements))})
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         return _up(_resolve(node.value, names, here), 1)
@@ -269,18 +288,26 @@ def _bindings(nodes: list[ast.AST]) -> list[tuple[str, ast.AST | None, bool]]:
     module-level path of the same name does not leak in.
     """
     found: list[tuple[str, ast.AST | None, bool]] = []
+    followed: set[ast.AST] = set()
     for node in nodes:
         if isinstance(node, ast.Assign):
-            found += [(t.id, node.value, False) for t in node.targets if isinstance(t, ast.Name)]
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            found += [(t.id, node.value, False) for t in targets]
+            followed.update(targets)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             found.append((node.target.id, node.value, False))
+            followed.add(node.target)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             if isinstance(node.target, ast.Name):
                 found.append((node.target.id, node.iter, True))
+                followed.add(node.target)
         elif isinstance(node, ast.arg):
             found.append((node.arg, None, False))
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            found.append((node.id, None, False))
+    found += [
+        (node.id, None, False)
+        for node in nodes
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node not in followed
+    ]
     return found
 
 
@@ -300,11 +327,10 @@ def _bound_names(
     for _ in range(len(bindings) + 1):
         changed = False
         for name, node, is_loop in bindings:
-            if node is None:
-                continue
-            value = _resolve(node, names, here)
+            value = _UNKNOWN if node is None else _resolve(node, names, here)
             if is_loop:
                 value = _elements(value)
+            value = value or frozenset({_MAYBE})
             merged = names.get(name, _UNKNOWN) | value
             if merged != names.get(name, _UNKNOWN):
                 names[name] = merged
@@ -339,8 +365,48 @@ def _base_of(node: ast.AST) -> ast.AST | None:
     return None
 
 
-def _scan_source(source: str, here: tuple[str, ...]) -> set[str]:
-    """Repo-relative paths a module at `here` builds from its own location.
+class _Scan(NamedTuple):
+    """What one test module reads, as far as its source says."""
+
+    # Repo paths, files or directories, that the module builds or declares.
+    reads: frozenset[str]
+    # Globs declared in `# path-filter:` comments, such as `**/*.md`.
+    patterns: frozenset[str]
+    # The entries of `reads` that came from a comment rather than code.
+    declared: frozenset[str]
+    # Expressions on the repo root the scan cannot resolve, and comments
+    # it cannot use, one line each.
+    problems: tuple[str, ...]
+
+
+_NO_SCAN = _Scan(frozenset(), frozenset(), frozenset(), ())
+
+
+def _pragmas(source: str) -> dict[int, list[str]]:
+    """The words after each `# path-filter:` comment, by line number."""
+    found: dict[int, list[str]] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            body = token.string[1:].strip()
+            if body.startswith(_PRAGMA):
+                found[token.start[0]] = body[len(_PRAGMA) :].split()
+    return found
+
+
+def _lists_the_root(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> bool:
+    """Whether `node` lists the repo root itself: `_REPO.glob(...)`, `os.walk(_REPO)`."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if _dotted(func) in _LISTING_CALLS:
+        return bool(node.args) and () in _paths(_resolve(node.args[0], names, here))
+    if isinstance(func, ast.Attribute) and func.attr in _LISTING_METHODS:
+        return () in _paths(_resolve(func.value, names, here))
+    return False
+
+
+def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
+    """What a module at `here` reads through paths built from its own location.
 
     Names are scoped: a module-level binding is visible everywhere, a
     binding inside a function only inside that function, and a function's
@@ -352,13 +418,18 @@ def _scan_source(source: str, here: tuple[str, ...]) -> set[str]:
     "docs" / "user" / "CONFIG.md"` yields one path and not three. When
     the outermost join does not resolve (`_REPO / "docs" / name`), the
     longest resolvable prefix is recorded instead, since the test reads
-    under it.
+    under it. When that prefix is the repo root itself, as in `_REPO /
+    name` with `name` read from `git ls-files`, or when the module lists
+    the root, the scan cannot say what is read. That line must carry a
+    `# path-filter:` comment naming exact paths, `<dir>/**` or a glob, or
+    `none`, and is otherwise reported as a problem. So is a comment on a
+    line with nothing for it to declare.
 
     A module that never names `__file__` builds no path from its own
     location, so it is not parsed.
     """
     if "__file__" not in source:
-        return set()
+        return _NO_SCAN
     tree = ast.parse(source)
     # One pass over the tree: each node's parent, the scope that owns it
     # (None at module level) and each scope's enclosing scope. A function
@@ -388,11 +459,14 @@ def _scan_source(source: str, here: tuple[str, ...]) -> set[str]:
             scopes[scope] = _bound_names(members.get(scope, []), names_of(enclosing[scope]), here)
         return scopes[scope]
 
-    found: set[str] = set()
+    found: set[tuple[str, ...]] = set()
+    unresolved: list[ast.AST] = []
     for node in owner:
+        names = names_of(owner[node])
+        if _lists_the_root(node, names, here):
+            unresolved.append(node)
         if _consumed(node, parents):
             continue
-        names = names_of(owner[node])
         if isinstance(node, ast.Name):
             if not isinstance(node.ctx, ast.Load):
                 continue
@@ -403,21 +477,75 @@ def _scan_source(source: str, here: tuple[str, ...]) -> set[str]:
             value = _resolve(node, names, here)
         else:
             continue
+        found |= _paths(value)
+        if _paths(value) and _MAYBE not in value:
+            continue
         current: ast.AST | None = node
-        while not any(item[0] == "p" for item in value) and current is not None:
-            current = _base_of(current)
-            if current is not None:
-                value = _resolve(current, names, here)
-        found |= {"/".join(item[1]) for item in value if item[0] == "p" and item[1]}
-    return found
+        while (current := _base_of(current)) is not None:
+            prefix = _paths(_resolve(current, names, here))
+            if prefix:
+                found |= prefix
+                if () in prefix:
+                    unresolved.append(node)
+                break
+
+    reads = {"/".join(segments) for segments in found if segments}
+    patterns: set[str] = set()
+    declared: set[str] = set()
+    problems: list[str] = []
+    pragmas = _pragmas(source)
+    used: set[int] = set()
+    for node in unresolved:
+        lines = [n for n in range(node.lineno, (node.end_lineno or node.lineno) + 1) if n in pragmas]
+        if not lines:
+            problems.append(f"line {node.lineno}: {ast.unparse(node)}")
+        used.update(lines)
+    for line, words in sorted(pragmas.items()):
+        if line not in used:
+            problems.append(f"line {line}: `# {_PRAGMA}` comment with no unresolved path on its line")
+        elif not words or ("none" in words and len(words) > 1):
+            problems.append(f"line {line}: `# {_PRAGMA}` needs paths, globs, or `none` alone")
+        else:
+            for word in words:
+                if word == "none":
+                    continue
+                if word.endswith("/**") and "*" not in word[:-3]:
+                    declared.add(word[:-3])
+                elif "*" in word:
+                    patterns.add(word)
+                else:
+                    declared.add(word)
+    return _Scan(frozenset(reads | declared), frozenset(patterns), frozenset(declared), tuple(problems))
 
 
-def _scan_module(path: Path) -> set[str]:
+def _scan_module(path: Path) -> _Scan:
     """`_scan_source` over one file under the repo."""
     return _scan_source(path.read_text(encoding="utf-8"), path.relative_to(_REPO).parts)
 
 
 @functools.cache
+def _suite_scans() -> dict[str, _Scan]:
+    """The scan of every module under `tests/`, by repo-relative path."""
+    return {
+        path.relative_to(_REPO).as_posix(): _scan_module(path)
+        for path in sorted(_REPO.joinpath("tests").rglob("*.py"))
+    }
+
+
+def _missing_declared_paths(scans: dict[str, _Scan]) -> list[str]:
+    """`<module>: <path>` for each declared path absent from the tree.
+
+    `_suite_root_reads` drops absent paths, so a mistyped declaration
+    would otherwise vanish without a word.
+    """
+    return sorted(
+        f"{module}: {path}"
+        for module, scan in scans.items()
+        for path in scan.declared
+        if not (_REPO / path).exists()  # path-filter: none
+    )
+
+
 def _suite_root_reads() -> dict[str, set[str]]:
     """Every repo-relative path `tests/` builds, mapped to the modules that build it.
 
@@ -426,19 +554,28 @@ def _suite_root_reads() -> dict[str, set[str]]:
     that is not there.
     """
     reads: dict[str, set[str]] = {}
-    for path in sorted(_REPO.joinpath("tests").rglob("*.py")):
-        for found in _scan_module(path):
-            if (_REPO / found).exists():
-                reads.setdefault(found, set()).add(path.relative_to(_REPO).as_posix())
+    for module, scan in _suite_scans().items():
+        for found in scan.reads:
+            if (_REPO / found).exists():  # path-filter: none
+                reads.setdefault(found, set()).add(module)
     return reads
 
 
+def _suite_pattern_reads() -> dict[str, set[str]]:
+    """Every glob a module declares it reads, mapped to the modules that declare it."""
+    patterns: dict[str, set[str]] = {}
+    for module, scan in _suite_scans().items():
+        for pattern in scan.patterns:
+            patterns.setdefault(pattern, set()).add(module)
+    return patterns
+
+
 def _suite_file_reads() -> dict[str, set[str]]:
-    return {p: m for p, m in _suite_root_reads().items() if (_REPO / p).is_file()}
+    return {p: m for p, m in _suite_root_reads().items() if (_REPO / p).is_file()}  # path-filter: none
 
 
 def _suite_directory_reads() -> dict[str, set[str]]:
-    return {p: m for p, m in _suite_root_reads().items() if (_REPO / p).is_dir()}
+    return {p: m for p, m in _suite_root_reads().items() if (_REPO / p).is_dir()}  # path-filter: none
 
 
 def _suite_dependencies() -> set[str]:
@@ -456,7 +593,7 @@ def _suite_dependencies() -> set[str]:
     code_reads = {
         p.split("/")[0]
         for p in _suite_root_reads()
-        if (_REPO / p).is_dir() or p.endswith(".py")
+        if (_REPO / p).is_dir() or p.endswith(".py")  # path-filter: none
     }
     return found | (code_reads & _IN_REPO_PACKAGES)
 
@@ -568,8 +705,9 @@ def test_the_read_scan_resolves_each_spelling(spelling: str) -> None:
     rewrite away from the inline form. A spelling the scan misses lets a
     new test read a new file outside the filter with every test green.
     """
-    reads = _scan_source(_PROBE_HEAD + _SPELLINGS[spelling], ("tests", "test_probe.py"))
-    assert "docs/new.md" in reads, f"{spelling}: the scan found {sorted(reads)}"
+    scan = _scan_source(_PROBE_HEAD + _SPELLINGS[spelling], ("tests", "test_probe.py"))
+    assert "docs/new.md" in scan.reads, f"{spelling}: the scan found {sorted(scan.reads)}"
+    assert not scan.problems, scan.problems
 
 
 def test_a_name_bound_twice_reads_under_both() -> None:
@@ -581,8 +719,99 @@ def test_a_name_bound_twice_reads_under_both() -> None:
         '        base = _R / "docs"\n'
         '    (base / "new.md").read_text()\n'
     )
-    reads = _scan_source(source, ("tests", "test_probe.py"))
+    reads = _scan_source(source, ("tests", "test_probe.py")).reads
     assert {"docs/new.md", "other/new.md"} <= reads, sorted(reads)
+
+
+# One test module per way of reading under the root that the scan cannot
+# name a path for.
+_UNRESOLVED = {
+    "git_ls_files": (
+        "import subprocess\n"
+        "def test_x():\n"
+        '    out = subprocess.run(["git", "ls-files", "*.md"], cwd=_R, capture_output=True,\n'
+        "                         text=True, check=True, timeout=30).stdout\n"
+        "    for p in out.split():\n"
+        "        (_R / p).read_text()\n"
+    ),
+    "parameter": "def test_x(name):\n    (_R / name).read_text()\n",
+    "imported_name": "from elsewhere import NAME\ndef test_x():\n    (_R / NAME).read_text()\n",
+    "partly_known_name": (
+        "def test_x(other):\n"
+        '    rel = "README.md"\n'
+        "    if other:\n"
+        "        rel = other\n"
+        "    (_R / rel).read_text()\n"
+    ),
+    "tuple_with_unknown": (
+        'def test_x():\n    for rel in ("README.md", os.environ["DOC"]):\n        (_R / rel).read_text()\n'
+    ),
+    "loop_over_partly_known": (
+        '_NAMES = ("README.md",)\n'
+        'if os.environ.get("DOCS"):\n'
+        '    _NAMES = os.environ["DOCS"]\n'
+        "def test_x():\n"
+        "    for rel in _NAMES:\n"
+        "        (_R / rel).read_text()\n"
+    ),
+    "root_glob": 'def test_x():\n    for p in sorted(_R.glob("*.md")):\n        p.read_text()\n',
+    "root_walk": "def test_x():\n    for top, dirs, files in os.walk(_R):\n        print(top, files)\n",
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_UNRESOLVED))
+def test_a_root_path_the_scan_cannot_resolve_is_a_problem(spelling: str) -> None:
+    """Each of these reads files under the root that the drift tests cannot see."""
+    scan = _scan_source(_PROBE_HEAD + _UNRESOLVED[spelling], ("tests", "test_probe.py"))
+    assert scan.problems, f"{spelling}: no problem reported; reads {sorted(scan.reads)}"
+
+
+def test_an_unknown_name_under_a_directory_reads_the_directory() -> None:
+    """Below the root, the resolvable prefix is the read and nothing is unresolved."""
+    source = _PROBE_HEAD + 'def test_x(name):\n    (_R / "docs" / name).read_text()\n'
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert scan.reads == {"docs"}
+    assert not scan.problems, scan.problems
+
+
+def test_a_path_filter_comment_declares_what_the_line_reads() -> None:
+    source = _PROBE_HEAD + (
+        "def test_x(name, other, third):\n"
+        "    (_R / name).read_text()  # path-filter: **/*.md\n"
+        "    (_R / other).read_text()  # path-filter: docs/user/CONFIG.md docs/assets/**\n"
+        "    (_R / third).exists()  # path-filter: none\n"
+    )
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert not scan.problems, scan.problems
+    assert scan.patterns == {"**/*.md"}
+    assert scan.declared == {"docs/user/CONFIG.md", "docs/assets"}
+    assert scan.declared <= scan.reads
+
+
+def test_a_declared_path_that_does_not_exist_is_reported() -> None:
+    source = _PROBE_HEAD + (
+        "def test_x(name):\n"
+        "    (_R / name).read_text()  # path-filter: docs/no-such-page.md README.md\n"
+    )
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert _missing_declared_paths({"tests/test_probe.py": scan}) == [
+        "tests/test_probe.py: docs/no-such-page.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "    (_R / name).read_text()  # path-filter:\n",
+        "    (_R / name).read_text()  # path-filter: none docs/x.md\n",
+        '    (_R / "README.md").read_text()  # path-filter: README.md\n',
+    ],
+    ids=["empty", "none_with_paths", "nothing_to_declare"],
+)
+def test_a_path_filter_comment_the_scan_cannot_use_is_a_problem(line: str) -> None:
+    """A malformed comment, or one that outlived its unresolved path."""
+    scan = _scan_source(_PROBE_HEAD + "def test_x(name):\n" + line, ("tests", "test_probe.py"))
+    assert scan.problems
 
 
 def test_a_function_binding_hides_the_module_binding() -> None:
@@ -593,7 +822,7 @@ def test_a_function_binding_hides_the_module_binding() -> None:
         '    _DIR = tmp_path / "x"\n'
         '    (_DIR / "a.md").read_text()\n'
     )
-    assert _scan_source(source, ("tests", "test_probe.py")) == {"CHANGELOG"}
+    assert _scan_source(source, ("tests", "test_probe.py")).reads == {"CHANGELOG"}
 
 
 def test_an_exact_entry_covers_one_path_and_a_glob_covers_a_tree() -> None:
@@ -613,6 +842,29 @@ def test_an_exact_entry_covers_one_path_and_a_glob_covers_a_tree() -> None:
     assert not _entry_covers("docs", "docs/user/CONFIG.md")
     assert not _entry_covers("docs/user", "docs/user/CONFIG.md")
     assert not _entry_covers("src/**", "scripts/x.py")
+
+
+def test_every_repo_path_a_test_builds_is_resolved() -> None:
+    """A read the scan cannot resolve is a read the drift tests cannot check.
+
+    A join onto the repo root with an operand the scan cannot follow,
+    such as `REPO / p` over `git ls-files` output or `_REPO / path` over
+    a parameter, or a listing of the root itself, reads files that no
+    path in the source names. Such a line must say what it reads in a
+    `# path-filter:` comment: exact paths, `<dir>/**`, a glob such as
+    `**/*.md`, or `none` when it reads nothing the filter must cover,
+    such as a stat of a path the scan already found. The declared paths
+    then take part in every check here as if the code had spelled them.
+    """
+    scans = _suite_scans()
+    problems = {module: list(scan.problems) for module, scan in scans.items() if scan.problems}
+    assert not problems, (
+        f"paths on the repo root that the scan cannot resolve, or "
+        f"`# {_PRAGMA}` comments it cannot use: {problems}. Spell the path "
+        f"so the scan resolves it, or say on the line what it reads."
+    )
+    missing = _missing_declared_paths(scans)
+    assert not missing, f"`# {_PRAGMA}` comments name paths that do not exist: {missing}"
 
 
 def test_code_filter_covers_every_in_repo_package_the_suite_uses() -> None:

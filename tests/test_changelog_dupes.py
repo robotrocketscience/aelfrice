@@ -235,7 +235,7 @@ def test_the_ci_invocation_names_the_unreleased_directory() -> None:
     directory = (_REPO / "CHANGELOG" / "unreleased").resolve()
     matched = [
         arg for arg in _ci_arguments()
-        if any(p.resolve() == directory for p in _REPO.glob(arg))
+        if any(p.resolve() == directory for p in _REPO.glob(arg))  # path-filter: CHANGELOG.md CHANGELOG/**
     ]
     assert matched, (
         "release-docs-check does not pass CHANGELOG/unreleased to "
@@ -255,6 +255,6 @@ def test_the_committed_tree_passes_the_ci_invocation(
     monkeypatch.chdir(_REPO)
     expanded: list[str] = []
     for arg in _ci_arguments():
-        matches = sorted(str(p) for p in _REPO.glob(arg))
+        matches = sorted(str(p) for p in _REPO.glob(arg))  # path-filter: CHANGELOG.md CHANGELOG/**
         expanded.extend(matches or [arg])
     assert main(["check_changelog_dupes.py", *expanded]) == 0

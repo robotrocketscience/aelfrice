@@ -77,7 +77,7 @@ def _tracked_markdown() -> list[Path]:
         ["git", "ls-files", "*.md"],
         cwd=REPO, capture_output=True, text=True, check=True, timeout=30,
     ).stdout.split()
-    return [REPO / p for p in out]
+    return [REPO / p for p in out]  # path-filter: **/*.md
 
 
 def _broken() -> tuple[list[str], int]:

@@ -79,7 +79,7 @@ def test_each_mutation_run_deselect_names_a_real_test() -> None:
     for target in targets:
         path, sep, func = target.partition("::")
         assert sep and func, target
-        source = (_REPO / path).read_text(encoding="utf-8")
+        source = (_REPO / path).read_text(encoding="utf-8")  # path-filter: tests/**
         assert re.search(rf"^def {re.escape(func)}\(", source, re.M), target
 
 
