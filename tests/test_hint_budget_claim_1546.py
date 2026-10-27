@@ -27,17 +27,22 @@ reservation of either kind, added at the budget resolution or inside
 `_retrieve`, changes that value and fails here.
 
 The third covers the hint's second emitting path. On a session's first
-prompt that the #674 shape gate refuses, the hook emits the locked
-sub-block and the hint without calling `_retrieve`, so a paragraph that
-says the hint always follows a spent budget is true of one path only. The
-test fires that path, asserts the hint is emitted with no `_retrieve`
-call, and then requires the paragraph to say `_retrieve` never runs there.
+prompt that the #674 shape gate refuses, the hook emits the session-start
+block and the hint without calling `_retrieve`. What that block holds
+depends on the store, the cwd and the cadence-resume cache, so the test
+fires the path three ways: a lock with a plain cwd, a lock with a git cwd,
+which adds `<recent-work>`, and an empty store with a cadence-resume cache,
+which leaves no `<locked>` or `<core>` at all. Each fire asserts the hint
+is emitted with no `_retrieve` call and records the sub-blocks ahead of it.
+The paragraph then has to say `_retrieve` never runs there and name every
+one of those sub-blocks.
 """
 from __future__ import annotations
 
 import ast
 import io
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -188,30 +193,11 @@ def test_the_hook_hands_retrieve_the_bare_budget(
         "budget; change the paragraph in the same commit (#1546)."
     )
 
+_GATE_SKIP_TAGS = ("cadence-resume", "locked", "core", "recent-work")
+"""Every sub-block the gate-skip branch can put ahead of the hint."""
 
-@pytest.mark.source_scan
-def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The paragraph names the emitting path on which `_retrieve` never runs.
 
-    "ok" is a session's first prompt and too short for the #674 shape gate,
-    so the hook takes the gate-skip branch and emits the locked sub-block
-    with the hint and no retrieval. The control fire, a long first prompt in
-    a second session, has to call `_retrieve` once, so a wrapper the hook
-    routes around fails there rather than passing on zero calls. Only then
-    is the paragraph read; it is marked `source_scan` (#1746) for that read.
-    """
-    calls: list[int] = []
-    real = hook._retrieve
-
-    def counting(*args: Any, **kwargs: Any) -> Any:
-        calls.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(hook, "_retrieve", counting)
-    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
-    db = tmp_path / "memory.db"
+def _seed_lock(db: Path) -> None:
     store = MemoryStore(str(db))
     try:
         store.insert_belief(
@@ -230,13 +216,98 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
         )
     finally:
         store.close()
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args], cwd=str(cwd), check=True, capture_output=True,
+        timeout=30,
+    )
+
+
+def _git_checkout(path: Path) -> None:
+    """A repository on branch `work` with one commit, so `<recent-work>` renders."""
+    path.mkdir()
+    _git(path, "init", "-q", "-b", "work")
+    _git(path, "config", "user.email", "t@t")
+    _git(path, "config", "user.name", "t")
+    _git(path, "config", "commit.gpgsign", "false")
+    (path / "a.txt").write_text("a", encoding="utf-8")
+    _git(path, "add", "a.txt")
+    _git(path, "commit", "-q", "-m", "feat: seed")
+
+
+def _write_cadence_resume_cache() -> None:
+    """A fresh cache where the hook reads it, beside the scratch store."""
+    cache = hook._cadence_resume_cache_path()
+    assert cache is not None
+    cache.write_text(
+        json.dumps(
+            {
+                "ts": "2026-10-27T00:00:00Z",
+                "session_id": "previous",
+                "policy": "p1",
+                "body": "pick up the packaging work",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.source_scan
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("lock", {"locked", "core"}),
+        ("lock-in-git", {"locked", "core", "recent-work"}),
+        ("cadence-only", {"cadence-resume"}),
+    ],
+)
+def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    case: str, expected: set[str],
+) -> None:
+    """The paragraph names the gate-skip path and what the hint follows there.
+
+    "ok" is a session's first prompt and too short for the #674 shape gate,
+    so the hook takes the gate-skip branch and emits the session-start
+    block with the hint and no retrieval. Each case asserts the exact set
+    of sub-blocks ahead of the hint, so a case that stopped producing the
+    shape it is named for fails before the paragraph is read. The control
+    fire, a long first prompt in a second session, has to call `_retrieve`
+    once, so a wrapper the hook routes around fails there rather than
+    passing on zero calls. Only then is the paragraph read; it is marked
+    `source_scan` (#1746) for that read.
+    """
+    calls: list[int] = []
+    real = hook._retrieve
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hook, "_retrieve", counting)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    cwd = tmp_path / "cwd"
+    if case == "lock-in-git":
+        _git_checkout(cwd)
+    else:
+        cwd.mkdir()
+    db = tmp_path / "memory.db"
+    if case == "cadence-only":
+        MemoryStore(str(db)).close()
+    else:
+        _seed_lock(db)
     monkeypatch.setenv("AELFRICE_DB", str(db))
+    if case == "cadence-only":
+        _write_cadence_resume_cache()
 
     def fire(session_id: str, prompt: str) -> str:
         sout = io.StringIO()
         serr = io.StringIO()
         rc = hook.user_prompt_submit(
-            stdin=io.StringIO(_payload(tmp_path, session_id, prompt)),
+            stdin=io.StringIO(_payload(cwd, session_id, prompt)),
             stdout=sout,
             stderr=serr,
         )
@@ -254,6 +325,12 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
         "the gate-skip first-prompt fire emitted no hint, so this test "
         f"measured nothing: {skipped!r}"
     )
+    ahead = skipped[: skipped.index(hook.MEMORY_BLOCK_HINT)]
+    seen = {tag for tag in _GATE_SKIP_TAGS if f"<{tag}" in ahead}
+    assert seen == expected, (
+        f"the {case!r} gate-skip fire put {sorted(seen)} ahead of the hint, "
+        f"not {sorted(expected)}: {skipped!r}"
+    )
     fire("retrieve", "how should I manage python packaging with uv here")
     assert len(calls) == 1, (
         f"the retrieving control fire called _retrieve {len(calls)} times, "
@@ -265,3 +342,14 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
         "On a gate-skip first prompt the hint is emitted with no _retrieve "
         "call, so no budget was spent before it; say so (#1546)."
     )
+    for tag in sorted(seen):
+        assert f"`<{tag}>`" in doc, (
+            f"on a gate-skip first prompt the hint can follow <{tag}>, and "
+            "the MEMORY_BLOCK_HINT docstring does not name it (#1546)"
+        )
+    if "locked" not in seen:
+        assert "no `<locked>` or `<core>`" in doc, (
+            "a gate-skip first prompt can emit the hint with no <locked> or "
+            "<core> ahead of it, and the MEMORY_BLOCK_HINT docstring does "
+            "not say so (#1546)"
+        )
