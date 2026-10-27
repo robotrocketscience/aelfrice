@@ -36,9 +36,10 @@ so the run always uses the `claude` login (`runner_env`).
 On Windows (#1761) the child starts with `DETACHED_PROCESS`,
 `CREATE_NO_WINDOW`, and `CREATE_NEW_PROCESS_GROUP` in place of
 `start_new_session`, which Popen ignores there, and runs the CLI with
-`CREATE_NO_WINDOW`, so neither opens a console window. `shutil.which`
-resolves an npm `claude.cmd` shim through `PATHEXT`, and the reply is
-decoded as UTF-8 rather than through the ANSI code page.
+`CREATE_NO_WINDOW`, so neither opens a console window. `find_claude`
+resolves `claude` through the `PATHEXT` extensions, so an npm
+`claude.cmd` shim is found, and the reply is decoded as UTF-8 rather
+than through the ANSI code page.
 
 Never raises into the hook. A failed run leaves the batch open; an open
 batch claims its beliefs, so no later Stop asks about them, and
@@ -133,6 +134,9 @@ _WIN32_CREATION_FLAGS: Final[dict[str, int]] = {
     "CREATE_NO_WINDOW": 0x08000000,
 }
 
+#: The executable extensions `find_claude` tries when `PATHEXT` is unset.
+_WIN32_DEFAULT_PATHEXT: Final[str] = ".COM;.EXE;.BAT;.CMD"
+
 
 def _is_win32() -> bool:
     return sys.platform == "win32"
@@ -222,10 +226,23 @@ def background_enabled(
 def find_claude() -> str | None:
     """Path of the host's `claude` CLI, or None when it isn't on PATH.
 
-    On Windows `shutil.which` reads `PATHEXT`, so an npm `claude.cmd` shim
-    resolves as the native installer's `claude.exe` does (#1761).
+    On Windows (#1761) it asks `shutil.which` for `claude` with each
+    `PATHEXT` extension in turn, so the native installer's `claude.exe` and
+    the npm shim `claude.cmd` both resolve, and the first extension found
+    anywhere on PATH wins. It never asks for the bare name: npm installs an
+    extensionless `sh` script beside the shim, which `CreateProcess` can't
+    start, and Python 3.12.0's `which` tries the bare name first.
     """
-    return shutil.which(CLAUDE_BIN)
+    if not _is_win32():
+        return shutil.which(CLAUDE_BIN)
+    pathext = os.environ.get("PATHEXT") or _WIN32_DEFAULT_PATHEXT
+    for ext in pathext.split(";"):
+        if not ext:
+            continue
+        found = shutil.which(CLAUDE_BIN + ext)
+        if found is not None:
+            return found
+    return None
 
 
 @contextmanager

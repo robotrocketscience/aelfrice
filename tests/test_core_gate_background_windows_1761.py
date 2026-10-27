@@ -95,6 +95,10 @@ def _write_stub(folder: Path) -> str:
         shim.write_text(
             f'@echo off\r\n"{sys.executable}" "{program}" %*\r\n', encoding="utf-8",
         )
+        # npm's other two files beside the shim, which `find_claude` must
+        # pass over: an extensionless `sh` script and a PowerShell script.
+        (folder / "claude").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (folder / "claude.ps1").write_text("exit 1\r\n", encoding="utf-8")
     else:
         shim = folder / "claude"
         shim.write_text(

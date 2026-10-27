@@ -641,22 +641,41 @@ def test_find_claude_reads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert _REAL_FIND_CLAUDE() is None
 
 
-def test_find_claude_returns_the_cmd_shim_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Killed by: a `win32` branch that returns None before `shutil.which`
-    (the #1741 guard that #1761 removed). `which` is replaced here because
-    its own `PATHEXT` branch needs `_winapi`; the real resolution runs on
-    the windows-smoke leg in test_core_gate_background_windows_1761."""
-    shim = r"C:\Users\user\AppData\Roaming\npm\claude.CMD"
-    asked: list[str] = []
+@pytest.mark.parametrize("pathext", [".COM;.EXE;.BAT;.CMD", ";.COM;.EXE;;.CMD;", None])
+def test_find_claude_returns_the_cmd_shim_beside_npm_s_sh_script_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pathext: str | None,
+) -> None:
+    """npm installs `claude` (a `sh` script), `claude.cmd`, and `claude.ps1`
+    side by side, and Python 3.12.0's `shutil.which` tries the bare name
+    before the `PATHEXT` names, so asking it for `claude` returns the script,
+    which `CreateProcess` can't start. Killed by: asking for the bare name,
+    a `win32` branch that returns None (the #1741 guard that #1761 removed),
+    an empty `PATHEXT` entry taken as the bare name, or no default when
+    `PATHEXT` is unset. `which` is replaced with 3.12.0's lookup order
+    because its real `PATHEXT` branch needs `_winapi`; the real resolution
+    runs on the windows-smoke leg in test_core_gate_background_windows_1761."""
+    for name in ("claude", "claude.cmd", "claude.ps1"):
+        (tmp_path / name).write_text("", encoding="utf-8")
 
-    def fake_which(cmd: str) -> str:
-        asked.append(cmd)
-        return shim
+    def which_3_12_0(cmd: str) -> str | None:
+        on_disk = {p.name.lower() for p in tmp_path.iterdir()}
+        exts = (pathext or ".COM;.EXE;.BAT;.CMD").split(";")
+        for candidate in [cmd, *(cmd + ext for ext in exts)]:
+            if candidate.lower() in on_disk:
+                return str(tmp_path / candidate)
+        return None
 
     monkeypatch.setattr(bg.sys, "platform", "win32")
-    monkeypatch.setattr(bg.shutil, "which", fake_which)
-    assert _REAL_FIND_CLAUDE() == shim
-    assert asked == [bg.CLAUDE_BIN]
+    monkeypatch.setattr(bg.shutil, "which", which_3_12_0)
+    if pathext is None:
+        monkeypatch.delenv("PATHEXT", raising=False)
+    else:
+        monkeypatch.setenv("PATHEXT", pathext)
+    found = _REAL_FIND_CLAUDE()
+    assert found is not None
+    assert Path(found).name.lower() == "claude.cmd"
+    (tmp_path / "claude.cmd").unlink()
+    assert _REAL_FIND_CLAUDE() is None
 
 
 def test_spawn_comes_after_the_commit(
