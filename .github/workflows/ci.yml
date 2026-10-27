@@ -200,7 +200,11 @@ jobs:
       # producers over the same tree on every PR, with no path filter, and
       # the merge train requires it, so each leg ran the producers a second
       # time. That job runs Python 3.13 only, so the 3.12 leg no longer runs
-      # the producers. The test still runs locally.
+      # the producers. It also has no 120 s cap: the test's timeout marker
+      # held each leg to 120 s, while the job lets each producer run for
+      # 300 s (`PRODUCER_TIMEOUT_S` in scripts/check_derived_figures.py) and
+      # sets no `timeout-minutes`. A producer that slows past 120 s and
+      # finishes inside 300 s now passes CI. The test still runs locally.
       # tests/test_ci_pytest_job_hygiene.py ties the deselect to that job.
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks --junitxml=junit-${{ matrix.python-version }}.xml

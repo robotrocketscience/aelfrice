@@ -1151,7 +1151,9 @@ def test_the_repo_passes_the_producer_checks() -> None:
 
     The required `pytest` legs in ci.yml deselect this test (#1786): the
     `derived-figures` job runs the same producers over the same tree on
-    every PR. It still runs in a local `uv run pytest`.
+    every PR. That job bounds each producer at `PRODUCER_TIMEOUT_S`
+    (300s) and has no 120s cap, so no required check enforces this
+    marker. The test still runs in a local `uv run pytest`.
 
     Price a new producer before you add one, not at the release cut:
 
