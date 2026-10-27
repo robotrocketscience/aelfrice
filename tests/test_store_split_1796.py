@@ -536,18 +536,6 @@ def test_a_root_in_another_letter_case_below_the_work_tree_is_one_target(
     assert all(str(r[1]).startswith("a-") for r in rows), rows
 
 
-def test_only_a_name_in_another_letter_case_respells_a_root_part(
-    repo: Path,
-) -> None:
-    """The symlink `Alias` is the folder `a/` too, but not its spelling.
-    The parts from the first missing one keep their recorded spelling."""
-    _other_case(repo)
-    (repo / "Alias").symlink_to(repo / "a", target_is_directory=True)
-    spell = store_split._disk_spelling  # pyright: ignore[reportPrivateUsage]
-    assert spell(repo, ("A", "Docs")) == Path("a", "docs")
-    assert spell(repo, ("A", "Docs", "Gone", "X")) == Path("a", "docs", "Gone", "X")
-
-
 def test_a_file_path_in_another_letter_case_is_one_target(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -626,6 +614,29 @@ def test_a_file_path_is_spelled_from_disk_below_the_onboard_root(
         work_tree, [(root, "Docs/x.md")], set(),
     )
     assert folders == (None, {root / "docs"})
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks need extra rights on Windows",
+)
+def test_a_name_in_another_letter_case_is_respelled_as_the_entry_it_names(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a case-insensitive filesystem `A` names the folder `a/` and
+    `ALIAS` names the symlink `Alias` to it, so each is spelled as that
+    entry, and a file path through `ALIAS` stops at the symlink as one
+    through `Alias` does (#1806). The parts from the first missing one
+    keep their recorded spelling."""
+    (repo / "Alias").symlink_to(repo / "a", target_is_directory=True)
+    monkeypatch.setattr(store_split, "os", _CaseInsensitiveOs())
+    spell = store_split._disk_spelling  # pyright: ignore[reportPrivateUsage]
+    assert spell(repo, ("A", "Docs")) == Path("a", "docs")
+    assert spell(repo, ("ALIAS", "Docs")) == Path("Alias", "docs")
+    assert spell(repo, ("A", "Docs", "Gone", "X")) == Path("a", "docs", "Gone", "X")
+    folders = store_split._belief_folders(  # pyright: ignore[reportPrivateUsage]
+        repo, [(repo, "ALIAS/docs/y.md"), (repo, "Alias/docs/x.md")], set(),
+    )
+    assert folders == (None, {repo})
 
 
 def test_folders_it_cannot_read_compare_by_their_text(tmp_path: Path) -> None:

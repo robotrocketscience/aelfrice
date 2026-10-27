@@ -428,15 +428,17 @@ def _disk_spelling(folder: Path, parts: tuple[str, ...]) -> Path:
 
     On a case-insensitive filesystem `A` reaches the folder `a`, and the
     two spellings would name one store as two targets. A part that its
-    parent doesn't list is replaced by the listed entry that is the same
-    file, so a symlink to that folder never counts. Parts from the first
-    one that is missing, or whose parent can't be listed, keep their
-    recorded spelling.
+    parent doesn't list is replaced by the listed entry that it reaches,
+    compared without following symlinks: `A` is spelled `a`, never as a
+    symlink to `a`, and `ALIAS` for the symlink `Alias` is spelled
+    `Alias`, so `owning_folder` stops there as it does for `Alias`.
+    Parts from the first one that is missing, or whose parent can't be
+    listed, keep their recorded spelling.
     """
     current = folder
     for i, part in enumerate(parts):
         try:
-            found = os.stat(current / part)
+            found = os.lstat(current / part)
             names = os.listdir(current)
         except OSError:
             return current.joinpath(*parts[i:]).relative_to(folder)
