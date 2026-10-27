@@ -599,6 +599,47 @@ def test_fetch_baseline_asks_for_max_commits_of_history() -> None:
     assert api.paths[0] == "/repos/o/r/commits?sha=base&per_page=7"
 
 
+class _FakeGh:
+    """Stands in for `subprocess.run` under GhApi and records each call."""
+
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes = b"") -> None:
+        self.result = (returncode, stdout, stderr)
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append((cmd, kwargs))
+        returncode, stdout, stderr = self.result
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+
+
+def test_gh_api_runs_gh_api_on_the_path_with_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    gh = _FakeGh(0, b'{"workflow_runs": [{"id": 7}]}', b"a warning")
+    monkeypatch.setattr(tor.subprocess, "run", gh)
+    assert tor.GhApi().json("/repos/o/r/x") == {"workflow_runs": [{"id": 7}]}
+    assert tor.GhApi().bytes("/repos/o/r/y") == b'{"workflow_runs": [{"id": 7}]}'
+    kwargs = {"capture_output": True, "check": False, "timeout": tor._API_TIMEOUT_SECONDS}
+    assert gh.calls == [(["gh", "api", "/repos/o/r/x"], kwargs), (["gh", "api", "/repos/o/r/y"], kwargs)]
+    assert 0 < tor._API_TIMEOUT_SECONDS <= 120
+
+
+def test_gh_api_raises_with_gh_stderr_when_gh_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tor.subprocess, "run", _FakeGh(1, b"{}", b"HTTP 404: Not Found\n"))
+    with pytest.raises(RuntimeError, match=r"^gh api /repos/o/r/x failed: HTTP 404: Not Found$"):
+        tor.GhApi().json("/repos/o/r/x")
+    with pytest.raises(RuntimeError):
+        tor.GhApi().bytes("/repos/o/r/x")
+
+
+def test_a_gh_failure_through_gh_api_becomes_a_no_baseline_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tor.subprocess, "run", _FakeGh(1, b"", b"HTTP 502"))
+    out = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 0
+    marker = json.loads(out.read_text(encoding="utf-8"))
+    assert marker["found"] is False and "HTTP 502" in marker["notice"]
+
+
 # ------------------------------------------------------------------ CLI
 
 def test_record_then_diff_through_main(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
