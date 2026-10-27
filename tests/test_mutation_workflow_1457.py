@@ -485,3 +485,75 @@ def test_the_pr_trigger_is_path_filtered() -> None:
     text = _workflow_text()
     pr_at = text.index("pull_request:")
     assert "paths:" in text[pr_at:pr_at + 400]
+
+
+# --- #1786: the per-PR job runs on the ready-to-merge label ---------------
+
+
+def _pr_trigger_lines() -> list[str]:
+    """The `pull_request:` sub-block under `on:`, comments and blanks dropped."""
+    lines = _workflow_text().splitlines()
+    start = lines.index("  pull_request:") + 1
+    block: list[str] = []
+    for line in lines[start:]:
+        if line.strip() and not line.startswith("    "):
+            break
+        if line.strip() and not line.lstrip().startswith("#"):
+            block.append(line)
+    return block
+
+
+def _diff_job_condition() -> str:
+    """The `if:` expression of the `diff` job, folded onto one line.
+
+    The expression is a `|` block scalar, so its lines are indented past the
+    job's own keys; the fold stops at the next four-space key.
+    """
+    lines = _workflow_text().splitlines()
+    job_at = next(i for i, line in enumerate(lines) if line.rstrip() == "  diff:")
+    body: list[str] = []
+    for line in lines[job_at + 1:]:
+        if line.strip() and not line.startswith("    "):
+            break
+        body.append(line)
+    if_at = next(i for i, line in enumerate(body) if line.startswith("    if:"))
+    parts = [body[if_at][len("    if:"):].strip().lstrip("|").strip()]
+    for line in body[if_at + 1:]:
+        if line.startswith("    ") and line[4] != " ":
+            break
+        parts.append(line.strip())
+    return " ".join(part for part in parts if part)
+
+
+def test_the_pr_trigger_fires_on_labeled_and_synchronize_only() -> None:
+    """#1786: not on every push.
+
+    An unrestricted trigger ran an hour of mutmut on every push to every
+    PR, for a result the next push replaced. The label says the PR is done;
+    `synchronize` refreshes the result when a push lands while the label is
+    on. These are the two events `merge-train.yml` reacts to.
+    """
+    types = [line for line in _pr_trigger_lines() if line.strip().startswith("types:")]
+    assert len(types) == 1, "the pull_request trigger must list its types"
+    inner = types[0].split("[", 1)[1].rsplit("]", 1)[0]
+    listed = [t.strip().strip("'\"") for t in inner.split(",") if t.strip()]
+    assert listed == ["labeled", "synchronize"], listed
+
+
+def test_the_diff_job_runs_only_for_the_ready_to_merge_label() -> None:
+    """`types: [labeled]` fires on any label; the job's `if` picks the one.
+
+    Both arms are needed. Without the `labeled` arm the job never starts on
+    the operator's add; without the `synchronize` arm a push while the label
+    is on leaves the stale result standing.
+    """
+    expr = _diff_job_condition()
+    assert "github.event_name == 'pull_request'" in expr
+    assert (
+        "github.event.action == 'labeled' && "
+        "github.event.label.name == 'ready-to-merge'"
+    ) in expr
+    assert (
+        "github.event.action == 'synchronize' && "
+        "contains(github.event.pull_request.labels.*.name, 'ready-to-merge')"
+    ) in expr
