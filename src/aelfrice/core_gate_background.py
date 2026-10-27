@@ -31,8 +31,14 @@ The runner's flags were measured on #1741 before it was built:
 The labels are the classifier's own: the prompt is `core_gate.build_prompt`
 and the reply goes through `core_gate.parse_labels`, the same parser
 `aelf core-gate accept` uses. The child's environment drops any API key,
-so the run always uses the `claude` login (`runner_env`). It doesn't run
-on Windows yet (`find_claude`).
+so the run always uses the `claude` login (`runner_env`).
+
+On Windows (#1761) the child starts with `DETACHED_PROCESS`,
+`CREATE_NO_WINDOW`, and `CREATE_NEW_PROCESS_GROUP` in place of
+`start_new_session`, which Popen ignores there, and runs the CLI with
+`CREATE_NO_WINDOW`, so neither opens a console window. `shutil.which`
+resolves an npm `claude.cmd` shim through `PATHEXT`, and the reply is
+decoded as UTF-8 rather than through the ANSI code page.
 
 Never raises into the hook. A failed run leaves the batch open; an open
 batch claims its beliefs, so no later Stop asks about them, and
@@ -216,13 +222,9 @@ def background_enabled(
 def find_claude() -> str | None:
     """Path of the host's `claude` CLI, or None when it isn't on PATH.
 
-    Always None on Windows until the path is verified there (operator
-    ruling on #1741, 2026-10-08): a detached child may open a console
-    window, and an npm `claude.cmd` shim passes the JSON `--settings`
-    argument through cmd.exe quoting. Windows then behaves as 5.1.1 did.
+    On Windows `shutil.which` reads `PATHEXT`, so an npm `claude.cmd` shim
+    resolves as the native installer's `claude.exe` does (#1761).
     """
-    if sys.platform == "win32":
-        return None
     return shutil.which(CLAUDE_BIN)
 
 

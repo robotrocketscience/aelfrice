@@ -102,8 +102,11 @@ checks the reply with `parse_labels`, and caches the labels.
 `parse_labels` strips one surrounding Markdown fence for both accept
 paths; that change made a new classifier version. Since #1761 the
 hooks-off setting reaches `claude` as a per-run temporary file, removed
-when the run returns, so no JSON goes through a command line. It's off
-on Windows until verified there. Nothing is
+when the run returns, so no JSON goes through a command line. On
+Windows (#1761) the process starts with `DETACHED_PROCESS`,
+`CREATE_NO_WINDOW`, and `CREATE_NEW_PROCESS_GROUP`, and `claude` can be
+the npm `claude.cmd` shim, which runs its arguments through cmd.exe.
+Nothing is
 written to the hook's stdout. A run that fails leaves the batch open,
 which the backlog drain covers. Each run appends one line, with no belief
 text, to `core_gate_background.jsonl` beside the store.

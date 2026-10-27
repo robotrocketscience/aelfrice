@@ -1395,7 +1395,7 @@ The process writes one line per run to `core_gate_background.jsonl` beside the s
 
 The setting that turns hooks off reaches `claude` as a file (#1761): each run writes `{"disableAllHooks": true}`, and nothing else, to a new `aelfrice-core-gate-*.json` file in your temporary folder, readable only by you on macOS and Linux, and removes it when the run returns, times out, or fails to start. A process that is killed before then leaves that file behind.
 
-Background labeling doesn't run on Windows yet, in a headless session (#1634), on the Codex host, or when `claude` isn't on your `PATH`. The variable and the key apply from the next Stop.
+Background labeling doesn't run in a headless session (#1634), on the Codex host, or when `claude` isn't on your `PATH`. Since #1761 it also runs on Windows, with `claude` from the native installer or from npm, and the process starts detached with no console. The variable and the key apply from the next Stop.
 
 The reply goes through the same strict check as `aelf core-gate accept`, which since #1741 also accepts a reply wrapped in one Markdown code fence. That changed the classifier version, so labels made under 5.1.x no longer apply: those beliefs count as unlabeled, and a belief that was labeled C returns to core. Background labeling labels only each session's new beliefs, so to label the older ones again, run `aelf doctor core-gate --emit`.
 

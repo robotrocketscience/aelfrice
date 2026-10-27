@@ -17,6 +17,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -280,3 +281,83 @@ def test_the_cli_run_hides_its_window_on_windows_only(
         assert call["creationflags"] == CREATE_NO_WINDOW
     else:
         assert "creationflags" not in call
+
+
+# --- the stub CLI: argv, settings file, and the real spawn path ----------------
+
+
+def _run_against_the_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the stub through `find_claude`, run one batch, check what arrived."""
+    _write_stub(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    if WIN32:
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    claude = _REAL_FIND_CLAUDE()
+    assert claude is not None, "find_claude did not resolve the stub"
+    assert Path(claude).resolve().parent == tmp_path.resolve()
+    assert Path(claude).name.lower() == ("claude.cmd" if WIN32 else "claude")
+    db = tmp_path / "memory.db"
+    batch_id = _open_batch(db)
+    store = MemoryStore(str(db))
+    try:
+        record = bg.label_batch(store, batch_id, claude=claude)
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_ACCEPTED, record
+    assert _labels(db) == {"hash-w1": "A"}
+    argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
+    settings = argv[argv.index("--settings") + 1]
+    assert argv == bg.runner_argv(claude, settings)[1:]
+    assert (tmp_path / "settings-copy.json").read_text(encoding="utf-8") == bg.RUNNER_SETTINGS_JSON
+    assert not Path(settings).exists()
+    assert "widgetwin w1" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not WIN32, reason="the cmd.exe shim path; the POSIX variant is below")
+@pytest.mark.timeout(120)  # #1307: a real interpreter spawn through cmd.exe
+def test_a_cmd_shim_receives_the_argv_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows leg. Killed by: an argument that cmd.exe reshapes on the
+    way through `%*`, a `--settings` file the CLI can't read, or a labeler
+    that can't run a `.cmd` at all. The `--system-prompt` value carries
+    spaces and an apostrophe, and `--tools` is the empty string."""
+    _run_against_the_stub(tmp_path, monkeypatch)
+
+
+@pytest.mark.skipif(WIN32, reason="the POSIX shim path; the Windows variant is above")
+@pytest.mark.timeout(120)  # #1307: a real interpreter spawn through sh
+def test_a_posix_shim_receives_the_argv_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The required legs' arm of the test above: the same stub behind `sh`,
+    so the argv and settings-file assertions run on every pull request."""
+    _run_against_the_stub(tmp_path, monkeypatch)
+
+
+@pytest.mark.skipif(not WIN32, reason="the real Windows spawn; POSIX is covered in #1741's tests")
+@pytest.mark.timeout(120)  # #1307: a real detached child
+def test_the_detached_child_runs_the_stub_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows leg's spawn path with no fake: Popen accepts the flag set,
+    the detached child finds the store, runs the `.cmd`, and logs `accepted`.
+    Killed by: a flag combination `CreateProcess` rejects, or a child that
+    can't reach the store or the shim from a detached start."""
+    claude = _write_stub(tmp_path)
+    store = tmp_path / "store" / "memory.db"
+    store.parent.mkdir()
+    batch_id = _open_batch(store)
+    monkeypatch.setenv("AELFRICE_DB", str(store))
+    assert bg.spawn(batch_id, db_path=str(store), claude=claude) is True
+    log = store.parent / bg.LOG_FILENAME
+    text = ""
+    deadline = time.monotonic() + 90
+    # The child opens the log before it writes the line, so wait for the
+    # newline that ends the record rather than for the file.
+    while not text.endswith("\n") and time.monotonic() < deadline:
+        time.sleep(0.2)
+        text = log.read_text(encoding="utf-8") if log.exists() else ""
+    (rec,) = [json.loads(x) for x in text.splitlines()]
+    assert rec["outcome"] == bg.OUTCOME_ACCEPTED, rec
+    assert _labels(store) == {"hash-w1": "A"}

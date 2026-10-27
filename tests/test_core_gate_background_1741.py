@@ -623,26 +623,40 @@ def test_main_logs_one_record_without_text(
 
 def test_find_claude_reads_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Killed by: a wrong binary name, which would turn the feature off with
-    a green suite."""
+    a green suite. On Windows the CLI is the npm shim `claude.cmd`, which
+    `shutil.which` resolves through `PATHEXT` (#1761)."""
     if sys.platform == "win32":
-        pytest.skip("background labeling is off on Windows")
-    exe = tmp_path / "claude"
-    exe.write_text("#!/bin/sh\n", encoding="utf-8")
-    exe.chmod(0o755)
+        exe = tmp_path / "claude.cmd"
+        exe.write_text("@echo off\r\n", encoding="utf-8")
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    else:
+        exe = tmp_path / "claude"
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert _REAL_FIND_CLAUDE() == str(exe)
+    found = _REAL_FIND_CLAUDE()
+    assert found is not None
+    assert Path(found).resolve() == exe.resolve()
     monkeypatch.setenv("PATH", str(tmp_path / "missing"))
     assert _REAL_FIND_CLAUDE() is None
 
 
-def test_find_claude_is_off_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Killed by: dropping the Windows guard (ruling on #1741)."""
-    exe = tmp_path / "claude"
-    exe.write_text("#!/bin/sh\n", encoding="utf-8")
-    exe.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
+def test_find_claude_returns_the_cmd_shim_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killed by: a `win32` branch that returns None before `shutil.which`
+    (the #1741 guard that #1761 removed). `which` is replaced here because
+    its own `PATHEXT` branch needs `_winapi`; the real resolution runs on
+    the windows-smoke leg in test_core_gate_background_windows_1761."""
+    shim = r"C:\Users\widget\AppData\Roaming\npm\claude.CMD"
+    asked: list[str] = []
+
+    def fake_which(cmd: str) -> str:
+        asked.append(cmd)
+        return shim
+
     monkeypatch.setattr(bg.sys, "platform", "win32")
-    assert _REAL_FIND_CLAUDE() is None
+    monkeypatch.setattr(bg.shutil, "which", fake_which)
+    assert _REAL_FIND_CLAUDE() == shim
+    assert asked == [bg.CLAUDE_BIN]
 
 
 def test_spawn_comes_after_the_commit(
