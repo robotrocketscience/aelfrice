@@ -1875,6 +1875,26 @@ def test_h2_split_separates_the_writers_from_the_lane() -> None:
         bench.V_NOT_MEASURED)
 
 
+def test_the_lane_reads_grader_a_then_grader_c() -> None:
+    # A1 gains 1, 1, 0, 2 over A1W for the grader that keeps A1's labels.
+    # The other calls only A1's first 2 items per prompt relevant, A1W's
+    # count: no lane gain, and the lane fails.
+    rows = _split_rows([2, 2, 2, 2], [2, 2, 2, 2], [3, 3, 2, 4])
+    one_fails = [r if not r[0].startswith("y") else (*r[:5], int(r[0].split("-")[1]) < 2)
+                 for r in rows]
+    swapped = [(*r[:4], r[5], r[4]) for r in one_fails]
+    for case, gains, verdicts in (
+        (one_fails, [1.0, 0.0], [bench.V_PASS, bench.V_FAIL]),
+        (swapped, [0.0, 1.0], [bench.V_FAIL, bench.V_PASS]),
+    ):
+        rep = _score(case)
+        assert rep["hypotheses"]["H0"] == bench.V_PASS
+        lane = rep["arms"]["A1"]["vs_A1W"]["graders"]
+        assert [g["mean_gain"] for g in lane] == [_approx(x) for x in gains]
+        assert [g["gain_verdict"] for g in lane] == verdicts
+        assert rep["hypotheses"]["H2_split"]["lane"] == bench.V_FAIL
+
+
 def test_h1_withholds_the_writer_arms_h5_and_h6() -> None:
     # #1795 H1: under 1 per 100, A1 is substrate-starved, not a lane
     # verdict, on any hypothesis. A2 doesn't depend on the writers.
