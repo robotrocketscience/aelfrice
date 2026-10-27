@@ -2,8 +2,8 @@
 
 #1812 threads the host through the host-specific code so a third host can
 plug in. That refactor must not change what the `claude` or `codex` host
-writes or prints. These tests were committed before the refactor, against
-the code it starts from, and pass unchanged after it.
+writes or prints. These tests pass against the code the refactor starts
+from and pass unchanged after it.
 
 Each test drives `cli.main` in a sandbox home and compares the normalized
 result with a literal: the settings or hooks file written, the slash
@@ -403,6 +403,17 @@ def test_claude_uninstall_cleans_the_claude_host_only(sandbox: Sandbox) -> None:
     # The codex host keeps its wiring and its skills.
     assert _read_json(sandbox.codex / "hooks.json") == codex_before
     assert sorted(p.name for p in sandbox.skills.iterdir()) == _skill_names()
+
+
+@pytest.mark.timeout(120)
+def test_claude_setup_clears_the_claude_opt_out(sandbox: Sandbox) -> None:
+    # #1053: a claude setup is re-consent, so it drops the claude opt-out
+    # that a codex setup writes.
+    assert _codex_setup(sandbox)[0] == 0
+    rc, lines = _claude_setup(sandbox)
+    assert rc == 0
+    assert lines[0] == "cleared claude host auto-install opt-out (#1053)"
+    assert _read_json(sandbox.opt_out) == {"opt_out": []}
 
 
 # --- codex host --------------------------------------------------------------
