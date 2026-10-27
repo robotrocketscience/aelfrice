@@ -27,12 +27,13 @@ compared a tuple against the same constants the tuple was copied from,
 so it could only fail on a rename, never on the drift that occurred.
 
 The read scan walks each module's AST for paths built from the module's
-own location (`Path(__file__).resolve().parents[1] / "docs" / ...`),
-following names bound to such paths, so a test that first binds the repo
-root to a name and then joins onto it is seen the same as one that spells
-the path inline. A new test that reads a new file outside the filter
-fails `test_every_file_the_suite_reads_is_in_the_code_filter`; an entry
-nobody reads any more fails the reverse test beside it.
+own location (`Path(__file__)`, `os.path.dirname(__file__)`). It follows
+names, string constants, literal tuples and the loops over them,
+`joinpath`, `Path(root, ...)`, `os.path.join` and `..`, so each spelling
+the suite uses resolves the same as an inline path. A new test that reads
+a new file outside the filter fails
+`test_every_file_the_suite_reads_is_in_the_code_filter`; an entry nobody
+reads any more fails the reverse test beside it.
 """
 from __future__ import annotations
 
@@ -41,6 +42,8 @@ import functools
 import re
 import shlex
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO / ".github" / "workflows" / "ci.yml"
@@ -134,167 +137,284 @@ def _is_covered(directory: str, globs: list[str]) -> bool:
 
 # --- what the suite reads, derived from its AST ---------------------------
 
-# A path value under resolution: how many `.parent` steps above the test
-# file it starts, and the literal segments joined onto that. The repo root
-# is the value whose depth equals the file's depth below the repo and whose
-# segments are empty.
-_PathValue = tuple[int, tuple[str, ...]]
+# What the scan knows an expression may denote, as a set of tagged items:
+# ("p", segments) is a repo path as its segments below the repo root, so
+# the root itself is ("p", ()); ("s", text) is a string; ("c", items) is a
+# literal tuple, list or set of such items. The empty set means the scan
+# cannot tell. A set rather than one value lets a name bound in several
+# places, or a loop over a tuple of paths, yield one path per binding.
+_Value = frozenset[tuple]
+_UNKNOWN: _Value = frozenset()
+
+# Calls that build a path from a base and string segments.
+_CONSTRUCTORS = frozenset({"Path", "pathlib.Path", "os.path.join"})
+# Calls whose result denotes what their one argument does.
+_PASS_THROUGH = frozenset({
+    "str", "os.fspath", "os.path.abspath", "os.path.realpath", "os.path.normpath",
+    "list", "tuple", "sorted",
+})
+# Attribute steps that consume a path to build another one.
+_PATH_STEPS = frozenset({"parent", "parents", "joinpath", "resolve", "absolute"})
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
-def _is_path_of_file(node: ast.AST) -> bool:
-    """`Path(__file__)` or `pathlib.Path(__file__)`."""
-    return (
-        isinstance(node, ast.Call)
-        and (
-            (isinstance(node.func, ast.Name) and node.func.id == "Path")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "Path")
-        )
-        and len(node.args) == 1
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "__file__"
+def _dotted(node: ast.AST) -> str | None:
+    """`os.path.join` for that attribute chain, `Path` for a bare name."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _step(segments: tuple[str, ...], text: str) -> tuple[str, ...] | None:
+    """`segments` joined with `text`; None for an absolute path or one above the root."""
+    if text.startswith("/"):
+        return None
+    for part in text.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not segments:
+                return None
+            segments = segments[:-1]
+        else:
+            segments = (*segments, part)
+    return segments
+
+
+def _join(base: _Value, parts: list[_Value]) -> _Value:
+    """Every path `base / part / part ...` may denote."""
+    paths = {item[1] for item in base if item[0] == "p"}
+    for part in parts:
+        texts = [item[1] for item in part if item[0] == "s"]
+        if not texts:
+            return _UNKNOWN
+        paths = {
+            joined
+            for segments in paths
+            for text in texts
+            if (joined := _step(segments, text)) is not None
+        }
+    return frozenset(("p", segments) for segments in paths)
+
+
+def _up(value: _Value, levels: int) -> _Value:
+    """The paths `levels` directories above each path in `value`, inside the repo."""
+    return frozenset(
+        ("p", item[1][:-levels])
+        for item in value
+        if item[0] == "p" and len(item[1]) >= levels
     )
 
 
-def _resolve(node: ast.AST, names: dict[str, _PathValue]) -> _PathValue | None:
-    """The path `node` denotes relative to the test file, or None."""
-    if _is_path_of_file(node):
-        return (0, ())
-    if isinstance(node, ast.Call):
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in ("resolve", "absolute"):
-            if not node.args and not node.keywords:
-                return _resolve(func.value, names)
-        return None
-    if isinstance(node, ast.Attribute) and node.attr == "parent":
-        inner = _resolve(node.value, names)
-        if inner is None:
-            return None
-        depth, segments = inner
-        return (depth, segments[:-1]) if segments else (depth + 1, ())
-    if isinstance(node, ast.Subscript):
-        value = node.value
-        if isinstance(value, ast.Attribute) and value.attr == "parents":
-            inner = _resolve(value.value, names)
-            index = node.slice
-            if (
-                inner is not None
-                and not inner[1]
-                and isinstance(index, ast.Constant)
-                and isinstance(index.value, int)
-            ):
-                return (inner[0] + index.value + 1, ())
-        return None
+def _elements(value: _Value) -> _Value:
+    """What a loop over `value` binds its target to."""
+    return frozenset(e for item in value if item[0] == "c" for e in item[1])
+
+
+def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> _Value:
+    """What `node` may denote; `here` is the module's own repo-relative path."""
+    if isinstance(node, ast.Constant):
+        return frozenset({("s", node.value)}) if isinstance(node.value, str) else _UNKNOWN
     if isinstance(node, ast.Name):
-        return names.get(node.id)
+        if node.id == "__file__":
+            return frozenset({("p", here)})
+        return names.get(node.id, _UNKNOWN)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        elements = [_resolve(e, names, here) for e in node.elts]
+        if not elements or not all(elements):
+            return _UNKNOWN
+        return frozenset({("c", frozenset().union(*elements))})
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        return _up(_resolve(node.value, names, here), 1)
+    if isinstance(node, ast.Subscript):
+        index = node.slice
+        if (
+            isinstance(node.value, ast.Attribute)
+            and node.value.attr == "parents"
+            and isinstance(index, ast.Constant)
+            and type(index.value) is int
+            and index.value >= 0
+        ):
+            return _up(_resolve(node.value.value, names, here), index.value + 1)
+        return _UNKNOWN
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        left = _resolve(node.left, names)
-        right = node.right
-        if left is None or not isinstance(right, ast.Constant):
-            return None
-        if not isinstance(right.value, str) or right.value.startswith("/"):
-            return None
-        parts = tuple(p for p in right.value.split("/") if p and p != ".")
-        return (left[0], left[1] + parts)
-    return None
+        return _join(_resolve(node.left, names, here), [_resolve(node.right, names, here)])
+    if isinstance(node, ast.Call) and not any(isinstance(a, ast.Starred) for a in node.args):
+        func = node.func
+        args = [_resolve(a, names, here) for a in node.args]
+        if isinstance(func, ast.Attribute) and func.attr in ("resolve", "absolute") and not args:
+            return _resolve(func.value, names, here)
+        if isinstance(func, ast.Attribute) and func.attr == "joinpath":
+            return _join(_resolve(func.value, names, here), args)
+        dotted = _dotted(func)
+        if dotted in _CONSTRUCTORS and args:
+            return _join(args[0], args[1:])
+        if dotted == "os.path.dirname" and len(args) == 1:
+            return _up(args[0], 1)
+        if dotted in _PASS_THROUGH and len(args) == 1:
+            return args[0]
+    return _UNKNOWN
+
+
+def _bindings(nodes: list[ast.AST]) -> list[tuple[str, ast.AST | None, bool]]:
+    """`(name, value, is_loop)` per binding in one scope.
+
+    `value` is None for a binding the scan cannot follow (a parameter, a
+    tuple target, `with ... as`); it still makes the name local, so a
+    module-level path of the same name does not leak in.
+    """
+    found: list[tuple[str, ast.AST | None, bool]] = []
+    for node in nodes:
+        if isinstance(node, ast.Assign):
+            found += [(t.id, node.value, False) for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            found.append((node.target.id, node.value, False))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            if isinstance(node.target, ast.Name):
+                found.append((node.target.id, node.iter, True))
+        elif isinstance(node, ast.arg):
+            found.append((node.arg, None, False))
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            found.append((node.id, None, False))
+    return found
 
 
 def _bound_names(
-    nodes: list[ast.AST], outer: dict[str, _PathValue]
-) -> dict[str, _PathValue]:
-    """Names in `nodes` bound to a path value, starting from `outer`.
+    nodes: list[ast.AST], outer: dict[str, _Value], here: tuple[str, ...]
+) -> dict[str, _Value]:
+    """Each name bound in one scope, mapped to everything its bindings may denote.
 
-    Iterated to a fixpoint, bounded by the number of assignments, so a
-    name bound from another name resolves whatever order they appear in.
+    A name bound locally hides the enclosing scope's binding. The union
+    over a name's bindings is iterated to a fixpoint, bounded by the
+    number of bindings, so a name bound from another name resolves
+    whatever order they appear in.
     """
-    names = dict(outer)
-    assigns = [n for n in nodes if isinstance(n, (ast.Assign, ast.AnnAssign))]
-    for _ in range(len(assigns) + 1):
+    bindings = _bindings(nodes)
+    local = {name for name, _, _ in bindings}
+    names = {k: v for k, v in outer.items() if k not in local}
+    for _ in range(len(bindings) + 1):
         changed = False
-        for node in assigns:
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if len(targets) != 1 or not isinstance(targets[0], ast.Name):
+        for name, node, is_loop in bindings:
+            if node is None:
                 continue
-            if node.value is None:
-                continue
-            value = _resolve(node.value, names)
-            if value is not None and names.get(targets[0].id) != value:
-                names[targets[0].id] = value
+            value = _resolve(node, names, here)
+            if is_loop:
+                value = _elements(value)
+            merged = names.get(name, _UNKNOWN) | value
+            if merged != names.get(name, _UNKNOWN):
+                names[name] = merged
                 changed = True
         if not changed:
             break
     return names
 
 
-def _scan_module(path: Path) -> set[str]:
-    """Repo-relative paths that `path` builds from its own location.
+def _consumed(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether `node` is the base of a larger path expression, recorded instead."""
+    parent = parents.get(node)
+    if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Div):
+        return parent.left is node
+    if isinstance(parent, ast.Attribute):
+        return parent.value is node and parent.attr in _PATH_STEPS
+    if isinstance(parent, ast.Call) and parent.args and parent.args[0] is node:
+        dotted = _dotted(parent.func)
+        return dotted in _CONSTRUCTORS or dotted in _PASS_THROUGH or dotted == "os.path.dirname"
+    return False
+
+
+def _base_of(node: ast.AST) -> ast.AST | None:
+    """The expression a join builds on."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return node.left
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+            return node.func.value
+        if _dotted(node.func) in _CONSTRUCTORS and node.args:
+            return node.args[0]
+    return None
+
+
+def _scan_source(source: str, here: tuple[str, ...]) -> set[str]:
+    """Repo-relative paths a module at `here` builds from its own location.
 
     Names are scoped: a module-level binding is visible everywhere, a
-    binding inside a function only inside that function. Without the
-    split, `directory = tmp_path / "x"` in one test and `directory =
-    _REPO / "CHANGELOG"` in another would read as the same name.
+    binding inside a function only inside that function, and a function's
+    own binding of a name hides the module's. Without the split,
+    `directory = tmp_path / "x"` in one test and `directory = _REPO /
+    "CHANGELOG"` in another would read as the same name.
 
-    Only the outermost join of a chain is recorded, so `_REPO / "docs" /
-    "user" / "CONFIG.md"` yields one path and not three. When the
-    outermost join does not resolve (`_REPO / "docs" / name`), the longest
-    resolvable prefix is recorded instead, since the test reads under it.
+    Only the outermost expression of a chain is recorded, so `_REPO /
+    "docs" / "user" / "CONFIG.md"` yields one path and not three. When
+    the outermost join does not resolve (`_REPO / "docs" / name`), the
+    longest resolvable prefix is recorded instead, since the test reads
+    under it.
+
+    A module that never names `__file__` builds no path from its own
+    location, so it is not parsed.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    # One pass over the tree: each node's parent, and the function that
-    # owns it (None at module level). The function node itself belongs to
-    # the scope that defines it.
+    if "__file__" not in source:
+        return set()
+    tree = ast.parse(source)
+    # One pass over the tree: each node's parent, the scope that owns it
+    # (None at module level) and each scope's enclosing scope. A function
+    # node itself belongs to the scope that defines it.
     parents: dict[ast.AST, ast.AST] = {}
     owner: dict[ast.AST, ast.AST | None] = {}
     members: dict[ast.AST | None, list[ast.AST]] = {None: []}
+    enclosing: dict[ast.AST, ast.AST | None] = {}
     pending: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
     while pending:
-        node, function = pending.pop()
-        owner[node] = function
-        members.setdefault(function, []).append(node)
-        inner = node if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else function
+        node, scope = pending.pop()
+        owner[node] = scope
+        members.setdefault(scope, []).append(node)
+        inner = scope
+        if isinstance(node, _SCOPES):
+            enclosing[node] = scope
+            inner = node
         for child in ast.iter_child_nodes(node):
             parents[child] = node
             pending.append((child, inner))
-    module_names = _bound_names(members[None], {})
-    scopes = {
-        function: _bound_names(nodes, module_names)
-        for function, nodes in members.items()
-        if function is not None
+    scopes: dict[ast.AST | None, dict[str, _Value]] = {
+        None: _bound_names(members[None], {}, here)
     }
-    file_depth = len(path.relative_to(_REPO).parts)
+
+    def names_of(scope: ast.AST | None) -> dict[str, _Value]:
+        if scope not in scopes:
+            scopes[scope] = _bound_names(members.get(scope, []), names_of(enclosing[scope]), here)
+        return scopes[scope]
+
     found: set[str] = set()
-
-    def names_for(node: ast.AST) -> dict[str, _PathValue]:
-        function = owner[node]
-        return module_names if function is None else scopes[function]
-
-    def record(value: _PathValue | None) -> None:
-        if value is not None and value[0] == file_depth and value[1]:
-            found.add("/".join(value[1]))
-
     for node in owner:
-        parent = parents.get(node)
-        joined_further = (
-            isinstance(parent, ast.BinOp)
-            and isinstance(parent.op, ast.Div)
-            and parent.left is node
-        )
-        if joined_further:
+        if _consumed(node, parents):
             continue
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            names = names_for(node)
-            current: ast.AST = node
-            value = _resolve(current, names)
-            while value is None and isinstance(current, ast.BinOp):
-                if not isinstance(current.op, ast.Div):
-                    break
-                current = current.left
-                value = _resolve(current, names)
-            record(value)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if isinstance(parent, (ast.Assign, ast.AnnAssign)):
+        names = names_of(owner[node])
+        if isinstance(node, ast.Name):
+            if not isinstance(node.ctx, ast.Load):
                 continue
-            record(names_for(node).get(node.id))
+            if isinstance(parents.get(node), (ast.Assign, ast.AnnAssign)):
+                continue
+            value = names.get(node.id, _UNKNOWN)
+        elif isinstance(node, (ast.BinOp, ast.Call, ast.Attribute, ast.Subscript)):
+            value = _resolve(node, names, here)
+        else:
+            continue
+        current: ast.AST | None = node
+        while not any(item[0] == "p" for item in value) and current is not None:
+            current = _base_of(current)
+            if current is not None:
+                value = _resolve(current, names, here)
+        found |= {"/".join(item[1]) for item in value if item[0] == "p" and item[1]}
     return found
+
+
+def _scan_module(path: Path) -> set[str]:
+    """`_scan_source` over one file under the repo."""
+    return _scan_source(path.read_text(encoding="utf-8"), path.relative_to(_REPO).parts)
 
 
 @functools.cache
@@ -387,6 +507,93 @@ def test_the_read_scan_is_not_vacuous() -> None:
     assert "tests" in _suite_directory_reads(), (
         "the scan did not see any module reading the `tests` directory itself"
     )
+
+
+def test_the_read_scan_credits_every_reader_of_an_entry() -> None:
+    """The reverse test trusts this map, so a missed reader is a wrong verdict.
+
+    `test_check_doc_defaults_1654.py` reads `docs/user/CONFIG.md` through
+    a loop over a tuple of paths, and `test_pyright_ratchet_1503.py` reads
+    `docs/concepts/RELEASING.md` the same way. A scan that credits only
+    the inline readers would, once those stopped reading, tell the reverse
+    test to drop an entry a looping test still needs.
+    """
+    reads = _suite_file_reads()
+    for path, module in (
+        ("docs/user/CONFIG.md", "tests/test_check_doc_defaults_1654.py"),
+        ("docs/concepts/RELEASING.md", "tests/test_pyright_ratchet_1503.py"),
+    ):
+        assert module in reads.get(path, set()), (
+            f"the scan does not credit {module} with reading {path}; it "
+            f"credits {sorted(reads.get(path, set()))}"
+        )
+
+
+_PROBE_HEAD = (
+    "import os\n"
+    "from pathlib import Path\n"
+    "_R = Path(__file__).resolve().parents[1]\n"
+)
+
+# One test module per spelling of a read of `docs/new.md`.
+_SPELLINGS = {
+    "inline": 'def test_x():\n    (Path(__file__).resolve().parents[1] / "docs" / "new.md").read_text()\n',
+    "name_bound": 'def test_x():\n    (_R / "docs" / "new.md").read_text()\n',
+    "string_constant": '_DOC = "docs/new.md"\ndef test_x():\n    (_R / _DOC).read_text()\n',
+    "tuple_loop": (
+        '_FILES = ("README.md", "docs/new.md")\n'
+        "def test_x():\n    for rel in _FILES:\n        (_R / rel).read_text()\n"
+    ),
+    "comprehension": 'def test_x():\n    [(_R / rel).read_text() for rel in ["docs/new.md"]]\n',
+    "joinpath": 'def test_x():\n    _R.joinpath("docs", "new.md").read_text()\n',
+    "path_constructor": 'def test_x():\n    Path(_R, "docs", "new.md").read_text()\n',
+    "os_path": (
+        "def test_x():\n    open(os.path.join(os.path.dirname(os.path.dirname("
+        'os.path.abspath(__file__))), "docs", "new.md")).read()\n'
+    ),
+    "dotdot": 'def test_x():\n    (Path(__file__).parent / ".." / "docs" / "new.md").read_text()\n',
+    "function_local_root": (
+        "def test_x():\n    root = Path(__file__).parent.parent\n"
+        '    (root / "docs/new.md").read_text()\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(_SPELLINGS))
+def test_the_read_scan_resolves_each_spelling(spelling: str) -> None:
+    """Each spelling in the suite of a read under the repo resolves to its path.
+
+    The tuple loop is how `test_pyright_ratchet_1503.py` and
+    `test_check_doc_defaults_1654.py` read; the others are each one
+    rewrite away from the inline form. A spelling the scan misses lets a
+    new test read a new file outside the filter with every test green.
+    """
+    reads = _scan_source(_PROBE_HEAD + _SPELLINGS[spelling], ("tests", "test_probe.py"))
+    assert "docs/new.md" in reads, f"{spelling}: the scan found {sorted(reads)}"
+
+
+def test_a_name_bound_twice_reads_under_both() -> None:
+    """Either binding can reach the join, so both paths count as read."""
+    source = _PROBE_HEAD + (
+        "def test_x(flag):\n"
+        '    base = _R / "other"\n'
+        "    if flag:\n"
+        '        base = _R / "docs"\n'
+        '    (base / "new.md").read_text()\n'
+    )
+    reads = _scan_source(source, ("tests", "test_probe.py"))
+    assert {"docs/new.md", "other/new.md"} <= reads, sorted(reads)
+
+
+def test_a_function_binding_hides_the_module_binding() -> None:
+    """A local `directory` is not the module's `directory`."""
+    source = _PROBE_HEAD + (
+        '_DIR = _R / "CHANGELOG"\n'
+        "def test_x(tmp_path):\n"
+        '    _DIR = tmp_path / "x"\n'
+        '    (_DIR / "a.md").read_text()\n'
+    )
+    assert _scan_source(source, ("tests", "test_probe.py")) == {"CHANGELOG"}
 
 
 def test_an_exact_entry_covers_one_path_and_a_glob_covers_a_tree() -> None:
