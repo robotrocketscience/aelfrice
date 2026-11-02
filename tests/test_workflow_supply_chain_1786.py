@@ -412,6 +412,71 @@ def _value(lines: list[str], key: str) -> str | None:
     return None
 
 
+def _groups(item: list[str]) -> dict[str, list[str]]:
+    """Each group under the item's `groups:` key, mapped to its lines."""
+    groups: dict[str, list[str]] = {}
+    groups_indent: int | None = None
+    current: str | None = None
+    for line in item:
+        indent = _indent(line)
+        if groups_indent is None:
+            if line.strip() == "groups:":
+                groups_indent = indent
+            continue
+        if indent <= groups_indent:
+            break
+        if current is None or indent <= _indent(groups[current][0]):
+            current = line.strip().rstrip(":")
+            groups[current] = [line]
+        else:
+            groups[current].append(line)
+    return groups
+
+
+def _update_types(group_lines: list[str]) -> list[str]:
+    """A group's `update-types`, flow (`[a, b]`) or block (`- a`) style.
+
+    Empty when the group has no `update-types` key.
+    """
+    for i, line in enumerate(group_lines):
+        match = re.match(r"^(?P<lead>\s*)update-types:\s*(?P<rest>.*?)\s*$", line)
+        if not match:
+            continue
+        if match.group("rest"):
+            return sorted(re.findall(r"\w+", match.group("rest")))
+        types: list[str] = []
+        for follow in group_lines[i + 1 :]:
+            item = re.match(r"^\s*-\s*[\"']?(\w+)[\"']?\s*$", follow)
+            if _indent(follow) <= len(match.group("lead")) and not item:
+                break
+            if item:
+                types.append(item.group(1))
+        return sorted(types)
+    return []
+
+
+@pytest.mark.parametrize(
+    ("group_body", "expected"),
+    [
+        ('        update-types: ["minor", "patch"]', ["minor", "patch"]),
+        ('        update-types:\n          - "minor"\n          - "patch"', ["minor", "patch"]),
+        ('        patterns: ["*"]', []),
+    ],
+)
+def test_the_group_reader_reads_each_shape(group_body: str, expected: list[str]) -> None:
+    item = [
+        '  - package-ecosystem: "uv"',
+        "    groups:",
+        "      only:",
+        *group_body.splitlines(),
+        "    labels:",
+        '      - "deps"',
+    ]
+    groups = _groups(item)
+    assert list(groups) == ["only"], groups
+    assert _update_types(groups["only"]) == expected
+
+
 def test_dependabot_covers_actions_and_uv_weekly_with_grouped_minor_and_patch() -> None:
     """CI-09: both ecosystems, weekly, minor and patch grouped, the subject
     prefix the commit checks accept. `uv` and not `pip`: only the `uv`
@@ -428,12 +493,13 @@ def test_dependabot_covers_actions_and_uv_weekly_with_grouped_minor_and_patch() 
         assert _value(item, "interval") == "weekly", (name, item)
         assert _value(item, "prefix") == "build", (name, item)
         assert _value(item, "include") == "scope", (name, item)
-        groups = [line for line in item if "update-types:" in line]
-        assert len(groups) == 1, (name, item)
+        groups = _groups(item)
+        assert len(groups) == 1, (name, groups)
         # Exactly minor and patch: a grouped major would hide a breaking
-        # bump inside a routine PR.
-        types = re.findall(r"\w+", _value(groups, "update-types") or "")
-        assert sorted(types) == ["minor", "patch"], (name, groups)
+        # bump inside a routine PR. A group with no `update-types` takes
+        # every type, majors included.
+        for group, lines in groups.items():
+            assert _update_types(lines) == ["minor", "patch"], (name, group, lines)
 
 
 # `gh pr merge` with `--auto` anywhere after it on the same command: the PR
