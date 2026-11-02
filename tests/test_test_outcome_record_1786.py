@@ -344,8 +344,11 @@ def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
 
 
 def _is_one_test_id(entry: str) -> bool:
+    """`::` present, no whitespace in the classname, and no comment after
+    the id: `parse_allowlist` keeps a same-line `# ...` as part of the entry,
+    which then matches nothing."""
     classname, sep, _ = entry.partition("::")
-    return bool(sep) and not re.search(r"\s", classname)
+    return bool(sep) and not re.search(r"\s", classname) and not re.search(r"\s#", entry)
 
 
 @pytest.mark.parametrize(
@@ -358,6 +361,9 @@ def _is_one_test_id(entry: str) -> bool:
         ("tests.test_store", False),
         ("tests.test_store test_readonly", False),
         ("tests.test_store # why::test_readonly", False),
+        ("tests.test_store.TestOpen::test_readonly[a]  # skips on 3.13", False),
+        ("tests.test_store.TestOpen::test_readonly[a]\t# skips on 3.13", False),
+        ("tests.t::test_x[a#b]", True),
     ],
 )
 def test_the_entry_shape_check(entry: str, ok: bool) -> None:
@@ -366,9 +372,23 @@ def test_the_entry_shape_check(entry: str, ok: bool) -> None:
 
 
 def test_every_checked_in_allowlist_entry_is_one_test_id() -> None:
-    """A bare module name would parse and match nothing."""
+    """A bare module name, or an id with a comment after it, would parse and
+    match nothing. The checked-in file may hold no entry yet, so the next
+    test runs this check on a file that does."""
     for entry in tor.parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8")):
         assert _is_one_test_id(entry), entry
+
+
+def test_the_shape_check_refuses_the_entry_the_allowlist_header_warns_about() -> None:
+    """The header says a comment after the id on the same line becomes part
+    of the id. Parsed as the ratchet parses it, that entry exempts nothing,
+    and the shape check above refuses it."""
+    test = "tests.test_store.TestOpen::test_readonly[a]"
+    text = _ALLOWLIST.read_text(encoding="utf-8") + f"# why it skips\n{test}\n{test}  # skips on 3.13\n"
+    entries = tor.parse_allowlist(text)
+    assert entries == [test, f"{test}  # skips on 3.13"]
+    assert [_is_one_test_id(e) for e in entries] == [True, False]
+    assert not tor.is_allowlisted(test, entries[1:])
 
 
 def test_a_leg_without_a_baseline_reports_a_notice_and_no_violations() -> None:
