@@ -13,8 +13,10 @@ The job deselects one test, the live-tree producer check, because the
 ruleset requires the `pytest` legs and not that job, so each leg waits for
 it and fails unless it passed. The tests at the bottom pin that edge, pin
 the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
-They pin that job's gate command verbatim, run its arguments through the
-script, and reject the keys that skip the job or let it fail green.
+They pin that job's gate command verbatim and run its arguments through the
+script. They reject a job-level key outside an allowlist on that job, an
+`if:` or `continue-on-error:` in it, a top-level workflow key outside an
+allowlist, and a `defaults:` or `shell:` anywhere in the file.
 
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
@@ -72,6 +74,10 @@ _GATE_RUNS = {
 # can skip the job, and the merge train does not count `skipped` as failing.
 # `continue-on-error` turns a red job green, and `name` renames the check.
 _DERIVED_FIGURES_KEYS = {"runs-on", "steps", "timeout-minutes", "permissions"}
+
+# The top-level keys ci.yml may carry. `defaults` would set a shell for every
+# `run:` step in the file.
+_WORKFLOW_KEYS = {"name", "on", "permissions", "env", "concurrency", "jobs"}
 
 
 def _indent(line: str) -> int:
@@ -382,9 +388,10 @@ def test_the_gate_command_reaches_the_producers(
     assert calls == []
 
 
-def test_the_derived_figures_job_cannot_be_skipped_or_fail_green() -> None:
+def test_the_derived_figures_job_has_no_if_or_continue_on_error() -> None:
     """A skipped job, or one whose failure is green, leaves the producers
-    unchecked on every PR with nothing red to show for it."""
+    unchecked on every PR with nothing red to show for it. This reads the
+    job's own keys and steps. The workflow-wide shell check is below."""
     keys = set(_job_keys("derived-figures"))
     assert keys <= _DERIVED_FIGURES_KEYS, sorted(keys - _DERIVED_FIGURES_KEYS)
     found = [
@@ -394,3 +401,25 @@ def test_the_derived_figures_job_cannot_be_skipped_or_fail_green() -> None:
     ]
     assert found == [], found
     assert "derived-figures" in FLOOR_NAMES
+
+
+def test_no_default_or_step_shell_wraps_a_run_line() -> None:
+    """A `shell:` template such as `true {0}` runs nothing and exits 0. Set
+    under a workflow-level or job-level `defaults: run:`, it reaches every
+    `run:` step that names no shell of its own, which is every step here, so
+    the required legs and the producer gate would report green having run
+    nothing. No line outside a comment sets `defaults:` or `shell:`, and the
+    top-level keys are pinned."""
+    lines = _CI.read_text(encoding="utf-8").splitlines()
+    top = {
+        m.group(1)
+        for line in lines
+        if (m := re.fullmatch(r"([A-Za-z_-]+):.*", line))
+    }
+    assert top == _WORKFLOW_KEYS, sorted(top ^ _WORKFLOW_KEYS)
+    found = [
+        line.strip()
+        for line in lines
+        if re.match(r"\s*(?:-\s+)?(?:defaults|shell):", line)
+    ]
+    assert found == [], found
