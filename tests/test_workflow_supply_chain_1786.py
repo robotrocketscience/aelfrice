@@ -181,6 +181,42 @@ def test_every_uses_names_a_commit_sha_and_its_tag(path: Path) -> None:
     assert not bad, "\n".join(["uses: lines without a sha pin and a `# vX.Y.Z` comment:", *bad])
 
 
+# Workflows whose `actions/checkout` ran v4.4.0 before the sha pins landed:
+# the `@v4` tag named 11d5960a (v4.4.0), and so did pyright-ratchet's pin. A
+# sha pin replaces a tag with the commit the tag names, so these jobs must not
+# move back to an older release. The other checkouts stay where they were:
+# v4.4.0 changes the `pull_request_target` defaults, so moving them is a
+# version bump, not a pin.
+_CHECKOUT_FLOOR = (4, 4, 0)
+_CHECKOUT_FLOOR_FILES = (
+    "codeql.yml",
+    "deadcode.yml",
+    "link-check.yml",
+    "post-release-docs-issue.yml",
+    "pyright-ratchet.yml",
+    "staging-gate.yml",
+    "typos.yml",
+    "zizmor.yml",
+)
+
+
+def test_pinning_did_not_move_a_tag_checkout_to_an_older_release() -> None:
+    found: list[str] = []
+    bad: list[str] = []
+    for name in _CHECKOUT_FLOOR_FILES:
+        for n, line in _code_lines((_WORKFLOWS / name).read_text(encoding="utf-8")):
+            match = _USES.match(line)
+            if not match or not match.group("ref").startswith("actions/checkout@"):
+                continue
+            found.append(f"{name}:{n}")
+            version = re.search(r"#\s*v(\d+)\.(\d+)\.(\d+)", match.group("rest"))
+            if version is None or tuple(map(int, version.groups())) < _CHECKOUT_FLOOR:
+                bad.append(f"{name}:{n}: {line.strip()}")
+    # The 12 lines that named `@v4`, plus pyright-ratchet's.
+    assert len(found) == 13, found
+    assert not bad, "\n".join(["checkout older than v4.4.0:", *bad])
+
+
 # --- uvx ---------------------------------------------------------------------
 
 
