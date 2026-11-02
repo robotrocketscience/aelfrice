@@ -1,9 +1,12 @@
 name: label-docs
 
 # #413 — auto-apply the `docs` label when every changed file in a PR matches
-# the docs-only path set.  Mirrors the paths-ignore globs used by ci.yml,
-# deadcode.yml, and codeql.yml so the label is a faithful indicator of which
-# PRs skipped the heavy gates.
+# the docs-only path set. The set mirrors the paths-ignore globs of
+# deadcode.yml and codeql.yml, so a labelled PR skipped those two workflows.
+# The label does not mean ci.yml skipped its tests: a labelled PR that changes
+# a page a test reads matches ci.yml's `code` filter and runs the suite, and
+# one that changes a Markdown file matches `tree_reads` and runs the tests
+# that read every Markdown file.
 
 # `pull_request_target` is required so the workflow can apply labels to PRs
 # from forks (the default `pull_request` token has read-only access from a

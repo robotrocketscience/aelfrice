@@ -6,8 +6,11 @@ on:
     # No paths-ignore: the workflow must always run so the
     # `pytest (3.12)` and `pytest (3.13)` required status checks
     # report on every PR — including docs-only ones. Path detection
-    # happens inside the job via `dorny/paths-filter`; non-code PRs
-    # short-circuit the install + test steps and report success.
+    # happens inside the job via `dorny/paths-filter`. A PR that matches
+    # neither filter key, `code` or `tree_reads`, skips the install and
+    # test steps and reports success. A PR that matches `tree_reads` and
+    # not `code`, such as one that changes only Markdown, installs and
+    # runs only the tests that read every file a glob matches.
     # Per #413/#427 follow-up: replaces the previous `paths-ignore`
     # filter that silently dropped the pytest check on docs-only PRs
     # and blocked them under `required_status_checks`.

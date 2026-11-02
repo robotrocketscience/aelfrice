@@ -50,6 +50,7 @@ loads in turn, and a read a loaded module makes at import time.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import functools
 import io
 import re
@@ -68,6 +69,7 @@ pytestmark = pytest.mark.source_scan
 _REPO = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO / ".github" / "workflows" / "ci.yml"
 _STAGING_GATE_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
+_LABEL_DOCS_WORKFLOW = _REPO / ".github" / "workflows" / "label-docs.yml"
 
 # A top-level directory holding Python the suite could depend on. Excludes
 # directories with no .py at all (`CHANGELOG/`, and the untracked
@@ -147,6 +149,32 @@ def _entry_covers(entry: str, path: str) -> bool:
         prefix = entry[:-3]
         return path == prefix or path.startswith(f"{prefix}/")
     return entry == path
+
+
+@functools.cache
+def _glob_regex(glob: str) -> re.Pattern[str]:
+    """A regex for one filter glob, as paths-filter's picomatch reads it.
+
+    `**` as a whole segment matches any number of directories, `*` any
+    run of characters inside one segment, and `?` one character: the
+    subset the filter uses.
+    """
+    parts = glob.split("/")
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        if part == "**":
+            out.append(".*" if last else "(?:[^/]+/)*")
+            continue
+        out.append("".join("[^/]*" if c == "*" else "[^/]" if c == "?" else re.escape(c) for c in part))
+        if not last:
+            out.append("/")
+    return re.compile("".join(out))
+
+
+def _glob_matches(glob: str, path: str) -> bool:
+    """Whether a filter glob such as `**/*.md` matches a changed file at `path`."""
+    return _glob_regex(glob).fullmatch(path) is not None
 
 
 def _is_covered(directory: str, globs: list[str]) -> bool:
@@ -1401,6 +1429,65 @@ def test_a_tree_reads_match_installs_first_and_skips_the_echo() -> None:
     assert len(echoes) == 1, f"expected one echo step, found {len(echoes)}"
     assert "steps.filter.outputs.tree_reads != 'true'" in echoes[0][0], (
         f"the docs-only echo also fires on a `tree_reads` match: {echoes[0][0].strip()!r}"
+    )
+
+
+def test_a_filter_glob_matches_as_picomatch_does() -> None:
+    """Pin the glob semantics the `tree_reads` checks lean on."""
+    assert _glob_matches("**/*.md", "README.md")
+    assert _glob_matches("**/*.md", "CHANGELOG/unreleased/README.md")
+    assert not _glob_matches("**/*.md", "CHANGELOG/v5.mdx")
+    assert _glob_matches("CHANGELOG/**/*.py", "CHANGELOG/a.py")
+    assert _glob_matches("CHANGELOG/**/*.py", "CHANGELOG/x/y/a.py")
+    assert not _glob_matches("CHANGELOG/**/*.py", "docs/a.py")
+    assert not _glob_matches("docs/*.py", "docs/assets/a.py")
+    assert _glob_matches("docs/**", "docs/assets/a.py")
+
+
+def test_the_ci_trigger_comment_names_each_key_the_echo_step_tests() -> None:
+    """The trigger comment says which PRs skip the suite, so it names each key that decides it.
+
+    The echo step reports a pass only when no key matches, and a PR that
+    matches `tree_reads` alone installs and runs tests. A comment that
+    names one key tells a reader that a Markdown-only PR runs nothing.
+    """
+    echoes = [step for step in _pytest_job_steps() if any(line.strip().startswith("run: echo ") for line in step)]
+    assert len(echoes) == 1, f"expected one echo step, found {len(echoes)}"
+    keys = sorted(set(re.findall(r"steps\.filter\.outputs\.(\w+)", echoes[0][0])))
+    assert len(keys) >= 2, f"the echo step tests {keys}, expected `code` and `tree_reads`"
+    lines = _CI_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    trigger = lines.index("  pull_request:")
+    comment = "\n".join(lines[i] for i in _block_range(lines, trigger) if lines[i].startswith("    #"))
+    unnamed = [key for key in keys if f"`{key}`" not in comment]
+    assert not unnamed, (
+        f"the `pull_request` trigger comment in {_CI_WORKFLOW.name} does not "
+        f"name {unnamed}, which the echo step tests before it reports a pass"
+    )
+
+
+def test_label_docs_names_the_filter_keys_that_run_tests_on_a_labelled_pr() -> None:
+    """The `docs` label marks a docs-only diff, not a PR that skipped ci.yml's tests.
+
+    An exact `code` entry that a docs-only `case` arm matches runs the
+    suite on a labelled PR, and one a `tree_reads` glob also matches runs
+    the `tree_reads` tests. The workflow's header must name each such key,
+    so that nobody reads the label as a record of skipped tests.
+    """
+    lines = _LABEL_DOCS_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    arms = re.findall(r"^\s*(\S+)\) ;;$", "\n".join(lines), re.MULTILINE)
+    assert arms, f"{_LABEL_DOCS_WORKFLOW.name} lists no docs-only `case` arm"
+    exact = [g for g in _code_filter_globs() if not g.endswith("/**")]
+    # A shell `case` pattern's `*` matches `/` too, as fnmatch's does.
+    labelled = [g for g in exact if any(fnmatch.fnmatchcase(g, arm) for arm in arms)]
+    tree_reads = _filter_entries("tree_reads")
+    keys = ["code"] if labelled else []
+    keys += ["tree_reads"] if any(_glob_matches(t, g) for g in labelled for t in tree_reads) else []
+    assert keys, f"no exact `code` entry is docs-only by {arms}; this test checks nothing"
+    header = "\n".join(lines[: lines.index("on:")])
+    unnamed = [key for key in keys if f"`{key}`" not in header]
+    assert not unnamed, (
+        f"{_LABEL_DOCS_WORKFLOW.name} labels {labelled} docs-only, and ci.yml "
+        f"runs tests on them through {keys}, but its header does not name {unnamed}"
     )
 
 
