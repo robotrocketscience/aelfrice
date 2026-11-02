@@ -187,6 +187,34 @@ def test_an_ordinary_skip_reason_is_not_never_executed(reason: str) -> None:
     assert not tor.is_never_executed_reason(reason)
 
 
+def _bench_gate_skip_reasons() -> dict[str, str]:
+    """The bench-gate skip reasons as tests/conftest.py writes them: the
+    whole-tier `BENCH_GATE_SKIP_REASON`, and one `skip_corpus_module`
+    reason per corpus state it accepts, keyed by a short label."""
+    from tests.conftest import BENCH_GATE_SKIP_REASON, CORPUS_SKIP_STATES, skip_corpus_module
+
+    reasons = {"whole-tier": BENCH_GATE_SKIP_REASON}
+    for why in sorted(CORPUS_SKIP_STATES):
+        with pytest.raises(pytest.skip.Exception) as info:
+            skip_corpus_module("retrieve", why, Path("/corpus"), "a detail")
+        reasons[f"module-{why}"] = str(info.value.msg)
+    return reasons
+
+
+_BENCH_GATE_REASONS = _bench_gate_skip_reasons()
+
+
+@pytest.mark.parametrize("reason", list(_BENCH_GATE_REASONS.values()), ids=list(_BENCH_GATE_REASONS))
+def test_every_bench_gate_skip_conftest_writes_is_never_executed(reason: str) -> None:
+    """Built from the conftest text, not a copy of it: a reworded reason
+    would otherwise turn every bench-gate skip into `skipped`."""
+    from xml.sax.saxutils import escape, quoteattr
+
+    body = f'<skipped type="pytest.skip" message={quoteattr(reason)}>t.py:3: {escape(reason)}</skipped>'
+    outcomes = tor.parse_junit(_report(_case("tests.bench_gate.test_b", "test_gate", body)))
+    assert outcomes == {"tests.bench_gate.test_b::test_gate": tor.NEVER_EXECUTED}
+
+
 def test_the_test_id_is_classname_and_name() -> None:
     outcomes = tor.parse_junit(_report(
         _case("tests.test_a.TestGroup", "test_in_class"),
