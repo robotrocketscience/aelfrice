@@ -400,13 +400,59 @@ def test_dependabot_covers_actions_and_uv_weekly_with_grouped_minor_and_patch() 
         assert sorted(types) == ["minor", "patch"], (name, groups)
 
 
+# `gh pr merge` with `--auto` anywhere after it on the same command: the PR
+# argument and other flags may come first.
+_GH_MERGE_AUTO = re.compile(r"\bgh\s+pr\s+merge\b.*\s--auto\b")
+
+
+def _auto_merge_lines(text: str) -> list[tuple[int, str]]:
+    """(line number, command) for every code line that enables auto-merge.
+
+    A shell line ending in `\\` continues on the next line, so the two are
+    read as one command, numbered by its first line.
+    """
+    found: list[tuple[int, str]] = []
+    pending: tuple[int, str] | None = None
+    for n, line in _code_lines(text):
+        start, command = pending if pending else (n, "")
+        command += " " + line.strip()
+        if command.endswith("\\"):
+            pending = (start, command[:-1])
+            continue
+        pending = None
+        lowered = command.lower()
+        if "auto-merge" in lowered or "automerge" in lowered or _GH_MERGE_AUTO.search(lowered):
+            found.append((start, command.strip()))
+    return found
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "run: gh pr merge --auto --squash \"$PR_URL\"",
+        "run: gh pr merge \"$PR_URL\" --auto --squash",
+        "run: gh pr merge --squash --auto \"$PR_URL\"",
+        "run: gh pr merge \"$PR_URL\" \\\n  --squash \\\n  --auto",
+        "uses: peter-evans/enable-pull-request-automerge@0000000000000000000000000000000000000000",
+        "run: gh api graphql -f query='mutation { enablePullRequestAutoMerge }'",
+    ],
+)
+def test_the_auto_merge_scan_catches_each_spelling(command: str) -> None:
+    text = "jobs:\n  merge:\n    steps:\n      - " + command + "\n"
+    assert _auto_merge_lines(text), command
+
+
+def test_the_auto_merge_scan_passes_a_plain_merge() -> None:
+    text = "jobs:\n  merge:\n    steps:\n      - run: gh pr merge --squash \"$PR_URL\"\n"
+    assert _auto_merge_lines(text) == []
+
+
 def test_nothing_under_github_enables_auto_merge() -> None:
     """Dependabot PRs ride the merge train like every other PR. The repository
     setting is outside the tree; this holds the tree's half of the rule."""
-    offenders: list[str] = []
-    for path in [_DEPENDABOT, *_WORKFLOW_FILES]:
-        for n, line in _code_lines(path.read_text(encoding="utf-8")):
-            lowered = line.lower()
-            if "auto-merge" in lowered or "automerge" in lowered or "merge --auto" in lowered:
-                offenders.append(f"{path.name}:{n}: {line.strip()}")
+    offenders = [
+        f"{path.name}:{n}: {command}"
+        for path in [_DEPENDABOT, *_WORKFLOW_FILES]
+        for n, command in _auto_merge_lines(path.read_text(encoding="utf-8"))
+    ]
     assert not offenders, "\n".join(offenders)
