@@ -241,59 +241,55 @@ def test_zizmor_blocks_at_high_severity() -> None:
     assert "upload-sarif@" in "".join(steps), steps
 
 
-def _trigger_paths(text: str, event: str) -> list[str]:
-    """The `paths:` globs under `on: <event>:`, in order; empty if none."""
+def _trigger(text: str, event: str) -> list[str] | None:
+    """The settings under `on: <event>:`, one stripped line each, comments
+    dropped; an inline value on the event line comes first. None when the
+    workflow has no such event."""
     lines = text.splitlines()
-    paths: list[str] = []
-    in_event = False
-    in_paths = False
+    settings: list[str] | None = None
     for line in lines[lines.index("on:") + 1 :]:
-        stripped = line.strip()
+        stripped = line.split(" #")[0].strip()
         if not stripped or stripped.startswith("#"):
             continue
         indent = _indent(line)
         if indent == 0:
             break
         if indent == 2:
-            in_event = stripped == f"{event}:"
-            in_paths = False
-        elif in_event and indent == 4:
-            in_paths = stripped == "paths:"
-        elif in_paths and stripped.startswith("- "):
-            paths.append(stripped[2:].split(" #")[0].strip().strip("'\""))
-    return paths
+            if settings is not None:
+                break
+            key, _, value = stripped.partition(":")
+            if key == event:
+                settings = [value.strip()] if value.strip() else []
+        elif settings is not None:
+            settings.append(stripped)
+    return settings
 
 
-def _glob_matches(pattern: str, path: str) -> bool:
-    """GitHub's `paths:` glob: `**` crosses `/`, `*` does not."""
-    regex = ".*".join(
-        "[^/]*".join(re.escape(part) for part in chunk.split("*"))
-        for chunk in pattern.split("**")
-    )
-    return re.fullmatch(regex, path) is not None
+@pytest.mark.parametrize(
+    ("on", "expected"),
+    [
+        ("on:\n  pull_request:\n  push:\n    branches: [main]\n", []),
+        ("on:\n  pull_request:\n    paths:\n      - 'a/**'\njobs:\n", ["paths:", "- 'a/**'"]),
+        ("on:\n  pull_request:\n    # note\n    branches: [x]  # why\n", ["branches: [x]"]),
+        ("on:\n  pull_request: {types: [opened]}\n", ["{types: [opened]}"]),
+        ("on:\n  push:\n", None),
+    ],
+)
+def test_the_trigger_reader_returns_every_setting(on: str, expected: list[str] | None) -> None:
+    assert _trigger(on, "pull_request") == expected
 
 
-def test_zizmor_runs_on_every_pr_that_changes_a_file_it_audits() -> None:
-    """zizmor audits workflows, composite actions and dependabot.yml. A
-    `paths:` filter that misses one of them lets a PR change that file with
-    no `zizmor` check at all, and an absent check does not block the train.
-    The example `.yaml` workflow and action paths stand in for files that do
-    not exist yet, so the rule holds before the first one lands."""
+def test_zizmor_runs_on_every_pr() -> None:
+    """zizmor reads files outside `.github/workflows/`: an `action.yml` or
+    `action.yaml` anywhere in the tree, `dependabot.yaml` as well as
+    `dependabot.yml`, the pre-commit configs, and its own `zizmor.yml`, which
+    can switch a rule off. A `paths:` list cannot track that set, and any
+    filter on `pull_request` (`paths:`, `branches:`, `types:`) lets some PR
+    through with no `zizmor` check at all. An absent check does not block the
+    train, so `pull_request` carries no settings."""
     text = _ZIZMOR.read_text(encoding="utf-8")
-    audited = [
-        *(f".github/workflows/{p.name}" for p in _WORKFLOW_FILES),
-        ".github/workflows/example.yaml",
-        ".github/actions/example/action.yml",
-        ".github/dependabot.yml",
-    ]
-    assert _DEPENDABOT.is_file(), _DEPENDABOT
-    code = "\n".join(line for _n, line in _code_lines(text))
-    assert "paths-ignore" not in code, code
-    for event in ("pull_request", "push"):
-        globs = _trigger_paths(text, event)
-        assert globs, (event, text)
-        missed = [p for p in audited if not any(_glob_matches(g, p) for g in globs)]
-        assert not missed, (event, globs, missed)
+    assert _trigger(text, "pull_request") == [], text
+    assert _trigger(text, "push") == ["branches: [main]"], text
 
 
 # --- harden-runner -----------------------------------------------------------

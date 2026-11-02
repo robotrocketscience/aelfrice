@@ -198,6 +198,7 @@ FLOOR_NAMES: frozenset[str] = frozenset({
     "secrets-scan",             # staging-gate.yml
     "size-check",               # pr-size-soft-cap.yml
     "typos",                    # typos.yml
+    "zizmor",                   # zizmor.yml
 })
 
 FAILING_CONCLUSIONS: frozenset[str] = frozenset(

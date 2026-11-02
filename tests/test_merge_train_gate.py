@@ -984,6 +984,7 @@ _FLOOR_SOURCES: dict[str, frozenset[str]] = {
         "secrets-scan",
     }),
     "typos.yml": frozenset({"typos"}),
+    "zizmor.yml": frozenset({"zizmor"}),
 }
 
 # Rows an unfiltered PR workflow emits on every head that stay out of
@@ -1515,7 +1516,7 @@ def test_a_docs_only_pr_still_passes_the_floor() -> None:
     """AC2 — the constraint that makes AC1 hard, demonstrated not argued.
 
     A docs-only diff never runs `e2e`, `CodeQL`, `deptry`, `vulture`,
-    `Windows smoke`, `calibration` or `zizmor` — their workflows are
+    `Windows smoke` or `calibration` — their workflows are
     path-filtered, so they emit no check-run at all rather than a skipped one.
     A floor containing any of those names would block every docs PR forever.
     """
