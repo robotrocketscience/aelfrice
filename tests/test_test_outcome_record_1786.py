@@ -1176,6 +1176,32 @@ def test_no_expression_is_interpolated_into_a_run_script() -> None:
             assert "${{" not in run.group(1), step
 
 
+_IO_NAMES = frozenset({"print", "open", "input", "subprocess", "sys", "os", "Path"})
+_IO_ATTRS = frozenset({"read_text", "write_text", "read_bytes", "write_bytes", "open", "run", "write", "unlink"})
+
+
+def test_the_functions_the_docstring_calls_pure_do_no_io() -> None:
+    """The module docstring names the first definition below the pure ones;
+    nothing above it may print, open a file or start a process."""
+    import ast
+    assert tor.__doc__ is not None
+    m = re.search(r"The functions above `(\w+)` are pure", tor.__doc__)
+    assert m, "the docstring no longer says which functions are pure"
+    tree = ast.parse((_REPO / "scripts" / "test_outcome_record.py").read_text(encoding="utf-8"))
+    defs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))]
+    names = [n.name for n in defs]
+    assert m.group(1) in names, m.group(1)
+    impure: list[str] = []
+    for node in defs[: names.index(m.group(1))]:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id in _IO_NAMES:
+                impure.append(f"{node.name}: {sub.id}")
+            elif isinstance(sub, ast.Attribute) and sub.attr in _IO_ATTRS:
+                impure.append(f"{node.name}: .{sub.attr}")
+    assert impure == []
+    assert len(defs[: names.index(m.group(1))]) > 10
+
+
 def test_the_script_is_standard_library_only() -> None:
     """The job runs it on the runner's interpreter, without `uv sync`."""
     import ast

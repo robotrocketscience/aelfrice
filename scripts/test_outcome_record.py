@@ -58,9 +58,11 @@ Artifacts expire after 30 days and a docs-only PR uploads none; when the
 walk finds no artifact the output says so and `diff` reports no baseline.
 
 Standard library only, so the job runs on the runner's own interpreter
-without `uv sync`. The functions above `main` are pure and take their
+without `uv sync`. The functions above `GhApi` are pure and take their
 inputs as values; `tests/test_test_outcome_record_1786.py` runs them on
-synthetic reports.
+synthetic reports. `GhApi` calls `gh`, `fetch_baseline` calls it through
+the client it is given, and the `cmd_*` functions read and write files
+and print; the tests run those against a fake `gh` and temporary files.
 
 Exit status: 0, or 1 for a ratchet violation under `--block`, or 2 for a
 usage error or an unreadable input.
