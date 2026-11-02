@@ -561,9 +561,12 @@ def test_the_pr_trigger_fires_on_labeled_and_synchronize_only() -> None:
 
 # The whole `if`, folded. Both arms are needed: without the `labeled` arm
 # the job never starts on the operator's add; without the `synchronize`
-# arm a push while the label is on leaves the stale result standing.
+# arm a push while the label is on leaves the stale result standing. The
+# fork guard is the train's: the train skips a fork PR, so the job's result
+# for one would go unread.
 _DIFF_JOB_GATE = (
-    "github.event_name == 'pull_request' && ( "
+    "github.event_name == 'pull_request' && "
+    "github.event.pull_request.head.repo.full_name == github.repository && ( "
     "(github.event.action == 'labeled' && "
     "github.event.label.name == 'ready-to-merge') || "
     "(github.event.action == 'synchronize' && "

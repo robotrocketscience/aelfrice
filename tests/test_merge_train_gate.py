@@ -385,20 +385,33 @@ def _label_gate(text: str) -> tuple[set[str], set[str]]:
     return {added for added, _ in hits}, {present for _, present in hits}
 
 
+def _named_job_if(text: str, name: str) -> str:
+    """The folded `if:` block of the job whose `name:` is *name*."""
+    lines = text.splitlines()
+    at = lines.index(f"    name: {name}")
+    start = max(i for i in range(at) if re.match(r"^  \S", lines[i]))
+    end = next(
+        (i for i in range(at, len(lines)) if re.match(r"^  \S", lines[i])),
+        len(lines),
+    )
+    return _job_if("\n".join(lines[start:end]))
+
+
 def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
     """#1786: the mutation diff job fires on `ready-to-merge`, as the train does.
 
     The two start on the same event, so the job is pending during every poll
     the train makes, and NONGATING_WHILE_PENDING is what lets it run then
-    without holding the train. The label names and the trigger types are
-    read from both files, so a rename or a dropped event in one of them
-    fails here instead of leaving a job that never runs, or one that runs
-    on pushes the train ignores.
+    without holding the train. The job's `if` is the train's whole condition,
+    fork guard included, behind an event-name check, and the trigger types
+    are read from both files. A rename or a dropped event in one of them
+    fails here instead of leaving a job that never runs, and a dropped guard
+    fails instead of leaving one that runs on PRs the train skips.
     """
     assert _MUTATION in NONGATING_WHILE_PENDING
     train_text = _WORKFLOW.read_text()
-    train = _label_gate(train_text)
-    assert train == ({"ready-to-merge"}, {"ready-to-merge"})
+    assert _label_gate(train_text) == ({"ready-to-merge"}, {"ready-to-merge"})
+    train_if = _job_if(train_text)
     train_types = {
         frozenset(types) for _, types in _pull_request_triggers(train_text)
     }
@@ -409,7 +422,10 @@ def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
             if name in _job_bodies(path)
         )
         text = source.read_text()
-        assert _label_gate(text) == train, source.name
+        job_if = _named_job_if(text, name)
+        assert job_if == f"github.event_name == 'pull_request' && {train_if}", (
+            source.name, job_if,
+        )
         types = {frozenset(types) for _, types in _pull_request_triggers(text)}
         assert types == train_types, f"{source.name} triggers on {types}"
 

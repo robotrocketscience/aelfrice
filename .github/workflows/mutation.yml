@@ -348,10 +348,13 @@ jobs:
   # `merge_train_gate.ADVISORY_NAMES`, which drops its result from the gate.
   diff:
     name: mutation (advisory, PR diff)
-    # #1786: the label gate merge-train.yml's `merge` job uses, so the two
-    # fire on the same events. A test pins the label name to that file.
+    # #1786: merge-train.yml's `merge` condition, fork guard included, behind
+    # an event-name check, so the two fire on the same events. The train
+    # skips a fork PR, so a result for one would go unread. A test compares
+    # the two conditions whole.
     if: |
-      github.event_name == 'pull_request' && (
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository && (
         (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
       )
