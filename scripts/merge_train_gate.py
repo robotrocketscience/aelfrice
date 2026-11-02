@@ -119,7 +119,7 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 #
 # This is not ADVISORY_NAMES: a `failure` conclusion still gates, but only if
 # it arrives while the train is polling. Once everything else has settled the
-# train moves, and a later result is never read. Both jobs here are advisory,
+# train moves, and a later result is never read. Every job here is advisory,
 # so losing a late result is accepted. Job-level `continue-on-error` does not
 # change the first case: it keeps the workflow run green, while the job's own
 # check-run, the row this module reads, still reports `failure`
@@ -132,9 +132,21 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 # run on the head at the moment the train begins polling, and the train
 # waited on it every time. It stays in `FLOOR_NAMES`: a head it never
 # reported on is still `missing`, and a lone `cancelled` row still fails.
+#
+# `test-outcomes` (ci.yml, #1829) writes the per-PR test outcome diff and
+# never gates. It `needs: pytest`, so its run starts once both legs finish,
+# after every other gate has settled, and the train would wait out that
+# run on every PR. A step-level `continue-on-error` on each of its steps
+# holds its check-run at `success`, so a `failure` row means that design
+# broke, and it still gates if the train reads it. It stays out of
+# `FLOOR_NAMES`: a floor name whose newest row is `cancelled` fails, and
+# the job's own `timeout-minutes` ends it that way. Its blocking form
+# (`--block` on the diff step) would have to leave this set and join the
+# floor, or a late failure is never read.
 NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
     "mutation (advisory, PR diff)",
     "size-check",
+    "test-outcomes",
 })
 
 # The presence floor (#1458). Check-run names emitted by every workflow that
@@ -158,6 +170,9 @@ NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
 # on every PR head: `auto-add-to-board` (`types: [opened]` only),
 # `auto-status-board` (`types: [closed]`), `replay-soak` (`schedule:` only), and
 # merge-train's own `merge` job (SELF_NAMES — waiting on it would deadlock).
+# `test-outcomes` (ci.yml, #1829) does emit a row on every head and stays
+# out because it is advisory; the comment above NONGATING_WHILE_PENDING
+# says why, and the drift guard names it as its one exemption.
 #
 # This list drifts when a workflow or a job is added.
 # `tests/test_merge_train_gate.py::test_every_unfiltered_pr_workflow_is_in_the_floor`

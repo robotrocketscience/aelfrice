@@ -342,9 +342,31 @@ def test_a_size_check_that_never_reported_is_still_missing() -> None:
     assert evaluate(runs, REQUIRED)["missing"] == [_SIZE_CHECK]
 
 
-def test_the_nongating_set_is_exactly_the_two_advisory_jobs() -> None:
+_TEST_OUTCOMES = "test-outcomes"
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "pending"])
+def test_a_running_test_outcomes_job_does_not_hold_the_train(status: str) -> None:
+    """#1829: the job `needs: pytest`, so it runs after every other gate
+    has settled, and waiting on it would add its whole run to every merge."""
+    runs = [*_all_floor_green(), _run(_TEST_OUTCOMES, None, status=status)]
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["pending"] == []
+    assert verdict["pending_not_gating"] == [_TEST_OUTCOMES]
+
+
+def test_test_outcomes_is_outside_the_floor() -> None:
+    """Advisory, so a head without its row is not `missing`, and a
+    `cancelled` row from its job cap does not fail the head."""
+    assert _TEST_OUTCOMES not in FLOOR_NAMES
+    assert evaluate(_all_floor_green(), REQUIRED)["missing"] == []
+    runs = [*_all_floor_green(), _run(_TEST_OUTCOMES, "cancelled")]
+    assert evaluate(runs, REQUIRED)["failing"] == []
+
+
+def test_the_nongating_set_is_exactly_the_advisory_jobs() -> None:
     """A literal list, so widening it is a visible edit here."""
-    assert NONGATING_WHILE_PENDING == {_MUTATION, _SIZE_CHECK}
+    assert NONGATING_WHILE_PENDING == {_MUTATION, _SIZE_CHECK, _TEST_OUTCOMES}
 
 
 def _job_bodies(workflow: Path) -> dict[str, list[str]]:

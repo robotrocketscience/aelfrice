@@ -542,6 +542,7 @@ feature.
   | `windows-smoke.yml` | `smoke` |
   | `zizmor.yml` | `zizmor` |
   | `ci.yml` | `pytest (3.12)`, `pytest (3.13)`, `derived-figures`, `posterior-writers` |
+  | `ci.yml` | also `test-outcomes`, which is advisory and outside the floor |
   | `staging-gate.yml` | `secrets-scan`, `pattern-scan`, `history-scan`, `commit-msg-prefix`, `release-docs-check` |
   | `pr-metadata.yml` | `pr-title-prefix`, `pr-body-issue-link` |
   | `pr-size-soft-cap.yml` | `size-check` |
