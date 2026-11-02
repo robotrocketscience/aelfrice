@@ -9,10 +9,13 @@ mutations. The workflow parsing helpers come from that module.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.test_ci_manual_dispatch import _block, _text
+
+_REPO = Path(__file__).resolve().parents[1]
 
 # #1786: `pull_request.edited` fires on a title, body or base change. Of the
 # two workflows checked below, only `pr-metadata.yml` reads the title or body,
@@ -41,6 +44,8 @@ _PR_METADATA_FIELD_RE = re.compile(
     rf"|(?<![\w$])context\.payload(?:{_PAYLOAD_PULL_REQUEST}{_TITLE_OR_BODY}"
     rf"|(?:{_PAYLOAD_PULL_REQUEST})?(?![\w$]|\s*(?:\??\.|\[)))"
 )
+# A repo script a step runs, such as `python3 scripts/check_commit_identity.py`.
+_REPO_SCRIPT_RE = re.compile(r"(?<![\w./-])(?:\./)?((?:scripts|\.github)/[\w./-]+\.(?:py|sh|js|mjs|cjs))\b")
 
 
 def _pull_request_types(workflow: str) -> list[str]:
@@ -53,16 +58,33 @@ def _pull_request_types(workflow: str) -> list[str]:
     return []
 
 
-def _reads_title_or_body(text: str) -> bool:
-    """True when a non-comment line of workflow `text` reads the PR title or body.
+def _code_lines(text: str) -> list[str]:
+    """The lines of `text` that are not `#` or `//` comments."""
+    return [line for line in text.splitlines() if not line.lstrip().startswith(("#", "//"))]
+
+
+def _reads_title_or_body(text: str, root: Path = _REPO) -> bool:
+    """True when workflow `text`, or a repo script it runs, reads the PR title or body.
 
     A line that hands the whole PR object or event to a step counts as a read.
+    A script under `root` that a non-comment line names is read as well: a step
+    gets `GITHUB_EVENT_PATH` from the runner, so the script can open the event
+    file without the workflow line naming it. A third-party action
+    (`uses: owner/repo@ref`) also gets the event file, and its code is not
+    read here.
     """
-    return any(
-        _PR_METADATA_FIELD_RE.search(line)
-        for line in text.splitlines()
-        if not line.lstrip().startswith("#")
-    )
+    lines = _code_lines(text)
+    if any(_PR_METADATA_FIELD_RE.search(line) for line in lines):
+        return True
+    for line in lines:
+        for m in _REPO_SCRIPT_RE.finditer(line):
+            script = root / m.group(1)
+            if script.is_file() and any(
+                _PR_METADATA_FIELD_RE.search(code)
+                for code in _code_lines(script.read_text(encoding="utf-8"))
+            ):
+                return True
+    return False
 
 
 def test_staging_gate_does_not_run_on_pull_request_edited() -> None:
@@ -146,3 +168,31 @@ def test_a_comment_naming_the_title_or_body_is_not_a_read(line: str, reads: bool
 def test_every_event_payload_form_of_the_title_or_body_is_a_read(line: str, reads: bool) -> None:
     """A read through brackets, `toJSON`, the event file or `context.payload` counts."""
     assert _reads_title_or_body(f"on:\n  pull_request:\n{line}\n") is reads
+
+
+_READS_EVENT_FILE = (
+    "import json, os\n"
+    "event = json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))\n"
+    "print(event['pull_request']['title'])\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("step", "script", "reads"),
+    [
+        ("      - run: python3 scripts/step.py --strict", _READS_EVENT_FILE, True),
+        ("        run: bash ./scripts/step.py", _READS_EVENT_FILE, True),
+        ("      # - run: python3 scripts/step.py", _READS_EVENT_FILE, False),
+        ("      - run: python3 scripts/other.py", _READS_EVENT_FILE, False),
+        ("      - run: python3 scripts/step.py", "# GITHUB_EVENT_PATH is not read\nprint(1)\n", False),
+        ("      - run: python3 scripts/step.py", "print('scan')\n", False),
+    ],
+)
+def test_a_repo_script_a_step_runs_is_read_for_the_title_or_body(
+    tmp_path: Path, step: str, script: str, reads: bool,
+) -> None:
+    """A script that opens the event file reads the title or body for its workflow."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "step.py").write_text(script, encoding="utf-8")
+    workflow = f"on:\n  pull_request:\njobs:\n  j:\n    steps:\n{step}\n"
+    assert _reads_title_or_body(workflow, tmp_path) is reads
