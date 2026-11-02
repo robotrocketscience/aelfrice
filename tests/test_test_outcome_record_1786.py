@@ -344,11 +344,18 @@ def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
 
 
 def _is_one_test_id(entry: str) -> bool:
-    """`::` present, no whitespace in the classname, and no comment after
-    the id: `parse_allowlist` keeps a same-line `# ...` as part of the entry,
-    which then matches nothing."""
-    classname, sep, _ = entry.partition("::")
-    return bool(sep) and not re.search(r"\s", classname) and not re.search(r"\s#", entry)
+    """`::` present, no whitespace in the classname or the function name,
+    and no comment after the id: `parse_allowlist` keeps a same-line `# ...`
+    as part of the entry, which then matches nothing. A parameter may hold
+    whitespace and `#` (`[Let's move on to PR #869]`), so the check looks for
+    the comment after the closing bracket, not anywhere in the entry."""
+    classname, sep, name = entry.partition("::")
+    function = name.partition("[")[0]
+    return (
+        bool(sep)
+        and not re.search(r"\s", classname + function)
+        and not re.search(r"\]\s+#", entry)
+    )
 
 
 @pytest.mark.parametrize(
@@ -364,10 +371,20 @@ def _is_one_test_id(entry: str) -> bool:
         ("tests.test_store.TestOpen::test_readonly[a]  # skips on 3.13", False),
         ("tests.test_store.TestOpen::test_readonly[a]\t# skips on 3.13", False),
         ("tests.t::test_x[a#b]", True),
+        ("tests.test_cadence_p2::test_phase_boundary_prefix_match[Let's move on to PR #869]", True),
+        (
+            "tests.bench_gate.test_commit_intent::test_classifies_corrective_messages"
+            "[Fix #1234: handle empty input-fix]",
+            True,
+        ),
+        ("tests.t::test_x  # skips on 3.13", False),
+        ("tests.test_win*::*  # skips on the linux legs", False),
+        ("tests.t::test_x[a]  # see [b]", False),
     ],
 )
 def test_the_entry_shape_check(entry: str, ok: bool) -> None:
-    """Parameters may hold spaces; the classname never does, and `::` must be there."""
+    """Parameters may hold spaces and `#`; the classname and the function
+    name never hold whitespace, and `::` must be there."""
     assert _is_one_test_id(entry) is ok
 
 
