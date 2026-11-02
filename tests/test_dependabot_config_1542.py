@@ -5,11 +5,11 @@
 update needs an alert with a patched version. Version updates on the `uv`
 ecosystem cover the gap. These tests hold the configuration to the terms it
 landed under: the `uv` updater and not `pip`, since only `uv` rewrites
-uv.lock, and CI's `uv sync --frozen` installs a stale lock's old pins
-without an error; a weekly schedule; minor and patch bumps grouped into one
-PR; at most five open PRs; the labels Dependabot's security updates already
-apply; and no label or option that would merge a PR without a person adding
-`ready-to-merge`.
+uv.lock, and CI passes a PR that leaves the lock stale because its `uv run`
+steps re-lock in the runner; a weekly schedule; minor and patch bumps
+grouped into one PR; at most five open PRs; the labels Dependabot's
+security updates already apply; and no label or option that would merge a
+PR without a person adding `ready-to-merge`.
 
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set, so an `import yaml` passes locally and fails
@@ -136,8 +136,8 @@ def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
 
 def test_no_python_updater_besides_uv() -> None:
     """No `pip`, `pipenv`, or `poetry` item sits next to the `uv` one. Each
-    of those bumps pyproject.toml without rewriting uv.lock, and the stale
-    lock passes CI on the old pins."""
+    of those bumps pyproject.toml without rewriting uv.lock, CI passes the
+    PR, and the stale lock merges."""
     _uv_item()
     ecosystems = [
         _value(item, "package-ecosystem")
@@ -173,23 +173,39 @@ def test_uv_group_takes_every_minor_and_patch_version_update() -> None:
 
 
 def test_stale_lock_reason_matches_how_ci_installs() -> None:
-    """The reason given for `uv` over `pip` is that a stale uv.lock passes
-    CI: every workflow installs with `uv sync --frozen`, which installs the
-    locked pins without checking them against pyproject.toml, and no
-    workflow runs `uv lock --check` or `uv sync --locked`. Neither the
-    config comment nor this module may say that `--frozen` fails on a stale
-    lock. If a workflow starts checking the lock, the reason changes, and
-    this test asks for the comment to change with it."""
+    """The reason given for `uv` over `pip` is that CI passes a PR with a
+    stale uv.lock and the stale lock merges. Every workflow installs with
+    `uv sync --frozen`, which installs the locked pins without checking
+    them against pyproject.toml. The test steps then call plain `uv run`,
+    which re-locks in the runner and installs the newer versions, so the
+    tests run on the new pins. No workflow runs `uv lock --check` or
+    `uv sync --locked`, and none keeps `uv run` from syncing with
+    `--frozen`, `--no-sync`, or a `UV_FROZEN` or `UV_NO_SYNC` variable.
+    The config comment must say that `uv run` re-locks, and neither it nor
+    a docstring here may say that a stale lock makes `--frozen` fail or that
+    the tests see the old versions. If a workflow changes how it installs,
+    the reason changes, and this test asks for the comment to change with
+    it."""
     syncs: list[str] = []
+    test_runs: list[str] = []
     checks: list[str] = []
     for workflow in sorted(_WORKFLOWS.glob("*.yml")):
         for line in _code_lines(workflow.read_text(encoding="utf-8")):
+            where = f"{workflow.name}: {line.strip()}"
             if "uv sync" in line:
-                syncs.append(f"{workflow.name}: {line.strip()}")
-            if re.search(r"uv lock\b.*--check|--locked\b|UV_LOCKED", line):
-                checks.append(f"{workflow.name}: {line.strip()}")
+                syncs.append(where)
+            if re.search(r"\buv run\b.*\bpytest\b", line):
+                test_runs.append(where)
+            if re.search(
+                r"uv lock\b.*--check|--locked\b|UV_(?:LOCKED|FROZEN|NO_SYNC)\b",
+                line,
+            ):
+                checks.append(where)
     assert syncs, "no workflow runs `uv sync`"
     assert all("--frozen" in sync for sync in syncs), syncs
+    assert test_runs, "no workflow runs pytest under `uv run`"
+    pinned = [run for run in test_runs if re.search(r"--(?:frozen|no-sync)\b", run)]
+    assert not pinned, pinned
     assert not checks, checks
     comment = " ".join(
         line.lstrip().lstrip("#").strip()
@@ -197,8 +213,16 @@ def test_stale_lock_reason_matches_how_ci_installs() -> None:
         if line.lstrip().startswith("#")
     )
     assert "uv sync --frozen" in comment, comment
-    false_claim = re.compile(r"--frozen`?\s+fails", re.IGNORECASE)
-    for text in (comment, " ".join((__doc__ or "").split())):
+    assert re.search(r"`uv run`.*\bre-locks\b", comment), comment
+    false_claim = re.compile(
+        r"--frozen`?\s+fails|\bon the old (?:versions|pins)\b", re.IGNORECASE
+    )
+    docs = [__doc__ or ""] + [
+        test.__doc__ or ""
+        for name, test in sorted(globals().items())
+        if name.startswith("test_") and callable(test)
+    ]
+    for text in [comment] + [" ".join(doc.split()) for doc in docs]:
         assert not false_claim.search(text), text
 
 
