@@ -985,6 +985,15 @@ _FLOOR_SOURCES: dict[str, frozenset[str]] = {
     "typos.yml": frozenset({"typos"}),
 }
 
+# Rows an unfiltered PR workflow emits on every head that stay out of
+# FLOOR_NAMES on purpose, per workflow. `test-outcomes` (ci.yml, #1829) is
+# advisory: it is in NONGATING_WHILE_PENDING, and a floored `cancelled`
+# row would gate on it. The drift guard subtracts exactly these names, so
+# any other new job still fails it until FLOOR_NAMES carries it.
+_UNFLOORED_ADVISORY: dict[str, frozenset[str]] = {
+    "ci.yml": frozenset({"test-outcomes"}),
+}
+
 _WORKFLOW_DIR = _REPO / ".github" / "workflows"
 
 
@@ -1544,7 +1553,11 @@ def test_every_unfiltered_pr_workflow_is_in_the_floor() -> None:
     always-run job, `posterior-writers`, that the floor did not carry: the
     file was already in the mapping, so nothing noticed the new row.
     """
-    derived = _derived_floor_sources()
+    derived = {
+        name: rest
+        for name, emitted in _derived_floor_sources().items()
+        if (rest := emitted - _UNFLOORED_ADVISORY.get(name, frozenset()))
+    }
     files = set(derived) | set(_FLOOR_SOURCES)
     drift = {
         name: (
@@ -1558,6 +1571,16 @@ def test_every_unfiltered_pr_workflow_is_in_the_floor() -> None:
         "the floor and .github/workflows/ have drifted; per workflow "
         f"(only in the workflow's jobs, only in the floor): {drift}"
     )
+
+
+def test_every_floor_exemption_is_an_advisory_row_its_workflow_emits() -> None:
+    """An exemption whose job was renamed or dropped would sit unused, and
+    one for a name that waits or floors would hide a real gate."""
+    derived = _derived_floor_sources()
+    for file, names in _UNFLOORED_ADVISORY.items():
+        assert names <= derived.get(file, frozenset()), (file, sorted(names))
+        assert names <= NONGATING_WHILE_PENDING, sorted(names)
+        assert not names & FLOOR_NAMES, sorted(names)
 
 
 def test_the_floor_is_exactly_what_its_sources_emit() -> None:
