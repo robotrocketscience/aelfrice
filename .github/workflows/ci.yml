@@ -222,14 +222,16 @@ jobs:
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
-  # The baseline. This workflow runs on `pull_request` only, so no run is
-  # "on main". The train fast-forwards, so a merged PR's head commit is the
-  # commit on main and the run that tested it has that commit as its
-  # `head_sha`. The script walks main back from the PR's base commit through
-  # the runs API and takes the first commit with a green run that still
-  # holds a JUnit artifact. The artifact name carries `github.sha`, the
-  # merge commit of the PR, which never lands on main, so the lookup matches
-  # the `junit-<leg>-` prefix only. Artifacts expire after 30 days; when the
+  # The baseline. This workflow runs on `pull_request` and on
+  # `workflow_dispatch`, never on a push to main. The train fast-forwards,
+  # so a merged PR's head commit is the commit on main and the run that
+  # tested it has that commit as its `head_sha`; a dispatched run has the
+  # commit it tested as its `head_sha`. The script walks main back from the
+  # PR's base commit through the runs API and takes the first commit with a
+  # green run of either event that still holds a JUnit artifact. The
+  # artifact name carries `github.sha`: on a PR run the merge commit of the
+  # PR, which never lands on main, and on a dispatch the tested commit, so
+  # the lookup matches the `junit-<leg>-` prefix only. Artifacts expire after 30 days; when the
   # walk finds none, or the base is a docs-only PR chain with no report,
   # the summary says "no baseline" and the job stays green. Shape B's
   # nightly on main will write records to a `test-results` branch, which

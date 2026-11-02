@@ -1131,6 +1131,43 @@ def test_each_step_reads_the_files_the_step_before_it_wrote() -> None:
     assert _flag(baseline, "--repo") == '"$GITHUB_REPOSITORY"'
 
 
+def _ci_triggers() -> list[str]:
+    """The event names under ci.yml's top-level `on:`."""
+    lines = _CI.read_text(encoding="utf-8").splitlines()
+    triggers: list[str] = []
+    for line in lines[lines.index("on:") + 1:]:
+        if line and not line.startswith(" "):
+            break
+        m = re.match(r"  ([a-z_]+):", line)
+        if m:
+            triggers.append(m.group(1))
+    return triggers
+
+
+def _ci_baseline_comment() -> str:
+    """The ci.yml comment paragraph that opens with `The baseline.`."""
+    lines = _CI.read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("  # The baseline."))
+    block: list[str] = []
+    for line in lines[start:]:
+        if not line.startswith("  #") or not line[3:].strip():
+            break
+        block.append(line[3:].strip())
+    return " ".join(block)
+
+
+def test_the_baseline_notes_name_every_event_the_workflow_runs_on() -> None:
+    """The walk reads green runs of any event; a note that names one event
+    misstates which `head_sha` and `github.sha` a run carries."""
+    triggers = _ci_triggers()
+    assert "pull_request" in triggers and len(triggers) > 1, triggers
+    assert tor.__doc__ is not None
+    docstring = next(p for p in tor.__doc__.split("\n\n") if p.startswith("The baseline."))
+    for text in (docstring, _ci_baseline_comment()):
+        for event in triggers:
+            assert f"`{event}`" in text, (event, text)
+
+
 def test_no_expression_is_interpolated_into_a_run_script() -> None:
     """zizmor template-injection: values reach shell through `env:`, never inline."""
     for step in _steps("test-outcomes"):

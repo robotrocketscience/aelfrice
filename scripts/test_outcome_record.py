@@ -43,14 +43,17 @@ whatever the diff says and each violation is a `::warning::`; with it the
 exit status is 1 when a violation exists. A missing baseline is a notice,
 never a failure, in both modes.
 
-The baseline. `ci.yml` runs on `pull_request` only, so no run is "on
-main". The merge train fast-forwards, so a merged PR's head commit is the
-commit on main, and the run that tested it has that commit as `head_sha`.
-`baseline` walks main back from `--base-sha` and takes the first commit
-with a successful run of the workflow that still holds a JUnit artifact
-for a leg. Artifacts are named `junit-<leg>-<github.sha>`, where
-`github.sha` is the merge commit of the PR, a commit that never lands on
-main, so artifacts are matched on the `junit-<leg>-` prefix only.
+The baseline. `ci.yml` runs on `pull_request` and on `workflow_dispatch`,
+never on a push to main. The merge train fast-forwards, so a merged PR's
+head commit is the commit on main, and the run that tested it has that
+commit as `head_sha`; a dispatched run has the commit it tested as
+`head_sha` too. `baseline` walks main back from `--base-sha` and takes
+the first commit with a successful run of the workflow, of either event,
+that still holds a JUnit artifact for a leg. Artifacts are named
+`junit-<leg>-<github.sha>`. On a `pull_request` run `github.sha` is the
+merge commit of the PR, a commit that never lands on main, and on a
+dispatch it is the tested commit, so artifacts are matched on the
+`junit-<leg>-` prefix only.
 Artifacts expire after 30 days and a docs-only PR uploads none; when the
 walk finds no artifact the output says so and `diff` reports no baseline.
 
