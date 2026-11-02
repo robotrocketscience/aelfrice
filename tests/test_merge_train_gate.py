@@ -1569,6 +1569,41 @@ def test_every_floor_comment_names_the_workflow_that_emits_the_row() -> None:
     assert _floor_comment_attributions() == expected
 
 
+_TABLE_ROW = re.compile(r"^\s*\| `(?P<file>[^`]+\.ya?ml)` \| (?P<names>.+?) \|\s*$")
+
+
+def _contributing_recovery_table() -> dict[str, set[str]]:
+    """`{workflow file: check-run names}` from the CONTRIBUTING.md recovery
+    table. A file listed on more than one row gets the union of its rows."""
+    rows: dict[str, set[str]] = {}
+    for line in (_REPO / "CONTRIBUTING.md").read_text().splitlines():
+        m = _TABLE_ROW.match(line)
+        if m:
+            names = re.findall(r"`([^`]+)`", m.group("names"))
+            rows.setdefault(m.group("file"), set()).update(names)
+    return rows
+
+
+def test_the_recovery_table_lists_every_floor_row() -> None:
+    """CONTRIBUTING.md's table is what a reader compares a head's rows
+    against after a dispatch-only recovery (#1786). A floor row the table
+    leaves out is one the reader never looks for."""
+    table = _contributing_recovery_table()
+    absent = {
+        file: sorted(names - table.get(file, set()))
+        for file, names in _derived_floor_sources().items()
+        if names - table.get(file, set())
+    }
+    assert not absent, f"floor rows missing from the CONTRIBUTING.md table: {absent}"
+
+
+def test_contributing_describes_the_floor_as_required_plus_floor_names() -> None:
+    """The floor is `required | FLOOR_NAMES` (#1458), not the required set."""
+    text = " ".join((_REPO / "CONTRIBUTING.md").read_text().split())
+    assert "covers the required set only" not in text
+    assert "is the required set plus `merge_train_gate.FLOOR_NAMES`" in text
+
+
 def test_the_floor_excludes_advisory_bots_and_the_trains_own_jobs() -> None:
     """Flooring on either is a deadlock, not a gate.
 

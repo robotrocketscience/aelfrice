@@ -512,11 +512,14 @@ feature.
   `workflow_dispatch`.
 - **⚠️ A dispatch of these two does *not* mean the PR is safe to label.**
   The two workflows produce the five *required* contexts. The presence floor
-  of `merge-train` (`missing`, #1435) covers the required set only. An
-  *absence test* evaluates every other gating check, and an absent check
-  satisfies that test. A head that carries only the dispatched rows therefore
-  evaluates as green while the other checks never ran. Before you label the
-  PR, list what is actually on the head SHA:
+  of `merge-train` (`missing`, #1435, #1458) is the required set plus
+  `merge_train_gate.FLOOR_NAMES`, the check-runs of every workflow that runs
+  on every PR head. The train waits for a floor row that has not reported
+  and fails the run when its wait ends. An *absence test* evaluates every
+  other gating check, and an absent check satisfies that test. A head that
+  carries every floor row therefore evaluates as green while a path-filtered
+  check never ran. Before you label the PR, list what is actually on the head
+  SHA:
 
   ```sh
   gh api repos/robotrocketscience/aelfrice/commits/<head-sha>/check-runs \
@@ -542,6 +545,7 @@ feature.
   | `staging-gate.yml` | `secrets-scan`, `pattern-scan`, `history-scan`, `commit-msg-prefix`, `release-docs-check` |
   | `pr-metadata.yml` | `pr-title-prefix`, `pr-body-issue-link` |
   | `pr-size-soft-cap.yml` | `size-check` |
+  | `label-docs.yml` | `label` |
   | `replay-soak-gate.yml` | `consecutive-green` |
   | `e2e.yml` | also `surface-failure` |
   | `auto-add-to-board.yml` | `add-to-board` |
@@ -550,9 +554,9 @@ feature.
   **After a dispatch-only recovery, check the `pr-title-prefix` and
   `pr-body-issue-link` rows first.** They live in `pr-metadata.yml`, which
   deliberately has no `workflow_dispatch`. They are therefore exactly the
-  gating checks a dispatch cannot produce. An absence test evaluates their
-  absence, and an absent check satisfies that test. If they are missing, the
-  head is not safe to label, however green the dispatched rows look.
+  gating checks a dispatch cannot produce. Both are floor rows, so if they
+  are missing, the train waits for them and then fails the run, however
+  green the dispatched rows look.
 
   Not all of them belong on every head, so an absent row is not automatically
   a problem. `windows-smoke.yml`, `eval-calibration.yml`, `e2e.yml`, and
