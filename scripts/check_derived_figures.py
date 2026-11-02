@@ -196,6 +196,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # How long one producer may run before it is treated as hung. Generous: the
 # slowest producer on this tree takes 15.0s on a laptop (see `check_producers`).
+# The default for `--producer-timeout`, which ci.yml sets lower.
 PRODUCER_TIMEOUT_S: int = 300
 
 # Ceiling on concurrent producer children. One worker per producer up to this,
@@ -1153,13 +1154,18 @@ def runnable_producers(by_producer: dict[str, list[Marker]]) -> list[tuple[str, 
     return runnable
 
 
-def run_producer(path: Path, cache_root: str) -> subprocess.CompletedProcess[str]:
+def run_producer(
+    path: Path, cache_root: str, timeout_s: int = PRODUCER_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
     """Run one producer under `--emit-figures` and hand back the raw result.
 
     This is the only part of the producer check that runs off the main thread,
     and it is deliberately the whole of it: it decides nothing and records
     nothing. Everything that reaches `Report` is derived from the returned
     `CompletedProcess` afterwards, in producer order, on one thread.
+
+    A producer still running after `timeout_s` seconds is killed, and
+    `subprocess.TimeoutExpired` fails the check.
     """
     return subprocess.run(
         [sys.executable, str(path), "--emit-figures"],
@@ -1167,13 +1173,15 @@ def run_producer(path: Path, cache_root: str) -> subprocess.CompletedProcess[str
         text=True,
         cwd=str(REPO_ROOT),
         env=producer_env(cache_root),
-        timeout=PRODUCER_TIMEOUT_S,
+        timeout=timeout_s,
         check=False,
     )
 
 
 def run_producers(
-    runnable: list[tuple[str, Path]], max_workers: int | None = None
+    runnable: list[tuple[str, Path]],
+    max_workers: int | None = None,
+    timeout_s: int = PRODUCER_TIMEOUT_S,
 ) -> list[subprocess.CompletedProcess[str]]:
     """Run the given producers concurrently, results in the order given.
 
@@ -1198,7 +1206,9 @@ def run_producers(
         # `map` yields in submission order, never completion order, and the
         # list is materialised inside the pool so the cache directory outlives
         # every child.
-        return list(pool.map(lambda item: run_producer(item[1], pyc), runnable))
+        return list(
+            pool.map(lambda item: run_producer(item[1], pyc, timeout_s), runnable)
+        )
 
 
 def report_producer(
@@ -1260,7 +1270,11 @@ def report_producer(
 
 
 def check_producers(
-    markers: list[Marker], report: Report, *, max_workers: int | None = None
+    markers: list[Marker],
+    report: Report,
+    *,
+    max_workers: int | None = None,
+    timeout_s: int = PRODUCER_TIMEOUT_S,
 ) -> None:
     """Run every store-free producer and diff its output against the prose.
 
@@ -1334,7 +1348,7 @@ def check_producers(
     if not runnable:
         return
 
-    finished = run_producers(runnable, max_workers)
+    finished = run_producers(runnable, max_workers, timeout_s)
     for (producer, _path), proc in zip(runnable, finished, strict=True):
         report_producer(producer, by_producer[producer], proc, report)
 
@@ -1459,6 +1473,14 @@ def list_unmarked(files: list[Path]) -> int:
     return 0
 
 
+def _seconds(text: str) -> int:
+    """`--producer-timeout`'s value: a whole number of seconds, at least 1."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} is not at least 1 second")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument(
@@ -1470,6 +1492,14 @@ def main(argv: list[str] | None = None) -> int:
         "all: both.",
     )
     ap.add_argument("--list-unmarked", action="store_true")
+    ap.add_argument(
+        "--producer-timeout",
+        type=_seconds,
+        default=PRODUCER_TIMEOUT_S,
+        metavar="SECONDS",
+        help="how long one producer may run before the check fails "
+        f"(default {PRODUCER_TIMEOUT_S}).",
+    )
     ap.add_argument(
         "--time-producers",
         action="store_true",
@@ -1514,7 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.time_producers:
         return time_producers(markers)
     if args.mode in ("producers", "all"):
-        check_producers(markers, report)
+        check_producers(markers, report, timeout_s=args.producer_timeout)
 
     store_free = sum(1 for m in markers if not m.store_backed)
     print(

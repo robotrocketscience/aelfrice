@@ -830,6 +830,46 @@ def _slow_producer(
     (repo / f"{name}.md").write_text(_published(f"benchmarks/{name}.py#k", published))
 
 
+@pytest.mark.timeout(60)
+def test_the_producer_timeout_bounds_each_producer(repo: Path) -> None:
+    """A producer that outlives `timeout_s` fails the check (#1786).
+
+    The same producer passes under the default, so the failure comes from the
+    cap and not from the fixture.
+    """
+    _slow_producer(repo, "slow", 2.0, emits=20, published=20)
+    scan = cdf.Report(github=False)
+    markers = cdf.check_text([repo / "slow.md"], scan)
+    assert scan.hard == [], "\n".join(scan.hard)
+
+    passed = cdf.Report(github=False)
+    cdf.check_producers(markers, passed)
+    assert passed.hard == [], "\n".join(passed.hard)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        cdf.check_producers(markers, cdf.Report(github=False), timeout_s=1)
+
+
+def test_the_producer_timeout_flag_reaches_the_producer_check(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--producer-timeout` sets the cap `check_producers` runs under, and
+    leaving it out keeps `PRODUCER_TIMEOUT_S`. Zero is refused."""
+    seen: list[dict[str, object]] = []
+
+    def check_producers(markers: object, report: object, **kwargs: object) -> None:
+        seen.append(kwargs)
+
+    monkeypatch.setattr(cdf, "check_producers", check_producers)
+    (repo / "CHANGELOG" / "v9.md").write_text("- **Entry.** Nothing measured.\n")
+    base = ["--mode", "producers", "CHANGELOG/v9.md"]
+    assert cdf.main([*base, "--producer-timeout", "120"]) == 0
+    assert cdf.main(base) == 0
+    assert seen == [{"timeout_s": 120}, {"timeout_s": cdf.PRODUCER_TIMEOUT_S}]
+    with pytest.raises(SystemExit):
+        cdf.main([*base, "--producer-timeout", "0"])
+
+
 def test_running_no_producers_returns_no_results() -> None:
     """#1578: an empty producer list is a legitimate input, not an error.
 
