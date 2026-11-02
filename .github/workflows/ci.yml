@@ -6,11 +6,13 @@ on:
     # No paths-ignore: the workflow must always run so the
     # `pytest (3.12)` and `pytest (3.13)` required status checks
     # report on every PR — including docs-only ones. Path detection
-    # happens inside the job via `dorny/paths-filter`. A PR that matches
-    # neither filter key, `code` or `tree_reads`, skips the install and
-    # test steps and reports success. A PR that matches `tree_reads` and
-    # not `code`, such as one that changes only Markdown, installs and
-    # runs only the tests that read every file a glob matches.
+    # happens inside the job via `dorny/paths-filter`. `tree_reads`
+    # carries `**`, because two tests read every tracked file, so a PR
+    # that matches `tree_reads` and not `code`, such as a docs-only one,
+    # installs and runs only the tests that read every file a glob
+    # matches. A PR that matches neither filter key, `code` or
+    # `tree_reads`, which takes a diff that names no file, skips the
+    # install and test steps and reports success.
     # Per #413/#427 follow-up: replaces the previous `paths-ignore`
     # filter that silently dropped the pytest check on docs-only PRs
     # and blocked them under `required_status_checks`.
@@ -133,10 +135,12 @@ jobs:
               - 'docs/user/SLASH_COMMANDS.md'
               - 'pyright_baseline.json'
             # Globs that a test reads every match of, declared in its
-            # `# path-filter:` comment: the cross-file anchor test reads
-            # each tracked Markdown file, and the derived-figure tests read
-            # every Markdown and Python file under docs/ and CHANGELOG/
-            # through `iter_files`. No list of exact entries can cover
+            # `# path-filter:` comment: the privacy and conflict-marker
+            # scans read every tracked file through `git ls-files`, which
+            # `**` matches, the cross-file anchor test reads each tracked
+            # Markdown file, and the derived-figure tests read every
+            # Markdown and Python file under docs/ and CHANGELOG/ through
+            # `iter_files`. No list of exact entries can cover
             # that, and these globs under `code` would put the full matrix
             # on every docs-only PR. A PR that matches this key and not
             # `code` runs only the modules that declare a glob, and those
@@ -147,6 +151,7 @@ jobs:
             # comments and that step's modules from the comments and the
             # directories the suite reads.
             tree_reads:
+              - '**'
               - '**/*.md'
               - 'CHANGELOG/**/*.py'
               - 'docs/**/*.py'
@@ -195,9 +200,9 @@ jobs:
       # suite.
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads == 'true' && github.event_name != 'workflow_dispatch'
         name: Run the tests that read every file a glob matches
-        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_store_open_cost_1561.py -q -rfEsxX
+        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_conflict_markers_1491.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_no_personal_paths.py tests/test_store_open_cost_1561.py -q -rfEsxX
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads != 'true' && github.event_name != 'workflow_dispatch'
-        run: echo "No code paths changed; reporting pass for docs-only PR."
+        run: echo "No changed file matched a filter key; reporting pass."
       # `always()` so a red leg still keeps its report, which is the case the
       # report is for. On the docs-only branch there is no file, and the
       # action warns rather than fails.

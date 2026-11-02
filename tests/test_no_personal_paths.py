@@ -301,7 +301,7 @@ def test_placeholders_and_service_accounts_do_not_fire(text: str) -> None:
 
 @pytest.mark.timeout(60)
 def test_the_tracked_tree_is_clean() -> None:
-    findings = chk.scan_tracked()
+    findings = chk.scan_tracked()  # path-filter: **
     assert not findings, "personal paths in tracked files: " + "; ".join(
         f"{p}:{n} {hit!r}" for p, n, hit, _ in findings
     )
@@ -309,7 +309,7 @@ def test_the_tracked_tree_is_clean() -> None:
 
 @pytest.mark.timeout(60)
 def test_no_host_configuration_directory_is_tracked() -> None:
-    tracked = chk.forbidden_tracked()
+    tracked = chk.forbidden_tracked()  # path-filter: **
     assert not tracked, f"host configuration directories tracked: {tracked}"
 
 

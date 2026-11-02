@@ -5,8 +5,8 @@ name: label-docs
 # deadcode.yml and codeql.yml, so a labelled PR skipped those two workflows.
 # The label does not mean ci.yml skipped its tests: a labelled PR that changes
 # a page a test reads matches ci.yml's `code` filter and runs the suite, and
-# one that changes a Markdown file matches `tree_reads` and runs the tests
-# that read every Markdown file.
+# every labelled PR matches `tree_reads` and runs the tests that read every
+# file a glob matches, the privacy and conflict-marker scans among them.
 
 # `pull_request_target` is required so the workflow can apply labels to PRs
 # from forks (the default `pull_request` token has read-only access from a

@@ -73,7 +73,7 @@ def _anchors(path: Path) -> set[str]:
 
 
 def _tracked_markdown() -> list[Path]:
-    out = subprocess.run(
+    out = subprocess.run(  # path-filter: **/*.md
         ["git", "ls-files", "*.md"],
         cwd=REPO, capture_output=True, text=True, check=True, timeout=30,
     ).stdout.split()

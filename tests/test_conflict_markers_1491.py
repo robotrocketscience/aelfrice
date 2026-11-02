@@ -171,7 +171,7 @@ def test_an_unreadable_file_fails_the_scan_instead_of_shrinking_it(
         scan([missing])
 
     assert "vanished.md" in str(caught.value)
-    assert check_conflict_markers.main(["prog", str(missing)]) == 2
+    assert check_conflict_markers.main(["prog", str(missing)]) == 2  # path-filter: none
 
 
 def test_scan_reports_the_file_and_line(tmp_path: Path) -> None:
@@ -194,7 +194,7 @@ def test_no_tracked_file_carries_a_marker(marker: str) -> None:
     `git ls-files` returned nothing the scan would pass having read no
     file, which is how this class of check quietly stops working.
     """
-    read, findings = scan(tracked_files(_REPO))
+    read, findings = scan(tracked_files(_REPO))  # path-filter: **
 
     assert read > 100, f"only {read} tracked text files scanned"
     hits = [(str(p), n, line) for p, n, line in findings
@@ -205,6 +205,6 @@ def test_no_tracked_file_carries_a_marker(marker: str) -> None:
 @pytest.mark.source_scan
 def test_the_live_scan_reports_no_separator_either() -> None:
     """Separators are conditional, so they need their own live assert."""
-    _, findings = scan(tracked_files(_REPO))
+    _, findings = scan(tracked_files(_REPO))  # path-filter: **
 
     assert [(str(p), n) for p, n, _ in findings] == []

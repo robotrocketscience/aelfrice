@@ -43,12 +43,16 @@ on the repo root that the scan still cannot resolve, such as `REPO / p`
 over `git ls-files` output, or a string built on the root, such as
 `f"{_REPO}/docs/x.md"`, fails `test_every_repo_path_a_test_builds_is_resolved`
 until its line carries a `# path-filter:` comment naming what it reads.
-So a new test that reads a new file outside the filter through such a
-path fails here, and an entry nobody reads any more fails the reverse
-test. Outside the scan: a path handed to a subprocess or spelled
-relative to the working directory, a module object the scan cannot trace
-to its file (one a helper function returns), a module the loaded module
-loads in turn, and a read a loaded module makes at import time.
+So does a `git ls-files` run that the scan cannot place below the root,
+in the test or in a function of a module it loads, such as the privacy
+scan's `chk.scan_tracked()`: the listing names files no path in the
+source does. So a new test that reads a new file outside the filter
+through such a path fails here, and an entry nobody reads any more
+fails the reverse test. Outside the scan: any other path handed to a
+subprocess or spelled relative to the working directory, a module
+object the scan cannot trace to its file (one a helper function
+returns), a module the loaded module loads in turn, and a read a loaded
+module makes at import time.
 """
 from __future__ import annotations
 
@@ -216,6 +220,9 @@ _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 # path in the source names.
 _LISTING_METHODS = frozenset({"glob", "rglob", "iterdir", "walk"})
 _LISTING_CALLS = frozenset({"os.walk", "os.listdir", "os.scandir"})
+# The git subcommand that lists the tracked tree, which reads every
+# tracked file, or every match of its pathspec, without naming one.
+_LS_FILES = "ls-files"
 # The comment that says what a line the scan cannot resolve reads.
 _PRAGMA = "path-filter:"
 
@@ -298,8 +305,12 @@ def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> 
     if isinstance(node, ast.Attribute):
         modules = _modules(_resolve(node.value, names, here))
         if modules:
-            # `cdf.REPO_ROOT`: what that module binds the name to.
-            return frozenset().union(*(_module_exports(m).names.get(node.attr, _UNKNOWN) for m in modules))
+            # `cdf.REPO_ROOT`: what that module binds the name to, and
+            # `ccm.tracked_files`: one of its reader functions.
+            return frozenset().union(
+                *(_module_exports(m).names.get(node.attr, _UNKNOWN) for m in modules),
+                {("fn", m, node.attr) for m in modules if node.attr in _module_exports(m).readers},
+            )
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         return _up(_resolve(node.value, names, here), 1)
     if isinstance(node, ast.Subscript):
@@ -531,6 +542,27 @@ def _lists_the_root(node: ast.AST, names: dict[str, _Value], here: tuple[str, ..
     return False
 
 
+def _lists_the_tracked_tree(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> bool:
+    """Whether `node` runs `git ls-files` where the scan cannot place it below the root.
+
+    The command word counts as a positional argument or inside a literal
+    list or tuple one: `subprocess.run(["git", "ls-files"], cwd=_REPO)`
+    and `_git("ls-files")` alike. With no `cwd=` the listing is of the
+    working directory, which pytest starts at the repo root. A `cwd=` the
+    scan cannot resolve, such as a parameter, may be the root as well.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    words = [w for a in node.args for w in (a.elts if isinstance(a, (ast.List, ast.Tuple)) else [a])]
+    if not any(isinstance(w, ast.Constant) and w.value == _LS_FILES for w in words):
+        return False
+    cwd = next((k.value for k in node.keywords if k.arg == "cwd"), None)
+    if cwd is None:
+        return True
+    places = _paths(_resolve(cwd, names, here))
+    return not places or () in places
+
+
 def _flatten(value: _Value) -> _Value:
     """`value` with each literal tuple, list or set replaced by its elements."""
     items: set[tuple] = set()
@@ -640,6 +672,7 @@ def _analyse(source: str, here: tuple[str, ...]) -> _Analysis:
         names = names_of(owner[node])
         if (
             _lists_the_root(node, names, here)
+            or _lists_the_tracked_tree(node, names, here)
             or _calls_a_reader(node, names, here)
             or _builds_a_string_on_the_root(node, names, here)
         ):
@@ -736,9 +769,10 @@ def _module_exports(segments: tuple[str, ...]) -> _Exports:
         return _NO_EXPORTS
     source = path.read_text(encoding="utf-8")
     # Followed one module deep, a module builds paths only from its own
-    # `__file__`, so one that never names it exports nothing.
+    # `__file__` and lists the tree only through `git ls-files`, so one
+    # that names neither exports nothing.
     exports = _NO_EXPORTS
-    if "__file__" in source:
+    if "__file__" in source or _LS_FILES in source:
         _EXPORTING.add(segments)
         try:
             exports = _exports_of(source, segments)
@@ -792,7 +826,11 @@ def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
     root, and a call to one of its functions that reads under its root,
     such as `cdf.iter_files(roots)`, is a read the scan cannot resolve.
     """
-    if "__file__" not in source and not any(stem in source for stem in _exporting_stems()):
+    if (
+        "__file__" not in source
+        and _LS_FILES not in source
+        and not any(stem in source for stem in _exporting_stems())
+    ):
         return _NO_SCAN
     analysis = _analyse(source, here)
     found, unresolved = analysis.found, analysis.unresolved
@@ -1121,6 +1159,33 @@ _UNRESOLVED = {
     "percent": 'def test_x():\n    open("%s/docs/new.md" % (_R,)).read()\n',
     "format": 'def test_x():\n    open("{}/docs/new.md".format(_R)).read()\n',
     "os_sep_join": 'def test_x():\n    open(os.sep.join([str(_R), "docs", "new.md"])).read()\n',
+    # A `git ls-files` run names every tracked file without a join on the
+    # root: the listing alone, one in the working directory, one through
+    # a helper that takes the command words, and one whose `cwd=` is a
+    # parameter that may be the root.
+    "git_ls_files_listing": (
+        "import subprocess\n"
+        "def test_x():\n"
+        '    subprocess.run(["git", "ls-files"], cwd=_R, capture_output=True, timeout=30)\n'
+    ),
+    "git_ls_files_no_cwd": (
+        "import subprocess\n"
+        "def test_x():\n"
+        '    for p in subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split():\n'
+        "        Path(p).read_text()\n"
+    ),
+    "git_ls_files_helper": (
+        "import subprocess\n"
+        "def _git(*args):\n"
+        '    return subprocess.run(["git", *args], capture_output=True, text=True).stdout\n'
+        "def test_x():\n"
+        '    _git("ls-files")\n'
+    ),
+    "git_ls_files_parameter_cwd": (
+        "import subprocess\n"
+        "def test_x(repo):\n"
+        '    subprocess.run(("git", "ls-files", "-z"), cwd=repo, capture_output=True)\n'
+    ),
 }
 
 
@@ -1161,21 +1226,54 @@ def test_a_root_another_module_binds_resolves_as_the_module_own(source: str) -> 
     assert not scan.problems, scan.problems
 
 
+# Two scripts that list the tracked tree with `git ls-files`: one in a
+# directory its caller passes, one in the working directory. The second
+# names no `__file__`, so it also pins that such a module is parsed.
+_CCM_HEAD = (
+    "import importlib.util\n"
+    "from pathlib import Path\n"
+    "_R = Path(__file__).resolve().parents[1]\n"
+    '_spec = importlib.util.spec_from_file_location("_ccm", _R / "scripts" / "check_conflict_markers.py")\n'
+    "ccm = importlib.util.module_from_spec(_spec)\n"
+)
+_CHK_HEAD = (
+    "import importlib.util\n"
+    "from pathlib import Path\n"
+    "_R = Path(__file__).resolve().parents[1]\n"
+    '_spec = importlib.util.spec_from_file_location("_chk", _R / "scripts" / "check_no_personal_paths.py")\n'
+    "chk = importlib.util.module_from_spec(_spec)\n"
+)
+
+
 @pytest.mark.parametrize(
     "source",
     [
         _CDF_HEAD + "def test_x():\n    cdf.iter_files(list(cdf.DEFAULT_ROOTS))\n",
         _CDF_HEAD + "def test_x():\n    for p in cdf.iter_files(['docs']):\n        p.read_text()\n",
         "from benchmarks.published_constants import figures\ndef test_x():\n    figures()\n",
+        _CCM_HEAD + "def test_x():\n    ccm.scan(ccm.tracked_files(_R))\n",
+        _CCM_HEAD + "tracked_files = ccm.tracked_files\ndef test_x():\n    tracked_files(_R)\n",
+        _CHK_HEAD + "def test_x():\n    chk.scan_tracked()\n",
+        _CHK_HEAD + "def test_x():\n    chk.forbidden_tracked()\n",
     ],
-    ids=["iter_files", "iter_files_loop", "imported_reader"],
+    ids=[
+        "iter_files",
+        "iter_files_loop",
+        "imported_reader",
+        "git_listing_reader",
+        "name_bound_reader",
+        "working_directory_reader",
+        "working_directory_listing",
+    ],
 )
 def test_a_call_to_another_module_reader_is_a_problem(source: str) -> None:
     """#1786: `cdf.iter_files(...)` reads every page under its roots unseen.
 
     `iter_files` joins each root onto its module's own repo root, and
     `figures` calls a function that does the same, so neither call names
-    the files it reads.
+    the files it reads. `ccm.tracked_files(_R)` and `chk.scan_tracked()`
+    read every tracked file through `git ls-files`, the conflict-marker
+    and privacy scans that a docs-only PR can break.
     """
     scan = _scan_source(source, ("tests", "test_probe.py"))
     assert scan.problems, f"no problem reported; reads {sorted(scan.reads)}"

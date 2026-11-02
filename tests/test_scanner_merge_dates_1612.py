@@ -51,7 +51,7 @@ def _write(repo: Path, name: str, text: str) -> None:
 
 def _per_path(repo: Path) -> dict[str, str]:
     """The reference answer: one `git log -1` per tracked path."""
-    names = subprocess.run(
+    names = subprocess.run(  # path-filter: none
         ["git", "ls-files", "-z"], cwd=repo, capture_output=True,
         check=True, timeout=30,
     ).stdout.split(b"\x00")
