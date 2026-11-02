@@ -29,6 +29,8 @@ from aelfrice.auto_install import _merge_hooks_into_settings, load_manifest
 from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.db_paths import STORE_RULE_ENV, STORE_RULE_GLOBAL, resolve_store
 from aelfrice.setup import COMMIT_INGEST_EVENT, COMMIT_INGEST_SCRIPT_NAME
+from aelfrice import transcript_logger
+from aelfrice.transcript_logger import transcripts_dir
 
 REPO = Path(__file__).resolve().parents[1]
 ARCHITECTURE = REPO / "docs" / "concepts" / "ARCHITECTURE.md"
@@ -171,3 +173,43 @@ def test_env_step_says_an_empty_value_is_unset(
     step = _store_step("1. `env`")
     assert "non-empty" in step, step
     assert "empty value counts as unset" in step, step
+
+
+def _store_section_prose() -> str:
+    text = ARCHITECTURE.read_text(encoding="utf-8")
+    section = text.split("## Store location", 1)[1].split("\n## ", 1)[0]
+    return _collapse(section)
+
+
+def test_store_location_names_every_transcript_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The log has an override and a global fallback besides the
+    marker and git locations, and `AELFRICE_DB` doesn't move it; the
+    section has to name all of them."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", home / ".aelfrice")
+    db_paths.clear_git_common_dir_cache()
+    monkeypatch.delenv("AELFRICE_TRANSCRIPTS_DIR", raising=False)
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / CONFIG_FILENAME).write_text(
+        '[store]\npath = "store"\n', encoding="utf-8",
+    )
+    monkeypatch.chdir(marked)
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+    assert transcripts_dir() == marked / "store" / "transcripts"
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "pinned.db"))
+    legacy = transcript_logger.LEGACY_TRANSCRIPTS_DIR
+    assert transcripts_dir() == legacy
+    assert legacy.parts[-2:] == (".aelfrice", "transcripts")
+    monkeypatch.setenv("AELFRICE_TRANSCRIPTS_DIR", str(tmp_path / "tx"))
+    assert transcripts_dir() == tmp_path / "tx"
+
+    prose = _store_section_prose()
+    assert "`aelfrice_transcripts_dir`" in prose, prose
+    assert "`~/.aelfrice/transcripts/`" in prose, prose
+    assert "`aelfrice_db` doesn't move the log" in prose, prose

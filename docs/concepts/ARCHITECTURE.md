@@ -138,7 +138,7 @@ The `scope` column has an `idx_beliefs_scope` index, and the migration runner ad
 3. `git`: `<git-common-dir>/aelfrice/memory.db`, inside a git work tree.
 4. `global`: `~/.aelfrice/memory.db`.
 
-A marker that names no usable store raises `StoreMarkerError` instead of falling through to the `git` rule, and an `aelf` command then exits with status 2. `aelf status` prints the store and the rule, and `aelf doctor` prints the rule. The transcript log sits in `transcripts/` beside a marker store, and under `<git-common-dir>/aelfrice/transcripts/` for the `git` rule. The commit-ingest hook resolves a store for each folder a commit changed, so one commit can land in several stores.
+A marker that names no usable store raises `StoreMarkerError` instead of falling through to the `git` rule, and an `aelf` command then exits with status 2. `aelf status` prints the store and the rule, and `aelf doctor` prints the rule. The transcript log goes to `AELFRICE_TRANSCRIPTS_DIR` when that variable holds a non-empty value. Otherwise it sits in `transcripts/` beside a marker store, under `<git-common-dir>/aelfrice/transcripts/` inside a git work tree, and under `~/.aelfrice/transcripts/` outside one. `AELFRICE_DB` doesn't move the log, so with it set, a marker folder's log goes to the git or global location. The commit-ingest hook resolves a store for each folder a commit changed, so one commit can land in several stores.
 
 ## Bayesian update
 
