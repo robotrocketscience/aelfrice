@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_ci_manual_dispatch import _block, _text
+from tests.test_ci_manual_dispatch import _block, _indent, _text
 
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "scripts"))
@@ -55,14 +55,46 @@ _PR_METADATA_FIELD_RE = re.compile(
 _REPO_SCRIPT_RE = re.compile(r"(?<![\w./-])(?:\./)?((?:scripts|\.github)/[\w./-]+\.(?:py|sh|js|mjs|cjs))\b")
 
 
-def _pull_request_list(workflow: str, key: str) -> list[str]:
-    """The `key:` list under the `pull_request:` trigger; [] when absent."""
-    on_block = _block(_text(workflow), "on", 0)
-    for line in _block("\n".join(on_block), "pull_request", 2):
-        m = re.match(rf"\s+{key}:\s*\[(.*)\]", line)
-        if m:
-            return [t.strip().strip("'\"") for t in m.group(1).split(",") if t.strip()]
+def _trigger_list(text: str, key: str) -> list[str]:
+    """The `key:` list under the `pull_request:` trigger of workflow `text`; [] when absent.
+
+    Reads the flow form (`[a, b]`, on one line or several), the block form
+    (`- a` lines) and a lone scalar (`key: a`). A list line in any other
+    shape fails the test instead of reading as [].
+    """
+    on_block = _block(text, "on", 0)
+    lines = _block("\n".join(on_block), "pull_request", 2)
+    for i, line in enumerate(lines):
+        m = re.match(rf"( +){key}:(?:\s+(.*?))?\s*(?:\s#.*)?$", line)
+        if not m:
+            continue
+        value = m.group(2) or ""
+        if value.startswith("["):
+            j = i
+            while not value.endswith("]"):
+                j += 1
+                assert j < len(lines), f"unclosed `{key}:` flow list: {line!r}"
+                value += " " + re.sub(r"\s+#.*$", "", lines[j]).strip()
+            return [t.strip().strip("'\"") for t in value[1:-1].split(",") if t.strip()]
+        if value:
+            return [value.strip("'\"")]
+        indent = len(m.group(1))
+        items = []
+        for item in lines[i + 1 :]:
+            if _indent(item) < indent or (
+                _indent(item) == indent and not item.lstrip().startswith("-")
+            ):
+                break
+            im = re.match(r"\s*-\s+(.*?)\s*(?:\s#.*)?$", item)
+            assert im, f"unread `{key}:` list line: {item!r}"
+            items.append(im.group(1).strip("'\""))
+        return items
     return []
+
+
+def _pull_request_list(workflow: str, key: str) -> list[str]:
+    """The `key:` list under the `pull_request:` trigger of `workflow`; [] when absent."""
+    return _trigger_list(_text(workflow), key)
 
 
 def _pull_request_types(workflow: str) -> list[str]:
@@ -133,6 +165,26 @@ def test_a_pr_retargeted_onto_main_waits_for_a_push() -> None:
         for name in sorted(FLOOR_NAMES - _CI_FLOOR_NAMES)
     ]
     assert evaluate(rows, set())["missing"] == sorted(_CI_FLOOR_NAMES)
+
+
+_ON_PR = "on:\n  pull_request:\n    branches: [main]\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "types"),
+    [
+        ("    types: [opened, edited]\n", ["opened", "edited"]),
+        ("    types: [opened,\n      edited]\n", ["opened", "edited"]),
+        ("    types:\n      - opened\n      - edited\n", ["opened", "edited"]),
+        ("    types:\n    - opened\n    - 'edited'  # title or body\n", ["opened", "edited"]),
+        ("    types: edited\n", ["edited"]),
+        ("    types:\n      - opened\n    paths: [src/**]\n", ["opened"]),
+        ("    paths: [src/**]\n", []),
+    ],
+)
+def test_the_types_list_is_read_in_flow_block_and_scalar_form(body: str, types: list[str]) -> None:
+    """Every YAML form of `types:` reads, so `edited` in a block list is not missed."""
+    assert _trigger_list(_ON_PR + body + "  workflow_dispatch:\n", "types") == types
 
 
 @pytest.mark.parametrize("workflow", ["pr-metadata.yml", "staging-gate.yml"])
