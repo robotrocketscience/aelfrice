@@ -488,7 +488,10 @@ the following:
 - `pr-body-issue-link` warns, because the body has no issue link. The job
   never blocks.
 - Dependabot signs its commits with GitHub's key, so the signature check in
-  the train passes, and the train's author check accepts `dependabot[bot]`.
+  the train passes. The train has no author check of its own. The
+  `history-scan` job runs `scripts/check_commit_identity.py`, which accepts
+  `dependabot[bot]` and its noreply address, and the train waits for
+  `history-scan` with the other required checks.
 
 For an action bump, Dependabot rewrites the commit sha on the `uses:` line
 and the version comment beside it. Keep both: Dependabot reads the comment to

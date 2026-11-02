@@ -11,6 +11,7 @@ dependency set CI installs (#1436).
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
@@ -21,6 +22,8 @@ _GITHUB = _REPO / ".github"
 _WORKFLOWS = _GITHUB / "workflows"
 _DEPENDABOT = _GITHUB / "dependabot.yml"
 _ZIZMOR = _WORKFLOWS / "zizmor.yml"
+_CONTRIBUTING = _REPO / "CONTRIBUTING.md"
+_SCRIPTS = _REPO / "scripts"
 
 
 
@@ -445,6 +448,41 @@ def test_the_auto_merge_scan_catches_each_spelling(command: str) -> None:
 def test_the_auto_merge_scan_passes_a_plain_merge() -> None:
     text = "jobs:\n  merge:\n    steps:\n      - run: gh pr merge --squash \"$PR_URL\"\n"
     assert _auto_merge_lines(text) == []
+
+
+def _dependabot_section() -> str:
+    """CONTRIBUTING.md § Dependency updates from Dependabot, heading to next heading."""
+    text = _CONTRIBUTING.read_text(encoding="utf-8")
+    start = text.index("### Dependency updates from Dependabot")
+    end = text.find("\n#", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_the_dependabot_section_names_the_author_check_where_it_runs() -> None:
+    """The section once credited the merge train with an author check. The
+    train has none: the author rule is `check_commit_identity.py` in the
+    `history-scan` job, which the train waits on as a required check."""
+    section = " ".join(_dependabot_section().split())
+    assert "The train has no author check of its own." in section, section
+    assert "`history-scan` job runs `scripts/check_commit_identity.py`" in section, section
+    staging = _jobs((_WORKFLOWS / "staging-gate.yml").read_text(encoding="utf-8"))
+    assert any(
+        "python3 scripts/check_commit_identity.py" in line for line in staging["history-scan"]
+    ), staging["history-scan"]
+    train = (_WORKFLOWS / "merge-train.yml").read_text(encoding="utf-8")
+    assert "check_commit_identity" not in train
+    gate = (_SCRIPTS / "merge_train_gate.py").read_text(encoding="utf-8")
+    start = gate.index("FLOOR_NAMES: frozenset[str] = frozenset({")
+    floor = gate[start : gate.index("})", start)]
+    assert '"history-scan",' in floor, floor
+    spec = importlib.util.spec_from_file_location(
+        "check_commit_identity_1786", _SCRIPTS / "check_commit_identity.py"
+    )
+    assert spec is not None and spec.loader is not None
+    identity = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(identity)
+    assert identity.name_is_allowed("dependabot[bot]")
+    assert identity.email_is_allowed("49699333+dependabot[bot]@users.noreply.github.com")
 
 
 def test_nothing_under_github_enables_auto_merge() -> None:
