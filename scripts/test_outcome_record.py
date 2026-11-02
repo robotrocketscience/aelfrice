@@ -490,7 +490,10 @@ def fetch_baseline(
             return no_baseline_marker(
                 f"artifact {artifact_id} of run {ref.run_id} could not be read: {exc}"
             )
-    record = build_record(texts, ref.sha)
+    try:
+        record = build_record(texts, ref.sha)
+    except ElementTree.ParseError as exc:
+        return no_baseline_marker(f"a JUnit report of run {ref.run_id} could not be parsed: {exc}")
     record["run_id"] = ref.run_id
     return record
 

@@ -593,6 +593,46 @@ def test_fetch_baseline_degrades_when_the_artifact_holds_no_report() -> None:
     assert "artifact 50 of run 5 could not be read" in marker["notice"]
 
 
+class _BadXml(_FakeApi):
+    """An artifact that unzips fine and holds one report that does not parse."""
+
+    def __init__(self, xml: str) -> None:
+        super().__init__(["green"], {"green": [{"id": 5}]}, {5: [_artifact(50, "junit-3.12-m0")]})
+        self.xml = xml
+
+    def bytes(self, path: str) -> bytes:
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("junit-3.12.xml", self.xml)
+        return buf.getvalue()
+
+
+_UNPARSEABLE = ["<testsuites><testsuite><testcase", "not xml"]
+
+
+@pytest.mark.parametrize("xml", _UNPARSEABLE, ids=["truncated", "not-xml"])
+def test_fetch_baseline_degrades_when_the_report_does_not_parse(xml: str) -> None:
+    marker = tor.fetch_baseline(_BadXml(xml), "o/r", "green", "ci.yml", ["3.12"], 30)  # type: ignore[arg-type]
+    assert marker["found"] is False
+    assert "a JUnit report of run 5 could not be parsed" in marker["notice"]
+
+
+@pytest.mark.parametrize("xml", _UNPARSEABLE, ids=["truncated", "not-xml"])
+def test_an_unparseable_baseline_report_writes_a_marker_and_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], xml: str,
+) -> None:
+    """The diff step after it then reports "no baseline" rather than never running."""
+    monkeypatch.setattr(tor, "GhApi", lambda: _BadXml(xml))
+    out = tmp_path / "baseline.json"
+    argv = ["baseline", "--repo", "o/r", "--base-sha", "green", "--legs", "3.12", "--out", str(out)]
+    assert tor.main(argv) == 0
+    marker = json.loads(out.read_text(encoding="utf-8"))
+    assert marker["found"] is False
+    assert "::notice::a JUnit report of run 5 could not be parsed" in capsys.readouterr().err
+
+
 def test_fetch_baseline_asks_for_max_commits_of_history() -> None:
     api = _FakeApi(["base"], {}, {})
     tor.fetch_baseline(api, "o/r", "base", "ci.yml", ["3.12"], 7)  # type: ignore[arg-type]
