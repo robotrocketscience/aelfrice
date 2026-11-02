@@ -94,10 +94,10 @@ OUTCOMES: tuple[str, ...] = (
 RATCHETED_OUTCOMES: frozenset[str] = frozenset({SKIPPED, XFAILED, NEVER_EXECUTED})
 
 # Skip reasons that mean "left out by design", as the suite writes them.
-# `--run-perf` is the opt-in registered in tests/conftest.py; the four
-# latency tests word their reason differently but all name the flag. The
-# other two shapes are `BENCH_GATE_SKIP_REASON` and `skip_corpus_module`
-# in tests/conftest.py.
+# `--run-perf` is the opt-in registered in tests/conftest.py; the latency
+# tests behind it word their skip reason in more than one way, and every
+# wording names the flag. The other two shapes are `BENCH_GATE_SKIP_REASON`
+# and `skip_corpus_module` in tests/conftest.py.
 NEVER_EXECUTED_REASONS: tuple[re.Pattern[str], ...] = (
     re.compile(r"--run-perf"),
     re.compile(r"skipping bench-gate test"),

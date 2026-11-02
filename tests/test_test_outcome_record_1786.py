@@ -139,14 +139,42 @@ def test_a_teardown_error_in_each_shape_pytest_writes(entries: list[str], outcom
     assert tor.count_outcomes(outcomes)["total"] == 1
 
 
-@pytest.mark.parametrize("reason", [
+_PERF_SKIP_WORDINGS = (
     "perf test gated on --run-perf",
     "perf benchmark; pass --run-perf to enable",
     "perf-gated: pass --run-perf to run",
-])
+)
+
+
+@pytest.mark.parametrize("reason", _PERF_SKIP_WORDINGS)
 def test_every_perf_skip_wording_in_the_suite_is_never_executed(reason: str) -> None:
-    """The four latency tests word the reason differently; all name the flag."""
+    """The latency tests word the reason in more than one way; all name the flag."""
     assert tor.is_never_executed_reason(reason)
+
+
+def _perf_skip_reasons_in_the_suite() -> list[str]:
+    """The literal reason of every `pytest.skip(...)` call under tests/ that names `--run-perf`."""
+    import ast
+    found: list[str] = []
+    for path in sorted((_REPO / "tests").rglob("*.py")):
+        if path.name == Path(__file__).name:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr != "skip" or not node.args:
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "--run-perf" in arg.value:
+                found.append(arg.value)
+    return found
+
+
+def test_the_perf_wordings_above_are_every_one_the_suite_uses() -> None:
+    """A new wording, or a site that stops naming the flag, shows up here."""
+    reasons = _perf_skip_reasons_in_the_suite()
+    assert len(reasons) >= len(_PERF_SKIP_WORDINGS), reasons
+    assert set(reasons) == set(_PERF_SKIP_WORDINGS)
 
 
 @pytest.mark.parametrize("reason", [
