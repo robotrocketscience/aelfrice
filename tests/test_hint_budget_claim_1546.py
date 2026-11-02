@@ -11,7 +11,8 @@ the packer fills on a UserPromptSubmit fire is the bare constant: in
 that. Seven tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
-carried the false claim. `tests/test_docs_truth_1511.py` records why a text
+carried the false claim, or on the loss of the sentences that state the
+true one, so a rewording of the false claim has to delete those too. `tests/test_docs_truth_1511.py` records why a text
 match alone is weak: it breaks on rephrasing and proves nothing about the
 tree. The first test is a text match and nothing more, because the claim is
 about a change that did not happen, and the tree cannot state a negative;
@@ -107,6 +108,17 @@ The third and fourth tests match other phrases, each after measuring the
 fact the phrase states.
 """
 
+_TRUE_CLAIMS = (
+    "#1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing "
+    "header uncharged",
+    "The packer never charges the hint",
+)
+"""The sentences that state what #1526 did and did not do to the budget.
+
+The first test asserts each is present, so the false claim cannot come
+back reworded while these still stand beside it unchanged.
+"""
+
 
 def _hint_docstring() -> str:
     """The string literal that follows the `MEMORY_BLOCK_HINT` assignment.
@@ -144,6 +156,10 @@ def test_the_hint_docstring_claims_no_header_reservation() -> None:
 
     The vacuity guard first: the paragraph has to still be about the
     budget, or an empty replacement would pass the absence asserts.
+    The positive claims last: the paragraph has to say #1526 left the
+    budget and the header alone and that the packer never charges the
+    hint, so a false claim reworded around the two phrases still fails
+    unless it also deletes those sentences.
     Whitespace runs are collapsed first, so a phrase wrapped across a line
     break still matches.
     """
@@ -158,6 +174,12 @@ def test_the_hint_docstring_claims_no_header_reservation() -> None:
             "did not move DEFAULT_HOOK_TOKEN_BUDGET and left the framing "
             "header uncharged; see the constant's and the header's own "
             "docstrings (#1546)."
+        )
+    for claim in _TRUE_CLAIMS:
+        assert claim in doc, (
+            f"the MEMORY_BLOCK_HINT docstring no longer says {claim!r}. "
+            "#1526 did not move DEFAULT_HOOK_TOKEN_BUDGET, left the framing "
+            "header uncharged, and the packer never charges the hint (#1546)."
         )
 
 
