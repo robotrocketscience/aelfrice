@@ -471,8 +471,10 @@ Both workflows shipped as part of #602.
 ecosystems: the actions the workflows run (`github-actions`) and the Python
 dependencies in `pyproject.toml` and `uv.lock` (`uv`). Minor and patch bumps
 arrive grouped, one PR per ecosystem. A major bump arrives as its own PR.
-Every PR title and commit subject starts with `build(deps):`, so the
-`pr-title-prefix` and `commit-msg-prefix` checks pass without an edit.
+Every PR title and commit subject starts with `build(deps):`, or with
+`build(deps-dev):` when every package the PR bumps is in the `dev` group of
+`pyproject.toml`. The `pr-title-prefix` and `commit-msg-prefix` checks accept
+both, so they pass without an edit.
 
 A Dependabot PR reaches `main` the same way as every other PR: through the
 merge train, after a person reads the diff and adds `ready-to-merge`. Nothing

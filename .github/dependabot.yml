@@ -22,10 +22,11 @@
 # version. Each `uv` PR carries the `dependencies` and `python:uv` labels,
 # the ones Dependabot's security updates already apply.
 #
-# `build(deps): ...` is the subject the commit-msg-prefix and
-# pr-title-prefix checks accept. Nothing here merges a PR: a person reads
-# the diff and adds `ready-to-merge`, and the merge train takes it from
-# there. See CONTRIBUTING.md § Dependency updates from Dependabot.
+# Subjects start with `build(deps):`, or with `build(deps-dev):` when every
+# package a PR bumps is in pyproject.toml's `dev` group. The commit-msg-prefix
+# and pr-title-prefix checks accept both. Nothing here merges a PR: a person
+# reads the diff and adds `ready-to-merge`, and the merge train takes it
+# from there. See CONTRIBUTING.md § Dependency updates from Dependabot.
 version: 2
 updates:
   - package-ecosystem: "github-actions"

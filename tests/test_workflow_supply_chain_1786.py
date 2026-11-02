@@ -485,6 +485,31 @@ def test_the_dependabot_section_names_the_author_check_where_it_runs() -> None:
     assert identity.email_is_allowed("49699333+dependabot[bot]@users.noreply.github.com")
 
 
+def test_both_dependabot_subjects_are_documented_and_accepted() -> None:
+    """With `include: scope`, Dependabot writes `deps-dev` when every package
+    in a PR is a development dependency (the pyproject `dev` group) and `deps`
+    otherwise. Both docs name both subjects, and the prefix check that
+    `commit-msg-prefix` and `pr-title-prefix` run accepts both."""
+    subjects = ("build(deps):", "build(deps-dev):")
+    section = _dependabot_section()
+    header = "\n".join(
+        line
+        for line in _DEPENDABOT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#")
+    )
+    for subject in subjects:
+        assert f"`{subject}" in section, (subject, section)
+        assert f"`{subject}" in header, (subject, header)
+    spec = importlib.util.spec_from_file_location(
+        "check_commit_msg_1786", _SCRIPTS / "check-commit-msg.py"
+    )
+    assert spec is not None and spec.loader is not None
+    check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check)
+    for subject in subjects:
+        assert check.validate_subject(f"{subject} bump pytest from 8.4.1 to 9.0.0"), subject
+
+
 def test_nothing_under_github_enables_auto_merge() -> None:
     """Dependabot PRs ride the merge train like every other PR. The repository
     setting is outside the tree; this holds the tree's half of the rule."""
