@@ -133,7 +133,7 @@ The `scope` column has an `idx_beliefs_scope` index, and the migration runner ad
 
 `db_paths.resolve_store()` chooses the store file. The first of these rules that applies wins:
 
-1. `env`: `AELFRICE_DB`, if that variable is set.
+1. `env`: `AELFRICE_DB`, if that variable holds a non-empty value. An empty value counts as unset.
 2. `marker`: the nearest `.aelfrice.toml` at or above the working folder that holds a `[store]` table ([#1796](https://github.com/robotrocketscience/aelfrice/issues/1796)). Inside a git work tree, the walk passes over a nearer file without a `[store]` table and stops at the work-tree root. Outside a git work tree, only the nearest `.aelfrice.toml` counts, so a nearer file without a `[store]` table hides one above it and the `global` rule applies. The walk never reads the home directory. See [`[store]`](../user/CONFIG.md#store-1796).
 3. `git`: `<git-common-dir>/aelfrice/memory.db`, inside a git work tree.
 4. `global`: `~/.aelfrice/memory.db`.

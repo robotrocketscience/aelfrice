@@ -27,7 +27,7 @@ import pytest
 from aelfrice import db_paths
 from aelfrice.auto_install import _merge_hooks_into_settings, load_manifest
 from aelfrice.config_discovery import CONFIG_FILENAME
-from aelfrice.db_paths import STORE_RULE_GLOBAL, resolve_store
+from aelfrice.db_paths import STORE_RULE_ENV, STORE_RULE_GLOBAL, resolve_store
 from aelfrice.setup import COMMIT_INGEST_EVENT, COMMIT_INGEST_SCRIPT_NAME
 
 REPO = Path(__file__).resolve().parents[1]
@@ -44,6 +44,16 @@ def _module_row(name: str) -> str:
     rows = [ln for ln in text.splitlines() if ln.startswith(f"| `{name}` |")]
     assert len(rows) == 1, f"expected one module-table row for {name}, got {rows}"
     return rows[0]
+
+
+def _store_step(prefix: str) -> str:
+    text = ARCHITECTURE.read_text(encoding="utf-8")
+    heading = "## Store location"
+    assert heading in text, "ARCHITECTURE.md lost its Store location section"
+    section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    steps = [ln for ln in section.splitlines() if ln.startswith(prefix)]
+    assert len(steps) == 1, f"expected one {prefix} step, got {steps}"
+    return _collapse(steps[0])
 
 
 def _marker_step() -> str:
@@ -137,3 +147,27 @@ def test_marker_step_states_the_outside_work_tree_rule(
     assert "outside a git work tree" in step, step
     assert "only the nearest" in step, step
     assert "inside a git work tree" in step, step
+
+
+def test_env_step_says_an_empty_value_is_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty `AELFRICE_DB` falls through to the other rules, so
+    the page's env step has to say the value must be non-empty."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(db_paths, "DEFAULT_DB_DIR", home / ".aelfrice")
+    db_paths.clear_git_common_dir_cache()
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    monkeypatch.chdir(folder)
+    monkeypatch.setenv("AELFRICE_DB", "")
+    assert resolve_store().rule == STORE_RULE_GLOBAL
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "pinned.db"))
+    assert resolve_store().rule == STORE_RULE_ENV
+
+    step = _store_step("1. `env`")
+    assert "non-empty" in step, step
+    assert "empty value counts as unset" in step, step
