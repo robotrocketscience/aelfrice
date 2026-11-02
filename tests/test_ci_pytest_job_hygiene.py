@@ -287,9 +287,11 @@ def _module_names(source: str) -> list[str]:
     """Every name the module namespace binds, which is what pytest collects
     test functions from. A `def`, `class`, import or assignment counts at top
     level and inside an `if`, `try`, `with`, `for`, `while` or `match` block,
-    since each of those binds into the module. The bodies of functions,
-    classes and lambdas bind local names and are skipped. A comprehension
-    variable counts, which errs toward a red test, not a hidden one."""
+    since each of those binds into the module. In a `match` block a
+    capture, a `*` pattern and a `**` rest pattern bind a name too. The
+    bodies of functions, classes and lambdas bind local names and are
+    skipped. A comprehension variable counts, which errs toward a red
+    test, not a hidden one."""
     names: list[str] = []
     todo: list[ast.AST] = list(ast.parse(source).body)
     while todo:
@@ -307,14 +309,18 @@ def _module_names(source: str) -> list[str]:
         elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
             if node.name:
                 names.append(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.append(node.rest)
         todo.extend(ast.iter_child_nodes(node))
     return sorted(names)
 
 
 def test_module_names_sees_a_test_bound_inside_a_block() -> None:
-    """pytest collects a test bound inside an `if`, `try`, `with` or `for`
-    block, so a name there that starts with the deselected one also drops out
-    of the required legs. A name local to a function does not bind."""
+    """pytest collects a test bound inside an `if`, `try`, `with`, `for`,
+    `while` or `match` block, so a name there that starts with the
+    deselected one also drops out of the required legs. A `match` capture,
+    `*` pattern or `**` rest pattern binds a name as well. A name local to
+    a function does not bind."""
     source = (
         "import os as alias\n"
         "x = 1\n"
@@ -328,13 +334,21 @@ def test_module_names_sees_a_test_bound_inside_a_block() -> None:
         "    class InWith: pass\n"
         "for in_for in []:\n"
         "    in_loop_body = 1\n"
+        "while False:\n"
+        "    def in_while(): pass\n"
+        "match x:\n"
+        "    case [in_case, *in_star]:\n"
+        "        def in_case_body(): pass\n"
+        "    case {**in_rest}:\n"
+        "        pass\n"
         "def outer():\n"
         "    def local(): pass\n"
         "    local_var = 1\n"
     )
     assert _module_names(source) == sorted([
         "alias", "x", "in_if", "in_try", "in_except", "in_with", "InWith",
-        "in_for", "in_loop_body", "outer",
+        "in_for", "in_loop_body", "in_while", "in_case", "in_star",
+        "in_case_body", "in_rest", "outer",
     ])
 
 
