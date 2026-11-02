@@ -11086,8 +11086,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default="user_confirmed",
         help=(
             "source label written to feedback_history. "
-            "Defaults to 'user_confirmed'. A label aelfrice writes on its "
-            "own, such as 'hook', doesn't keep the belief from doctor "
+            "Defaults to 'user_confirmed'. A confirmation under a label "
+            "aelfrice writes on its own (hook, retrieval_driven_feedback, "
+            "sentiment_inferred, clamp_ghosts, or one that starts with "
+            "propagation:) doesn't keep the belief from doctor "
             "--retire-scheduled-prompts."
         ),
     )

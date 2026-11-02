@@ -1003,7 +1003,8 @@ def _option_help(
 
 
 @pytest.mark.parametrize(
-    "command,flag", [("doctor", "--retire-scheduled-prompts")],
+    "command,flag",
+    [("doctor", "--retire-scheduled-prompts"), ("confirm", "--source")],
 )
 def test_help_names_every_automatic_source(
     capsys: pytest.CaptureFixture[str], command: str, flag: str,
