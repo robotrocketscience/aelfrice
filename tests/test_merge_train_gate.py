@@ -1034,14 +1034,28 @@ _JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$")
 _MATRIX_AXIS = re.compile(r"^        ([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$")
 _SINGLE_QUOTED = re.compile(r"'((?:[^']|'')*)'\s*(?:#.*)?")
 _DOUBLE_QUOTED = re.compile(r'"([^"\\]*)"\s*(?:#.*)?')
+# Plain scalars that YAML 1.1 or 1.2 reads as null, a boolean, an integer,
+# or a float. GitHub names a row after the parsed value, so an unquoted
+# `3.10` names it `(3.1)`, and returning the text would name a row no head
+# carries.
+_NON_STRING_PLAIN = re.compile(
+    r"~|null|Null|NULL"
+    r"|true|True|TRUE|false|False|FALSE"
+    r"|y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF"
+    r"|[-+]?(?:0b[01_]+|0o[0-7_]+|0x[0-9a-fA-F_]+|[0-9][0-9_]*(?::[0-5]?[0-9])*)"
+    r"|[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?[0-9][0-9_]*[eE][-+]?[0-9]+"
+    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)"
+)
 
 
 def _scalar(raw: str) -> str:
-    """A one-line YAML scalar as YAML reads it: quotes removed, `''` inside
-    single quotes read as `'`, and a trailing comment dropped. A shape this
-    does not read, such as an escape inside double quotes, a block scalar,
-    an anchor, or no value at all, fails rather than come back with its
-    syntax still in it."""
+    """A one-line YAML string scalar as YAML reads it: quotes removed, `''`
+    inside single quotes read as `'`, and a trailing comment dropped. A
+    shape this does not read, such as an escape inside double quotes, a
+    block scalar, an anchor, or no value at all, fails rather than come back
+    with its syntax still in it. So does an unquoted value that YAML reads
+    as a number, a boolean, or null, because its text is not its name."""
     raw = raw.strip()
     m = _SINGLE_QUOTED.fullmatch(raw)
     if m:
@@ -1050,7 +1064,11 @@ def _scalar(raw: str) -> str:
     if m:
         return m.group(1)
     assert raw and raw[0] not in "'\"[]{}|>&*!%@`#", f"scalar shape not supported: {raw!r}"
-    return re.split(r"\s#", raw, maxsplit=1)[0].rstrip()
+    value = re.split(r"\s#", raw, maxsplit=1)[0].rstrip()
+    assert not _NON_STRING_PLAIN.fullmatch(value), (
+        f"unquoted {value!r} is not a string in YAML; quote it"
+    )
+    return value
 
 
 def _check_run_names(text: str) -> frozenset[str]:
@@ -1243,10 +1261,30 @@ def test_the_name_parser_unquotes_matrix_values() -> None:
         "  legs:",
         "    strategy:",
         "      matrix:",
-        "        python-version: [\"3.12\", '3.13', 3.14]",
+        "        python-version: [\"3.12\", '3.13', v3.14]",
         "",
     ])
-    assert _check_run_names(text) == {"legs (3.12)", "legs (3.13)", "legs (3.14)"}
+    assert _check_run_names(text) == {"legs (3.12)", "legs (3.13)", "legs (v3.14)"}
+
+
+@pytest.mark.parametrize(
+    "value", ["3.10", "3.14", "1.0", "010", "1e3", "0x1f", "true", "False", "yes", "null", "~"]
+)
+def test_the_name_parser_refuses_a_matrix_value_yaml_reads_as_no_string(value: str) -> None:
+    """YAML reads an unquoted `3.10` as the float 3.1, and GitHub names the
+    row `legs (3.1)`. Taken as text it gives `legs (3.10)`, a row no head
+    carries, and a floor entry with that name holds the train until it
+    times out."""
+    text = "\n".join([
+        "jobs:",
+        "  legs:",
+        "    strategy:",
+        "      matrix:",
+        f"        python-version: ['3.12', {value}]",
+        "",
+    ])
+    with pytest.raises(AssertionError, match="is not a string in YAML"):
+        _check_run_names(text)
 
 
 @pytest.mark.parametrize(
