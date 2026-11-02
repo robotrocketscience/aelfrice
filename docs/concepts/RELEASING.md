@@ -117,7 +117,7 @@ git tag vX.Y.Z <merge-sha>   # lightweight tag on the merged release commit
 git push github vX.Y.Z
 ```
 
-You sign the **release commit** with SSH (`gpg.format = ssh`, key `~/.ssh/id_rrs`). The **tag itself is lightweight**: it points directly at that commit. Every release tag to date has this form; for example, `git cat-file -t v3.8.0` prints `commit`. Pushing a tag starts `.github/workflows/publish.yml`, which does these steps:
+You sign the **release commit** with SSH (`gpg.format = ssh`, key `~/.ssh/id_rrs`). The **tag itself is lightweight**: it points directly at that commit. Every release tag after v4.3.0 has this form; for example, `git cat-file -t v5.3.0` prints `commit`. v4.3.0 and 16 earlier tags are annotated, so `git cat-file -t` prints `tag` for them. Pushing a tag starts `.github/workflows/publish.yml`, which does these steps:
 
 1. Run `scripts/release_preflight.sh`. The job stops here unless `main` contains the tagged commit and the `pyproject.toml` version at that commit equals the tag without its leading `v`.
 2. Run pytest as a gate.
