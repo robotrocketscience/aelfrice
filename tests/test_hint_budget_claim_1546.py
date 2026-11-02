@@ -30,12 +30,14 @@ The third covers the hint's second emitting path. On a session's first
 prompt that the #674 shape gate refuses, the hook emits the session-start
 block and the hint without calling `_retrieve`. What that block holds
 depends on the store, the cwd and the cadence-resume cache, so the test
-fires the path three ways: a lock with a plain cwd, a lock with a git cwd,
-which adds `<recent-work>`, and an empty store with a cadence-resume cache,
-which leaves no `<locked>` or `<core>` at all. Each fire asserts the hint
-is emitted with no `_retrieve` call and records the sub-blocks ahead of it.
-The paragraph then has to say `_retrieve` never runs there and name every
-one of those sub-blocks.
+fires the path once per shape: a lock with a plain cwd, a lock with a git
+cwd, which adds `<recent-work>`, a reference lock, which renders in an
+`<aelfrice-locks-manifest>` block after `</session-start>` instead of in
+`<locked>`, and an empty store with a cadence-resume cache, which leaves
+no `<locked>` or `<core>` at all. Each fire asserts the hint is emitted
+with no `_retrieve` call and records the sub-blocks ahead of it. The
+paragraph then has to say `_retrieve` never runs there and name every one
+of those sub-blocks.
 
 The fourth covers the retrieving path. It wraps `_retrieve`, prices the
 hits it returns with `_ups_belief_line_cost`, the cost the packer charges
@@ -57,7 +59,14 @@ from typing import Any
 import pytest
 
 from aelfrice import hook
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    LOCK_TIER_FROZEN,
+    LOCK_TIER_REFERENCE,
+    LOCK_USER,
+    Belief,
+)
 from aelfrice.store import MemoryStore
 
 _FALSE_PHRASES = ("re-denominated", "reserved the framing header")
@@ -201,11 +210,14 @@ def test_the_hook_hands_retrieve_the_bare_budget(
         "budget; change the paragraph in the same commit (#1546)."
     )
 
-_GATE_SKIP_TAGS = ("cadence-resume", "locked", "core", "recent-work")
+_GATE_SKIP_TAGS = (
+    "cadence-resume", "locked", "core", "aelfrice-locks-manifest",
+    "recent-work",
+)
 """Every sub-block the gate-skip branch can put ahead of the hint."""
 
 
-def _seed_lock(db: Path) -> None:
+def _seed_lock(db: Path, tier: str = LOCK_TIER_FROZEN) -> None:
     store = MemoryStore(str(db))
     try:
         store.insert_belief(
@@ -220,6 +232,7 @@ def _seed_lock(db: Path) -> None:
                 locked_at="2026-04-26T00:00:00Z",
                 created_at="2026-04-26T00:00:00Z",
                 last_retrieved_at=None,
+                lock_tier=tier,
             )
         )
     finally:
@@ -269,6 +282,7 @@ def _write_cadence_resume_cache() -> None:
     [
         ("lock", {"locked", "core"}),
         ("lock-in-git", {"locked", "core", "recent-work"}),
+        ("reference-lock", {"locked", "core", "aelfrice-locks-manifest"}),
         ("cadence-only", {"cadence-resume"}),
     ],
 )
@@ -305,6 +319,8 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
     db = tmp_path / "memory.db"
     if case == "cadence-only":
         MemoryStore(str(db)).close()
+    elif case == "reference-lock":
+        _seed_lock(db, LOCK_TIER_REFERENCE)
     else:
         _seed_lock(db)
     monkeypatch.setenv("AELFRICE_DB", str(db))
@@ -339,6 +355,14 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
         f"the {case!r} gate-skip fire put {sorted(seen)} ahead of the hint, "
         f"not {sorted(expected)}: {skipped!r}"
     )
+    if case == "reference-lock":
+        # The lock left `<locked>` for a `ref` line, and that line sits in
+        # the manifest after the sub-block closes, not inside it.
+        assert '<belief id="L1"' not in ahead, skipped
+        assert "ref L1:" in ahead, skipped
+        assert ahead.index("</session-start>") < ahead.index(
+            "<aelfrice-locks-manifest"
+        ), skipped
     fire("retrieve", "how should I manage python packaging with uv here")
     assert len(calls) == 1, (
         f"the retrieving control fire called _retrieve {len(calls)} times, "
@@ -354,6 +378,12 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
         assert f"`<{tag}>`" in doc, (
             f"on a gate-skip first prompt the hint can follow <{tag}>, and "
             "the MEMORY_BLOCK_HINT docstring does not name it (#1546)"
+        )
+    if "aelfrice-locks-manifest" in seen:
+        assert "`<aelfrice-locks-manifest>` block after `</session-start>`" in doc, (
+            "on a gate-skip first prompt a reference lock's manifest block "
+            "comes after </session-start>, and the MEMORY_BLOCK_HINT "
+            "docstring does not say where (#1546)"
         )
     if "locked" not in seen:
         assert "no `<locked>` or `<core>`" in doc, (
