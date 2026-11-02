@@ -479,6 +479,20 @@ def _named_job_if(text: str, name: str) -> str:
     return _job_if("\n".join(lines[start:end]))
 
 
+def _mutation_source() -> Path:
+    """The workflow that defines the mutation diff job.
+
+    The checks that read it are about that job alone. `size-check` is also
+    in NONGATING_WHILE_PENDING, but its `if` skips only drafts and its
+    workflow has neither a `paths:` filter nor a `skip=true` exit, so
+    neither check describes it.
+    """
+    return next(
+        path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
+        if _MUTATION in _job_bodies(path)
+    )
+
+
 def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
     """#1786: the mutation diff job fires on `ready-to-merge`, as the train does.
 
@@ -499,18 +513,14 @@ def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
         frozenset(types) for _, types in _pull_request_triggers(train_text)
     }
     assert train_types == {frozenset({"labeled", "synchronize"})}, train_types
-    for name in NONGATING_WHILE_PENDING:
-        source = next(
-            path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
-            if name in _job_bodies(path)
-        )
-        text = source.read_text()
-        job_if = _named_job_if(text, name)
-        assert job_if == f"github.event_name == 'pull_request' && {train_if}", (
-            source.name, job_if,
-        )
-        types = {frozenset(types) for _, types in _pull_request_triggers(text)}
-        assert types == train_types, f"{source.name} triggers on {types}"
+    source = _mutation_source()
+    text = source.read_text()
+    job_if = _named_job_if(text, _MUTATION)
+    assert job_if == f"github.event_name == 'pull_request' && {train_if}", (
+        source.name, job_if,
+    )
+    types = {frozenset(types) for _, types in _pull_request_triggers(text)}
+    assert types == train_types, f"{source.name} triggers on {types}"
 
 
 def _nongating_comment() -> str:
@@ -542,16 +552,12 @@ def test_the_nongating_comment_names_the_runs_that_are_never_pending() -> None:
     fails here until the comment changes with it.
     """
     comment = _nongating_comment()
-    for name in NONGATING_WHILE_PENDING:
-        source = next(
-            path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
-            if name in _job_bodies(path)
-        )
-        text = source.read_text()
-        has_paths = any(p for p, _ in _pull_request_triggers(text))
-        assert ("`paths:`" in comment) == has_paths, (source.name, has_paths)
-        early_skip = _EARLY_SKIP.search(text) is not None
-        assert ("`skip=true`" in comment) == early_skip, (source.name, early_skip)
+    source = _mutation_source()
+    text = source.read_text()
+    has_paths = any(p for p, _ in _pull_request_triggers(text))
+    assert ("`paths:`" in comment) == has_paths, (source.name, has_paths)
+    early_skip = _EARLY_SKIP.search(text) is not None
+    assert ("`skip=true`" in comment) == early_skip, (source.name, early_skip)
 
 
 def test_a_later_skipped_row_does_not_hide_the_nongating_run() -> None:
