@@ -246,15 +246,22 @@ jobs:
     # tests/test_ci_manual_dispatch.py). A dispatch carries no base commit,
     # so its summary says "no baseline".
     if: ${{ !cancelled() }}
-    # Job-level, for the workflow run only: a timeout or a lost runner then
-    # leaves the run `success`, so the baseline walk, which reads only
-    # successful runs, can still take this commit. The step-level lines
-    # below keep the check-run off `failure`; this one does not.
+    # Job-level, for the workflow run only: a failed job then leaves the run
+    # `success`, so the baseline walk, which reads only successful runs, can
+    # still take this commit. The step-level lines below keep the check-run
+    # off `failure`; this one does not.
     continue-on-error: true
     runs-on: ubuntu-latest
     # Three API walks and two small downloads; a green run takes under two
-    # minutes.
-    timeout-minutes: 10
+    # minutes. A job that reaches this cap ends `cancelled`, and so does the
+    # run, whatever `continue-on-error` says: mutation.yml's 60-minute
+    # timeouts on runs 41401037793 and 39564214136 ended that way. The
+    # baseline walk then skips the commit. So every step carries its own
+    # `timeout-minutes`, and the steps' caps add up to less than this one.
+    # A step past its cap ends `failure`, its `continue-on-error` turns that
+    # into `success` (`ApplyContinueOnError` in actions/runner,
+    # src/Runner.Worker/ExecutionContext.cs), and the run stays `success`.
+    timeout-minutes: 15
     permissions:
       contents: read
       # Listing another run's artifacts and downloading them.
@@ -264,6 +271,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         continue-on-error: true
+        timeout-minutes: 1
         with:
           persist-credentials: false
       # The two legs' reports from this run. `pattern` with no match is not
@@ -271,6 +279,7 @@ jobs:
       # puts `junit-3.12.xml` and `junit-3.13.xml` side by side.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
+        timeout-minutes: 1
         with:
           pattern: junit-*-${{ github.sha }}
           merge-multiple: true
@@ -279,6 +288,7 @@ jobs:
       # python3, so the job does not pay for `uv sync`. A test pins that.
       - name: Build this run's record
         continue-on-error: true
+        timeout-minutes: 1
         env:
           # On a dispatch the first field is empty and `github.sha` is the
           # tested commit (#1436).
@@ -290,6 +300,7 @@ jobs:
               --sha "$HEAD_SHA" --out current-record.json
       - name: Find the last green record on main
         continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -304,6 +315,7 @@ jobs:
               --out baseline-record.json
       - name: Diff against the baseline
         continue-on-error: true
+        timeout-minutes: 1
         run: |
           python3 scripts/test_outcome_record.py diff \
               --current current-record.json --baseline baseline-record.json \
@@ -313,6 +325,7 @@ jobs:
       # the format. Named by `github.sha` like the JUnit artifacts.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         continue-on-error: true
+        timeout-minutes: 1
         with:
           name: test-outcome-record-${{ github.sha }}
           path: |

@@ -1030,7 +1030,22 @@ def test_the_job_exists_runs_after_pytest_and_also_on_a_dispatch() -> None:
     assert keys.get("needs") == "pytest"
     assert keys.get("if") == "${{ !cancelled() }}"
     assert keys.get("runs-on") == "ubuntu-latest"
-    assert keys.get("timeout-minutes") == "10"
+    assert keys.get("timeout-minutes") == "15"
+
+
+def test_every_step_times_out_before_the_job_does() -> None:
+    """A job that reaches its own `timeout-minutes` ends `cancelled`, and so
+    does the workflow run, job-level `continue-on-error` or not. The
+    baseline walk reads only successful runs, so it would skip that commit.
+    A step past its own cap ends `failure`, which the step's
+    `continue-on-error` turns into `success`. So each step carries a cap,
+    and the caps add up to less than the job's."""
+    caps: list[int] = []
+    for step in _steps("test-outcomes"):
+        m = re.search(r"\n        timeout-minutes: (\d+)\n", step + "\n")
+        assert m, step
+        caps.append(int(m.group(1)))
+    assert sum(caps) < int(_job_keys("test-outcomes")["timeout-minutes"]), caps
 
 
 def test_the_job_is_advisory_by_the_2026_10_21_ruling() -> None:
