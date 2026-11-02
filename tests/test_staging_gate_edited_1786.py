@@ -61,7 +61,13 @@ def test_staging_gate_does_not_run_on_pull_request_edited() -> None:
 
 @pytest.mark.parametrize("workflow", ["pr-metadata.yml", "staging-gate.yml"])
 def test_edited_is_a_trigger_exactly_where_the_title_or_body_is_read(workflow: str) -> None:
-    """A workflow runs on `edited` exactly when an edit can change a field it reads."""
+    """A workflow runs on `edited` exactly when it reads the PR title or body.
+
+    The rule covers the title and body only. A retarget also fires `edited`
+    and changes `base.ref` and `base.sha`, which `staging-gate.yml` reads;
+    `test_staging_gate_does_not_run_on_pull_request_edited` covers why that
+    workflow leaves a retarget to the `synchronize` run of the next push.
+    """
     reads = _reads_title_or_body(_text(workflow))
     assert ("edited" in _pull_request_types(workflow)) == reads, (
         f"{workflow} {'reads' if reads else 'does not read'} the PR title or body, "
