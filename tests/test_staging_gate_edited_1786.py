@@ -9,6 +9,7 @@ mutations. The workflow parsing helpers come from that module.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,12 @@ import pytest
 from tests.test_ci_manual_dispatch import _block, _text
 
 _REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO / "scripts"))
+
+from merge_train_gate import FLOOR_NAMES, evaluate  # noqa: E402
+
+# The presence-floor names `ci.yml` emits (see `merge_train_gate.FLOOR_NAMES`).
+_CI_FLOOR_NAMES = frozenset({"derived-figures", "pytest (3.12)", "pytest (3.13)"})
 
 # #1786: `pull_request.edited` fires on a title, body or base change. Of the
 # two workflows checked below, only `pr-metadata.yml` reads the title or body,
@@ -48,14 +55,19 @@ _PR_METADATA_FIELD_RE = re.compile(
 _REPO_SCRIPT_RE = re.compile(r"(?<![\w./-])(?:\./)?((?:scripts|\.github)/[\w./-]+\.(?:py|sh|js|mjs|cjs))\b")
 
 
-def _pull_request_types(workflow: str) -> list[str]:
-    """The `types:` list under the `pull_request:` trigger; [] when absent."""
+def _pull_request_list(workflow: str, key: str) -> list[str]:
+    """The `key:` list under the `pull_request:` trigger; [] when absent."""
     on_block = _block(_text(workflow), "on", 0)
     for line in _block("\n".join(on_block), "pull_request", 2):
-        m = re.match(r"\s+types:\s*\[(.*)\]", line)
+        m = re.match(rf"\s+{key}:\s*\[(.*)\]", line)
         if m:
             return [t.strip().strip("'\"") for t in m.group(1).split(",") if t.strip()]
     return []
+
+
+def _pull_request_types(workflow: str) -> list[str]:
+    """The `types:` list under the `pull_request:` trigger; [] when absent."""
+    return _pull_request_list(workflow, "types")
 
 
 def _code_lines(text: str) -> list[str]:
@@ -93,14 +105,34 @@ def test_staging_gate_does_not_run_on_pull_request_edited() -> None:
     `edited` also fires on a retarget, which changes `base.ref` and
     `base.sha` and so the range the scan jobs read. A PR retargeted onto
     `main` from a feature branch has no required check-runs until it is
-    pushed (see `merge_train_gate.base_refusal`), and that push fires
-    `synchronize`, which scans the new range.
+    pushed (`test_a_pr_retargeted_onto_main_waits_for_a_push`), and that push
+    fires `synchronize`, which scans the new range.
     """
     assert _pull_request_types("staging-gate.yml") == ["opened", "synchronize", "reopened"], (
         "staging-gate.yml must not trigger on pull_request.edited: no job in it "
         "reads the title or body, and a retarget needs a push, which fires "
         "synchronize, before the merge train accepts the PR (#1786)"
     )
+
+
+def test_a_pr_retargeted_onto_main_waits_for_a_push() -> None:
+    """A retargeted PR has no `ci.yml` rows, so the train waits for a push.
+
+    `ci.yml` and `staging-gate.yml` run only for a PR whose base is `main`, so a
+    PR stacked on another branch gets no row from either. A retarget onto
+    `main` fires `edited`, which neither runs on, so the head stays without the
+    `ci.yml` floor names and the merge train reports them `missing` until a
+    push fires `synchronize`.
+    """
+    for workflow in ("ci.yml", "staging-gate.yml"):
+        assert _pull_request_list(workflow, "branches") == ["main"], workflow
+        assert "edited" not in _pull_request_types(workflow), workflow
+    rows = [
+        {"name": name, "status": "completed", "conclusion": "success",
+         "started_at": "2026-11-02T10:00:00Z"}
+        for name in sorted(FLOOR_NAMES - _CI_FLOOR_NAMES)
+    ]
+    assert evaluate(rows, set())["missing"] == sorted(_CI_FLOOR_NAMES)
 
 
 @pytest.mark.parametrize("workflow", ["pr-metadata.yml", "staging-gate.yml"])
