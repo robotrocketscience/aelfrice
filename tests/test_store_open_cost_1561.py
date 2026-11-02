@@ -513,7 +513,7 @@ def test_every_marker_naming_this_producer_has_a_key_it_emits() -> None:
     published run at a fraction of the cost; the *values* are the gate's
     job, and `tests/test_derived_figures_1469.py` already runs it.
     """
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     cited = {
         marker.key

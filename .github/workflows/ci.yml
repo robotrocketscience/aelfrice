@@ -130,14 +130,18 @@ jobs:
               - 'pyright_baseline.json'
             # Globs that a test reads every match of, declared in its
             # `# path-filter:` comment: the cross-file anchor test reads
-            # each tracked Markdown file. No list of exact entries can
-            # cover that, and `**/*.md` under `code` would put the full
-            # matrix on every docs-only PR. A PR that matches this key and
-            # not `code` runs only the modules that declare a glob, in the
-            # step after the suite. tests/test_ci_path_filter.py derives
-            # both this list and that step's modules from the comments.
+            # each tracked Markdown file, and the derived-figure tests read
+            # every Markdown and Python file under docs/ and CHANGELOG/
+            # through `iter_files`. No list of exact entries can cover
+            # that, and these globs under `code` would put the full matrix
+            # on every docs-only PR. A PR that matches this key and not
+            # `code` runs only the modules that declare a glob, in the step
+            # after the suite. tests/test_ci_path_filter.py derives both
+            # this list and that step's modules from the comments.
             tree_reads:
               - '**/*.md'
+              - 'CHANGELOG/**/*.py'
+              - 'docs/**/*.py'
       - if: steps.filter.outputs.code == 'true' || steps.filter.outputs.tree_reads == 'true' || github.event_name == 'workflow_dispatch'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
@@ -182,7 +186,7 @@ jobs:
       # report: a partial run is not a record of the suite.
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads == 'true' && github.event_name != 'workflow_dispatch'
         name: Run the tests that read every file a glob matches
-        run: uv run pytest tests/test_docs_cross_file_anchors_1511.py -q -rfEsxX
+        run: uv run pytest tests/test_code_span_scanner_1556.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_store_open_cost_1561.py -q -rfEsxX
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No code paths changed; reporting pass for docs-only PR."
       # `always()` so a red leg still keeps its report, which is the case the

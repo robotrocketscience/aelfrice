@@ -30,14 +30,21 @@ The read scan walks each module's AST for paths built from the module's
 own location (`Path(__file__)`, `os.path.dirname(__file__)`). It follows
 names, string constants, literal tuples and the loops over them,
 `joinpath`, `Path(root, ...)`, `os.path.join` and `..`, so each spelling
-the suite uses resolves the same as an inline path. A path built on the
-repo root that the scan still cannot resolve, such as `REPO / p` over
-`git ls-files` output, fails `test_every_repo_path_a_test_builds_is_resolved`
+the suite uses resolves the same as an inline path. It also follows a
+repo module the test loads, by `importlib` spec, `import_module`,
+`import ... as` or `from ... import`, one module deep: a path that
+module binds, such as `cdf.REPO_ROOT`, is the test's own, and a call to
+one of its functions that reads under its root, such as
+`cdf.iter_files(roots)`, is a read the scan cannot resolve. A path built
+on the repo root that the scan still cannot resolve, such as `REPO / p`
+over `git ls-files` output, fails `test_every_repo_path_a_test_builds_is_resolved`
 until its line carries a `# path-filter:` comment naming what it reads.
 So a new test that reads a new file outside the filter through such a
 path fails here, and an entry nobody reads any more fails the reverse
-test. A path handed to a subprocess, or spelled relative to the working
-directory, is outside the scan.
+test. Outside the scan: a path handed to a subprocess or spelled
+relative to the working directory, a module object the scan cannot trace
+to its file (one a helper function returns), a module the loaded module
+loads in turn, and a read a loaded module makes at import time.
 """
 from __future__ import annotations
 
@@ -51,6 +58,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+
+# The read scan follows a test's `from aelfrice... import` into
+# `src/aelfrice` and parses that module, which is reading the source as
+# text (#1746).
+pytestmark = pytest.mark.source_scan
 
 _REPO = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO / ".github" / "workflows" / "ci.yml"
@@ -156,10 +168,13 @@ def _is_covered(directory: str, globs: list[str]) -> bool:
 # What the scan knows an expression may denote, as a set of tagged items:
 # ("p", segments) is a repo path as its segments below the repo root, so
 # the root itself is ("p", ()); ("s", text) is a string; ("c", items) is a
-# literal tuple, list or set of such items; `_MAYBE` marks a binding or
-# part the scan cannot follow. The empty set means the scan cannot tell at
-# all. A set rather than one value lets a name bound in several places, or
-# a loop over a tuple of paths, yield one path per binding.
+# literal tuple, list or set of such items; ("m", segments) is a module
+# loaded from that repo file, ("spec", segments) the import spec for one,
+# and ("fn", segments, name) a function imported from it that reads under
+# the root; `_MAYBE` marks a binding or part the scan cannot follow. The
+# empty set means the scan cannot tell at all. A set rather than one value
+# lets a name bound in several places, or a loop over a tuple of paths,
+# yield one path per binding.
 _Value = frozenset[tuple]
 _UNKNOWN: _Value = frozenset()
 _MAYBE = ("?",)
@@ -257,6 +272,11 @@ def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> 
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         elements = [_resolve(e, names, here) or frozenset({_MAYBE}) for e in node.elts]
         return frozenset({("c", frozenset().union(*elements))})
+    if isinstance(node, ast.Attribute):
+        modules = _modules(_resolve(node.value, names, here))
+        if modules:
+            # `cdf.REPO_ROOT`: what that module binds the name to.
+            return frozenset().union(*(_module_exports(m).names.get(node.attr, _UNKNOWN) for m in modules))
     if isinstance(node, ast.Attribute) and node.attr == "parent":
         return _up(_resolve(node.value, names, here), 1)
     if isinstance(node, ast.Subscript):
@@ -286,20 +306,89 @@ def _resolve(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> 
             return _up(args[0], 1)
         if dotted in _PASS_THROUGH and len(args) == 1:
             return args[0]
+        last = dotted.rsplit(".", 1)[-1] if dotted else None
+        if last == "spec_from_file_location" and len(args) >= 2:
+            return frozenset(("spec", segments) for segments in _paths(args[1]))
+        if last == "module_from_spec" and len(args) == 1:
+            return frozenset(("m", item[1]) for item in args[0] if item[0] == "spec")
+        if last == "import_module" and len(node.args) == 1:
+            return _imported(("", 0, None), here, args[0])
     return _UNKNOWN
 
 
-def _bindings(nodes: list[ast.AST]) -> list[tuple[str, ast.AST | None, bool]]:
+def _modules(value: _Value) -> set[tuple[str, ...]]:
+    return {item[1] for item in value if item[0] == "m"}
+
+
+@functools.cache
+def _module_file(dotted: str, level: int, here: tuple[str, ...]) -> tuple[str, ...] | None:
+    """The repo file `import <dotted>` loads, from `here` for a relative import.
+
+    An absolute name is looked up from the root and from `src/`, the two
+    places `pythonpath` and the installed package put on `sys.path`.
+    """
+    parts = tuple(dotted.split(".")) if dotted else ()
+    if not parts or level > len(here):
+        return None
+    bases = [here[:-level]] if level else [(), ("src",)]
+    for base in bases:
+        for candidate in ((*base, *parts[:-1], f"{parts[-1]}.py"), (*base, *parts, "__init__.py")):
+            if _REPO.joinpath(*candidate).is_file():  # path-filter: none
+                return candidate
+    return None
+
+
+def _imported(spec: tuple[str, int, str | None], here: tuple[str, ...], dotted: _Value = _UNKNOWN) -> _Value:
+    """What an import binds: `from <module> import <name>`, or a module itself.
+
+    `spec` is `(module, level, name)`, with `name` None for `import
+    <module> as x`. `dotted`, for `importlib.import_module`, carries the
+    module name as a string instead. A name the module binds to a path is
+    that path; a name for a function that reads under the root is ("fn",
+    ...); a submodule is ("m", ...).
+    """
+    module, level, name = spec
+    # The importing module matters only to a relative import.
+    where = here if level else ()
+    found: set[tuple] = set()
+    for text in [module] if not dotted else [item[1] for item in dotted if item[0] == "s"]:
+        if name is None:
+            target = _module_file(text, level, where)
+            found |= {("m", target)} if target else set()
+            continue
+        sub = _module_file(f"{text}.{name}" if text else name, level, where)
+        found |= {("m", sub)} if sub else set()
+        base = _module_file(text, level, where)
+        if base:
+            exports = _module_exports(base)
+            found |= exports.names.get(name, _UNKNOWN)
+            found |= {("fn", base, name)} if name in exports.readers else set()
+    return frozenset(found)
+
+
+_Binding = tuple[str, "ast.AST | tuple[str, int, str | None] | None", bool]
+
+
+def _bindings(nodes: list[ast.AST]) -> list[_Binding]:
     """`(name, value, is_loop)` per binding in one scope.
 
     `value` is None for a binding the scan cannot follow (a parameter, a
     tuple target, `with ... as`); it still makes the name local, so a
-    module-level path of the same name does not leak in.
+    module-level path of the same name does not leak in. For an import it
+    is the `(module, level, name)` that `_imported` reads.
     """
-    found: list[tuple[str, ast.AST | None, bool]] = []
+    found: list[_Binding] = []
     followed: set[ast.AST] = set()
     for node in nodes:
-        if isinstance(node, ast.Assign):
+        if isinstance(node, ast.ImportFrom):
+            found += [
+                (a.asname or a.name, (node.module or "", node.level, a.name), False)
+                for a in node.names
+                if a.name != "*"
+            ]
+        elif isinstance(node, ast.Import):
+            found += [(a.asname, (a.name, 0, None), False) for a in node.names if a.asname]
+        elif isinstance(node, ast.Assign):
             targets = [t for t in node.targets if isinstance(t, ast.Name)]
             found += [(t.id, node.value, False) for t in targets]
             followed.update(targets)
@@ -333,10 +422,15 @@ def _bound_names(
     bindings = _bindings(nodes)
     local = {name for name, _, _ in bindings}
     names = {k: v for k, v in outer.items() if k not in local}
+    # An import binds the same value on every round; resolve it once.
+    imports = {id(node): _imported(node, here) for _, node, _ in bindings if isinstance(node, tuple)}
     for _ in range(len(bindings) + 1):
         changed = False
         for name, node, is_loop in bindings:
-            value = _UNKNOWN if node is None else _resolve(node, names, here)
+            if isinstance(node, tuple):
+                value = imports[id(node)]
+            else:
+                value = _UNKNOWN if node is None else _resolve(node, names, here)
             if is_loop:
                 value = _elements(value)
             value = value or frozenset({_MAYBE})
@@ -414,32 +508,44 @@ def _lists_the_root(node: ast.AST, names: dict[str, _Value], here: tuple[str, ..
     return False
 
 
-def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
-    """What a module at `here` reads through paths built from its own location.
+def _calls_a_reader(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> bool:
+    """Whether `node` calls another module's function that reads under the root.
 
-    Names are scoped: a module-level binding is visible everywhere, a
-    binding inside a function only inside that function, and a function's
-    own binding of a name hides the module's. Without the split,
-    `directory = tmp_path / "x"` in one test and `directory = _REPO /
-    "CHANGELOG"` in another would read as the same name.
-
-    Only the outermost expression of a chain is recorded, so `_REPO /
-    "docs" / "user" / "CONFIG.md"` yields one path and not three. When
-    the outermost join does not resolve (`_REPO / "docs" / name`), the
-    longest resolvable prefix is recorded instead, since the test reads
-    under it. When that prefix is the repo root itself, as in `_REPO /
-    name` with `name` read from `git ls-files`, or when the module lists
-    the root, the scan cannot say what is read. That line must carry a
-    `# path-filter:` comment naming exact paths, `<dir>/**` or a glob, or
-    `none`, and is otherwise reported as a problem. So is a comment on a
-    line with nothing for it to declare.
-
-    A module that never names `__file__` builds no path from its own
-    location, so it is not parsed.
+    `cdf.iter_files(roots)` joins each root onto the module's own repo
+    root, so the call reads files that no path in the caller names.
     """
-    if "__file__" not in source:
-        return _NO_SCAN
-    tree = ast.parse(source)
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        modules = _modules(_resolve(func.value, names, here))
+        return any(func.attr in _module_exports(m).readers for m in modules)
+    if isinstance(func, ast.Name):
+        return any(item[0] == "fn" for item in names.get(func.id, _UNKNOWN))
+    return False
+
+
+class _Analysis(NamedTuple):
+    """Every path one module builds, before `# path-filter:` comments apply."""
+
+    tree: ast.Module
+    owner: dict[ast.AST, ast.AST | None]
+    enclosing: dict[ast.AST, ast.AST | None]
+    module_names: dict[str, _Value]
+    found: frozenset[tuple[str, ...]]
+    # Nodes that read under the root through a path the scan cannot name.
+    unresolved: tuple[ast.AST, ...]
+
+
+@functools.cache
+def _parse(source: str) -> ast.Module:
+    """`ast.parse` once per source; nothing here mutates a tree."""
+    return ast.parse(source)
+
+
+def _analyse(source: str, here: tuple[str, ...]) -> _Analysis:
+    """Resolve every path expression in a module at `here`."""
+    tree = _parse(source)
     # One pass over the tree: each node's parent, the scope that owns it
     # (None at module level) and each scope's enclosing scope. A function
     # node itself belongs to the scope that defines it.
@@ -472,7 +578,7 @@ def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
     unresolved: list[ast.AST] = []
     for node in owner:
         names = names_of(owner[node])
-        if _lists_the_root(node, names, here):
+        if _lists_the_root(node, names, here) or _calls_a_reader(node, names, here):
             unresolved.append(node)
         if _consumed(node, parents):
             continue
@@ -497,7 +603,134 @@ def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
                 if () in prefix:
                     unresolved.append(node)
                 break
+    return _Analysis(tree, owner, enclosing, scopes[None], frozenset(found), tuple(unresolved))
 
+
+class _Exports(NamedTuple):
+    """What a module hands the test that loads it."""
+
+    # Module-level names bound to a repo path, such as `REPO_ROOT`.
+    names: dict[str, _Value]
+    # Functions that read under the root through a path the scan cannot
+    # resolve, such as `iter_files(roots)`, and those that call one.
+    readers: frozenset[str]
+
+
+_NO_EXPORTS = _Exports({}, frozenset())
+_EXPORTS: dict[tuple[str, ...], _Exports] = {}
+# The module whose exports are being computed, if any.
+_EXPORTING: set[tuple[str, ...]] = set()
+
+
+def _exports_of(source: str, here: tuple[str, ...]) -> _Exports:
+    """The path-valued names and the reader functions of a module at `here`.
+
+    A function is a reader when a node it owns reads under the root
+    unresolved, with a comment or without one: the comment states what the
+    line reads for that module's own arguments, and a caller passes its
+    own. A function that calls a reader of the same module by its bare
+    name is a reader too. Calls through `self`, and reads a module makes
+    when it loads, are not followed.
+    """
+    analysis = _analyse(source, here)
+    names = {n: v for n, v in analysis.module_names.items() if _paths(v)}
+    functions: dict[str, ast.AST] = {}
+    for node in analysis.tree.body:
+        body = node.body if isinstance(node, ast.ClassDef) else [node]
+        functions.update((f.name, f) for f in body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    readers: set[str] = set()
+    for node in analysis.unresolved:
+        scope = analysis.owner[node]
+        while scope is not None and analysis.enclosing[scope] is not None:
+            scope = analysis.enclosing[scope]
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            readers.add(scope.name)
+    calls = {
+        name: {c.func.id for c in ast.walk(f) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        for name, f in functions.items()
+    }
+    for _ in range(len(calls) + 1):
+        grown = {name for name, called in calls.items() if called & readers} - readers
+        if not grown:
+            break
+        readers |= grown
+    return _Exports(names, frozenset(readers))
+
+
+def _module_exports(segments: tuple[str, ...]) -> _Exports:
+    """`_exports_of` the repo module at `segments`, once per module.
+
+    One module deep: while one module's exports are computed, the modules
+    it loads export nothing. So a loaded module that reads through a
+    third module is not followed, an import cycle ends, and what a module
+    exports does not depend on which test reached it first.
+    """
+    if segments in _EXPORTS:
+        return _EXPORTS[segments]
+    path = _REPO.joinpath(*segments)  # path-filter: none
+    if _EXPORTING or path.suffix != ".py" or not path.is_file():
+        return _NO_EXPORTS
+    source = path.read_text(encoding="utf-8")
+    # Followed one module deep, a module builds paths only from its own
+    # `__file__`, so one that never names it exports nothing.
+    exports = _NO_EXPORTS
+    if "__file__" in source:
+        _EXPORTING.add(segments)
+        try:
+            exports = _exports_of(source, segments)
+        finally:
+            _EXPORTING.discard(segments)
+    _EXPORTS[segments] = exports
+    return exports
+
+
+@functools.cache
+def _exporting_stems() -> frozenset[str]:
+    """The names of the repo modules that export a path or a reader.
+
+    A module that names none of them, and not `__file__`, can reach no
+    repo path the scan follows, so it is not parsed. A package's
+    `__init__.py` goes by the package's name.
+    """
+    return frozenset(
+        path.parent.name if path.stem == "__init__" else path.stem
+        for package in sorted(_IN_REPO_PACKAGES)
+        for path in sorted(_REPO.joinpath(package).rglob("*.py"))  # path-filter: none
+        if _module_exports(path.relative_to(_REPO).parts) != _NO_EXPORTS
+    )
+
+
+def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
+    """What a module at `here` reads through paths built from its own location.
+
+    Names are scoped: a module-level binding is visible everywhere, a
+    binding inside a function only inside that function, and a function's
+    own binding of a name hides the module's. Without the split,
+    `directory = tmp_path / "x"` in one test and `directory = _REPO /
+    "CHANGELOG"` in another would read as the same name.
+
+    Only the outermost expression of a chain is recorded, so `_REPO /
+    "docs" / "user" / "CONFIG.md"` yields one path and not three. When
+    the outermost join does not resolve (`_REPO / "docs" / name`), the
+    longest resolvable prefix is recorded instead, since the test reads
+    under it. When that prefix is the repo root itself, as in `_REPO /
+    name` with `name` read from `git ls-files`, or when the module lists
+    the root, the scan cannot say what is read. That line must carry a
+    `# path-filter:` comment naming exact paths, `<dir>/**` or a glob, or
+    `none`, and is otherwise reported as a problem. So is a comment on a
+    line with nothing for it to declare.
+
+    A path another module holds counts as this module's own. The scan
+    follows a module the test loads from a repo file, through
+    `importlib.util.spec_from_file_location`, `importlib.import_module`,
+    `import ... as` or `from ... import`: `cdf.REPO_ROOT` is that module's
+    root, and a call to one of its functions that reads under its root,
+    such as `cdf.iter_files(roots)`, is a read the scan cannot resolve.
+    """
+    if "__file__" not in source and not any(stem in source for stem in _exporting_stems()):
+        return _NO_SCAN
+    analysis = _analyse(source, here)
+    found, unresolved = analysis.found, analysis.unresolved
     reads = {"/".join(segments) for segments in found if segments}
     patterns: set[str] = set()
     declared: set[str] = set()
@@ -815,6 +1048,63 @@ def test_a_root_path_the_scan_cannot_resolve_is_a_problem(spelling: str) -> None
     assert scan.problems, f"{spelling}: no problem reported; reads {sorted(scan.reads)}"
 
 
+# Probes that reach the root through another repo module, one module deep.
+_CDF_HEAD = (
+    "import importlib.util\n"
+    "from pathlib import Path\n"
+    "_R = Path(__file__).resolve().parents[1]\n"
+    '_spec = importlib.util.spec_from_file_location("_cdf", _R / "scripts" / "check_derived_figures.py")\n'
+    "cdf = importlib.util.module_from_spec(_spec)\n"
+)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'from tests.test_ci_path_filter import _REPO\ndef test_x():\n    (_REPO / "docs" / "new.md").read_text()\n',
+        'import tests.test_ci_path_filter as f\ndef test_x():\n    (f._REPO / "docs" / "new.md").read_text()\n',
+        _CDF_HEAD + 'def test_x():\n    (cdf.REPO_ROOT / "docs" / "new.md").read_text()\n',
+    ],
+    ids=["from_import", "import_as", "importlib_spec"],
+)
+def test_a_root_another_module_binds_resolves_as_the_module_own(source: str) -> None:
+    """#1786: a root imported or read off a loaded module is the test's root.
+
+    The first two probes name no `__file__`, so they also pin that such a
+    module is parsed at all.
+    """
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert "docs/new.md" in scan.reads, sorted(scan.reads)
+    assert not scan.problems, scan.problems
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        _CDF_HEAD + "def test_x():\n    cdf.iter_files(list(cdf.DEFAULT_ROOTS))\n",
+        _CDF_HEAD + "def test_x():\n    for p in cdf.iter_files(['docs']):\n        p.read_text()\n",
+        "from benchmarks.published_constants import figures\ndef test_x():\n    figures()\n",
+    ],
+    ids=["iter_files", "iter_files_loop", "imported_reader"],
+)
+def test_a_call_to_another_module_reader_is_a_problem(source: str) -> None:
+    """#1786: `cdf.iter_files(...)` reads every page under its roots unseen.
+
+    `iter_files` joins each root onto its module's own repo root, and
+    `figures` calls a function that does the same, so neither call names
+    the files it reads.
+    """
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert scan.problems, f"no problem reported; reads {sorted(scan.reads)}"
+
+
+def test_a_reader_call_that_declares_its_reads_is_not_a_problem() -> None:
+    source = _CDF_HEAD + "def test_x():\n    cdf.iter_files(['docs'])  # path-filter: **/*.md\n"
+    scan = _scan_source(source, ("tests", "test_probe.py"))
+    assert not scan.problems, scan.problems
+    assert scan.patterns == {"**/*.md"}
+
+
 def test_an_unknown_name_under_a_directory_reads_the_directory() -> None:
     """Below the root, the resolvable prefix is the read and nothing is unresolved."""
     source = _PROBE_HEAD + 'def test_x(name):\n    (_R / "docs" / name).read_text()\n'
@@ -1012,12 +1302,14 @@ def test_every_glob_the_suite_reads_runs_its_readers_when_a_match_changes() -> N
     """#1786 CI-07: a test that reads every match of a glob runs on any match.
 
     `test_docs_cross_file_anchors_1511.py` reads every tracked Markdown
-    file. Listing them all under `code` would put the full matrix on
-    every docs-only PR (#413/#427), and leaving them out let a PR break
-    an anchor in an unlisted page with the required check green. So the
-    glob sits under the filter's `tree_reads` key, and a PR that matches
-    it but no `code` path runs exactly the modules that declare it.
-    Both lists come from the modules' `# path-filter:` comments.
+    file, and the derived-figure tests read every page under `docs/` and
+    `CHANGELOG/` through `cdf.iter_files`. Listing them all under `code`
+    would put the full matrix on every docs-only PR (#413/#427), and
+    leaving them out let a PR break an anchor, or leave a fence open, in
+    an unlisted page with the required check green. So the globs sit under
+    the filter's `tree_reads` key, and a PR that matches one but no `code`
+    path runs exactly the modules that declare one. Both lists come from
+    the modules' `# path-filter:` comments.
     """
     patterns = _suite_pattern_reads()
     assert "**/*.md" in patterns, (

@@ -357,7 +357,7 @@ def test_mask_delta_flag_reports_and_returns_before_the_gate_runs(
     without running the marker gate -- reporting only, as the help text says.
     """
     (repo / "CHANGELOG" / "v9.md").write_text(_MASK_DELTA_FIXTURE)
-    assert cdf.main(["--mask-delta", "CHANGELOG/v9.md"]) == 0
+    assert cdf.main(["--mask-delta", "CHANGELOG/v9.md"]) == 0  # path-filter: none
     out = capsys.readouterr().out
     rows = _parse_mask_delta(out)
     files = [repo / "CHANGELOG" / "v9.md"]
@@ -562,7 +562,7 @@ def test_every_non_blank_line_of_the_corpus_lands_in_exactly_one_entry() -> None
     invariant against a different line numbering than the gate uses, and the
     two disagree on any file carrying a vertical tab or a U+2028 (#1556).
     """
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     assert len(files) > 100, "an empty scan would pass this test vacuously"
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -1048,7 +1048,7 @@ def test_the_published_factor_agrees_with_the_two_maxima_it_divides() -> None:
     rounded ratio of the two maxima markers beside it, so editing one of the
     three and leaving the others is caught here as well as by the gate.
     """
-    files = cdf.iter_files(["CHANGELOG"])
+    files = cdf.iter_files(["CHANGELOG"])  # path-filter: **/*.md CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     published = {
         m.key: m.value
@@ -1107,7 +1107,7 @@ def test_every_store_free_key_is_named_by_a_marker() -> None:
     emitted = {str(k) for k in cast("dict[object, object]", json.loads(proc.stdout))}
     assert emitted, "an empty producer would pass this test vacuously"
 
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     cited = {
         m.key
@@ -1123,7 +1123,7 @@ def test_every_store_free_key_is_named_by_a_marker() -> None:
 
 @pytest.mark.source_scan
 def test_the_repo_passes_the_text_checks() -> None:
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     markers = cdf.check_text(files, report)
     assert len(markers) >= 10, "an empty scan would pass this test vacuously"
@@ -1158,7 +1158,7 @@ def test_the_repo_passes_the_producer_checks() -> None:
     wall clock here is now the maximum, so anything slower than the current
     15.0s worst case moves it.
     """
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     markers = cdf.check_text(files, report)
     store_free = [m for m in markers if not m.store_backed]

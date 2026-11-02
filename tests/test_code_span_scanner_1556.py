@@ -1300,7 +1300,7 @@ def test_no_file_in_the_scanned_corpus_exercises_the_divergence() -> None:
     should read about -- so the message names the file and the remedy rather
     than leaving a reader to conclude the scanner regressed.
     """
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     assert len(files) > 100, "an empty scan would pass this vacuously"
     dangling = [
         (cdf.rel(p), cdf.unterminated_fence(p.read_text(encoding="utf-8", errors="replace")))
@@ -1354,7 +1354,7 @@ def test_the_whole_repository_still_passes_the_text_checks() -> None:
     but it is above what the pre-fix scanner reached on this same tree, which
     is the claim being made.
     """
-    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))
+    files = cdf.iter_files(list(cdf.DEFAULT_ROOTS))  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
     report = cdf.Report(github=False)
     markers = cdf.check_text(files, report)
     assert len(markers) >= 199, "the two PRIVACY.md markers are part of this floor"
@@ -1374,7 +1374,7 @@ def test_the_live_corpus_is_where_the_pre_fix_rule_went_blind() -> None:
     figure on them at all.
     """
     prose = blind = 0
-    for path in cdf.iter_files(list(cdf.DEFAULT_ROOTS)):
+    for path in cdf.iter_files(list(cdf.DEFAULT_ROOTS)):  # path-filter: **/*.md docs/**/*.py CHANGELOG/**/*.py
         if path.suffix != ".md":
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
