@@ -17,7 +17,10 @@ workflow file but its own, while tests across the suite read workflows,
 and it named no document while tests read `README.md`, `SECURITY.md`
 and pages under `docs/`. A PR that changed only one of those files ran
 no test that reads it. The filter now carries `.github/**` and one exact
-entry per file a test reads outside the package globs.
+entry per file a test opens by name outside the package globs. A test
+that reads every match of a glob, or every file of a directory the
+filter leaves out such as `CHANGELOG/`, runs in the step that the
+filter's `tree_reads` key starts.
 
 These tests **derive** the expected filter contents by scanning
 `tests/` for what it actually imports and reads, rather than comparing
@@ -54,7 +57,6 @@ import fnmatch
 import functools
 import io
 import re
-import shlex
 import tokenize
 from pathlib import Path
 from typing import NamedTuple
@@ -68,7 +70,6 @@ pytestmark = pytest.mark.source_scan
 
 _REPO = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO / ".github" / "workflows" / "ci.yml"
-_STAGING_GATE_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
 _LABEL_DOCS_WORKFLOW = _REPO / ".github" / "workflows" / "label-docs.yml"
 
 # A top-level directory holding Python the suite could depend on. Excludes
@@ -87,13 +88,6 @@ _IN_REPO_PACKAGES = frozenset(
 _BUILD_INPUTS = frozenset({"pyproject.toml", "uv.lock"})
 
 _IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_]\w*)", re.MULTILINE)
-
-# The `release-docs-check` invocation in staging-gate.yml. Its arguments
-# name the CHANGELOG paths that job checks on every PR; a directory the
-# suite reads under one of them may stay out of the `code` filter.
-_DUPES_INVOCATION_RE = re.compile(
-    r"python3 scripts/check_changelog_dupes\.py ([^\n]*)"
-)
 
 
 def _filter_entries(key: str) -> list[str]:
@@ -951,20 +945,33 @@ def _tree_read_step_modules() -> list[str]:
     return modules
 
 
-def _release_docs_check_paths() -> list[str]:
-    """The CHANGELOG paths `release-docs-check` scans on every PR."""
-    found = _DUPES_INVOCATION_RE.search(_STAGING_GATE_WORKFLOW.read_text(encoding="utf-8"))
-    assert found, (
-        f"{_STAGING_GATE_WORKFLOW.name} no longer runs check_changelog_dupes.py; "
-        f"the CHANGELOG directories the suite reads have lost their per-PR check "
-        f"and must enter the `code` filter"
+def _tree_read_directories() -> dict[str, set[str]]:
+    """Each directory a test reads that no `code` glob covers, mapped to its readers.
+
+    A bare directory name as an exact entry would pass `_entry_covers`
+    here while matching no file under it in paths-filter. The reverse
+    test rejects such an entry, since no test reads it as a file.
+    """
+    globs = _code_filter_globs()
+    return {
+        path: modules
+        for path, modules in _suite_directory_reads().items()
+        if not any(_entry_covers(g, path) for g in globs)
+    }
+
+
+def _files_under(directory: str) -> list[str]:
+    """The repo-relative files under `directory`.
+
+    Skips dotfiles such as a Finder `.DS_Store`, which a local run may
+    find and no PR carries.
+    """
+    root = _REPO.joinpath(*directory.split("/"))  # path-filter: none
+    return sorted(
+        p.relative_to(_REPO).as_posix()
+        for p in root.rglob("*")
+        if p.is_file() and not p.name.startswith(".")
     )
-    return shlex.split(found.group(1))
-
-
-def _checked_by_release_docs_check(directory: str, scanned: list[str]) -> bool:
-    """Whether `release-docs-check` scans `directory` or something under it."""
-    return any(s == directory or s.startswith(f"{directory}/") for s in scanned)
 
 
 def test_the_discovery_scan_is_not_vacuous() -> None:
@@ -1314,43 +1321,33 @@ def test_every_file_the_suite_reads_is_in_the_code_filter() -> None:
     )
 
 
-def test_every_directory_the_suite_reads_is_in_the_code_filter() -> None:
-    """A directory a test lists must be under a `dir/**` glob.
+def test_every_directory_the_suite_reads_runs_its_readers_on_a_change() -> None:
+    """#1786 CI-07: a directory a test lists must run that test when a file in it changes.
 
-    One exception, by ruling (#413/#427): the CHANGELOG directories. A
-    fragment-only PR stays off the suite, and `release-docs-check` in
-    staging-gate.yml scans those same directories on every PR. The
-    exception is read from that job's arguments, so removing the job or
-    a directory from it puts the directory back under this assertion.
+    A `dir/**` glob in `code` runs the whole suite. The CHANGELOG
+    directories stay out of `code` by ruling (#413/#427), so a
+    fragment-only PR does not run the full matrix. A directory outside
+    `code` passes when a `tree_reads` glob matches every file under it,
+    so that any change there starts the `tree_reads` step, and the glob
+    test below holds that step to running each module that reads the
+    directory.
     """
-    globs = _code_filter_globs()
-    exempt = _release_docs_check_paths()
-    # A bare directory name as an exact entry would pass `_entry_covers`
-    # here while matching no file under it in paths-filter. The reverse
-    # test below rejects such an entry, since no test reads it as a file.
+    tree_reads = _filter_entries("tree_reads")
     uncovered = {
-        path: sorted(modules)
-        for path, modules in _suite_directory_reads().items()
-        if not any(_entry_covers(g, path) for g in globs)
-        and not _checked_by_release_docs_check(path, exempt)
+        path: {
+            "readers": sorted(modules),
+            "unmatched": [f for f in _files_under(path) if not any(_glob_matches(g, f) for g in tree_reads)],
+        }
+        for path, modules in _tree_read_directories().items()
     }
+    uncovered = {path: found for path, found in uncovered.items() if found["unmatched"]}
     assert not uncovered, (
-        f"directories listed by tests/ but not under a '<dir>/**' glob in "
-        f"{_CI_WORKFLOW.name}: {uncovered}. An exact entry covers one file; "
-        f"a test that globs a directory needs the directory."
+        f"directories listed by tests/ that neither a '<dir>/**' glob under "
+        f"`code` nor the `tree_reads` globs in {_CI_WORKFLOW.name} cover: "
+        f"{uncovered}. A PR that changes an unmatched file runs none of the "
+        f"readers. Add '<dir>/**' to `code`, or a glob for those files to a "
+        f"reader's `# path-filter:` comment."
     )
-
-
-def test_the_release_docs_exemption_is_narrow() -> None:
-    """Only a directory the dupes check names, or a parent of one, is exempt."""
-    scanned = ["CHANGELOG/*.md", "CHANGELOG.md", "CHANGELOG/unreleased"]
-    assert _checked_by_release_docs_check("CHANGELOG", scanned)
-    assert _checked_by_release_docs_check("CHANGELOG/unreleased", scanned)
-    assert not _checked_by_release_docs_check("CHANGELOG/unreleased/sub", scanned)
-    assert not _checked_by_release_docs_check("CHANGELOG.md", ["CHANGELOG/*.md"])
-    assert not _checked_by_release_docs_check("docs", scanned)
-    assert not _checked_by_release_docs_check("C", scanned)
-    assert not _checked_by_release_docs_check("CHANGELOG", [])
 
 
 def test_every_exact_entry_in_the_code_filter_is_read_by_a_test() -> None:
@@ -1385,7 +1382,9 @@ def test_every_glob_the_suite_reads_runs_its_readers_when_a_match_changes() -> N
     an unlisted page with the required check green. So the globs sit under
     the filter's `tree_reads` key, and a PR that matches one but no `code`
     path runs exactly the modules that declare one. Both lists come from
-    the modules' `# path-filter:` comments.
+    the modules' `# path-filter:` comments. The step also runs each module
+    that reads a directory `code` leaves out, such as `CHANGELOG/`: the
+    directory test above requires `tree_reads` to match every file there.
     """
     patterns = _suite_pattern_reads()
     assert "**/*.md" in patterns, (
@@ -1403,12 +1402,12 @@ def test_every_glob_the_suite_reads_runs_its_readers_when_a_match_changes() -> N
         f"`tree_reads` entries in {_CI_WORKFLOW.name} that no test declares: "
         f"{stale}. A PR matching only those runs tests that read nothing it changed."
     )
-    readers = sorted(set().union(*patterns.values()))
+    readers = sorted(set().union(*patterns.values(), *_tree_read_directories().values()))
     step = sorted(_tree_read_step_modules())
     assert step == readers, (
         f"the `tree_reads` step runs {step}, but the modules that declare a "
-        f"glob are {readers}. A module left out never runs on the PR that "
-        f"changes only the files it reads."
+        f"glob or read a directory outside `code` are {readers}. A module "
+        f"left out never runs on the PR that changes only the files it reads."
     )
 
 

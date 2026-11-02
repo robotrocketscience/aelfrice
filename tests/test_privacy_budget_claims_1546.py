@@ -26,8 +26,9 @@ what the caller passed lands on the value in the file.
 `code` filter did not list the page, so the suite was skipped on exactly the
 docs-only pull request that changed it, and a guard on the page would have
 reported a pass from an `echo`. The filter now lists each file outside the
-package directories that a test builds a path to (#1786 CI-07), `PRIVACY.md`
-among them. `tests/test_ci_path_filter.py` derives that list from the tests'
+package directories that a test builds a path to by name (#1786 CI-07),
+`PRIVACY.md` among them, and a test that reads a whole directory or glob
+outside them runs in the filter's `tree_reads` step. `tests/test_ci_path_filter.py` derives that list from the tests'
 own path expressions and from the paths and readers of the repo modules a
 test loads, and fails on a read under the repo root that it cannot resolve.
 A new page read through a path the scan follows is either in the filter or

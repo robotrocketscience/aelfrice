@@ -139,9 +139,13 @@ jobs:
             # through `iter_files`. No list of exact entries can cover
             # that, and these globs under `code` would put the full matrix
             # on every docs-only PR. A PR that matches this key and not
-            # `code` runs only the modules that declare a glob, in the step
-            # after the suite. tests/test_ci_path_filter.py derives both
-            # this list and that step's modules from the comments.
+            # `code` runs only the modules that declare a glob, and those
+            # that read a CHANGELOG directory, in the step after the suite.
+            # `code` leaves those directories out by ruling (#413/#427),
+            # and `**/*.md` matches every file in them.
+            # tests/test_ci_path_filter.py derives this list from the
+            # comments and that step's modules from the comments and the
+            # directories the suite reads.
             tree_reads:
               - '**/*.md'
               - 'CHANGELOG/**/*.py'
@@ -186,11 +190,12 @@ jobs:
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --junitxml=junit-${{ matrix.python-version }}.xml
       # A PR that matches `tree_reads` and no `code` path runs the modules
-      # that read every match of a glob, not the whole suite. No JUnit
-      # report: a partial run is not a record of the suite.
+      # that read every match of a glob or a CHANGELOG directory, not the
+      # whole suite. No JUnit report: a partial run is not a record of the
+      # suite.
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads == 'true' && github.event_name != 'workflow_dispatch'
         name: Run the tests that read every file a glob matches
-        run: uv run pytest tests/test_code_span_scanner_1556.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_store_open_cost_1561.py -q -rfEsxX
+        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_store_open_cost_1561.py -q -rfEsxX
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No code paths changed; reporting pass for docs-only PR."
       # `always()` so a red leg still keeps its report, which is the case the
