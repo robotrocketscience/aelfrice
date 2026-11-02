@@ -23,6 +23,7 @@ dependency set CI installs (#1436).
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 import sys
@@ -270,11 +271,27 @@ def test_no_continue_on_error_anywhere_in_the_job() -> None:
     assert found == [], found
 
 
+def _module_names(path: Path) -> list[str]:
+    """Every name a module binds at top level, which is what pytest collects
+    test functions from: a `def`, a `class`, an assignment or an import."""
+    names: list[str] = []
+    for stmt in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(stmt.name)
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            names.extend(a.asname or a.name for a in stmt.names)
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            names.extend(n.id for n in ast.walk(stmt) if isinstance(n, ast.Name))
+    return names
+
+
 def test_the_legs_deselect_exactly_the_producer_check() -> None:
     """`-k`, `-m`, a second `--ignore` or `--deselect`, `--collect-only` or
     `|| true` would hide tests from the required legs with nothing else
     running them, so every token outside the report flags is pinned. A
-    renamed test turns the deselect into a no-op."""
+    renamed test turns the deselect into a no-op. pytest matches
+    `--deselect` as a node ID prefix, so any other name in the file that
+    starts with the deselected one drops out of the legs too."""
     run = (_field(_pytest_step(), "run") or "").replace(
         f"--junitxml={_junit_name()}", ""
     )
@@ -285,9 +302,11 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
         f"the pytest legs select {selection!r}, not {_SELECTION!r}"
     )
     path, _, func = _DESELECTED.partition("::")
-    source = (_REPO / path).read_text(encoding="utf-8")
-    assert re.search(rf"^def {re.escape(func)}\(", source, re.M), (
-        f"{func} is not defined in {path}, so the deselect skips nothing"
+    sharing = [n for n in _module_names(_REPO / path) if n.startswith(func)]
+    assert sharing == [func], (
+        f"{path} binds {sharing!r}, not exactly [{func!r}]. Absent, the "
+        "deselect skips nothing. Any other name that starts with it drops "
+        "out of the required legs with nothing else running it."
     )
 
 
