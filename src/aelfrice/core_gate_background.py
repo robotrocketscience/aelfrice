@@ -40,7 +40,9 @@ On Windows (#1761) the child starts with `DETACHED_PROCESS`,
 resolves `claude` through the `PATHEXT` extensions, so an npm
 `claude.cmd` shim is found, and only in the folders named on `PATH`, so
 a `claude.cmd` in the project the hook runs in is not. The reply is
-decoded as UTF-8 rather than through the ANSI code page.
+decoded as UTF-8 rather than through the ANSI code page. A run that
+passes its timeout ends with its whole process tree (`run_bounded`), so
+the node process behind a `claude.cmd` doesn't outlive it.
 
 Never raises into the hook. A failed run leaves the batch open; an open
 batch claims its beliefs, so no later Stop asks about them, and
@@ -50,6 +52,7 @@ today's core rule, so a failure costs nothing but the label.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import subprocess
@@ -79,6 +82,9 @@ CLAUDE_BIN: Final[str] = "claude"
 RUNNER_MODEL: Final[str] = "haiku"
 RUNNER_BUDGET_USD: Final[str] = "0.10"
 RUNNER_TIMEOUT_SECONDS: Final[int] = 300
+#: After a timeout, the most `run_bounded` waits for `taskkill`, and then
+#: for the run's pipes to close (see `run_bounded`).
+RUNNER_KILL_WAIT_SECONDS: Final[int] = 10
 RUNNER_SYSTEM_PROMPT: Final[str] = (
     "You label short text snippets. Follow the user's instructions exactly."
 )
@@ -262,8 +268,10 @@ def settings_file() -> Generator[str, None, None]:
     One file per run, in the temp directory, created by `mkstemp`, so on
     POSIX it is readable by its owner only. It holds no belief text. The
     `finally` removes it on every exit the child's completion path can
-    take: a normal return, a timeout, or a failed start. Only a child
-    killed outright leaves it behind, as a 25-byte file whose name starts
+    take: a normal return, a timeout, or a failed start. `run_bounded`
+    makes the timeout exit come at most `RUNNER_TIMEOUT_SECONDS` plus
+    twice `RUNNER_KILL_WAIT_SECONDS` after the start. Only a child killed
+    outright leaves the file behind, as a 25-byte file whose name starts
     with `RUNNER_SETTINGS_PREFIX`.
     """
     fd, name = tempfile.mkstemp(prefix=RUNNER_SETTINGS_PREFIX, suffix=".json")
@@ -333,6 +341,83 @@ def runner_env(base: dict[str, str]) -> dict[str, str]:
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
+def _taskkill_path() -> str:
+    """System32's `taskkill.exe`, by full path.
+
+    `CreateProcess` searches the working directory, here the user's
+    project, before System32 for a bare name, so a bare `taskkill` would
+    run a `taskkill.exe` planted there.
+    """
+    root = os.environ.get("SystemRoot") or "C:\\Windows"
+    return ntpath.join(root, "System32", "taskkill.exe")
+
+
+def _kill_tree(proc: "subprocess.Popen[str]") -> None:
+    """End `proc` and, on Windows, every process it started. Never raises.
+
+    An npm `claude.cmd` runs as cmd.exe, which starts node.exe and waits
+    on it, and node.exe holds the run's pipes. `Popen.kill` ends cmd.exe
+    only, so on Windows `taskkill /F /T` ends the tree first, while
+    cmd.exe is alive to link it. `Popen.kill` follows either way, so a
+    `taskkill` that fails or is missing still ends the direct child.
+    """
+    if _is_win32():
+        try:
+            subprocess.run(  # noqa: S603 - a fixed System32 path and a pid
+                [_taskkill_path(), "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=RUNNER_KILL_WAIT_SECONDS,
+                check=False, creationflags=_creationflags("CREATE_NO_WINDOW"),
+            )
+        except (OSError, subprocess.SubprocessError):
+            # No taskkill, or it hung: the kill below still ends cmd.exe.
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        # Already exited.
+        pass
+
+
+def run_bounded(
+    argv: list[str], *, input: str, timeout: float, capture_output: bool = True,
+    **kwargs: Any,
+) -> "subprocess.CompletedProcess[str]":
+    """`subprocess.run` for the CLI, with a timeout that holds through a shim.
+
+    On a timeout, `subprocess.run` kills only its direct child, and on
+    Windows it then waits with no limit for the pipes to close (`kill()`,
+    then `communicate()` with no timeout, in CPython 3.12-3.14). Through
+    an npm `claude.cmd` the direct child is cmd.exe and node.exe holds the
+    pipes, so that wait lasts as long as the hung run. Here a timeout ends
+    the process tree (`_kill_tree`), waits at most
+    `RUNNER_KILL_WAIT_SECONDS` for the pipes, and raises `TimeoutExpired`
+    whether or not they closed. The call returns or raises within
+    `timeout` plus twice `RUNNER_KILL_WAIT_SECONDS`.
+    """
+    if capture_output:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
+        argv, stdin=subprocess.PIPE, **kwargs,
+    )
+    try:
+        out, err = proc.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=RUNNER_KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A process the kill didn't reach still holds the pipes. The
+            # bound matters more than the output of a run that failed.
+            pass
+        raise
+    except BaseException:
+        _kill_tree(proc)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 def label_batch(
     store: "MemoryStore",
     batch_id: str,
@@ -396,7 +481,7 @@ def _label_batch(
             return
         snippets.append((item.index, belief.content))
     prompt = core_gate.build_prompt(snippets)
-    runner = run if run is not None else subprocess.run
+    runner = run if run is not None else run_bounded
     platform_kwargs: dict[str, Any] = {}
     if _is_win32():
         # This process has no console (`spawn`), so a console program it

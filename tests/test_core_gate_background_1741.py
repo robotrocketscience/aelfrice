@@ -608,7 +608,7 @@ def test_main_logs_one_record_without_text(
     _seed(db, [_belief("w1")])
     store, batch_id = _open_batch(db, ["w1"])
     store.close()
-    monkeypatch.setattr(bg.subprocess, "run", FakeRun(stdout=_reply([(0, "B")])))
+    monkeypatch.setattr(bg, "run_bounded", FakeRun(stdout=_reply([(0, "B")])))
     assert bg.main([batch_id, CLAUDE]) == 0
     lines = (db.parent / bg.LOG_FILENAME).read_text(encoding="utf-8").splitlines()
     (rec,) = [json.loads(x) for x in lines]
@@ -836,7 +836,7 @@ def test_main_returns_one_on_failure(db: Path, monkeypatch: pytest.MonkeyPatch) 
     _seed(db, [_belief("w1")])
     store, batch_id = _open_batch(db, ["w1"])
     store.close()
-    monkeypatch.setattr(bg.subprocess, "run", FakeRun(stdout="widget"))
+    monkeypatch.setattr(bg, "run_bounded", FakeRun(stdout="widget"))
     assert bg.main([batch_id, CLAUDE]) == 1
     (rec,) = [json.loads(x) for x in (db.parent / bg.LOG_FILENAME).read_text().splitlines()]
     assert rec["outcome"] == bg.OUTCOME_RUN_FAILED

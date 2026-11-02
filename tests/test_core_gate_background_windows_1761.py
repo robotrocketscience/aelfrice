@@ -13,6 +13,7 @@ store is under `tmp_path`, and the belief text is synthetic.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import sqlite3
 import subprocess
@@ -288,6 +289,130 @@ def test_the_cli_run_hides_its_window_on_windows_only(
         assert call["creationflags"] == CREATE_NO_WINDOW
     else:
         assert "creationflags" not in call
+
+
+# --- the timeout through a claude.cmd shim ---------------------------------------
+
+
+class HungShimPopen:
+    """A `Popen` for a `claude.cmd` run that never finishes.
+
+    It stands for cmd.exe, whose node.exe child holds the pipes: until the
+    tree is killed, `communicate` with a timeout times out, and one with no
+    timeout would block until node exits, so it raises instead. With
+    `tree_dies`, a `taskkill /T` for its pid closes the pipes; without it,
+    they stay open. A `taskkill.exe` instance returns at once.
+    """
+
+    events: list[tuple[str, Any]] = []
+    tree_dies = True
+
+    def __init__(self, argv: list[str], **kw: Any) -> None:
+        self.argv = argv
+        self.args = argv
+        self.kw = kw
+        self.pid = 4242
+        self.returncode: int | None = None
+        self.tree_killed = False
+        HungShimPopen.events.append(("popen", argv))
+
+    def __enter__(self) -> HungShimPopen:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def communicate(
+        self, input: str | None = None, timeout: float | None = None,
+    ) -> tuple[str | None, str | None]:
+        HungShimPopen.events.append(("communicate", timeout))
+        if self.argv[0].lower().endswith("taskkill.exe"):
+            self.returncode = 0
+            if HungShimPopen.tree_dies:
+                for name, arg in HungShimPopen.events:
+                    if name == "kill_target":
+                        arg.tree_killed = True
+            return None, None
+        HungShimPopen.events.append(("kill_target", self))
+        if timeout is None:
+            raise AssertionError("communicate() with no timeout waits for node.exe to exit")
+        if self.tree_killed:
+            return "", ""
+        raise subprocess.TimeoutExpired(self.argv, timeout)
+
+    def kill(self) -> None:
+        HungShimPopen.events.append(("kill", self.argv[0]))
+        self.returncode = 1
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        return self.returncode
+
+
+@pytest.mark.parametrize("tree_dies", [True, False])
+def test_a_timeout_through_a_cmd_shim_ends_the_tree_and_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tree_dies: bool,
+) -> None:
+    """Killed by: running the CLI through `subprocess.run`, whose Windows
+    timeout path kills cmd.exe only and then calls `communicate()` with no
+    timeout, waiting on node.exe for as long as the hung run lasts; ending
+    the run without `taskkill /F /T` on its pid; a bare `taskkill`, which
+    `CreateProcess` would look for in the project first; or a final wait
+    with no timeout, which `tree_dies=False` (a `taskkill` that missed the
+    tree) would turn into the same hang. `subprocess._mswindows` is set so
+    `subprocess.run` takes its Windows branch here."""
+    db = tmp_path / "memory.db"
+    batch_id = _open_batch(db)
+    HungShimPopen.events = []
+    HungShimPopen.tree_dies = tree_dies
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    monkeypatch.setenv("SystemRoot", "C:\\WidgetWin")
+    monkeypatch.setattr(subprocess, "Popen", HungShimPopen)
+    monkeypatch.setattr(subprocess, "_mswindows", True)
+    store = MemoryStore(str(db))
+    try:
+        record = bg.label_batch(store, batch_id, claude="C:\\widget\\claude.cmd", env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_RUN_FAILED, record
+    assert record["error"] == "TimeoutExpired"
+    timeouts = [arg for name, arg in HungShimPopen.events if name == "communicate"]
+    assert None not in timeouts
+    assert timeouts[0] == bg.RUNNER_TIMEOUT_SECONDS
+    taskkill = [arg for name, arg in HungShimPopen.events
+                if name == "popen" and arg[0].lower().endswith("taskkill.exe")]
+    assert taskkill == [[
+        ntpath.join("C:\\WidgetWin", "System32", "taskkill.exe"), "/F", "/T", "/PID", "4242",
+    ]]
+    order = [name if name != "popen" else arg[0] for name, arg in HungShimPopen.events
+             if name in ("popen", "kill")]
+    assert order.index(taskkill[0][0]) < order.index("kill")
+    assert _labels(db) == {}
+
+
+def test_the_settings_file_is_removed_after_a_timeout_through_a_cmd_shim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: a timeout path that never returns, which keeps the
+    `finally` that removes the file from running."""
+    db = tmp_path / "memory.db"
+    batch_id = _open_batch(db)
+    HungShimPopen.events = []
+    HungShimPopen.tree_dies = False
+    monkeypatch.setattr(bg, "_is_win32", lambda: True)
+    monkeypatch.setattr(subprocess, "Popen", HungShimPopen)
+    monkeypatch.setattr(subprocess, "_mswindows", True)
+    store = MemoryStore(str(db))
+    try:
+        record = bg.label_batch(store, batch_id, claude="C:\\widget\\claude.cmd", env={})
+    finally:
+        store.close()
+    assert record["outcome"] == bg.OUTCOME_RUN_FAILED, record
+    (argv,) = [arg for name, arg in HungShimPopen.events
+               if name == "popen" and not arg[0].lower().endswith("taskkill.exe")]
+    assert not Path(argv[argv.index("--settings") + 1]).exists()
 
 
 # --- the stub CLI: argv, settings file, and the real spawn path ----------------
