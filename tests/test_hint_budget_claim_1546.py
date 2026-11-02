@@ -4,10 +4,11 @@ The paragraph used to say that #1526 "re-denominated `DEFAULT_HOOK_TOKEN_BUDGET`
 and reserved the framing header out of it". Neither half happened. The
 constant's own docstring says #1526 did not move it, the framing header's
 docstring says #1526 measured the header and left it uncharged, and the budget
-the UserPromptSubmit hook hands `retrieve()` is the bare constant: in
+the packer fills on a UserPromptSubmit fire is the bare constant: in
 `user_prompt_submit`, `budget` is the caller's `token_budget` or
-`DEFAULT_HOOK_TOKEN_BUDGET`, and `_retrieve` passes it on unchanged. The
-paragraph now says that. Four tests hold it there.
+`DEFAULT_HOOK_TOKEN_BUDGET`, and nothing between there and the packer in
+`retrieval.retrieve_with_tiers` takes any of it off. The paragraph now says
+that. Four tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
@@ -19,14 +20,17 @@ fourth tests also match phrases in the paragraph, but only after each has
 measured the tree fact the phrase states. Every test that reads the
 paragraph carries `source_scan` (#1746).
 
-The second checks the tree for what the paragraph now says: the budget the
-hook passes is `DEFAULT_HOOK_TOKEN_BUDGET` itself, with nothing taken off for
-the framing header or for the hint. It replaces `search_for_prompt`, the
-callable `hook._retrieve` resolves, with a recorder and reads the
-`token_budget` kwarg off the wire, the way
-`tests/test_privacy_budget_claims_1546.py` reads the SessionStart lane's. A
-reservation of either kind, added at the budget resolution or inside
-`_retrieve`, changes that value and fails here.
+The second checks the tree for what the paragraph now says: the packer fills
+`DEFAULT_HOOK_TOKEN_BUDGET` itself, with nothing taken off for the framing
+header or for the hint. It seeds more beliefs than the budget holds, each
+priced at exactly `_SLOT_COST` by `_ups_belief_line_cost`, the cost the
+packer charges on this lane. It wraps `hook._retrieve` and asserts the hits
+that come back price to the whole budget. Reading the `token_budget` kwarg
+at `search_for_prompt` instead would stop one hop short of `retrieve()`,
+which resolves the budget again. A reservation of any size changes the sum
+and fails here, whether `user_prompt_submit`, `_retrieve`,
+`search_for_prompt`, `retrieve()`, the budget resolution or the packer
+takes it.
 
 The third covers the hint's second emitting path. On a session's first
 prompt that the #674 shape gate refuses, the hook emits the session-start
@@ -151,43 +155,75 @@ def _payload(
     )
 
 
-def test_the_hook_hands_retrieve_the_bare_budget(
+_SLOT_COST = 100
+"""What `_ups_belief_line_cost` charges each belief the packer test seeds.
+
+`DEFAULT_HOOK_TOKEN_BUDGET` is a whole number of these, so the budget holds
+an exact count of beliefs and a reservation of even one token leaves room
+for one fewer.
+"""
+
+
+def _belief_costing(i: int, cost: int) -> Belief:
+    """An unlocked banana belief that `_ups_belief_line_cost` prices at `cost`.
+
+    The filler words carry the index, so no two contents share more than
+    the leading phrase and no dedup or clustering lane can fold them.
+    """
+    filler = " ".join(f"q{i:02d}r{j:03d}" for j in range(400))
+    for pad in range(len(filler) + 1):
+        b = Belief(
+            id=f"F{i:02d}",
+            content=f"banana note {i:02d} {filler[:pad]}",
+            content_hash=f"h_F{i:02d}",
+            alpha=1.0,
+            beta=1.0,
+            type=BELIEF_FACTUAL,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            created_at="2026-04-26T00:00:00Z",
+            last_retrieved_at=None,
+        )
+        if hook._ups_belief_line_cost(b) == cost:
+            return b
+    pytest.fail(f"no padding of belief {i} costs exactly {cost} tokens")
+
+
+def test_the_packer_fills_the_bare_hook_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`token_budget` on the wire is `DEFAULT_HOOK_TOKEN_BUDGET`, unreduced.
+    """The hits a fire packs price to `DEFAULT_HOOK_TOKEN_BUDGET`, unreduced.
 
     This is the fact the paragraph now states and the one a reservation
     would change: the framing header's 126 estimated tokens and the hint's
-    25 are both outside what `retrieve()` is given to spend. The recorder
-    returns no hits, so the fire emits nothing and only the kwarg matters.
-    The arity assert is the distinguishing arm: a resolution order that
-    routed around the recorder fails there rather than passing on an empty
-    list.
+    25 are both outside what the packer spends. The store holds five more
+    beliefs than the budget fits, each priced at `_SLOT_COST`, so the
+    packer stops on the budget, not on the pool. The arity and
+    "fewer than seeded" asserts are the distinguishing arm: a fire that
+    skipped `_retrieve`, or a pool that ran out before the budget did,
+    fails there rather than on the sum.
     """
-    calls: list[dict[str, Any]] = []
+    budget = hook.DEFAULT_HOOK_TOKEN_BUDGET
+    assert budget % _SLOT_COST == 0, (
+        f"DEFAULT_HOOK_TOKEN_BUDGET={budget} is not a whole number of "
+        f"{_SLOT_COST}-token beliefs; pick a _SLOT_COST that divides it"
+    )
+    seeded = budget // _SLOT_COST + 5
+    packed: list[list[Belief]] = []
+    real = hook._retrieve
 
-    def recorder(store: Any, prompt: str, **kwargs: Any) -> list[Any]:
-        calls.append(kwargs)
-        return []
+    def capturing(*args: Any, **kwargs: Any) -> Any:
+        hits = real(*args, **kwargs)
+        packed.append(list(hits))
+        return hits
 
-    monkeypatch.setattr(hook, "search_for_prompt", recorder)
+    monkeypatch.setattr(hook, "_retrieve", capturing)
+    monkeypatch.delenv("AELFRICE_RETRIEVAL_TOKEN_BUDGET", raising=False)
     db = tmp_path / "memory.db"
     store = MemoryStore(str(db))
     try:
-        store.insert_belief(
-            Belief(
-                id="F1",
-                content="banana is a yellow fruit",
-                content_hash="h_F1",
-                alpha=1.0,
-                beta=1.0,
-                type=BELIEF_FACTUAL,
-                lock_level=LOCK_NONE,
-                locked_at=None,
-                created_at="2026-04-26T00:00:00Z",
-                last_retrieved_at=None,
-            )
-        )
+        for i in range(seeded):
+            store.insert_belief(_belief_costing(i, _SLOT_COST))
     finally:
         store.close()
     monkeypatch.setenv("AELFRICE_DB", str(db))
@@ -199,18 +235,26 @@ def test_the_hook_hands_retrieve_the_bare_budget(
     )
 
     assert rc == 0
-    # The hook fails soft, so a recorder that raised would still return 0.
+    # The hook fails soft, so a wrapper that raised would still return 0.
     assert "Traceback" not in serr.getvalue(), serr.getvalue()
-    assert len(calls) == 1, (
-        f"the recorder was called {len(calls)} times, so this test measured "
-        "nothing: hook._lazy did not resolve search_for_prompt to it"
+    assert len(packed) == 1, (
+        f"_retrieve ran {len(packed)} times, not once, so this test "
+        "measured nothing about the packer"
     )
-    assert calls[0].get("token_budget") == hook.DEFAULT_HOOK_TOKEN_BUDGET, (
-        f"the UserPromptSubmit hook passed token_budget="
-        f"{calls[0].get('token_budget')!r} to retrieval, not "
-        f"DEFAULT_HOOK_TOKEN_BUDGET={hook.DEFAULT_HOOK_TOKEN_BUDGET}. The "
-        "MEMORY_BLOCK_HINT docstring says nothing is reserved out of that "
-        "budget; change the paragraph in the same commit (#1546)."
+    hits = packed[0]
+    assert 0 < len(hits) < seeded, (
+        f"the packer returned {len(hits)} of {seeded} seeded beliefs, so "
+        "the pool, not the budget, ended retrieval and the sum below "
+        "measures nothing"
+    )
+    assert {hook._ups_belief_line_cost(b) for b in hits} == {_SLOT_COST}
+    spent = sum(hook._ups_belief_line_cost(b) for b in hits)
+    assert spent == budget, (
+        f"the packer filled {spent} tokens of "
+        f"DEFAULT_HOOK_TOKEN_BUDGET={budget}. The MEMORY_BLOCK_HINT "
+        "docstring says nothing is reserved out of that budget and the "
+        "packer never charges the hint; change the paragraph in the same "
+        "commit (#1546)."
     )
 
 _GATE_SKIP_TAGS = (
