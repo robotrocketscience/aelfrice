@@ -10,8 +10,10 @@
 # new ones. The tests run on the new versions, and the stale uv.lock
 # merges.
 #
-# For a sha-pinned action, Dependabot reads the `# vX.Y.Z` comment beside
-# the sha to tell a patch from a major, so every `uses:` line carries one.
+# For a sha-pinned action, Dependabot finds the current version from the
+# tags that point at the sha, and on a bump it rewrites the `# vX.Y.Z`
+# comment beside the sha. The comment tells a reviewer which release a sha
+# names, so every `uses:` line carries one.
 #
 # Updates arrive weekly: minor and patch bumps grouped into one PR per
 # ecosystem, a major bump as its own PR. The `uv` item holds at most five

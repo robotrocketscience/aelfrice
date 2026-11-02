@@ -496,16 +496,17 @@ the following:
   `history-scan` with the other required checks.
 
 For an action bump, Dependabot rewrites the commit sha on the `uses:` line
-and the version comment beside it. Keep both: Dependabot reads the comment to
-tell a patch bump from a major one, and
-`tests/test_workflow_supply_chain_1786.py` fails on any `uses:` line that
-names a tag instead of a sha or has no `# vX.Y.Z` comment. The same test
-holds the `uvx` tool versions in the workflows to an exact pin, keeps the
-`zizmor` check blocking at high severity, and allows `harden-runner` only in
-jobs that hold a write token or read a secret. The `zizmor` check runs on
-every PR, since zizmor also reads files outside `.github/workflows/`, such as
-`.github/dependabot.yml`, any `action.yml`, and its own `zizmor.yml`. That puts
-`zizmor` in the presence floor, so the merge train waits for it.
+and the version comment beside it. It finds the current version from the
+tags that point at the sha. Keep the comment anyway: it tells a reviewer which
+release a sha names, and `tests/test_workflow_supply_chain_1786.py` fails on
+any `uses:` line that names a tag instead of a sha or has no `# vX.Y.Z`
+comment. The same test holds the `uvx` tool versions in the workflows to an
+exact pin, keeps the `zizmor` check blocking at high severity, and allows
+`harden-runner` only in jobs that hold a write token or read a secret. The
+`zizmor` check runs on every PR, since zizmor also reads files outside
+`.github/workflows/`, such as `.github/dependabot.yml`, any `action.yml`, and
+its own `zizmor.yml`. That puts `zizmor` in the presence floor, so the merge
+train waits for it.
 
 ### When a check never reports — how to re-run it by hand
 

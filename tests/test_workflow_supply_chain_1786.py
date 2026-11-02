@@ -165,8 +165,9 @@ def test_the_scan_reads_yaml_workflows_too(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("path", _WORKFLOW_FILES, ids=lambda p: p.name)
 def test_every_uses_names_a_commit_sha_and_its_tag(path: Path) -> None:
-    """A tag moves; a sha does not. The comment is what Dependabot reads to
-    tell a patch bump from a major one, so it is part of the pin."""
+    """A tag moves; a sha does not. The `# vX.Y.Z` comment tells a reviewer
+    which release the sha names. Dependabot finds the version from the tags
+    that point at the sha and rewrites the comment on a bump."""
     bad: list[str] = []
     for n, line in _code_lines(path.read_text(encoding="utf-8")):
         match = _USES.match(line)
@@ -504,6 +505,30 @@ def test_both_dependabot_subjects_are_documented_and_accepted() -> None:
     spec.loader.exec_module(check)
     for subject in subjects:
         assert check.validate_subject(f"{subject} bump pytest from 8.4.1 to 9.0.0"), subject
+
+
+def test_the_docs_give_the_version_comment_its_real_job() -> None:
+    """dependabot-core's github_actions updater takes a sha-pinned action's
+    version from git (`git_checker.version_for_pinned_sha` in file_parser.rb,
+    `most_specific_tag_equivalent_to_pinned_ref` in update_checker.rb) and
+    only rewrites the comment. The docs once said it read the comment to tell
+    a patch bump from a major one."""
+    header = "\n".join(
+        line.lstrip("# ")
+        for line in _DEPENDABOT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#")
+    )
+    texts = {
+        "dependabot.yml header": header,
+        "CONTRIBUTING.md": _dependabot_section(),
+        "pin test docstring": test_every_uses_names_a_commit_sha_and_its_tag.__doc__ or "",
+    }
+    for where, text in texts.items():
+        flat = " ".join(text.split())
+        assert "tags that point at the sha" in flat, (where, flat)
+        assert "tells a reviewer which release" in flat, (where, flat)
+        assert not re.search(r"reads? (?:the|that|its)\b[^.]*comment", flat), (where, flat)
+        assert "tell a patch" not in flat, (where, flat)
 
 
 def test_nothing_under_github_enables_auto_merge() -> None:
