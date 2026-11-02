@@ -5,7 +5,9 @@ The #1820 docs sweep left statements that disagreed with the 5.3.0 code:
   1. LIMITATIONS.md said two projects in one repository share a store
      unless each project folder holds a `[store]` table. One table is
      enough: the folder with it resolves to its own store, and the
-     other keeps the repository's store.
+     other keeps the repository's store. A project nested below the
+     marked folder shares the marked store unless it holds a
+     `[store]` table of its own.
   2. QUICKSTART.md's `aelf status` sample showed an `aelfrice <version>`
      first line and no `store:`, `store rule:` or `phantoms:` line.
   3. The `/aelf:status` description listed counts only, though the
@@ -78,20 +80,37 @@ def test_one_store_table_separates_two_projects_in_a_repository(
     )
     unmarked = repo / "b"
     unmarked.mkdir()
+    nested = marked / "nested"
+    nested.mkdir()
+    (nested / CONFIG_FILENAME).write_text("[retrieval]\n", encoding="utf-8")
+    own = marked / "own"
+    own.mkdir()
+    (own / CONFIG_FILENAME).write_text(
+        '[store]\npath = ".aelfrice/store"\n', encoding="utf-8",
+    )
 
     monkeypatch.chdir(marked)
     sel_a = resolve_store()
     monkeypatch.chdir(unmarked)
     sel_b = resolve_store()
+    monkeypatch.chdir(nested)
+    sel_nested = resolve_store()
+    monkeypatch.chdir(own)
+    sel_own = resolve_store()
     assert sel_a.rule == STORE_RULE_MARKER
     assert sel_b.rule == STORE_RULE_GIT
     assert sel_a.path != sel_b.path
+    assert sel_nested.path == sel_a.path
+    assert sel_own.rule == STORE_RULE_MARKER
+    assert sel_own.path not in (sel_a.path, sel_b.path)
 
     section = _collapse(
         _section(USER_DOCS / "LIMITATIONS.md", "### Multi-project query"),
     )
     assert "each project folder holds" not in section, section
     assert "unless one of them holds a `[store]` table" in section, section
+    assert "nested below it" in section, section
+    assert "table of its own" in section, section
 
 
 def _labels(lines: list[str]) -> list[str]:
