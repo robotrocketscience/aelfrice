@@ -459,6 +459,57 @@ def test_a_pipe_in_a_test_id_keeps_the_violation_row_at_two_cells() -> None:
     assert len(table) == 3 and all(_unescaped_pipes(row) == 3 for row in table)
 
 
+_MASS_IDS = [
+    f"tests.test_module_{i // 100:03d}.TestClassWithALongName::test_case_with_a_long_name_{i}[param-{i}]"
+    for i in range(13_000)
+]
+
+
+@pytest.mark.parametrize("after", [tor.SKIPPED, tor.ERROR], ids=["mass-skip", "mass-error"])
+def test_a_mass_change_keeps_the_summary_under_githubs_limit(after: str) -> None:
+    """GitHub drops a step summary over 1 MiB whole, counts table included."""
+    passed = dict.fromkeys(_MASS_IDS, tor.PASSED)
+    moved = dict.fromkeys(_MASS_IDS, after)
+    baseline = _record(**{"3.12": passed, "3.13": passed})
+    current = _record(**{"3.12": moved, "3.13": moved})
+    text = tor.render_summary(tor.diff_records(current, baseline), baseline, None, block=False)
+    assert len(text.encode("utf-8")) <= tor.SUMMARY_MAX_BYTES < 1024 * 1024
+    for leg in ("3.12", "3.13"):
+        assert f"| {leg} |" in text
+        section = text.split(f"### Leg {leg}", 1)[1].split("### Leg", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith(("- `", "| `"))]
+        assert len(rows) == tor.SUMMARY_MAX_ROWS
+        assert f"{len(_MASS_IDS) - tor.SUMMARY_MAX_ROWS} more not listed;" in section
+    if after == tor.SKIPPED:
+        assert "13000 ratchet violation(s)" in text
+    else:
+        assert "13000 red outcome(s)" in text
+
+
+def test_a_short_list_names_every_test_and_no_left_out_line() -> None:
+    ids = _MASS_IDS[: tor.SUMMARY_MAX_ROWS]
+    current = _record(**{"3.13": dict.fromkeys(ids, tor.SKIPPED)})
+    baseline = _record(**{"3.13": dict.fromkeys(ids, tor.PASSED)})
+    text = tor.render_summary(tor.diff_records(current, baseline), baseline, None, block=False)
+    assert sum(line.startswith("| `") for line in text.splitlines()) == tor.SUMMARY_MAX_ROWS
+    assert "more not listed" not in text
+
+
+def test_a_summary_past_the_byte_cap_ends_on_a_whole_line_and_a_note() -> None:
+    """Long ids on many legs pass the byte cap even with each list capped."""
+    ids = [f"tests.t::test_x[{i}-{'p' * 4_000}]" for i in range(tor.SUMMARY_MAX_ROWS)]
+    legs = {f"3.{n}": dict.fromkeys(ids, tor.SKIPPED) for n in range(10)}
+    base = {leg: dict.fromkeys(ids, tor.PASSED) for leg in legs}
+    current, baseline = _record(**legs), _record(**base)
+    text = tor.render_summary(tor.diff_records(current, baseline), baseline, None, block=False)
+    assert len(text.encode("utf-8")) <= tor.SUMMARY_MAX_BYTES
+    assert text.startswith("## Test outcomes (advisory)\n")
+    assert "| 3.0 |" in text and "| 3.9 |" in text
+    lines = text.splitlines()
+    assert lines[-1].startswith("The summary stops here to stay under 1000000 bytes;")
+    assert lines[-2] == "" and lines[-3].endswith("| passed -> skipped |")
+
+
 def test_the_summary_without_a_baseline_carries_the_notice() -> None:
     current = _record(**{"3.13": {"t::a": tor.SKIPPED}})
     diffs = tor.diff_records(current, None)

@@ -36,7 +36,9 @@ holds one test id per line, in which `*` matches any run of characters and
 every other character, `[` and `?` included, matches itself; blank lines
 and `#` comments are ignored.
 Failures, errors and xpasses are reported but are not violations: the
-pytest leg itself is red on those. Without `--block` the exit status is 0
+pytest leg itself is red on those. The step summary names the first 50
+tests of each list and stays under GitHub's 1 MiB limit, so a mass skip
+still shows its counts; the record names every test. Without `--block` the exit status is 0
 whatever the diff says and each violation is a `::warning::`; with it the
 exit status is 1 when a violation exists. A missing baseline is a notice,
 never a failure, in both modes.
@@ -108,6 +110,18 @@ _XPASS_STRICT_PREFIX = "[XPASS(strict)]"
 _XPASS_LEGACY_MESSAGE = "xfail-marked test passes unexpectedly"
 
 _API_TIMEOUT_SECONDS = 60
+
+# GitHub refuses a step summary over 1 MiB and then shows none of it, the
+# counts table included, so the summary stays under that with room to spare.
+SUMMARY_MAX_BYTES = 1_000_000
+# Tests each list of a leg names before it says how many it left out. A
+# mass skip moves every test in the suite, thousands of rows per leg.
+SUMMARY_MAX_ROWS = 50
+_ROWS_LEFT_OUT = "{n} more not listed; this run's `test-outcome-record` artifact names every test's outcome."
+_SUMMARY_CUT = (
+    "The summary stops here to stay under {limit} bytes; "
+    "this run's `test-outcome-record` artifact names every test's outcome."
+)
 
 
 # ---------------------------------------------------------------- record
@@ -303,13 +317,35 @@ def _table_cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+def _capped(rows: list[str]) -> list[str]:
+    """The first `SUMMARY_MAX_ROWS` of `rows`, then a paragraph naming how
+    many it left out."""
+    if len(rows) <= SUMMARY_MAX_ROWS:
+        return [*rows, ""]
+    left_out = len(rows) - SUMMARY_MAX_ROWS
+    return [*rows[:SUMMARY_MAX_ROWS], "", _ROWS_LEFT_OUT.format(n=left_out), ""]
+
+
+def _fit(text: str) -> str:
+    """`text` within `SUMMARY_MAX_BYTES` of UTF-8: when it is longer, its
+    whole lines up to that size and a closing note."""
+    if len(text.encode("utf-8")) <= SUMMARY_MAX_BYTES:
+        return text
+    note = "\n" + _SUMMARY_CUT.format(limit=SUMMARY_MAX_BYTES) + "\n"
+    room = SUMMARY_MAX_BYTES - len(note.encode("utf-8"))
+    head = text.encode("utf-8")[:room].decode("utf-8", "ignore")
+    return head[: head.rfind("\n") + 1] + note
+
+
 def render_summary(
     diffs: list[LegDiff],
     baseline: dict[str, Any] | None,
     baseline_notice: str | None,
     block: bool,
 ) -> str:
-    """The step-summary Markdown."""
+    """The step-summary Markdown, at most `SUMMARY_MAX_BYTES` long. Each
+    list of a leg names its first `SUMMARY_MAX_ROWS` tests; the counts
+    table and each list's total always show."""
     lines = [f"## Test outcomes ({'blocking' if block else 'advisory'})", ""]
     if baseline is None:
         lines.append(f"No baseline: {baseline_notice or 'none given'}. The ratchet was not evaluated.")
@@ -332,8 +368,7 @@ def render_summary(
         if d.red:
             lines.append(f"{len(d.red)} red outcome(s) in this run (the pytest leg reports these):")
             lines.append("")
-            lines.extend(f"- `{t.test}`: {t.after}" for t in d.red)
-            lines.append("")
+            lines.extend(_capped([f"- `{t.test}`: {t.after}" for t in d.red]))
         if not d.baseline_present:
             continue
         lines.append(
@@ -344,14 +379,14 @@ def render_summary(
         if d.violations:
             lines.append("| Test | Outcome |")
             lines.append("|---|---|")
-            lines.extend(f"| `{_table_cell(t.test)}` | {_describe(t.before, t.after)} |" for t in d.violations)
-            lines.append("")
+            lines.extend(_capped([
+                f"| `{_table_cell(t.test)}` | {_describe(t.before, t.after)} |" for t in d.violations
+            ]))
         if d.recovered:
             lines.append("Recovered:")
             lines.append("")
-            lines.extend(f"- `{t.test}`: {_describe(t.before, t.after)}" for t in d.recovered)
-            lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+            lines.extend(_capped([f"- `{t.test}`: {_describe(t.before, t.after)}" for t in d.recovered]))
+    return _fit("\n".join(lines).rstrip() + "\n")
 
 
 def render_annotations(diffs: list[LegDiff], baseline_notice: str | None, block: bool) -> list[str]:
