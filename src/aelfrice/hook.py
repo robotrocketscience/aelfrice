@@ -5468,7 +5468,11 @@ hint follows that block. The cadence-resume recap and the sub-block are
 built independently, so the hint can follow a `<cadence-resume>` block
 with no `<locked>` or `<core>` at all. Either
 way the hint shows up where the assembled block is measured, such as the
-audited `tokens` (the +24/+25 rule above).
+audited `tokens` (the +24/+25 rule above). Both paths emit the hint only
+while the memory block is on. With `AELFRICE_MEMORY_BLOCK=0`, or
+`[memory_block] enabled = false` in `.aelfrice.toml`, the retrieving
+path blanks the assembled block, hint included, and the gate-skip path
+writes no block.
 #1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing
 header uncharged too (the `_SPECULATIVE_FRAMING_SENTENCE` docstring says
 why). The share of the budget the hint represents is not quoted here,
