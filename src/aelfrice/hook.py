@@ -5444,11 +5444,16 @@ a block. The budget to read that cost against is
 `DEFAULT_HOOK_TOKEN_BUDGET`, the budget the UPS hook actually passes, not
 the CLI default, which `resolve_token_budget` ranks below an explicit
 caller kwarg. The packer never charges the hint, because the hint is
-appended outside retrieval. On a fire that retrieves, the hint is
-appended after `_retrieve` returns, however much of that budget the hits
-used. That can be well under the whole budget:
+appended outside retrieval. On a fire that retrieves and keeps at least
+one hit, the hint is appended after `_retrieve` returns, however much of
+that budget the hits used. That can be well under the whole budget:
 `docs/design/budget_discriminability_k0_result.md` found `binds_on`, the
-cap that ended retrieval, was `pool` on 7 of 7 queries on every lane. On
+cap that ended retrieval, was `pool` on 7 of 7 queries on every lane. A
+fire that retrieves and keeps no hit, because `_retrieve` returned none
+or the filters after it dropped them all, writes an audit row and no
+`<aelfrice-memory>` block, so it emits no hint. On a session's first
+prompt that fire also emits nothing from the session-start build, a
+fresh `<cadence-resume>` block included. On
 a session's first prompt that the #674 shape gate refuses, `_retrieve`
 never runs, and the hint follows what the session-start build returned:
 a `<cadence-resume>` block when a fresh cadence-resume cache exists, then
