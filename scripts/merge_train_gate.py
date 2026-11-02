@@ -222,11 +222,25 @@ def latest_per_name(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any
     and keeping the last mirrors what GitHub's own required-checks evaluation
     does. Rows with no `started_at` sort first so a row that has one always
     wins over one that does not.
+
+    A `skipped` row of a NONGATING_WHILE_PENDING name only fills an empty
+    slot (#1786). The mutation diff job starts on every `labeled` event and
+    its `if` skips it for any label but `ready-to-merge`, so a label added
+    while the real run is going leaves a newer `skipped` row on the same
+    SHA. Kept as newest, that row hid the running state from
+    `pending_not_gating` and a `failure` from `failing`. The rule is scoped
+    to these names: a floor name's skipped row still replaces a `cancelled`
+    one, which would otherwise gate.
     """
     latest: dict[str, dict[str, Any]] = {}
     for run in sorted(check_runs, key=lambda r: r.get("started_at") or ""):
         name = run.get("name")
         if not isinstance(name, str) or name in SELF_NAMES:
+            continue
+        if (
+            name in NONGATING_WHILE_PENDING and name in latest
+            and run.get("conclusion") == "skipped"
+        ):
             continue
         latest[name] = run
     return latest

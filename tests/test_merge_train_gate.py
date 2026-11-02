@@ -472,6 +472,38 @@ def test_the_nongating_comment_names_the_runs_that_are_never_pending() -> None:
         assert ("`skip=true`" in comment) == early_skip, (source.name, early_skip)
 
 
+def test_a_later_skipped_row_does_not_hide_the_nongating_run() -> None:
+    """#1786: a label added after ready-to-merge leaves a newer skipped row.
+
+    The mutation diff job starts on every `labeled` event and its `if` skips
+    it for other labels, so the SHA carries the real run and a later
+    `skipped` row under one name. The real run's state still reaches the
+    verdict, whether it is running or has failed.
+    """
+    late_skip = _run(_MUTATION, "skipped", started_at="2026-08-06T10:03:00Z")
+    running = _run(_MUTATION, None, status="in_progress")
+    verdict = evaluate([*_all_floor_green(), running, late_skip], REQUIRED)
+    assert verdict["pending_not_gating"] == [_MUTATION]
+    assert verdict["pending"] == []
+
+    failed = _run(_MUTATION, "failure")
+    verdict = evaluate([*_all_floor_green(), failed, late_skip], REQUIRED)
+    assert verdict["failing"] == [_MUTATION]
+
+
+def test_a_skipped_floor_row_still_replaces_a_cancelled_one() -> None:
+    """The skipped-row rule is scoped to NONGATING_WHILE_PENDING names.
+
+    A floor name whose newest row is `cancelled` gates, so widening the rule
+    to every name would let an older cancelled row block a head whose later
+    run skipped the job.
+    """
+    runs = [r for r in _all_floor_green() if r["name"] != "label"]
+    runs.append(_run("label", "cancelled"))
+    runs.append(_run("label", "skipped", started_at="2026-08-06T10:03:00Z"))
+    assert evaluate(runs, REQUIRED)["failing"] == []
+
+
 def test_a_slow_required_check_does_hold_the_train() -> None:
     runs = [r for r in _all_required_green() if r["name"] != "pytest (3.13)"]
     runs.append(_run("pytest (3.13)", None, status="in_progress"))
