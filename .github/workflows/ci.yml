@@ -82,7 +82,9 @@ jobs:
           egress-policy: audit
       # No `if:`, so a docs-only PR fails here too. `needs` reports
       # `success`, `failure`, `cancelled` or `skipped`, and only `success`
-      # passes.
+      # passes. `derived-figures` is a matrix job with one job ID, so this
+      # reads one result for all its legs, and it is `success` only when
+      # every leg passed.
       - name: The derived-figures job must pass
         env:
           DERIVED_FIGURES: ${{ needs.derived-figures.result }}
@@ -214,12 +216,12 @@ jobs:
       #
       # `--deselect` drops the one test that re-runs the store-free producers
       # over the live tree. The `derived-figures` job below runs the same
-      # producers over the same tree on every PR, with no path filter, so
-      # each leg ran the producers a second time. The branch ruleset does not
-      # require that job, so the step after harden-runner fails unless it
-      # passed, and a red producer check still turns both required legs
-      # red. That job runs Python 3.13 only, so the 3.12 leg no longer runs
-      # the producers. It also has no 120 s cap: the test's timeout marker
+      # producers over the same tree on every PR, with no path filter, on the
+      # same Python versions as these legs, so each leg ran the producers a
+      # second time. The branch ruleset does not require that job, so the
+      # step after harden-runner fails unless every leg of it passed, and a
+      # red producer check still turns both required legs red. That job has
+      # no 120 s cap: the test's timeout marker
       # held each leg to 120 s, while the job lets each producer run for
       # 300 s (`PRODUCER_TIMEOUT_S` in scripts/check_derived_figures.py) and
       # sets no `timeout-minutes`. A producer that slows past 120 s and
@@ -251,7 +253,7 @@ jobs:
   # difference between what a producer emits and what the prose published.
   #
   # Its own job rather than a step on `pytest`, for two reasons. `pytest` is
-  # matrix'd and path-gated, so a CHANGELOG-only PR takes the `echo` branch —
+  # path-gated, so a CHANGELOG-only PR takes the `echo` branch —
   # and a PR that changes only the CHANGELOG is precisely the one that ships a
   # figure. And the gate must never report a pass it did not run: no
   # `paths-filter` here, no conditional steps, so the check is either green
@@ -261,8 +263,18 @@ jobs:
   # public runner has none, and the lab corpus does not go there (#1456);
   # running them would fail for a reason that has nothing to do with the
   # figure, and the gate would be switched off within a week.
+  #
+  # The matrix is the `pytest` legs' matrix, because those legs deselect the
+  # producer check and this job runs it for them. The legs report as
+  # `derived-figures (3.12)` and `derived-figures (3.13)`, the names
+  # `FLOOR_NAMES` in scripts/merge_train_gate.py lists.
   derived-figures:
     runs-on: ubuntu-latest
+    strategy:
+      # One leg failing must not cancel the other, as on the `pytest` legs.
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -272,7 +284,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev

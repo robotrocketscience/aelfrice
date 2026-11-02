@@ -9,9 +9,11 @@ branch ruleset and `scripts/merge_train_gate.py` match them as strings and a
 job-level `name:` or a matrix change would rename both.
 
 The job deselects one test, the live-tree producer check, because the
-`derived-figures` job runs the same producers on every PR. The branch
-ruleset requires the `pytest` legs and not that job, so each leg waits for
-it and fails unless it passed. The tests at the bottom pin that edge, pin
+`derived-figures` job runs the same producers on every PR, on the same
+Python versions as the `pytest` matrix. The branch ruleset requires the
+`pytest` legs and not that job, so each leg waits for it and fails unless
+every leg of it passed. The tests at the bottom pin that edge, pin that
+job's matrix to the `pytest` matrix, pin
 the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
 They pin that job's gate command verbatim and run its arguments through the
 script. They reject a job-level key outside an allowlist on that job, an
@@ -71,10 +73,14 @@ _GATE_RUNS = {
     for mode in ("all", "producers")
 }
 
-# The job-level keys `derived-figures` may carry. `if`, `needs` and `strategy`
-# can skip the job, and the merge train does not count `skipped` as failing.
+# The job-level keys `derived-figures` may carry. `if` and `needs` can skip
+# the job, and the merge train does not count `skipped` as failing.
 # `continue-on-error` turns a red job green, and `name` renames the check.
-_DERIVED_FIGURES_KEYS = {"runs-on", "steps", "timeout-minutes", "permissions"}
+# `strategy` is allowed, and its whole body is pinned below: an `exclude:` or
+# an empty axis would drop a leg.
+_DERIVED_FIGURES_KEYS = {
+    "runs-on", "steps", "timeout-minutes", "permissions", "strategy",
+}
 
 # The top-level keys ci.yml may carry. `defaults` would set a shell for every
 # `run:` step in the file.
@@ -144,9 +150,9 @@ def _field(step: list[str], key: str) -> str | None:
     return None
 
 
-def _matrix() -> tuple[str, list[str]]:
+def _matrix(job: str = "pytest") -> tuple[str, list[str]]:
     """The single matrix key and its values."""
-    entries = [line.strip() for line in _block("matrix", 6)]
+    entries = [line.strip() for line in _block("matrix", 6, job)]
     assert len(entries) == 1, f"expected one matrix axis, found {entries!r}"
     m = re.fullmatch(r"([A-Za-z0-9_-]+):\s*\[(.*)\]", entries[0])
     assert m, f"unparsed matrix entry {entries[0]!r}"
@@ -466,7 +472,36 @@ def test_the_derived_figures_job_has_no_if_or_continue_on_error() -> None:
         if re.match(r"\s*(?:-\s+)?(?:if|continue-on-error):", line)
     ]
     assert found == [], found
-    assert "derived-figures" in FLOOR_NAMES
+
+
+def test_derived_figures_runs_on_the_pytest_matrix_versions() -> None:
+    """The legs deselect the producer check on 3.12 and 3.13, so
+    `derived-figures` has to run it on both. A dropped version, an
+    `exclude:` or a hard-coded `python-version` on setup-uv would leave a
+    version the legs no longer cover. The merge train matches each leg's
+    check name as a string, so the floor has to name both."""
+    key, values = _matrix("derived-figures")
+    assert (key, values) == _matrix(), (
+        f"derived-figures runs {key}={values!r}, not the pytest matrix "
+        f"{_matrix()!r}"
+    )
+    strategy = [line.strip() for line in _block("strategy", 4, "derived-figures")]
+    assert strategy == [
+        "fail-fast: false",
+        "matrix:",
+        f"{key}: [{', '.join(repr(v) for v in values)}]",
+    ], strategy
+    setups = [
+        s for s in _steps("derived-figures", minimum=1)
+        if "astral-sh/setup-uv@" in (_field(s, "uses") or "")
+    ]
+    assert len(setups) == 1, f"expected one setup-uv step, found {len(setups)}"
+    assert _field(setups[0], "python-version") == f"${{{{ matrix.{key} }}}}"
+    names = {f"derived-figures ({v})" for v in values}
+    assert names <= FLOOR_NAMES, f"the floor does not name {sorted(names)}"
+    assert "derived-figures" not in FLOOR_NAMES, (
+        "the floor names `derived-figures`, which a matrix job never reports"
+    )
 
 
 def test_no_default_or_step_shell_wraps_a_run_line() -> None:

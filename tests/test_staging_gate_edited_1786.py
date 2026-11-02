@@ -22,7 +22,12 @@ sys.path.insert(0, str(_REPO / "scripts"))
 from merge_train_gate import FLOOR_NAMES, evaluate  # noqa: E402
 
 # The presence-floor names `ci.yml` emits (see `merge_train_gate.FLOOR_NAMES`).
-_CI_FLOOR_NAMES = frozenset({"derived-figures", "pytest (3.12)", "pytest (3.13)"})
+_CI_FLOOR_NAMES = frozenset({
+    "derived-figures (3.12)",
+    "derived-figures (3.13)",
+    "pytest (3.12)",
+    "pytest (3.13)",
+})
 
 # #1786: `pull_request.edited` fires on a title, body or base change. Of the
 # two workflows checked below, only `pr-metadata.yml` reads the title or body,

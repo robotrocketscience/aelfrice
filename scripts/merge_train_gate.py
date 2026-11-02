@@ -183,7 +183,8 @@ NONGATING_WHILE_PENDING: frozenset[str] = frozenset({
 FLOOR_NAMES: frozenset[str] = frozenset({
     "bench-smoke",              # bench-smoke.yml
     "commit-msg-prefix",        # staging-gate.yml
-    "derived-figures",          # ci.yml
+    "derived-figures (3.12)",   # ci.yml
+    "derived-figures (3.13)",   # ci.yml
     "history-scan",             # staging-gate.yml
     "label",                    # label-docs.yml
     "migration-policy-check",   # migration-policy-check.yml

@@ -967,7 +967,8 @@ def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
 _FLOOR_SOURCES: dict[str, frozenset[str]] = {
     "bench-smoke.yml": frozenset({"bench-smoke"}),
     "ci.yml": frozenset({
-        "derived-figures",
+        "derived-figures (3.12)",
+        "derived-figures (3.13)",
         "posterior-writers",
         "pytest (3.12)",
         "pytest (3.13)",
