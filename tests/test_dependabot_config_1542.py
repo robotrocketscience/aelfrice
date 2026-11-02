@@ -64,12 +64,28 @@ def _updates(lines: list[str]) -> list[list[str]]:
     return items
 
 
+def _uncomment(raw: str) -> str:
+    """`raw` without a trailing YAML comment. A comment starts at a `#` at
+    the start of `raw` or after whitespace, outside a quoted scalar, so
+    `"pip" # note` reads as `"pip"`, the value Dependabot sees."""
+    quote: str | None = None
+    for index, char in enumerate(raw):
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "\"'" and (index == 0 or raw[index - 1] in " [,"):
+            quote = char
+        elif char == "#" and (index == 0 or raw[index - 1].isspace()):
+            return raw[:index].strip()
+    return raw.strip()
+
+
 def _value(lines: list[str], key: str) -> str | None:
     """The scalar after `key:` on the first line that carries it."""
     for line in lines:
         match = re.match(rf"^\s*(?:-\s+)?{re.escape(key)}:\s*(.+?)\s*$", line)
         if match:
-            return match.group(1).strip().strip("\"'")
+            return _uncomment(match.group(1)).strip("\"'")
     return None
 
 
@@ -86,7 +102,7 @@ def _list_items(lines: list[str], key: str) -> list[str]:
             break
         match = re.match(r"^\s*-\s+(.+?)\s*$", line)
         if match:
-            items.append(match.group(1).strip().strip("\"'"))
+            items.append(_uncomment(match.group(1)).strip("\"'"))
     return items
 
 
@@ -103,7 +119,7 @@ def _uv_item() -> list[str]:
 
 def _scalars(raw: str) -> list[str]:
     """The values of a scalar or a flow list such as `["minor", "patch"]`."""
-    raw = raw.strip()
+    raw = _uncomment(raw)
     if raw.startswith("[") and raw.endswith("]"):
         parts = raw[1:-1].split(",")
     else:
@@ -128,7 +144,7 @@ def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
             break
         if name_depth is None:
             name_depth = _indent(line)
-        stripped = line.strip()
+        stripped = _uncomment(line)
         if _indent(line) == name_depth:
             assert stripped.endswith(":"), line
             rules = groups.setdefault(stripped[:-1].strip("\"'"), {})
@@ -151,8 +167,9 @@ def test_no_python_updater_besides_uv() -> None:
     """No `pip`, `pipenv`, or `poetry` item sits next to the `uv` one. Each
     of those bumps pyproject.toml without rewriting uv.lock, CI passes the
     PR, and the stale lock merges. An item counts whichever key it lists
-    first, and an item whose ecosystem this parser cannot read, such as a
-    flow mapping, fails the test rather than passing unread."""
+    first, a trailing comment does not hide its ecosystem, and an item
+    whose ecosystem this parser cannot read, such as a flow mapping, fails
+    the test rather than passing unread."""
     _uv_item()
     items = _updates(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
     ecosystems = [_value(item, "package-ecosystem") for item in items]
@@ -189,7 +206,7 @@ def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
             break
         pair = re.match(r"^\s*([A-Za-z-]+):\s*(.*?)\s*$", line)
         assert pair, line
-        rules[pair.group(1)] = pair.group(2)
+        rules[pair.group(1)] = _uncomment(pair.group(2)).strip("\"'")
     assert "default-days" in rules, rules
     days = {"default-days", "semver-major-days", "semver-minor-days", "semver-patch-days"}
     assert set(rules) <= days, rules
