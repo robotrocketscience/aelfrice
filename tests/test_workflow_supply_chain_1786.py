@@ -22,7 +22,16 @@ _WORKFLOWS = _GITHUB / "workflows"
 _DEPENDABOT = _GITHUB / "dependabot.yml"
 _ZIZMOR = _WORKFLOWS / "zizmor.yml"
 
-_WORKFLOW_FILES = sorted(_WORKFLOWS.glob("*.yml"))
+
+
+def _workflow_files(directory: Path) -> list[Path]:
+    """Every file GitHub runs as a workflow: both `.yml` and `.yaml`."""
+    return sorted(
+        p for p in directory.iterdir() if p.is_file() and p.suffix in (".yml", ".yaml")
+    )
+
+
+_WORKFLOW_FILES = _workflow_files(_WORKFLOWS)
 
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<ref>\S+)(?P<rest>.*)$")
 # owner/repo[/path]@<40-hex>, then a comment carrying the full tag.
@@ -142,6 +151,15 @@ def test_the_scan_sees_the_workflow_directory() -> None:
     assert uses >= 100, uses
 
 
+def test_the_scan_reads_yaml_workflows_too(tmp_path: Path) -> None:
+    """GitHub runs `.yaml` workflows as well as `.yml` ones, so a rule that
+    globbed only `*.yml` would skip a workflow saved with the longer suffix."""
+    for name in ("a.yml", "b.yaml", "notes.md"):
+        (tmp_path / name).write_text("on: push\n", encoding="utf-8")
+    (tmp_path / "dir.yml").mkdir()
+    assert [p.name for p in _workflow_files(tmp_path)] == ["a.yml", "b.yaml"]
+
+
 @pytest.mark.parametrize("path", _WORKFLOW_FILES, ids=lambda p: p.name)
 def test_every_uses_names_a_commit_sha_and_its_tag(path: Path) -> None:
     """A tag moves; a sha does not. The comment is what Dependabot reads to
@@ -256,11 +274,12 @@ def test_zizmor_runs_on_every_pr_that_changes_a_file_it_audits() -> None:
     """zizmor audits workflows, composite actions and dependabot.yml. A
     `paths:` filter that misses one of them lets a PR change that file with
     no `zizmor` check at all, and an absent check does not block the train.
-    The example action path stands in for a directory that does not exist
-    yet, so the rule holds before the first composite action lands."""
+    The example `.yaml` workflow and action paths stand in for files that do
+    not exist yet, so the rule holds before the first one lands."""
     text = _ZIZMOR.read_text(encoding="utf-8")
     audited = [
         *(f".github/workflows/{p.name}" for p in _WORKFLOW_FILES),
+        ".github/workflows/example.yaml",
         ".github/actions/example/action.yml",
         ".github/dependabot.yml",
     ]
