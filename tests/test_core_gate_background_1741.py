@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import stat
 import time
@@ -653,7 +654,7 @@ def test_find_claude_returns_the_cmd_shim_beside_npm_s_sh_script_on_windows(
     for name in ("claude", "claude.cmd", "claude.ps1"):
         (tmp_path / name).write_text("", encoding="utf-8")
 
-    def which_3_12_0(cmd: str) -> str | None:
+    def which_3_12_0(cmd: str, path: str | None = None) -> str | None:
         on_disk = {p.name.lower() for p in tmp_path.iterdir()}
         exts = (pathext or ".COM;.EXE;.BAT;.CMD").split(";")
         for candidate in [cmd, *(cmd + ext for ext in exts)]:
@@ -663,6 +664,7 @@ def test_find_claude_returns_the_cmd_shim_beside_npm_s_sh_script_on_windows(
 
     monkeypatch.setattr(bg.sys, "platform", "win32")
     monkeypatch.setattr(bg.shutil, "which", which_3_12_0)
+    monkeypatch.setenv("PATH", str(tmp_path))
     if pathext is None:
         monkeypatch.delenv("PATHEXT", raising=False)
     else:
@@ -671,6 +673,48 @@ def test_find_claude_returns_the_cmd_shim_beside_npm_s_sh_script_on_windows(
     assert found is not None
     assert Path(found).name.lower() == "claude.cmd"
     (tmp_path / "claude.cmd").unlink()
+    assert _REAL_FIND_CLAUDE() is None
+
+
+def test_find_claude_never_resolves_a_claude_in_the_working_directory_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows `shutil.which` searches the working directory before
+    PATH unless `NoDefaultCurrentDirectoryInExePath` is set, and the Stop
+    hook's working directory is the user's project. Killed by: resolving
+    through `shutil.which` alone, which returns the planted file in both
+    cases below. `which` is replaced with that search order, matched
+    without case as on NTFS, because its real win32 branch needs `_winapi`."""
+    project = tmp_path / "widgetproject"
+    bin_dir = tmp_path / "bin"
+    project.mkdir()
+    bin_dir.mkdir()
+    (bin_dir / "claude.cmd").write_text("", encoding="utf-8")
+
+    def which_win32(cmd: str, path: str | None = None) -> str | None:
+        search = path if path is not None else os.environ.get("PATH", "")
+        for folder in [os.curdir, *search.split(os.pathsep)]:
+            if not folder:
+                continue
+            names = {n.lower() for n in os.listdir(folder)}
+            if cmd.lower() in names:
+                return os.path.join(folder, cmd)
+        return None
+
+    monkeypatch.setattr(bg.sys, "platform", "win32")
+    monkeypatch.setattr(bg.shutil, "which", which_win32)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.chdir(project)
+    # Planted with an extension PATHEXT tries earlier: the PATH shim still wins.
+    (project / "claude.exe").write_text("", encoding="utf-8")
+    found = _REAL_FIND_CLAUDE()
+    assert found is not None
+    assert Path(found).parent.resolve() == bin_dir.resolve()
+    assert Path(found).name.lower() == "claude.cmd"
+    # Planted with the same extension: it hides the PATH shim, so no run.
+    (project / "claude.exe").unlink()
+    (project / "claude.cmd").write_text("", encoding="utf-8")
     assert _REAL_FIND_CLAUDE() is None
 
 

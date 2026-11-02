@@ -38,8 +38,9 @@ On Windows (#1761) the child starts with `DETACHED_PROCESS`,
 `start_new_session`, which Popen ignores there, and runs the CLI with
 `CREATE_NO_WINDOW`, so neither opens a console window. `find_claude`
 resolves `claude` through the `PATHEXT` extensions, so an npm
-`claude.cmd` shim is found, and the reply is decoded as UTF-8 rather
-than through the ANSI code page.
+`claude.cmd` shim is found, and only in the folders named on `PATH`, so
+a `claude.cmd` in the project the hook runs in is not. The reply is
+decoded as UTF-8 rather than through the ANSI code page.
 
 Never raises into the hook. A failed run leaves the batch open; an open
 batch claims its beliefs, so no later Stop asks about them, and
@@ -60,6 +61,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Callable, Final, Generator, cast
 
+from aelfrice import launcher
 from aelfrice.print_mode import ENV_HOST_ENTRYPOINT
 
 if TYPE_CHECKING:
@@ -226,12 +228,20 @@ def background_enabled(
 def find_claude() -> str | None:
     """Path of the host's `claude` CLI, or None when it isn't on PATH.
 
-    On Windows (#1761) it asks `shutil.which` for `claude` with each
-    `PATHEXT` extension in turn, so the native installer's `claude.exe` and
-    the npm shim `claude.cmd` both resolve, and the first extension found
-    anywhere on PATH wins. It never asks for the bare name: npm installs an
+    On Windows (#1761) it asks for `claude` with each `PATHEXT` extension
+    in turn, so the native installer's `claude.exe` and the npm shim
+    `claude.cmd` both resolve, and the first extension found anywhere on
+    PATH wins. It never asks for the bare name: npm installs an
     extensionless `sh` script beside the shim, which `CreateProcess` can't
     start, and Python 3.12.0's `which` tries the bare name first.
+
+    Each lookup goes through `launcher.which_on_path` (#1412), because
+    `shutil.which` on Windows searches the working directory before PATH,
+    and the Stop hook's working directory is the user's project. A hit
+    outside the PATH folders is dropped, so a `claude.cmd` planted in the
+    project never runs. When it has the extension a PATH `claude` has, it
+    hides that one too, and this returns None: no run, rather than the
+    planted one.
     """
     if not _is_win32():
         return shutil.which(CLAUDE_BIN)
@@ -239,9 +249,9 @@ def find_claude() -> str | None:
     for ext in pathext.split(";"):
         if not ext:
             continue
-        found = shutil.which(CLAUDE_BIN + ext)
+        found = launcher.which_on_path(CLAUDE_BIN + ext)
         if found is not None:
-            return found
+            return str(found)
     return None
 
 
