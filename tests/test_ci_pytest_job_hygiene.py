@@ -13,7 +13,7 @@ The job deselects one test, the live-tree producer check, because the
 Python versions as the `pytest` matrix. The branch ruleset requires the
 `pytest` legs and not that job, so each leg waits for it and fails unless
 every leg of it passed. The tests at the bottom pin that edge, pin that
-job's matrix to the `pytest` matrix, pin
+job's matrix and runner image to the `pytest` job's, pin
 the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
 They pin that job's gate command verbatim, pin its producer cap to the
 deselected test's 120 s timeout marker, and run its arguments through the
@@ -549,6 +549,16 @@ def test_derived_figures_runs_on_the_pytest_matrix_versions() -> None:
     assert names <= FLOOR_NAMES, f"the floor does not name {sorted(names)}"
     assert "derived-figures" not in FLOOR_NAMES, (
         "the floor names `derived-figures`, which a matrix job never reports"
+    )
+
+
+def test_derived_figures_runs_on_the_legs_pinned_image() -> None:
+    """The required legs fail unless `derived-figures` passed, so a label
+    move under that job turns them red with no commit to point at, as one
+    under the legs would. It runs on the image the legs pin."""
+    image = _job_keys("derived-figures").get("runs-on")
+    assert image == _job_keys().get("runs-on") == "ubuntu-24.04", (
+        f"derived-figures runs on {image!r}, not the legs' ubuntu-24.04"
     )
 
 

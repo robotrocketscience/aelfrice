@@ -52,10 +52,11 @@ concurrency:
 
 jobs:
   pytest:
-    # Pinned image rather than `ubuntu-latest`, for the two required legs
-    # only: a label move can change the system Python and SQLite a leg
-    # resolves, under a required check, with no commit to point at. The
-    # other jobs here keep `ubuntu-latest`.
+    # Pinned image rather than `ubuntu-latest`: a label move can change the
+    # system Python and SQLite a leg resolves, under a required check, with
+    # no commit to point at. `derived-figures` carries the same pin, since
+    # these legs fail unless it passed. The other jobs here keep
+    # `ubuntu-latest`.
     runs-on: ubuntu-24.04
     # A hung leg is cancelled at 30 minutes instead of the platform's
     # 360. Recent green legs took 11 to 14 minutes.
@@ -270,8 +271,12 @@ jobs:
   # `FLOOR_NAMES` in scripts/merge_train_gate.py lists.
   # `--producer-timeout 120` holds each producer to the 120 s the deselected
   # test's timeout marker sets.
+  #
+  # The image is the `pytest` legs' pinned image. The legs fail unless this
+  # job passed, so a label move here would turn both required checks red
+  # with no commit to point at.
   derived-figures:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # One leg failing must not cancel the other, as on the `pytest` legs.
       fail-fast: false
