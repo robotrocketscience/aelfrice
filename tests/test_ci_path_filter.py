@@ -1470,6 +1470,7 @@ def test_docs_only_changes_still_skip_the_suite() -> None:
 # --- e2e trigger coverage (#1420 §1) -------------------------------------
 
 _E2E_WORKFLOW = _REPO / ".github" / "workflows" / "e2e.yml"
+_TESTING_STRATEGY = _REPO / "docs" / "design" / "testing-strategy.md"
 
 
 def _block_range(lines: list[str], start: int) -> range:
@@ -1592,11 +1593,13 @@ def test_e2e_paths_cover_the_ci_code_filter() -> None:
     means a PR that changes installed behaviour runs the unit suite and skips
     e2e, with nothing red to show for it.
 
-    Each list may legitimately reference its *own* workflow file, so those are
-    excluded from the comparison rather than the assertion being loosened.
-    So are ci.yml's exact entries other than the build inputs: they exist
+    Entries under `.github/` are excluded from both sides: ci.yml carries
+    `.github/**` because unit tests read the workflows, and e2e names only
+    its own file, since a workflow cannot change the installed package. So
+    are ci.yml's exact entries other than the build inputs: they exist
     because a unit test reads the file, and e2e tests the installed package,
-    which a page under `docs/` cannot change.
+    which a page under `docs/` cannot change. The test below holds the two
+    documents that state this mirror to naming each exclusion.
     """
     ci_globs = {
         g
@@ -1609,6 +1612,31 @@ def test_e2e_paths_cover_the_ci_code_filter() -> None:
         f"{missing} are in ci.yml's `code` filter but not in e2e.yml's "
         f"`paths`. A PR touching only those runs pytest but not e2e."
     )
+
+
+def test_the_e2e_mirror_docs_name_each_glob_e2e_leaves_out() -> None:
+    """The e2e.yml header and testing-strategy.md say e2e mirrors the `code` filter.
+
+    The comparison above drops `.github/` entries, so a directory glob or
+    build input that e2e leaves out on purpose passes it unseen. Each
+    document that states the mirror must name every such entry, or the
+    mirror it states does not hold.
+    """
+    e2e = set(_e2e_pull_request_paths())
+    omitted = sorted(
+        g for g in _code_filter_globs() if (g.endswith("/**") or g in _BUILD_INPUTS) and g not in e2e
+    )
+    lines = _E2E_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    header = "\n".join(lines[: _sole_key(lines, range(len(lines)), "on:", "top-level key")])
+    for name, text in (
+        (_E2E_WORKFLOW.name, header),
+        (_TESTING_STRATEGY.name, _TESTING_STRATEGY.read_text(encoding="utf-8")),
+    ):
+        unnamed = [g for g in omitted if f"`{g}`" not in text]
+        assert not unnamed, (
+            f"{name} says e2e's paths mirror ci.yml's `code` filter, but e2e "
+            f"leaves out {unnamed} and {name} does not name them"
+        )
 
 
 def test_e2e_still_skips_docs_only_prs() -> None:

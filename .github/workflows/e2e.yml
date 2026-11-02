@@ -23,10 +23,13 @@ name: E2E
 # instead. Do not copy this pattern into a required workflow.
 #
 # The path list mirrors the directory globs and build inputs of `ci.yml`'s
-# `code` filter. Keep them in sync: a path that can change installed behaviour
-# but is missing here is an e2e regression nobody sees until it is on main.
-# The exact document entries in `ci.yml` are not mirrored: they exist because
-# a unit test reads the file, and a page cannot change the installed package.
+# `code` filter, except `.github/**`. Keep them in sync: a path that can change
+# installed behaviour but is missing here is an e2e regression nobody sees
+# until it is on main. `ci.yml` carries `.github/**` because unit tests read
+# the workflows; a workflow cannot change the installed package, so this list
+# names only its own file. The exact document entries in `ci.yml` are not
+# mirrored either: they exist because a unit test reads the file, and a page
+# cannot change the installed package.
 
 on:
   pull_request:

@@ -41,9 +41,11 @@ the way an external user would experience it?
 
 - Run by `.github/workflows/e2e.yml`:
   - on every PR whose diff matches the trigger's `paths` list, which mirrors
-    the directory globs and build inputs of `ci.yml`'s `code` filter, with
-    no label and no opt-in (#1420 §1). The exact document entries in
-    `ci.yml` are not mirrored; a page cannot change the installed package,
+    the directory globs and build inputs of `ci.yml`'s `code` filter except
+    `.github/**`, with no label and no opt-in (#1420 §1). In place of
+    `.github/**` the list names `e2e.yml` itself, and the exact document
+    entries in `ci.yml` are not mirrored: a workflow or a page cannot change
+    the installed package,
   - on every push to `main` (post-merge regression catch),
   - across an install-method matrix: `uv-tool`, `pipx`, `venv-pip`.
 

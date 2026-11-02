@@ -121,6 +121,7 @@ jobs:
               - 'docs/concepts/RELEASING.md'
               - 'docs/concepts/ROADMAP.md'
               - 'docs/design/derived_figure_markers.md'
+              - 'docs/design/testing-strategy.md'
               - 'docs/user/COMMANDS.md'
               - 'docs/user/CONFIG.md'
               - 'docs/user/INSTALL.md'
