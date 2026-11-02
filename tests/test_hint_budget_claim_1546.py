@@ -130,6 +130,8 @@ def _hint_docstring() -> str:
     """
     tree = ast.parse(Path(hook.__file__).read_text(encoding="utf-8"))
     body = tree.body
+    found = False
+    doc: str | None = None
     for i, node in enumerate(body[:-1]):
         target = None
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -139,15 +141,20 @@ def _hint_docstring() -> str:
                 target = node.targets[0].id
         if target != "MEMORY_BLOCK_HINT":
             continue
+        found = True
         nxt = body[i + 1]
         if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant):
             if isinstance(nxt.value.value, str):
-                return nxt.value.value
+                doc = nxt.value.value
+        break
+    if not found:
+        pytest.fail("MEMORY_BLOCK_HINT is not assigned at module level in hook.py")
+    if doc is None:
         pytest.fail(
             "MEMORY_BLOCK_HINT has no attribute docstring after it; the "
             "paragraph this file pins is gone"
         )
-    pytest.fail("MEMORY_BLOCK_HINT is not assigned at module level in hook.py")
+    return doc
 
 
 @pytest.mark.source_scan
@@ -217,6 +224,7 @@ def _belief_costing(i: int, cost: int) -> Belief:
     the leading phrase and no dedup or clustering lane can fold them.
     """
     filler = " ".join(f"q{i:02d}r{j:03d}" for j in range(400))
+    found: Belief | None = None
     for pad in range(len(filler) + 1):
         b = Belief(
             id=f"F{i:02d}",
@@ -231,8 +239,11 @@ def _belief_costing(i: int, cost: int) -> Belief:
             last_retrieved_at=None,
         )
         if hook._ups_belief_line_cost(b) == cost:
-            return b
-    pytest.fail(f"no padding of belief {i} costs exactly {cost} tokens")
+            found = b
+            break
+    if found is None:
+        pytest.fail(f"no padding of belief {i} costs exactly {cost} tokens")
+    return found
 
 
 def test_the_packer_fills_the_bare_hook_budget(
