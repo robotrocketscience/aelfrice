@@ -59,7 +59,9 @@ jobs:
     # `ubuntu-latest`.
     runs-on: ubuntu-24.04
     # A hung leg is cancelled at 30 minutes instead of the platform's
-    # 360. Recent green legs took 11 to 14 minutes.
+    # 360. Recent green legs took 11 to 14 minutes. The wait for
+    # `derived-figures` comes before the leg starts and does not count
+    # toward these 30 minutes. That job's own `timeout-minutes` bounds it.
     timeout-minutes: 30
     # The branch ruleset requires the two `pytest` legs and not
     # `derived-figures`, so the legs carry that job's result: each leg waits
@@ -277,6 +279,11 @@ jobs:
   # with no commit to point at.
   derived-figures:
     runs-on: ubuntu-24.04
+    # The `pytest` legs wait for this job, so a hang here holds both
+    # required checks pending until this cap, or the platform's 360
+    # minutes without one. The producer cap does not bound the text scan
+    # or the setup steps. Recent green runs took 45 to 72 seconds.
+    timeout-minutes: 10
     strategy:
       # One leg failing must not cancel the other, as on the `pytest` legs.
       fail-fast: false

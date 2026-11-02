@@ -13,7 +13,7 @@ The job deselects one test, the live-tree producer check, because the
 Python versions as the `pytest` matrix. The branch ruleset requires the
 `pytest` legs and not that job, so each leg waits for it and fails unless
 every leg of it passed. The tests at the bottom pin that edge, pin that
-job's matrix and runner image to the `pytest` job's, pin
+job's matrix and runner image to the `pytest` job's, pin its timeout, pin
 the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
 They pin that job's gate command verbatim, pin its producer cap to the
 deselected test's 120 s timeout marker, and run its arguments through the
@@ -560,6 +560,15 @@ def test_derived_figures_runs_on_the_legs_pinned_image() -> None:
     assert image == _job_keys().get("runs-on") == "ubuntu-24.04", (
         f"derived-figures runs on {image!r}, not the legs' ubuntu-24.04"
     )
+
+
+def test_derived_figures_has_a_timeout() -> None:
+    """The legs wait for `derived-figures` before they start, and the
+    wait does not count toward their own 30 minutes. `--producer-timeout`
+    bounds each producer and not the text scan, so without a job cap a
+    hang there holds both required checks pending for the platform's 360
+    minutes."""
+    assert _job_keys("derived-figures").get("timeout-minutes") == "10"
 
 
 def test_no_default_or_step_shell_wraps_a_run_line() -> None:
