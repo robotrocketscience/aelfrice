@@ -5454,8 +5454,13 @@ never runs, and the hint follows what the session-start build returned:
 a `<cadence-resume>` block when a fresh cadence-resume cache exists, then
 the `<session-start>` sub-block, which holds `<locked>` and `<core>`
 and, when the payload cwd is a git checkout on a branch,
-`<recent-work>`. The two are built independently, so the hint can follow
-a `<cadence-resume>` block with no `<locked>` or `<core>` at all. Either
+`<recent-work>`. A reference lock (#1016) renders as a `ref` line, not
+in `<locked>`, and `_format_hits_with_session_start` lifts those lines out
+of `<session-start>` into the envelope's one `<aelfrice-locks-manifest>`
+block after `</session-start>`, so with a reference lock in the store the
+hint follows that block. The cadence-resume recap and the sub-block are
+built independently, so the hint can follow a `<cadence-resume>` block
+with no `<locked>` or `<core>` at all. Either
 way the hint shows up where the assembled block is measured, such as the
 audited `tokens` (the +24/+25 rule above).
 #1526 did not move `DEFAULT_HOOK_TOKEN_BUDGET` and left the framing
