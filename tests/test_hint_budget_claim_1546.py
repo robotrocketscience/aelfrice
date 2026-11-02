@@ -8,7 +8,7 @@ the packer fills on a UserPromptSubmit fire is the bare constant: in
 `user_prompt_submit`, `budget` is the caller's `token_budget` or
 `DEFAULT_HOOK_TOKEN_BUDGET`, and nothing between there and the packer in
 `retrieval.retrieve_with_tiers` takes any of it off. The paragraph now says
-that. Six tests hold it there.
+that. Seven tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
@@ -69,6 +69,13 @@ emits nothing. The test fires that path, asserts the output is empty,
 and checks with a control fire after the cache is written that the
 hint does render. The paragraph then has to say the empty build
 emits no hint.
+
+The seventh covers the retrieving fire whose hits the filters after
+`_retrieve` drop. `_retrieve` returns one hit tagged with another
+project context and `_filter_by_project_context` removes it, so the
+fire emits no hint although retrieval found something. A control fire
+with the context unset has to emit the hint. The paragraph then has
+to say a fire whose filters drop every hit emits no hint.
 """
 from __future__ import annotations
 
@@ -715,3 +722,92 @@ def test_a_retrieving_fire_with_no_hit_emits_no_hint(
             "a retrieving fire with no hit emits no hint and, on a first "
             "prompt, no session-start block (#1546)"
         )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.source_scan
+def test_a_retrieving_fire_whose_filters_drop_every_hit_emits_no_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fire whose hits the post-retrieval filters drop emits no hint.
+
+    The store holds one banana belief tagged with another project context,
+    and `AELFRICE_PROJECT_CONTEXT` names a different one, so `_retrieve`
+    returns the hit and `_filter_by_project_context` drops it before the
+    `if hits:` branch. The wrapper counts the hits `_retrieve` returns. The
+    one-hit assert is the distinguishing arm: unlike the zero-hit test, the
+    hit reaches the hook and only a filter removes it. The control fire, a
+    second session with the context unset, has to emit the hint, so a
+    broken fixture fails there rather than passing the absence assert. Only
+    then is the paragraph read; it is marked `source_scan` (#1746) for that
+    read.
+    """
+    returned: list[int] = []
+    real = hook._retrieve
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        hits = real(*args, **kwargs)
+        returned.append(len(hits))
+        return hits
+
+    monkeypatch.setattr(hook, "_retrieve", counting)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            Belief(
+                id="F1",
+                content="banana is a yellow fruit",
+                content_hash="h_F1",
+                alpha=1.0,
+                beta=1.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+                project_context="repo-b",
+            )
+        )
+    finally:
+        store.close()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    def fire(session_id: str) -> str:
+        sout = io.StringIO()
+        serr = io.StringIO()
+        rc = hook.user_prompt_submit(
+            stdin=io.StringIO(
+                _payload(tmp_path, session_id, "tell me about bananas")
+            ),
+            stdout=sout,
+            stderr=serr,
+        )
+        assert rc == 0
+        assert "Traceback" not in serr.getvalue(), serr.getvalue()
+        return sout.getvalue()
+
+    monkeypatch.setenv("AELFRICE_PROJECT_CONTEXT", "repo-a")
+    filtered = fire("filtered")
+    assert returned == [1], (
+        f"_retrieve returned {returned} hit counts, not one fire with one "
+        "hit, so the filter had nothing to drop"
+    )
+    assert hook.MEMORY_BLOCK_HINT not in filtered, (
+        "a retrieving fire whose filters dropped every hit emitted the hint; "
+        f"the MEMORY_BLOCK_HINT docstring says it emits none (#1546): "
+        f"{filtered!r}"
+    )
+    monkeypatch.delenv("AELFRICE_PROJECT_CONTEXT")
+    control = fire("control")
+    assert returned == [1, 1], returned
+    assert hook.MEMORY_BLOCK_HINT in control, (
+        "the unfiltered control fire emitted no hint, so the absence assert "
+        f"above checks nothing: {control!r}"
+    )
+    doc = " ".join(_hint_docstring().split())
+    assert "or the filters after it dropped them all" in doc, (
+        "the MEMORY_BLOCK_HINT docstring no longer says a fire whose filters "
+        "drop every hit emits no hint (#1546)"
+    )
