@@ -62,7 +62,7 @@ modules against the 142 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `store_split.py` | Copies the beliefs with a file source under a `[store]` marker folder from the repository store into that folder's store. Reads the source with SQLite `mode=ro`. Backs `aelf store split`. |
 | `doctor.py` | A settings linter. It walks every `command` in `settings.json`, verifies that each one resolves, and special-cases a `bash <script>` wrapper. Backs `aelf doctor`. |
 | `lifecycle.py` | The update notifier (a background check against PyPI), the uninstall code, and the archive encryption. |
-| `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). Writes one JSONL line per turn under `<git-common-dir>/aelfrice/transcripts/`. |
+| `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). Writes one JSONL line per turn under `transcripts/` beside a `[store]` marker store, or under `<git-common-dir>/aelfrice/transcripts/` in a git work tree without one (#1796). |
 | `hook_commit_ingest.py` | The `PostToolUse:Bash` hook. Ingests a commit message after `git commit`. |
 | `hook_search.py` | The retrieval helper for UserPromptSubmit. It records every hit as a `feedback_history` row tagged `source='hook'`, audit-only since #1086 (v4.0). The row logs exposure and recurrence, but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α or β. Set `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` to restore the legacy behavior that promotes on exposure. |
 | `triple_extractor.py` | Extracts `(subject, relation, object)` triples with regex alone, over six relation families. Both the commit-ingest lane and the transcript-ingest lane use it. |
@@ -128,6 +128,17 @@ A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `
 - `schema_meta`
 
 The `scope` column has an `idx_beliefs_scope` index, and the migration runner adds the column and the index idempotently.
+
+## Store location
+
+`db_paths.resolve_store()` chooses the store file. The first of these rules that applies wins:
+
+1. `env`: `AELFRICE_DB`, if that variable is set.
+2. `marker`: the nearest `.aelfrice.toml` at or above the working folder that holds a `[store]` table ([#1796](https://github.com/robotrocketscience/aelfrice/issues/1796)). The walk stops at the git work-tree root and never reads the home directory. See [`[store]`](../user/CONFIG.md#store-1796).
+3. `git`: `<git-common-dir>/aelfrice/memory.db`, inside a git work tree.
+4. `global`: `~/.aelfrice/memory.db`.
+
+A marker that names no usable store raises `StoreMarkerError` instead of falling through to the `git` rule, and an `aelf` command then exits with status 2. `aelf status` prints the store and the rule, and `aelf doctor` prints the rule. The transcript log sits in `transcripts/` beside a marker store, and under `<git-common-dir>/aelfrice/transcripts/` for the `git` rule. The commit-ingest hook resolves a store for each folder a commit changed, so one commit can land in several stores.
 
 ## Bayesian update
 
@@ -202,7 +213,7 @@ settings.json  hooks.UserPromptSubmit: [{command: "aelf-hook"}]
                           ↓ JSON payload on stdin
                   aelfrice.hook:main
                           ↓ retrieve(store, prompt)
-                  .git/aelfrice/memory.db
+                  the resolved store (see Store location)
                           ↓ <aelfrice-memory> block on stdout
                   Claude Code injects above your prompt
 ```
