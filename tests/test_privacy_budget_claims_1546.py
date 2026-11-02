@@ -28,9 +28,11 @@ docs-only pull request that changed it, and a guard on the page would have
 reported a pass from an `echo`. The filter now lists each file outside the
 package directories that a test builds a path to (#1786 CI-07), `PRIVACY.md`
 among them. `tests/test_ci_path_filter.py` derives that list from the tests'
-own path expressions and fails on a path on the repo root that it cannot
-resolve, so a new page read through such a path is either in the filter or
-fails that module on the PR that adds it. A test here can read the page.
+own path expressions and from the paths and readers of the repo modules a
+test loads, and fails on a read under the repo root that it cannot resolve.
+A new page read through a path the scan follows is either in the filter or
+fails that module on the PR that adds it; that module's docstring names the
+reads it does not follow. A test here can read the page.
 
 None does yet. The page's two published figures are guarded by review rather
 than by CI. The #1469 derived-figure marker is the mechanism that would guard
