@@ -240,8 +240,11 @@ def latest_per_name(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any
     while the real run is going leaves a newer `skipped` row on the same
     SHA. Kept as newest, that row hid the running state from
     `pending_not_gating` and a `failure` from `failing`. The rule is scoped
-    to these names: a floor name's skipped row still replaces a `cancelled`
-    one, which would otherwise gate.
+    to these names: any other name's skipped row still replaces a
+    `cancelled` one, which would otherwise gate. `size-check` is in both
+    this set and the floor, and its `if` skips only drafts, so on a head
+    where it left a `cancelled` row and then a `skipped` one, the
+    `cancelled` row is the one the gate reads.
     """
     latest: dict[str, dict[str, Any]] = {}
     for run in sorted(check_runs, key=lambda r: r.get("started_at") or ""):
