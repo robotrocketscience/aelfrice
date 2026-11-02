@@ -71,7 +71,7 @@ aelfrice then runs without further commands. `/aelf:doctor` checks the install (
 | `/aelf:search <query>` | Lists matches, locks first. A hook also runs it on the agent's Grep, Glob, WebSearch, WebFetch, and Bash `grep` or `rg` calls and appends the results. | Checking a topic. |
 | `/aelf:locked` | Lists locked beliefs. | Reviewing locks. |
 | `/aelf:onboard <path>` | Scans a project and stores what it learns. | New project. |
-| `/aelf:status` | Shows the store in use, the rule that chose it, and counts of beliefs, locks, and feedback. | Health check. |
+| `/aelf:status` | Shows the store in use, the rule that chose it, and counts of beliefs, threads, locks, feedback, and phantoms. | Health check. |
 | `/aelf:doctor` | Checks hooks and store; exits nonzero on failure. | After setup, or no injection. |
 | `/aelf:unlock <id>` | Removes a belief's lock. | Lock no longer applies. |
 | `/aelf:confirm <id>` | Raises a belief's confidence without locking it. | Proved right, but not a rule to lock. |
