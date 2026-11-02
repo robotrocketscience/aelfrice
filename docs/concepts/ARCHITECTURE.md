@@ -63,7 +63,7 @@ modules against the 142 `.py` files under `src/aelfrice/`, so it isn't an exhaus
 | `doctor.py` | A settings linter. It walks every `command` in `settings.json`, verifies that each one resolves, and special-cases a `bash <script>` wrapper. Backs `aelf doctor`. |
 | `lifecycle.py` | The update notifier (a background check against PyPI), the uninstall code, and the archive encryption. |
 | `transcript_logger.py` | The hook entry point for transcript capture (v1.2+). Writes one JSONL line per turn under `transcripts/` beside a `[store]` marker store, or under `<git-common-dir>/aelfrice/transcripts/` in a git work tree without one (#1796). |
-| `hook_commit_ingest.py` | The `PostToolUse:Bash` hook. Ingests a commit message after `git commit`. |
+| `hook_commit_ingest.py` | The git `post-commit` hook (#1698). Ingests a commit message after each commit. |
 | `hook_search.py` | The retrieval helper for UserPromptSubmit. It records every hit as a `feedback_history` row tagged `source='hook'`, audit-only since #1086 (v4.0). The row logs exposure and recurrence, but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α or β. Set `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` to restore the legacy behavior that promotes on exposure. |
 | `triple_extractor.py` | Extracts `(subject, relation, object)` triples with regex alone, over six relation families. Both the commit-ingest lane and the transcript-ingest lane use it. |
 | `context_rebuilder.py` | The rebuilder that runs after compaction, surfacing the aelfrice retrieval again once the harness has written its summary. The block is delivered on `SessionStart(source="compact")` (#1031). |
