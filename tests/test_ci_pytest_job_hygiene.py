@@ -15,7 +15,8 @@ Python versions as the `pytest` matrix. The branch ruleset requires the
 every leg of it passed. The tests at the bottom pin that edge, pin that
 job's matrix to the `pytest` matrix, pin
 the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
-They pin that job's gate command verbatim and run its arguments through the
+They pin that job's gate command verbatim, pin its producer cap to the
+deselected test's 120 s timeout marker, and run its arguments through the
 script. They reject a job-level key outside an allowlist on that job, an
 `if:` or `continue-on-error:` in it, a top-level workflow key outside an
 allowlist, and a `defaults:` or `shell:` anywhere in the file.
@@ -67,11 +68,16 @@ _REPORT_FLAGS = {"-q", "-rfEsxX", "--durations=25"}
 
 # The `derived-figures` gate command, verbatim. A path argument replaces the
 # scanned roots, `--restamp` or `--list-unmarked` returns before the producers
-# run, and `|| true` turns a hard failure into a pass.
+# run, and `|| true` turns a hard failure into a pass. `--producer-timeout 120`
+# is the cap the deselected test's timeout marker sets.
 _GATE_RUNS = {
     f"uv run python scripts/check_derived_figures.py --mode {mode} --github"
+    " --producer-timeout 120"
     for mode in ("all", "producers")
 }
+
+# The cap the gate command applies to each producer, in seconds.
+_PRODUCER_CAP_S = 120
 
 # The job-level keys `derived-figures` may carry. `if` and `needs` can skip
 # the job, and the merge train does not count `skipped` as failing.
@@ -436,6 +442,7 @@ def test_the_gate_command_reaches_the_producers(
     `--mode text` must not reach the stub, or the stub proves nothing."""
     markers = [SimpleNamespace(store_backed=False)]
     calls: list[object] = []
+    caps: list[object] = []
 
     def iter_files(roots: list[str]) -> list[Path]:
         return [Path("stub.md")]
@@ -443,8 +450,9 @@ def test_the_gate_command_reaches_the_producers(
     def check_text(files: list[Path], report: object) -> list[SimpleNamespace]:
         return markers
 
-    def check_producers(found: object, report: object, **_: object) -> None:
+    def check_producers(found: object, report: object, **kwargs: object) -> None:
         calls.append(found)
+        caps.append(kwargs.get("timeout_s"))
 
     monkeypatch.setattr(cdf, "iter_files", iter_files)
     monkeypatch.setattr(cdf, "check_text", check_text)
@@ -454,10 +462,50 @@ def test_the_gate_command_reaches_the_producers(
     argv = tokens[tokens.index("scripts/check_derived_figures.py") + 1 :]
     assert cdf.main(argv) == 0
     assert calls == [markers], f"`{' '.join(argv)}` never ran the producers"
+    assert caps == [_PRODUCER_CAP_S], (
+        f"`{' '.join(argv)}` ran the producers under a {caps!r} s cap"
+    )
 
     calls.clear()
     assert cdf.main(["--mode", "text"]) == 0
     assert calls == []
+
+
+def _timeout_marker(path: str, func: str) -> int:
+    """The seconds in `@pytest.mark.timeout(N)` on `func` in `path`."""
+    tree = ast.parse((_REPO / path).read_text(encoding="utf-8"))
+    found = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == func
+    ]
+    assert len(found) == 1, f"{path} defines {len(found)} `{func}`"
+    seconds = [
+        dec.args[0].value
+        for dec in found[0].decorator_list
+        if isinstance(dec, ast.Call)
+        and ast.unparse(dec.func) == "pytest.mark.timeout"
+        and len(dec.args) == 1
+        and isinstance(dec.args[0], ast.Constant)
+        and isinstance(dec.args[0].value, int)
+    ]
+    assert len(seconds) == 1, f"`{func}` carries {len(seconds)} timeout markers"
+    return seconds[0]
+
+
+def test_ci_holds_each_producer_to_the_deselected_tests_cap() -> None:
+    """The deselected test's timeout marker held the producers to 120 s on
+    each leg. `derived-figures` runs them in its place, so its gate command
+    passes the same number to `--producer-timeout`. Without the flag the
+    script's 300 s default applies."""
+    tokens = (_field(_gate_step(), "run") or "").split()
+    flags = [i for i, t in enumerate(tokens) if t == "--producer-timeout"]
+    assert len(flags) == 1, f"the gate passes --producer-timeout {len(flags)} times"
+    path, _, func = _DESELECTED.partition("::")
+    marker = _timeout_marker(path, func)
+    assert int(tokens[flags[0] + 1]) == marker == _PRODUCER_CAP_S, (
+        f"derived-figures caps each producer at {tokens[flags[0] + 1]} s, "
+        f"and `{func}` is marked {marker} s"
+    )
 
 
 def test_the_derived_figures_job_has_no_if_or_continue_on_error() -> None:

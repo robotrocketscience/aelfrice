@@ -220,12 +220,12 @@ jobs:
       # same Python versions as these legs, so each leg ran the producers a
       # second time. The branch ruleset does not require that job, so the
       # step after harden-runner fails unless every leg of it passed, and a
-      # red producer check still turns both required legs red. That job has
-      # no 120 s cap: the test's timeout marker
-      # held each leg to 120 s, while the job lets each producer run for
-      # 300 s (`PRODUCER_TIMEOUT_S` in scripts/check_derived_figures.py) and
-      # sets no `timeout-minutes`. A producer that slows past 120 s and
-      # finishes inside 300 s now passes CI. The test still runs locally.
+      # red producer check still turns both required legs red. That job
+      # passes `--producer-timeout 120`, the 120 s the test's timeout marker
+      # sets, so a producer still running at 120 s fails it. The marker timed
+      # the text scan and the producers together. The flag times each
+      # producer, and up to eight of them start at once. The test still runs
+      # locally.
       # tests/test_ci_pytest_job_hygiene.py ties the deselect to that job.
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q -rfEsxX --durations=25 --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks --junitxml=junit-${{ matrix.python-version }}.xml
@@ -268,6 +268,8 @@ jobs:
   # producer check and this job runs it for them. The legs report as
   # `derived-figures (3.12)` and `derived-figures (3.13)`, the names
   # `FLOOR_NAMES` in scripts/merge_train_gate.py lists.
+  # `--producer-timeout 120` holds each producer to the 120 s the deselected
+  # test's timeout marker sets.
   derived-figures:
     runs-on: ubuntu-latest
     strategy:
@@ -288,7 +290,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
-      - run: uv run python scripts/check_derived_figures.py --mode all --github
+      - run: uv run python scripts/check_derived_figures.py --mode all --github --producer-timeout 120
 
   # Every code path that can write `beliefs.alpha` / `beliefs.beta` must be
   # declared (#1592 AC2). #1359 is why this is a job and not a document: that
