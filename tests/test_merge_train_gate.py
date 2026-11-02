@@ -261,6 +261,59 @@ def test_the_trains_own_jobs_are_excluded() -> None:
     assert "merge" not in latest_per_name(runs)
 
 
+# --- two apps posting one name (#1786) ----------------------------------
+
+
+def _app_run(
+    name: str, app: str, conclusion: str | None, status: str, started_at: str,
+) -> dict[str, Any]:
+    return {**_run(name, conclusion, status, started_at), "app": {"slug": app}}
+
+
+def _zizmor_head(job_conclusion: str | None, job_status: str) -> list[dict[str, Any]]:
+    """The two `zizmor` rows a PR head carries, in the order seen on ea090c9a.
+
+    The job starts first. Its SARIF upload makes code scanning post a second
+    `zizmor` row that starts later and finishes before the job's last step.
+    """
+    runs = [r for r in _all_floor_green() if r["name"] != "zizmor"]
+    runs.append(_app_run(
+        "zizmor", "github-actions", job_conclusion, job_status,
+        "2026-11-01T18:15:10Z",
+    ))
+    runs.append(_app_run(
+        "zizmor", "github-advanced-security", "success", "completed",
+        "2026-11-01T18:15:25Z",
+    ))
+    return runs
+
+
+def test_a_failed_zizmor_job_blocks_despite_the_later_code_scanning_row() -> None:
+    verdict = evaluate(_zizmor_head("failure", "completed"), REQUIRED)
+    assert verdict["failing"] == ["zizmor"]
+
+
+def test_the_train_waits_for_a_running_zizmor_job() -> None:
+    verdict = evaluate(_zizmor_head(None, "in_progress"), REQUIRED)
+    assert verdict["pending"] == ["zizmor"]
+    assert verdict["failing"] == []
+
+
+def test_a_green_zizmor_job_and_code_scanning_row_pass() -> None:
+    verdict = evaluate(_zizmor_head("success", "completed"), REQUIRED)
+    assert verdict["failing"] == [] and verdict["pending"] == []
+    assert verdict["missing"] == []
+
+
+def test_a_rerun_still_supersedes_within_one_app() -> None:
+    """#632 holds per app: a newer job attempt replaces the older one."""
+    runs = _zizmor_head("failure", "completed")
+    runs.append(_app_run(
+        "zizmor", "github-actions", "success", "completed", "2026-11-01T18:30:00Z",
+    ))
+    assert evaluate(runs, REQUIRED)["failing"] == []
+
+
 # --- pending is scoped to the required set ------------------------------
 
 

@@ -242,6 +242,23 @@ def required_contexts(rules: list[dict[str, Any]]) -> set[str]:
     return contexts
 
 
+def _app_slug(run: dict[str, Any]) -> str:
+    app = run.get("app")
+    slug = app.get("slug") if isinstance(app, dict) else None
+    return slug if isinstance(slug, str) else ""
+
+
+def _gate_rank(run: dict[str, Any]) -> int:
+    """How strongly a row holds the train: failed, running, cancelled, other."""
+    if run.get("conclusion") in FAILING_CONCLUSIONS:
+        return 3
+    if run.get("status") in PENDING_STATUSES:
+        return 2
+    if run.get("conclusion") in FLOOR_FAILING_CONCLUSIONS:
+        return 1
+    return 0
+
+
 def latest_per_name(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Newest run per check name, excluding the train's own jobs (#632).
 
@@ -262,18 +279,37 @@ def latest_per_name(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any
     this set and the floor, and its `if` skips only drafts, so on a head
     where it left a `cancelled` row and then a `skipped` one, the
     `cancelled` row is the one the gate reads.
+
+    The newest row is kept per app, not per name alone, because two apps can
+    post the same name. The `zizmor` job uploads SARIF, and code scanning
+    then posts its own `zizmor` check-run from the `github-advanced-security`
+    app. That row starts after the job and finishes before the job's last
+    step, so newest-wins across apps let it stand in for a job that was
+    still running or that failed (#1786). When apps disagree, the row that
+    holds the train hardest stands for the name. The skipped-row rule above
+    applies within each app's rows.
     """
-    latest: dict[str, dict[str, Any]] = {}
+    per_app: dict[tuple[str, str], dict[str, Any]] = {}
     for run in sorted(check_runs, key=lambda r: r.get("started_at") or ""):
         name = run.get("name")
         if not isinstance(name, str) or name in SELF_NAMES:
             continue
+        key = (name, _app_slug(run))
         if (
-            name in NONGATING_WHILE_PENDING and name in latest
+            name in NONGATING_WHILE_PENDING and key in per_app
             and run.get("conclusion") == "skipped"
         ):
             continue
-        latest[name] = run
+        per_app[key] = run
+    latest: dict[str, dict[str, Any]] = {}
+    for (name, _slug), run in per_app.items():
+        held = latest.get(name)
+        if held is None or _gate_rank(run) > _gate_rank(held):
+            latest[name] = run
+        elif _gate_rank(run) == _gate_rank(held) and (
+            (run.get("started_at") or "") > (held.get("started_at") or "")
+        ):
+            latest[name] = run
     return latest
 
 
