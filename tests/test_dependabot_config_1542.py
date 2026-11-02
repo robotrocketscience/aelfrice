@@ -5,10 +5,11 @@
 update needs an alert with a patched version. Version updates on the `uv`
 ecosystem cover the gap. These tests hold the configuration to the terms it
 landed under: the `uv` updater and not `pip`, since only `uv` rewrites
-uv.lock and `uv sync --frozen` fails on a stale lock; a weekly schedule;
-minor and patch bumps grouped into one PR; at most five open PRs; the
-labels Dependabot's security updates already apply; and no label or option
-that would merge a PR without a person adding `ready-to-merge`.
+uv.lock, and CI's `uv sync --frozen` installs a stale lock's old pins
+without an error; a weekly schedule; minor and patch bumps grouped into one
+PR; at most five open PRs; the labels Dependabot's security updates already
+apply; and no label or option that would merge a PR without a person adding
+`ready-to-merge`.
 
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set, so an `import yaml` passes locally and fails
@@ -21,6 +22,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
 _DEPENDABOT = _REPO / ".github" / "dependabot.yml"
+_WORKFLOWS = _REPO / ".github" / "workflows"
 
 _ITEM_START = "  - package-ecosystem:"
 
@@ -156,6 +158,36 @@ def test_uv_group_takes_every_minor_and_patch_version_update() -> None:
     assert sorted(rules.get("update-types", [])) == ["minor", "patch"], rules
     assert rules.get("applies-to", ["version-updates"]) == ["version-updates"], rules
     assert set(rules) <= {"update-types", "applies-to"}, rules
+
+
+def test_stale_lock_reason_matches_how_ci_installs() -> None:
+    """The reason given for `uv` over `pip` is that a stale uv.lock passes
+    CI: every workflow installs with `uv sync --frozen`, which installs the
+    locked pins without checking them against pyproject.toml, and no
+    workflow runs `uv lock --check` or `uv sync --locked`. Neither the
+    config comment nor this module may say that `--frozen` fails on a stale
+    lock. If a workflow starts checking the lock, the reason changes, and
+    this test asks for the comment to change with it."""
+    syncs: list[str] = []
+    checks: list[str] = []
+    for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+        for line in _code_lines(workflow.read_text(encoding="utf-8")):
+            if "uv sync" in line:
+                syncs.append(f"{workflow.name}: {line.strip()}")
+            if re.search(r"uv lock\b.*--check|--locked\b|UV_LOCKED", line):
+                checks.append(f"{workflow.name}: {line.strip()}")
+    assert syncs, "no workflow runs `uv sync`"
+    assert all("--frozen" in sync for sync in syncs), syncs
+    assert not checks, checks
+    comment = " ".join(
+        line.lstrip().lstrip("#").strip()
+        for line in _DEPENDABOT.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith("#")
+    )
+    assert "uv sync --frozen" in comment, comment
+    false_claim = re.compile(r"--frozen`?\s+fails", re.IGNORECASE)
+    for text in (comment, " ".join((__doc__ or "").split())):
+        assert not false_claim.search(text), text
 
 
 def test_uv_updates_carry_the_dependency_labels_and_wait_for_the_train() -> None:

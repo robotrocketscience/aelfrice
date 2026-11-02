@@ -1,7 +1,10 @@
 # Dependabot version updates for the Python dependencies (#1542, #1786).
 #
-# The `uv` ecosystem reads pyproject.toml and rewrites uv.lock. `pip` would
-# leave the lockfile stale, and `uv sync --frozen` fails on a stale lock.
+# The `uv` ecosystem reads pyproject.toml and rewrites uv.lock in the same
+# PR. A `pip` updater bumps pyproject.toml and leaves uv.lock at the old
+# pins. CI installs with `uv sync --frozen`, which installs what uv.lock
+# pins without checking it against pyproject.toml, so that PR passes CI
+# while the tests run on the old versions.
 # Updates arrive weekly: minor and patch bumps grouped into one PR, a major
 # bump as its own PR, at most five open PRs at a time. Each PR carries the
 # `dependencies` and `python:uv` labels, the ones Dependabot's security
