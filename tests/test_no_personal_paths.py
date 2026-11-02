@@ -31,15 +31,13 @@ _SCRIPT = _REPO_ROOT / "scripts" / "check_no_personal_paths.py"
 _LEAK = "/home/" + "jdoe" + "/projects/app/.venv/bin/aelf-hook"
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("check_no_personal_paths", _SCRIPT)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-chk = _load()
+# Loaded at module level, not through a helper that returns the module,
+# so tests/test_ci_path_filter.py can trace `chk` to the script and see
+# that `chk.scan_tracked()` reads every tracked file.
+_spec = importlib.util.spec_from_file_location("check_no_personal_paths", _SCRIPT)
+assert _spec is not None and _spec.loader is not None
+chk = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(chk)
 
 
 def _run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
