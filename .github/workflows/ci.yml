@@ -62,8 +62,9 @@ jobs:
     timeout-minutes: 30
     # The branch ruleset requires the two `pytest` legs and not
     # `derived-figures`, so the legs carry that job's result: each leg waits
-    # for it and fails in its first step unless it passed. A merge through
-    # the UI, `gh pr merge` or auto-merge then cannot land a red figure.
+    # for it and fails in the step after harden-runner, before checkout,
+    # unless it passed. A merge through the UI, `gh pr merge` or
+    # auto-merge then cannot land a red figure.
     # `!cancelled()` runs the legs after a failed `derived-figures`. Without
     # it they report `skipped`, and the ruleset counts a skipped check as a
     # pass.
@@ -215,9 +216,10 @@ jobs:
       # over the live tree. The `derived-figures` job below runs the same
       # producers over the same tree on every PR, with no path filter, so
       # each leg ran the producers a second time. The branch ruleset does not
-      # require that job, so the legs' first step fails unless it passed, and
-      # a red producer check still turns both required legs red. That job
-      # runs Python 3.13 only, so the 3.12 leg no longer runs the producers. It also has no 120 s cap: the test's timeout marker
+      # require that job, so the step after harden-runner fails unless it
+      # passed, and a red producer check still turns both required legs
+      # red. That job runs Python 3.13 only, so the 3.12 leg no longer runs
+      # the producers. It also has no 120 s cap: the test's timeout marker
       # held each leg to 120 s, while the job lets each producer run for
       # 300 s (`PRODUCER_TIMEOUT_S` in scripts/check_derived_figures.py) and
       # sets no `timeout-minutes`. A producer that slows past 120 s and

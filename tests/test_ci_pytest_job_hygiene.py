@@ -366,8 +366,9 @@ def test_no_pytest_variable_is_set_anywhere_in_the_workflow() -> None:
     assert found == [], found
 
 
-# The legs' first check, verbatim with comments dropped. `needs` reports
-# `success`, `failure`, `cancelled` or `skipped`, and only `success` passes.
+# The step right after harden-runner, verbatim with comments dropped.
+# `needs` reports `success`, `failure`, `cancelled` or `skipped`, and only
+# `success` passes.
 _NEEDS_STEP = [
     "- name: The derived-figures job must pass",
     "env:",
@@ -382,7 +383,8 @@ def test_a_red_derived_figures_job_turns_the_required_legs_red() -> None:
     `needs` a leg never sees it. Without `!cancelled()` a failed
     `derived-figures` skips the legs, and the ruleset counts a skipped check
     as a pass. An `if:` or a `shell:` on the step would let it pass on the
-    docs-only branch or without testing anything."""
+    docs-only branch or without testing anything. ci.yml says the step runs
+    right after harden-runner, before checkout, so its position is pinned."""
     keys = _job_keys()
     assert keys.get("needs") == "derived-figures", keys
     assert keys.get("if") == "${{ !cancelled() }}", keys
@@ -392,7 +394,10 @@ def test_a_red_derived_figures_job_turns_the_required_legs_red() -> None:
     ]
     assert len(found) == 1, f"expected one step that reads the result: {found!r}"
     assert [line.strip() for line in found[0]] == _NEEDS_STEP
-    assert steps.index(found[0]) < steps.index(_pytest_step())
+    assert "step-security/harden-runner@" in (_field(steps[0], "uses") or "")
+    assert steps.index(found[0]) == 1, (
+        "the result check is not the step right after harden-runner"
+    )
 
 
 def _gate_step() -> list[str]:
