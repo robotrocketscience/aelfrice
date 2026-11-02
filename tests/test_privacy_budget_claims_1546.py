@@ -35,17 +35,18 @@ A new page read through a path the scan follows is either in the filter or
 fails that module on the PR that adds it; that module's docstring names the
 reads it does not follow. A test here can read the page.
 
-None does yet. The page's two published figures are guarded by review rather
-than by CI. The #1469 derived-figure marker is the mechanism that would guard
-them, and it does not work in this file: `scripts/check_derived_figures.py`
-pairs backticks across the whole file, `PRIVACY.md` carries six fence lines, and
-markers planted below them parse as absent while the gate reports green. That
-hole is #1556; when it closes, the two figures can carry markers and the
-`derived-figures` job -- which has no path filter and runs on every pull request
--- re-derives them from the shipped constants.
+No test in this module reads it. The page's two published figures carry #1469
+derived-figure markers, and CI checks both. `scripts/check_derived_figures.py`
+used to pair backticks across the whole file, so markers below the page's fence
+lines parsed as absent while the gate reported green; #1556 fixed the scanner.
+The `derived-figures` job, which has no path filter and runs on every pull
+request, re-derives both figures from the shipped constants, and
+`tests/test_code_span_scanner_1556.py::test_the_privacy_page_publishes_the_two_budgets_it_names`
+asserts that both markers parse with no hard failure.
 """
 from __future__ import annotations
 
+import ast
 import inspect
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,29 @@ from aelfrice import hook
 # module both ways trips CodeQL's py/import-and-import-from.
 from aelfrice import retrieval
 from aelfrice.store import MemoryStore
+
+_REPO = Path(__file__).resolve().parents[1]
+# The test that guards the page's two figures, which the docstring names.
+_GUARD_MODULE = "tests/test_code_span_scanner_1556.py"
+_GUARD_TEST = "test_the_privacy_page_publishes_the_two_budgets_it_names"
+
+
+def test_the_docstring_names_the_test_that_guards_the_page_figures() -> None:
+    """The account above of what guards `PRIVACY.md`'s figures must name a real test.
+
+    It once said review guarded them and that markers on the page parsed as
+    absent, after #1556 had made both markers parse and a test held them to
+    it. Naming that test, and checking that it exists, fails the account when
+    the docstring drops it or the test is renamed or removed.
+    """
+    doc = " ".join((__doc__ or "").split())
+    assert f"{_GUARD_MODULE}::{_GUARD_TEST}" in doc, (
+        f"the module docstring no longer names {_GUARD_MODULE}::{_GUARD_TEST} "
+        "as the guard on docs/user/PRIVACY.md's two figures"
+    )
+    tree = ast.parse((_REPO / _GUARD_MODULE).read_text(encoding="utf-8"))
+    names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    assert _GUARD_TEST in names, f"{_GUARD_MODULE} has no {_GUARD_TEST}"
 
 
 def test_no_budget_reaches_the_session_start_call_path() -> None:
