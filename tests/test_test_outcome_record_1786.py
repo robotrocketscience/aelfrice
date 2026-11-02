@@ -401,6 +401,19 @@ def test_the_summary_names_the_mode_the_baseline_and_each_violation() -> None:
     assert "## Test outcomes (blocking)" in tor.render_summary(diffs, baseline, None, block=True)
 
 
+@pytest.mark.parametrize("with_baseline", [True, False], ids=["baseline", "no-baseline"])
+def test_the_summary_lists_each_red_outcome_with_or_without_a_baseline(with_baseline: bool) -> None:
+    """Failures, errors and xpasses are reported, though they are not violations."""
+    tests = {"t::f": tor.FAILED, "t::e": tor.ERROR, "t::x": tor.XPASSED, "t::p": tor.PASSED, "t::s": tor.SKIPPED}
+    current = _record(**{"3.13": tests})
+    baseline = _record(**{"3.13": tests}) if with_baseline else None
+    text = tor.render_summary(tor.diff_records(current, baseline), baseline, None, block=False)
+    section = text.split("### Leg 3.13", 1)[1]
+    assert "3 red outcome(s) in this run (the pytest leg reports these):" in section
+    bullets = [line for line in section.splitlines() if line.startswith("- ")]
+    assert bullets == ["- `t::e`: error", "- `t::f`: failed", "- `t::x`: xpassed"]
+
+
 def _unescaped_pipes(line: str) -> int:
     return len(re.findall(r"(?<!\\)\|", line))
 
