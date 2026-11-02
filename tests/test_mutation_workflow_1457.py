@@ -395,18 +395,19 @@ def test_the_pr_scope_is_the_merge_base_diff_not_a_two_tree_diff() -> None:
     assert 'f"{base}..{head}"' not in joined
 
 
-def test_the_pr_job_cannot_block_the_merge_train() -> None:
-    """AC3, and the reason it needs more than an exit code.
+def test_the_pr_job_keeps_its_workflow_run_green() -> None:
+    """AC3: a failed step in the advisory job leaves the workflow run green.
 
-    merge-train gates on every non-advisory check-run on the head SHA, so an
-    advisory job that reports failure blocks merges — the opposite of
-    advisory. `continue-on-error` is what keeps the two consistent.
+    Job-level `continue-on-error` sets the workflow run's conclusion, not the
+    job's check-run, which still reports `failure`. merge-train reads that
+    check-run. It skips the job's running state through
+    `merge_train_gate.NONGATING_WHILE_PENDING`, and a `failure` it reads while
+    polling still blocks the merge.
 
-    The *level* is the load-bearing part and is asserted, not assumed. This is
-    the repo's first job-level `continue-on-error`; every other use in
-    `.github/workflows/` is on a step, where it spares that step and lets the
-    job still conclude `failure`. Indented two levels further in, this line
-    still parses as valid YAML and silently makes the job blocking.
+    The level is asserted, not assumed. Every other use in
+    `.github/workflows/` is on a step, where it spares only that step.
+    Indented two levels further in, this line still parses as valid YAML and
+    turns the workflow run red on any other step's failure.
     """
     lines = _workflow_text().splitlines()
     job_at = next(i for i, line in enumerate(lines) if line.rstrip() == "  diff:")
@@ -418,8 +419,8 @@ def test_the_pr_job_cannot_block_the_merge_train() -> None:
     keys = [line for line in body if line.startswith("    ") and line[4] != " "]
     assert "    continue-on-error: true" in keys, (
         "continue-on-error must be a key of the `diff` job, not of one of its "
-        "steps — a step-level flag leaves the job's check-run at `failure`, "
-        "which is exactly what blocks the train"
+        "steps: a step-level flag spares only that step, so any other step's "
+        "failure turns the workflow run red"
     )
     assert "ADVISORY_NAMES" in _workflow_text(), (
         "the alternative must be named, so promoting this to blocking is a "

@@ -336,16 +336,15 @@ jobs:
           retention-days: 30
 
   # --- per PR, changed functions only, advisory --------------------------
-  # `continue-on-error` is load-bearing, not decoration. merge-train gates on
-  # every non-advisory check-run on the head SHA, so a job that reports failure
-  # blocks the merge — which is exactly what "advisory" must not do. This keeps
-  # the job's failure off the train while its findings stay visible in the step
-  # summary. While the job runs, merge-train doesn't wait for it: the name is
-  # in `merge_train_gate.NONGATING_WHILE_PENDING` (#1633), which a test ties to
-  # this line. If mutation is ever promoted to blocking, this line comes out
-  # and the name comes out of that set, so the train waits for the result.
-  # Making it advisory by name instead would mean adding it to
-  # `merge_train_gate.ADVISORY_NAMES`, which drops its result from the gate.
+  # merge-train gates on every non-advisory check-run on the head SHA. It does
+  # not wait for this job while it runs: the name is in
+  # `merge_train_gate.NONGATING_WHILE_PENDING` (#1633), and a test fails when
+  # no job carries that name. A `failure` this job reports while the train is
+  # polling still blocks the merge. One it reports after the train moves is
+  # never read. If mutation is ever promoted to blocking, the name comes out
+  # of that set, so the train waits for the result. Making it advisory by name
+  # instead would mean adding it to `merge_train_gate.ADVISORY_NAMES`, which
+  # drops its result from the gate.
   diff:
     name: mutation (advisory, PR diff)
     # #1786: merge-train.yml's `merge` condition, fork guard included, behind
@@ -370,13 +369,14 @@ jobs:
     concurrency:
       group: mutation-diff-${{ github.ref }}
       cancel-in-progress: true
-    # NOTE: job-level, not step-level. Every other `continue-on-error` in
-    # `.github/workflows/` is on a step, where it only spares that step; the
-    # property needed here is that the *job's* check-run conclusion is
-    # `success` even when a step fails, which is what keeps merge-train's
-    # "nothing failing" test satisfied. A test pins the level, because moving
-    # this line two levels down would still parse and would silently make the
-    # job blocking.
+    # Job-level, not step-level. When a step fails, this keeps the workflow
+    # run green, so the run list does not show an advisory job as a red run.
+    # The job's own check-run, the row merge-train reads, still reports
+    # `failure` (https://github.com/orgs/community/discussions/15452). Every
+    # other `continue-on-error` in `.github/workflows/` is on a step, where it
+    # spares only that step. A test pins the level, because moving this line
+    # two levels down would still parse and would turn the workflow run red on
+    # any other step's failure.
     continue-on-error: true
     runs-on: ubuntu-latest
     # Not 30. mutmut runs the whole suite once to collect stats before it

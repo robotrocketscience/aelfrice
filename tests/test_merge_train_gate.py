@@ -394,23 +394,49 @@ def test_every_nongating_name_is_a_job() -> None:
         assert name in jobs, f"no job is named {name!r}"
 
 
-def _comment_text(path: Path) -> str:
-    """Every `#` comment in a file, joined into one line of prose."""
-    return " ".join(
-        ln.split("#", 1)[1].strip() for ln in path.read_text().splitlines() if "#" in ln
-    )
+def _prose(path: Path) -> str:
+    """A file's prose, joined into one line.
+
+    For a workflow, every `#` comment. For Python, every line with a leading
+    `#` removed, so comments, docstrings and test names are all read.
+    """
+    lines = path.read_text().splitlines()
+    if path.suffix == ".py":
+        parts = [ln.strip().removeprefix("#").strip() for ln in lines]
+    else:
+        parts = [ln.split("#", 1)[1].strip() for ln in lines if "#" in ln]
+    return " ".join(p for p in parts if p)
 
 
-@pytest.mark.parametrize(
-    "path", ["scripts/merge_train_gate.py", ".github/workflows/pr-size-soft-cap.yml"]
+# Each wording this repo has used for the claim that job-level
+# `continue-on-error` keeps the job's check-run off `failure`.
+_KEEPS_A_CHECK_OFF_FAILURE = re.compile(
+    r"continue-on-error`? keeps the (?:job's )?conclusion off"
+    r"|keeps the job's failure off the train"
+    r"|check-run conclusion is `?success`? even when a step fails"
+    r"|`continue-on-error` is what keeps the two consistent"
+    r"|cannot_block_the_merge_train"
 )
+
+_CONTINUE_ON_ERROR_PROSE = sorted(
+    [
+        "scripts/merge_train_gate.py",
+        "tests/test_mutation_workflow_1457.py",
+        *(
+            p.relative_to(_REPO).as_posix()
+            for p in (_REPO / ".github" / "workflows").glob("*.yml")
+        ),
+    ]
+)
+
+
+@pytest.mark.parametrize("path", _CONTINUE_ON_ERROR_PROSE)
 def test_no_comment_says_continue_on_error_keeps_a_check_off_failure(path: str) -> None:
     """Job-level `continue-on-error` changes the workflow run's conclusion,
     not the job's check-run, which is the row the gate reads. A comment that
     says otherwise sends a reader to the wrong reason a nongating job's late
     failure is ignored."""
-    text = _comment_text(_REPO / path)
-    claim = re.search(r"continue-on-error`? keeps the (?:job's )?conclusion off", text)
+    claim = _KEEPS_A_CHECK_OFF_FAILURE.search(_prose(_REPO / path))
     assert claim is None, f"{path}: {claim.group(0)!r}"
 
 
