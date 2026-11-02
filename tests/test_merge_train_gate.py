@@ -400,13 +400,14 @@ def _named_job_if(text: str, name: str) -> str:
 def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
     """#1786: the mutation diff job fires on `ready-to-merge`, as the train does.
 
-    The two start on the same event, so the job is pending during every poll
-    the train makes, and NONGATING_WHILE_PENDING is what lets it run then
-    without holding the train. The job's `if` is the train's whole condition,
-    fork guard included, behind an event-name check, and the trigger types
-    are read from both files. A rename or a dropped event in one of them
-    fails here instead of leaving a job that never runs, and a dropped guard
-    fails instead of leaving one that runs on PRs the train skips.
+    The two start on the same event, so a run that reaches mutmut can be
+    pending at every poll the train makes, and NONGATING_WHILE_PENDING is
+    what lets it run then without holding the train. The job's `if` is the
+    train's whole condition, fork guard included, behind an event-name
+    check, and the trigger types are read from both files. A rename or a
+    dropped event in one of them fails here instead of leaving a job that
+    never runs, and a dropped guard fails instead of leaving one that runs on
+    PRs the train skips.
     """
     assert _MUTATION in NONGATING_WHILE_PENDING
     train_text = _WORKFLOW.read_text()
@@ -428,6 +429,47 @@ def test_the_nongating_job_starts_on_the_trains_own_label() -> None:
         )
         types = {frozenset(types) for _, types in _pull_request_triggers(text)}
         assert types == train_types, f"{source.name} triggers on {types}"
+
+
+def _nongating_comment() -> str:
+    """The comment block right above NONGATING_WHILE_PENDING, folded."""
+    lines = (_REPO / "scripts" / "merge_train_gate.py").read_text().splitlines()
+    at = next(
+        i for i, ln in enumerate(lines)
+        if ln.startswith("NONGATING_WHILE_PENDING")
+    )
+    start = at
+    while start > 0 and lines[start - 1].startswith("#"):
+        start -= 1
+    return " ".join(ln.lstrip("#").strip() for ln in lines[start:at])
+
+
+# The scope step's early exit: no mutable change, so every mutmut step skips.
+_EARLY_SKIP = re.compile(
+    r'echo "skip=true" >> "\$\{GITHUB_OUTPUT\}"\n\s*exit 0\n'
+)
+
+
+def test_the_nongating_comment_names_the_runs_that_are_never_pending() -> None:
+    """#1786: the job is not pending at every poll, and the comment says so.
+
+    A diff that misses the job's `paths:` filter starts no run, and a scope
+    step that finds no mutable change writes `skip=true` and finishes in
+    minutes. The comment above NONGATING_WHILE_PENDING names each case its
+    workflow has and claims none it lacks, so a dropped filter or early exit
+    fails here until the comment changes with it.
+    """
+    comment = _nongating_comment()
+    for name in NONGATING_WHILE_PENDING:
+        source = next(
+            path for path in sorted(_WORKFLOW_DIR.glob("*.yml"))
+            if name in _job_bodies(path)
+        )
+        text = source.read_text()
+        has_paths = any(p for p, _ in _pull_request_triggers(text))
+        assert ("`paths:`" in comment) == has_paths, (source.name, has_paths)
+        early_skip = _EARLY_SKIP.search(text) is not None
+        assert ("`skip=true`" in comment) == early_skip, (source.name, early_skip)
 
 
 def test_a_slow_required_check_does_hold_the_train() -> None:
