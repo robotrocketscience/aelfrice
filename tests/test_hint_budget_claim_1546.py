@@ -8,7 +8,7 @@ the packer fills on a UserPromptSubmit fire is the bare constant: in
 `user_prompt_submit`, `budget` is the caller's `token_budget` or
 `DEFAULT_HOOK_TOKEN_BUDGET`, and nothing between there and the packer in
 `retrieval.retrieve_with_tiers` takes any of it off. The paragraph now says
-that. Four tests hold it there.
+that. Five tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
@@ -52,6 +52,15 @@ under `DEFAULT_HOOK_TOKEN_BUDGET`. The paragraph then must not say
 that budget was spent before the hint, and must cite
 `docs/design/budget_discriminability_k0_result.md`, where `binds_on` is
 `pool` on 7 of 7 queries on every lane.
+
+The fifth covers the retrieving fire that keeps no hit. The hint sits in
+the `if hits:` branch of `user_prompt_submit`, so a first prompt whose
+`_retrieve` returns nothing emits no hint and drops the session-start
+build, even with a fresh cadence-resume cache. The test fires that path,
+asserts the output holds neither, and checks with a gate-skip control
+that the cache and the hint do render elsewhere. The paragraph then has
+to scope the retrieving sentence to a fire that keeps at least one hit
+and say what the zero-hit fire emits.
 """
 from __future__ import annotations
 
@@ -525,3 +534,110 @@ def test_a_retrieving_fire_appends_the_hint_under_an_unspent_budget(
     assert (root / _K0_RESULT).is_file(), (
         f"the MEMORY_BLOCK_HINT docstring cites {_K0_RESULT}, which is gone"
     )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.source_scan
+def test_a_retrieving_fire_with_no_hit_emits_no_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fire that retrieves and keeps no hit emits nothing, hint included.
+
+    The store holds one unlocked belief the prompt does not match, and a
+    fresh cadence-resume cache sits beside it, so the first prompt's
+    session-start build returns a `<cadence-resume>` block. The wrapper
+    counts the hits `_retrieve` returns. The arity and zero-hit asserts are
+    the distinguishing arm: a fire that skipped `_retrieve`, or one that
+    found a hit, says nothing about this path. The control fire, a
+    gate-skip first prompt in a second session, has to emit that block
+    and the hint, so an absent cache or a broken hint fails there rather
+    than passing the absence asserts. Only then is the paragraph read; it
+    is marked `source_scan` (#1746) for that read.
+    """
+    returned: list[int] = []
+    real = hook._retrieve
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        hits = real(*args, **kwargs)
+        returned.append(len(hits))
+        return hits
+
+    monkeypatch.setattr(hook, "_retrieve", counting)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    db = tmp_path / "memory.db"
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            Belief(
+                id="Z1",
+                content="zebra stripes are black",
+                content_hash="h_Z1",
+                alpha=1.0,
+                beta=1.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+            )
+        )
+    finally:
+        store.close()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    _write_cadence_resume_cache()
+
+    def fire(session_id: str, prompt: str) -> str:
+        sout = io.StringIO()
+        serr = io.StringIO()
+        rc = hook.user_prompt_submit(
+            stdin=io.StringIO(_payload(tmp_path, session_id, prompt)),
+            stdout=sout,
+            stderr=serr,
+        )
+        assert rc == 0
+        assert "Traceback" not in serr.getvalue(), serr.getvalue()
+        return sout.getvalue()
+
+    empty = fire("s1", "tell me about bananas")
+    assert returned == [0], (
+        f"_retrieve returned {returned} hit counts, not one fire with zero "
+        "hits, so this test measured nothing about the zero-hit path"
+    )
+    assert hook.MEMORY_BLOCK_HINT not in empty, (
+        "a retrieving fire with no hit emitted the hint; the "
+        "MEMORY_BLOCK_HINT docstring says it emits none (#1546): "
+        f"{empty!r}"
+    )
+    assert "<cadence-resume" not in empty, (
+        "a zero-hit first prompt emitted the cadence-resume block; the "
+        f"MEMORY_BLOCK_HINT docstring says it emits none (#1546): {empty!r}"
+    )
+    control = fire("gate", "ok")
+    assert returned == [0], (
+        "the gate-skip control fire called _retrieve, so it is not the "
+        "path the control needs"
+    )
+    assert "<cadence-resume" in control, (
+        "the gate-skip control emitted no cadence-resume block, so the "
+        f"absence assert above checks nothing: {control!r}"
+    )
+    assert hook.MEMORY_BLOCK_HINT in control, (
+        "the gate-skip control emitted no hint, so the absence assert "
+        f"above checks nothing: {control!r}"
+    )
+    doc = " ".join(_hint_docstring().split())
+    assert "On a fire that retrieves, the hint" not in doc, (
+        "the MEMORY_BLOCK_HINT docstring says every retrieving fire gets "
+        "the hint; a fire that keeps no hit emits none (#1546)"
+    )
+    for phrase in (
+        "retrieves and keeps at least one hit, the hint is appended",
+        "retrieves and keeps no hit",
+        "so it emits no hint",
+        "a fresh `<cadence-resume>` block included",
+    ):
+        assert phrase in doc, (
+            f"the MEMORY_BLOCK_HINT docstring no longer says {phrase!r}; "
+            "a retrieving fire with no hit emits no hint and, on a first "
+            "prompt, no session-start block (#1546)"
+        )
