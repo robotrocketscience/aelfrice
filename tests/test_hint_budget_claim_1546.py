@@ -8,7 +8,7 @@ the packer fills on a UserPromptSubmit fire is the bare constant: in
 `user_prompt_submit`, `budget` is the caller's `token_budget` or
 `DEFAULT_HOOK_TOKEN_BUDGET`, and nothing between there and the packer in
 `retrieval.retrieve_with_tiers` takes any of it off. The paragraph now says
-that. Five tests hold it there.
+that. Six tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
@@ -61,6 +61,14 @@ asserts the output holds neither, and checks with a gate-skip control
 that the cache and the hint do render elsewhere. The paragraph then has
 to scope the retrieving sentence to a fire that keeps at least one hit
 and say what the zero-hit fire emits.
+
+The sixth covers the gate-skip fire whose session-start build is
+empty. The hint sits under `if session_start_block` in the gate-skip
+branch, so with an empty store and no cadence-resume cache that fire
+emits nothing. The test fires that path, asserts the output is empty,
+and checks with a control fire after the cache is written that the
+hint does render. The paragraph then has to say the empty build
+emits no hint.
 """
 from __future__ import annotations
 
@@ -447,6 +455,72 @@ def test_the_gate_skip_fire_emits_the_hint_without_retrieving(
             "<core> ahead of it, and the MEMORY_BLOCK_HINT docstring does "
             "not say so (#1546)"
         )
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.source_scan
+def test_a_gate_skip_fire_with_an_empty_build_emits_no_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gate-skip first prompt whose session-start build is empty emits nothing.
+
+    The store is empty and no cadence-resume cache exists, so the build
+    returns nothing and the gate-skip branch has no block to write the hint
+    into. The control fire, a gate-skip first prompt in a second session
+    after the cache is written, has to emit the hint, so a branch that no
+    longer reaches the write fails there rather than passing the absence
+    assert. Neither fire may call `_retrieve`. Only then is the paragraph
+    read; it is marked `source_scan` (#1746) for that read.
+    """
+    calls: list[int] = []
+    real = hook._retrieve
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hook, "_retrieve", counting)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    db = tmp_path / "memory.db"
+    MemoryStore(str(db)).close()
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    def fire(session_id: str) -> str:
+        sout = io.StringIO()
+        serr = io.StringIO()
+        rc = hook.user_prompt_submit(
+            stdin=io.StringIO(_payload(tmp_path, session_id, "ok")),
+            stdout=sout,
+            stderr=serr,
+        )
+        assert rc == 0
+        assert "Traceback" not in serr.getvalue(), serr.getvalue()
+        return sout.getvalue()
+
+    empty = fire("empty")
+    assert empty == "", (
+        "a gate-skip first prompt with an empty session-start build emitted "
+        f"output; the MEMORY_BLOCK_HINT docstring says it emits none (#1546): "
+        f"{empty!r}"
+    )
+    _write_cadence_resume_cache()
+    control = fire("control")
+    assert hook.MEMORY_BLOCK_HINT in control, (
+        "the gate-skip control with a cadence-resume cache emitted no hint, "
+        f"so the absence assert above checks nothing: {control!r}"
+    )
+    assert calls == [], (
+        f"a gate-skip fire called _retrieve {len(calls)} times, so these "
+        "fires did not take the gate-skip branch"
+    )
+    doc = " ".join(_hint_docstring().split())
+    assert (
+        "If the session-start build returned nothing, that fire emits no "
+        "block and no hint." in doc
+    ), (
+        "the MEMORY_BLOCK_HINT docstring no longer says a gate-skip first "
+        "prompt with an empty session-start build emits no hint (#1546)"
+    )
 
 
 _K0_RESULT = "docs/design/budget_discriminability_k0_result.md"
