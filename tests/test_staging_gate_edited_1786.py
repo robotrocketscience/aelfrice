@@ -18,10 +18,21 @@ from tests.test_ci_manual_dispatch import _block, _text
 # two workflows checked below, only `pr-metadata.yml` reads the title or body,
 # so with `edited` in its trigger list `staging-gate.yml` re-scanned an
 # unchanged diff on every title or body edit and, through the concurrency
-# group, cancelled the in-flight run of the same PR. The regex matches the
-# event expression only: a workflow that fetches the body through the API, as
-# `merge-train.yml` does with `gh pr view --json body`, does not trip it.
-_PR_METADATA_FIELD_RE = re.compile(r"github\.event\.pull_request\.(title|body)\b")
+# group, cancelled the in-flight run of the same PR.
+#
+# The regex counts a read of the event payload in any of these forms: the
+# dotted or bracketed field (`github.event.pull_request.title`,
+# `github.event.pull_request['title']`), the whole PR object or event passed
+# to `toJSON`, and the event file (`GITHUB_EVENT_PATH`, `github.event_path`),
+# which holds the title and body. It does not count an API fetch: a workflow
+# that reads the body as `merge-train.yml` does, with
+# `gh pr view --json body`, does not trip it.
+_PULL_REQUEST = r"(?:\.pull_request|\[\s*['\"]pull_request['\"]\s*\])"
+_PR_METADATA_FIELD_RE = re.compile(
+    rf"github\.event{_PULL_REQUEST}(?:\.(?:title|body)\b|\[\s*['\"](?:title|body)['\"]\s*\])"
+    rf"|toJSON\(\s*github(?:\.event{_PULL_REQUEST}?)?\s*\)"
+    r"|\bGITHUB_EVENT_PATH\b|\bgithub\.event_path\b"
+)
 
 
 def _pull_request_types(workflow: str) -> list[str]:
@@ -35,7 +46,10 @@ def _pull_request_types(workflow: str) -> list[str]:
 
 
 def _reads_title_or_body(text: str) -> bool:
-    """True when a non-comment line of workflow `text` reads the PR title or body."""
+    """True when a non-comment line of workflow `text` reads the PR title or body.
+
+    A line that hands the whole PR object or event to a step counts as a read.
+    """
     return any(
         _PR_METADATA_FIELD_RE.search(line)
         for line in text.splitlines()
@@ -87,4 +101,25 @@ def test_edited_is_a_trigger_exactly_where_the_title_or_body_is_read(workflow: s
 )
 def test_a_comment_naming_the_title_or_body_is_not_a_read(line: str, reads: bool) -> None:
     """Only a non-comment line counts, so a comment cannot add or keep `edited`."""
+    assert _reads_title_or_body(f"on:\n  pull_request:\n{line}\n") is reads
+
+
+@pytest.mark.parametrize(
+    ("line", "reads"),
+    [
+        ("          T: ${{ github.event.pull_request['title'] }}", True),
+        ("          B: ${{ github.event['pull_request'][\"body\"] }}", True),
+        ("        run: echo '${{ toJSON(github.event.pull_request) }}' | jq -r .title", True),
+        ("        run: echo '${{ toJSON(github.event) }}' | jq -r .pull_request.body", True),
+        ("        run: echo '${{ toJSON(github) }}' | jq -r .event.pull_request.title", True),
+        ("        run: jq -r .pull_request.title \"$GITHUB_EVENT_PATH\"", True),
+        ("          E: ${{ github.event_path }}", True),
+        ("          BASE_REF: ${{ github.event.pull_request.base.ref }}", False),
+        ("          N: ${{ github.event.pull_request.number }}", False),
+        ("        run: echo '${{ toJSON(github.event.pull_request.base) }}'", False),
+        ("        run: gh pr view \"$PR\" --json body", False),
+    ],
+)
+def test_every_event_payload_form_of_the_title_or_body_is_a_read(line: str, reads: bool) -> None:
+    """A title or body read through brackets, `toJSON` or the event file counts too."""
     assert _reads_title_or_body(f"on:\n  pull_request:\n{line}\n") is reads
