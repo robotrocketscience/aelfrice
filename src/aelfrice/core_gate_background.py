@@ -33,10 +33,11 @@ and the reply goes through `core_gate.parse_labels`, the same parser
 `aelf core-gate accept` uses. The child's environment drops any API key,
 so the run always uses the `claude` login (`runner_env`).
 
-On Windows (#1761) the child starts with `DETACHED_PROCESS`,
-`CREATE_NO_WINDOW`, and `CREATE_NEW_PROCESS_GROUP` in place of
-`start_new_session`, which Popen ignores there, and runs the CLI with
-`CREATE_NO_WINDOW`, so neither opens a console window. `find_claude`
+On Windows (#1761) the child starts with `CREATE_NO_WINDOW` and
+`CREATE_NEW_PROCESS_GROUP` in place of `start_new_session`, which Popen
+ignores there, and runs the CLI with `CREATE_NO_WINDOW`, so neither
+opens a console window. The child has a console with no window, which
+the python.exe a venv's launcher starts inherits (`spawn`). `find_claude`
 resolves `claude` through the `PATHEXT` extensions, so an npm
 `claude.cmd` shim is found, and only in the folders named on `PATH`, so
 a `claude.cmd` in the project the hook runs in is not. The reply is
@@ -484,8 +485,8 @@ def _label_batch(
     runner = run if run is not None else run_bounded
     platform_kwargs: dict[str, Any] = {}
     if _is_win32():
-        # This process has no console (`spawn`), so a console program it
-        # starts would get a new, visible one without this flag.
+        # The CLI gets a console of its own with no window, whatever
+        # console this process has (`spawn`).
         platform_kwargs["creationflags"] = _creationflags("CREATE_NO_WINDOW")
     started = time.monotonic()
     try:
@@ -566,11 +567,17 @@ def spawn(batch_id: str, *, db_path: str, claude: str) -> bool:
         "stderr": subprocess.DEVNULL, "close_fds": True, "env": env,
     }
     if _is_win32():
-        # Popen ignores `start_new_session` on Windows. Detached: no
-        # console, so no window; its own process group, so the host's
-        # Ctrl+C doesn't reach it (#1761).
+        # Popen ignores `start_new_session` on Windows (#1761).
+        # `CREATE_NO_WINDOW` gives the child a console with no window. In
+        # a venv, `sys.executable` is a launcher that starts the real
+        # python.exe with no creation flags, and that python.exe inherits
+        # the hidden console. Under `DETACHED_PROCESS` the launcher would
+        # have no console, so Windows would give python.exe a new, visible
+        # one, and Windows ignores `CREATE_NO_WINDOW` next to
+        # `DETACHED_PROCESS`, so that flag is left out. Its own process
+        # group keeps the host's Ctrl+C from reaching it.
         kwargs["creationflags"] = _creationflags(
-            "DETACHED_PROCESS", "CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP",
+            "CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP",
         )
     else:
         kwargs["start_new_session"] = True

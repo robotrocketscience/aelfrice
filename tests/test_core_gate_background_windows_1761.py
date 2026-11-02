@@ -210,16 +210,22 @@ class FakePopen:
         FakePopen.seen = {"argv": argv, "kw": kw}
 
 
-def test_spawn_detaches_without_a_console_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawn_starts_in_a_console_with_no_window_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Killed by: passing `start_new_session` on Windows, where Popen ignores
-    it; dropping any of the three flags, which would leave a console window,
-    a shared process group, or an attached child; or resolving the flags
-    through a name `subprocess` has only on Windows without the fallback."""
+    it; dropping `CREATE_NO_WINDOW` or `CREATE_NEW_PROCESS_GROUP`, which
+    would leave a console window or a shared process group; adding
+    `DETACHED_PROCESS`, next to which Windows ignores `CREATE_NO_WINDOW`,
+    so the python.exe a venv's launcher starts would open a visible
+    console; or resolving the flags through a name `subprocess` has only on
+    Windows without the fallback."""
     monkeypatch.setattr(bg, "_is_win32", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     assert bg.spawn("widgetbatch", db_path="/x/memory.db", claude=CLAUDE) is True
     kw = FakePopen.seen["kw"]
-    assert kw["creationflags"] == DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    assert kw["creationflags"] == CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    assert not kw["creationflags"] & DETACHED_PROCESS
     assert "start_new_session" not in kw
     for stream in ("stdin", "stdout", "stderr"):
         assert kw[stream] is subprocess.DEVNULL, stream
@@ -272,8 +278,8 @@ def test_the_cli_run_hides_its_window_on_windows_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, win32: bool,
 ) -> None:
     """Killed by: running the CLI without `CREATE_NO_WINDOW` on Windows,
-    where a detached parent's console child gets a new visible console; or
-    passing `creationflags` on POSIX, where Popen rejects it."""
+    which would leave the CLI's window to whatever console this process
+    has; or passing `creationflags` on POSIX, where Popen rejects it."""
     monkeypatch.setattr(bg, "_is_win32", lambda: win32)
     db = tmp_path / "memory.db"
     batch_id = _open_batch(db)

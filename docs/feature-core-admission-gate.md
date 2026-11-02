@@ -103,8 +103,10 @@ checks the reply with `parse_labels`, and caches the labels.
 paths; that change made a new classifier version. Since #1761 the
 hooks-off setting reaches `claude` as a per-run temporary file, removed
 when the run returns, so no JSON goes through a command line. On
-Windows (#1761) the process starts with `DETACHED_PROCESS`,
-`CREATE_NO_WINDOW`, and `CREATE_NEW_PROCESS_GROUP`, and `claude` can be
+Windows (#1761) the process starts with `CREATE_NO_WINDOW` and
+`CREATE_NEW_PROCESS_GROUP`, so it has a console with no window, which
+the python.exe a venv's launcher starts inherits. `DETACHED_PROCESS`
+would leave that python.exe to open a visible console. `claude` can be
 the npm `claude.cmd` shim, which runs its arguments through cmd.exe.
 Nothing is
 written to the hook's stdout. A run that fails leaves the batch open,
