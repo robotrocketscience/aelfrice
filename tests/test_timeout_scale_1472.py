@@ -147,7 +147,7 @@ def _conftest_body() -> str:
     """
     return (
         "import sys\n"
-        f"sys.path.insert(0, {str(_REPO)!r})\n"
+        f"sys.path.insert(0, {str(_REPO)!r})\n"  # path-filter: none
         "from tests.conftest import pytest_collection_modifyitems  # noqa: F401\n"
     )
 

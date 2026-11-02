@@ -398,7 +398,8 @@ def test_importing_an_unmarked_module_that_reads_source_fails_collection(
     )
     driver = tmp_path / "driver.py"
     driver.write_text(
-        _COLLECT_DRIVER.format(repo=str(_REPO), probes=str(probes)), encoding="utf-8",
+        # The driver puts the root on `sys.path` and imports from tests/.
+        _COLLECT_DRIVER.format(repo=str(_REPO), probes=str(probes)), encoding="utf-8",  # path-filter: none
     )
     done = subprocess.run(
         [sys.executable, str(driver)], cwd=tmp_path,

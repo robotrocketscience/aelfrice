@@ -37,7 +37,8 @@ module binds, such as `cdf.REPO_ROOT`, is the test's own, and a call to
 one of its functions that reads under its root, such as
 `cdf.iter_files(roots)`, is a read the scan cannot resolve. A path built
 on the repo root that the scan still cannot resolve, such as `REPO / p`
-over `git ls-files` output, fails `test_every_repo_path_a_test_builds_is_resolved`
+over `git ls-files` output, or a string built on the root, such as
+`f"{_REPO}/docs/x.md"`, fails `test_every_repo_path_a_test_builds_is_resolved`
 until its line carries a `# path-filter:` comment naming what it reads.
 So a new test that reads a new file outside the filter through such a
 path fails here, and an entry nobody reads any more fails the reverse
@@ -508,6 +509,43 @@ def _lists_the_root(node: ast.AST, names: dict[str, _Value], here: tuple[str, ..
     return False
 
 
+def _flatten(value: _Value) -> _Value:
+    """`value` with each literal tuple, list or set replaced by its elements."""
+    items: set[tuple] = set()
+    pending = list(value)
+    while pending:
+        item = pending.pop()
+        if item[0] == "c":
+            pending.extend(item[1])
+        else:
+            items.add(item)
+    return frozenset(items)
+
+
+def _builds_a_string_on_the_root(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> bool:
+    """Whether `node` builds a string from the repo root: `f"{_REPO}/docs/x.md"`.
+
+    The scan follows path joins, not string operations, so it cannot say
+    which file such a string names, as with `_REPO / name`. An f-string,
+    `+`, `%`, `.format` and `str.join` count; `os.path.join` is a path
+    constructor and resolves.
+    """
+    if isinstance(node, ast.JoinedStr):
+        operands = [v.value for v in node.values if isinstance(v, ast.FormattedValue)]
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        operands = [node.left, node.right]
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("format", "join")
+        and _dotted(node.func) not in _CONSTRUCTORS
+    ):
+        operands = [*node.args, *(k.value for k in node.keywords)]
+    else:
+        return False
+    return any(() in _paths(_flatten(_resolve(o, names, here))) for o in operands)
+
+
 def _calls_a_reader(node: ast.AST, names: dict[str, _Value], here: tuple[str, ...]) -> bool:
     """Whether `node` calls another module's function that reads under the root.
 
@@ -578,7 +616,11 @@ def _analyse(source: str, here: tuple[str, ...]) -> _Analysis:
     unresolved: list[ast.AST] = []
     for node in owner:
         names = names_of(owner[node])
-        if _lists_the_root(node, names, here) or _calls_a_reader(node, names, here):
+        if (
+            _lists_the_root(node, names, here)
+            or _calls_a_reader(node, names, here)
+            or _builds_a_string_on_the_root(node, names, here)
+        ):
             unresolved.append(node)
         if _consumed(node, parents):
             continue
@@ -715,7 +757,8 @@ def _scan_source(source: str, here: tuple[str, ...]) -> _Scan:
     longest resolvable prefix is recorded instead, since the test reads
     under it. When that prefix is the repo root itself, as in `_REPO /
     name` with `name` read from `git ls-files`, or when the module lists
-    the root, the scan cannot say what is read. That line must carry a
+    the root or builds a string on it (`f"{_REPO}/x"`, `str(_REPO) +
+    "/x"`), the scan cannot say what is read. That line must carry a
     `# path-filter:` comment naming exact paths, `<dir>/**` or a glob, or
     `none`, and is otherwise reported as a problem. So is a comment on a
     line with nothing for it to declare.
@@ -1038,6 +1081,11 @@ _UNRESOLVED = {
     ),
     "root_glob": 'def test_x():\n    for p in sorted(_R.glob("*.md")):\n        p.read_text()\n',
     "root_walk": "def test_x():\n    for top, dirs, files in os.walk(_R):\n        print(top, files)\n",
+    "fstring": 'def test_x():\n    open(f"{_R}/docs/new.md").read()\n',
+    "str_concat": 'def test_x():\n    open(str(_R) + "/docs/new.md").read()\n',
+    "percent": 'def test_x():\n    open("%s/docs/new.md" % (_R,)).read()\n',
+    "format": 'def test_x():\n    open("{}/docs/new.md".format(_R)).read()\n',
+    "os_sep_join": 'def test_x():\n    open(os.sep.join([str(_R), "docs", "new.md"])).read()\n',
 }
 
 
