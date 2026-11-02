@@ -39,15 +39,22 @@ _CI_FLOOR_NAMES = frozenset({"derived-figures", "pytest (3.12)", "pytest (3.13)"
 # `pull_request` object taken whole, as a destructuring or a `JSON.stringify`
 # does. It does not count an API fetch: a workflow that reads the body as
 # `merge-train.yml` does, with `gh pr view --json body`, does not trip it.
+#
+# A `${{ }}` expression looks up function and property names without regard
+# to case, so the `github` forms and `toJSON` match in any case:
+# `toJson(github.event)` and `github.event.pull_request.Title` both count. The
+# `context.payload` form is JavaScript and `GITHUB_EVENT_PATH` is a shell
+# variable, and both keep their exact case.
 _EVENT = r"github(?:\.event|\[\s*['\"]event['\"]\s*\])"
 _EVENT_PATH = r"github(?:\.event_path\b|\[\s*['\"]event_path['\"]\s*\])"
 _PULL_REQUEST = r"(?:\.pull_request|\[\s*['\"]pull_request['\"]\s*\])"
 _TITLE_OR_BODY = r"(?:\??\.(?:title|body)\b|\[\s*['\"](?:title|body)['\"]\s*\])"
 _PAYLOAD_PULL_REQUEST = r"(?:\??\.pull_request|\[\s*['\"]pull_request['\"]\s*\])"
 _PR_METADATA_FIELD_RE = re.compile(
-    rf"{_EVENT}{_PULL_REQUEST}{_TITLE_OR_BODY}"
+    rf"(?i:{_EVENT}{_PULL_REQUEST}{_TITLE_OR_BODY}"
     rf"|toJSON\(\s*(?:{_EVENT}{_PULL_REQUEST}?|github)\s*\)"
-    rf"|\bGITHUB_EVENT_PATH\b|\b{_EVENT_PATH}"
+    rf"|\b{_EVENT_PATH})"
+    rf"|\bGITHUB_EVENT_PATH\b"
     rf"|(?<![\w$])context\.payload(?:{_PAYLOAD_PULL_REQUEST}{_TITLE_OR_BODY}"
     rf"|(?:{_PAYLOAD_PULL_REQUEST})?(?![\w$]|\s*(?:\??\.|\[)))"
 )
@@ -247,10 +254,21 @@ def test_a_comment_naming_the_title_or_body_is_not_a_read(line: str, reads: bool
         ("          N: ${{ github.event.pull_request.number }}", False),
         ("        run: echo '${{ toJSON(github.event.pull_request.base) }}'", False),
         ("        run: gh pr view \"$PR\" --json body", False),
+        ("        run: echo '${{ toJson(github.event) }}' | jq -r .pull_request.title", True),
+        ("        run: echo '${{ tojson(github.event.pull_request) }}'", True),
+        ("        run: echo '${{ TOJSON(github) }}' | jq -r .event.pull_request.body", True),
+        ("          T: ${{ github.event.pull_request.Title }}", True),
+        ("          B: ${{ GitHub.Event['Pull_Request']['BODY'] }}", True),
+        ("          E: ${{ github.Event_Path }}", True),
+        ("          R: ${{ GitHub.Event.Pull_Request.Base.Ref }}", False),
+        ("            const t = context.payload.pull_request.Title;", False),
     ],
 )
 def test_every_event_payload_form_of_the_title_or_body_is_a_read(line: str, reads: bool) -> None:
-    """A read through brackets, `toJSON`, the event file or `context.payload` counts."""
+    """A read through brackets, `toJSON`, the event file or `context.payload` counts.
+
+    An expression read counts in any letter case, as the runner resolves it.
+    """
     assert _reads_title_or_body(f"on:\n  pull_request:\n{line}\n") is reads
 
 
