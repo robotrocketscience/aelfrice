@@ -60,6 +60,15 @@ jobs:
     # A hung leg is cancelled at 30 minutes instead of the platform's
     # 360. Recent green legs took 11 to 14 minutes.
     timeout-minutes: 30
+    # The branch ruleset requires the two `pytest` legs and not
+    # `derived-figures`, so the legs carry that job's result: each leg waits
+    # for it and fails in its first step unless it passed. A merge through
+    # the UI, `gh pr merge` or auto-merge then cannot land a red figure.
+    # `!cancelled()` runs the legs after a failed `derived-figures`. Without
+    # it they report `skipped`, and the ruleset counts a skipped check as a
+    # pass.
+    needs: derived-figures
+    if: ${{ !cancelled() }}
     strategy:
       # One leg failing must not cancel the other: a 3.12-only failure and
       # a failure on both versions are different diagnoses.
@@ -70,6 +79,13 @@ jobs:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
           egress-policy: audit
+      # No `if:`, so a docs-only PR fails here too. `needs` reports
+      # `success`, `failure`, `cancelled` or `skipped`, and only `success`
+      # passes.
+      - name: The derived-figures job must pass
+        env:
+          DERIVED_FIGURES: ${{ needs.derived-figures.result }}
+        run: test "$DERIVED_FIGURES" = success
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -197,10 +213,11 @@ jobs:
       #
       # `--deselect` drops the one test that re-runs the store-free producers
       # over the live tree. The `derived-figures` job below runs the same
-      # producers over the same tree on every PR, with no path filter, and
-      # the merge train requires it, so each leg ran the producers a second
-      # time. That job runs Python 3.13 only, so the 3.12 leg no longer runs
-      # the producers. It also has no 120 s cap: the test's timeout marker
+      # producers over the same tree on every PR, with no path filter, so
+      # each leg ran the producers a second time. The branch ruleset does not
+      # require that job, so the legs' first step fails unless it passed, and
+      # a red producer check still turns both required legs red. That job
+      # runs Python 3.13 only, so the 3.12 leg no longer runs the producers. It also has no 120 s cap: the test's timeout marker
       # held each leg to 120 s, while the job lets each producer run for
       # 300 s (`PRODUCER_TIMEOUT_S` in scripts/check_derived_figures.py) and
       # sets no `timeout-minutes`. A producer that slows past 120 s and

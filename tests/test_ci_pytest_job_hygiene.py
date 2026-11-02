@@ -9,11 +9,12 @@ branch ruleset and `scripts/merge_train_gate.py` match them as strings and a
 job-level `name:` or a matrix change would rename both.
 
 The job deselects one test, the live-tree producer check, because the
-`derived-figures` job runs the same producers on every PR. The tests at the
-bottom pin the legs' `run:` line and reject the `PYTEST_` variables that
-add to it. They pin that job's gate command verbatim, run its arguments
-through the script, and reject the keys that skip the job or let it fail
-green.
+`derived-figures` job runs the same producers on every PR. The branch
+ruleset requires the `pytest` legs and not that job, so each leg waits for
+it and fails unless it passed. The tests at the bottom pin that edge, pin
+the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
+They pin that job's gate command verbatim, run its arguments through the
+script, and reject the keys that skip the job or let it fail green.
 
 Parsed by line, like the neighbouring workflow tests: PyYAML is not in the
 dependency set CI installs (#1436).
@@ -296,6 +297,35 @@ def test_no_pytest_variable_is_set_anywhere_in_the_workflow() -> None:
         if "PYTEST_" in line and not line.lstrip().startswith("#")
     ]
     assert found == [], found
+
+
+# The legs' first check, verbatim with comments dropped. `needs` reports
+# `success`, `failure`, `cancelled` or `skipped`, and only `success` passes.
+_NEEDS_STEP = [
+    "- name: The derived-figures job must pass",
+    "env:",
+    "DERIVED_FIGURES: ${{ needs.derived-figures.result }}",
+    'run: test "$DERIVED_FIGURES" = success',
+]
+
+
+def test_a_red_derived_figures_job_turns_the_required_legs_red() -> None:
+    """The ruleset requires the `pytest` legs and not `derived-figures`, so
+    the deselect holds only while the legs carry that job's result. Without
+    `needs` a leg never sees it. Without `!cancelled()` a failed
+    `derived-figures` skips the legs, and the ruleset counts a skipped check
+    as a pass. An `if:` or a `shell:` on the step would let it pass on the
+    docs-only branch or without testing anything."""
+    keys = _job_keys()
+    assert keys.get("needs") == "derived-figures", keys
+    assert keys.get("if") == "${{ !cancelled() }}", keys
+    steps = _steps()
+    found = [
+        s for s in steps if "needs.derived-figures.result" in "\n".join(s)
+    ]
+    assert len(found) == 1, f"expected one step that reads the result: {found!r}"
+    assert [line.strip() for line in found[0]] == _NEEDS_STEP
+    assert steps.index(found[0]) < steps.index(_pytest_step())
 
 
 def _gate_step() -> list[str]:
