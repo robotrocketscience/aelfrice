@@ -6,24 +6,29 @@ The #1820 docs sweep left statements that disagreed with the 5.3.0 code:
      unless each project folder holds a `[store]` table. One table is
      enough: the folder with it resolves to its own store, and the
      other keeps the repository's store.
+  2. QUICKSTART.md's `aelf status` sample showed an `aelfrice <version>`
+     first line and no `store:`, `store rule:` or `phantoms:` line.
 
 Each test checks the code fact first, then the page. The page checks
 match terms, not whole sentences.
 """
 from __future__ import annotations
 
+import argparse
+import io
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from aelfrice import db_paths
+from aelfrice import cli, db_paths
 from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.db_paths import STORE_RULE_GIT, STORE_RULE_MARKER, resolve_store
 
 REPO = Path(__file__).resolve().parents[1]
 USER_DOCS = REPO / "docs" / "user"
+STATUS_PROMPT = "$ aelf status"
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -84,3 +89,27 @@ def test_one_store_table_separates_two_projects_in_a_repository(
     )
     assert "each project folder holds" not in section, section
     assert "unless one of them holds a `[store]` table" in section, section
+
+
+def _labels(lines: list[str]) -> list[str]:
+    return [ln.split(":", 1)[0] for ln in lines]
+
+
+def _quickstart_status_sample() -> list[str]:
+    text = (USER_DOCS / "QUICKSTART.md").read_text(encoding="utf-8")
+    assert text.count(STATUS_PROMPT + "\n") == 1, "expected one aelf status sample"
+    body = text.split(STATUS_PROMPT + "\n", 1)[1]
+    return body.split("\n\n", 1)[0].splitlines()
+
+
+def test_quickstart_status_sample_has_the_labels_status_prints(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sample's labels, in order, are the ones `aelf status` prints."""
+    monkeypatch.setenv("AELFRICE_DB", str(sandbox / "store" / "memory.db"))
+    buf = io.StringIO()
+    assert cli._cmd_stats(argparse.Namespace(), buf) == 0
+    printed = _labels(buf.getvalue().splitlines())
+    assert "store" in printed and "store rule" in printed, printed
+
+    assert _labels(_quickstart_status_sample()) == printed

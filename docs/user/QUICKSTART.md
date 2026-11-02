@@ -74,12 +74,15 @@ Restart Claude Code. Your next prompt that mentions "deploy" or "push" arrives w
 
 ```bash
 $ aelf status
-aelfrice <version>
-beliefs: 287
-threads: 42
-locked: 1
-feedback events: 0
-hrr.persist_state: on 1181696 bytes, last build 0.4s
+version:           <version>
+store:             <project>/.git/aelfrice/memory.db
+store rule:        git
+beliefs:           287
+threads:           42
+locked:            1
+feedback events:   0
+phantoms:          0 active · 0 promoted · 0 retired (latest: —)
+hrr.persist_state:  on 1181696 bytes, last build 0.412s
 
 $ aelf doctor graph
 audit:
