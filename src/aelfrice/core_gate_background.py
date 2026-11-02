@@ -59,6 +59,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -380,6 +381,27 @@ def _kill_tree(proc: "subprocess.Popen[str]") -> None:
         pass
 
 
+def _feed_stdin(stdin: IO[str] | None, data: str) -> None:
+    """Write `data` to the run's stdin, then close it. Never raises.
+
+    `run_bounded` calls this on a thread of its own, because a write to a
+    pipe the run isn't reading blocks once the pipe's buffer is full.
+    """
+    if stdin is None:
+        return
+    try:
+        stdin.write(data)
+    except (OSError, ValueError):
+        # A broken pipe: the run exited, or was killed, before it read all
+        # of its input. Its exit and reply decide the outcome.
+        pass
+    try:
+        stdin.close()
+    except (OSError, ValueError):
+        # The same broken pipe, met again when the close flushes.
+        pass
+
+
 def run_bounded(
     argv: list[str], *, input: str, timeout: float, capture_output: bool = True,
     **kwargs: Any,
@@ -395,6 +417,13 @@ def run_bounded(
     `RUNNER_KILL_WAIT_SECONDS` for the pipes, and raises `TimeoutExpired`
     whether or not they closed. The call returns or raises within
     `timeout` plus twice `RUNNER_KILL_WAIT_SECONDS`.
+
+    `input` goes to the run on a daemon thread (`_feed_stdin`), and
+    `communicate` never sees stdin. On Windows, CPython 3.12's
+    `communicate` writes `input` before it starts the timeout, so a run
+    that never reads a prompt larger than the pipe's buffer would block
+    that write, and the call, with no limit. The kill on a timeout breaks
+    the pipe, which ends the thread's write.
     """
     if capture_output:
         kwargs["stdout"] = subprocess.PIPE
@@ -403,7 +432,9 @@ def run_bounded(
         argv, stdin=subprocess.PIPE, **kwargs,
     )
     try:
-        out, err = proc.communicate(input, timeout=timeout)
+        stdin, proc.stdin = proc.stdin, None
+        threading.Thread(target=_feed_stdin, args=(stdin, input), daemon=True).start()
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
         try:

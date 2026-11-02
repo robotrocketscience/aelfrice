@@ -12,12 +12,14 @@ store is under `tmp_path`, and the belief text is synthetic.
 """
 from __future__ import annotations
 
+import io
 import json
 import ntpath
 import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -317,6 +319,7 @@ class HungShimPopen:
         self.argv = argv
         self.args = argv
         self.kw = kw
+        self.stdin = io.StringIO()
         self.pid = 4242
         self.returncode: int | None = None
         self.tree_killed = False
@@ -419,6 +422,80 @@ def test_the_settings_file_is_removed_after_a_timeout_through_a_cmd_shim(
     (argv,) = [arg for name, arg in HungShimPopen.events
                if name == "popen" and not arg[0].lower().endswith("taskkill.exe")]
     assert not Path(argv[argv.index("--settings") + 1]).exists()
+
+
+# The longest a `_FullPipe` write blocks before the test gives up on it.
+_FULL_PIPE_BLOCK_SECONDS = 5.0
+
+
+class _FullPipe:
+    """A stdin pipe whose buffer is full: a write blocks until the reader dies."""
+
+    def __init__(self) -> None:
+        self.broken = threading.Event()
+        self.closed = threading.Event()
+
+    def write(self, data: str) -> int:
+        if self.broken.wait(_FULL_PIPE_BLOCK_SECONDS):
+            raise BrokenPipeError(32, "Broken pipe")
+        raise AssertionError("the stdin write blocked, and no kill ended it")
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+class UnreadStdinPopen:
+    """A `Popen` for a run that never reads stdin and never finishes.
+
+    Its `communicate` writes `input` before it starts the timeout, as
+    CPython 3.12's Windows `communicate` does, so a prompt larger than the
+    pipe's buffer blocks there. `kill` breaks the pipe.
+    """
+
+    last: UnreadStdinPopen | None = None
+
+    def __init__(self, argv: list[str], **kw: Any) -> None:
+        self.argv = argv
+        self.args = argv
+        self.pid = 4343
+        self.returncode: int | None = None
+        self.pipe = _FullPipe()
+        self.stdin: _FullPipe | None = self.pipe
+        UnreadStdinPopen.last = self
+
+    def communicate(
+        self, input: str | None = None, timeout: float | None = None,
+    ) -> tuple[str, str]:
+        if self.stdin is not None:
+            if input:
+                self.stdin.write(input)
+            self.stdin.close()
+        if self.returncode is not None:
+            return "", ""
+        assert timeout is not None, "communicate() with no timeout waits for the run"
+        self.pipe.broken.wait(timeout)
+        raise subprocess.TimeoutExpired(self.argv, timeout)
+
+    def kill(self) -> None:
+        self.returncode = 1
+        self.pipe.broken.set()
+
+
+def test_a_run_that_never_reads_its_prompt_still_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killed by: handing the prompt to `communicate`, which on Windows under
+    CPython 3.12 writes it before the timeout starts, so a run that never
+    reads blocks the call past `timeout` until the pipe breaks."""
+    monkeypatch.setattr(bg, "_is_win32", lambda: False)
+    monkeypatch.setattr(subprocess, "Popen", UnreadStdinPopen)
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        bg.run_bounded(["widget-cli"], input="w" * 65536, timeout=0.2)
+    assert time.monotonic() - started < _FULL_PIPE_BLOCK_SECONDS
+    proc = UnreadStdinPopen.last
+    assert proc is not None and proc.stdin is None
+    assert proc.pipe.closed.wait(_FULL_PIPE_BLOCK_SECONDS), "the stdin thread never closed the pipe"
 
 
 # --- the stub CLI: argv, settings file, and the real spawn path ----------------
