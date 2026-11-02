@@ -24,7 +24,7 @@ The visible CLI verbs `migrate`, `sweep-feedback`, and `scan-derivation` are als
 | `/aelf:promote` | a belief id. Promotes `agent_inferred` to `user_validated`. From v3.0 it accepts `--to-scope SCOPE`, which flips the federation visibility in the same call (#689). |
 | `/aelf:delete` | a belief id. A locked belief requires `--force`, and `--yes` skips the prompt. |
 | `/aelf:core` | optional `--json` and `--locked-only`. Surfaces the load-bearing beliefs. |
-| `/aelf:status` | (none). Prints the belief, lock, and history counts. Renamed from `stats` at v1.2.0. |
+| `/aelf:status` | (none). Prints the output of `aelf status` as is: the store path and the rule that chose it, then the belief, thread, lock, feedback, and phantom counts. Renamed from `stats` at v1.2.0. |
 | `/aelf:doctor` | optional `[hooks\|graph]`, `--user-settings`, and `--project-root` |
 | `/aelf:tail` | optional `--filter`, `--since`, and `--no-follow`. Live-tails the hook-injection audit log. |
 | `/aelf:setup` | optional `--scope`, `--command`, `--transcript-ingest`, and others |
