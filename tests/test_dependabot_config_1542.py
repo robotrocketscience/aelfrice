@@ -171,6 +171,32 @@ def test_uv_updates_are_weekly_and_capped() -> None:
     assert _value(item, "include") == "scope", item
 
 
+def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
+    """Dependabot proposes a release no sooner than seven days after it is
+    published. Without `cooldown`, or with fewer days, zizmor's
+    dependabot-cooldown audit raises a code-scanning alert on main. Every
+    `*-days` key holds at least seven, and no `include` or `exclude` list
+    narrows the packages the cooldown covers."""
+    item = _uv_item()
+    depth: int | None = None
+    rules: dict[str, str] = {}
+    for line in item:
+        if depth is None:
+            if re.match(r"^\s*cooldown:\s*$", line):
+                depth = _indent(line)
+            continue
+        if _indent(line) <= depth:
+            break
+        pair = re.match(r"^\s*([A-Za-z-]+):\s*(.*?)\s*$", line)
+        assert pair, line
+        rules[pair.group(1)] = pair.group(2)
+    assert "default-days" in rules, rules
+    days = {"default-days", "semver-major-days", "semver-minor-days", "semver-patch-days"}
+    assert set(rules) <= days, rules
+    short = {key: value for key, value in rules.items() if not value.isdigit() or int(value) < 7}
+    assert not short, short
+
+
 def test_uv_group_takes_every_minor_and_patch_version_update() -> None:
     """One group holds the minor and patch version updates of every
     package. `applies-to: security-updates` moves the group off version

@@ -7,7 +7,11 @@
 # new ones. The tests run on the new versions, and the stale uv.lock
 # merges.
 # Updates arrive weekly: minor and patch bumps grouped into one PR, a major
-# bump as its own PR, at most five open PRs at a time. Each PR carries the
+# bump as its own PR, at most five open PRs at a time. Dependabot waits
+# seven days after a release before it proposes that version, the shortest
+# cooldown zizmor's dependabot-cooldown audit accepts. The cooldown covers
+# version updates only, so a security update still opens once an alert has
+# a patched version. Each PR carries the
 # `dependencies` and `python:uv` labels, the ones Dependabot's security
 # updates already apply, and a `build(deps):` subject, which the
 # commit-msg-prefix and pr-title-prefix checks accept. Nothing here merges
@@ -21,6 +25,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
