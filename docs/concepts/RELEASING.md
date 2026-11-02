@@ -160,10 +160,10 @@ Then bump the version to `vX.Y.Z+1` and include the fix.
 
 ## Pre-releases
 
-PyPI treats `-rc` as a pre-release, and a pre-release does not appear as the default install candidate. The name follows the current major version: `v3.4.0-rc1` is a candidate for v3.4.0. `publish.yml` fires only on a final-release tag that matches `v[0-9]+.[0-9]+.[0-9]+`, so pushing an rc tag starts nothing. The existing `v0.9.0rc0` tag never reached PyPI. To ship an rc, publish it by hand with `uv build` and `uv publish`, or extend the workflow's tag filter first.
+PyPI treats `-rc` as a pre-release, and a pre-release does not appear as the default install candidate. The name follows the current major version: `v5.4.0-rc1` is a candidate for v5.4.0. `publish.yml` fires only on a final-release tag that matches `v[0-9]+.[0-9]+.[0-9]+`, so pushing an rc tag starts nothing. The existing `v0.9.0rc0` tag never reached PyPI. To ship an rc, publish it by hand with `uv build` and `uv publish`, or extend the workflow's tag filter first.
 
 ```bash
-uv tool install --pre aelfrice==3.4.0rc1
+uv tool install --pre aelfrice==5.4.0rc1
 ```
 
 ## Branch protection
