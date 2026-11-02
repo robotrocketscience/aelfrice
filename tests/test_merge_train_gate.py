@@ -1061,9 +1061,11 @@ def _check_run_names(text: str) -> frozenset[str]:
     `name:` emits one row per combination, named `<id> (<v1>, <v2>, ...)`
     in axis order, which is how `pytest` becomes `pytest (3.12)`. Any other
     matrix shape, including an inline `strategy:` or `matrix:` value such as
-    an expression, a `name:` holding an expression, or a two-space line that
-    is not a job key fails here so the parser is extended rather than
-    deriving a wrong name or skipping a job.
+    an expression, a `name:` holding an expression, a job that calls a
+    reusable workflow through a job-level `uses:` (GitHub names its rows
+    `<caller> / <callee job>`, which this does not read from the callee),
+    or a two-space line that is not a job key fails here so the parser is
+    extended rather than deriving a wrong name or skipping a job.
     """
     import itertools
 
@@ -1101,6 +1103,9 @@ def _check_run_names(text: str) -> frozenset[str]:
             job_id, display, axes, in_matrix = m.group(1), None, [], False
             continue
         assert ln.startswith("   "), f"job key shape not supported: {ln.strip()}"
+        assert not re.match(r"    uses\s*:", ln), (
+            f"{job_id}: a reusable workflow call is not supported: {ln.strip()}"
+        )
         if ln.startswith("    name:"):
             display = _scalar(ln[len("    name:"):])
         elif ln.startswith(("    strategy:", "      matrix:")):
@@ -1179,6 +1184,40 @@ def test_the_name_parser_refuses_a_job_key_it_cannot_read() -> None:
     text = "jobs:\n  lint: {runs-on: ubuntu-latest}\n"
     with pytest.raises(AssertionError, match="job key shape not supported"):
         _check_run_names(text)
+
+
+@pytest.mark.parametrize(
+    "uses",
+    [
+        "    uses: ./.github/workflows/reusable-lint.yml",
+        "    uses: owner/repo/.github/workflows/lint.yml@v1  # pinned",
+    ],
+)
+@pytest.mark.parametrize("titled", [False, True])
+def test_the_name_parser_refuses_a_reusable_workflow_call(uses: str, titled: bool) -> None:
+    """GitHub names a called workflow's rows `<caller> / <callee job>`. Read
+    as a plain job, it gives `call-lint` or `Lint`, a row no head carries, and
+    a floor entry with that name waits on it until the train times out."""
+    lines = ["jobs:", "  call-lint:", *(["    name: Lint"] if titled else []), uses, ""]
+    with pytest.raises(AssertionError, match="reusable workflow call is not supported"):
+        _check_run_names("\n".join(lines))
+
+
+def test_the_name_parser_reads_a_step_level_uses() -> None:
+    """A step's `uses:` is an action, not a reusable workflow call."""
+    text = "\n".join([
+        "jobs:",
+        "  lint:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - uses: actions/checkout@v4",
+        "        with:",
+        "          fetch-depth: 0",
+        "      - name: run",
+        "        uses: ./.github/actions/lint",
+        "",
+    ])
+    assert _check_run_names(text) == {"lint"}
 
 
 @pytest.mark.parametrize(
