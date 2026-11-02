@@ -212,10 +212,13 @@ jobs:
   # with one of those, is a ratchet violation.
   #
   # Advisory, by the 2026-10-21 ruling: a violation is a `::warning::`, the
-  # diff step passes no `--block`, and job-level `continue-on-error` keeps
-  # the check-run `success`, so the merge train's "nothing failing" test
-  # holds whatever the diff says. The blocking form is the same job with
-  # `--block` on the diff step and without `continue-on-error`.
+  # diff step passes no `--block`, and every step carries `continue-on-error`,
+  # so the job's check-run is `success` when a step fails and the merge
+  # train's "nothing failing" test holds whatever the diff says. A job-level
+  # `continue-on-error` alone would not do that: it keeps the workflow run
+  # green, but the job's check-run still reads `failure`, and the train
+  # gates on check-runs. The blocking form is the same job with `--block` on
+  # the diff step and without `continue-on-error` on that step.
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
@@ -241,8 +244,10 @@ jobs:
     # tests/test_ci_manual_dispatch.py). A dispatch carries no base commit,
     # so its summary says "no baseline".
     if: ${{ !cancelled() }}
-    # Job-level, as in mutation.yml: the property needed is that the job's
-    # check-run conclusion is `success` when a step fails.
+    # Job-level, for the workflow run only: a timeout or a lost runner then
+    # leaves the run `success`, so the baseline walk, which reads only
+    # successful runs, can still take this commit. The step-level lines
+    # below keep the check-run off `failure`; this one does not.
     continue-on-error: true
     runs-on: ubuntu-latest
     # Three API walks and two small downloads; a green run takes under two
@@ -256,12 +261,14 @@ jobs:
     # hold a write token or a secret, and this job holds neither.
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        continue-on-error: true
         with:
           persist-credentials: false
       # The two legs' reports from this run. `pattern` with no match is not
       # an error in v4 (a docs-only PR uploads none), and `merge-multiple`
       # puts `junit-3.12.xml` and `junit-3.13.xml` side by side.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
         with:
           pattern: junit-*-${{ github.sha }}
           merge-multiple: true
@@ -269,6 +276,7 @@ jobs:
       # The script is standard library only and runs on the image's own
       # python3, so the job does not pay for `uv sync`. A test pins that.
       - name: Build this run's record
+        continue-on-error: true
         env:
           # On a dispatch the first field is empty and `github.sha` is the
           # tested commit (#1436).
@@ -279,6 +287,7 @@ jobs:
               --junit 3.13=current/junit-3.13.xml \
               --sha "$HEAD_SHA" --out current-record.json
       - name: Find the last green record on main
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -292,6 +301,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" --base-sha "$BASE_SHA" \
               --out baseline-record.json
       - name: Diff against the baseline
+        continue-on-error: true
         run: |
           python3 scripts/test_outcome_record.py diff \
               --current current-record.json --baseline baseline-record.json \
@@ -300,6 +310,7 @@ jobs:
       # Both records, so a reader can rerun the diff and shape B can reuse
       # the format. Named by `github.sha` like the JUnit artifacts.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        continue-on-error: true
         with:
           name: test-outcome-record-${{ github.sha }}
           path: |

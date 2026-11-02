@@ -882,8 +882,15 @@ def test_the_job_exists_runs_after_pytest_and_also_on_a_dispatch() -> None:
 
 
 def test_the_job_is_advisory_by_the_2026_10_21_ruling() -> None:
-    """Job-level `continue-on-error`, no `--block`, and a name outside the floor."""
-    assert "    continue-on-error: true" in _job_lines("test-outcomes")
+    """`continue-on-error` on every step, no `--block`, and a name outside the floor.
+
+    The job-level line keeps the workflow run green, but the job's check-run
+    still reads `failure` when a step fails, and `merge_train_gate.evaluate`
+    counts that check-run as failing. A step-level line is what keeps the
+    check-run at `success`, so every step carries one."""
+    for step in _steps("test-outcomes"):
+        assert "\n        continue-on-error: true" in step, step
+    assert _job_keys("test-outcomes").get("continue-on-error") == "true"
     assert "name" not in _job_keys("test-outcomes")
     assert "test-outcomes" not in FLOOR_NAMES
     diff_steps = [s for s in _steps("test-outcomes") if "test_outcome_record.py diff" in s]
