@@ -92,9 +92,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # 20 minutes (#1786). The required pytest legs take 11 to 14
-          # minutes, so a label added right after a push outlived the earlier
-          # wait of 10 minutes and bounced a green PR. The job's
+          # 20 minutes (#1786). Green required pytest legs on PRs from
+          # 2026-10-21 to 2026-11-02 finished up to 16 minutes after their
+          # run was created, so a label added right after a push outlived the
+          # earlier wait of 10 minutes and bounced a green PR. The job's
           # timeout-minutes above is the only bound that must exceed this one.
           CHECK_TIMEOUT_SECONDS: '1200'
         run: |

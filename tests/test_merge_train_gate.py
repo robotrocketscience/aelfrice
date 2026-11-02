@@ -1648,6 +1648,31 @@ def test_the_workflow_comments_quote_the_current_wait() -> None:
     assert {int(m) for m in mentions} == {minutes}
 
 
+# The slowest green pytest leg, rounded up: 15.6 minutes from run creation
+# over 76 legs of PR runs of ci.yml from 2026-10-21 to 2026-11-02 (`gh run
+# list --workflow ci.yml --event pull_request --status success --limit 40`,
+# then each run's jobs, dropping legs under a minute).
+_SLOWEST_GREEN_LEG_MINUTES = 16
+
+
+def test_the_check_wait_comment_quotes_the_slowest_measured_leg() -> None:
+    """The comment above the wait is where a reader judges its margin. One
+    that quoted 11 to 14 minutes understated how close the slowest leg comes
+    to it, and a wait cut to fit that range would bounce green PRs again."""
+    text = _WORKFLOW.read_text()
+    wait = re.search(r"^\s+CHECK_TIMEOUT_SECONDS: '", text, re.M)
+    assert wait is not None
+    comment: list[str] = []
+    for line in reversed(text[: wait.start()].splitlines()):
+        if not line.lstrip().startswith("#"):
+            break
+        comment.insert(0, line.strip().lstrip("#").strip())
+    quoted = re.search(r"up to (\d+) minutes", " ".join(comment))
+    assert quoted is not None, "the wait comment no longer quotes the slowest leg"
+    assert int(quoted.group(1)) >= _SLOWEST_GREEN_LEG_MINUTES
+    assert int(quoted.group(1)) * 60 < _check_timeout_seconds()
+
+
 def _fail_and_unlabel_body() -> str:
     text = _WORKFLOW.read_text()
     start = text.index("fail_and_unlabel() {")
