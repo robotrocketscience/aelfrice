@@ -105,9 +105,8 @@ SELF_NAMES: frozenset[str] = frozenset({"Attempt merge-train FF", "merge"})
 ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 
 # Checks whose *running* state never gates, though their result still does
-# (#1633). The mutation diff job is advisory through job-level
-# `continue-on-error`, which sets its conclusion only once it finishes. While
-# it runs it read as pending, and its 60-minute cap is far past the train's
+# (#1633). The mutation diff job is advisory and sets its conclusion only
+# once it finishes. While it runs it read as pending, and its 60-minute cap is far past the train's
 # check wait (10 minutes then, 20 since #1786), so a PR with every gate green
 # was bounced whenever the job was slow (always, when `cli.py` changes: #1632).
 # Since #1786 the job starts on the same `labeled` event as the train, so a
@@ -120,9 +119,11 @@ ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 #
 # This is not ADVISORY_NAMES: a `failure` conclusion still gates, but only if
 # it arrives while the train is polling. Once everything else has settled the
-# train moves, and a later result is never read. That is acceptable only
-# because job-level `continue-on-error` keeps the job's conclusion off
-# `failure`; a test ties every name here to that line in its workflow.
+# train moves, and a later result is never read. Both jobs here are advisory,
+# so losing a late result is accepted. Job-level `continue-on-error` does not
+# change the first case: it keeps the workflow run green, while the job's own
+# check-run, the row this module reads, still reports `failure`
+# (https://github.com/orgs/community/discussions/15452).
 # `tests/test_merge_train_gate.py` pins each name against its workflow, since
 # a rename would silently restore the wait.
 #

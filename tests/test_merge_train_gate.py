@@ -305,8 +305,9 @@ def test_a_running_check_with_a_similar_name_still_holds_the_train(
 
 
 def test_a_failed_mutation_job_still_blocks() -> None:
-    """Only its running state is exempt. A failure conclusion means the
-    job-level `continue-on-error` is gone and the job is meant to gate."""
+    """Only its running state is exempt. Job-level `continue-on-error` keeps
+    the workflow run green but leaves the job's check-run at `failure`, so a
+    failure read while the train polls blocks it."""
     runs = [*_all_required_green(), _run(_MUTATION, "failure")]
     assert evaluate(runs, REQUIRED)["failing"] == [_MUTATION]
 
@@ -352,8 +353,8 @@ def _job_bodies(workflow: Path) -> dict[str, list[str]]:
     The check-run name is the job's `name:` key when it has one and its id
     otherwise, which is how GitHub names the row. A job is a two-space-
     indented key under `jobs:`; its own keys are the lines indented exactly
-    four spaces, so a step's `continue-on-error` (indented further) never
-    counts, and a commented line never matches.
+    four spaces, so a step's `name:` (indented further) never counts, and a
+    commented line never matches.
     """
     jobs: dict[str, list[str]] = {}
     body: list[str] | None = None
@@ -384,16 +385,33 @@ def _job_bodies(workflow: Path) -> dict[str, list[str]]:
     return jobs
 
 
-def test_every_nongating_name_is_a_continue_on_error_job() -> None:
-    """A renamed job would silently be waited on again, and a job without
-    job-level `continue-on-error` could report a failure the train never
-    reads once it has moved on (#1633)."""
+def test_every_nongating_name_is_a_job() -> None:
+    """A renamed job would silently be waited on again."""
     jobs: dict[str, list[str]] = {}
     for wf in sorted((_REPO / ".github" / "workflows").glob("*.yml")):
         jobs.update(_job_bodies(wf))
     for name in NONGATING_WHILE_PENDING:
         assert name in jobs, f"no job is named {name!r}"
-        assert "    continue-on-error: true" in jobs[name], name
+
+
+def _comment_text(path: Path) -> str:
+    """Every `#` comment in a file, joined into one line of prose."""
+    return " ".join(
+        ln.split("#", 1)[1].strip() for ln in path.read_text().splitlines() if "#" in ln
+    )
+
+
+@pytest.mark.parametrize(
+    "path", ["scripts/merge_train_gate.py", ".github/workflows/pr-size-soft-cap.yml"]
+)
+def test_no_comment_says_continue_on_error_keeps_a_check_off_failure(path: str) -> None:
+    """Job-level `continue-on-error` changes the workflow run's conclusion,
+    not the job's check-run, which is the row the gate reads. A comment that
+    says otherwise sends a reader to the wrong reason a nongating job's late
+    failure is ignored."""
+    text = _comment_text(_REPO / path)
+    claim = re.search(r"continue-on-error`? keeps the (?:job's )?conclusion off", text)
+    assert claim is None, f"{path}: {claim.group(0)!r}"
 
 
 # One `||` expression behind an `&&`, over the file folded onto one line.
