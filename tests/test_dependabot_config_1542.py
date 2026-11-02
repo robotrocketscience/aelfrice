@@ -38,30 +38,7 @@ def _code_lines(text: str) -> list[str]:
     ]
 
 
-def _updates(lines: list[str]) -> list[list[str]]:
-    """Each item of the `updates:` list, as its lines. An item starts at
-    any `-` line at the list's indent, whatever key comes first in it, and
-    the list ends at the first line that is not indented past that dash."""
-    items: list[list[str]] = []
-    dash: int | None = None
-    inside = False
-    for line in lines:
-        if not inside:
-            inside = re.match(r"^updates:\s*$", line) is not None
-            continue
-        stripped = line.strip()
-        starts = stripped == "-" or stripped.startswith("- ")
-        if dash is None:
-            if not starts:
-                break
-            dash = _indent(line)
-        if starts and _indent(line) == dash:
-            items.append([line])
-        elif _indent(line) > dash:
-            items[-1].append(line)
-        else:
-            break
-    return items
+Entry = tuple[str, list[str]]
 
 
 def _uncomment(raw: str) -> str:
@@ -80,41 +57,66 @@ def _uncomment(raw: str) -> str:
     return raw.strip()
 
 
-def _value(lines: list[str], key: str) -> str | None:
-    """The scalar after `key:` on the first line that carries it."""
+def _mapping(lines: list[str]) -> dict[str, Entry]:
+    """The keys of a block mapping at the indent of its first line, each as
+    the value on its line and the lines nested under it. A key indented
+    deeper belongs to the key above it, so a `cooldown:` under `schedule:`
+    is a key of `schedule`, not of the item. A `- ` line at the key indent
+    continues the key above it, as YAML allows for a list. A line this
+    parser cannot read, or a key given twice, fails the test."""
+    assert lines, "empty mapping"
+    column = _indent(lines[0])
+    keys: dict[str, Entry] = {}
+    last: str | None = None
     for line in lines:
-        match = re.match(rf"^\s*(?:-\s+)?{re.escape(key)}:\s*(.+?)\s*$", line)
-        if match:
-            return _uncomment(match.group(1)).strip("\"'")
-    return None
-
-
-def _list_items(lines: list[str], key: str) -> list[str]:
-    """The `- value` lines nested under `key:`."""
-    items: list[str] = []
-    depth: int | None = None
-    for line in lines:
-        if depth is None:
-            if re.match(rf"^\s*{re.escape(key)}:\s*$", line):
-                depth = _indent(line)
+        stripped = line.strip()
+        dash = stripped == "-" or stripped.startswith("- ")
+        if _indent(line) > column or (dash and _indent(line) == column):
+            assert last is not None, line
+            keys[last][1].append(line)
             continue
-        if _indent(line) <= depth:
-            break
-        match = re.match(r"^\s*-\s+(.+?)\s*$", line)
-        if match:
-            items.append(_uncomment(match.group(1)).strip("\"'"))
-    return items
+        pair = re.match(r"^([A-Za-z][\w-]*|\"[^\"]*\"|'[^']*'):(?:\s+(.*))?$", stripped)
+        assert _indent(line) == column and pair, line
+        last = pair.group(1).strip("\"'")
+        assert last not in keys, f"{last} given twice"
+        keys[last] = (_uncomment(pair.group(2) or ""), [])
+    return keys
 
 
-def _uv_item() -> list[str]:
-    assert _DEPENDABOT.is_file(), _DEPENDABOT
-    lines = _code_lines(_DEPENDABOT.read_text(encoding="utf-8"))
-    assert _value(lines, "version") == "2", lines
-    updates = _updates(lines)
-    assert updates, "no item under updates:"
-    uv = [item for item in updates if _value(item, "package-ecosystem") == "uv"]
-    assert len(uv) == 1, [_value(item, "package-ecosystem") for item in updates]
-    return uv[0]
+def _entries(lines: list[str]) -> list[list[str]]:
+    """Each `- ` entry of a block sequence, as its lines, with the dash
+    blanked so the keys of a mapping entry line up. An entry starts at any
+    dash at the list's indent, whatever key comes first in it."""
+    assert lines, "empty list"
+    column = _indent(lines[0])
+    entries: list[list[str]] = []
+    for line in lines:
+        stripped = line.strip()
+        if _indent(line) == column and (stripped == "-" or stripped.startswith("- ")):
+            entries.append([])
+            line = line[:column] + " " + line[column + 1 :]
+            if not line.strip():
+                continue
+        assert entries and _indent(line) > column, line
+        entries[-1].append(line)
+    return entries
+
+
+def _text(fields: dict[str, Entry], key: str) -> str | None:
+    """The scalar on the line of `key`, or None when `key` is absent."""
+    if key not in fields:
+        return None
+    inline, nested = fields[key]
+    assert not nested, (key, nested)
+    return inline.strip("\"'")
+
+
+def _block(fields: dict[str, Entry], key: str) -> dict[str, Entry]:
+    """The mapping nested under `key`, which must hold a block of its own."""
+    assert key in fields, (key, sorted(fields))
+    inline, nested = fields[key]
+    assert not inline and nested, (key, inline)
+    return _mapping(nested)
 
 
 def _scalars(raw: str) -> list[str]:
@@ -127,40 +129,46 @@ def _scalars(raw: str) -> list[str]:
     return [part.strip().strip("\"'") for part in parts if part.strip()]
 
 
-def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
-    """Each group under `groups:`, as its keys and their values. A key's
-    values come from a flow list on its line or from `- value` lines below."""
-    groups: dict[str, dict[str, list[str]]] = {}
-    depth: int | None = None
-    name_depth: int | None = None
-    rules: dict[str, list[str]] = {}
-    key: str | None = None
-    for line in item:
-        if depth is None:
-            if re.match(r"^\s*groups:\s*$", line):
-                depth = _indent(line)
-            continue
-        if _indent(line) <= depth:
-            break
-        if name_depth is None:
-            name_depth = _indent(line)
-        stripped = _uncomment(line)
-        if _indent(line) == name_depth:
-            assert stripped.endswith(":"), line
-            rules = groups.setdefault(stripped[:-1].strip("\"'"), {})
-            key = None
-            continue
-        entry = re.match(r"^-\s+(.+)$", stripped)
-        if entry:
-            assert key is not None, line
-            rules[key].extend(_scalars(entry.group(1)))
-            continue
-        pair = re.match(r"^([A-Za-z-]+):\s*(.*)$", stripped)
-        assert pair, line
-        name: str = pair.group(1)
-        rules[name] = _scalars(pair.group(2))
-        key = name
-    return groups
+def _sequence(fields: dict[str, Entry], key: str) -> list[str]:
+    """The values under `key`: a scalar or flow list on its line, or one
+    `- value` line per value below it."""
+    assert key in fields, (key, sorted(fields))
+    inline, nested = fields[key]
+    if inline:
+        assert not nested, (key, nested)
+        return _scalars(inline)
+    values: list[str] = []
+    for entry in _entries(nested):
+        assert len(entry) == 1, entry
+        values.append(_uncomment(entry[0]).strip("\"'"))
+    return values
+
+
+def _items() -> list[dict[str, Entry]]:
+    """Each item of the top-level `updates:` list, as its keys."""
+    assert _DEPENDABOT.is_file(), _DEPENDABOT
+    document = _mapping(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
+    assert _text(document, "version") == "2", document
+    assert "updates" in document and not document["updates"][0], document
+    return [_mapping(entry) for entry in _entries(document["updates"][1])]
+
+
+def _uv_item() -> dict[str, Entry]:
+    items = _items()
+    uv = [item for item in items if _text(item, "package-ecosystem") == "uv"]
+    assert len(uv) == 1, [_text(item, "package-ecosystem") for item in items]
+    return uv[0]
+
+
+def _groups(item: dict[str, Entry]) -> dict[str, dict[str, list[str]]]:
+    """Each group under the item's `groups:` key, as its keys and their
+    values. A key's values come from a flow list on its line or from
+    `- value` lines below."""
+    groups = _block(item, "groups")
+    return {
+        name: {key: _sequence(rules, key) for key in rules}
+        for name, rules in ((name, _block(groups, name)) for name in groups)
+    }
 
 
 def test_no_python_updater_besides_uv() -> None:
@@ -170,22 +178,25 @@ def test_no_python_updater_besides_uv() -> None:
     first, a trailing comment does not hide its ecosystem, and an item
     whose ecosystem this parser cannot read, such as a flow mapping, fails
     the test rather than passing unread."""
-    _uv_item()
-    items = _updates(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
-    ecosystems = [_value(item, "package-ecosystem") for item in items]
-    assert None not in ecosystems, items
+    ecosystems = [_text(item, "package-ecosystem") for item in _items()]
+    assert None not in ecosystems, ecosystems
+    assert ecosystems.count("uv") == 1, ecosystems
     assert not {"pip", "pipenv", "poetry"} & set(ecosystems), ecosystems
 
 
 def test_uv_updates_are_weekly_and_capped() -> None:
     """The `uv` updater, weekly, five PRs open at most, and the
-    `build(deps):` subject the commit checks accept."""
+    `build(deps):` subject the commit checks accept. Each key counts only
+    at the depth Dependabot reads it: `directory` and
+    `open-pull-requests-limit` on the item, `interval` under `schedule`,
+    and `prefix` and `include` under `commit-message`."""
     item = _uv_item()
-    assert _value(item, "directory") == "/", item
-    assert _value(item, "interval") == "weekly", item
-    assert _value(item, "open-pull-requests-limit") == "5", item
-    assert _value(item, "prefix") == "build", item
-    assert _value(item, "include") == "scope", item
+    assert _text(item, "directory") == "/", item
+    assert _text(_block(item, "schedule"), "interval") == "weekly", item
+    assert _text(item, "open-pull-requests-limit") == "5", item
+    message = _block(item, "commit-message")
+    assert _text(message, "prefix") == "build", message
+    assert _text(message, "include") == "scope", message
 
 
 def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
@@ -193,20 +204,11 @@ def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
     published. Without `cooldown`, or with fewer days, zizmor's
     dependabot-cooldown audit raises a code-scanning alert on main. Every
     `*-days` key holds at least seven, and no `include` or `exclude` list
-    narrows the packages the cooldown covers."""
-    item = _uv_item()
-    depth: int | None = None
-    rules: dict[str, str] = {}
-    for line in item:
-        if depth is None:
-            if re.match(r"^\s*cooldown:\s*$", line):
-                depth = _indent(line)
-            continue
-        if _indent(line) <= depth:
-            break
-        pair = re.match(r"^\s*([A-Za-z-]+):\s*(.*?)\s*$", line)
-        assert pair, line
-        rules[pair.group(1)] = _uncomment(pair.group(2)).strip("\"'")
+    narrows the packages the cooldown covers. The block sits on the item
+    itself, the only place Dependabot's schema defines `cooldown`, so a
+    `cooldown:` nested under `schedule:` fails."""
+    cooldown = _block(_uv_item(), "cooldown")
+    rules = {key: _text(cooldown, key) or "" for key in cooldown}
     assert "default-days" in rules, rules
     days = {"default-days", "semver-major-days", "semver-minor-days", "semver-patch-days"}
     assert set(rules) <= days, rules
@@ -288,7 +290,7 @@ def test_uv_updates_carry_the_dependency_labels_and_wait_for_the_train() -> None
     label starts the merge train; a person adds `ready-to-merge` after
     reading the diff, and nothing in the file merges on its own."""
     item = _uv_item()
-    labels = _list_items(item, "labels")
+    labels = _sequence(item, "labels")
     assert labels == ["dependencies", "python:uv"], labels
     assert "ready-to-merge" not in labels, labels
     merging = [
