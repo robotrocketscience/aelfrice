@@ -676,6 +676,20 @@ def test_find_claude_returns_the_cmd_shim_beside_npm_s_sh_script_on_windows(
     assert _REAL_FIND_CLAUDE() is None
 
 
+def _which_win32(cmd: str, path: str | None = None) -> str | None:
+    """`shutil.which` in its win32 search order: the working directory,
+    then PATH, matched without case as on NTFS. Its real win32 branch needs
+    `_winapi`."""
+    search = path if path is not None else os.environ.get("PATH", "")
+    for folder in [os.curdir, *search.split(os.pathsep)]:
+        if not folder:
+            continue
+        names = {n.lower() for n in os.listdir(folder)}
+        if cmd.lower() in names:
+            return os.path.join(folder, cmd)
+    return None
+
+
 def test_find_claude_never_resolves_a_claude_in_the_working_directory_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -683,26 +697,15 @@ def test_find_claude_never_resolves_a_claude_in_the_working_directory_on_windows
     PATH unless `NoDefaultCurrentDirectoryInExePath` is set, and the Stop
     hook's working directory is the user's project. Killed by: resolving
     through `shutil.which` alone, which returns the planted file in both
-    cases below. `which` is replaced with that search order, matched
-    without case as on NTFS, because its real win32 branch needs `_winapi`."""
+    cases below. `which` is replaced with that search order."""
     project = tmp_path / "widgetproject"
     bin_dir = tmp_path / "bin"
     project.mkdir()
     bin_dir.mkdir()
     (bin_dir / "claude.cmd").write_text("", encoding="utf-8")
 
-    def which_win32(cmd: str, path: str | None = None) -> str | None:
-        search = path if path is not None else os.environ.get("PATH", "")
-        for folder in [os.curdir, *search.split(os.pathsep)]:
-            if not folder:
-                continue
-            names = {n.lower() for n in os.listdir(folder)}
-            if cmd.lower() in names:
-                return os.path.join(folder, cmd)
-        return None
-
     monkeypatch.setattr(bg.sys, "platform", "win32")
-    monkeypatch.setattr(bg.shutil, "which", which_win32)
+    monkeypatch.setattr(bg.shutil, "which", _which_win32)
     monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.chdir(project)
@@ -716,6 +719,33 @@ def test_find_claude_never_resolves_a_claude_in_the_working_directory_on_windows
     (project / "claude.exe").unlink()
     (project / "claude.cmd").write_text("", encoding="utf-8")
     assert _REAL_FIND_CLAUDE() is None
+
+
+def test_a_planted_claude_hides_only_the_path_claude_with_its_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the native `claude.exe` and the npm `claude.cmd` both on PATH,
+    a `claude.exe` in the working directory hides the native one, and the
+    lookup moves on to `.CMD` and returns the npm shim, as CONFIG.md says.
+    Killed by: returning None as soon as the working directory hides a
+    PATH hit."""
+    project = tmp_path / "widgetproject"
+    native = tmp_path / "native"
+    npm = tmp_path / "npm"
+    for folder in (project, native, npm):
+        folder.mkdir()
+    (native / "claude.exe").write_text("", encoding="utf-8")
+    (npm / "claude.cmd").write_text("", encoding="utf-8")
+    (project / "claude.exe").write_text("", encoding="utf-8")
+    monkeypatch.setattr(bg.sys, "platform", "win32")
+    monkeypatch.setattr(bg.shutil, "which", _which_win32)
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(native), str(npm)]))
+    monkeypatch.chdir(project)
+    found = _REAL_FIND_CLAUDE()
+    assert found is not None
+    assert Path(found).parent.resolve() == npm.resolve()
+    assert Path(found).name.lower() == "claude.cmd"
 
 
 def test_spawn_comes_after_the_commit(

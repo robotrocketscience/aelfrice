@@ -247,9 +247,10 @@ def find_claude() -> str | None:
     `shutil.which` on Windows searches the working directory before PATH,
     and the Stop hook's working directory is the user's project. A hit
     outside the PATH folders is dropped, so a `claude.cmd` planted in the
-    project never runs. When it has the extension a PATH `claude` has, it
-    hides that one too, and this returns None: no run, rather than the
-    planted one.
+    project never runs. It still hides the PATH `claude` with its
+    extension, and the loop moves on to the next extension: this returns
+    a PATH `claude` with a later extension when there is one, which can
+    differ from the one the user's shell runs, and None otherwise.
     """
     if not _is_win32():
         return shutil.which(CLAUDE_BIN)
