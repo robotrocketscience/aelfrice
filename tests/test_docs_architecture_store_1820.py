@@ -18,14 +18,17 @@ keeps these quiet, and dropping the claim fails them.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
 
 from aelfrice import db_paths
+from aelfrice.auto_install import _merge_hooks_into_settings, load_manifest
 from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.db_paths import STORE_RULE_GLOBAL, resolve_store
+from aelfrice.setup import COMMIT_INGEST_EVENT, COMMIT_INGEST_SCRIPT_NAME
 
 REPO = Path(__file__).resolve().parents[1]
 ARCHITECTURE = REPO / "docs" / "concepts" / "ARCHITECTURE.md"
@@ -54,9 +57,18 @@ def _marker_step() -> str:
 
 
 @pytest.mark.source_scan
-def test_commit_ingest_module_row_names_the_git_hook() -> None:
-    """Setup wires the git hook and nothing installs the settings entry,
-    so the module row must name `post-commit` and not `PostToolUse`."""
+def test_commit_ingest_module_row_names_the_git_hook(tmp_path: Path) -> None:
+    """Setup wires the git hook and neither install path writes the
+    settings entry, so the module row must name `post-commit` and not
+    `PostToolUse`.
+
+    Two paths could write the entry: a direct call to
+    `install_commit_ingest_hook(` anywhere in the package, and the
+    manifest merge, which holds the installer by reference in
+    `_DISPATCH` and runs it for every default-on hook. The regex covers
+    the first. Running the merge into a scratch settings file covers the
+    second.
+    """
     cli_text = (SRC / "cli.py").read_text(encoding="utf-8")
     assert "install_commit_ingest_git_hook(" in cli_text, (
         "aelf setup no longer installs the commit-ingest git hook; "
@@ -74,6 +86,25 @@ def test_commit_ingest_module_row_names_the_git_hook() -> None:
         f"{callers} install the PostToolUse commit-ingest entry again; "
         "revisit ARCHITECTURE.md's hook_commit_ingest.py row"
     )
+    settings = tmp_path / "settings.json"
+    installed, already, _ = _merge_hooks_into_settings(
+        manifest=load_manifest(),
+        opt_outs=set(),
+        scope="user",
+        settings_path=settings,
+        timeout=None,
+    )
+    assert "commit_ingest" not in installed + already, (
+        "the manifest merge installs the PostToolUse commit-ingest entry "
+        "again; revisit ARCHITECTURE.md's hook_commit_ingest.py row"
+    )
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    commands = [
+        hook.get("command", "")
+        for entry in data.get("hooks", {}).get(COMMIT_INGEST_EVENT, [])
+        for hook in entry.get("hooks", [])
+    ]
+    assert not [c for c in commands if COMMIT_INGEST_SCRIPT_NAME in c], commands
     row = _module_row("hook_commit_ingest.py")
     assert "post-commit" in row, row
     assert "PostToolUse" not in row, row
