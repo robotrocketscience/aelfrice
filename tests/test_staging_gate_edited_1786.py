@@ -23,15 +23,21 @@ from tests.test_ci_manual_dispatch import _block, _text
 # The regex counts a read of the event payload in any of these forms: the
 # dotted or bracketed field (`github.event.pull_request.title`,
 # `github.event.pull_request['title']`), the whole PR object or event passed
-# to `toJSON`, and the event file (`GITHUB_EVENT_PATH`, `github.event_path`),
-# which holds the title and body. It does not count an API fetch: a workflow
-# that reads the body as `merge-train.yml` does, with
-# `gh pr view --json body`, does not trip it.
+# to `toJSON`, the event file (`GITHUB_EVENT_PATH`, `github.event_path`),
+# which holds the title and body, and the `actions/github-script` view of that
+# file: `context.payload.pull_request.title`, or `context.payload` or its
+# `pull_request` object taken whole, as a destructuring or a `JSON.stringify`
+# does. It does not count an API fetch: a workflow that reads the body as
+# `merge-train.yml` does, with `gh pr view --json body`, does not trip it.
 _PULL_REQUEST = r"(?:\.pull_request|\[\s*['\"]pull_request['\"]\s*\])"
+_TITLE_OR_BODY = r"(?:\??\.(?:title|body)\b|\[\s*['\"](?:title|body)['\"]\s*\])"
+_PAYLOAD_PULL_REQUEST = r"(?:\??\.pull_request|\[\s*['\"]pull_request['\"]\s*\])"
 _PR_METADATA_FIELD_RE = re.compile(
-    rf"github\.event{_PULL_REQUEST}(?:\.(?:title|body)\b|\[\s*['\"](?:title|body)['\"]\s*\])"
+    rf"github\.event{_PULL_REQUEST}{_TITLE_OR_BODY}"
     rf"|toJSON\(\s*github(?:\.event{_PULL_REQUEST}?)?\s*\)"
     r"|\bGITHUB_EVENT_PATH\b|\bgithub\.event_path\b"
+    rf"|(?<![\w$])context\.payload(?:{_PAYLOAD_PULL_REQUEST}{_TITLE_OR_BODY}"
+    rf"|(?:{_PAYLOAD_PULL_REQUEST})?(?![\w$]|\s*(?:\??\.|\[)))"
 )
 
 
@@ -114,6 +120,16 @@ def test_a_comment_naming_the_title_or_body_is_not_a_read(line: str, reads: bool
         ("        run: echo '${{ toJSON(github) }}' | jq -r .event.pull_request.title", True),
         ("        run: jq -r .pull_request.title \"$GITHUB_EVENT_PATH\"", True),
         ("          E: ${{ github.event_path }}", True),
+        ("          script: core.info(context.payload.pull_request.title)", True),
+        ("            const body = context.payload.pull_request.body;", True),
+        ("            const b = context.payload['pull_request']['body'];", True),
+        ("            const t = github.context.payload.pull_request?.title;", True),
+        ("            const { title, body } = context.payload.pull_request;", True),
+        ("            core.info(JSON.stringify(context.payload));", True),
+        ("            const n = context.payload.pull_request.number;", False),
+        ("            const ref = context.payload.pull_request.base.ref;", False),
+        ("            const r = context.payload.pull_request_review.state;", False),
+        ("            const a = context.payload.action;", False),
         ("          BASE_REF: ${{ github.event.pull_request.base.ref }}", False),
         ("          N: ${{ github.event.pull_request.number }}", False),
         ("        run: echo '${{ toJSON(github.event.pull_request.base) }}'", False),
@@ -121,5 +137,5 @@ def test_a_comment_naming_the_title_or_body_is_not_a_read(line: str, reads: bool
     ],
 )
 def test_every_event_payload_form_of_the_title_or_body_is_a_read(line: str, reads: bool) -> None:
-    """A title or body read through brackets, `toJSON` or the event file counts too."""
+    """A read through brackets, `toJSON`, the event file or `context.payload` counts."""
     assert _reads_title_or_body(f"on:\n  pull_request:\n{line}\n") is reads
