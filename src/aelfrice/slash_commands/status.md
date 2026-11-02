@@ -1,6 +1,6 @@
 ---
 name: aelf:status
-description: Show summary counts — beliefs, threads, locks, and feedback events.
+description: Show the store in use, the rule that chose it, and counts of beliefs, threads, locks, feedback events, and phantoms.
 allowed-tools:
   - Bash
 ---

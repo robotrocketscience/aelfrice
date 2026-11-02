@@ -8,6 +8,8 @@ The #1820 docs sweep left statements that disagreed with the 5.3.0 code:
      other keeps the repository's store.
   2. QUICKSTART.md's `aelf status` sample showed an `aelfrice <version>`
      first line and no `store:`, `store rule:` or `phantoms:` line.
+  3. The `/aelf:status` description listed counts only, though the
+     command prints the store and its rule first.
 
 Each test checks the code fact first, then the page. The page checks
 match terms, not whole sentences.
@@ -29,6 +31,7 @@ from aelfrice.db_paths import STORE_RULE_GIT, STORE_RULE_MARKER, resolve_store
 REPO = Path(__file__).resolve().parents[1]
 USER_DOCS = REPO / "docs" / "user"
 STATUS_PROMPT = "$ aelf status"
+SLASH_STATUS = REPO / "src" / "aelfrice" / "slash_commands" / "status.md"
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -113,3 +116,22 @@ def test_quickstart_status_sample_has_the_labels_status_prints(
     assert "store" in printed and "store rule" in printed, printed
 
     assert _labels(_quickstart_status_sample()) == printed
+
+
+def test_status_slash_description_names_the_store_and_rule(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`aelf status` prints the store and its rule, so the slash
+    command's description has to name both."""
+    monkeypatch.setenv("AELFRICE_DB", str(sandbox / "store" / "memory.db"))
+    buf = io.StringIO()
+    assert cli._cmd_stats(argparse.Namespace(), buf) == 0
+    printed = _labels(buf.getvalue().splitlines())
+    assert printed[1:3] == ["store", "store rule"], printed
+
+    text = SLASH_STATUS.read_text(encoding="utf-8")
+    found = re.search(r"^description:\s*(.+)$", text, re.MULTILINE)
+    assert found is not None, "status.md lost its description"
+    description = found.group(1).lower()
+    assert "store" in description, description
+    assert "rule" in description, description
