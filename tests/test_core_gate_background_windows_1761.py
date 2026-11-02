@@ -162,10 +162,10 @@ _CHILD = """\
 import json, sys
 from aelfrice.core_gate_background import label_batch
 from aelfrice.store import MemoryStore
-db, batch_id, claude = sys.argv[1:4]
+db, batch_id, cli = sys.argv[1:4]
 store = MemoryStore(db)
 try:
-    record = label_batch(store, batch_id, claude=claude)
+    record = label_batch(store, batch_id, claude=cli)
 finally:
     store.close()
 sys.stdout.write(json.dumps(record))
@@ -191,9 +191,9 @@ def test_the_reply_decodes_as_utf8_under_a_non_utf8_locale(tmp_path: Path) -> No
     )
     db = tmp_path / "memory.db"
     batch_id = _open_batch(db)
-    claude = _write_stub(tmp_path)
+    cli = _write_stub(tmp_path)
     proc = subprocess.run(
-        [sys.executable, "-c", _CHILD, str(db), batch_id, claude],
+        [sys.executable, "-c", _CHILD, str(db), batch_id, cli],
         env=env, capture_output=True, text=True, encoding="utf-8", check=False, timeout=90,
     )
     assert proc.returncode == 0, proc.stderr
@@ -507,22 +507,22 @@ def _run_against_the_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("PATH", str(tmp_path))
     if WIN32:
         monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-    claude = _REAL_FIND_CLAUDE()
-    assert claude is not None, "find_claude did not resolve the stub"
-    assert Path(claude).resolve().parent == tmp_path.resolve()
-    assert Path(claude).name.lower() == ("claude.cmd" if WIN32 else "claude")
+    cli = _REAL_FIND_CLAUDE()
+    assert cli is not None, "find_claude did not resolve the stub"
+    assert Path(cli).resolve().parent == tmp_path.resolve()
+    assert Path(cli).name.lower() == ("claude.cmd" if WIN32 else "claude")
     db = tmp_path / "memory.db"
     batch_id = _open_batch(db)
     store = MemoryStore(str(db))
     try:
-        record = bg.label_batch(store, batch_id, claude=claude)
+        record = bg.label_batch(store, batch_id, claude=cli)
     finally:
         store.close()
     assert record["outcome"] == bg.OUTCOME_ACCEPTED, record
     assert _labels(db) == {"hash-w1": "A"}
     argv = json.loads((tmp_path / "argv.json").read_text(encoding="utf-8"))
     settings = argv[argv.index("--settings") + 1]
-    assert argv == bg.runner_argv(claude, settings)[1:]
+    assert argv == bg.runner_argv(cli, settings)[1:]
     assert (tmp_path / "settings-copy.json").read_text(encoding="utf-8") == bg.RUNNER_SETTINGS_JSON
     assert not Path(settings).exists()
     assert "widgetwin w1" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
@@ -559,12 +559,12 @@ def test_the_detached_child_runs_the_stub_on_windows(
     the detached child finds the store, runs the `.cmd`, and logs `accepted`.
     Killed by: a flag combination `CreateProcess` rejects, or a child that
     can't reach the store or the shim from a detached start."""
-    claude = _write_stub(tmp_path)
+    cli = _write_stub(tmp_path)
     store = tmp_path / "store" / "memory.db"
     store.parent.mkdir()
     batch_id = _open_batch(store)
     monkeypatch.setenv("AELFRICE_DB", str(store))
-    assert bg.spawn(batch_id, db_path=str(store), claude=claude) is True
+    assert bg.spawn(batch_id, db_path=str(store), claude=cli) is True
     log = store.parent / bg.LOG_FILENAME
     text = ""
     deadline = time.monotonic() + 90
