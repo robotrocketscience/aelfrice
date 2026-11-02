@@ -5455,7 +5455,8 @@ or the filters after it dropped them all, writes an audit row and no
 prompt that fire also emits nothing from the session-start build, a
 fresh `<cadence-resume>` block included. On
 a session's first prompt that the #674 shape gate refuses, `_retrieve`
-never runs, and the hint follows what the session-start build returned:
+never runs. If the session-start build returned nothing, that fire
+emits no block and no hint. Otherwise the hint follows what it returned:
 a `<cadence-resume>` block when a fresh cadence-resume cache exists, then
 the `<session-start>` sub-block, which holds `<locked>` and `<core>`
 and, when the payload cwd is a git checkout on a branch,
