@@ -1529,6 +1529,78 @@ def test_a_tree_reads_match_installs_first_and_skips_the_echo() -> None:
     )
 
 
+_CONDITION_TERM = re.compile(r"(steps\.filter\.outputs\.(\w+)|github\.event_name) (==|!=) '([^']*)'")
+
+
+def _holds(condition: str, outputs: dict[str, str], event: str) -> bool:
+    """Evaluate a step's `if:` for the subset of GitHub's syntax the pytest job uses.
+
+    Terms compare `steps.filter.outputs.<key>` or `github.event_name`
+    with a quoted string and join with `&&` and `||`, `&&` binding
+    tighter. An output the filter step did not set reads as the empty
+    string, as on a manual dispatch. A term of any other shape, such as
+    a parenthesis or a function call, fails the test rather than being
+    guessed at.
+    """
+    alternatives: list[bool] = []
+    for disjunct in condition.split("||"):
+        terms: list[bool] = []
+        for term in disjunct.split("&&"):
+            matched = _CONDITION_TERM.fullmatch(term.strip())
+            assert matched, f"cannot read {term.strip()!r} in `if: {condition}`"
+            _, key, op, literal = matched.groups()
+            actual = event if key is None else outputs.get(key, "")
+            terms.append((actual == literal) == (op == "=="))
+        alternatives.append(all(terms))
+    return any(alternatives)
+
+
+def test_exactly_one_test_step_runs_for_each_filter_outcome() -> None:
+    """#1160: the `tree_reads` step fires on the PR it exists for, and only then.
+
+    The `if:` of the full suite, the `tree_reads` step and the echo are
+    evaluated for each outcome of the two filter keys on a pull request,
+    and for a manual dispatch, where the filter step does not run and
+    sets no output. Exactly one of the three runs each time: the suite
+    on a `code` match or a dispatch, the `tree_reads` step on a
+    `tree_reads` match alone, and the echo when neither key matches. A
+    `tree_reads` gate that can never fire leaves the required legs green
+    having run no test, since the echo skips on that match too.
+    """
+    steps = _pytest_job_steps()
+
+    def gate(prefix: str) -> str:
+        found = [s for s in steps if any(line.strip().startswith(prefix) for line in s)]
+        assert len(found) == 1, f"expected one step running `{prefix}`, found {len(found)}"
+        head = found[0][0].strip()
+        assert head.startswith("- if: "), f"the step running `{prefix}` has no `if:` first: {head!r}"
+        return head[len("- if: ") :]
+
+    gates = {
+        "suite": gate("run: uv run pytest tests/ "),
+        "tree_reads": gate("run: uv run pytest tests/test_"),
+        "echo": gate("run: echo "),
+    }
+    outcomes: list[tuple[dict[str, str], str]] = [
+        ({"code": code, "tree_reads": tree}, "pull_request")
+        for code in ("true", "false")
+        for tree in ("true", "false")
+    ]
+    outcomes.append(({}, "workflow_dispatch"))
+    for outputs, event in outcomes:
+        if outputs.get("code") == "true" or event == "workflow_dispatch":
+            expected = "suite"
+        elif outputs.get("tree_reads") == "true":
+            expected = "tree_reads"
+        else:
+            expected = "echo"
+        ran = [name for name, condition in gates.items() if _holds(condition, outputs, event)]
+        assert ran == [expected], (
+            f"on a {event} with filter outputs {outputs}, the pytest job runs "
+            f"{ran or 'no test step'}, expected only `{expected}`: {gates}"
+        )
+
+
 def test_a_filter_glob_matches_as_picomatch_does() -> None:
     """Pin the glob semantics the `tree_reads` checks lean on."""
     assert _glob_matches("**/*.md", "README.md")
