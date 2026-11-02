@@ -134,6 +134,18 @@ def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
     return groups
 
 
+def test_no_python_updater_besides_uv() -> None:
+    """No `pip`, `pipenv`, or `poetry` item sits next to the `uv` one. Each
+    of those bumps pyproject.toml without rewriting uv.lock, and the stale
+    lock passes CI on the old pins."""
+    _uv_item()
+    ecosystems = [
+        _value(item, "package-ecosystem")
+        for item in _updates(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
+    ]
+    assert not {"pip", "pipenv", "poetry"} & set(ecosystems), ecosystems
+
+
 def test_uv_updates_are_weekly_and_capped() -> None:
     """The `uv` updater, weekly, five PRs open at most, and the
     `build(deps):` subject the commit checks accept."""
