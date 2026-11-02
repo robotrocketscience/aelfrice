@@ -24,8 +24,6 @@ _REPO = Path(__file__).resolve().parents[1]
 _DEPENDABOT = _REPO / ".github" / "dependabot.yml"
 _WORKFLOWS = _REPO / ".github" / "workflows"
 
-_ITEM_START = "  - package-ecosystem:"
-
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
@@ -41,13 +39,28 @@ def _code_lines(text: str) -> list[str]:
 
 
 def _updates(lines: list[str]) -> list[list[str]]:
-    """Each `- package-ecosystem:` item under `updates:`, as its lines."""
+    """Each item of the `updates:` list, as its lines. An item starts at
+    any `-` line at the list's indent, whatever key comes first in it, and
+    the list ends at the first line that is not indented past that dash."""
     items: list[list[str]] = []
+    dash: int | None = None
+    inside = False
     for line in lines:
-        if line.startswith(_ITEM_START):
+        if not inside:
+            inside = re.match(r"^updates:\s*$", line) is not None
+            continue
+        stripped = line.strip()
+        starts = stripped == "-" or stripped.startswith("- ")
+        if dash is None:
+            if not starts:
+                break
+            dash = _indent(line)
+        if starts and _indent(line) == dash:
             items.append([line])
-        elif items and _indent(line) >= 4:
+        elif _indent(line) > dash:
             items[-1].append(line)
+        else:
+            break
     return items
 
 
@@ -82,7 +95,7 @@ def _uv_item() -> list[str]:
     lines = _code_lines(_DEPENDABOT.read_text(encoding="utf-8"))
     assert _value(lines, "version") == "2", lines
     updates = _updates(lines)
-    assert updates, "no `- package-ecosystem:` item under updates:"
+    assert updates, "no item under updates:"
     uv = [item for item in updates if _value(item, "package-ecosystem") == "uv"]
     assert len(uv) == 1, [_value(item, "package-ecosystem") for item in updates]
     return uv[0]
@@ -137,12 +150,13 @@ def _groups(item: list[str]) -> dict[str, dict[str, list[str]]]:
 def test_no_python_updater_besides_uv() -> None:
     """No `pip`, `pipenv`, or `poetry` item sits next to the `uv` one. Each
     of those bumps pyproject.toml without rewriting uv.lock, CI passes the
-    PR, and the stale lock merges."""
+    PR, and the stale lock merges. An item counts whichever key it lists
+    first, and an item whose ecosystem this parser cannot read, such as a
+    flow mapping, fails the test rather than passing unread."""
     _uv_item()
-    ecosystems = [
-        _value(item, "package-ecosystem")
-        for item in _updates(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
-    ]
+    items = _updates(_code_lines(_DEPENDABOT.read_text(encoding="utf-8")))
+    ecosystems = [_value(item, "package-ecosystem") for item in items]
+    assert None not in ecosystems, items
     assert not {"pip", "pipenv", "poetry"} & set(ecosystems), ecosystems
 
 
