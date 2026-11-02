@@ -748,6 +748,35 @@ def test_a_planted_claude_hides_only_the_path_claude_with_its_extension(
     assert Path(found).name.lower() == "claude.cmd"
 
 
+@pytest.mark.parametrize(
+    ("pathext", "expected"),
+    [(".COM;.EXE;.BAT;.CMD", "claude.exe"), (".CMD;.EXE", "claude.cmd")],
+)
+def test_find_claude_takes_the_first_pathext_extension_found_anywhere_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pathext: str, expected: str,
+) -> None:
+    """The npm folder comes first on PATH and the native folder second, so
+    the extension order decides which `claude` wins, not the folder order.
+    Killed by: ignoring the `PATHEXT` variable for the default, which
+    returns `claude.exe` under `.CMD;.EXE`, or trying the extensions in
+    reverse, which returns `claude.cmd` under the default."""
+    project = tmp_path / "widgetproject"
+    native = tmp_path / "native"
+    npm = tmp_path / "npm"
+    for folder in (project, native, npm):
+        folder.mkdir()
+    (native / "claude.exe").write_text("", encoding="utf-8")
+    (npm / "claude.cmd").write_text("", encoding="utf-8")
+    monkeypatch.setattr(bg.sys, "platform", "win32")
+    monkeypatch.setattr(bg.shutil, "which", _which_win32)
+    monkeypatch.setenv("PATHEXT", pathext)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(npm), str(native)]))
+    monkeypatch.chdir(project)
+    found = _REAL_FIND_CLAUDE()
+    assert found is not None
+    assert Path(found).name.lower() == expected
+
+
 def test_spawn_comes_after_the_commit(
     db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
