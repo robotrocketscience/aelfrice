@@ -271,18 +271,59 @@ def test_no_continue_on_error_anywhere_in_the_job() -> None:
     assert found == [], found
 
 
-def _module_names(path: Path) -> list[str]:
-    """Every name a module binds at top level, which is what pytest collects
-    test functions from: a `def`, a `class`, an assignment or an import."""
+def _module_names(source: str) -> list[str]:
+    """Every name the module namespace binds, which is what pytest collects
+    test functions from. A `def`, `class`, import or assignment counts at top
+    level and inside an `if`, `try`, `with`, `for`, `while` or `match` block,
+    since each of those binds into the module. The bodies of functions,
+    classes and lambdas bind local names and are skipped. A comprehension
+    variable counts, which errs toward a red test, not a hidden one."""
     names: list[str] = []
-    for stmt in ast.parse(path.read_text(encoding="utf-8")).body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names.append(stmt.name)
-        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
-            names.extend(a.asname or a.name for a in stmt.names)
-        elif isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            names.extend(n.id for n in ast.walk(stmt) if isinstance(n, ast.Name))
-    return names
+    todo: list[ast.AST] = list(ast.parse(source).body)
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.extend(a.asname or a.name for a in node.names)
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.append(node.id)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name:
+                names.append(node.name)
+        todo.extend(ast.iter_child_nodes(node))
+    return sorted(names)
+
+
+def test_module_names_sees_a_test_bound_inside_a_block() -> None:
+    """pytest collects a test bound inside an `if`, `try`, `with` or `for`
+    block, so a name there that starts with the deselected one also drops out
+    of the required legs. A name local to a function does not bind."""
+    source = (
+        "import os as alias\n"
+        "x = 1\n"
+        "if True:\n"
+        "    def in_if(): pass\n"
+        "try:\n"
+        "    def in_try(): pass\n"
+        "except ValueError as in_except:\n"
+        "    pass\n"
+        "with open(os.devnull) as in_with:\n"
+        "    class InWith: pass\n"
+        "for in_for in []:\n"
+        "    in_loop_body = 1\n"
+        "def outer():\n"
+        "    def local(): pass\n"
+        "    local_var = 1\n"
+    )
+    assert _module_names(source) == sorted([
+        "alias", "x", "in_if", "in_try", "in_except", "in_with", "InWith",
+        "in_for", "in_loop_body", "outer",
+    ])
 
 
 def test_the_legs_deselect_exactly_the_producer_check() -> None:
@@ -302,7 +343,8 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
         f"the pytest legs select {selection!r}, not {_SELECTION!r}"
     )
     path, _, func = _DESELECTED.partition("::")
-    sharing = [n for n in _module_names(_REPO / path) if n.startswith(func)]
+    source = (_REPO / path).read_text(encoding="utf-8")
+    sharing = [n for n in _module_names(source) if n.startswith(func)]
     assert sharing == [func], (
         f"{path} binds {sharing!r}, not exactly [{func!r}]. Absent, the "
         "deselect skips nothing. Any other name that starts with it drops "
