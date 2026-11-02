@@ -7,7 +7,8 @@ ecosystem cover the gap. These tests hold the configuration to the terms it
 landed under: the `uv` updater and not `pip`, since only `uv` rewrites
 uv.lock, and CI passes a PR that leaves the lock stale because its `uv run`
 steps re-lock in the runner; a weekly schedule; minor and patch bumps
-grouped into one PR; at most five open PRs; the labels Dependabot's
+grouped into one PR, with no `ignore` or `allow` filter narrowing them;
+at most five open PRs; the labels Dependabot's
 security updates already apply; and no label or option that would merge a
 PR without a person adding `ready-to-merge`.
 
@@ -197,6 +198,27 @@ def test_uv_updates_are_weekly_and_capped() -> None:
     message = _block(item, "commit-message")
     assert _text(message, "prefix") == "build", message
     assert _text(message, "include") == "scope", message
+
+
+def test_uv_item_sets_no_key_that_narrows_the_weekly_bump() -> None:
+    """The `uv` item sets only the keys these tests read. `ignore` drops
+    packages or update types from the weekly bump and `allow` limits it to
+    the packages it names, so either one leaves dependencies without the
+    minor and patch updates the group promises. A key outside the set,
+    such as `target-branch` or `versioning-strategy`, fails as well, so a
+    new key lands with a test of what it changes."""
+    reviewed = {
+        "package-ecosystem",
+        "directory",
+        "schedule",
+        "cooldown",
+        "open-pull-requests-limit",
+        "labels",
+        "commit-message",
+        "groups",
+    }
+    item = _uv_item()
+    assert set(item) <= reviewed, sorted(set(item) - reviewed)
 
 
 def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
