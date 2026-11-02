@@ -11,11 +11,13 @@ paragraph now says that. Four tests hold it there.
 
 The first reads the docstring as text and fails on the two phrases that
 carried the false claim. `tests/test_docs_truth_1511.py` records why a text
-match is the exception and not the rule: a match breaks on rephrasing and
-proves nothing about the tree. It is used here because the claim is about a
-change that did not happen, and the tree cannot state a negative; the phrases
-are the only trace a regression would leave. The read carries `source_scan`
-(#1746).
+match alone is weak: it breaks on rephrasing and proves nothing about the
+tree. The first test is a text match and nothing more, because the claim is
+about a change that did not happen, and the tree cannot state a negative;
+the phrases are the only trace a regression would leave. The third and
+fourth tests also match phrases in the paragraph, but only after each has
+measured the tree fact the phrase states. Every test that reads the
+paragraph carries `source_scan` (#1746).
 
 The second checks the tree for what the paragraph now says: the budget the
 hook passes is `DEFAULT_HOOK_TOKEN_BUDGET` itself, with nothing taken off for
@@ -72,8 +74,9 @@ from aelfrice.store import MemoryStore
 _FALSE_PHRASES = ("re-denominated", "reserved the framing header")
 """The two phrases the false sentence was built from.
 
-Either one coming back is the regression this file exists to catch, and
-nothing else in the paragraph is text-matched.
+Either one coming back is the regression the first test exists to catch.
+The third and fourth tests match other phrases, each after measuring the
+fact the phrase states.
 """
 
 
