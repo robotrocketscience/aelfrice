@@ -984,18 +984,37 @@ def test_cli_apply_retires_a_belief_confirmed_under_an_automatic_label(
         s.close()
 
 
-def test_doctor_help_names_every_automatic_source(
-    capsys: pytest.CaptureFixture[str],
+def _option_help(
+    capsys: pytest.CaptureFixture[str], command: str, flag: str,
+) -> str:
+    """The help text of one option of `aelf <command> --help`, unwrapped."""
+    with pytest.raises(SystemExit) as exc:
+        cli_module.build_parser().parse_args([command, "--help"])
+    assert exc.value.code == 0
+    lines = capsys.readouterr().out.splitlines()
+    # An option's first line is indented by two spaces; its wrapped help
+    # lines are indented further.
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("  -")]
+    first = next(i for i in starts if lines[i].split()[0].rstrip(",") == flag)
+    end = next((i for i in starts if i > first), len(lines))
+    body = " ".join(" ".join(lines[first:end]).split())
+    assert body.startswith(flag)
+    return body
+
+
+@pytest.mark.parametrize(
+    "command,flag", [("doctor", "--retire-scheduled-prompts")],
+)
+def test_help_names_every_automatic_source(
+    capsys: pytest.CaptureFixture[str], command: str, flag: str,
 ) -> None:
     # A confirmation under one of these labels keeps nothing, so the help
-    # has to say which labels they are.
-    with pytest.raises(SystemExit) as exc:
-        cli_module.build_parser().parse_args(["doctor", "--help"])
-    assert exc.value.code == 0
-    text = " ".join(capsys.readouterr().out.split())
+    # has to say which labels they are. Other doctor help says "hooks", so
+    # the check reads this option's help alone and matches whole labels.
+    text = _option_help(capsys, command, flag)
     for label in [*sorted(AUTOMATIC_FEEDBACK_SOURCES),
                   *AUTOMATIC_FEEDBACK_SOURCE_PREFIXES]:
-        assert label in text
+        assert re.search(rf"(?<![\w:-]){re.escape(label)}(?![\w-])", text), label
 
 
 def test_cli_missing_path_exits_2(
