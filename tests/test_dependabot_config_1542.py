@@ -221,21 +221,29 @@ def test_uv_item_sets_no_key_that_narrows_the_weekly_bump() -> None:
     assert set(item) <= reviewed, sorted(set(item) - reviewed)
 
 
-def test_uv_updates_wait_out_a_seven_day_cooldown() -> None:
+def test_every_item_waits_out_a_seven_day_cooldown() -> None:
     """Dependabot proposes a release no sooner than seven days after it is
-    published. Without `cooldown`, or with fewer days, zizmor's
-    dependabot-cooldown audit raises a code-scanning alert on main. Every
-    `*-days` key holds at least seven, and no `include` or `exclude` list
-    narrows the packages the cooldown covers. The block sits on the item
-    itself, the only place Dependabot's schema defines `cooldown`, so a
-    `cooldown:` nested under `schedule:` fails."""
-    cooldown = _block(_uv_item(), "cooldown")
-    rules = {key: _text(cooldown, key) or "" for key in cooldown}
-    assert "default-days" in rules, rules
-    days = {"default-days", "semver-major-days", "semver-minor-days", "semver-patch-days"}
-    assert set(rules) <= days, rules
-    short = {key: value for key, value in rules.items() if not value.isdigit() or int(value) < 7}
-    assert not short, short
+    published, in each ecosystem. Without `cooldown`, or with fewer days,
+    zizmor's dependabot-cooldown audit raises a code-scanning alert on
+    main; zizmor 1.31.1 flags the `github-actions` item as well as the
+    `uv` one. Every `*-days` key holds at least seven, and no `include` or
+    `exclude` list narrows the packages the cooldown covers. The
+    `github-actions` ecosystem supports `default-days` only, not the
+    `semver-*-days` keys. The block sits on the item itself, the only
+    place Dependabot's schema defines `cooldown`, so a `cooldown:` nested
+    under `schedule:` fails."""
+    semver = {"semver-major-days", "semver-minor-days", "semver-patch-days"}
+    items = _items()
+    assert len(items) >= 2, items
+    for item in items:
+        ecosystem = _text(item, "package-ecosystem")
+        cooldown = _block(item, "cooldown")
+        rules = {key: _text(cooldown, key) or "" for key in cooldown}
+        assert "default-days" in rules, (ecosystem, rules)
+        days = {"default-days"} if ecosystem == "github-actions" else {"default-days", *semver}
+        assert set(rules) <= days, (ecosystem, rules)
+        short = {key: value for key, value in rules.items() if not value.isdigit() or int(value) < 7}
+        assert not short, (ecosystem, short)
 
 
 def test_uv_group_takes_every_minor_and_patch_version_update() -> None:

@@ -15,10 +15,10 @@
 # comment beside the sha. The comment tells a reviewer which release a sha
 # names, so every `uses:` line carries one.
 #
-# Updates arrive weekly: minor and patch bumps grouped into one PR per
-# ecosystem, a major bump as its own PR. The `uv` item holds at most five
-# open PRs at a time. Dependabot waits seven days after a `uv` release
-# before it proposes that version, the shortest cooldown zizmor's
+# Minor and patch bumps arrive grouped into one PR per ecosystem, and a
+# major bump arrives as its own PR. The `uv` item holds at most five open
+# PRs at a time. In both ecosystems Dependabot waits seven days after a
+# release before it proposes that version, the shortest cooldown zizmor's
 # dependabot-cooldown audit accepts. The cooldown covers version updates
 # only, so a security update still opens once an alert has a patched
 # version. Each `uv` PR carries the `dependencies` and `python:uv` labels,
@@ -36,6 +36,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "build"
       include: "scope"
