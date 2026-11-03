@@ -33,7 +33,6 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_gate import (  # noqa: E402
     ADVISORY_NAMES,
-    FLOOR_ALTERNATES,
     FLOOR_NAMES,
     NONGATING_WHILE_PENDING,
     SELF_NAMES,
@@ -1668,57 +1667,37 @@ def test_the_floor_excludes_advisory_bots_and_the_trains_own_jobs() -> None:
     assert not (FLOOR_NAMES & SELF_NAMES)
 
 
-# --- #1786: the derived-figures matrix names stand in for the bare name -------
+# --- #1786: each derived-figures matrix leg is a floor name -----------------
 #
-# PR #1835 turns `derived-figures` into a matrix. The train runs `main`'s gate,
-# so until `main` floors the matrix names, FLOOR_ALTERNATES lets the two legs
-# cover the bare floor name. The PR that renames the job removes the mapping.
+# `derived-figures` in `ci.yml` is a `python-version` matrix, so each leg
+# reports its own check-run and each leg is its own floor row.
 
-_DERIVED = "derived-figures"
-# The rows the matrix in PR #1835 produces: job id `derived-figures`, no
-# `name:`, one axis `python-version: ['3.12', '3.13']`. Written out rather
-# than read from FLOOR_ALTERNATES, so a typo in the mapping fails here.
+# The rows the matrix produces: job id `derived-figures`, no `name:`, one axis
+# `python-version: ['3.12', '3.13']`. Written out rather than read from
+# FLOOR_NAMES, so a floor that drops a leg fails here.
 _DERIVED_LEGS = ("derived-figures (3.12)", "derived-figures (3.13)")
 
 
 def _floor_green_with_derived_legs(
     legs: tuple[str, ...] = _DERIVED_LEGS,
 ) -> list[dict[str, Any]]:
-    """A green floor that reports the matrix legs and no bare row."""
+    """A green floor that reports only the given matrix legs."""
     return [
-        *(_run(name) for name in sorted(FLOOR - {_DERIVED})),
+        *(_run(name) for name in sorted(FLOOR - set(_DERIVED_LEGS))),
         *(_run(leg) for leg in legs),
     ]
 
 
-def test_the_alternates_are_the_names_the_derived_figures_matrix_emits() -> None:
-    assert FLOOR_ALTERNATES == {_DERIVED: _DERIVED_LEGS}
-    # Each key is a floor name, and no leg may skip the wait or floor twice.
-    assert set(FLOOR_ALTERNATES) <= FLOOR_NAMES
-    legs = {leg for alts in FLOOR_ALTERNATES.values() for leg in alts}
-    assert not legs & (FLOOR_NAMES | NONGATING_WHILE_PENDING | ADVISORY_NAMES)
-
-
-def test_a_bare_derived_figures_row_satisfies_the_floor() -> None:
-    runs = _all_floor_green()
-    assert _DERIVED in {r["name"] for r in runs}
-    verdict = evaluate(runs, REQUIRED)
-    assert verdict["missing"] == []
-    assert verdict["failing"] == []
-    assert verdict["pending"] == []
-
-
-def test_both_derived_figures_legs_satisfy_the_floor_without_a_bare_row() -> None:
-    verdict = evaluate(_floor_green_with_derived_legs(), REQUIRED)
-    assert verdict["missing"] == []
-    assert verdict["pending"] == []
-    assert verdict["failing"] == []
-
-
 @pytest.mark.parametrize("leg", _DERIVED_LEGS)
-def test_one_derived_figures_leg_alone_leaves_the_floor_name_missing(leg: str) -> None:
+def test_one_derived_figures_leg_alone_leaves_the_other_leg_missing(leg: str) -> None:
+    other = [n for n in _DERIVED_LEGS if n != leg]
     verdict = evaluate(_floor_green_with_derived_legs((leg,)), REQUIRED)
-    assert verdict["missing"] == [_DERIVED]
+    assert verdict["missing"] == other
+
+
+def test_neither_derived_figures_leg_leaves_both_legs_missing() -> None:
+    verdict = evaluate(_floor_green_with_derived_legs(()), REQUIRED)
+    assert verdict["missing"] == list(_DERIVED_LEGS)
 
 
 @pytest.mark.parametrize("status", ["queued", "in_progress", "pending"])
@@ -1744,11 +1723,6 @@ def test_a_failed_or_cancelled_derived_figures_leg_fails(
     verdict = evaluate(runs, REQUIRED)
     assert verdict["failing"] == [leg]
     assert verdict["missing"] == []
-
-
-def test_neither_derived_figures_form_leaves_the_floor_name_missing() -> None:
-    verdict = evaluate(_floor_green_with_derived_legs(()), REQUIRED)
-    assert verdict["missing"] == [_DERIVED]
 
 
 # --- #1695: the train runs only code from `main` -----------------------------
