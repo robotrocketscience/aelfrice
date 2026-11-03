@@ -863,11 +863,11 @@ def test_the_producer_timeout_flag_reaches_the_producer_check(
     monkeypatch.setattr(cdf, "check_producers", check_producers)
     (repo / "CHANGELOG" / "v9.md").write_text("- **Entry.** Nothing measured.\n")
     base = ["--mode", "producers", "CHANGELOG/v9.md"]
-    assert cdf.main([*base, "--producer-timeout", "120"]) == 0
-    assert cdf.main(base) == 0
+    assert cdf.main([*base, "--producer-timeout", "120"]) == 0  # path-filter: none
+    assert cdf.main(base) == 0  # path-filter: none
     assert seen == [{"timeout_s": 120}, {"timeout_s": cdf.PRODUCER_TIMEOUT_S}]
     with pytest.raises(SystemExit):
-        cdf.main([*base, "--producer-timeout", "0"])
+        cdf.main([*base, "--producer-timeout", "0"])  # path-filter: none
 
 
 def test_running_no_producers_returns_no_results() -> None:

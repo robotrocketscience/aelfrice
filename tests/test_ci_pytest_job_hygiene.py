@@ -369,7 +369,7 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
         f"the pytest legs select {selection!r}, not {_SELECTION!r}"
     )
     path, _, func = _DESELECTED.partition("::")
-    source = (_REPO / path).read_text(encoding="utf-8")
+    source = (_REPO / path).read_text(encoding="utf-8")  # path-filter: tests/test_derived_figures_1469.py
     sharing = [n for n in _module_names(source) if n.startswith(func)]
     assert sharing == [func], (
         f"{path} binds {sharing!r}, not exactly [{func!r}]. Absent, the "
@@ -474,20 +474,20 @@ def test_the_gate_command_reaches_the_producers(
 
     tokens = (_field(_gate_step(), "run") or "").split()
     argv = tokens[tokens.index("scripts/check_derived_figures.py") + 1 :]
-    assert cdf.main(argv) == 0
+    assert cdf.main(argv) == 0  # path-filter: none
     assert calls == [markers], f"`{' '.join(argv)}` never ran the producers"
     assert caps == [_PRODUCER_CAP_S], (
         f"`{' '.join(argv)}` ran the producers under a {caps!r} s cap"
     )
 
     calls.clear()
-    assert cdf.main(["--mode", "text"]) == 0
+    assert cdf.main(["--mode", "text"]) == 0  # path-filter: none
     assert calls == []
 
 
 def _timeout_marker(path: str, func: str) -> int:
     """The seconds in `@pytest.mark.timeout(N)` on `func` in `path`."""
-    tree = ast.parse((_REPO / path).read_text(encoding="utf-8"))
+    tree = ast.parse((_REPO / path).read_text(encoding="utf-8"))  # path-filter: tests/test_derived_figures_1469.py
     found = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == func
