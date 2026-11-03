@@ -199,6 +199,24 @@ FLOOR_NAMES: frozenset[str] = frozenset({
     "typos",                    # typos.yml
 })
 
+# Names whose rows stand in for a floor name that has no row of its own
+# (#1786). This is a transition. PR #1835 turns the `derived-figures` job in
+# `ci.yml` into a `python-version` matrix, so that PR reports
+# `derived-figures (3.12)` and `derived-figures (3.13)` and never a bare
+# `derived-figures`. The train runs the gate from `main`, so while `main`
+# floors only the bare name, the train holds that PR as `missing` with every
+# check green. The PR that renames the job removes this entry and floors the
+# matrix names directly.
+#
+# A floor name counts as present when its own row is present, or when every
+# alternate has a row. A partial set is still `missing`: one leg that never
+# reported has not passed. While the alternates stand in, each one is
+# evaluated as a floor row, so a `cancelled` leg fails as a cancelled floor
+# row does, a failing leg fails, and a running leg is pending.
+FLOOR_ALTERNATES: dict[str, tuple[str, ...]] = {
+    "derived-figures": ("derived-figures (3.12)", "derived-figures (3.13)"),
+}
+
 FAILING_CONCLUSIONS: frozenset[str] = frozenset(
     {"failure", "timed_out", "action_required"}
 )
@@ -310,11 +328,26 @@ def evaluate(
     latest = latest_per_name(check_runs)
     gating = {n: r for n, r in latest.items() if n not in ADVISORY_NAMES}
     floor = required | FLOOR_NAMES
+    # FLOOR_ALTERNATES (#1786): a floor name with no row of its own is
+    # covered when every alternate reported, and its alternates are then
+    # floor rows themselves.
+    standing_in = {
+        alt for name, alts in FLOOR_ALTERNATES.items()
+        if name in floor and name not in latest
+        for alt in alts
+    }
+    covered = set(latest) | {
+        name for name, alts in FLOOR_ALTERNATES.items()
+        if all(alt in latest for alt in alts)
+    }
 
     failing = sorted(
         n for n, r in gating.items()
         if r.get("conclusion") in FAILING_CONCLUSIONS
-        or (n in floor and r.get("conclusion") in FLOOR_FAILING_CONCLUSIONS)
+        or (
+            n in (floor | standing_in)
+            and r.get("conclusion") in FLOOR_FAILING_CONCLUSIONS
+        )
     )
     still_running = {
         n for n, r in gating.items() if r.get("status") in PENDING_STATUSES
@@ -333,7 +366,7 @@ def evaluate(
         # Running, but not waited on (#1633); reported so the log says why
         # the train moved while a check was still going.
         "pending_not_gating": sorted(still_running & NONGATING_WHILE_PENDING),
-        "missing": sorted(floor - set(latest)),
+        "missing": sorted(floor - covered),
         "advisory_failing": advisory_failing,
         # Advisory entries that matched nothing on this SHA. A renamed bot
         # would silently start blocking again, so the run says so out loud.
