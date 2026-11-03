@@ -1,4 +1,4 @@
-"""`.github/dependabot.yml` asks for weekly Python dependency updates (#1542).
+"""`.github/dependabot.yml` asks for weekly Python and action updates (#1542, #1786).
 
 #1542 waited on a Dependabot PR that could not come: the repository had no
 `dependabot.yml`, so Dependabot raised security updates only, and a security
@@ -6,11 +6,13 @@ update needs an alert with a patched version. Version updates on the `uv`
 ecosystem cover the gap. These tests hold the configuration to the terms it
 landed under: the `uv` updater and not `pip`, since only `uv` rewrites
 uv.lock, and CI passes a PR that leaves the lock stale because its `uv run`
-steps re-lock in the runner; a weekly schedule; minor and patch bumps
-grouped into one PR, with no `ignore` or `allow` filter narrowing them;
-at most five open PRs; the labels Dependabot's
-security updates already apply; and no label or option that would merge a
-PR without a person adding `ready-to-merge`.
+steps re-lock in the runner; a `github-actions` item beside it (#1786); a
+weekly schedule and a seven-day cooldown on both; minor and patch bumps
+grouped into one PR per ecosystem, with no `ignore` or `allow` filter
+narrowing them; at most five open `uv` PRs; and the labels Dependabot's
+security updates already apply, neither of which starts the merge train.
+`tests/test_workflow_supply_chain_1786.py` holds the rule that nothing
+under `.github/` enables auto-merge, this file included.
 
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set, so an `import yaml` passes locally and fails
@@ -178,30 +180,38 @@ def test_no_python_updater_besides_uv() -> None:
     PR, and the stale lock merges. An item counts whichever key it lists
     first, a trailing comment does not hide its ecosystem, and an item
     whose ecosystem this parser cannot read, such as a flow mapping, fails
-    the test rather than passing unread."""
+    the test rather than passing unread. The items are exactly
+    `github-actions` and `uv`, one each, so a new ecosystem lands with a
+    test of its own."""
     ecosystems = [_text(item, "package-ecosystem") for item in _items()]
     assert None not in ecosystems, ecosystems
     assert ecosystems.count("uv") == 1, ecosystems
     assert not {"pip", "pipenv", "poetry"} & set(ecosystems), ecosystems
+    assert sorted(ecosystems) == ["github-actions", "uv"], ecosystems
 
 
-def test_uv_updates_are_weekly_and_capped() -> None:
-    """The `uv` updater, weekly, five PRs open at most, and the
-    `build(deps):` subject the commit checks accept. Each key counts only
-    at the depth Dependabot reads it: `directory` and
-    `open-pull-requests-limit` on the item, `interval` under `schedule`,
-    and `prefix` and `include` under `commit-message`."""
-    item = _uv_item()
-    assert _text(item, "directory") == "/", item
-    assert _text(_block(item, "schedule"), "interval") == "weekly", item
-    assert _text(item, "open-pull-requests-limit") == "5", item
-    message = _block(item, "commit-message")
-    assert _text(message, "prefix") == "build", message
-    assert _text(message, "include") == "scope", message
+def test_every_item_is_weekly_with_the_build_subject() -> None:
+    """Each item, weekly, at the repository root, with the `build(deps):`
+    subject the commit checks accept. Each key counts only at the depth
+    Dependabot reads it: `directory` on the item, `interval` under
+    `schedule`, and `prefix` and `include` under `commit-message`."""
+    for item in _items():
+        ecosystem = _text(item, "package-ecosystem")
+        assert _text(item, "directory") == "/", (ecosystem, item)
+        assert _text(_block(item, "schedule"), "interval") == "weekly", (ecosystem, item)
+        message = _block(item, "commit-message")
+        assert _text(message, "prefix") == "build", (ecosystem, message)
+        assert _text(message, "include") == "scope", (ecosystem, message)
 
 
-def test_uv_item_sets_no_key_that_narrows_the_weekly_bump() -> None:
-    """The `uv` item sets only the keys these tests read. `ignore` drops
+def test_uv_updates_are_capped_at_five_open_prs() -> None:
+    """`open-pull-requests-limit` counts on the item, not under a nested
+    key."""
+    assert _text(_uv_item(), "open-pull-requests-limit") == "5"
+
+
+def test_no_item_sets_a_key_that_narrows_the_weekly_bump() -> None:
+    """Each item sets only the keys these tests read. `ignore` drops
     packages or update types from the weekly bump and `allow` limits it to
     the packages it names, so either one leaves dependencies without the
     minor and patch updates the group promises. A key outside the set,
@@ -217,8 +227,9 @@ def test_uv_item_sets_no_key_that_narrows_the_weekly_bump() -> None:
         "commit-message",
         "groups",
     }
-    item = _uv_item()
-    assert set(item) <= reviewed, sorted(set(item) - reviewed)
+    for item in _items():
+        extra = sorted(set(item) - reviewed)
+        assert not extra, (_text(item, "package-ecosystem"), extra)
 
 
 def test_every_item_waits_out_a_seven_day_cooldown() -> None:
@@ -246,19 +257,23 @@ def test_every_item_waits_out_a_seven_day_cooldown() -> None:
         assert not short, (ecosystem, short)
 
 
-def test_uv_group_takes_every_minor_and_patch_version_update() -> None:
-    """One group holds the minor and patch version updates of every
-    package. `applies-to: security-updates` moves the group off version
+def test_each_group_takes_every_minor_and_patch_version_update() -> None:
+    """In each item, one group holds the minor and patch version updates of
+    every package, and no major: a grouped major would hide a breaking bump
+    inside a routine PR, and a group with no `update-types` takes every
+    type. `applies-to: security-updates` moves the group off version
     updates, and `patterns`, `exclude-patterns`, `dependency-type`, or
     `group-by` limit or split what it holds. The schema accepts each of
     them, and each leaves weekly bumps outside the group, one PR per
     package."""
-    groups = _groups(_uv_item())
-    assert len(groups) == 1, groups
-    (rules,) = groups.values()
-    assert sorted(rules.get("update-types", [])) == ["minor", "patch"], rules
-    assert rules.get("applies-to", ["version-updates"]) == ["version-updates"], rules
-    assert set(rules) <= {"update-types", "applies-to"}, rules
+    for item in _items():
+        ecosystem = _text(item, "package-ecosystem")
+        groups = _groups(item)
+        assert len(groups) == 1, (ecosystem, groups)
+        (rules,) = groups.values()
+        assert sorted(rules.get("update-types", [])) == ["minor", "patch"], (ecosystem, rules)
+        assert rules.get("applies-to", ["version-updates"]) == ["version-updates"], (ecosystem, rules)
+        assert set(rules) <= {"update-types", "applies-to"}, (ecosystem, rules)
 
 
 def test_stale_lock_reason_matches_how_ci_installs() -> None:
@@ -318,14 +333,11 @@ def test_stale_lock_reason_matches_how_ci_installs() -> None:
 def test_uv_updates_carry_the_dependency_labels_and_wait_for_the_train() -> None:
     """The PR labels are the ones security updates already apply. Neither
     label starts the merge train; a person adds `ready-to-merge` after
-    reading the diff, and nothing in the file merges on its own."""
+    reading the diff. The scan for an auto-merge rule in this file is
+    `test_nothing_under_github_enables_auto_merge` in
+    `tests/test_workflow_supply_chain_1786.py`, which reads every spelling
+    this file and the workflows can use."""
     item = _uv_item()
     labels = _sequence(item, "labels")
     assert labels == ["dependencies", "python:uv"], labels
     assert "ready-to-merge" not in labels, labels
-    merging = [
-        line
-        for line in _code_lines(_DEPENDABOT.read_text(encoding="utf-8"))
-        if "auto-merge" in line.lower() or "automerge" in line.lower()
-    ]
-    assert not merging, merging
