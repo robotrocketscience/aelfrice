@@ -48,6 +48,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,6 +69,8 @@ jobs:
         with:
           egress-policy: audit
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Decode patterns
         env:
           PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
@@ -120,6 +123,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Fetch base ref
         run: |
           git fetch --no-tags origin "$BASE_REF"
@@ -173,6 +177,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       # #1211 — runs on every PR, deliberately ahead of the release-only
       # early exit below. Resolving a CHANGELOG conflict insert-only is
       # right for added entries and wrong for amended ones: it leaves the
@@ -321,6 +326,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate commit-message prefixes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

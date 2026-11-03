@@ -30,6 +30,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          persist-credentials: false
       - name: Run audit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
