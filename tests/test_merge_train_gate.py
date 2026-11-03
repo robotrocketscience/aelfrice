@@ -458,7 +458,7 @@ def test_no_comment_says_continue_on_error_keeps_a_check_off_failure(path: str) 
     not the job's check-run, which is the row the gate reads. A comment that
     says otherwise sends a reader to the wrong reason a nongating job's late
     failure is ignored."""
-    claim = _KEEPS_A_CHECK_OFF_FAILURE.search(_prose(_REPO / path))
+    claim = _KEEPS_A_CHECK_OFF_FAILURE.search(_prose(_REPO / path))  # path-filter: scripts/merge_train_gate.py tests/test_mutation_workflow_1457.py .github/workflows/**
     assert claim is None, f"{path}: {claim.group(0)!r}"
 
 
