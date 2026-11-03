@@ -421,7 +421,7 @@ def test_every_workflow_declares_permissions(workflow: str) -> None:
     assert _permissions_block(lines, 0) is not None, workflow
 
 
-@pytest.mark.parametrize(("workflow", "job"), _job_ids(), ids=lambda v: str(v))
+@pytest.mark.parametrize(("workflow", "job"), _job_ids(), ids=str)
 def test_harden_runner_runs_exactly_where_the_token_can_do_harm(workflow: str, job: str) -> None:
     """F12: `harden-runner` is the first step of a job that holds a write
     permission or reads a `secrets.*` value, and absent from every other
