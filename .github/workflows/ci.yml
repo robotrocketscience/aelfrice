@@ -235,10 +235,12 @@ jobs:
       # A PR that matches `tree_reads` and no `code` path runs the modules
       # that read every match of a glob or a CHANGELOG directory, not the
       # whole suite. No JUnit report: a partial run is not a record of the
-      # suite.
+      # suite. It carries the full suite's `--deselect`: `derived-figures`
+      # runs the producers on this PR as on any other, and these legs
+      # still fail unless it passed.
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads == 'true' && github.event_name != 'workflow_dispatch'
         name: Run the tests that read every file a glob matches
-        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_conflict_markers_1491.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_no_personal_paths.py tests/test_store_open_cost_1561.py -q -rfEsxX
+        run: uv run pytest tests/test_changelog_dupes.py tests/test_code_span_scanner_1556.py tests/test_codex_option_rejection_1429.py tests/test_collate_changelog.py tests/test_conflict_markers_1491.py tests/test_derived_figures_1469.py tests/test_docs_cross_file_anchors_1511.py tests/test_no_personal_paths.py tests/test_store_open_cost_1561.py --deselect tests/test_derived_figures_1469.py::test_the_repo_passes_the_producer_checks -q -rfEsxX
       - if: steps.filter.outputs.code != 'true' && steps.filter.outputs.tree_reads != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No changed file matched a filter key; reporting pass."
       # `always()` so a red leg still keeps its report, which is the case the
@@ -256,7 +258,7 @@ jobs:
   # difference between what a producer emits and what the prose published.
   #
   # Its own job rather than a step on `pytest`, for two reasons. `pytest` is
-  # path-gated, so a CHANGELOG-only PR takes the `echo` branch —
+  # path-gated, so a CHANGELOG-only PR runs only the `tree_reads` modules,
   # and a PR that changes only the CHANGELOG is precisely the one that ships a
   # figure. And the gate must never report a pass it did not run: no
   # `paths-filter` here, no conditional steps, so the check is either green

@@ -14,7 +14,8 @@ Python versions as the `pytest` matrix. The branch ruleset requires the
 `pytest` legs and not that job, so each leg waits for it and fails unless
 every leg of it passed. The tests at the bottom pin that edge, pin that
 job's matrix and runner image to the `pytest` job's, pin its timeout, pin
-the legs' `run:` line, and reject the `PYTEST_` variables that add to it.
+the legs' `run:` line and the partial run's deselect, and reject the
+`PYTEST_` variables that add to them.
 They pin that job's gate command verbatim, pin its producer cap to the
 deselected test's 120 s timeout marker, and run its arguments through the
 script. They reject a job-level key outside an allowlist on that job, an
@@ -173,6 +174,16 @@ def _pytest_step() -> list[str]:
         if (_field(s, "run") or "").startswith("uv run pytest tests/ ")
     ]
     assert len(found) == 1, f"expected one pytest step, found {len(found)}"
+    return found[0]
+
+
+def _partial_run_step() -> list[str]:
+    """The step that runs the `tree_reads` modules on a PR with no `code` match."""
+    found = [
+        s for s in _steps()
+        if (_field(s, "run") or "").startswith("uv run pytest tests/test_")
+    ]
+    assert len(found) == 1, f"expected one partial-run step, found {len(found)}"
     return found[0]
 
 
@@ -375,6 +386,27 @@ def test_the_legs_deselect_exactly_the_producer_check() -> None:
         f"{path} binds {sharing!r}, not exactly [{func!r}]. Absent, the "
         "deselect skips nothing. Any other name that starts with it drops "
         "out of the required legs with nothing else running it."
+    )
+
+
+def test_the_partial_run_deselects_the_producer_check_too() -> None:
+    """A PR that matches `tree_reads` and no `code` path, such as a
+    Markdown-only one, runs the deselected test's module in the partial
+    run. `derived-figures` runs the producers on that PR as on any other,
+    so the partial run deselects the same test and selects nothing else
+    beyond its modules."""
+    tokens = (_field(_partial_run_step(), "run") or "").split()
+    assert tokens[:3] == ["uv", "run", "pytest"], tokens
+    rest = [t for t in tokens[3:] if t not in _REPORT_FLAGS]
+    modules = [t for t in rest if re.fullmatch(r"tests/test_\w+\.py", t)]
+    path = _DESELECTED.partition("::")[0]
+    assert path in modules, (
+        f"the partial run no longer runs {path}; drop its deselect"
+    )
+    selection = [t for t in rest if t not in modules]
+    assert selection == ["--deselect", _DESELECTED], (
+        f"the partial run selects {selection!r} beyond its modules, not "
+        f"{['--deselect', _DESELECTED]!r}"
     )
 
 

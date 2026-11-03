@@ -965,7 +965,8 @@ def _tree_read_step_modules() -> list[str]:
 
     Read from the one step gated on `tree_reads == 'true'` whose command
     runs pytest, so a second such step, or a renamed output, fails here
-    instead of leaving the modules unread.
+    instead of leaving the modules unread. The operand of a `--deselect`
+    names one test and not a module the step runs, so it is skipped.
     """
     runs = [
         step
@@ -978,7 +979,7 @@ def _tree_read_step_modules() -> list[str]:
         f"found {len(runs)}"
     )
     command = next(line for line in runs[0] if line.strip().startswith("run: "))
-    modules = re.findall(r"tests/\S+\.py\b", command)
+    modules = re.findall(r"(?<!--deselect )tests/\S+\.py\b", command)
     assert modules, f"the `tree_reads` step names no test module: {command.strip()!r}"
     return modules
 
