@@ -125,6 +125,7 @@ jobs:
               - 'docs/concepts/ARCHITECTURE.md'
               - 'docs/concepts/RELEASING.md'
               - 'docs/concepts/ROADMAP.md'
+              - 'docs/design/budget_discriminability_k0_result.md'
               - 'docs/design/derived_figure_markers.md'
               - 'docs/design/testing-strategy.md'
               - 'docs/user/COMMANDS.md'
@@ -132,6 +133,7 @@ jobs:
               - 'docs/user/INSTALL.md'
               - 'docs/user/LIMITATIONS.md'
               - 'docs/user/PRIVACY.md'
+              - 'docs/user/QUICKSTART.md'
               - 'docs/user/SLASH_COMMANDS.md'
               - 'pyright_baseline.json'
             # Globs that a test reads every match of, declared in its
