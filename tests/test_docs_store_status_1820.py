@@ -31,7 +31,8 @@ from aelfrice.config_discovery import CONFIG_FILENAME
 from aelfrice.db_paths import STORE_RULE_GIT, STORE_RULE_MARKER, resolve_store
 
 REPO = Path(__file__).resolve().parents[1]
-USER_DOCS = REPO / "docs" / "user"
+LIMITATIONS = REPO / "docs" / "user" / "LIMITATIONS.md"
+QUICKSTART = REPO / "docs" / "user" / "QUICKSTART.md"
 STATUS_PROMPT = "$ aelf status"
 SLASH_STATUS = REPO / "src" / "aelfrice" / "slash_commands" / "status.md"
 
@@ -105,7 +106,7 @@ def test_one_store_table_separates_two_projects_in_a_repository(
     assert sel_own.path not in (sel_a.path, sel_b.path)
 
     section = _collapse(
-        _section(USER_DOCS / "LIMITATIONS.md", "### Multi-project query"),
+        _section(LIMITATIONS, "### Multi-project query"),
     )
     assert "each project folder holds" not in section, section
     assert "unless one of them holds a `[store]` table" in section, section
@@ -118,7 +119,7 @@ def _labels(lines: list[str]) -> list[str]:
 
 
 def _quickstart_status_sample() -> list[str]:
-    text = (USER_DOCS / "QUICKSTART.md").read_text(encoding="utf-8")
+    text = QUICKSTART.read_text(encoding="utf-8")
     assert text.count(STATUS_PROMPT + "\n") == 1, "expected one aelf status sample"
     body = text.split(STATUS_PROMPT + "\n", 1)[1]
     return body.split("\n\n", 1)[0].splitlines()
