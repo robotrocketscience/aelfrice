@@ -759,7 +759,9 @@ def validate_record(record: dict[str, Any], where: str) -> None:
         require(leg_state != GREEN or not confirmed.get(leg), f"leg {leg} is green with a confirmed failure")
     if verdict == GREEN:
         canary = [leg for leg, role in roles.items() if role == CANARY]
-        require(bool(canary) and all(status.get(leg) == GREEN for leg in canary), "the night is green over a canary leg that is not")
+        legs: dict[str, Any] = record["legs"]
+        require(bool(canary), "the night is green with no canary leg")
+        require(all(status.get(leg) == GREEN and legs.get(leg) for leg in canary), "the night is green over a canary leg that is not")
 
 
 def _is_pointer(value: object) -> bool:

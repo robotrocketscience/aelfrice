@@ -2317,6 +2317,16 @@ def _with(key: str, value: object) -> dict[str, Any]:
     return record
 
 
+def _green_with(key: str, value: object) -> dict[str, Any]:
+    """A good green record with `legs` or one `nightly` key replaced."""
+    record = _green(SHA1, 1)
+    if key == "legs":
+        record[key] = value
+    else:
+        record["nightly"][key] = value
+    return record
+
+
 _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("nightly-list", _with("nightly", [])),
     ("nightly-str", _with("nightly", "x")),
@@ -2347,6 +2357,10 @@ _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("created-at-word", _with("created_at", "Nov 4")),
     ("green-over-confirmed", _with("status", {"3.12": nc.GREEN, "3.13": nc.GREEN})),
     ("verdict-green-over-red-leg", _with("verdict", nc.GREEN)),
+    ("green-no-legs", _green_with("legs", {})),
+    ("green-null-canary-leg", _green_with("legs", {"3.12": None, "3.13": None})),
+    ("green-no-canary-role", _green_with("roles", {"3.12": nc.EXTRA, "3.13": nc.EXTRA})),
+    ("green-no-roles", _green_with("roles", {})),
 ]
 
 
