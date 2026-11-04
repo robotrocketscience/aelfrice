@@ -737,14 +737,17 @@ _BAD_FILES = [
     ("verdict.json", b'{"rc": 0, "red": [], "flaky": [], "confirmed": [], "status": "green"}'),
     ("verdict.json", b'{"rc": 0, "red": [], "flaky": null, "confirmed": [], "mass_failure": false, "status": "green"}'),
     ("verdict.json", b"\xff\xfe"),
+    ("verdict.json", b"[" * 200_000),
     ("env.json", b"oops"),
     ("env.json", b"[]"),
+    ("env.json", b"[" * 200_000),
     ("junit.xml", b"\xff\xfe"),
     ("junit.xml", b"<x"),
     ("junit.xml", b"<html></html>"),
 ]
 _BAD_IDS = ["verdict-corrupt", "verdict-array", "verdict-empty", "verdict-red-not-a-list", "verdict-rc-bool",
-            "verdict-no-mass-flag", "verdict-flaky-null", "verdict-not-utf8", "env-corrupt", "env-array", "junit-not-utf8",
+            "verdict-no-mass-flag", "verdict-flaky-null", "verdict-not-utf8", "verdict-too-deep", "env-corrupt",
+            "env-array", "env-too-deep", "junit-not-utf8",
             "junit-truncated", "junit-html"]
 
 
@@ -776,6 +779,47 @@ def test_a_bad_file_in_a_canary_leg_reads_incomplete_with_the_record_written(
     assert record["nightly"]["status"]["3.13"] == nc.MISSING
     assert record["nightly"]["verdict"] == nc.INCOMPLETE
     assert record["nightly"]["notes"]["3.13"]
+
+
+@pytest.mark.parametrize(
+    ("method", "name"),
+    [("is_file", "junit.xml"), ("exists", "env.json"), ("iterdir", None)],
+    ids=["bundle-probe", "env-probe", "artifact-listing"],
+)
+def test_an_extra_leg_the_script_cannot_probe_keeps_the_nights_green_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, name: str | None,
+) -> None:
+    """A leg directory with mode 000 raises from a probe as well as a read, and
+    which probe raises depends on the Python version."""
+    specs = _three_legs(tmp_path)
+    if method == "iterdir":
+        (tmp_path / "3.14" / "env.json").unlink()
+        (tmp_path / "3.14" / "junit.xml").unlink()
+        (tmp_path / "3.14" / "verdict.json").unlink()
+    real = getattr(Path, method)
+
+    def denied(self: Path) -> Any:
+        if (self.name == name and self.parent.name == "3.14") or (name is None and self.name == "3.14"):
+            raise PermissionError(13, "denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, method, denied)
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"] == {"3.12": nc.GREEN, "3.13": nc.GREEN, "3.14": nc.MISSING}
+    assert record["nightly"]["verdict"] == nc.GREEN
+    assert "denied" in " ".join(record["nightly"]["notes"]["3.14"])
+
+
+def test_a_rerun_report_too_deep_to_parse_leaves_every_red_test_confirmed(tmp_path: Path) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
+    rerun = tmp_path / "rerun.xml"
+    rerun.write_text("<testsuites>" + "<x>" * 200_000 + "</x>" * 200_000 + "</testsuites>", encoding="utf-8")
+    out = tmp_path / "v.json"
+    assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--rerun", str(rerun), "--rerun-rc", "1",
+                    "--out", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["confirmed"] == [_A]
 
 
 @pytest.mark.parametrize(

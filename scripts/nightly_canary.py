@@ -1044,7 +1044,7 @@ def cmd_verdict(args: argparse.Namespace) -> int:
     if args.rerun is not None:
         try:
             rerun = _read_junit(args.rerun)
-        except (OSError, ValueError, ElementTree.ParseError) as exc:
+        except _UNREADABLE as exc:
             unreadable = f"the rerun left no readable report ({exc}), so every red test stays confirmed"
     verdict = classify_leg(args.rc, outcomes, rerun, args.max, args.rerun_rc)
     if unreadable is not None:
@@ -1083,7 +1083,6 @@ def _load_bundle(base: Path, leg: str, sha: str) -> tuple[Path | None, int | Non
 def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None, list[str]]:
     """A bundle's JUnit text, verdict and environment, and a note per
     problem. A verdict comes back only when the leg can be trusted."""
-    unreadable: tuple[type[Exception], ...] = (OSError, ValueError, ElementTree.ParseError)
     notes: list[str] = []
     text: str | None = None
     outcomes: dict[str, str] | None = None
@@ -1091,21 +1090,21 @@ def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str
         raw = (bundle / "junit.xml").read_text(encoding="utf-8")
         outcomes = parse_report(raw)
         text = raw
-    except unreadable as exc:
+    except _UNREADABLE as exc:
         notes.append(f"junit.xml is unreadable: {exc}")
     verdict: dict[str, Any] | None = None
     try:
         verdict = _read_json(bundle / "verdict.json")
-    except unreadable as exc:
+    except _UNREADABLE as exc:
         notes.append(f"verdict.json is unreadable: {exc}")
     env: dict[str, Any] | None = None
     env_ok = True
-    if (bundle / "env.json").exists():
-        try:
+    try:
+        if (bundle / "env.json").exists():
             env = _read_json(bundle / "env.json")
-        except unreadable as exc:
-            env_ok = False
-            notes.append(f"env.json is unreadable: {exc}")
+    except _UNREADABLE as exc:
+        env_ok = False
+        notes.append(f"env.json is unreadable: {exc}")
     if verdict is not None and outcomes is not None:
         problem = check_verdict(verdict, outcomes)
         if problem is not None:
@@ -1138,11 +1137,15 @@ def cmd_record(args: argparse.Namespace) -> int:
     notes: dict[str, list[str]] = {}
     for leg, directory, role in specs:
         roles[leg] = role
-        bundle, attempt = _load_bundle(Path(directory), leg, args.sha)
+        why = f"no bundle under {directory}"
+        try:
+            bundle, attempt = _load_bundle(Path(directory), leg, args.sha)
+        except _UNREADABLE as exc:
+            bundle, attempt, why = None, None, f"the bundle under {directory} is unreadable: {exc}"
         attempts[leg] = attempt
         if bundle is None:
             junit[leg], verdicts[leg], envs[leg] = None, None, None
-            notes[leg] = [f"no bundle under {directory}"]
+            notes[leg] = [why]
         else:
             junit[leg], verdicts[leg], envs[leg], notes[leg] = _load_leg(bundle)
         for note in notes[leg]:
