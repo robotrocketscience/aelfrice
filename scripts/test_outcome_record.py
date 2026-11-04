@@ -13,7 +13,7 @@ Usage:
         [--head-sha SHA] [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30]
         --out RECORD.json [--dry-run]
     test_outcome_record.py diff --current RECORD.json --baseline RECORD.json
-        [--full-suite VALUE] [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
+        --full-suite VALUE [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
 
 `--dry-run` writes no file and calls no API. `record` prints each leg's
 counts, `baseline` prints the first request of its walk, and `diff` prints
@@ -842,7 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--baseline", default=None, type=Path)
     p.add_argument(
-        "--full-suite", default="false",
+        "--full-suite", required=True,
         help="the pytest job's full_suite output; any value but `false` requires a report on every leg",
     )
     p.add_argument("--allowlist", default=None, type=Path)

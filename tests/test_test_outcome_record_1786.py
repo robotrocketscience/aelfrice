@@ -72,6 +72,10 @@ def _report(*cases: str) -> str:
     )
 
 
+# The diff subcommand with the inputs it requires, as a docs-only run gives
+# them. A test that needs another value passes the flag again; the last wins.
+_DIFF = ["diff", "--full-suite", "false"]
+
 _FAIL = '<failure message="AssertionError: boom">assert 1 == 2</failure>'
 _ERROR = '<error message="failed on setup with RuntimeError">RuntimeError</error>'
 _XFAIL = '<skipped type="pytest.xfail" message="known bug" />'
@@ -522,7 +526,7 @@ def test_a_new_platform_skip_blocks_until_the_allowlist_names_it(
     baseline = tmp_path / "baseline.json"
     passed = {"tests.test_a::test_pass": tor.PASSED}
     baseline.write_text(json.dumps(_record(**{"3.12": passed, "3.13": passed})), encoding="utf-8")
-    args = ["diff", "--current", str(current), "--baseline", str(baseline), "--block"]
+    args = [*_DIFF, "--current", str(current), "--baseline", str(baseline), "--block"]
     if with_allowlist:
         args += ["--allowlist", str(_ALLOWLIST)]
     rc = tor.main(args)
@@ -1026,7 +1030,7 @@ def test_the_diff_names_its_allowlist_in_the_first_annotation(
     allow.write_text("# nothing\n", encoding="utf-8")
     capsys.readouterr()
     assert tor.main([
-        "diff", "--current", str(current), "--baseline", str(baseline), "--block", "--allowlist", str(allow),
+        *_DIFF, "--current", str(current), "--baseline", str(baseline), "--block", "--allowlist", str(allow),
     ]) == 1
     annotations = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::")]
     assert annotations[0].startswith("::error::test outcome ratchet: 1 violation(s)")
@@ -1320,7 +1324,7 @@ def test_record_then_diff_through_main(tmp_path: Path, capsys: pytest.CaptureFix
     baseline = tmp_path / "baseline.json"
     baseline.write_text(json.dumps(_record(**{"3.13": {"tests.test_a::test_skip": tor.PASSED}})))
     summary = tmp_path / "summary.md"
-    rc = tor.main(["diff", "--current", str(current), "--baseline", str(baseline), "--summary", str(summary)])
+    rc = tor.main([*_DIFF, "--current", str(current), "--baseline", str(baseline), "--summary", str(summary)])
     assert rc == 0, "advisory mode never fails the step"
     out = capsys.readouterr().out
     assert "::warning::test outcome ratchet, leg 3.13: tests.test_a::test_skip passed -> skipped" in out
@@ -1328,7 +1332,7 @@ def test_record_then_diff_through_main(tmp_path: Path, capsys: pytest.CaptureFix
     assert "| `tests.test_a::test_skip` | passed -> skipped |" in text
     assert "leg 3.12 produced no JUnit report" in text
 
-    rc = tor.main(["diff", "--current", str(current), "--baseline", str(baseline), "--block"])
+    rc = tor.main([*_DIFF, "--current", str(current), "--baseline", str(baseline), "--block"])
     assert rc == 1, "blocking mode fails on a violation"
 
 
@@ -1346,7 +1350,7 @@ def test_the_allowlist_flag_reaches_the_ratchet(tmp_path: Path, capsys: pytest.C
     })))
     allowlist = tmp_path / "allow.txt"
     allowlist.write_text("# windows-only\ntests.test_win*::*\n", encoding="utf-8")
-    base_args = ["diff", "--current", str(current), "--baseline", str(baseline), "--block"]
+    base_args = [*_DIFF, "--current", str(current), "--baseline", str(baseline), "--block"]
 
     assert tor.main(base_args) == 1
     capsys.readouterr()
@@ -1361,12 +1365,12 @@ def test_block_mode_passes_without_violations_and_with_no_baseline(tmp_path: Pat
     current.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.PASSED}})))
     clean = tmp_path / "clean.json"
     clean.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.PASSED}})))
-    assert tor.main(["diff", "--current", str(current), "--baseline", str(clean), "--block"]) == 0
+    assert tor.main([*_DIFF, "--current", str(current), "--baseline", str(clean), "--block"]) == 0
     marker = tmp_path / "marker.json"
     marker.write_text(json.dumps(tor.no_baseline_marker("expired")))
     summary = tmp_path / "summary.md"
     assert tor.main([
-        "diff", "--current", str(current), "--baseline", str(marker), "--block", "--summary", str(summary),
+        *_DIFF, "--current", str(current), "--baseline", str(marker), "--block", "--summary", str(summary),
     ]) == 0
     assert "No baseline: expired." in summary.read_text(encoding="utf-8")
 
@@ -1406,7 +1410,7 @@ def test_a_leg_that_ran_the_suite_and_left_no_report_fails_the_diff(
     summary = tmp_path / "summary.md"
     capsys.readouterr()
     rc = tor.main([
-        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        *_DIFF, "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
         "--full-suite", full_suite, "--summary", str(summary), "--block",
     ])
     assert rc == 2
@@ -1432,7 +1436,7 @@ def test_a_baseline_without_a_leg_warns_and_names_it_and_passes(
     base = tmp_path / "baseline.json"
     base.write_text(json.dumps(_record(**baseline_legs)))
     capsys.readouterr()
-    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--full-suite", "true", "--block"]) == 0
+    assert tor.main([*_DIFF, "--current", str(current), "--baseline", str(base), "--full-suite", "true", "--block"]) == 0
     annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
     assert annotations == ["::warning::test outcomes: no baseline for leg 3.13; the ratchet was not evaluated on it"]
 
@@ -1442,7 +1446,7 @@ def test_a_baseline_without_a_leg_still_blocks_on_the_leg_it_holds(tmp_path: Pat
     current.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.SKIPPED}, "3.13": {"t::a": tor.SKIPPED}})))
     base = tmp_path / "baseline.json"
     base.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.PASSED}})))
-    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--block"]) == 1
+    assert tor.main([*_DIFF, "--current", str(current), "--baseline", str(base), "--block"]) == 1
 
 
 @pytest.mark.parametrize("with_record", [True, False], ids=["both-legs", "no-baseline-at-all"])
@@ -1454,11 +1458,19 @@ def test_only_a_baseline_that_lacks_one_leg_warns_per_leg(with_record: bool) -> 
     assert [ln for ln in tor.render_annotations(diffs, None, block=True) if "leg 3." in ln] == []
 
 
+def test_the_diff_requires_full_suite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A default would hand a caller that omits the flag the docs-only pass."""
+    with pytest.raises(SystemExit) as info:
+        tor.main(["diff", "--current", str(_record_from_reports(tmp_path)), "--block"])
+    assert info.value.code == 2
+    assert "--full-suite" in capsys.readouterr().err
+
+
 def test_a_docs_only_run_with_no_reports_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     current = _record_from_reports(tmp_path)
     capsys.readouterr()
     rc = tor.main([
-        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        *_DIFF, "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
         "--full-suite", "false", "--block",
     ])
     assert rc == 0
@@ -1472,7 +1484,7 @@ def test_a_clean_run_with_a_report_on_every_leg_passes_with_the_flag_set(tmp_pat
     tests = {"t::test_a": tor.PASSED}
     current.write_text(json.dumps(_record(**{"3.12": tests, "3.13": tests})), encoding="utf-8")
     assert tor.main([
-        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        *_DIFF, "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
         "--full-suite", "true", "--block",
     ]) == 0
 
@@ -1480,7 +1492,7 @@ def test_a_clean_run_with_a_report_on_every_leg_passes_with_the_flag_set(tmp_pat
 def test_a_record_with_no_leg_fails_when_the_suite_ran(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     current = tmp_path / "current.json"
     current.write_text(json.dumps({"format": 1, "legs": {}}), encoding="utf-8")
-    assert tor.main(["diff", "--current", str(current), "--full-suite", "true", "--block"]) == 2
+    assert tor.main([*_DIFF, "--current", str(current), "--full-suite", "true", "--block"]) == 2
     assert "::error::test outcomes: this run's record holds no leg" in capsys.readouterr().out
 
 
@@ -1488,7 +1500,7 @@ def test_a_diff_with_no_record_to_read_fails_with_an_annotation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The record step died: the diff's own failure has to say so."""
-    assert tor.main(["diff", "--current", str(tmp_path / "gone.json"), "--block"]) == 2
+    assert tor.main([*_DIFF, "--current", str(tmp_path / "gone.json"), "--block"]) == 2
     assert capsys.readouterr().err.startswith("::error::test_outcome_record: ")
 
 
@@ -1508,7 +1520,7 @@ def test_a_walk_that_finds_no_baseline_warns_and_passes(
     assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(base)]) == 0
     capsys.readouterr()
     summary = tmp_path / "summary.md"
-    args = ["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
+    args = [*_DIFF, "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
     assert tor.main([*args, "--block"] if block else args) == 0
     out = capsys.readouterr().out
     assert "::warning::test outcomes: no baseline: no successful ci.yml run" in out
@@ -1527,7 +1539,7 @@ def test_a_failed_lookup_fails_the_baseline_step_and_the_diff(
     assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(base)]) == 2
     capsys.readouterr()
     summary = tmp_path / "summary.md"
-    args = ["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
+    args = [*_DIFF, "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
     assert tor.main([*args, "--block"] if block else args) == 2
     annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
     assert len(annotations) == 1
@@ -1551,19 +1563,19 @@ def test_a_baseline_file_that_holds_nothing_usable_fails_the_diff(
     base = tmp_path / "baseline.json"
     if content is not None:
         base.write_text(content, encoding="utf-8")
-    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
+    assert tor.main([*_DIFF, "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
     assert "::error::test outcomes: no usable baseline: baseline file" in capsys.readouterr().out
 
 
 def test_a_baseline_file_that_is_not_json_fails_the_diff(tmp_path: Path) -> None:
     base = tmp_path / "baseline.json"
     base.write_text("not json", encoding="utf-8")
-    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
+    assert tor.main([*_DIFF, "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
 
 
 def test_no_baseline_flag_at_all_passes_for_a_local_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """`ci.yml` always passes the flag; a local diff without it has nothing to compare."""
-    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--block"]) == 0
+    assert tor.main([*_DIFF, "--current", str(_one_test_record(tmp_path)), "--block"]) == 0
     assert "::warning::test outcomes: no baseline: no baseline file given" in capsys.readouterr().out
 
 
@@ -1635,7 +1647,7 @@ def test_a_dispatch_runs_the_same_diff_as_a_pull_request(
     current = tmp_path / "current.json"
     current.write_text(json.dumps(_record(**{"3.12": {"t::test_70": outcome}})), encoding="utf-8")
     capsys.readouterr()
-    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--block"]) == rc
+    assert tor.main([*_DIFF, "--current", str(current), "--baseline", str(base), "--block"]) == rc
     out = capsys.readouterr().out
     assert ("::error::test outcome ratchet, leg 3.12: t::test_70 passed -> skipped" in out) is (rc == 1)
     assert "no baseline" not in out.lower()
@@ -1769,7 +1781,7 @@ def test_dry_run_diff_prints_the_summary_appends_nothing_and_keeps_the_exit_stat
     summary = tmp_path / "summary.md"
     summary.write_text("earlier step\n", encoding="utf-8")
     rc = tor.main([
-        "diff", "--current", str(current), "--baseline", str(baseline),
+        *_DIFF, "--current", str(current), "--baseline", str(baseline),
         "--summary", str(summary), "--block", "--dry-run",
     ])
     assert rc == 1
