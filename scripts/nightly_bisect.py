@@ -29,9 +29,9 @@ commit of a PR merged since the day before `--good` was committed, as
 output maps each kept commit to its PR number, or to null for `--bad`
 when no PR merged it, in history order. When the `gh` call fails, returns
 as many PRs as its `--limit` (the list may be cut short), or names no merge
-in the range, the output is `{}` with a warning, and
-`run` then tests every commit. `run` reads a points file with no PR in the
-range the same way, since blaming `--bad` would test nothing.
+in the range, the output is `{}` with a warning, and `run` then tests every
+commit. `run` reads a points file with no PR in the range the same way,
+since blaming `--bad` would test nothing.
 
 The run. `run` adds a detached worktree at `--good` (`.bisect` under the
 repository root by default, removed first if a previous run left it), and
@@ -48,6 +48,14 @@ stops on skipped commits and when a step aborts it. The bad commit is the
 culprit when the merge point before it is good. The checks below then run
 the step outside the bisect. When the deadline stops a check, the range is
 the one the bisect narrowed to.
+
+`git bisect reset` runs in a `finally` after every round. A test that
+dirties a tracked file can make it fail, so it runs again after `git reset
+--hard`; a reset that still fails is a warning and lands in the result's
+`reset_errors`. The worktree stays after the run; the next run removes it
+first, including when its folder or its `.git` file is gone. A folder at
+`--worktree` that git does not list as a worktree is left alone and the run
+exits 2, unless it is the default `.bisect`, which belongs to this script.
 
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
@@ -78,19 +86,12 @@ What the checks cannot detect:
   left for git's similarity check: the new name reads as a new test.
 - A test that breaks, recovers and breaks again. The bisect finds one change
   from pass to fail, not all of them.
-`git bisect reset` runs in a `finally` after every round. A test that
-dirties a tracked file can make it fail, so it runs again after `git reset
---hard`; a reset that still fails is a warning and lands in the result's
-`reset_errors`. The worktree stays after the run; the next run removes it
-first, including when its folder or its `.git` file is gone. A folder at
-`--worktree` that git does not list as a worktree is left alone and the run
-exits 2, unless it is the default `.bisect`, which belongs to this script.
 
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
-still pass at the culprit broke later, and get a new round from the culprit to `--bad`, up
-to three rounds within the budget. What is left after the last round gets
-a range event.
+still pass at the culprit broke later, and get a new round from the culprit
+to `--bad`, up to three rounds within the budget. What is left after the
+last round gets a range event.
 
 `git bisect run` exports `GIT_DIR` to the step. A test that runs `git init`
 in a temporary directory under that variable re-initializes the worktree's
@@ -98,9 +99,10 @@ git directory instead, so the step's children, and every git call here, run
 without git's repository variables.
 
 The step. `--failed-out` and `--absent-out` name the tests that failed and
-the tests that do not exist at the commit. Its exit status follows `git bisect run`: 0 good, 1 bad, 125
-skip, 255 abort. Past `--deadline` it exits 255, which stops the bisect;
-the result then names the range it had narrowed to. Otherwise it runs
+the tests that do not exist at the commit. Its exit status follows `git
+bisect run`: 0 good, 1 bad, 125 skip, 255 abort. Past `--deadline` it exits
+255, which stops the bisect; the result then names the range it had
+narrowed to. Otherwise it runs
 `uv sync --frozen` (125 when that fails), collects the test files with
 `pytest --collect-only -q` (125 when collection fails) and keeps the ids
 it collected. When none is collected the commit predates the tests and is
@@ -139,8 +141,8 @@ keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
 when no culprit was found. The result file is replaced atomically after
 every change, with `complete` false until the run ends, so a run that dies
-keeps what it found. Each event lists its tests, and a range event
-maps each test to the reason it has no culprit: `budget`, `inconclusive`,
+keeps what it found. Each event lists its tests, and a range event maps
+each test to the reason it has no culprit: `budget`, `inconclusive`,
 `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed` or
 `returned`. Each round keeps its `git bisect log`.
 
