@@ -2056,20 +2056,28 @@ def test_work_tree_root_raises_on_a_git_timeout_and_not_otherwise(
     env: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`work_tree_root` tells a git that timed out from one that answered
-    no work tree or couldn't start (#1847)."""
-    raised: list[BaseException] = []
+    no work tree or couldn't start (#1847). git is stubbed, so the answer
+    doesn't depend on where the temporary folder lives."""
+    outcomes: list[BaseException | subprocess.CompletedProcess[str]] = []
 
-    def run(argv: list[str], **kwargs: object) -> object:
-        raise raised[-1]
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        outcome = outcomes[-1]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
-    with monkeypatch.context() as patch:
-        patch.setattr(store_split.subprocess, "run", run)
-        raised.append(subprocess.TimeoutExpired(["git"], 5.0))
-        with pytest.raises(store_split.GitTimeoutError):
-            store_split.work_tree_root(env)
-        raised.append(FileNotFoundError(2, "No such file or directory", "git"))
-        assert store_split.work_tree_root(env) is None
+    monkeypatch.setattr(store_split.subprocess, "run", run)
+    outcomes.append(subprocess.TimeoutExpired(["git"], 5.0))
+    with pytest.raises(store_split.GitTimeoutError):
+        store_split.work_tree_root(env)
+    outcomes.append(FileNotFoundError(2, "No such file or directory", "git"))
     assert store_split.work_tree_root(env) is None
+    outcomes.append(subprocess.CompletedProcess(
+        ["git"], 128, "", "fatal: not a git repository\n",
+    ))
+    assert store_split.work_tree_root(env) is None
+    outcomes.append(subprocess.CompletedProcess(["git"], 0, f"{env}\n", ""))
+    assert store_split.work_tree_root(env) == env.resolve()
 
 
 def test_a_path_that_is_a_file_or_missing_is_refused_as_such(
