@@ -87,7 +87,12 @@ that commit, which is good.
 
 Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300)
 each step, and at most 50 tests are bisected; the others get a range
-event.
+event. Every child that can run long has its own process group and writes
+its output to a temporary file. A timeout sends the group SIGTERM, then
+SIGKILL, so a killed `uv` leaves no pytest behind and a process that leaves
+the group cannot hold a pipe open. A step that receives SIGTERM kills its
+own children first. Process groups make this script POSIX only; the canary
+runs it on Linux and macOS.
 
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
@@ -108,7 +113,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -142,7 +149,9 @@ _PR_LIST_LIMIT = 500
 # Revisions per `git bisect skip`, to keep each command line short.
 _SKIP_CHUNK = 200
 # `git bisect run` gets the rest of the budget, one more step, and this.
-_RUN_MARGIN_SECONDS = 60
+_RUN_MARGIN_SECONDS = 15
+# Seconds a process group gets between SIGTERM and SIGKILL.
+_TERM_GRACE_SECONDS = 2
 # Lines of `git bisect run` output a round keeps.
 _OUTPUT_TAIL_LINES = 40
 
@@ -453,21 +462,71 @@ def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
     return good_sha, bad_sha
 
 
+# -------------------------------------------------------- process groups
+
+# The groups this process has running, for the step's SIGTERM handler.
+_LIVE_GROUPS: set[int] = set()
+
+
+def _signal_group(group: int, signum: int) -> None:
+    try:
+        os.killpg(group, signum)
+    except OSError:
+        pass  # The group has already ended.
+
+
+def run_group(
+    argv: list[str], timeout: float, *, cwd: Path | None = None, capture: bool = True,
+) -> tuple[int | None, str]:
+    """Run `argv` in its own process group and end the whole group after it.
+
+    Status None is a timeout; a missing program is status 127. Output goes
+    to a temporary file, not a pipe, so a process that escapes the group
+    cannot keep this call waiting. With `capture` the output is stdout and
+    stderr together.
+    """
+    with tempfile.TemporaryFile() as out:
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            return 127, ""
+        _LIVE_GROUPS.add(proc.pid)
+        rc: int | None = None
+        try:
+            try:
+                rc = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _signal_group(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=_TERM_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            _signal_group(proc.pid, signal.SIGKILL)
+            _LIVE_GROUPS.discard(proc.pid)
+        proc.wait(timeout=_TERM_GRACE_SECONDS)
+        out.seek(0)
+        return rc, out.read().decode("utf-8", "replace")
+
+
+def _die_with_children(_signum: int, _frame: object) -> None:
+    """The step's SIGTERM handler: its children have their own groups, so a
+    signal to the step's group does not reach them."""
+    for group in list(_LIVE_GROUPS):
+        _signal_group(group, signal.SIGKILL)
+    os._exit(STEP_ABORT)
+
+
 # ------------------------------------------------------------- the step
 
 def _bounded(argv: list[str], end: float, capture: bool = False) -> tuple[int | None, str]:
-    """Run `argv` until `end` (epoch seconds). Status None is a timeout;
-    a missing program is status 127."""
-    try:
-        r = subprocess.run(
-            argv, capture_output=capture, text=True, encoding="utf-8", errors="replace",
-            check=False, timeout=max(1.0, end - time.time()),
-        )
-    except subprocess.TimeoutExpired:
-        return None, ""
-    except FileNotFoundError:
-        return 127, ""
-    return r.returncode, r.stdout if capture else ""
+    """Run `argv` until `end` (epoch seconds), by `run_group`."""
+    rc, output = run_group(argv, max(1.0, end - time.time()), capture=capture)
+    return rc, output if capture else ""
 
 
 def _sync_argv(python: str | None, extras: Sequence[str]) -> list[str]:
@@ -502,6 +561,7 @@ def cmd_step(args: argparse.Namespace) -> int:
         return step_verdict(past_deadline=False, unmapped=True)
     end = min(args.deadline, now + args.step_timeout)
     failed: list[str] = []
+    previous = signal.signal(signal.SIGTERM, _die_with_children)
     try:
         sync_rc, _ = _bounded(sync, end)
         if sync_rc != 0:
@@ -538,6 +598,7 @@ def cmd_step(args: argparse.Namespace) -> int:
     finally:
         if args.failed_out is not None:
             args.failed_out.write_text("".join(f"{as_given[t]}\n" for t in failed), encoding="utf-8")
+        signal.signal(signal.SIGTERM, previous)
 
 
 # -------------------------------------------------------------- the run
@@ -589,15 +650,10 @@ class Bisector:
         """The step's status at `sha`, run outside a bisect."""
         failed_out.write_text("", encoding="utf-8")
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
-        try:
-            r = subprocess.run(
-                self._step(tests_file, failed_out), cwd=self.worktree, check=False,
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.step_timeout + _RUN_MARGIN_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            return STEP_SKIP
-        return r.returncode
+        rc, _ = run_group(
+            self._step(tests_file, failed_out), self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+        )
+        return STEP_SKIP if rc is None else rc
 
     def bisect_round(self, lo: str, tests: list[str], n: int) -> tuple[Outcome, dict[str, Any]]:
         """One `git bisect` from `lo` to `bad` over `tests`."""
@@ -618,14 +674,12 @@ class Bisector:
             for i in range(0, len(skips), _SKIP_CHUNK):
                 wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
             remaining = self.deadline - time.time()
-            try:
-                run = wt.run(
-                    "bisect", "run", *self._step(tests_file), check=False,
-                    timeout=max(1.0, remaining) + self.step_timeout + _RUN_MARGIN_SECONDS,
-                )
-                output = run.stdout + run.stderr
-            except subprocess.TimeoutExpired:
-                output = "git bisect run timed out"
+            rc, output = run_group(
+                ["git", "bisect", "run", *self._step(tests_file)],
+                max(1.0, remaining) + self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            )
+            if rc is None:
+                output += "\ngit bisect run timed out"
             bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
             goods = [
                 sha for sha, ref in (line.split(" ", 1) for line in wt.lines(

@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -107,13 +108,21 @@ sys.exit(1 if failing else 0)
 # --no-sync pytest --collect-only -q FILES` prints the `def test_*` ids of
 # each file, and exits 2 when one holds `import BROKEN`; `run --no-sync
 # pytest ... IDS` fails the ids `state.txt` marks bad and writes a JUnit
-# report for `--junitxml=`. Each call is logged.
+# report for `--junitxml=`. Each call is logged. FAKE_UV_HANG=<stage> makes
+# that stage (sync, collect or run) sleep with a child that sleeps too.
 _FAKE_UV = '''\
-import json, os, re, sys
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 argv = sys.argv[1:]
 with open(os.environ["FAKE_UV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(argv) + "\\n")
+stage = "sync" if argv[0] == "sync" else "collect" if "--collect-only" in argv else "run"
+if os.environ.get("FAKE_UV_HANG") == stage:
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\\n{child.pid}\\n")
+    time.sleep(30)
+    sys.exit(0)
 if argv[0] == "sync":
     sys.exit(1 if os.environ.get("FAKE_UV_SYNC_FAIL") else 0)
 args = [a for a in argv[4:] if not a.startswith("-") and a != "no:cacheprovider"]
@@ -191,6 +200,7 @@ class Env:
         self.uv_log = root / "uv.log"
         self.gh_log = root / "gh.log"
         self.gh_out = root / "gh.json"
+        self.pids_file = root / "pids.txt"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
     def repo(self, bad_tests: list[str], edits: tuple[_Edit, ...] = ()) -> list[str]:
@@ -213,6 +223,12 @@ class Env:
         if not self.step_log.is_file():
             return []
         return [row.split()[0] for row in self.step_log.read_text(encoding="utf-8").splitlines()]
+
+    def pids(self) -> list[int]:
+        """The processes the hanging fakes started and named."""
+        if not self.pids_file.is_file():
+            return []
+        return [int(row) for row in self.pids_file.read_text(encoding="utf-8").split()]
 
     def gh_calls(self) -> list[list[str]]:
         if not self.gh_log.is_file():
@@ -249,8 +265,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_UV_LOG", str(e.uv_log))
     monkeypatch.setenv("FAKE_GH_LOG", str(e.gh_log))
     monkeypatch.setenv("FAKE_GH_OUT", str(e.gh_out))
+    monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+                "FAKE_HANG", "FAKE_UV_HANG", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -301,6 +318,22 @@ def _build_repo(root: Path, bad_tests: list[str], edits: tuple[_Edit, ...] = ())
         assert r.returncode == 0, r.stderr
         shas.append(_git(root, "rev-parse", "HEAD", env=git_env).stdout.strip())
     return shas
+
+
+def _running(pid: int) -> bool:
+    """True when `pid` is a live process; a zombie has ended."""
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30, check=False).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def _survivors(pids: list[int]) -> list[int]:
+    """The processes in `pids` still running after a few seconds to end."""
+    assert pids, "the fake never started, so this proves nothing"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and any(_running(p) for p in pids):
+        time.sleep(0.1)
+    return [p for p in pids if _running(p)]
 
 
 def _write(path: Path, data: Any) -> Path:
@@ -418,6 +451,37 @@ def test_a_culprit_that_passes_when_checked_again_is_a_range(
     assert rc == 1
     assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
     assert result["rounds"][0]["verify"]["culprit_rc"] == nb.STEP_GOOD
+
+
+def test_a_hung_bisect_ends_on_time_with_nothing_left_running(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Budget 10 and step timeout 3 once took 73.5 s and left 3 processes."""
+    shas = env.repo(_LINEAR)
+    monkeypatch.setattr(nb, "_RUN_MARGIN_SECONDS", 1)
+    monkeypatch.setenv("FAKE_HANG", "30")
+    started = time.monotonic()
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
+                            extra=("--budget-seconds", "1", "--step-timeout", "1"))
+    elapsed = time.monotonic() - started
+    assert rc == 1
+    assert "timed out" in result["rounds"][0]["output"]
+    assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_INCONCLUSIVE)]
+    assert _survivors(env.pids()) == []
+    assert elapsed < 25, "the budget did not end the bisect"
+
+
+def test_a_hung_recheck_ends_on_time_with_nothing_left_running(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "a"])
+    monkeypatch.setattr(nb, "_RUN_MARGIN_SECONDS", 1)
+    monkeypatch.setenv("FAKE_HANG", "30")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7},
+                            extra=("--step-timeout", "1"))
+    assert rc == 1
+    assert result["events"][0]["kind"] == "range"
+    assert _survivors(env.pids()) == []
 
 
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -768,6 +832,59 @@ def test_step_given_an_id_with_no_file_skips(env: Env, tmp_path: Path, unread: s
     _tests_file(tmp_path / "ids.txt", unread)
     assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_SKIP
     assert env.uv_calls() == []
+
+
+@pytest.mark.parametrize("stage", ["sync", "collect", "run"])
+def test_step_timeout_ends_the_whole_child_group(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str,
+) -> None:
+    """A timeout used to kill only the direct child, and pytest under uv lived on."""
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", _A)
+    monkeypatch.setenv("FAKE_UV_HANG", stage)
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--step-timeout", "1") == nb.STEP_SKIP
+    assert _survivors(env.pids()) == []
+
+
+def test_a_terminated_step_ends_its_children(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run` signals the step's group; the step's children have their own."""
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", _A)
+    monkeypatch.setenv("FAKE_UV_HANG", "sync")
+    argv = [*nb.default_step_cmd(), "--tests", str(tmp_path / "ids.txt"), "--deadline", "9e12", "--step-timeout", "60"]
+    rc, _ = nb.run_group(argv, 2, cwd=tmp_path / "repo")
+    assert rc is None
+    assert _survivors(env.pids()) == []
+
+
+def test_run_group_is_not_held_by_a_process_that_left_the_group(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid.txt"
+    code = (
+        "import pathlib, subprocess, sys;"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'], start_new_session=True);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); print('done')"
+    )
+    started = time.monotonic()
+    rc, output = nb.run_group([sys.executable, "-c", code], 15)
+    elapsed = time.monotonic() - started
+    os.kill(int(pid_file.read_text(encoding="utf-8")), 9)
+    assert (rc, output.strip()) == (0, "done")
+    assert elapsed < 15
+
+
+def test_run_group_kills_what_a_finished_child_left_in_its_group(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pid.txt"
+    code = (
+        "import pathlib, subprocess, sys;"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)']);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid))"
+    )
+    assert nb.run_group([sys.executable, "-c", code], 15)[0] == 0
+    assert _survivors([int(pid_file.read_text(encoding="utf-8"))]) == []
+
+
+def test_run_group_reports_a_missing_program() -> None:
+    assert nb.run_group(["/nonexistent/program"], 5) == (127, "")
 
 
 def test_step_that_cannot_read_its_input_aborts(env: Env, tmp_path: Path) -> None:
