@@ -291,6 +291,12 @@ def test_an_extra_the_suite_needs_is_installed_and_imported_before_it(
     assert _field(steps[guards[0]], "if") == _field(_pytest_step(), "if"), (
         f"the `import {module}` step does not run on every event the suite runs on"
     )
+    for i, what in ((syncs[0], "sync"), (guards[0], f"`import {module}`")):
+        flag = _field(steps[i], "continue-on-error")
+        assert flag in (None, "false"), (
+            f"the {what} step has `continue-on-error: {flag}`, so its failure "
+            "leaves the leg green"
+        )
 
 
 def test_the_pytest_step_keeps_its_flags_and_adds_the_report_flags() -> None:
