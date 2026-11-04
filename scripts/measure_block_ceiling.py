@@ -267,6 +267,17 @@ _LIFTED_LIMIT = 10**9
 
 
 @contextlib.contextmanager
+def _scratch(prefix: str) -> Iterator[Path]:
+    """A fresh folder in the system temp folder, removed on exit (#1847).
+
+    Every fire below seeds its own store in one of these, and a test run
+    fires hundreds, so a folder left behind builds up there.
+    """
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        yield Path(tmp)
+
+
+@contextlib.contextmanager
 def _payload_bound_lifted() -> Iterator[None]:
     """Run a fire with the #1639 payload bound lifted and every other bound on.
 
@@ -341,29 +352,29 @@ def _lock(index: int, chars: int) -> Belief:
 
 def fire(n_locks: int, chars: int) -> tuple[int, str]:
     """Run one hook fire against a store of `n_locks` locks of `chars`."""
-    work = Path(tempfile.mkdtemp(prefix="aelf-ceiling-"))
-    db = work / "memory.db"
-    store = MemoryStore(str(db))
-    try:
-        for i in range(n_locks):
-            store.insert_belief(_lock(i, chars))
-    finally:
-        store.close()
-    os.environ["AELFRICE_DB"] = str(db)
-    sout, serr = io.StringIO(), io.StringIO()
-    payload = json.dumps(
-        {
-            "session_id": f"measure-{chars}-{n_locks}",
-            "transcript_path": "/dev/null",
-            "cwd": str(work),
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": PROMPT,
-        }
-    )
-    rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
-    if rc != 0:
-        raise SystemExit(f"hook returned {rc}")
-    return _audit_tokens_from_block(sout.getvalue()), serr.getvalue()
+    with _scratch("aelf-ceiling-") as work:
+        db = work / "memory.db"
+        store = MemoryStore(str(db))
+        try:
+            for i in range(n_locks):
+                store.insert_belief(_lock(i, chars))
+        finally:
+            store.close()
+        os.environ["AELFRICE_DB"] = str(db)
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps(
+            {
+                "session_id": f"measure-{chars}-{n_locks}",
+                "transcript_path": "/dev/null",
+                "cwd": str(work),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": PROMPT,
+            }
+        )
+        rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return _audit_tokens_from_block(sout.getvalue()), serr.getvalue()
 
 
 def gate_skip_tokens(n_locks: int, chars: int) -> int:
@@ -381,41 +392,41 @@ def gate_skip_tokens(n_locks: int, chars: int) -> int:
     worth 675 tokens at 300 locks (17,201 against 16,526), which is the size
     of the confusion this key exists to prevent.
     """
-    work = Path(tempfile.mkdtemp(prefix="aelf-gateskip-"))
-    db = work / "memory.db"
-    store = MemoryStore(str(db))
-    try:
-        for i in range(n_locks):
-            store.insert_belief(_lock(i, chars))
-    finally:
-        store.close()
-    os.environ["AELFRICE_DB"] = str(db)
-    previous = os.environ.get("AELFRICE_HOOK_BLOCK_CEILING")
-    os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = "0"
-    try:
-        sout, serr = io.StringIO(), io.StringIO()
-        payload = json.dumps(
-            {
-                "session_id": f"gateskip-{chars}-{n_locks}",
-                "transcript_path": "/dev/null",
-                "cwd": str(work),
-                "hook_event_name": "UserPromptSubmit",
-                "prompt": GATED_PROMPT,
-            }
-        )
-        rc = user_prompt_submit(
-            stdin=io.StringIO(payload), stdout=sout, stderr=serr
-        )
-        if rc != 0:
-            raise SystemExit(f"hook returned {rc}")
-        return _audit_tokens_from_block(sout.getvalue())
-    finally:
-        # Restore, so a later crossing sweep in the same process is not
-        # measured against a disabled ceiling.
-        if previous is None:
-            os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
-        else:
-            os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = previous
+    with _scratch("aelf-gateskip-") as work:
+        db = work / "memory.db"
+        store = MemoryStore(str(db))
+        try:
+            for i in range(n_locks):
+                store.insert_belief(_lock(i, chars))
+        finally:
+            store.close()
+        os.environ["AELFRICE_DB"] = str(db)
+        previous = os.environ.get("AELFRICE_HOOK_BLOCK_CEILING")
+        os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = "0"
+        try:
+            sout, serr = io.StringIO(), io.StringIO()
+            payload = json.dumps(
+                {
+                    "session_id": f"gateskip-{chars}-{n_locks}",
+                    "transcript_path": "/dev/null",
+                    "cwd": str(work),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": GATED_PROMPT,
+                }
+            )
+            rc = user_prompt_submit(
+                stdin=io.StringIO(payload), stdout=sout, stderr=serr
+            )
+            if rc != 0:
+                raise SystemExit(f"hook returned {rc}")
+            return _audit_tokens_from_block(sout.getvalue())
+        finally:
+            # Restore, so a later crossing sweep in the same process is not
+            # measured against a disabled ceiling.
+            if previous is None:
+                os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+            else:
+                os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = previous
 
 
 def fire_lanes(ceiling: int | None) -> dict[str, object]:
@@ -432,58 +443,58 @@ def fire_lanes(ceiling: int | None) -> dict[str, object]:
     and gives the untrimmed control arm.
     """
     n_locks, n_core, n_hits = 50, 20, 20
-    work = Path(tempfile.mkdtemp(prefix="aelf-lanes-"))
-    db = work / "memory.db"
-    core_ids: list[str] = []
-    hit_ids: list[str] = []
-    store = MemoryStore(str(db))
-    try:
-        for i in range(n_locks):
-            store.insert_belief(_lock(i, 150))
-        for i in range(n_core):
-            bid = f"C{i:031d}"
-            store.insert_belief(
-                _belief(
-                    bid, "coreword unrelated material " + "w" * 200, alpha=4.0,
+    with _scratch("aelf-lanes-") as work:
+        db = work / "memory.db"
+        core_ids: list[str] = []
+        hit_ids: list[str] = []
+        store = MemoryStore(str(db))
+        try:
+            for i in range(n_locks):
+                store.insert_belief(_lock(i, 150))
+            for i in range(n_core):
+                bid = f"C{i:031d}"
+                store.insert_belief(
+                    _belief(
+                        bid, "coreword unrelated material " + "w" * 200, alpha=4.0,
+                    )
                 )
-            )
-            core_ids.append(bid)
-        for i in range(n_hits):
-            bid = f"H{i:031d}"
-            store.insert_belief(_belief(bid, f"{LANE_WORD} fact " + "z" * 400))
-            hit_ids.append(bid)
-    finally:
-        store.close()
-    os.environ["AELFRICE_DB"] = str(db)
-    if ceiling is None:
-        os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
-    else:
-        os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = str(ceiling)
-    sout, serr = io.StringIO(), io.StringIO()
-    payload = json.dumps(
-        {
-            "session_id": f"lanes-{ceiling}",
-            "transcript_path": "/dev/null",
-            "cwd": str(work),
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": LANE_PROMPT,
+                core_ids.append(bid)
+            for i in range(n_hits):
+                bid = f"H{i:031d}"
+                store.insert_belief(_belief(bid, f"{LANE_WORD} fact " + "z" * 400))
+                hit_ids.append(bid)
+        finally:
+            store.close()
+        os.environ["AELFRICE_DB"] = str(db)
+        if ceiling is None:
+            os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        else:
+            os.environ["AELFRICE_HOOK_BLOCK_CEILING"] = str(ceiling)
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps(
+            {
+                "session_id": f"lanes-{ceiling}",
+                "transcript_path": "/dev/null",
+                "cwd": str(work),
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": LANE_PROMPT,
+            }
+        )
+        rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        out, err = sout.getvalue(), serr.getvalue()
+        rendered = set(_ELEMENT_ID_RE.findall(out))
+        dropped = re.search(r"dropped (\d+) belief element", err)
+        return {
+            "ceiling": ceiling if ceiling is not None else HOOK_BLOCK_TOKEN_CEILING,
+            "tokens": _audit_tokens_from_block(out),
+            "hits": sum(1 for b in hit_ids if b in rendered),
+            "n_hits": n_hits,
+            "core": sum(1 for b in core_ids if b in rendered),
+            "n_core": n_core,
+            "dropped": int(dropped.group(1)) if dropped else 0,
         }
-    )
-    rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
-    if rc != 0:
-        raise SystemExit(f"hook returned {rc}")
-    out, err = sout.getvalue(), serr.getvalue()
-    rendered = set(_ELEMENT_ID_RE.findall(out))
-    dropped = re.search(r"dropped (\d+) belief element", err)
-    return {
-        "ceiling": ceiling if ceiling is not None else HOOK_BLOCK_TOKEN_CEILING,
-        "tokens": _audit_tokens_from_block(out),
-        "hits": sum(1 for b in hit_ids if b in rendered),
-        "n_hits": n_hits,
-        "core": sum(1 for b in core_ids if b in rendered),
-        "n_core": n_core,
-        "dropped": int(dropped.group(1)) if dropped else 0,
-    }
 
 
 REF_LOCK_CHARS = 30_026
@@ -497,30 +508,32 @@ REF_WRITES = (
 )
 
 
-def _reference_lock_store(tier: str) -> tuple[Path, Path]:
-    """A store holding exactly one 30,026-character lock at `tier`."""
-    work = Path(tempfile.mkdtemp(prefix="aelf-reflock-"))
-    db = work / "memory.db"
-    store = MemoryStore(str(db))
-    try:
-        store.insert_belief(
-            Belief(
-                id=REF_LOCK_ID,
-                content=REF_LOCK_CONTENT,
-                content_hash="h_reflock",
-                alpha=1.0,
-                beta=1.0,
-                type=BELIEF_FACTUAL,
-                lock_level=LOCK_USER,
-                lock_tier=tier,
-                locked_at="2026-04-26T00:00:00Z",
-                created_at="2026-04-26T00:00:00Z",
-                last_retrieved_at=None,
+@contextlib.contextmanager
+def _reference_lock_store(tier: str) -> Iterator[tuple[Path, Path]]:
+    """A store holding exactly one 30,026-character lock at `tier`, in a
+    folder removed on exit."""
+    with _scratch("aelf-reflock-") as work:
+        db = work / "memory.db"
+        store = MemoryStore(str(db))
+        try:
+            store.insert_belief(
+                Belief(
+                    id=REF_LOCK_ID,
+                    content=REF_LOCK_CONTENT,
+                    content_hash="h_reflock",
+                    alpha=1.0,
+                    beta=1.0,
+                    type=BELIEF_FACTUAL,
+                    lock_level=LOCK_USER,
+                    lock_tier=tier,
+                    locked_at="2026-04-26T00:00:00Z",
+                    created_at="2026-04-26T00:00:00Z",
+                    last_retrieved_at=None,
+                )
             )
-        )
-    finally:
-        store.close()
-    return work, db
+        finally:
+            store.close()
+        yield work, db
 
 
 def _fire_for_reference(
@@ -630,27 +643,29 @@ def reference_tier(tier: str) -> dict[str, int]:
     a module constant and the table has a producer.
     """
     out: dict[str, int] = {}
-    work, db = _reference_lock_store(tier)
-    out["gate_skip_first"] = _audit_tokens_from_block(
-        _fire_for_reference(
-            work, db, prompt=GATED_PROMPT, session_id=f"gs-{tier}",
+    with _reference_lock_store(tier) as (work, db):
+        out["gate_skip_first"] = _audit_tokens_from_block(
+            _fire_for_reference(
+                work, db, prompt=GATED_PROMPT, session_id=f"gs-{tier}",
+            )
         )
-    )
-    work, db = _reference_lock_store(tier)
-    out["retrieval_first"] = _audit_tokens_from_block(
-        _fire_for_reference(work, db, prompt=PROMPT, session_id=f"r1-{tier}")
-    )
-    # Same store and same session id, so the second fire is turn two and
-    # the `<session-start>` sub-block is gone from the envelope.
-    out["turn_two"] = _audit_tokens_from_block(
-        _fire_for_reference(
-            work, db, prompt=REF_TURN_TWO_PROMPT, session_id=f"r1-{tier}",
+    with _reference_lock_store(tier) as (work, db):
+        out["retrieval_first"] = _audit_tokens_from_block(
+            _fire_for_reference(
+                work, db, prompt=PROMPT, session_id=f"r1-{tier}",
+            )
         )
-    )
-    work, db = _reference_lock_store(tier)
-    out["session_start"] = _audit_tokens_from_block(
-        _fire_for_reference(work, db, prompt=None, session_id=f"ss-{tier}")
-    )
+        # Same store and same session id, so the second fire is turn two
+        # and the `<session-start>` sub-block is gone from the envelope.
+        out["turn_two"] = _audit_tokens_from_block(
+            _fire_for_reference(
+                work, db, prompt=REF_TURN_TWO_PROMPT, session_id=f"r1-{tier}",
+            )
+        )
+    with _reference_lock_store(tier) as (work, db):
+        out["session_start"] = _audit_tokens_from_block(
+            _fire_for_reference(work, db, prompt=None, session_id=f"ss-{tier}")
+        )
     return out
 
 
@@ -683,28 +698,29 @@ def exploration_slot() -> dict[str, object]:
         "AELFRICE_EXPLORATION_SLOTS",
     )
 
-    def build() -> tuple[Path, Path]:
-        work = Path(tempfile.mkdtemp(prefix="aelf-explore-"))
-        db = work / "memory.db"
-        store = MemoryStore(str(db))
-        try:
-            for i in range(n_locks):
-                store.insert_belief(_lock(i, 150))
-            for i in range(n_core):
-                store.insert_belief(
-                    _belief(
-                        f"C{i:031d}",
-                        "coreword unrelated material " + "w" * 200,
-                        alpha=4.0,
+    @contextlib.contextmanager
+    def build() -> Iterator[tuple[Path, Path]]:
+        with _scratch("aelf-explore-") as work:
+            db = work / "memory.db"
+            store = MemoryStore(str(db))
+            try:
+                for i in range(n_locks):
+                    store.insert_belief(_lock(i, 150))
+                for i in range(n_core):
+                    store.insert_belief(
+                        _belief(
+                            f"C{i:031d}",
+                            "coreword unrelated material " + "w" * 200,
+                            alpha=4.0,
+                        )
                     )
-                )
-            for i in range(n_hits):
-                store.insert_belief(
-                    _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
-                )
-        finally:
-            store.close()
-        return work, db
+                for i in range(n_hits):
+                    store.insert_belief(
+                        _belief(f"H{i:031d}", f"{LANE_WORD} fact " + "z" * 400)
+                    )
+            finally:
+                store.close()
+            yield work, db
 
     def run(work: Path, db: Path, *, slot_on: bool) -> tuple[str, str]:
         os.environ["AELFRICE_DB"] = str(db)
@@ -733,22 +749,22 @@ def exploration_slot() -> dict[str, object]:
             raise SystemExit(f"hook returned {rc}")
         return sout.getvalue(), serr.getvalue()
 
-    work_off, db_off = build()
-    off, _ = run(work_off, db_off, slot_on=False)
-    work_on, db_on = build()
-    on, err_on = run(work_on, db_on, slot_on=True)
+    with build() as (work_off, db_off):
+        off, _ = run(work_off, db_off, slot_on=False)
+    with build() as (work_on, db_on):
+        on, err_on = run(work_on, db_on, slot_on=True)
+        store = MemoryStore(str(db_on))
+        try:
+            rows = [
+                (json.loads(r["drawn_ids"]), json.loads(r["displaced_ids"]))
+                for r in store._conn.execute(
+                    "SELECT drawn_ids, displaced_ids FROM exploration_events"
+                )
+            ]
+        finally:
+            store.close()
 
     rendered = set(_ELEMENT_ID_RE.findall(on))
-    store = MemoryStore(str(db_on))
-    try:
-        rows = [
-            (json.loads(r["drawn_ids"]), json.loads(r["displaced_ids"]))
-            for r in store._conn.execute(
-                "SELECT drawn_ids, displaced_ids FROM exploration_events"
-            )
-        ]
-    finally:
-        store.close()
     drawn = [bid for row in rows for bid in row[0]]
     displaced = [bid for row in rows for bid in row[1]]
     dropped_match = re.search(r"dropped (\d+) belief element", err_on)
@@ -942,46 +958,46 @@ def cadence_payload() -> dict[str, object]:
 
 def _cadence_fire() -> str:
     """Seed the cadence store, fire UPS once, and return its stdout."""
-    work = Path(tempfile.mkdtemp(prefix="aelf-cadence-"))
-    db = _cadence_store(work)
-    transcript = _cadence_transcript(work, CADENCE_SESSION)
-    (work / ".aelfrice.toml").write_text(
-        "[cadence]\n"
-        "enabled = true\n"
-        'policy = "p1_every_k_turns"\n'
-        f"k = {CADENCE_K}\n"
-        "[phantom_generation]\n"
-        "enabled = true\n"
-        "[phantom_promotion]\n"
-        "enabled = true\n",
-        encoding="utf-8",
-    )
-    # The session ring UPS-side cadence reads its `fire_idx` from. `k`
-    # divides it, so `should_fire` says yes on this fire.
-    (db.parent / "session_injected_ids.json").write_text(
-        json.dumps({
+    with _scratch("aelf-cadence-") as work:
+        db = _cadence_store(work)
+        transcript = _cadence_transcript(work, CADENCE_SESSION)
+        (work / ".aelfrice.toml").write_text(
+            "[cadence]\n"
+            "enabled = true\n"
+            'policy = "p1_every_k_turns"\n'
+            f"k = {CADENCE_K}\n"
+            "[phantom_generation]\n"
+            "enabled = true\n"
+            "[phantom_promotion]\n"
+            "enabled = true\n",
+            encoding="utf-8",
+        )
+        # The session ring UPS-side cadence reads its `fire_idx` from. `k`
+        # divides it, so `should_fire` says yes on this fire.
+        (db.parent / "session_injected_ids.json").write_text(
+            json.dumps({
+                "session_id": CADENCE_SESSION,
+                "ring": [],
+                "ring_max": 200,
+                "next_fire_idx": CADENCE_K,
+                "evicted_total": 0,
+            }),
+            encoding="utf-8",
+        )
+        os.environ["AELFRICE_DB"] = str(db)
+        os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps({
             "session_id": CADENCE_SESSION,
-            "ring": [],
-            "ring_max": 200,
-            "next_fire_idx": CADENCE_K,
-            "evicted_total": 0,
-        }),
-        encoding="utf-8",
-    )
-    os.environ["AELFRICE_DB"] = str(db)
-    os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
-    sout, serr = io.StringIO(), io.StringIO()
-    payload = json.dumps({
-        "session_id": CADENCE_SESSION,
-        "transcript_path": str(transcript),
-        "cwd": str(work),
-        "hook_event_name": "UserPromptSubmit",
-        "prompt": CADENCE_PROMPT,
-    })
-    rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
-    if rc != 0:
-        raise SystemExit(f"hook returned {rc}")
-    return sout.getvalue()
+            "transcript_path": str(transcript),
+            "cwd": str(work),
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": CADENCE_PROMPT,
+        })
+        rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr)
+        if rc != 0:
+            raise SystemExit(f"hook returned {rc}")
+        return sout.getvalue()
 
 
 def _cadence_rows(out: str) -> dict[str, object]:
@@ -1059,25 +1075,25 @@ _LOCK_RE = re.compile(r'<belief id="([^"]+)" lock="user"')
 
 def _locks_fire(n_locks: int, chars: int) -> str:
     """One retrieval-branch UPS fire on a store of `n_locks` user locks."""
-    work = Path(tempfile.mkdtemp(prefix="aelf-payload-"))
-    db = work / "memory.db"
-    store = MemoryStore(str(db))
-    try:
-        for i in range(n_locks):
-            store.insert_belief(_lock(i, chars))
-    finally:
-        store.close()
-    os.environ["AELFRICE_DB"] = str(db)
-    os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
-    sout, serr = io.StringIO(), io.StringIO()
-    payload = json.dumps({
-        "session_id": "payload", "transcript_path": "/dev/null",
-        "cwd": str(work), "hook_event_name": "UserPromptSubmit",
-        "prompt": PROMPT,
-    })
-    if user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr):
-        raise SystemExit("hook returned non-zero")
-    return sout.getvalue()
+    with _scratch("aelf-payload-") as work:
+        db = work / "memory.db"
+        store = MemoryStore(str(db))
+        try:
+            for i in range(n_locks):
+                store.insert_belief(_lock(i, chars))
+        finally:
+            store.close()
+        os.environ["AELFRICE_DB"] = str(db)
+        os.environ.pop("AELFRICE_HOOK_BLOCK_CEILING", None)
+        sout, serr = io.StringIO(), io.StringIO()
+        payload = json.dumps({
+            "session_id": "payload", "transcript_path": "/dev/null",
+            "cwd": str(work), "hook_event_name": "UserPromptSubmit",
+            "prompt": PROMPT,
+        })
+        if user_prompt_submit(stdin=io.StringIO(payload), stdout=sout, stderr=serr):
+            raise SystemExit("hook returned non-zero")
+        return sout.getvalue()
 
 
 def payload_bound() -> dict[str, object]:
@@ -1290,26 +1306,26 @@ def resume_drop() -> dict[str, object]:
     case that differs, and `tests/test_recap_lock_spelling_1570.py` covers
     it rather than this arm.
     """
-    producer = Path(tempfile.mkdtemp(prefix="aelf-resume-cache-"))
-    cached = _write_resume_cache(producer, _resume_store(producer))
+    with _scratch("aelf-resume-cache-") as producer:
+        cached = _write_resume_cache(producer, _resume_store(producer))
 
     def arm(name: str, *, recap: bool, ceiling: int | None) -> tuple[str, str]:
-        work = Path(tempfile.mkdtemp(prefix=f"aelf-resume-{name}-"))
-        db = _resume_store(work)
-        # Cadence off for the fires under test: the recap is read from
-        # the cache on a first prompt regardless, and leaving the
-        # UPS-side checkpoint enabled would add a second block this arm
-        # is not about.
-        (work / ".aelfrice.toml").write_text(
-            "[cadence]\nenabled = false\n", encoding="utf-8",
-        )
-        if recap:
-            (db.parent / "cadence_resume_cache.json").write_text(
-                cached, encoding="utf-8",
+        with _scratch(f"aelf-resume-{name}-") as work:
+            db = _resume_store(work)
+            # Cadence off for the fires under test: the recap is read from
+            # the cache on a first prompt regardless, and leaving the
+            # UPS-side checkpoint enabled would add a second block this arm
+            # is not about.
+            (work / ".aelfrice.toml").write_text(
+                "[cadence]\nenabled = false\n", encoding="utf-8",
             )
-        if ceiling is None:
-            return _resume_fire(work, db, f"resume-{name}")
-        return _resume_fire_with_ceiling(work, db, f"resume-{name}", ceiling)
+            if recap:
+                (db.parent / "cadence_resume_cache.json").write_text(
+                    cached, encoding="utf-8",
+                )
+            if ceiling is None:
+                return _resume_fire(work, db, f"resume-{name}")
+            return _resume_fire_with_ceiling(work, db, f"resume-{name}", ceiling)
 
     untrimmed, _ = arm("untrimmed", recap=True, ceiling=0)
     trimmed, trimmed_err = arm("trimmed", recap=True, ceiling=None)
@@ -1422,7 +1438,8 @@ def _hermetic_home() -> Iterator[Path]:
     add the #1652 ignored-config line, which put about 40 tokens on the
     ``session_start`` figures on one machine and none on CI. Measuring under
     an empty home makes every figure the same wherever the producer runs.
-    Restored on exit, so a caller in the same process keeps its own home.
+    Restored on exit, so a caller in the same process keeps its own home,
+    and the directory is removed.
     """
     saved = {
         k: os.environ.get(k)
@@ -1430,26 +1447,26 @@ def _hermetic_home() -> Iterator[Path]:
             "HOME", "USERPROFILE", "AELFRICE_USER_DB", "AELF_NO_SIDECAR_WARM",
         )
     }
-    home = Path(tempfile.mkdtemp(prefix="aelf-ceiling-home-"))
-    os.environ["HOME"] = str(home)
-    os.environ["USERPROFILE"] = str(home)
-    # #1681: the user lock store is per-user state too, and an exported
-    # `AELFRICE_USER_DB` would put its locks in every figure. Point it at
-    # a path inside the empty home that no one creates.
-    os.environ["AELFRICE_USER_DB"] = str(home / "no-user-store" / "memory.db")
-    # #1847: `session_start` spawns a detached sidecar warm that opens the
-    # fire's store after the fire returns and writes its BM25 sidecar
-    # beside it. No figure reads it, and each fire's folder has to be
-    # finished with when the fire returns.
-    os.environ["AELF_NO_SIDECAR_WARM"] = "1"
-    try:
-        yield home
-    finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    with _scratch("aelf-ceiling-home-") as home:
+        os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)
+        # #1681: the user lock store is per-user state too, and an exported
+        # `AELFRICE_USER_DB` would put its locks in every figure. Point it at
+        # a path inside the empty home that no one creates.
+        os.environ["AELFRICE_USER_DB"] = str(home / "no-user-store" / "memory.db")
+        # #1847: `session_start` spawns a detached sidecar warm that opens the
+        # fire's store after the fire returns and writes its BM25 sidecar
+        # beside it. No figure reads it, and each fire's folder is removed
+        # when the fire returns.
+        os.environ["AELF_NO_SIDECAR_WARM"] = "1"
+        try:
+            yield home
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def main(argv: list[str] | None = None) -> int:
