@@ -141,10 +141,10 @@ def test_the_installed_sdk_sends_the_classifier_request(
 
     assert len(requests) == 1, f"expected one request, got {len(requests)}"
     body = json.loads(requests[0].content)
-    sent = _recorded_create_kwargs()
-    assert set(body) == set(sent), (
-        f"the request body carries {sorted(body)}, the classifier passed {sorted(sent)}"
+    # The recorded keywords as JSON, the form the SDK serializes them into.
+    sent = json.loads(json.dumps(_recorded_create_kwargs()))
+    assert body == sent, (
+        f"the request body is {body!r}, the classifier passed {sent!r}"
     )
-    assert body["temperature"] == sent["temperature"]
     assert resp.text == "[]"
     assert (resp.input_tokens, resp.output_tokens) == (7, 3)
