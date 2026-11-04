@@ -45,17 +45,22 @@ step command; the tests use it to run a fake in place of uv and pytest.
 The result comes from `refs/bisect/bad` and `refs/bisect/good-*`, never
 from the exit status of `git bisect run`, which is nonzero both when it
 stops on skipped commits and when a step aborts it. The bad commit is the
-culprit when the merge point before it is good. The script then runs the
-step once more on the culprit, which has to fail, and on that merge point,
-which has to pass. When either disagrees the tests get a range event. When
-the deadline stops a check, the range is the one the bisect narrowed to.
+culprit when the merge point before it is good. The checks below then run
+the step outside the bisect. When the deadline stops a check, the range is
+the one the bisect narrowed to.
+
+The checks, per test, at each culprit. The step runs on the culprit, which
+has to fail, and on the merge point before it, which has to pass. A test
+that fails at that merge point too gets a range event up to the culprit.
+The tests that failed at the culprit then run there a second time, and only
+a test that fails both times is blamed on it. One that passes the second
+time flaked, and goes to the next round.
 `git bisect reset` runs in a `finally` after every round. The worktree
 stays after the run; the next run removes it first.
 
 Several culprits. The step fails when any of its tests fails, so the
-first round finds the first commit that broke one of them. The check on
-the culprit writes which tests failed there. Tests that still pass at the
-culprit broke later, and get a new round from the culprit to `--bad`, up
+first round finds the first commit that broke one of them. Tests that
+still pass at the culprit broke later, and get a new round from the culprit to `--bad`, up
 to three rounds within the budget. What is left after the last round gets
 a range event.
 
@@ -630,6 +635,13 @@ def default_step_cmd() -> list[str]:
     return [sys.executable, str(Path(__file__).resolve()), "step"]
 
 
+@dataclass(frozen=True)
+class Check:
+    """One step run outside the bisect: its status and the tests it named."""
+    rc: int
+    failed: list[str]
+
+
 @dataclass
 class Bisector:
     git: Git
@@ -667,14 +679,17 @@ class Bisector:
         path.write_text("".join(f"{t}\n" for t in tests), encoding="utf-8")
         return path
 
-    def _check(self, sha: str, tests_file: Path, failed_out: Path) -> int:
-        """The step's status at `sha`, run outside a bisect."""
+    def _check(self, sha: str, tests: list[str]) -> Check:
+        """The step at `sha` over `tests`, run outside a bisect."""
+        tests_file = self._write_tests("check.txt", tests)
+        failed_out = self.scratch / "check-failed.txt"
         failed_out.write_text("", encoding="utf-8")
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out), self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
         )
-        return STEP_SKIP if rc is None else rc
+        failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
+        return Check(STEP_SKIP if rc is None else rc, failed)
 
     def bisect_round(self, lo: str, tests: list[str], n: int) -> tuple[Outcome, dict[str, Any]]:
         """One `git bisect` from `lo` to `bad` over `tests`."""
@@ -714,6 +729,42 @@ class Bisector:
             wt.run("bisect", "reset", check=False)
         return read_outcome(order, points, lo, bad_ref, goods), record
 
+    def attribute(
+        self, lo: str, outcome: Outcome, remaining: list[str], record: dict[str, Any],
+    ) -> tuple[list[str], list[str]] | None:
+        """The tests blamed on the culprit and those for the next round, or
+        None when the round ended in range events."""
+        culprit = cast(str, outcome.culprit)
+        first = self._check(culprit, remaining)
+        before = self._check(outcome.good, remaining)
+        record.update(verify={"culprit_rc": first.rc, "preceding": outcome.good, "preceding_rc": before.rc})
+        if STEP_ABORT in (first.rc, before.rc):
+            add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
+            return None
+        if first.rc != STEP_BAD or before.rc not in (STEP_GOOD, STEP_BAD):
+            add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
+            return None
+        # A status of 1 with no test named blames all of them.
+        broke = first.failed or remaining
+        red_before = (before.failed or remaining) if before.rc == STEP_BAD else []
+        earlier = [t for t in broke if t in red_before]
+        if earlier:
+            add_event(self.events, event_for_range(lo, culprit, earlier, REASON_UNVERIFIED))
+        broke = [t for t in broke if t not in earlier]
+        blamed: list[str] = []
+        if broke:
+            again = self._check(culprit, broke)
+            record["verify"]["again_rc"] = again.rc
+            if again.rc == STEP_ABORT:
+                add_event(self.events, event_for_range(outcome.good, outcome.bad, broke, REASON_BUDGET))
+                return None
+            if again.rc not in (STEP_GOOD, STEP_BAD):
+                add_event(self.events, event_for_range(lo, self.bad, broke, REASON_UNVERIFIED))
+                return None
+            if again.rc == STEP_BAD:
+                blamed = again.failed or broke
+        return blamed, [t for t in remaining if t not in blamed and t not in earlier]
+
     def bisect(self, good: str, tests: list[str]) -> None:
         lo, remaining = good, list(tests)
         for n in range(1, MAX_ROUNDS + 1):
@@ -731,23 +782,13 @@ class Bisector:
                 record["culprit"] = None
                 add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_INCONCLUSIVE))
                 return
-            tests_file = self.scratch / f"round-{n}.txt"
-            failed_out = self.scratch / f"round-{n}-failed.txt"
-            culprit_rc = self._check(outcome.culprit, tests_file, failed_out)
-            failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in remaining]
-            before_rc = self._check(outcome.good, tests_file, self.scratch / f"round-{n}-before.txt")
-            record.update(culprit=outcome.culprit, verify={
-                "culprit_rc": culprit_rc, "preceding": outcome.good, "preceding_rc": before_rc,
-            })
-            if STEP_ABORT in (culprit_rc, before_rc):
-                add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
+            record["culprit"] = outcome.culprit
+            attributed = self.attribute(lo, outcome, remaining, record)
+            if attributed is None:
                 return
-            if culprit_rc != STEP_BAD or before_rc != STEP_GOOD:
-                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
-                return
-            broke = failed or remaining
-            add_event(self.events, event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), broke))
-            remaining = [t for t in remaining if t not in broke]
+            blamed, remaining = attributed
+            if blamed:
+                add_event(self.events, event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), blamed))
             lo = outcome.culprit
         if remaining:
             add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_ROUNDS))

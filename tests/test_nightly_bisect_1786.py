@@ -501,6 +501,62 @@ def test_a_deadline_during_the_recheck_keeps_the_narrowed_range(
     assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
 
 
+def test_a_bystander_that_flakes_once_at_the_culprit_goes_to_the_next_round(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test b breaks at 4, but failed once when the culprit of test a ran."""
+    shas = env.repo(["", "", "a", "a", "ab", "ab"])
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": shas[2], "test": "test_b", "phase": "check", "as": "bad", "nth": [1]}]))
+    points = {shas[i]: 30 + i for i in range(1, 6)}
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, _B, points=points)
+    assert rc == 0
+    assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-32", [_A]), ("pr-34", [_B])]
+
+
+def test_a_test_that_fails_at_the_preceding_point_is_not_blamed_on_the_culprit(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test b reads good during the bisect and fails when the point before
+    the culprit runs again. Test a is still the culprit's."""
+    shas = env.repo(["", "", "ab", "ab"])
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": shas[1], "test": "test_b", "phase": "check", "as": "bad", "nth": [1]}]))
+    points = {shas[i]: 30 + i for i in range(1, 4)}
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B, points=points)
+    assert rc == 1
+    assert result["events"] == [
+        nb.event_for_range(shas[0], shas[2], [_B], nb.REASON_UNVERIFIED),
+        nb.event_for_culprit(shas[2], 32, [_A]),
+    ]
+
+
+def test_a_false_good_step_is_caught_at_the_preceding_point(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One false result during the bisect moves the culprit one point later,
+    and the run on the point before it finds the real break."""
+    shas = env.repo(["", "", "a", "a", "a", "a"])
+    points: dict[str, int | None] = {shas[i]: 30 + i for i in range(1, 6)}
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": shas[2], "test": "test_a", "phase": "bisect", "as": "ok"}]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, points=points)
+    assert rc == 1
+    assert result["rounds"][0]["culprit"] == shas[3]
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [_A], nb.REASON_UNVERIFIED)]
+
+
+def test_a_status_of_one_with_no_test_named_blames_them_all(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "", "ab", "ab"])
+    monkeypatch.setenv("FAKE_NO_FAILED", "1")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B,
+                            points={shas[i]: 30 + i for i in range(1, 4)})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[2], 32, [_A, _B])]
+
+
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
