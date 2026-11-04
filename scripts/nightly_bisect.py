@@ -13,8 +13,8 @@ Usage:
         [--budget-seconds 1200] [--step-timeout 300] [--step-cmd CMD]
         [--python VERSION] [--extra NAME ...] [--dry-run]
     nightly_bisect.py step --tests IDS.txt --deadline EPOCH
-        [--step-timeout 300] [--failed-out FILE] [--python VERSION]
-        [--extra NAME ...] [--dry-run]
+        [--step-timeout 300] [--failed-out FILE] [--absent-out FILE]
+        [--python VERSION] [--extra NAME ...] [--dry-run]
 
 `--dry-run` writes no file, calls no API and changes no git state. It
 prints what the subcommand would do and exits as a real run would on
@@ -57,6 +57,27 @@ a test that fails both times is blamed on it. One that passes the second
 time flaked, and goes to the next round. A real break stays broken, so the
 blamed tests also run at the merge point after the culprit, unless that is
 `--bad`: one that passes there gets a range event.
+
+A commit where a test does not exist reads good, so a test that existed
+under another name, or was gone for a while, looks new at the commit that
+brought it back. When a blamed test is absent at the merge point before the
+culprit, and git sees its file renamed or copied between the two, or the
+test is present at the round's first commit, it gets a range event up to
+the culprit. A test absent all the way back is new, and is blamed on the
+commit that added it.
+
+What the checks cannot detect:
+
+- A test that gives the same wrong result at every run of a commit. A false
+  good at the real culprit, at the bisect and again at the check, moves the
+  blame to the next merge point, and that commit fails as a later commit
+  should. No fixed number of reruns closes this. A false bad is caught only
+  when the merge point after it passes, so not when the real break is that
+  next point.
+- A test function renamed inside its file, or a file renamed with too little
+  left for git's similarity check: the new name reads as a new test.
+- A test that breaks, recovers and breaks again. The bisect finds one change
+  from pass to fail, not all of them.
 `git bisect reset` runs in a `finally` after every round. The worktree
 stays after the run; the next run removes it first.
 
@@ -71,7 +92,8 @@ in a temporary directory under that variable re-initializes the worktree's
 git directory instead, so the step's children, and every git call here, run
 without git's repository variables.
 
-The step. Its exit status follows `git bisect run`: 0 good, 1 bad, 125
+The step. `--failed-out` and `--absent-out` name the tests that failed and
+the tests that do not exist at the commit. Its exit status follows `git bisect run`: 0 good, 1 bad, 125
 skip, 255 abort. Past `--deadline` it exits 255, which stops the bisect;
 the result then names the range it had narrowed to. Otherwise it runs
 `uv sync --frozen` (125 when that fails), collects the test files with
@@ -175,6 +197,8 @@ REASON_ROUNDS = "rounds"
 REASON_CAP = "cap"
 REASON_PASSES_AT_BAD = "passes at bad"
 REASON_UNMAPPED = "unmapped"
+REASON_RENAMED = "renamed"
+REASON_RETURNED = "returned"
 
 
 # ------------------------------------------------------------------ step
@@ -597,6 +621,7 @@ def cmd_step(args: argparse.Namespace) -> int:
         return step_verdict(past_deadline=False, unmapped=True)
     end = min(args.deadline, now + args.step_timeout)
     failed: list[str] = []
+    absent: list[str] = []
     previous = signal.signal(signal.SIGTERM, _die_with_children)
     try:
         sync_rc, _ = _bounded(sync, end)
@@ -607,17 +632,24 @@ def cmd_step(args: argparse.Namespace) -> int:
         module_rcs: list[int | None] = []
         for test_id in ids:
             path = module_file(test_id)
-            if path is None or not Path(path).is_file():
+            if path is None:
+                continue
+            if not Path(path).is_file():
+                absent.append(test_id)
                 continue
             rc, _ = _bounded([*_PYTEST, "--collect-only", "-q", path], end, capture=True)
             module_rcs.append(rc)
             if rc == _PYTEST_COLLECTION_ERROR:
                 failed.append(test_id)
+        node_ids = [i for i in ids if module_file(i) is None]
         files = [f for f in test_files(ids) if Path(f).is_file()]
+        absent += [i for i in node_ids if i.split("::", 1)[0] not in files]
         if not files:
             return step_verdict(past_deadline=False, module_rcs=module_rcs)
         collect_rc, listing = _bounded([*_PYTEST, "--collect-only", "-q", *files], end, capture=True)
         present = present_ids(ids, collected_ids(listing))
+        if collect_rc in (0, _PYTEST_NO_TESTS):
+            absent += [i for i in node_ids if i not in absent and i not in present]
         if collect_rc not in (0, _PYTEST_NO_TESTS) or not present:
             return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present, module_rcs=module_rcs)
         with tempfile.TemporaryDirectory() as tmp:
@@ -634,6 +666,8 @@ def cmd_step(args: argparse.Namespace) -> int:
     finally:
         if args.failed_out is not None:
             args.failed_out.write_text("".join(f"{as_given[t]}\n" for t in failed), encoding="utf-8")
+        if args.absent_out is not None:
+            args.absent_out.write_text("".join(f"{as_given[t]}\n" for t in absent), encoding="utf-8")
         signal.signal(signal.SIGTERM, previous)
 
 
@@ -650,6 +684,7 @@ class Check:
     """One step run outside the bisect: its status and the tests it named."""
     rc: int
     failed: list[str]
+    absent: list[str]
 
 
 @dataclass
@@ -674,7 +709,7 @@ class Bisector:
     def _wt(self) -> Git:
         return Git(self.worktree)
 
-    def _step(self, tests_file: Path, failed_out: Path | None = None) -> list[str]:
+    def _step(self, tests_file: Path, failed_out: Path | None = None, absent_out: Path | None = None) -> list[str]:
         argv = [
             *self.step_cmd, "--tests", str(tests_file),
             "--deadline", f"{self.deadline:.3f}", "--step-timeout", str(self.step_timeout),
@@ -682,6 +717,8 @@ class Bisector:
         ]
         if failed_out is not None:
             argv += ["--failed-out", str(failed_out)]
+        if absent_out is not None:
+            argv += ["--absent-out", str(absent_out)]
         return argv
 
     def _write_tests(self, name: str, tests: list[str]) -> Path:
@@ -693,13 +730,17 @@ class Bisector:
         """The step at `sha` over `tests`, run outside a bisect."""
         tests_file = self._write_tests("check.txt", tests)
         failed_out = self.scratch / "check-failed.txt"
-        failed_out.write_text("", encoding="utf-8")
+        absent_out = self.scratch / "check-absent.txt"
+        for path in (failed_out, absent_out):
+            path.write_text("", encoding="utf-8")
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
-            self._step(tests_file, failed_out), self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            self._step(tests_file, failed_out, absent_out),
+            self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
         )
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
-        return Check(STEP_SKIP if rc is None else rc, failed)
+        absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
+        return Check(STEP_SKIP if rc is None else rc, failed, absent)
 
     def bisect_round(self, lo: str, tests: list[str], n: int) -> tuple[Outcome, dict[str, Any]]:
         """One `git bisect` from `lo` to `bad` over `tests`."""
@@ -775,7 +816,32 @@ class Bisector:
                 blamed = again.failed or broke
         settled = [*earlier, *blamed]
         blamed = self._still_broken(lo, outcome, blamed, record)
+        blamed = self._new_here(lo, outcome, blamed, before.absent)
         return blamed, [t for t in remaining if t not in settled]
+
+    def _new_here(self, lo: str, outcome: Outcome, blamed: list[str], absent_before: list[str]) -> list[str]:
+        """Those of `blamed` that the culprit did not bring back. The others
+        existed before under another name or before a gap, and read good
+        there, so their real break can lie anywhere up to the culprit."""
+        culprit = cast(str, outcome.culprit)
+        absent = [t for t in blamed if t in absent_before]
+        if not absent:
+            return blamed
+        moved_files = self.git.lines(
+            "diff", "--name-only", "--find-renames", "--find-copies", "--diff-filter=RC", outcome.good, culprit,
+        )
+        moved = [t for t in absent if t.split("::", 1)[0] in moved_files]
+        if moved:
+            add_event(self.events, event_for_range(lo, culprit, moved, REASON_RENAMED))
+        returned: list[str] = []
+        unexplained = [t for t in absent if t not in moved]
+        if unexplained and outcome.good != lo:
+            origin = self._check(lo, unexplained)
+            if origin.rc in (STEP_GOOD, STEP_BAD):
+                returned = [t for t in unexplained if t not in origin.absent]
+        if returned:
+            add_event(self.events, event_for_range(lo, culprit, returned, REASON_RETURNED))
+        return [t for t in blamed if t not in moved and t not in returned]
 
     def _still_broken(self, lo: str, outcome: Outcome, blamed: list[str], record: dict[str, Any]) -> list[str]:
         """Those of `blamed` that do not pass at the merge point after the
@@ -986,6 +1052,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tests", required=True, type=Path)
     p.add_argument("--deadline", required=True, type=float, help="epoch seconds; past it the step exits 255")
     p.add_argument("--failed-out", type=Path, default=None, help="write the ids that failed here")
+    p.add_argument("--absent-out", type=Path, default=None, help="write the ids that do not exist here")
     p.set_defaults(func=cmd_step)
     return parser
 

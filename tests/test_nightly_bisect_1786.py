@@ -583,6 +583,76 @@ def test_following_point() -> None:
     assert nb.following_point(order, None, "c3") is None
 
 
+def test_a_file_renamed_after_the_break_is_not_blamed_on_the_rename(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """The test broke at 1 under its old name and reads absent, so good,
+    until the rename at 3."""
+    shas = env.repo(["", "a", "a", "a", "a"], edits=(
+        (0, "tests/test_old.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"),
+        (3, "tests/test_old.py", None),
+        (3, "tests/test_new.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"),
+    ))
+    new_id = "tests/test_new.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], new_id,
+                            points={shas[i]: 30 + i for i in range(1, 5)})
+    assert rc == 1
+    assert result["rounds"][0]["culprit"] == shas[3]
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [new_id], nb.REASON_RENAMED)]
+
+
+def test_a_file_deleted_and_added_back_is_not_blamed_on_the_return(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """The test broke at 2, was gone at 3-5, and came back at 6 still broken."""
+    shas = env.repo(["", "", "a", "a", "a", "a", "a", "a"], edits=(
+        (0, "tests/test_z.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"),
+        (3, "tests/test_z.py", None),
+        (6, "tests/test_z.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"),
+    ))
+    z_id = "tests/test_z.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], z_id,
+                            points={shas[i]: 30 + i for i in range(1, 8)})
+    assert rc == 1
+    assert result["rounds"][0]["culprit"] == shas[6]
+    assert result["events"] == [nb.event_for_range(shas[0], shas[6], [z_id], nb.REASON_RETURNED)]
+
+
+def test_a_test_function_removed_and_added_back_is_not_blamed_on_the_return(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    shas = env.repo(["", "A", "A", "A", "a", "a"])
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A,
+                            points={shas[i]: 30 + i for i in range(1, 6)})
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A], nb.REASON_RETURNED)]
+
+
+def test_a_test_added_failing_is_blamed_on_the_merge_that_added_it(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    shas = env.repo(["", "", "", "a", "a"], edits=((3, "tests/test_new.py", "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"),))
+    new_id = "tests/test_new.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], new_id,
+                            points={shas[i]: 30 + i for i in range(1, 5)})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[3], 33, [new_id])]
+
+
+def test_a_repeated_false_good_at_the_real_culprit_stays_undetected(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documented in the module docstring: the same wrong result at the
+    bisect and at the check moves the blame one merge point later."""
+    shas = env.repo(["", "", "", "a", "a", "a", "a", "a"])
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": shas[3], "test": "test_a", "phase": p, "as": "ok"} for p in ("bisect", "check")]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A,
+                            points={shas[i]: 30 + i for i in range(1, 8)})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[4], 34, [_A])]
+
+
 def test_a_status_of_one_with_no_test_named_blames_them_all(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1021,6 +1091,15 @@ def test_run_group_kills_what_a_finished_child_left_in_its_group(tmp_path: Path)
 
 def test_run_group_reports_a_missing_program() -> None:
     assert nb.run_group(["/nonexistent/program"], 5) == (127, "")
+
+
+def test_step_names_the_absent_tests(env: Env, tmp_path: Path) -> None:
+    env.repo(["a"])
+    gone_file, gone_test = "tests/test_gone.py::test_a", "tests/test_x.py::test_gone"
+    _tests_file(tmp_path / "ids.txt", _A, gone_file, gone_test, "tests.test_gone", "tests.test_y")
+    absent = tmp_path / "absent.txt"
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--absent-out", str(absent)) == nb.STEP_BAD
+    assert sorted(absent.read_text(encoding="utf-8").split()) == sorted([gone_file, gone_test, "tests.test_gone"])
 
 
 def test_step_that_cannot_read_its_input_aborts(env: Env, tmp_path: Path) -> None:
