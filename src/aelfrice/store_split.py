@@ -160,6 +160,10 @@ class SplitError(Exception):
     """The repository store couldn't be read."""
 
 
+class GitTimeoutError(Exception):
+    """git didn't answer within `_GIT_TIMEOUT_S` (#1847)."""
+
+
 @dataclass(frozen=True)
 class _DocRow:
     belief_id: str
@@ -305,14 +309,20 @@ def doc_uri_rel(uri: str) -> str | None:
 
 
 def work_tree_root(start: Path) -> Path | None:
-    """The root of the git work tree holding `start`, or None."""
+    """The root of the git work tree holding `start`, or None.
+
+    Raises `GitTimeoutError` when git doesn't answer within
+    `_GIT_TIMEOUT_S`, so a slow git isn't read as no work tree (#1847).
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, encoding="utf-8",
             errors="strict", check=False, timeout=_GIT_TIMEOUT_S, cwd=start,
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as exc:
+        raise GitTimeoutError(start) from exc
+    except (OSError, ValueError):
         return None
     top = result.stdout.strip()
     if result.returncode != 0 or not top:
@@ -1031,9 +1041,9 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
 
     A dry run unless `apply`. Raises `SplitRefused` when the command
     can't run here, including a folder of the work tree it can't list or
-    search, `StoreMarkerError` for a broken marker anywhere in the work
-    tree (both before anything is written), and `SplitError` when the
-    repository store can't be read.
+    search and a git that times out, `StoreMarkerError` for a broken
+    marker anywhere in the work tree (both before anything is written),
+    and `SplitError` when the repository store can't be read.
     """
     if apply and os.environ.get("AELFRICE_DB"):
         raise SplitRefused(
@@ -1042,7 +1052,19 @@ def split_store(start: Path, *, apply: bool) -> SplitReport:
         )
     try:
         path = _check_start(start)
-        work_tree = work_tree_root(path)
+        try:
+            work_tree = work_tree_root(path)
+        except GitTimeoutError:
+            # In a folder it can search but not list, git can take longer
+            # than the timeout to read its own path (#1847). The marker
+            # walk names such a folder inside a work tree, so it is named
+            # here too.
+            if not os.access(path, os.R_OK):
+                raise FolderAccessError(path) from None
+            raise SplitRefused(
+                f"git timed out after {_GIT_TIMEOUT_S:g} s finding the work "
+                f"tree of {path}",
+            ) from None
         if work_tree is None:
             raise SplitRefused(f"{path} is not in a git work tree")
         source = repository_store_path(work_tree)

@@ -1946,6 +1946,132 @@ def test_a_folder_outside_a_work_tree_is_refused(
     assert "not in a git work tree" in err
 
 
+def _git_times_out(start: Path) -> Path | None:
+    raise store_split.GitTimeoutError(start)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_a_search_only_folder_where_git_times_out_is_named(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """git can take longer than its timeout in a folder it can search but
+    not list (#1847). The refusal names that folder, as the marker walk
+    does for it in a work tree, and nothing is written."""
+    _seed_pair(repo)
+    before = _file_hash(_source_path(repo))
+    calls: list[Path] = []
+
+    def timed_out(start: Path) -> Path | None:
+        calls.append(start)
+        return _git_times_out(start)
+
+    monkeypatch.setattr(store_split, "work_tree_root", timed_out)
+    sealed = repo / "b" / "pgdata"
+    sealed.mkdir()
+    sealed.chmod(0o111)
+    try:
+        runs = [
+            _run(sealed, *flags, capsys=capsys) for flags in ((), ("--apply",))
+        ]
+    finally:
+        sealed.chmod(0o755)
+    for code, out, err in runs:
+        assert code == 2
+        assert out == ""
+        assert err == f"aelf store split: cannot list or search {sealed}\n"
+    assert calls == [sealed, sealed]
+    assert _file_hash(_source_path(repo)) == before
+    assert not _target_path(repo).parent.exists()
+
+
+def test_a_listable_folder_where_git_times_out_says_so(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A git timeout in a folder it can list isn't read as no work tree."""
+    monkeypatch.setattr(store_split, "work_tree_root", _git_times_out)
+    monkeypatch.setattr(store_split, "_GIT_TIMEOUT_S", 5.0)
+    start = repo / "b"
+    code, out, err = _run(start, capsys=capsys)
+    assert code == 2
+    assert out == ""
+    assert err == (
+        "aelf store split: git timed out after 5 s finding the work tree "
+        f"of {start}\n"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_git_finding_no_work_tree_keeps_its_message_for_a_search_only_folder(
+    env: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a timeout changes the message (#1847). When git answers that
+    there is no work tree, a folder it can't list still gets that answer."""
+    monkeypatch.setattr(store_split, "work_tree_root", lambda start: None)
+    sealed = env / "plain"
+    sealed.mkdir()
+    sealed.chmod(0o111)
+    try:
+        code, out, err = _run(sealed, capsys=capsys)
+    finally:
+        sealed.chmod(0o755)
+    assert code == 2
+    assert out == ""
+    assert err == f"aelf store split: {sealed} is not in a git work tree\n"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX permissions that the user can't bypass",
+)
+def test_git_runs_before_the_start_folder_is_checked(
+    repo: Path, capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where git finds the work tree, a broken marker is reported as on a
+    listable start, though the start can't be listed (#1847)."""
+    monkeypatch.setattr(store_split, "work_tree_root", lambda start: repo)
+    config = _marker(repo / "a", "x.db")
+    sealed = repo / "b" / "pgdata"
+    sealed.mkdir()
+    sealed.chmod(0o111)
+    try:
+        code, out, err = _run(sealed, capsys=capsys)
+    finally:
+        sealed.chmod(0o755)
+    assert code == 2
+    assert out == ""
+    assert err.startswith(f"aelf store split: {config}: ")
+
+
+def test_work_tree_root_raises_on_a_git_timeout_and_not_otherwise(
+    env: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`work_tree_root` tells a git that timed out from one that answered
+    no work tree or couldn't start (#1847)."""
+    raised: list[BaseException] = []
+
+    def run(argv: list[str], **kwargs: object) -> object:
+        raise raised[-1]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_split.subprocess, "run", run)
+        raised.append(subprocess.TimeoutExpired(["git"], 5.0))
+        with pytest.raises(store_split.GitTimeoutError):
+            store_split.work_tree_root(env)
+        raised.append(FileNotFoundError(2, "No such file or directory", "git"))
+        assert store_split.work_tree_root(env) is None
+    assert store_split.work_tree_root(env) is None
+
+
 def test_a_path_that_is_a_file_or_missing_is_refused_as_such(
     repo: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
