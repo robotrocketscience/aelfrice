@@ -399,27 +399,34 @@ _TEST_OUTCOMES = "test-outcomes"
 
 
 @pytest.mark.parametrize("status", ["queued", "in_progress", "pending"])
-def test_a_running_test_outcomes_job_does_not_hold_the_train(status: str) -> None:
-    """#1829: the job `needs: pytest`, so it runs after every other gate
-    has settled, and waiting on it would add its whole run to every merge."""
-    runs = [*_all_floor_green(), _run(_TEST_OUTCOMES, None, status=status)]
+def test_a_running_test_outcomes_job_holds_the_train(status: str) -> None:
+    """#1786: the diff step blocks, so the train waits for the row; a
+    failure that lands after the train moved on would never be read."""
+    runs = [r for r in _all_floor_green() if r["name"] != _TEST_OUTCOMES]
+    runs.append(_run(_TEST_OUTCOMES, None, status=status))
     verdict = evaluate(runs, REQUIRED)
-    assert verdict["pending"] == []
-    assert verdict["pending_not_gating"] == [_TEST_OUTCOMES]
+    assert verdict["pending"] == [_TEST_OUTCOMES]
+    assert verdict["pending_not_gating"] == []
 
 
-def test_test_outcomes_is_outside_the_floor() -> None:
-    """Advisory, so a head without its row is not `missing`, and a
-    `cancelled` row from its job cap does not fail the head."""
-    assert _TEST_OUTCOMES not in FLOOR_NAMES
-    assert evaluate(_all_floor_green(), REQUIRED)["missing"] == []
-    runs = [*_all_floor_green(), _run(_TEST_OUTCOMES, "cancelled")]
-    assert evaluate(runs, REQUIRED)["failing"] == []
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled"])
+def test_a_failed_or_cancelled_test_outcomes_job_fails_the_head(conclusion: str) -> None:
+    """`failure` is a ratchet violation under `--block`; `cancelled` is the
+    job's own 15-minute cap, which a floor name may not end on."""
+    runs = [r for r in _all_floor_green() if r["name"] != _TEST_OUTCOMES]
+    runs.append(_run(_TEST_OUTCOMES, conclusion))
+    assert evaluate(runs, REQUIRED)["failing"] == [_TEST_OUTCOMES]
+
+
+def test_a_head_without_a_test_outcomes_row_is_missing_it() -> None:
+    assert _TEST_OUTCOMES in FLOOR_NAMES
+    runs = [r for r in _all_floor_green() if r["name"] != _TEST_OUTCOMES]
+    assert evaluate(runs, REQUIRED)["missing"] == [_TEST_OUTCOMES]
 
 
 def test_the_nongating_set_is_exactly_the_advisory_jobs() -> None:
     """A literal list, so widening it is a visible edit here."""
-    assert NONGATING_WHILE_PENDING == {_MUTATION, _SIZE_CHECK, _TEST_OUTCOMES}
+    assert NONGATING_WHILE_PENDING == {_MUTATION, _SIZE_CHECK}
 
 
 def _job_bodies(workflow: Path) -> dict[str, list[str]]:
@@ -1024,6 +1031,7 @@ _FLOOR_SOURCES: dict[str, frozenset[str]] = {
         "posterior-writers",
         "pytest (3.12)",
         "pytest (3.13)",
+        "test-outcomes",
     }),
     "label-docs.yml": frozenset({"label"}),
     "migration-policy-check.yml": frozenset({"migration-policy-check"}),
@@ -1041,13 +1049,11 @@ _FLOOR_SOURCES: dict[str, frozenset[str]] = {
 }
 
 # Rows an unfiltered PR workflow emits on every head that stay out of
-# FLOOR_NAMES on purpose, per workflow. `test-outcomes` (ci.yml, #1829) is
-# advisory: it is in NONGATING_WHILE_PENDING, and a floored `cancelled`
-# row would gate on it. The drift guard subtracts exactly these names, so
-# any other new job still fails it until FLOOR_NAMES carries it.
-_UNFLOORED_ADVISORY: dict[str, frozenset[str]] = {
-    "ci.yml": frozenset({"test-outcomes"}),
-}
+# FLOOR_NAMES on purpose, per workflow. None does today: `test-outcomes`
+# (ci.yml) was the one exemption until its diff step began to block
+# (#1786). The drift guard subtracts exactly these names, so any other new
+# job still fails it until FLOOR_NAMES carries it.
+_UNFLOORED_ADVISORY: dict[str, frozenset[str]] = {}
 
 _WORKFLOW_DIR = _REPO / ".github" / "workflows"
 

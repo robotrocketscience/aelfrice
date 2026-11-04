@@ -340,14 +340,16 @@ jobs:
   # removed id of the same test function keeps the removed test's outcome.
   # The script's docstring has the rules.
   #
-  # Advisory, by the 2026-10-21 ruling: a violation is a `::warning::`, the
-  # diff step passes no `--block`, and every step carries `continue-on-error`,
-  # so the job's check-run is `success` when a step fails and the merge
-  # train's "nothing failing" test holds whatever the diff says. A job-level
-  # `continue-on-error` alone would not do that: it keeps the workflow run
-  # green, but the job's check-run still reads `failure`, and the train
-  # gates on check-runs. The blocking form is the same job with `--block` on
-  # the diff step and without `continue-on-error` on that step.
+  # Blocking, by the 2026-11-04 ruling: the diff step passes `--block` and
+  # carries no `continue-on-error`, so a violation is an `::error::`, the
+  # step fails, and the job's check-run reads `failure`. The merge train
+  # floors `test-outcomes` (scripts/merge_train_gate.py), so it waits for
+  # the row and gates on it. Every other step keeps its step-level
+  # `continue-on-error`: a failed download, record or baseline lookup leaves
+  # the diff to report "no baseline" or "no JUnit report". A diff that cannot
+  # read this run's record at all exits 2 and fails the check too. The
+  # job-level `continue-on-error` keeps the workflow run green, not the
+  # check-run (https://github.com/orgs/community/discussions/15452).
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
@@ -390,6 +392,8 @@ jobs:
     # A step past its cap ends `failure`, its `continue-on-error` turns that
     # into `success` (`ApplyContinueOnError` in actions/runner,
     # src/Runner.Worker/ExecutionContext.cs), and the run stays `success`.
+    # The diff step has no `continue-on-error`, so past its cap it fails the
+    # check-run, and the job-level line keeps the run `success`.
     timeout-minutes: 15
     permissions:
       contents: read
@@ -442,16 +446,10 @@ jobs:
           python3 scripts/test_outcome_record.py baseline \
               --repo "$GITHUB_REPOSITORY" --base-sha "$BASE_SHA" \
               --out baseline-record.json
-      - name: Diff against the baseline
-        continue-on-error: true
-        timeout-minutes: 1
-        run: |
-          python3 scripts/test_outcome_record.py diff \
-              --current current-record.json --baseline baseline-record.json \
-              --allowlist .github/test-outcome-allowlist.txt \
-              --summary "$GITHUB_STEP_SUMMARY"
       # Both records, so a reader can rerun the diff and shape B can reuse
-      # the format. Named by `github.sha` like the JUnit artifacts.
+      # the format. Named by `github.sha` like the JUnit artifacts. Before
+      # the diff, because a step after a failed one does not run, and a
+      # blocked run is the one whose records a reader wants.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         continue-on-error: true
         timeout-minutes: 1
@@ -461,3 +459,10 @@ jobs:
             current-record.json
             baseline-record.json
           retention-days: 30
+      - name: Diff against the baseline
+        timeout-minutes: 1
+        run: |
+          python3 scripts/test_outcome_record.py diff \
+              --current current-record.json --baseline baseline-record.json \
+              --allowlist .github/test-outcome-allowlist.txt \
+              --summary "$GITHUB_STEP_SUMMARY" --block

@@ -10,10 +10,11 @@ drive the baseline walk with a fake API, and pin
 the `test-outcomes` job in ci.yml as text, the way the neighboring
 workflow tests do.
 
-The ruling of 2026-10-21 makes the skip/xfail ratchet advisory first and
-blocking later. The workflow tests here pin the advisory wiring: no
-`--block`, job-level `continue-on-error`, and a job name outside the
-merge train's floor.
+The ruling of 2026-10-21 made the skip/xfail ratchet advisory first; the
+ruling of 2026-11-04 turns blocking on once the rules are fixed. The
+workflow tests here pin the blocking wiring: `--block` on the diff step and
+no `continue-on-error` on it, `continue-on-error` on every other step and
+on the job, and a job name inside the merge train's floor.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ _ALLOWLIST = _REPO / ".github" / "test-outcome-allowlist.txt"
 sys.path.insert(0, str(_REPO / "scripts"))
 
 import test_outcome_record as tor  # noqa: E402
-from merge_train_gate import FLOOR_NAMES  # noqa: E402
+from merge_train_gate import FLOOR_NAMES, NONGATING_WHILE_PENDING  # noqa: E402
 
 # Sha pins and the releases they name. The release is not pinned:
 # Dependabot bumps both, and tests/test_workflow_supply_chain_1786.py holds
@@ -1338,23 +1339,34 @@ def test_every_step_times_out_before_the_job_does() -> None:
     assert sum(caps) < int(_job_keys("test-outcomes")["timeout-minutes"]), caps
 
 
-def test_the_job_is_advisory_by_the_2026_10_21_ruling() -> None:
-    """`continue-on-error` on every step, no `--block`, and a name outside the floor.
+def test_the_diff_step_blocks_by_the_2026_11_04_ruling() -> None:
+    """`--block` and no `continue-on-error` on the diff step, and a name in the floor.
 
-    The job-level line keeps the workflow run green, but the job's check-run
-    still reads `failure` when a step fails, and `merge_train_gate.evaluate`
-    counts that check-run as failing. A step-level line is what keeps the
-    check-run at `success`, so every step carries one."""
+    The job-level line keeps the workflow run green, so the baseline walk
+    can still read the run, but the job's check-run reads `failure` when a
+    step fails, and `merge_train_gate.evaluate` counts that check-run as
+    failing. Every step but the diff keeps a step-level line, so a failed
+    lookup reaches the diff as "no baseline" rather than failing the check."""
+    diff = _one_step("test_outcome_record.py diff")
+    assert "continue-on-error" not in diff, diff
+    assert re.search(r" --block$", diff, re.MULTILINE), diff
+    assert "--allowlist .github/test-outcome-allowlist.txt" in diff
+    assert '--summary "$GITHUB_STEP_SUMMARY"' in diff
     for step in _steps("test-outcomes"):
-        assert "\n        continue-on-error: true" in step, step
+        if step != diff:
+            assert "\n        continue-on-error: true" in step, step
     assert _job_keys("test-outcomes").get("continue-on-error") == "true"
     assert "name" not in _job_keys("test-outcomes")
-    assert "test-outcomes" not in FLOOR_NAMES
-    diff_steps = [s for s in _steps("test-outcomes") if "test_outcome_record.py diff" in s]
-    assert len(diff_steps) == 1
-    assert "--block" not in diff_steps[0]
-    assert "--allowlist .github/test-outcome-allowlist.txt" in diff_steps[0]
-    assert '--summary "$GITHUB_STEP_SUMMARY"' in diff_steps[0]
+    assert "test-outcomes" in FLOOR_NAMES
+    assert "test-outcomes" not in NONGATING_WHILE_PENDING
+
+
+def test_the_records_upload_before_the_diff_can_fail() -> None:
+    """A step after a failed one does not run, and a blocked run's records
+    are the ones a reader wants. The diff is the last step."""
+    steps = _steps("test-outcomes")
+    assert steps[-1] == _one_step("test_outcome_record.py diff")
+    assert "if:" not in steps[-1]
 
 
 def test_the_job_reads_other_runs_artifacts_with_a_read_token() -> None:
@@ -1437,7 +1449,7 @@ def _block_lines(step: str, key: str) -> list[str]:
 
 
 def test_each_step_reads_the_files_the_step_before_it_wrote() -> None:
-    """The job is advisory, so a broken handoff would stay green in CI."""
+    """A broken handoff would fail the diff step on every pull request."""
     download = _one_step("actions/download-artifact@")
     record = _one_step("test_outcome_record.py record")
     baseline = _one_step("test_outcome_record.py baseline")
