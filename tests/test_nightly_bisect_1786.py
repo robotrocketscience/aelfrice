@@ -1411,6 +1411,10 @@ def test_module_file(test_id: str, path: str | None) -> None:
         ("::tests.test_x", "tests/test_x.py"),
         ("tests.test_gone::test_a", None),
         ("tests.test-y::test_a", None),
+        ("tests.twice.test_z::test_a", None),
+        ("tests.test_x.Not-A-Class::test_a", None),
+        ("tests.test_x[p]::test_a", None),
+        ("tests.test_x::", None),
         ("tests..test_x::test_a", None),
         ("tests/test_x::test_a", None),
         ("/etc/test_x.py::test_a", None),
@@ -1419,7 +1423,7 @@ def test_module_file(test_id: str, path: str | None) -> None:
     ],
 )
 def test_canonical_id(test_id: str, canonical: str | None) -> None:
-    files = {"tests/test_x.py", "tests/sub/test_z.py"}
+    files = {"tests/test_x.py", "tests/sub/test_z.py", "tests/twice.py", "tests/twice/test_z.py"}
     assert nb.canonical_id(test_id, files.__contains__) == canonical
 
 

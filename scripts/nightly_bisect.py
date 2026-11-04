@@ -279,9 +279,10 @@ def _is_relative(path: str) -> bool:
 def canonical_id(test_id: str, is_file: Callable[[str], bool]) -> str | None:
     """`test_id` as a node id, or as a module's file; None when it names no file.
 
-    A JUnit id's classname mixes the module path with the class names. The
-    longest prefix that `is_file` accepts is the module, as `pytest`'s report
-    joins the path to the classes with dots.
+    A JUnit id's classname joins the module path to the class names with
+    dots. The one prefix that `is_file` accepts is the module; none, or more
+    than one, names no file. `nightly_canary.py`'s `node_id` reads an id the
+    same way, so the two scripts agree on what is mapped.
     """
     head, sep, rest = test_id.partition("::")
     if not sep or not head:
@@ -289,13 +290,12 @@ def canonical_id(test_id: str, is_file: Callable[[str], bool]) -> str | None:
     if head.endswith(".py"):
         return test_id if _is_relative(head) else None
     parts = head.split(".")
-    if "/" in head or not all(parts):
+    if "/" in head or "[" in head or "]" in head or not rest or not all(parts):
         return None
-    for end in range(len(parts), 0, -1):
-        path = "/".join(parts[:end]) + ".py"
-        if is_file(path):
-            return "::".join([path, *parts[end:], rest])
-    return None
+    cuts = [cut for cut in range(1, len(parts) + 1) if is_file("/".join(parts[:cut]) + ".py")]
+    if len(cuts) != 1 or not all(part.isidentifier() for part in parts[cuts[0]:]):
+        return None
+    return "::".join(["/".join(parts[:cuts[0]]) + ".py", *parts[cuts[0]:], rest])
 
 
 def test_files(ids: Iterable[str]) -> list[str]:
