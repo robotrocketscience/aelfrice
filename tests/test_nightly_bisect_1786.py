@@ -664,6 +664,29 @@ def test_a_status_of_one_with_no_test_named_blames_them_all(
     assert result["events"] == [nb.event_for_culprit(shas[2], 32, [_A, _B])]
 
 
+def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """One range merged 50 `budget` tests and 5 `cap` tests, and the cap
+    tests read as `budget`."""
+    shas = env.repo(_LINEAR)
+    ids = [f"tests/test_x.py::test_n{i}" for i in range(nb.MAX_TESTS + 5)]
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, points=_linear_points(shas),
+                            extra=("--budget-seconds", "0"))
+    assert rc == 1
+    expected = {t: nb.REASON_BUDGET for t in ids[:nb.MAX_TESTS]} | {t: nb.REASON_CAP for t in ids[nb.MAX_TESTS:]}
+    assert [(e["key"], e["reasons"], sorted(e["tests"])) for e in result["events"]] == [
+        (f"range-{shas[0][:12]}-{shas[7][:12]}", expected, sorted(ids)),
+    ]
+
+
+def test_reasons_use_the_ids_as_given(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    junit = "tests.test_x::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], junit, points={shas[1]: 7},
+                            extra=("--budget-seconds", "0"))
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[1], [junit], nb.REASON_BUDGET)]
+
+
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
@@ -834,9 +857,7 @@ def test_ids_that_name_no_file_get_a_range_without_a_step(env: Env, tmp_path: Pa
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], *unread,
                             points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
     assert rc == 1
-    assert [(e["key"], e["tests"], e["reason"]) for e in result["events"]] == [
-        (f"range-{shas[0][:12]}-{shas[3][:12]}", unread, nb.REASON_UNMAPPED),
-    ]
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], unread, nb.REASON_UNMAPPED)]
     assert env.stepped() == []
 
 
@@ -1356,7 +1377,9 @@ def test_add_event_merges_one_key() -> None:
     events: list[dict[str, Any]] = []
     nb.add_event(events, nb.event_for_range("a" * 40, "b" * 40, ["t1"], nb.REASON_ROUNDS))
     nb.add_event(events, nb.event_for_range("a" * 40, "b" * 40, ["t1", "t2"], nb.REASON_CAP))
-    assert [(e["key"], e["tests"]) for e in events] == [(f"range-{'a' * 12}-{'b' * 12}", ["t1", "t2"])]
+    assert [(e["key"], e["tests"], e["reasons"]) for e in events] == [
+        (f"range-{'a' * 12}-{'b' * 12}", ["t1", "t2"], {"t1": nb.REASON_ROUNDS, "t2": nb.REASON_CAP}),
+    ]
 
 
 def test_parse_tests_and_points() -> None:

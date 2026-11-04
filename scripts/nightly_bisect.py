@@ -137,8 +137,10 @@ runs it on Linux and macOS.
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
-when no culprit was found. Each event lists its tests. Each round keeps
-its `git bisect log`.
+when no culprit was found. Each event lists its tests, and a range event
+maps each test to the reason it has no culprit: `budget`, `inconclusive`,
+`unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed` or
+`returned`. Each round keeps its `git bisect log`.
 
 Standard library only. The functions above `Git` are pure; the tests in
 `tests/test_nightly_bisect_1786.py` run them on values, and run the
@@ -438,15 +440,17 @@ def event_for_culprit(sha: str, pr: int | None, tests: list[str]) -> dict[str, A
 def event_for_range(good: str, bad: str, tests: list[str], reason: str) -> dict[str, Any]:
     return {
         "key": f"range-{good[:12]}-{bad[:12]}", "kind": "range",
-        "good": good, "bad": bad, "reason": reason, "tests": tests,
+        "good": good, "bad": bad, "reasons": {test: reason for test in tests}, "tests": tests,
     }
 
 
 def add_event(events: list[dict[str, Any]], event: dict[str, Any]) -> None:
-    """Append `event`, or merge its tests into the event with its key."""
+    """Append `event`, or merge its tests and reasons into the event with its key."""
     for existing in events:
         if existing["key"] == event["key"]:
             existing["tests"] = [*existing["tests"], *(t for t in event["tests"] if t not in existing["tests"])]
+            if "reasons" in event:
+                existing["reasons"] = {**event["reasons"], **existing["reasons"]}
             return
     events.append(event)
 
@@ -1032,6 +1036,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
     for event in bisector.events:
         event["tests"] = [given for test in event["tests"] for given in mapped.get(test, [test])]
+        if "reasons" in event:
+            event["reasons"] = {
+                given: reason for test, reason in event["reasons"].items() for given in mapped.get(test, [test])
+            }
     result = {
         "format": RESULT_FORMAT, "good": good, "bad": bad, "tests": tests,
         "merge_points": len(points), "events": bisector.events, "rounds": bisector.rounds,
