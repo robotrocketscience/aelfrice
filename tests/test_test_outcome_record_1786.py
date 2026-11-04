@@ -34,8 +34,19 @@ sys.path.insert(0, str(_REPO / "scripts"))
 import test_outcome_record as tor  # noqa: E402
 from merge_train_gate import FLOOR_NAMES  # noqa: E402
 
-_DOWNLOAD_SHA = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
-_UPLOAD_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
+# Sha pins and the releases they name. The release is not pinned:
+# Dependabot bumps both, and tests/test_workflow_supply_chain_1786.py holds
+# the pin rule for every `uses:` line in the tree.
+_DOWNLOAD_PIN = re.compile(r"actions/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+")
+_UPLOAD_PIN = re.compile(r"actions/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+")
+_USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _uses(step: str) -> str:
+    """The one `uses:` value in a step."""
+    values = _USES.findall(step)
+    assert len(values) == 1, step
+    return values[0]
 
 
 # ----------------------------------------------------------- fixtures
@@ -1164,7 +1175,7 @@ def test_the_job_reads_other_runs_artifacts_with_a_read_token() -> None:
 def test_the_job_downloads_this_runs_reports_by_the_merge_sha_pattern() -> None:
     steps = [s for s in _steps("test-outcomes") if "actions/download-artifact@" in s]
     assert len(steps) == 1
-    assert f"actions/download-artifact@{_DOWNLOAD_SHA} # v4.3.0" in steps[0]
+    assert _DOWNLOAD_PIN.fullmatch(_uses(steps[0])), steps[0]
     assert "pattern: junit-*-${{ github.sha }}" in steps[0]
     assert "merge-multiple: true" in steps[0]
     record_steps = [s for s in _steps("test-outcomes") if "test_outcome_record.py record" in s]
@@ -1178,7 +1189,7 @@ def test_the_job_downloads_this_runs_reports_by_the_merge_sha_pattern() -> None:
 def test_the_job_keeps_the_records_as_an_artifact() -> None:
     steps = [s for s in _steps("test-outcomes") if "actions/upload-artifact@" in s]
     assert len(steps) == 1
-    assert f"actions/upload-artifact@{_UPLOAD_SHA} # v4.6.2" in steps[0]
+    assert _UPLOAD_PIN.fullmatch(_uses(steps[0])), steps[0]
     assert "name: test-outcome-record-${{ github.sha }}" in steps[0]
     assert "retention-days: 30" in steps[0]
 
