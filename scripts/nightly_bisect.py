@@ -942,7 +942,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def cmd_merge_points(args: argparse.Namespace) -> int:
-    git = Git(args.repo_root)
+    git = Git(args.repo_root.resolve())
     good, bad = resolve_range(git, args.good, args.bad)
     order = ancestry(git, good, bad)
     since = merged_since(int(git.out("show", "-s", "--format=%ct", good)))
@@ -976,7 +976,8 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    git = Git(args.repo_root)
+    root = args.repo_root.resolve()
+    git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
     tests = parse_tests(args.tests.read_text(encoding="utf-8"))
     if not tests:
@@ -990,7 +991,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     bisected, over_cap = canonical[:MAX_TESTS], canonical[MAX_TESTS:]
     step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
     step_args = _step_passthrough(args)
-    worktree = args.worktree if args.worktree is not None else args.repo_root / ".bisect"
+    # Git runs in `root`, so a relative path would land under it.
+    worktree = args.worktree.resolve() if args.worktree is not None else root / ".bisect"
     if args.dry_run:
         in_range = git.lines("rev-list", f"{good}..{bad}")
         point_set = set(points) | {bad} if points else None

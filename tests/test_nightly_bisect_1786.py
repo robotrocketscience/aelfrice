@@ -727,6 +727,25 @@ def test_the_bisect_is_reset_when_the_round_raises(
     assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
 
 
+@pytest.mark.parametrize("worktree", [None, "elsewhere"])
+def test_a_relative_repo_root_works(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worktree: str | None,
+) -> None:
+    """A relative root exited 2 and left `repo/repo/.bisect` behind."""
+    shas = env.repo(["", "a"])
+    monkeypatch.chdir(tmp_path)
+    ids = _tests_file(tmp_path / "ids.txt", _A)
+    extra = ["--worktree", worktree] if worktree else []
+    rc = nb.main(["run", "--repo-root", "repo", "--good", shas[0], "--bad", shas[1], "--tests", str(ids),
+                  "--out", "result.json", "--step-cmd", env.step_cmd, *extra])
+    assert rc == 0
+    assert not (tmp_path / "repo" / "repo").exists()
+    assert (tmp_path / (worktree or "repo/.bisect")).is_dir()
+    points = nb.main(["merge-points", "--repo-root", "repo", "--good", shas[0], "--bad", shas[1],
+                      "--out", "points.json", "--dry-run"])
+    assert points == 0
+
+
 def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
