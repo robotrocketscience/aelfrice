@@ -84,6 +84,10 @@ jobs:
           # Default token is fine for FF pushes — we're advancing main
           # to existing already-signed commits, not adding new ones.
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Kept on purpose: the FF step below runs `git push origin` with
+          # the token this checkout writes to .git/config (zizmor
+          # `artipacked`).
+          persist-credentials: true
 
       - name: Attempt merge-train FF
         env:
