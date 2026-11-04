@@ -74,8 +74,11 @@ environment, rc, status, flaky and confirmed tests, notes saying why a leg
 reads as it does, and the night's verdict. `DIR` is either one leg's bundle or the directory the artifacts
 were downloaded into; in the second case the bundle is the subdirectory
 `nightly-<leg>-<sha>-a<N>` with the highest `N`. `ROLE` is `canary`
-(the default) or `extra`. A leg with no `junit.xml`, an unparseable one,
-or no `verdict.json` is `missing`. The night is `green` when every canary
+(the default) or `extra`. One bad bundle never loses the night's record: a
+leg is `missing`, with a note saying why, when `junit.xml` or `verdict.json`
+is absent or unreadable, when `env.json` is unreadable, or when
+`verdict.json` disagrees with `junit.xml` (a green verdict over a report
+with a failure, for one). The night is `green` when every canary
 leg is green, `incomplete` when a canary leg is missing or there is no
 canary leg, and `red` otherwise. `--created-at` defaults to the current
 UTC time and `--event` to `GITHUB_EVENT_NAME`.
@@ -323,6 +326,27 @@ def night_verdict(roles: dict[str, str], status: dict[str, str]) -> str:
     return RED
 
 
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(x, str) for x in value)  # pyright: ignore[reportUnknownVariableType]
+
+
+def check_verdict(verdict: dict[str, Any], outcomes: dict[str, str]) -> str | None:
+    """Why `verdict` cannot be trusted over the report it came from, or None."""
+    rc = verdict.get("rc")
+    if not isinstance(rc, int) or isinstance(rc, bool):
+        return "verdict.json holds no pytest rc"
+    if not all(_is_str_list(verdict.get(key)) for key in ("red", "flaky", "confirmed")):
+        return "verdict.json does not list the red, flaky and confirmed tests"
+    if not isinstance(verdict.get("mass_failure"), bool):
+        return "verdict.json does not say whether this was a mass failure"
+    red = red_ids(outcomes)
+    if sorted(verdict["red"]) != red or sorted(verdict["flaky"] + verdict["confirmed"]) != red:
+        return "verdict.json does not name the red tests in junit.xml"
+    if verdict.get("status") != leg_status(rc, outcomes, verdict["confirmed"]):
+        return f"verdict.json says {verdict.get('status')!r}, which junit.xml and its rc do not support"
+    return None
+
+
 def build_nightly_record(
     junit: dict[str, str | None],
     verdicts: dict[str, dict[str, Any] | None],
@@ -334,6 +358,7 @@ def build_nightly_record(
     run_attempt: int,
     event: str,
     created_at: str,
+    bundle_notes: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """The format-1 record for one night with its additive `nightly` key."""
     record = tor.build_record(junit, sha)
@@ -345,7 +370,9 @@ def build_nightly_record(
     notes: dict[str, list[str]] = {}
     for leg in sorted(roles):
         v = verdicts.get(leg)
-        notes[leg] = [str(v["rerun_note"])] if v and v.get("rerun_note") else []
+        notes[leg] = list((bundle_notes or {}).get(leg, []))
+        if v and v.get("rerun_note"):
+            notes[leg].append(str(v["rerun_note"]))
         if junit.get(leg) is None or v is None:
             status[leg] = MISSING
             flaky[leg] = []
@@ -727,6 +754,42 @@ def _load_bundle(base: Path, leg: str, sha: str) -> tuple[Path | None, int | Non
     return base / name, bundle_attempt(name, leg, sha)
 
 
+def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None, list[str]]:
+    """A bundle's JUnit text, verdict and environment, and a note per
+    problem. A verdict comes back only when the leg can be trusted."""
+    unreadable: tuple[type[Exception], ...] = (OSError, ValueError, ElementTree.ParseError)
+    notes: list[str] = []
+    text: str | None = None
+    outcomes: dict[str, str] | None = None
+    try:
+        raw = (bundle / "junit.xml").read_text(encoding="utf-8")
+        outcomes = parse_report(raw)
+        text = raw
+    except unreadable as exc:
+        notes.append(f"junit.xml is unreadable: {exc}")
+    verdict: dict[str, Any] | None = None
+    try:
+        verdict = _read_json(bundle / "verdict.json")
+    except unreadable as exc:
+        notes.append(f"verdict.json is unreadable: {exc}")
+    env: dict[str, Any] | None = None
+    env_ok = True
+    if (bundle / "env.json").exists():
+        try:
+            env = _read_json(bundle / "env.json")
+        except unreadable as exc:
+            env_ok = False
+            notes.append(f"env.json is unreadable: {exc}")
+    if verdict is not None and outcomes is not None:
+        problem = check_verdict(verdict, outcomes)
+        if problem is not None:
+            notes.append(problem)
+            verdict = None
+    if outcomes is None or not env_ok:
+        verdict = None
+    return text, verdict, env, notes
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     specs = [parse_leg_spec(v) for v in args.leg]
     seen = [leg for leg, _, _ in specs]
@@ -737,30 +800,23 @@ def cmd_record(args: argparse.Namespace) -> int:
     envs: dict[str, dict[str, Any] | None] = {}
     roles: dict[str, str] = {}
     attempts: dict[str, int | None] = {}
+    notes: dict[str, list[str]] = {}
     for leg, directory, role in specs:
         roles[leg] = role
         bundle, attempt = _load_bundle(Path(directory), leg, args.sha)
         attempts[leg] = attempt
-        junit[leg], verdicts[leg], envs[leg] = None, None, None
         if bundle is None:
-            print(f"::notice::no bundle for leg {leg} under {directory}", file=sys.stderr)
-            continue
-        if (bundle / "junit.xml").is_file():
-            text = (bundle / "junit.xml").read_text(encoding="utf-8")
-            try:
-                tor.parse_junit(text)
-                junit[leg] = text
-            except ElementTree.ParseError as exc:
-                print(f"::notice::leg {leg}: junit.xml does not parse: {exc}", file=sys.stderr)
-        if (bundle / "verdict.json").is_file():
-            verdicts[leg] = _read_json(bundle / "verdict.json")
-        if (bundle / "env.json").is_file():
-            envs[leg] = _read_json(bundle / "env.json")
+            junit[leg], verdicts[leg], envs[leg] = None, None, None
+            notes[leg] = [f"no bundle under {directory}"]
+        else:
+            junit[leg], verdicts[leg], envs[leg], notes[leg] = _load_leg(bundle)
+        for note in notes[leg]:
+            print(f"::notice::leg {leg}: {note}", file=sys.stderr)
     created_at = args.created_at or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     run_date(created_at)
     event = args.event if args.event is not None else os.environ.get("GITHUB_EVENT_NAME", "")
     record = build_nightly_record(
-        junit, verdicts, envs, roles, attempts, args.sha, args.run_id, args.run_attempt, event, created_at,
+        junit, verdicts, envs, roles, attempts, args.sha, args.run_id, args.run_attempt, event, created_at, notes,
     )
     nightly = record["nightly"]
     if args.dry_run:

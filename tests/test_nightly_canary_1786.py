@@ -565,6 +565,87 @@ def test_a_broken_canary_leg_makes_the_night_red(tmp_path: Path) -> None:
     assert record["nightly"]["verdict"] == nc.RED
 
 
+_BAD_FILES = [
+    ("verdict.json", b"oops"),
+    ("verdict.json", b"[]"),
+    ("verdict.json", b"{}"),
+    ("verdict.json", b'{"rc": 0, "red": "x", "flaky": [], "confirmed": [], "mass_failure": false, "status": "green"}'),
+    ("verdict.json", b'{"rc": true, "red": [], "flaky": [], "confirmed": [], "mass_failure": false, "status": "green"}'),
+    ("verdict.json", b'{"rc": 0, "red": [], "flaky": [], "confirmed": [], "status": "green"}'),
+    ("verdict.json", b"\xff\xfe"),
+    ("env.json", b"oops"),
+    ("env.json", b"[]"),
+    ("junit.xml", b"\xff\xfe"),
+    ("junit.xml", b"<x"),
+    ("junit.xml", b"<html></html>"),
+]
+_BAD_IDS = ["verdict-corrupt", "verdict-array", "verdict-empty", "verdict-red-not-a-list", "verdict-rc-bool",
+            "verdict-no-mass-flag", "verdict-not-utf8", "env-corrupt", "env-array", "junit-not-utf8",
+            "junit-truncated", "junit-html"]
+
+
+def _three_legs(tmp_path: Path) -> list[str]:
+    for leg in ("3.12", "3.13", "3.14"):
+        _bundle(tmp_path / leg, {_A: tor.PASSED})
+    return [f"3.12={tmp_path / '3.12'}", f"3.13={tmp_path / '3.13'}", f"3.14={tmp_path / '3.14'}:extra"]
+
+
+@pytest.mark.parametrize(("name", "data"), _BAD_FILES, ids=_BAD_IDS)
+def test_a_bad_file_in_an_extra_leg_keeps_the_nights_green_record(tmp_path: Path, name: str, data: bytes) -> None:
+    specs = _three_legs(tmp_path)
+    (tmp_path / "3.14" / name).write_bytes(data)
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"] == {"3.12": nc.GREEN, "3.13": nc.GREEN, "3.14": nc.MISSING}
+    assert record["nightly"]["verdict"] == nc.GREEN
+    assert record["nightly"]["notes"]["3.14"]
+
+
+@pytest.mark.parametrize(("name", "data"), _BAD_FILES, ids=_BAD_IDS)
+def test_a_bad_file_in_a_canary_leg_reads_incomplete_with_the_record_written(
+    tmp_path: Path, name: str, data: bytes,
+) -> None:
+    specs = _three_legs(tmp_path)
+    (tmp_path / "3.13" / name).write_bytes(data)
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.MISSING
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
+    assert record["nightly"]["notes"]["3.13"]
+
+
+@pytest.mark.parametrize(
+    "report",
+    [_junit({_A: tor.FAILED}), _junit({_B: tor.PASSED, _A: tor.ERROR}), _junit({})],
+    ids=["failing-test", "erroring-test", "no-tests"],
+)
+def test_a_green_verdict_over_a_report_that_is_not_green_reads_incomplete(tmp_path: Path, report: str) -> None:
+    specs = _three_legs(tmp_path)
+    (tmp_path / "3.13" / "junit.xml").write_text(report, encoding="utf-8")
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.MISSING
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
+    assert "verdict.json" in record["nightly"]["notes"]["3.13"][0]
+
+
+def test_a_verdict_that_marks_a_red_test_flaky_without_listing_it_red_is_refused() -> None:
+    outcomes = {_A: tor.FAILED}
+    verdict = nc.classify_leg(1, outcomes, {_A: tor.PASSED})
+    assert nc.check_verdict(verdict, outcomes) is None
+    assert nc.check_verdict({**verdict, "flaky": [], "confirmed": []}, outcomes) is not None
+    assert nc.check_verdict({**verdict, "status": nc.RED}, outcomes) is not None
+
+
+def test_an_absent_env_file_is_a_null_environment_not_a_bad_leg(tmp_path: Path) -> None:
+    specs = _three_legs(tmp_path)
+    (tmp_path / "3.13" / "env.json").unlink()
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.GREEN
+    assert record["nightly"]["env"]["3.13"] is None
+
+
 def test_a_leg_whose_report_does_not_parse_or_has_no_verdict_is_missing(tmp_path: Path) -> None:
     bad = _bundle(tmp_path / "3.12", {_A: tor.PASSED})
     (bad / "junit.xml").write_text("<testsuites><testcase", encoding="utf-8")
