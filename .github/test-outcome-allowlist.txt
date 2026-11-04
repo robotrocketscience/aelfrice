@@ -10,3 +10,14 @@
 # diff calling it a ratchet violation. Say why on a `#` line above each
 # entry; a comment after the id on the same line becomes part of the id,
 # which then matches nothing.
+#
+# Two cases need no entry. A new test that is never executed (behind
+# `--run-perf`, or a bench-gate test) is not a violation. A new id that
+# renames a removed id of the same test function, as a pytest upgrade does
+# to parameter ids, keeps the removed test's outcome. Every other new skip
+# needs an entry, a platform skip included: the ratchet reads the outcome,
+# never the skip reason.
+
+# Windows-only (#1833): `skipif(not WIN32)`, so both Linux legs skip them.
+tests.test_core_gate_background_windows_1761::test_a_cmd_shim_receives_the_argv_intact
+tests.test_core_gate_background_windows_1761::test_the_detached_child_runs_the_stub_on_windows

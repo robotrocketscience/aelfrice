@@ -30,18 +30,35 @@ pyproject.toml makes every xpass strict, so a lenient xpass, which pytest
 records as a plain pass, does not occur in this suite.
 
 The ratchet. A test whose outcome moves to `skipped`, `xfailed` or `never
-executed` from any other outcome, or that is new with one of those
-outcomes, is a violation unless the allowlist names it. The allowlist file
-holds one test id per line, in which `*` matches any run of characters and
-every other character, `[` and `?` included, matches itself; blank lines
-and `#` comments are ignored.
+executed` from any other outcome, or that is new as `skipped` or
+`xfailed`, is a violation unless the allowlist names it. A new test that is
+`never executed` is not one: the perf and bench-gate tests skip by design
+on every CI leg (#1825). No skip reason earns that pass, a platform skip
+included, so a new `skipif(not WIN32)` test needs an allowlist entry
+(#1833). A removed test is counted and is never a violation.
+
+Renames. The diff pairs a new test with a removed test of the same test
+function, the id up to its first `[`, and reads the removed test's
+outcome as the new test's earlier one. pytest renames parameter ids
+between releases, and pytest 9.2 renamed every id of a perf test (#1825).
+A new test pairs first with a removed test of its own outcome. A new test
+that is skipped, xfailed or never executed and still unpaired then pairs
+with any removed test of its function that is left, so a passing test
+renamed into a skip is still a violation. Each removed test pairs at most
+once, in sorted order.
+
+The allowlist file holds one test id per line, in which `*` matches any
+run of characters and every other character, `[` and `?` included,
+matches itself; blank lines and `#` comments are ignored.
 Failures, errors and xpasses are reported but are not violations: the
 pytest leg itself is red on those. The step summary names the first 50
 tests of each list and stays under GitHub's 1 MiB limit, so a mass skip
 still shows its counts; the record names every test. Without `--block` the exit status is 0
 whatever the diff says and each violation is a `::warning::`; with it the
-exit status is 1 when a violation exists. A missing baseline is a notice,
-never a failure, in both modes.
+exit status is 1 when a violation exists and each is an `::error::`.
+GitHub shows 10 annotations of a level per step, so one annotation that
+counts the violations per leg comes before the per-test ones. A missing
+baseline is a notice, never a failure, in both modes.
 
 The baseline. `ci.yml` runs on `pull_request` and on `workflow_dispatch`,
 never on a push to main. The merge train fast-forwards, so a merged PR's
@@ -214,6 +231,8 @@ class Transition:
     test: str
     before: str | None
     after: str | None
+    # The removed test this one renames, when the diff paired the two.
+    renamed_from: str | None = None
 
 
 @dataclass
@@ -226,6 +245,7 @@ class LegDiff:
     red: list[Transition] = field(default_factory=list)
     added: int = 0
     removed: int = 0
+    renamed: int = 0
     notice: str | None = None
 
 
@@ -250,8 +270,42 @@ def is_allowlisted(test: str, allowlist: Iterable[str]) -> bool:
     return any(allowlist_regex(entry).fullmatch(test) for entry in allowlist)
 
 
+def function_id(test: str) -> str:
+    """The test function an id belongs to: the id up to its first `[`, so
+    every parameter of one function shares it."""
+    return test.partition("[")[0]
+
+
+def pair_renames(added: dict[str, str], removed: dict[str, str]) -> dict[str, str]:
+    """Each new test id the diff reads as a rename, to the removed id it renames.
+
+    Both arguments map a test id to its outcome. A new test pairs first with
+    a removed test of its own function and outcome. A new test in a
+    ratcheted outcome that is still unpaired then pairs with any removed
+    test of its function that is left. Each removed test pairs at most once,
+    and both passes go in sorted id order.
+    """
+    free: dict[str, list[str]] = {}
+    for test in sorted(removed):
+        free.setdefault(function_id(test), []).append(test)
+    pairs: dict[str, str] = {}
+    for same_outcome in (True, False):
+        for test in sorted(added):
+            if test in pairs or (not same_outcome and added[test] not in RATCHETED_OUTCOMES):
+                continue
+            pool = free.get(function_id(test), [])
+            match = next((r for r in pool if not same_outcome or removed[r] == added[test]), None)
+            if match is not None:
+                pool.remove(match)
+                pairs[test] = match
+    return pairs
+
+
 def is_violation(before: str | None, after: str | None) -> bool:
-    """The ratchet rule on one transition."""
+    """The ratchet rule on one transition. `before` is None for a new test
+    the diff did not pair with a removed one."""
+    if before is None and after == NEVER_EXECUTED:
+        return False
     return after in RATCHETED_OUTCOMES and before != after
 
 
@@ -270,6 +324,9 @@ def diff_leg(
     if baseline is None:
         out.notice = f"no baseline for leg {leg}; the ratchet was not evaluated"
         return out
+    removed = {test: outcome for test, outcome in baseline.items() if test not in current}
+    renames = pair_renames({t: o for t, o in current.items() if t not in baseline}, removed)
+    out.renamed = len(renames)
     for test in sorted(set(current) | set(baseline)):
         before = baseline.get(test)
         after = current.get(test)
@@ -278,9 +335,12 @@ def diff_leg(
         if after is None:
             out.removed += 1
             continue
+        renamed_from = renames.get(test)
+        if renamed_from is not None:
+            before = removed[renamed_from]
         if before == after:
             continue
-        t = Transition(test, before, after)
+        t = Transition(test, before, after, renamed_from)
         if is_violation(before, after) and not is_allowlisted(test, allow):
             out.violations.append(t)
         elif before in RATCHETED_OUTCOMES and after == PASSED:
@@ -312,8 +372,23 @@ def has_violations(diffs: Iterable[LegDiff]) -> bool:
     return any(d.violations for d in diffs)
 
 
-def _describe(before: str | None, after: str | None) -> str:
-    return f"{before or 'absent'} -> {after or 'absent'}"
+# Characters of a renamed test's id that a description quotes. pytest
+# writes a parameter's whole value into the id, and one perf test's ids
+# run past 200,000 characters (#1825).
+_RENAMED_ID_CHARS = 120
+
+
+def _short(test: str) -> str:
+    if len(test) <= _RENAMED_ID_CHARS:
+        return test
+    return test[: _RENAMED_ID_CHARS - 3] + "..."
+
+
+def _describe(t: Transition) -> str:
+    before = t.before or "absent"
+    if t.renamed_from is not None:
+        before = f"{before} as `{_short(t.renamed_from)}`"
+    return f"{before} -> {t.after or 'absent'}"
 
 
 def _table_cell(text: str) -> str:
@@ -378,31 +453,47 @@ def render_summary(
             continue
         lines.append(
             f"{len(d.violations)} ratchet violation(s), {len(d.recovered)} recovered, "
-            f"{d.added} added, {d.removed} removed."
+            f"{d.added} added, {d.removed} removed, {d.renamed} renamed."
         )
         lines.append("")
         if d.violations:
             lines.append("| Test | Outcome |")
             lines.append("|---|---|")
             lines.extend(_capped([
-                f"| `{_table_cell(t.test)}` | {_describe(t.before, t.after)} |" for t in d.violations
+                f"| `{_table_cell(t.test)}` | {_table_cell(_describe(t))} |" for t in d.violations
             ]))
         if d.recovered:
             lines.append("Recovered:")
             lines.append("")
-            lines.extend(_capped([f"- `{t.test}`: {_describe(t.before, t.after)}" for t in d.recovered]))
+            lines.extend(_capped([f"- `{t.test}`: {_describe(t)}" for t in d.recovered]))
     return _fit("\n".join(lines).rstrip() + "\n")
 
 
-def render_annotations(diffs: list[LegDiff], baseline_notice: str | None, block: bool) -> list[str]:
-    """Workflow commands: one per violation, one for a missing baseline."""
+def render_annotations(
+    diffs: list[LegDiff],
+    baseline_notice: str | None,
+    block: bool,
+    allowlist: str | None = None,
+) -> list[str]:
+    """Workflow commands: one that counts the violations, first, then one
+    per violation, and one for a missing baseline. GitHub shows 10
+    annotations of a level per step, so the count goes first and a long
+    list cannot hide it. `allowlist` is the path the count names."""
     level = "error" if block else "warning"
     out: list[str] = []
+    per_leg = [f"leg {d.leg}: {len(d.violations)}" for d in diffs if d.violations]
+    if per_leg:
+        total = sum(len(d.violations) for d in diffs)
+        entry = f"an entry in {allowlist}" if allowlist else "an allowlist entry"
+        out.append(
+            f"::{level}::test outcome ratchet: {total} violation(s) ({', '.join(per_leg)}). "
+            f"The step summary lists each one. A test that is meant to skip needs {entry}."
+        )
     if baseline_notice:
         out.append(f"::notice::test outcomes: no baseline: {baseline_notice}")
     for d in diffs:
         for t in d.violations:
-            out.append(f"::{level}::test outcome ratchet, leg {d.leg}: {t.test} {_describe(t.before, t.after)}")
+            out.append(f"::{level}::test outcome ratchet, leg {d.leg}: {t.test} {_describe(t)}")
     return out
 
 
@@ -625,7 +716,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
         if args.summary is not None:
             print(f"dry run: would append the summary to {args.summary}")
         sys.stdout.write(summary)
-    for line in render_annotations(diffs, baseline_notice, args.block):
+    for line in render_annotations(diffs, baseline_notice, args.block, str(args.allowlist) if args.allowlist else None):
         print(line)
     return 1 if args.block and has_violations(diffs) else 0
 

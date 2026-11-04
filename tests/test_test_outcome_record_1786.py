@@ -313,7 +313,9 @@ def test_the_record_holds_each_leg_sorted_and_a_missing_leg_as_null() -> None:
 def test_moving_to_a_ratcheted_outcome_is_a_violation_unless_unchanged(
     before: str | None, after: str,
 ) -> None:
-    assert tor.is_violation(before, after) is (before != after)
+    """A new test that is never executed is the one exemption (#1825)."""
+    exempt = before is None and after == tor.NEVER_EXECUTED
+    assert tor.is_violation(before, after) is (before != after and not exempt)
 
 
 @pytest.mark.parametrize("after", [None, tor.PASSED, tor.FAILED, tor.ERROR, tor.XPASSED])
@@ -350,7 +352,6 @@ def test_diff_leg_sorts_transitions_into_violations_recovered_red_added_removed(
     }
     d = tor.diff_leg("3.13", current, baseline)
     assert [(t.test, t.before, t.after) for t in d.violations] == [
-        ("t::new_perf", None, tor.NEVER_EXECUTED),
         ("t::now_skips", tor.PASSED, tor.SKIPPED),
         ("t::now_xfails", tor.PASSED, tor.XFAILED),
     ]
@@ -360,8 +361,163 @@ def test_diff_leg_sorts_transitions_into_violations_recovered_red_added_removed(
         ("t::new_xpass", tor.XPASSED),
         ("t::now_fails", tor.FAILED),
     ]
-    assert (d.added, d.removed) == (4, 1)
+    assert (d.added, d.removed, d.renamed) == (4, 1, 0)
     assert d.baseline_present and d.notice is None
+
+
+def _violations(d: tor.LegDiff) -> list[tuple[str, str | None, str | None, str | None]]:
+    return [(t.test, t.before, t.after, t.renamed_from) for t in d.violations]
+
+
+def test_a_new_test_that_is_never_executed_is_not_a_violation() -> None:
+    """The perf and bench-gate tests skip on every CI leg by design, so a
+    new one has never had another outcome to lose (#1825)."""
+    d = tor.diff_leg("3.12", {"t::a": tor.PASSED, "t::new_perf": tor.NEVER_EXECUTED}, {"t::a": tor.PASSED})
+    assert d.violations == [] and d.added == 1
+
+
+@pytest.mark.parametrize("after", [tor.SKIPPED, tor.XFAILED])
+def test_a_new_test_that_skips_or_xfails_is_a_violation(after: str) -> None:
+    d = tor.diff_leg("3.12", {"t::a": tor.PASSED, "t::new": after}, {"t::a": tor.PASSED})
+    assert _violations(d) == [("t::new", None, after, None)]
+
+
+def test_a_passing_test_that_becomes_never_executed_is_still_a_violation() -> None:
+    d = tor.diff_leg("3.12", {"t::a": tor.NEVER_EXECUTED}, {"t::a": tor.PASSED})
+    assert _violations(d) == [("t::a", tor.PASSED, tor.NEVER_EXECUTED, None)]
+
+
+# The two tests #1833 added, as the cmd.exe shim and the real Windows spawn
+# mark them, and a JUnit skip in the shape pytest writes for a `skipif`.
+_WIN_ONLY = (
+    ("test_a_cmd_shim_receives_the_argv_intact", "the cmd.exe shim path; the POSIX variant is below"),
+    ("test_the_detached_child_runs_the_stub_on_windows", "the real Windows spawn; POSIX is covered in #1741's tests"),
+)
+_WIN_MODULE = "tests.test_core_gate_background_windows_1761"
+
+
+def _platform_skip(reason: str) -> str:
+    return f'<skipped type="pytest.skip" message="{reason}">t.py:3: {reason}</skipped>'
+
+
+def test_a_platform_skip_reason_is_skipped_not_never_executed() -> None:
+    """No skip reason earns the never-executed pass: a platform skip needs an
+    allowlist entry, which says why the test skips (#1833)."""
+    report = _report(*(_case(_WIN_MODULE, name, _platform_skip(reason)) for name, reason in _WIN_ONLY))
+    assert set(tor.parse_junit(report).values()) == {tor.SKIPPED}
+
+
+@pytest.mark.parametrize("with_allowlist", [False, True], ids=["no-entry", "checked-in-allowlist"])
+def test_a_new_platform_skip_blocks_until_the_allowlist_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], with_allowlist: bool,
+) -> None:
+    """The #1833 shape: two new `skipif(not WIN32)` tests arrive skipped on
+    both Linux legs. The checked-in allowlist names both."""
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_report(
+        _case("tests.test_a", "test_pass"),
+        *(_case(_WIN_MODULE, name, _platform_skip(reason)) for name, reason in _WIN_ONLY),
+    ), encoding="utf-8")
+    current = tmp_path / "current.json"
+    assert tor.main(["record", "--junit", f"3.12={junit}", "--junit", f"3.13={junit}", "--out", str(current)]) == 0
+    baseline = tmp_path / "baseline.json"
+    passed = {"tests.test_a::test_pass": tor.PASSED}
+    baseline.write_text(json.dumps(_record(**{"3.12": passed, "3.13": passed})), encoding="utf-8")
+    args = ["diff", "--current", str(current), "--baseline", str(baseline), "--block"]
+    if with_allowlist:
+        args += ["--allowlist", str(_ALLOWLIST)]
+    rc = tor.main(args)
+    out = capsys.readouterr().out
+    if with_allowlist:
+        assert rc == 0 and "::error::" not in out
+    else:
+        assert rc == 1
+        assert "::error::test outcome ratchet: 4 violation(s) (leg 3.12: 2, leg 3.13: 2)." in out
+
+
+# ---------------------------------------------------------------- renames
+
+def test_the_function_id_drops_the_parameter_part() -> None:
+    assert tor.function_id("tests.t.TestA::test_x[a::b[c]]") == "tests.t.TestA::test_x"
+    assert tor.function_id("tests.t::test_x") == "tests.t::test_x"
+
+
+# pytest 9.2 renamed every id of this test from the parameter's value to
+# `line<N>` (#1825); the old ids run past 200,000 characters.
+_PERF_FN = "tests.test_ingest_pasted_output_1691::test_a_long_line_is_judged_in_linear_time"
+
+
+def test_the_pytest_9_2_rename_of_a_perf_test_is_not_a_violation() -> None:
+    baseline = {f"{_PERF_FN}[{c * 200_000}]": tor.NEVER_EXECUTED for c in "./:"}
+    current = {f"{_PERF_FN}[line{i}]": tor.NEVER_EXECUTED for i in range(3)}
+    d = tor.diff_leg("3.12", current, baseline)
+    assert d.violations == []
+    assert (d.added, d.removed, d.renamed) == (3, 3, 3)
+
+
+def test_a_renamed_skip_keeps_its_skip() -> None:
+    """The exemption covers only never executed, so this case is the rename
+    rule's alone."""
+    d = tor.diff_leg("3.12", {"t::f[new]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
+    assert d.violations == [] and d.renamed == 1
+
+
+@pytest.mark.parametrize("after", sorted(tor.RATCHETED_OUTCOMES))
+def test_a_passing_test_renamed_into_a_ratcheted_outcome_is_a_violation(after: str) -> None:
+    """The rename carries the removed test's outcome, so a skip or a perf
+    gate added under a new id does not pass as a new test."""
+    d = tor.diff_leg("3.12", {"t::f[new]": after}, {"t::f[old]": tor.PASSED})
+    assert _violations(d) == [("t::f[new]", tor.PASSED, after, "t::f[old]")]
+
+
+def test_a_new_test_pairs_with_a_removed_test_of_its_own_outcome_first() -> None:
+    """Sorted id order alone would pair `f[c]` with the passing `f[a]`."""
+    baseline = {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}
+    d = tor.diff_leg("3.12", {"t::f[c]": tor.SKIPPED}, baseline)
+    assert d.violations == [] and d.renamed == 1
+
+
+def test_a_removed_test_pairs_once() -> None:
+    d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED, "t::f[y]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
+    assert _violations(d) == [("t::f[y]", None, tor.SKIPPED, None)]
+
+
+def test_a_rename_pairs_only_within_one_test_function() -> None:
+    d = tor.diff_leg("3.12", {"t::g[new]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
+    assert _violations(d) == [("t::g[new]", None, tor.SKIPPED, None)] and d.renamed == 0
+
+
+def test_a_passing_new_test_takes_only_a_removed_test_of_its_own_outcome() -> None:
+    """The second pass pairs only ratcheted new tests, so a passing one does
+    not take the removed test its skipped sibling renames, and does not read
+    as recovered."""
+    d = tor.diff_leg("3.12", {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}, {"t::f[old]": tor.XFAILED})
+    assert _violations(d) == [("t::f[b]", tor.XFAILED, tor.SKIPPED, "t::f[old]")]
+    assert d.recovered == []
+
+
+def test_the_pairing_does_not_depend_on_dict_order() -> None:
+    added = {"t::f[b]": tor.SKIPPED, "t::f[a]": tor.SKIPPED, "t::g[z]": tor.XFAILED}
+    removed = {"t::f[y]": tor.SKIPPED, "t::f[x]": tor.PASSED, "t::g[w]": tor.PASSED}
+    expected = {"t::f[a]": "t::f[y]", "t::f[b]": "t::f[x]", "t::g[z]": "t::g[w]"}
+    assert tor.pair_renames(added, removed) == expected
+    assert tor.pair_renames(dict(reversed(added.items())), dict(reversed(removed.items()))) == expected
+
+
+def test_a_removed_test_is_never_a_violation() -> None:
+    d = tor.diff_leg("3.12", {"t::a": tor.PASSED}, {"t::a": tor.PASSED, "t::gone": tor.PASSED, "t::s": tor.SKIPPED})
+    assert d.violations == [] and d.removed == 2
+
+
+def test_a_violation_through_a_rename_names_the_removed_test_shortened() -> None:
+    old = f"{_PERF_FN}[{'.' * 200_000}]"
+    current = _record(**{"3.12": {f"{_PERF_FN}[line0]": tor.SKIPPED}})
+    baseline = _record(**{"3.12": {old: tor.PASSED}})
+    diffs = tor.diff_records(current, baseline)
+    text = tor.render_summary(diffs, baseline, None, block=True)
+    assert f"| `{_PERF_FN}[line0]` | passed as `{old[:117]}...` -> skipped |" in text
+    assert "1 ratchet violation(s), 0 recovered, 1 added, 1 removed, 1 renamed." in text
+    assert all(len(line) < 1_000 for line in tor.render_annotations(diffs, None, block=True))
 
 
 @pytest.mark.parametrize("after", [*tor.OUTCOMES, None])
@@ -469,9 +625,11 @@ def test_the_entry_shape_check(entry: str, ok: bool) -> None:
 
 def test_every_checked_in_allowlist_entry_is_one_test_id() -> None:
     """A bare module name, or an id with a comment after it, would parse and
-    match nothing. The checked-in file may hold no entry yet, so the next
-    test runs this check on a file that does."""
-    for entry in tor.parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8")):
+    match nothing. The next test runs this check on an entry the header
+    warns about."""
+    entries = tor.parse_allowlist(_ALLOWLIST.read_text(encoding="utf-8"))
+    assert entries
+    for entry in entries:
         assert _is_one_test_id(entry), entry
 
 
@@ -481,7 +639,7 @@ def test_the_shape_check_refuses_the_entry_the_allowlist_header_warns_about() ->
     and the shape check above refuses it."""
     test = "tests.test_store.TestOpen::test_readonly[a]"
     text = _ALLOWLIST.read_text(encoding="utf-8") + f"# why it skips\n{test}\n{test}  # skips on 3.13\n"
-    entries = tor.parse_allowlist(text)
+    entries = tor.parse_allowlist(text)[-2:]
     assert entries == [test, f"{test}  # skips on 3.13"]
     assert [_is_one_test_id(e) for e in entries] == [True, False]
     assert not tor.is_allowlisted(test, entries[1:])
@@ -541,7 +699,7 @@ def test_the_summary_names_the_mode_the_baseline_and_each_violation() -> None:
     assert "| 3.13 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 2 |" in text
     assert "| `t::a` | passed -> skipped |" in text
     assert "- `t::b`: skipped -> passed" in text
-    assert "1 ratchet violation(s), 1 recovered, 0 added, 0 removed." in text
+    assert "1 ratchet violation(s), 1 recovered, 0 added, 0 removed, 0 renamed." in text
     assert "## Test outcomes (blocking)" in tor.render_summary(diffs, baseline, None, block=True)
 
 
@@ -639,12 +797,48 @@ def test_annotations_are_warnings_when_advisory_and_errors_when_blocking() -> No
     baseline = _record(**{"3.13": {"t::a": tor.PASSED}})
     diffs = tor.diff_records(current, baseline)
     assert tor.render_annotations(diffs, None, block=False) == [
+        "::warning::test outcome ratchet: 1 violation(s) (leg 3.13: 1). The step summary lists each one. "
+        "A test that is meant to skip needs an allowlist entry.",
         "::warning::test outcome ratchet, leg 3.13: t::a passed -> skipped",
     ]
-    assert tor.render_annotations(diffs, None, block=True)[0].startswith("::error::")
+    assert all(line.startswith("::error::") for line in tor.render_annotations(diffs, None, block=True))
     assert tor.render_annotations([], "gone", block=False) == [
         "::notice::test outcomes: no baseline: gone",
     ]
+
+
+def test_the_count_comes_first_so_the_annotation_cap_cannot_hide_it() -> None:
+    """GitHub shows 10 annotations of a level per step; with 30 violations
+    the first one still says how many there are and on which legs."""
+    ids = [f"t::test_{i:02d}" for i in range(15)]
+    current = _record(**{"3.12": dict.fromkeys(ids, tor.SKIPPED), "3.13": dict.fromkeys(ids, tor.XFAILED)})
+    baseline = _record(**{"3.12": dict.fromkeys(ids, tor.PASSED), "3.13": dict.fromkeys(ids, tor.PASSED)})
+    lines = tor.render_annotations(tor.diff_records(current, baseline), None, True, ".github/allow.txt")
+    assert len(lines) == 31
+    assert lines[0] == (
+        "::error::test outcome ratchet: 30 violation(s) (leg 3.12: 15, leg 3.13: 15). "
+        "The step summary lists each one. A test that is meant to skip needs an entry in .github/allow.txt."
+    )
+    assert lines[1] == "::error::test outcome ratchet, leg 3.12: t::test_00 passed -> skipped"
+    assert not any("violation(s)" in line for line in lines[1:])
+
+
+def test_the_diff_names_its_allowlist_in_the_first_annotation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.SKIPPED}})))
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps(_record(**{"3.13": {"t::a": tor.PASSED}})))
+    allow = tmp_path / "allow.txt"
+    allow.write_text("# nothing\n", encoding="utf-8")
+    capsys.readouterr()
+    assert tor.main([
+        "diff", "--current", str(current), "--baseline", str(baseline), "--block", "--allowlist", str(allow),
+    ]) == 1
+    annotations = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::")]
+    assert annotations[0].startswith("::error::test outcome ratchet: 1 violation(s)")
+    assert annotations[0].endswith(f"needs an entry in {allow}.")
 
 
 # ------------------------------------------------------------- baseline

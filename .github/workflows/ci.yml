@@ -336,7 +336,9 @@ jobs:
   # the perf and bench-gate tests that skip by design), finds the record of
   # the last green run on main, and writes the diff to the step summary. A
   # test that moves to skipped, xfailed or never executed, or arrives new
-  # with one of those, is a ratchet violation.
+  # as skipped or xfailed, is a ratchet violation. A new id that renames a
+  # removed id of the same test function keeps the removed test's outcome.
+  # The script's docstring has the rules.
   #
   # Advisory, by the 2026-10-21 ruling: a violation is a `::warning::`, the
   # diff step passes no `--block`, and every step carries `continue-on-error`,
