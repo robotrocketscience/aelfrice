@@ -1228,6 +1228,43 @@ def test_a_leg_that_ran_the_suite_and_left_no_report_fails_the_diff(
     )
 
 
+@pytest.mark.parametrize(
+    "baseline_legs",
+    [{"3.12": {"t::a": tor.PASSED}}, {"3.12": {"t::a": tor.PASSED}, "3.13": None}],
+    ids=["leg-absent", "leg-null"],
+)
+def test_a_baseline_without_a_leg_warns_and_names_it_and_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], baseline_legs: dict[str, Any],
+) -> None:
+    """`fetch_baseline` writes a leg with no artifact as null, and a leg can be
+    added on purpose, so 3.13 cannot block. It must not pass unannounced."""
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.PASSED}, "3.13": {"t::a": tor.SKIPPED}})))
+    base = tmp_path / "baseline.json"
+    base.write_text(json.dumps(_record(**baseline_legs)))
+    capsys.readouterr()
+    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--full-suite", "true", "--block"]) == 0
+    annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
+    assert annotations == ["::warning::test outcomes: no baseline for leg 3.13; the ratchet was not evaluated on it"]
+
+
+def test_a_baseline_without_a_leg_still_blocks_on_the_leg_it_holds(tmp_path: Path) -> None:
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.SKIPPED}, "3.13": {"t::a": tor.SKIPPED}})))
+    base = tmp_path / "baseline.json"
+    base.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.PASSED}})))
+    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--block"]) == 1
+
+
+@pytest.mark.parametrize("with_record", [True, False], ids=["both-legs", "no-baseline-at-all"])
+def test_only_a_baseline_that_lacks_one_leg_warns_per_leg(with_record: bool) -> None:
+    tests = {"t::a": tor.PASSED}
+    current = _record(**{"3.12": tests, "3.13": tests})
+    baseline = _record(**{"3.12": tests, "3.13": tests}) if with_record else None
+    diffs = tor.diff_records(current, baseline)
+    assert [ln for ln in tor.render_annotations(diffs, None, block=True) if "leg 3." in ln] == []
+
+
 def test_a_docs_only_run_with_no_reports_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     current = _record_from_reports(tmp_path)
     capsys.readouterr()

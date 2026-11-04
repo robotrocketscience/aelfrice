@@ -61,6 +61,10 @@ exit status is 1 when a violation exists and each is an `::error::`.
 GitHub shows 10 annotations of a level per step, so one annotation that
 counts the violations per leg comes before the per-test ones.
 
+A baseline that holds some legs and not another compares the legs it holds.
+The other leg gets a `::warning::` that names it and passes, since a leg can
+be added on purpose.
+
 A walk that finishes and finds no baseline is a `::warning::` and passes in
 both modes: artifacts expire, and the first run has none. A lookup that
 does not finish is a different case. On an API error, or an artifact or a
@@ -271,6 +275,8 @@ class LegDiff:
     removed: int = 0
     renamed: int = 0
     notice: str | None = None
+    # The run has a baseline and it holds no record of this leg.
+    baseline_lacks_leg: bool = False
 
 
 def parse_allowlist(text: str) -> list[str]:
@@ -388,7 +394,9 @@ def diff_records(
             continue
         base_leg = None if baseline is None else baseline.get("legs", {}).get(leg)
         base_tests = None if base_leg is None else base_leg.get("tests", {})
-        diffs.append(diff_leg(leg, leg_record["tests"], base_tests, allow))
+        d = diff_leg(leg, leg_record["tests"], base_tests, allow)
+        d.baseline_lacks_leg = baseline is not None and base_leg is None
+        diffs.append(d)
     return diffs
 
 
@@ -541,6 +549,9 @@ def render_annotations(
         )
     if baseline_notice:
         out.append(f"::warning::test outcomes: no baseline: {baseline_notice}")
+    for d in diffs:
+        if d.baseline_lacks_leg:
+            out.append(f"::warning::test outcomes: no baseline for leg {d.leg}; the ratchet was not evaluated on it")
     for d in diffs:
         for t in d.violations:
             out.append(f"::{level}::test outcome ratchet, leg {d.leg}: {t.test} {_describe(t)}")
