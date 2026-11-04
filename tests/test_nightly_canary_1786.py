@@ -936,16 +936,38 @@ def test_no_last_green_night_is_one_no_baseline_event_with_every_confirmed_test(
     tonight = _night(SHA2, {"3.12": ({_A: tor.FAILED, _B: tor.FAILED}, {_B: tor.PASSED}),
                             "3.13": ({_C: tor.FAILED}, None)})
     triage = nc.find_regressions(tonight, None, None, _LEGS)
-    assert triage["events"] == [{"key": f"no-baseline-{SHA2[:12]}", "kind": "no-baseline",
-                                 "legs": ["3.12", "3.13"], "tests": [_A, _C], "reason": "no last green night yet"}]
+    [event] = triage["events"]
+    assert event["failures"] == [{"test": _A, "node_id": None, "legs": ["3.12"]},
+                                 {"test": _C, "node_id": None, "legs": ["3.13"]}]
+    assert {k: v for k, v in event.items() if k != "failures"} == {
+        "key": f"no-baseline-{SHA2[:12]}", "kind": "no-baseline", "legs": ["3.12", "3.13"], "tests": [_A, _C],
+        "reason": "no last green night yet",
+    }
     assert triage["candidates"] == [] and triage["drift_check"] is None
+
+
+@pytest.mark.parametrize("kind", ["no-baseline", "drift"])
+def test_a_night_with_no_comparison_still_says_which_leg_failed_what(tmp_path: Path, kind: str) -> None:
+    root = _tree(tmp_path, "tests/test_a.py", "tests/test_b.py")
+    before = {_A: tor.PASSED, _C: tor.PASSED}
+    green = _night(SHA2, {"3.12": (before, None), "3.13": (before, None)})
+    tonight = _night(SHA2, {"3.12": ({_A: tor.FAILED, _C: tor.FAILED}, None), "3.13": ({_A: tor.PASSED, _C: tor.FAILED}, None)})
+    triage = nc.find_regressions(tonight, green if kind == "drift" else None,
+                                 {"sha": SHA2, "path": "runs/x"} if kind == "drift" else None,
+                                 _LEGS, lambda rel: (root / rel).is_file())
+    assert triage["events"][0]["kind"] == kind
+    assert triage["events"][0]["failures"] == [
+        {"test": _A, "node_id": "tests/test_a.py::test_one", "legs": ["3.12"]},
+        {"test": _C, "node_id": "tests/test_b.py::test_three", "legs": ["3.12", "3.13"]},
+    ]
 
 
 def test_a_red_night_on_the_last_green_commit_is_drift() -> None:
     green = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)})
     tonight = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=101)
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
-    assert triage["events"] == [{"key": f"drift-{SHA1[:12]}", "kind": "drift", "legs": ["3.13"], "tests": [_A]}]
+    assert triage["events"] == [{"key": f"drift-{SHA1[:12]}", "kind": "drift", "legs": ["3.13"], "tests": [_A],
+                                 "failures": [{"test": _A, "node_id": None, "legs": ["3.13"]}]}]
     assert triage["candidates"] == [] and triage["drift_check"] is None
 
 

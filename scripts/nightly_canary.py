@@ -102,7 +102,8 @@ carries:
   and `reason` says why;
   `drift-<lastgreen12>` when tonight's commit is the last green commit,
   since only the environment can have changed. Each of the last two holds
-  every confirmed test.
+  every confirmed test in `tests`, and in `failures` with its `node_id` and
+  the `legs` that failed it.
 - `candidates`: confirmed tests that the last green record holds on the
   same leg, with their outcome there. A test that failed there and was
   flaky counts as `passed`.
@@ -508,6 +509,15 @@ def collection_module(test: str, is_file: Callable[[str], bool]) -> str | None:
     return rel if is_file(rel) else None
 
 
+def failure_entries(by_leg: dict[str, list[str]], is_file: Callable[[str], bool]) -> list[dict[str, Any]]:
+    """One entry per test: its node id and the legs that failed it."""
+    tests = sorted({t for ids in by_leg.values() for t in ids})
+    return [
+        {"test": t, "node_id": node_id(t, is_file), "legs": [leg for leg, ids in by_leg.items() if t in ids]}
+        for t in tests
+    ]
+
+
 def even_sample(items: list[str], n: int) -> list[str]:
     """`n` items spread evenly over the sorted list, or all of them."""
     ordered = sorted(items)
@@ -562,16 +572,18 @@ def find_regressions(
         {"test": t, "module": collection_module(t, is_file), "legs": collection[t]} for t in sorted(collection)
     ]
     triage["collection_errors"] = collection_errors
+    failures = failure_entries(confirmed_by_leg, is_file)
     if last_green is None or last_green_meta is None:
         triage["events"].append({
             "key": f"no-baseline-{sha[:12]}", "kind": "no-baseline", "legs": failing_legs, "tests": tests,
-            "reason": baseline_problem or "no last green night yet",
+            "failures": failures, "reason": baseline_problem or "no last green night yet",
         })
         return triage
     green_sha = str(last_green_meta.get("sha") or "")
     if green_sha == sha:
         triage["events"].append({
             "key": f"drift-{green_sha[:12]}", "kind": "drift", "legs": failing_legs, "tests": tests,
+            "failures": failures,
         })
         return triage
     # `diff_records` names each red test with its outcome on the baseline;
