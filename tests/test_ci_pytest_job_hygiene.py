@@ -258,6 +258,41 @@ def test_the_environment_is_logged_before_the_suite() -> None:
     assert logs[0] < steps.index(_pytest_step())
 
 
+# Each extra whose tests skip without it, and the module whose import is
+# their skip condition. The job installs the extra and imports the module in
+# a step of its own before the suite, so a lost extra turns the leg red
+# instead of turning those tests into skips (#1529, #1844).
+_GUARDED_EXTRAS = (("archive", "cryptography"), ("onboard-llm", "anthropic"))
+
+
+@pytest.mark.parametrize(("extra", "module"), _GUARDED_EXTRAS)
+def test_an_extra_the_suite_needs_is_installed_and_imported_before_it(
+    extra: str, module: str,
+) -> None:
+    steps = _steps()
+    syncs = [
+        i for i, s in enumerate(steps)
+        if (_field(s, "run") or "").startswith("uv sync ")
+    ]
+    assert len(syncs) == 1, f"expected one `uv sync` step, found {len(syncs)}"
+    tokens = (_field(steps[syncs[0]], "run") or "").split()
+    extras = [b for a, b in zip(tokens, tokens[1:]) if a == "--extra"]
+    assert extra in extras, (
+        f"the pytest job's sync does not install the [{extra}] extra: {tokens!r}"
+    )
+    want = f'uv run python -c "import {module}"'
+    guards = [i for i, s in enumerate(steps) if _field(s, "run") == want]
+    assert len(guards) == 1, f"expected one step running {want!r}, found {len(guards)}"
+    suite = steps.index(_pytest_step())
+    assert syncs[0] < guards[0] < suite, (
+        f"the `import {module}` step must run after the sync and before the "
+        f"suite: sync {syncs[0]}, import {guards[0]}, suite {suite}"
+    )
+    assert _field(steps[guards[0]], "if") == _field(_pytest_step(), "if"), (
+        f"the `import {module}` step does not run on every event the suite runs on"
+    )
+
+
 def test_the_pytest_step_keeps_its_flags_and_adds_the_report_flags() -> None:
     tokens = (_field(_pytest_step(), "run") or "").split()
     for flag in ("tests/", "--ignore=tests/e2e", "-q", "-rfEsxX", "--durations=25"):
