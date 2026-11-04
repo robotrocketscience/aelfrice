@@ -13,7 +13,7 @@ Usage:
         [--head-sha SHA] [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30]
         --out RECORD.json [--dry-run]
     test_outcome_record.py diff --current RECORD.json --baseline RECORD.json
-        [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
+        [--full-suite VALUE] [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
 
 `--dry-run` writes no file and calls no API. `record` prints each leg's
 counts, `baseline` prints the first request of its walk, and `diff` prints
@@ -67,6 +67,13 @@ does not finish is a different case. On an API error, or an artifact or a
 report that cannot be read, `baseline` writes a marker that says so and
 exits 2, and `diff` exits 2 on that marker, on a baseline file that is
 missing and on one that holds neither a record nor a no-baseline marker.
+
+A leg with no JUnit report is either a docs-only run or a lost report. Both
+look the same in the record, and the `pytest` job's result is `success` in
+both, so the job's `full_suite` output tells them apart. `diff --full-suite`
+takes it: `false` means no leg was meant to report, and a leg with no report
+passes. Any other value, an empty one included, means every leg was meant to
+report, and `diff` exits 2 on a leg without one.
 
 The baseline. `ci.yml` runs on `pull_request` and on `workflow_dispatch`,
 never on a push to main. The merge train fast-forwards, so a merged PR's
@@ -376,7 +383,7 @@ def diff_records(
     for leg, leg_record in sorted(current.get("legs", {}).items()):
         if leg_record is None:
             d = LegDiff(leg=leg, counts=count_outcomes({}), baseline_present=False)
-            d.notice = f"leg {leg} produced no JUnit report; the suite did not run on it"
+            d.notice = f"leg {leg} produced no JUnit report"
             diffs.append(d)
             continue
         base_leg = None if baseline is None else baseline.get("legs", {}).get(leg)
@@ -387,6 +394,18 @@ def diff_records(
 
 def has_violations(diffs: Iterable[LegDiff]) -> bool:
     return any(d.violations for d in diffs)
+
+
+def missing_report_error(current: dict[str, Any]) -> str | None:
+    """What is wrong with a record from a run that was meant to report on
+    every leg, or None when nothing is."""
+    legs = current.get("legs") or {}
+    if not legs:
+        return "this run's record holds no leg"
+    missing = sorted(leg for leg, record in legs.items() if record is None)
+    if not missing:
+        return None
+    return f"the full suite ran and no JUnit report reached this job for leg {', '.join(missing)}"
 
 
 # Characters of a renamed test's id that a description quotes. pytest
@@ -440,11 +459,14 @@ def render_summary(
     baseline_notice: str | None,
     block: bool,
     lookup_error: str | None = None,
+    report_error: str | None = None,
 ) -> str:
     """The step-summary Markdown, at most `SUMMARY_MAX_BYTES` long. Each
     list of a leg names its first `SUMMARY_MAX_ROWS` tests; the counts
     table and each list's total always show."""
     lines = [f"## Test outcomes ({'blocking' if block else 'advisory'})", ""]
+    if report_error is not None:
+        lines.extend([f"No report to compare: {report_error}. This check fails.", ""])
     if lookup_error is not None:
         lines.append(f"No usable baseline: {lookup_error}. The ratchet was not evaluated, so this check fails.")
     elif baseline is None:
@@ -495,14 +517,17 @@ def render_annotations(
     block: bool,
     allowlist: str | None = None,
     lookup_error: str | None = None,
+    report_error: str | None = None,
 ) -> list[str]:
-    """Workflow commands: one that counts the violations, first, then one
-    per violation, one for a missing baseline, and an error for a failed
-    lookup. GitHub shows 10 annotations of a level per step, so the count
-    goes first and a long list cannot hide it. `allowlist` is the path the
-    count names."""
+    """Workflow commands: an error for a lost report and one for a failed
+    lookup, one that counts the violations, then one per violation, and one
+    for a missing baseline. GitHub shows 10 annotations of a level per step,
+    so the ones that explain the failure go first and a long list cannot
+    hide them. `allowlist` is the path the count names."""
     level = "error" if block else "warning"
     out: list[str] = []
+    if report_error is not None:
+        out.append(f"::error::test outcomes: {report_error}")
     if lookup_error is not None:
         # A command ends at its line; gh's stderr can span several.
         out.append(f"::error::test outcomes: no usable baseline: {' '.join(lookup_error.split())}")
@@ -745,6 +770,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 def cmd_diff(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
+    report_error = None if args.full_suite == "false" else missing_report_error(current)
     baseline: dict[str, Any] | None = None
     baseline_notice: str | None = None
     lookup_error: str | None = None
@@ -762,7 +788,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
             lookup_error = str(data.get("notice") or f"baseline file {args.baseline} holds no record")
     allowlist = parse_allowlist(args.allowlist.read_text(encoding="utf-8")) if args.allowlist else []
     diffs = diff_records(current, baseline, allowlist)
-    summary = render_summary(diffs, baseline, baseline_notice, args.block, lookup_error)
+    summary = render_summary(diffs, baseline, baseline_notice, args.block, lookup_error, report_error)
     if args.summary is not None and not args.dry_run:
         with args.summary.open("a", encoding="utf-8") as fh:
             fh.write(summary)
@@ -771,9 +797,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
             print(f"dry run: would append the summary to {args.summary}")
         sys.stdout.write(summary)
     allowlist_name = str(args.allowlist) if args.allowlist else None
-    for line in render_annotations(diffs, baseline_notice, args.block, allowlist_name, lookup_error):
+    for line in render_annotations(diffs, baseline_notice, args.block, allowlist_name, lookup_error, report_error):
         print(line)
-    if lookup_error is not None:
+    if lookup_error is not None or report_error is not None:
         return 2
     return 1 if args.block and has_violations(diffs) else 0
 
@@ -803,6 +829,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("diff", parents=[common], help="diff a record against a baseline record")
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--baseline", default=None, type=Path)
+    p.add_argument(
+        "--full-suite", default="false",
+        help="the pytest job's full_suite output; any value but `false` requires a report on every leg",
+    )
     p.add_argument("--allowlist", default=None, type=Path)
     p.add_argument("--summary", default=None, type=Path)
     p.add_argument("--block", action="store_true")
@@ -815,7 +845,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except (OSError, ValueError, KeyError, ElementTree.ParseError) as exc:
-        print(f"test_outcome_record: {exc}", file=sys.stderr)
+        # An annotation, so a check that fails here says why on the run's page.
+        print(f"::error::test_outcome_record: {' '.join(str(exc).split())}", file=sys.stderr)
         return 2
 
 

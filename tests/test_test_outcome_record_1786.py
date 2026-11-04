@@ -1182,6 +1182,90 @@ def test_block_mode_passes_without_violations_and_with_no_baseline(tmp_path: Pat
     assert "No baseline: expired." in summary.read_text(encoding="utf-8")
 
 
+def _record_from_reports(tmp_path: Path, *legs_with_a_report: str) -> Path:
+    """`record` as the step runs it, after a download that wrote only these legs."""
+    args = ["record", "--out", str(tmp_path / "current.json")]
+    for leg in ("3.12", "3.13"):
+        path = tmp_path / f"junit-{leg}.xml"
+        if leg in legs_with_a_report:
+            path.write_text(_report(_case("t", "test_a", _SKIP_PLAIN)), encoding="utf-8")
+        args += ["--junit", f"{leg}={path}"]
+    assert tor.main(args) == 0
+    return tmp_path / "current.json"
+
+
+def _passing_baseline(tmp_path: Path) -> Path:
+    base = tmp_path / "baseline.json"
+    tests = {"t::test_a": tor.PASSED}
+    base.write_text(json.dumps(_record(**{"3.12": tests, "3.13": tests})), encoding="utf-8")
+    return base
+
+
+@pytest.mark.parametrize(
+    ("reports", "named"),
+    [((), "3.12, 3.13"), (("3.12",), "3.13"), (("3.13",), "3.12")],
+    ids=["both-lost", "3.13-lost", "3.12-lost"],
+)
+@pytest.mark.parametrize("full_suite", ["true", ""], ids=["full-suite", "empty-output"])
+def test_a_leg_that_ran_the_suite_and_left_no_report_fails_the_diff(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    reports: tuple[str, ...], named: str, full_suite: str,
+) -> None:
+    """A failed download leaves the same record as a docs-only run. An empty
+    output fails too: only an explicit `false` says no report was meant."""
+    current = _record_from_reports(tmp_path, *reports)
+    summary = tmp_path / "summary.md"
+    capsys.readouterr()
+    rc = tor.main([
+        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        "--full-suite", full_suite, "--summary", str(summary), "--block",
+    ])
+    assert rc == 2
+    annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
+    assert annotations[0] == f"::error::test outcomes: the full suite ran and no JUnit report reached this job for leg {named}"
+    assert f"No report to compare: the full suite ran and no JUnit report reached this job for leg {named}." in (
+        summary.read_text(encoding="utf-8")
+    )
+
+
+def test_a_docs_only_run_with_no_reports_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    current = _record_from_reports(tmp_path)
+    capsys.readouterr()
+    rc = tor.main([
+        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        "--full-suite", "false", "--block",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "::error::" not in out
+    assert "leg 3.12 produced no JUnit report." in out
+
+
+def test_a_clean_run_with_a_report_on_every_leg_passes_with_the_flag_set(tmp_path: Path) -> None:
+    current = tmp_path / "current.json"
+    tests = {"t::test_a": tor.PASSED}
+    current.write_text(json.dumps(_record(**{"3.12": tests, "3.13": tests})), encoding="utf-8")
+    assert tor.main([
+        "diff", "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        "--full-suite", "true", "--block",
+    ]) == 0
+
+
+def test_a_record_with_no_leg_fails_when_the_suite_ran(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps({"format": 1, "legs": {}}), encoding="utf-8")
+    assert tor.main(["diff", "--current", str(current), "--full-suite", "true", "--block"]) == 2
+    assert "::error::test outcomes: this run's record holds no leg" in capsys.readouterr().out
+
+
+def test_a_diff_with_no_record_to_read_fails_with_an_annotation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The record step died: the diff's own failure has to say so."""
+    assert tor.main(["diff", "--current", str(tmp_path / "gone.json"), "--block"]) == 2
+    assert capsys.readouterr().err.startswith("::error::test_outcome_record: ")
+
+
 def _one_test_record(tmp_path: Path) -> Path:
     current = tmp_path / "current.json"
     current.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.PASSED}})), encoding="utf-8")
@@ -1562,6 +1646,20 @@ _TOLERATED_STEPS = (
     "test_outcome_record.py baseline",
     "actions/upload-artifact@",
 )
+
+
+def test_the_diff_learns_whether_the_suite_ran_from_the_pytest_job() -> None:
+    """The output has to be the test the `--junitxml` step runs on, or a leg
+    that wrote a report and a leg meant to write one come apart."""
+    diff = _one_step("test_outcome_record.py diff")
+    assert "FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}" in diff
+    assert '--full-suite "$FULL_SUITE"' in diff
+    lines = _job_lines("pytest")
+    output = [ln.strip().removeprefix("full_suite: ") for ln in lines if ln.strip().startswith("full_suite: ")]
+    assert len(output) == 1
+    junit = next(i for i, ln in enumerate(lines) if "--junitxml=" in ln)
+    condition = lines[junit - 1].strip().removeprefix("- if: ")
+    assert output[0] == "${{ " + condition + " }}"
 
 
 def test_only_the_steps_the_diff_outlives_tolerate_a_failure() -> None:

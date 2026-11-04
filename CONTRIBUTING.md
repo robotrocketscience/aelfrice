@@ -252,6 +252,9 @@ The job fails when a test does one of these things:
 - Moves from any other outcome to skipped, xfailed, or never executed.
 - Arrives new as skipped or xfailed.
 
+The job also fails when a leg that ran the full suite left no JUnit report. A
+docs-only pull request runs no full suite and writes no report, and it passes.
+
 The job passes in these cases:
 
 - A new test never executes. The latency tests behind `--run-perf` and the

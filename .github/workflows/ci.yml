@@ -73,6 +73,13 @@ jobs:
     # pass.
     needs: derived-figures
     if: ${{ !cancelled() }}
+    # Whether this run was meant to write a JUnit report, the same test as the
+    # `--junitxml` step's `if:` (a test ties them). `test-outcomes` reads it
+    # to tell a docs-only run from a lost report: this job's result is
+    # `success` for both. Both legs compute the same value, so it does not
+    # matter which leg's output a matrix job keeps.
+    outputs:
+      full_suite: ${{ steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch' }}
     strategy:
       # One leg failing must not cancel the other: a 3.12-only failure and
       # a failure on both versions are different diagnoses.
@@ -346,8 +353,11 @@ jobs:
   # The merge train floors `test-outcomes` (scripts/merge_train_gate.py), so
   # it waits for the row and gates on it. The download, record, baseline and
   # upload steps keep a step-level `continue-on-error`, so the diff still
-  # runs after one of them fails and can say what is missing. A diff that
-  # cannot read this run's record exits 2 and fails the check too.
+  # runs after one of them fails, and it fails with an annotation that says
+  # what is missing: a report from a leg that ran the full suite, a baseline
+  # lookup that did not finish, or this run's record. A docs-only run writes
+  # no report and passes, and the `pytest` job's `full_suite` output is what
+  # tells the two apart.
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
@@ -461,8 +471,11 @@ jobs:
           retention-days: 30
       - name: Diff against the baseline
         timeout-minutes: 1
+        env:
+          FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}
         run: |
           python3 scripts/test_outcome_record.py diff \
               --current current-record.json --baseline baseline-record.json \
+              --full-suite "$FULL_SUITE" \
               --allowlist .github/test-outcome-allowlist.txt \
               --summary "$GITHUB_STEP_SUMMARY" --block
