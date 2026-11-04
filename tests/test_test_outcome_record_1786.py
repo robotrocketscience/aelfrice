@@ -671,11 +671,12 @@ def test_a_partial_rename_with_unchanged_siblings_is_clean(count: int) -> None:
     assert d.violations == [] and d.renamed == 1
 
 
-def test_an_even_swap_cannot_be_seen_and_reads_as_a_rename() -> None:
-    """The limit the module docstring names: the outcomes are unchanged as a
-    multiset, so a passing test that became a skip here passes."""
-    baseline = {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}
-    d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED, "t::f[y]": tor.PASSED}, baseline)
+@pytest.mark.parametrize("swapped", [tor.SKIPPED, tor.XFAILED, tor.NEVER_EXECUTED])
+def test_an_even_swap_cannot_be_seen_and_reads_as_a_rename(swapped: str) -> None:
+    """The limit the module docstring and CONTRIBUTING.md name: the outcomes are
+    unchanged as a multiset, so a passing test that moved to this outcome passes."""
+    baseline = {"t::f[a]": tor.PASSED, "t::f[b]": swapped}
+    d = tor.diff_leg("3.12", {"t::f[x]": swapped, "t::f[y]": tor.PASSED}, baseline)
     assert d.violations == [] and d.renamed == 2
 
 
@@ -729,9 +730,15 @@ def test_a_perf_test_that_gains_a_parameter_while_renamed_stays_exempt() -> None
     assert d.violations == [] and d.renamed == 0
 
 
-def test_a_removal_in_another_function_leaves_the_exemption_alone() -> None:
-    """The operator's ruling: removals stay outside the ratchet."""
-    d = tor.diff_leg("3.12", {"t::g": tor.NEVER_EXECUTED}, {"t::f": tor.PASSED})
+@pytest.mark.parametrize(
+    ("new", "old"),
+    [("t::g", "t::f"), ("t.B::f", "t.A::f"), ("u::f", "t::f")],
+    ids=["function-renamed", "moved-class", "moved-module"],
+)
+def test_a_removal_in_another_function_leaves_the_exemption_alone(new: str, old: str) -> None:
+    """The operator's ruling: removals stay outside the ratchet. CONTRIBUTING.md
+    states that a function renamed behind the gate, or moved, passes this way."""
+    d = tor.diff_leg("3.12", {new: tor.NEVER_EXECUTED}, {old: tor.PASSED})
     assert d.violations == [] and d.removed == 1
 
 
@@ -1490,7 +1497,7 @@ def _passing_baseline(tmp_path: Path) -> Path:
     ids=["both-lost", "3.13-lost", "3.12-lost"],
 )
 @pytest.mark.parametrize("full_suite", ["true", ""], ids=["full-suite", "empty-output"])
-def test_a_leg_that_ran_the_suite_and_left_no_report_fails_the_diff(
+def test_a_leg_meant_to_report_that_left_no_report_fails_the_diff(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
     reports: tuple[str, ...], named: str, full_suite: str,
 ) -> None:
@@ -1505,10 +1512,12 @@ def test_a_leg_that_ran_the_suite_and_left_no_report_fails_the_diff(
     ])
     assert rc == 2
     annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
-    assert annotations[0] == f"::error::test outcomes: the full suite ran and no JUnit report reached this job for leg {named}"
-    assert f"No report to compare: the full suite ran and no JUnit report reached this job for leg {named}." in (
-        summary.read_text(encoding="utf-8")
+    error = (
+        f"no JUnit report reached this job for leg {named}, and the pytest job's "
+        "full_suite output and result do not mark this run as docs-only"
     )
+    assert annotations[0] == f"::error::test outcomes: {error}"
+    assert f"No report to compare: {error}." in summary.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

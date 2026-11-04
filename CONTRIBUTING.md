@@ -252,8 +252,9 @@ The job fails when a test does one of these things:
 - Moves from any other outcome to skipped, xfailed, or never executed.
 - Arrives new as skipped or xfailed.
 
-The job also fails when a leg that ran the full suite left no JUnit report. A
-docs-only pull request runs no full suite and writes no report, and it passes.
+The job also fails when a leg left no JUnit report, unless the `pytest` job
+marks the run as docs-only: its `full_suite` output is `false` and its result is
+`success`. A docs-only pull request writes no report and passes.
 
 The job passes in these cases:
 
@@ -265,12 +266,15 @@ The job passes in these cases:
   renames of removed ones when both groups hold the same outcomes the same
   number of times, so a pytest upgrade that renames parameter IDs passes. Any
   other mix pairs nothing, and a new skip in that function fails. A passing
-  test renamed into a skip fails unless another test in that function goes the
-  other way at the same time: the outcomes then match, and the job cannot see
-  the swap.
+  test renamed into a skip or into never executed fails unless another test in
+  that function goes the other way at the same time: the outcomes then match,
+  and the job cannot see the swap.
 - A test is removed. The job counts removals and never fails on them, by
   operator ruling. So a passing test removed in the same change as an unrelated
-  new never-executed test passes too, and the review has to catch that.
+  new never-executed test passes too, and the review has to catch that. A
+  function renamed behind the perf or bench gate, or moved to another class or
+  module, reads as a removal plus an unrelated new test and passes, as the
+  removals ruling allows.
 - A test fails, errors, or passes while marked xfail. The `pytest` legs fail
   on those.
 

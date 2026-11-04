@@ -458,7 +458,10 @@ def missing_report_error(current: dict[str, Any]) -> str | None:
     missing = sorted(leg for leg, record in legs.items() if record is None)
     if not missing:
         return None
-    return f"the full suite ran and no JUnit report reached this job for leg {', '.join(missing)}"
+    return (
+        f"no JUnit report reached this job for leg {', '.join(missing)}, and the pytest job's "
+        "full_suite output and result do not mark this run as docs-only"
+    )
 
 
 def _describe(t: Transition) -> str:

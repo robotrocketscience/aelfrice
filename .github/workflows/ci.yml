@@ -356,10 +356,10 @@ jobs:
   # it waits for the row and gates on it. The download, record, baseline and
   # upload steps keep a step-level `continue-on-error`, so the diff still
   # runs after one of them fails, and it fails with an annotation that says
-  # what is missing: a report from a leg that ran the full suite, a baseline
-  # lookup that did not finish, or this run's record. A docs-only run writes
-  # no report and passes, and the `pytest` job's `full_suite` output is what
-  # tells the two apart.
+  # what is missing: a report from a leg that was meant to write one, a
+  # baseline lookup that did not finish, or this run's record. A docs-only run
+  # writes no report and passes, and the `pytest` job's `full_suite` output and
+  # result are what tell the two apart.
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
