@@ -82,7 +82,9 @@ What the checks cannot detect:
 dirties a tracked file can make it fail, so it runs again after `git reset
 --hard`; a reset that still fails is a warning and lands in the result's
 `reset_errors`. The worktree stays after the run; the next run removes it
-first.
+first, including when its folder or its `.git` file is gone. A folder at
+`--worktree` that git does not list as a worktree is left alone and the run
+exits 2, unless it is the default `.bisect`, which belongs to this script.
 
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
@@ -153,6 +155,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -924,13 +927,25 @@ def map_ids(tests: Iterable[str], files: set[str]) -> tuple[dict[str, list[str]]
 
 
 def _prepare_worktree(git: Git, path: Path, good: str) -> None:
-    """A detached worktree at `good`, replacing one a previous run left."""
-    if path.exists():
+    """A detached worktree at `good`, replacing what a previous run left: a
+    worktree, a registered folder missing its `.git` file, or a registration
+    whose folder is gone."""
+    registered = _is_registered(git, path)
+    if registered:
         git.run("worktree", "remove", "--force", "--force", str(path), check=False)
-        git.run("worktree", "prune", check=False)
-    if path.exists():
-        raise ValueError(f"{path} exists and is not a worktree this script can remove")
+    if path.exists() and (registered or path == git.cwd / ".bisect"):
+        shutil.rmtree(path)
+    git.run("worktree", "prune")
+    if path.exists() and any(path.iterdir()):
+        raise ValueError(f"{path} exists and git does not list it as a worktree")
     git.run("worktree", "add", "--detach", str(path), good)
+
+
+def _is_registered(git: Git, path: Path) -> bool:
+    return any(
+        line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == path
+        for line in git.lines("worktree", "list", "--porcelain")
+    )
 
 
 def _read_json(path: Path) -> Any:

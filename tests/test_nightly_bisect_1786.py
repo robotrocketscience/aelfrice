@@ -746,6 +746,39 @@ def test_a_relative_repo_root_works(
     assert points == 0
 
 
+@pytest.mark.parametrize("leftover", ["folder-deleted", "dotgit-removed", "unregistered"])
+def test_a_later_run_recovers_from_what_a_run_left(
+    env: Env, tmp_path: Path, run_bisect: Runner, leftover: str,
+) -> None:
+    shas = env.repo(["", "", "a", "a"])
+    points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
+    assert run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)[0] == 0
+    worktree = tmp_path / "repo" / ".bisect"
+    if leftover == "folder-deleted":
+        shutil.rmtree(worktree)
+    elif leftover == "dotgit-removed":
+        (worktree / ".git").unlink()
+    else:
+        (worktree / ".git").unlink()
+        assert _git(tmp_path / "repo", "worktree", "prune").returncode == 0
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)
+    assert rc == 0
+    assert [e["key"] for e in result["events"]] == ["pr-22"]
+
+
+def test_a_folder_that_is_not_a_worktree_is_left_alone(env: Env, tmp_path: Path) -> None:
+    shas = env.repo(["", "a"])
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    (mine / "keep.txt").write_text("keep", encoding="utf-8")
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(tmp_path / "r.json"),
+                  "--step-cmd", env.step_cmd, "--worktree", str(mine)])
+    assert rc == 2
+    assert (mine / "keep.txt").is_file()
+    assert env.stepped() == []
+
+
 def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
