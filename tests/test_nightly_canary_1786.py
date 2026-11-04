@@ -289,6 +289,38 @@ def test_failed_ids_needs_a_readable_report_and_a_repo_root(tmp_path: Path) -> N
     assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(tmp_path / "no"), "--out", out]) == 2
 
 
+_LONG_ID = "a." * 3000 + "b::test_x"
+_LONG_COLLECTION_ID = "::" + "a." * 3000 + "b"
+
+
+def test_a_classname_too_long_for_a_path_stays_confirmed_and_the_rest_still_reruns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _tree(tmp_path / "repo", "tests/test_a.py")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.FAILED, _LONG_ID: tor.FAILED}), encoding="utf-8")
+    out = tmp_path / "ids.txt"
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(root), "--out", str(out)]) == 0
+    assert out.read_text(encoding="utf-8").splitlines() == ["tests/test_a.py::test_one"]
+    assert _LONG_ID in capsys.readouterr().err
+    assert nc.classify_leg(1, {_A: tor.FAILED, _LONG_ID: tor.FAILED}, {_A: tor.PASSED})["confirmed"] == [_LONG_ID]
+
+
+def test_regressions_survives_ids_too_long_for_a_path(tmp_path: Path) -> None:
+    tonight = _night(SHA2, {"3.12": ({_LONG_ID: tor.FAILED, _LONG_COLLECTION_ID: tor.ERROR}, None),
+                            "3.13": ({_A: tor.PASSED}, None)})
+    current = tmp_path / "record.json"
+    current.write_text(json.dumps(tonight), encoding="utf-8")
+    (tmp_path / "branch").mkdir()
+    (tmp_path / "repo").mkdir()
+    out = tmp_path / "t.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+                    "--repo-root", str(tmp_path / "repo"), "--out", str(out)]) == 0
+    triage = json.loads(out.read_text(encoding="utf-8"))
+    assert triage["collection_errors"][0]["module"] is None
+    assert {f["test"]: f["node_id"] for f in triage["events"][0]["failures"]}[_LONG_ID] is None
+
+
 def _pytest(project: Path, *args: str, fail: bool = False) -> subprocess.CompletedProcess[str]:
     """Real pytest in a throwaway project. Tests read FAIL from the environment."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_") and k != "FAIL"}

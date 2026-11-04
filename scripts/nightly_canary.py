@@ -43,7 +43,8 @@ An id maps to no node id when it would not round-trip through pytest: its
 module no longer exists, it is a collection error (pytest writes those with
 an empty `classname`), two prefixes are files (a class sharing its name with
 a file in a same-stem directory), the path holds `[` or `]` (pytest refuses
-those), or a directory holds a dot (its parts read as class names). One such
+those), a directory holds a dot (its parts read as class names), or the path is
+too long for the OS. One such
 id in the file would make pytest exit 4 for the whole rerun, so each is left
 out and named in a `::notice::`, and the verdict counts it as confirmed. The
 exit status carries the rerun decision:
@@ -1059,6 +1060,18 @@ def resolve_main_ref(repo: Path, requested: str | None) -> str | None:
     return None
 
 
+def _probe(root: Path, check: Callable[[Path], bool]) -> Callable[[str], bool]:
+    """`check` on a path under `root`. A path the OS refuses, such as a
+    classname too long for one, is not there."""
+    def probe(rel: str) -> bool:
+        try:
+            return check(root / rel)
+        except OSError:
+            return False
+
+    return probe
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -1093,7 +1106,7 @@ def cmd_failed_ids(args: argparse.Namespace) -> int:
     root: Path = args.repo_root
     if not root.is_dir():
         raise ValueError(f"--repo-root {root} is not a directory")
-    plan = plan_rerun(_read_junit(args.junit), lambda rel: (root / rel).is_file(), args.max)
+    plan = plan_rerun(_read_junit(args.junit), _probe(root, Path.is_file), args.max)
     text = "".join(f"{nid}\n" for nid in plan["ids"])
     for test in plan["unmapped"]:
         print(f"::notice::no node id for {test}; it is not rerun and stays confirmed", file=sys.stderr)
@@ -1316,7 +1329,7 @@ def cmd_regressions(args: argparse.Namespace) -> int:
     if not root.is_dir():
         raise ValueError(f"--repo-root {root} is not a directory")
     triage = find_regressions(
-        current, last_green, meta, listed, lambda rel: (root / rel).is_file(), problem, lambda rel: (root / rel).is_dir(),
+        current, last_green, meta, listed, _probe(root, Path.is_file), problem, _probe(root, Path.is_dir),
     )
     if problem is not None:
         print(f"::warning::no baseline tonight: {problem}")
