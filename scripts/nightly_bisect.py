@@ -8,8 +8,8 @@ commit again, the cause is a commit between the two. This script finds it.
 Usage:
     nightly_bisect.py merge-points --good SHA --bad SHA --out POINTS.json
         [--repo OWNER/NAME] [--repo-root DIR] [--dry-run]
-    nightly_bisect.py run --good SHA --bad SHA --tests IDS.txt --out RESULT.json
-        [--points POINTS.json] [--repo-root DIR] [--worktree DIR]
+    nightly_bisect.py run --good SHA --bad SHA (--tests IDS.txt | --triage TRIAGE.json)
+        --out RESULT.json [--points POINTS.json] [--repo-root DIR] [--worktree DIR]
         [--budget-seconds 1200] [--step-timeout 300] [--step-cmd CMD]
         [--python VERSION] [--extra NAME ...] [--dry-run]
     nightly_bisect.py step --tests IDS.txt --deadline EPOCH
@@ -127,6 +127,20 @@ cannot tell a test that does not exist yet from an id it cannot read. A
 node id or module id whose file is absent means the test does not exist at
 that commit, which is good.
 
+`--triage` reads what `nightly_canary.py regressions` writes, in place of
+`--tests`: every test of `candidates` and `new_failing` by its `node_id`, and
+every entry of `collection_errors` by its `module`. A null there is an id
+that mapped to no file, and gets a range event as `unmapped`. The result
+names each by its `test`, the id the records use. A triage of another format,
+or missing one of those keys, exits 2, so a change in `regressions` output
+cannot pass as a run with nothing to do. `drift_check` is not read: the
+workflow decides what to bisect, and writes a triage holding only that.
+
+For a module id the step follows the contract in `nightly_canary.py`: exit 2
+from `pytest --collect-only -q <module>` is bad, exit 0 is good, and a file
+absent from the commit is good. Any other status there is a skip, as any
+status but 0 or 1 is when a node id runs.
+
 Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300)
 each step, and at most 50 tests are bisected; the others get a range
 event. Every child that can run long has its own process group and writes
@@ -175,6 +189,8 @@ from typing import Any, cast
 from xml.etree import ElementTree
 
 RESULT_FORMAT = 1
+# The `format` this script reads from `nightly_canary.py regressions`.
+TRIAGE_FORMAT = 1
 
 # `git bisect run`'s protocol.
 STEP_GOOD = 0
@@ -939,6 +955,30 @@ def map_ids(tests: Iterable[str], files: set[str]) -> tuple[dict[str, list[str]]
     return mapped, unmapped
 
 
+def map_triage(triage: Any, files: set[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """As `map_ids`, for `nightly_canary.py regressions` output: the mapping
+    is already done, so each entry only has to name a file in `files`."""
+    if not isinstance(triage, dict):
+        raise ValueError("the triage file must hold a JSON object")
+    data = cast(dict[str, Any], triage)
+    if data.get("format") != TRIAGE_FORMAT:
+        raise ValueError(f"the triage file has format {data.get('format')!r}, not {TRIAGE_FORMAT}")
+    entries = [(e["test"], e["node_id"]) for e in [*data["candidates"], *data["new_failing"]]]
+    entries += [(e["test"], e["module"]) for e in data["collection_errors"]]
+    mapped: dict[str, list[str]] = {}
+    unmapped: list[str] = []
+    seen: set[str] = set()
+    for test, canon in entries:
+        if test in seen:
+            continue
+        seen.add(test)
+        if canon is None or str(canon).split("::", 1)[0] not in files:
+            unmapped.append(test)
+        else:
+            mapped.setdefault(canon, []).append(test)
+    return mapped, unmapped
+
+
 def _prepare_worktree(git: Git, path: Path, good: str) -> None:
     """A detached worktree at `good`, replacing what a previous run left: a
     worktree, a registered folder missing its `.git` file, or a registration
@@ -1013,14 +1053,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
-    tests = parse_tests(args.tests.read_text(encoding="utf-8"))
+    files = set(git.lines("ls-tree", "-r", "--name-only", bad))
+    if args.triage is not None:
+        mapped, unmapped = map_triage(_read_json(args.triage), files)
+    else:
+        mapped, unmapped = map_ids(parse_tests(args.tests.read_text(encoding="utf-8")), files)
+    tests = [*(given for ids in mapped.values() for given in ids), *unmapped]
     if not tests:
-        raise ValueError(f"{args.tests} names no test")
+        raise ValueError(f"{args.triage or args.tests} names no test")
     given_points = parse_points(_read_json(args.points)) if args.points is not None else {}
     points = usable_points(given_points, ancestry(git, good, bad))
     if given_points and not points:
         print("::warning::the points file names no PR in the range, so the bisect tests every commit", file=sys.stderr)
-    mapped, unmapped = map_ids(tests, set(git.lines("ls-tree", "-r", "--name-only", bad)))
     canonical = list(mapped)
     bisected, over_cap = canonical[:MAX_TESTS], canonical[MAX_TESTS:]
     step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
@@ -1105,7 +1149,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", parents=[common, env], help="bisect the tests from --good to --bad")
     p.add_argument("--good", required=True)
     p.add_argument("--bad", required=True)
-    p.add_argument("--tests", required=True, type=Path, help="one node, JUnit or module id per line")
+    tests = p.add_mutually_exclusive_group(required=True)
+    tests.add_argument("--tests", type=Path, help="one node, JUnit or module id per line")
+    tests.add_argument("--triage", type=Path, help="nightly_canary.py regressions output")
     p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
     p.add_argument("--repo-root", type=Path, default=Path("."))
     p.add_argument("--worktree", type=Path, default=None, help="default: .bisect under --repo-root")
@@ -1127,7 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))
-    except (OSError, ValueError, KeyError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"nightly_bisect: {exc}", file=sys.stderr)
         # `git bisect run` reads 2 as a bad commit, so a step that cannot
         # judge its commit stops the bisect instead.

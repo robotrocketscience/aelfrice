@@ -1028,6 +1028,110 @@ def test_run_usage_errors_exit_2(env: Env, tmp_path: Path, case: str) -> None:
     assert env.stepped() == []
 
 
+# ------------------------------------------------- the canary's triage
+
+# Input and output of a real run of `nightly_canary.py regressions`, from
+# ci/issue-1786-nightly-canary-script at bdddcdb7, before that script reached
+# this branch. `--repo-root` held tests/test_x.py and tests/test_y.py.
+_TRIAGE_FIXTURE = Path(__file__).parent / "fixtures" / "nightly_triage_1786.json"
+_CANARY_SCRIPT = _REPO / "scripts" / "nightly_canary.py"
+
+
+def _triage_case() -> dict[str, Any]:
+    return json.loads(_TRIAGE_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_the_bisect_reads_the_canarys_real_triage(env: Env, tmp_path: Path) -> None:
+    """Test a breaks at 2, tests/test_y.py stops importing at 3, test b
+    breaks at 4, and tests/test_gone.py has no file. Each entry of the
+    triage takes its own path through the real step, under the fake `uv`."""
+    shas = env.repo(["", "", "a", "am", "abm", "abm"])
+    triage = _write(tmp_path / "triage.json", _triage_case()["triage"])
+    points = _write(tmp_path / "points.json", {shas[i]: 30 + i for i in range(1, 6)})
+    out = tmp_path / "result.json"
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[5],
+                  "--triage", str(triage), "--points", str(points), "--out", str(out)])
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 1, result
+    assert result["events"] == [
+        nb.event_for_culprit(shas[2], 32, ["tests.test_x::test_a"]),
+        nb.event_for_culprit(shas[3], 33, ["::tests.test_y"]),
+        nb.event_for_culprit(shas[4], 34, ["tests.test_x::test_b"]),
+        nb.event_for_range(shas[0], shas[5], ["tests.test_gone::test_a"], nb.REASON_UNMAPPED),
+    ]
+
+
+def test_the_triage_fixture_is_what_the_canary_writes(tmp_path: Path) -> None:
+    """Fails when `regressions` changes the shape this script reads. Holds
+    nothing until `nightly_canary.py` reaches the same branch; then a change
+    to either script has to update the fixture here."""
+    if not _CANARY_SCRIPT.is_file():
+        return
+    case = _triage_case()
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    for name in ("test_x.py", "test_y.py"):
+        (repo / "tests" / name).write_text("", encoding="utf-8")
+    branch = tmp_path / "branch"
+    run_dir = branch / case["pointer"]["canary"]["path"]
+    run_dir.mkdir(parents=True)
+    _write(run_dir / "record.json", case["last_green"])
+    _write(branch / "last-green.json", case["pointer"])
+    current = _write(tmp_path / "current.json", case["current"])
+    out = tmp_path / "triage.json"
+    r = subprocess.run(
+        [sys.executable, str(_CANARY_SCRIPT), "regressions", "--current", str(current),
+         "--last-green-dir", str(branch), "--canary-legs", "3.12,3.13", "--repo-root", str(repo), "--out", str(out)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert json.loads(out.read_text(encoding="utf-8")) == case["triage"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"format": 2},
+        {"candidates": [{"test": "tests.test_x::test_a", "node": "tests/test_x.py::test_a"}]},
+        {"collection_errors": [{"test": "::tests.test_y", "path": "tests/test_y.py"}]},
+        {"new_failing": None},
+    ],
+    ids=["format", "node-id-renamed", "module-renamed", "not-a-list"],
+)
+def test_a_triage_of_another_shape_exits_2(env: Env, tmp_path: Path, change: dict[str, Any]) -> None:
+    shas = env.repo(["", "a"])
+    triage = _write(tmp_path / "triage.json", {**_triage_case()["triage"], **change})
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--triage", str(triage), "--out", str(tmp_path / "r.json"), "--step-cmd", env.step_cmd])
+    assert rc == 2
+    assert env.stepped() == []
+
+
+def test_a_triage_naming_a_file_missing_at_bad_gets_a_range() -> None:
+    triage: dict[str, Any] = {
+        "format": 1, "new_failing": [],
+        "candidates": [
+            {"test": "tests.gone::test_a", "node_id": "tests/gone.py::test_a"},
+            {"test": "tests.test_x::test_a", "node_id": _A},
+            {"test": "tests.test_x::test_a", "node_id": _A},
+        ],
+        "collection_errors": [{"test": "::tests.test_y", "module": "tests/test_y.py"},
+                              {"test": "::tests.test_z", "module": None}],
+    }
+    mapped, unmapped = nb.map_triage(triage, {"tests/test_x.py", "tests/test_y.py"})
+    assert mapped == {_A: ["tests.test_x::test_a"], "tests/test_y.py": ["::tests.test_y"]}
+    assert unmapped == ["tests.gone::test_a", "::tests.test_z"]
+
+
+def test_run_takes_tests_or_a_triage_and_not_both(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    base = ["run", "--good", "a", "--bad", "b", "--out", str(tmp_path / "r.json")]
+    for extra in ([], ["--tests", "x", "--triage", "y"]):
+        with pytest.raises(SystemExit) as exit_info:
+            nb.main([*base, *extra])
+        assert exit_info.value.code == 2
+    assert "--tests" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------- merge points
 
 def _merge_points(repo: Path, good: str, bad: str, out: Path, *extra: str) -> int:
