@@ -1045,6 +1045,54 @@ def test_a_newer_attempt_at_the_same_commit_takes_the_pointer(
     assert _last_green(tmp_path)["canary"]["path"] == "runs/2026-11-04-100-a2"
 
 
+def test_a_red_republish_of_the_run_and_attempt_last_green_names_writes_nothing(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 0
+    branch = tmp_path / "branch"
+    before = {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()}
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 1
+    assert {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()} == before
+    assert "::error::last green names runs/2026-11-04-100-a1" in capsys.readouterr().out
+
+
+def test_a_leg_entry_protects_its_record_as_well(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """A red night's green leg points at that night's record."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 0
+    assert _last_green(tmp_path)["canary"] is None
+    other = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
+    assert _publish(tmp_path, repo, other, None) == 1
+
+
+def test_republishing_the_same_content_is_a_no_op(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    record = _green(c0, 100)
+    assert _publish(tmp_path, repo, record, None) == 0
+    pointer = _last_green(tmp_path)
+    assert _publish(tmp_path, repo, record, None) == 0
+    assert _last_green(tmp_path) == pointer
+    assert len(_index(tmp_path)) == 1
+
+
+def test_republishing_a_run_no_entry_names_replaces_it(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Every leg red, so no entry points here and a workflow retry may rewrite it."""
+    repo, (c0, _, _), _ = main_repo
+    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
+    assert _publish(tmp_path, repo, both_red, None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 0
+    published = json.loads((tmp_path / "branch/runs/2026-11-04-100-a1/record.json").read_text(encoding="utf-8"))
+    assert published["nightly"]["verdict"] == nc.GREEN
+    assert _index(tmp_path)[0]["verdict"] == nc.GREEN
+
+
 def test_an_incomplete_night_does_not_move_the_pointer(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:

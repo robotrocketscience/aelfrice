@@ -121,7 +121,9 @@ green night on a commit that is not on main, or that git cannot place, moves
 nothing, and `publish` exits 1. A later commit already named stays named,
 which is the ordinary case of a late run: that exits 0. At one commit, the
 newer run and attempt hold the pointer, so a late older attempt cannot take
-it. An entry holds `attempt` beside `run_id` for that comparison.
+it. An entry holds `attempt` beside `run_id` for that comparison. The record
+an entry names does not change: republishing the same run and attempt with
+different content exits 1 and writes nothing. The same content is a no-op.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
@@ -640,6 +642,12 @@ def _moved(
     return old
 
 
+def pointed_at(green: dict[str, Any]) -> set[str]:
+    """The run directories `last-green.json` names."""
+    entries = [green.get("canary"), *green.get("legs", {}).values()]
+    return {str(entry["path"]) for entry in entries if entry is not None}
+
+
 def off_main_pointers(green: dict[str, Any], on_main: Callable[[str], bool | None]) -> list[str]:
     """A problem per entry of `last-green.json` whose commit is not on main."""
     entries = [("canary", green.get("canary")), *((f"leg {leg}", p) for leg, p in sorted(green.get("legs", {}).items()))]
@@ -983,7 +991,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
     new_green, notes, problems = next_last_green(
         old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
     )
-    writes: list[tuple[Path, str]] = [(branch / path / "record.json", _dumps(record))]
+    record_file = branch / path / "record.json"
+    if (
+        path in pointed_at(old_green or {})
+        and record_file.is_file()
+        and record_file.read_text(encoding="utf-8") != _dumps(record)
+    ):
+        print(f"::error::last green names {path}, so its record stays as it is; nothing was written")
+        return 1
+    writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
     if triage is not None:
         writes.append((branch / path / "triage.json", _dumps(triage)))
     writes.append((index_file, "".join(f"{line}\n" for line in index)))
