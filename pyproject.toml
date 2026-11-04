@@ -86,7 +86,8 @@ onboard-llm = [
     # pull anthropic; the import is local to the call site so a
     # default install has no `anthropic` symbol resolvable at any
     # module load. Boundary policy: docs/design/llm_classifier.md § 4.
-    "anthropic>=0.40",
+    # <1: SDK 1.0 dropped `temperature` from messages.create (#1844); 2.x is #1845.
+    "anthropic>=0.40,<1",
 ]
 archive = [
     # Required only for `aelf uninstall --archive`: AES-128-CBC + HMAC

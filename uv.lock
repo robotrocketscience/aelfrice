@@ -44,7 +44,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", marker = "extra == 'onboard-llm'", specifier = ">=0.40" },
+    { name = "anthropic", marker = "extra == 'onboard-llm'", specifier = ">=0.40,<1" },
     { name = "cryptography", marker = "extra == 'archive'", specifier = ">=50.0" },
     { name = "datasets", marker = "extra == 'benchmarks'", specifier = ">=2.14" },
     { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=0.20" },
