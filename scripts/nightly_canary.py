@@ -213,6 +213,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import io
 import json
 import os
 import re
@@ -1151,6 +1152,11 @@ def cmd_verdict(args: argparse.Namespace) -> int:
     verdict = classify_leg(args.rc, outcomes, rerun, args.max, args.rerun_rc)
     if unreadable is not None:
         verdict["rerun_note"] = unreadable
+    if args.out is not None:
+        if args.dry_run:
+            print(f"dry run: would write {args.out}")
+        else:
+            _write(args.out, _dumps(verdict))
     print(
         f"pytest rc {verdict['rc']}: {len(verdict['red'])} red, {len(verdict['flaky'])} flaky, "
         f"{len(verdict['confirmed'])} confirmed; leg {verdict['status']}"
@@ -1162,11 +1168,6 @@ def cmd_verdict(args: argparse.Namespace) -> int:
         print(f"flaky: {test}")
     for test in verdict["confirmed"]:
         print(f"confirmed: {test}")
-    if args.out is not None:
-        if args.dry_run:
-            print(f"dry run: would write {args.out}")
-        else:
-            _write(args.out, _dumps(verdict))
     return 0 if verdict["status"] == GREEN else 1
 
 
@@ -1493,7 +1494,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _safe_output() -> None:
+    """A test id can hold any character, and a runner's locale may not."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _safe_output()
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))

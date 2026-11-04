@@ -845,6 +845,42 @@ def test_an_extra_leg_the_script_cannot_probe_keeps_the_nights_green_record(
     assert "denied" in " ".join(record["nightly"]["notes"]["3.14"])
 
 
+def test_a_non_ascii_test_id_survives_an_ascii_stdout(tmp_path: Path) -> None:
+    """Run as a process, since the encoding belongs to the interpreter's stream."""
+    junit = tmp_path / "junit.xml"
+    test = "tests.test_a::test_caf\u00e9"
+    junit.write_text(_junit({test: tor.FAILED}), encoding="utf-8")
+    out = tmp_path / "v.json"
+    r = subprocess.run(
+        [sys.executable, str(_SCRIPT), "verdict", "--rc", "1", "--junit", str(junit), "--out", str(out)],
+        env={**os.environ, "PYTHONIOENCODING": "ascii", "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True, timeout=60,
+    )
+    assert r.returncode == 1, r.stderr
+    assert b"confirmed: tests.test_a::test_caf\\xe9" in r.stdout
+    assert json.loads(out.read_text(encoding="utf-8"))["confirmed"] == [test]
+
+
+def test_the_verdict_file_is_written_before_anything_is_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step that dies on its output must not lose what `record` needs."""
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
+    out = tmp_path / "v.json"
+
+    real_print = print
+
+    def broken_pipe(*args: Any, **kwargs: Any) -> None:
+        if "file" not in kwargs:
+            raise BrokenPipeError(32, "pipe")
+        real_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", broken_pipe)
+    assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--out", str(out)]) == 2
+    assert json.loads(out.read_text(encoding="utf-8"))["confirmed"] == [_A]
+
+
 def test_a_rerun_report_too_deep_to_parse_leaves_every_red_test_confirmed(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
     junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
