@@ -6,8 +6,8 @@
 # summary as it is. `*` matches any run of characters, so
 # `tests.test_store.TestOpen::test_readonly[*]` names every parameter of
 # that test; every other character, `[` and `?` included, matches itself.
-# Put a `*` after `::` or after a module name: it crosses `.` and `::`, so a
-# test refuses an entry like `*::*` that could exempt the whole suite.
+# Put a `*` only after `::`, with the whole classname before it: a `*` crosses
+# `.` and `::`, so a test refuses `tests.test_c*::*`, which takes 100 modules.
 # A test listed here may be skipped, xfailed or never executed without the
 # diff calling it a ratchet violation. Say why on a `#` line above each
 # entry; a comment after the id on the same line becomes part of the id,

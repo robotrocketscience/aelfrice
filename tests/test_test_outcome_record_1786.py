@@ -740,10 +740,6 @@ def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
     assert not tor.is_allowlisted("tests.t::test_y[p-1]", ["tests.t::test_x[*]"])
 
 
-# Text before an entry's first `*` that names at least one whole test module.
-_NAMED_MODULE = re.compile(r"tests\.(?:\w+\.)*test_\w+")
-
-
 def _is_one_test_id(entry: str) -> bool:
     """`::` present, no whitespace in the classname or the function name,
     and no comment after the id: `parse_allowlist` keeps a same-line `# ...`
@@ -751,17 +747,19 @@ def _is_one_test_id(entry: str) -> bool:
     whitespace and `#` (`[Let's move on to PR #869]`), so the check looks for
     the comment after the closing bracket, not anywhere in the entry.
 
-    `*` crosses `.` and `::` when the ratchet matches, so `*::*`, `tests.*::*`
-    and `tests.test_*::*` exempt the whole suite. A `*` has to come after
-    `::` or after a module name, which bounds what the entry can exempt."""
+    `*` crosses `.` and `::` when the ratchet matches, so a `*` in the
+    classname can reach the whole suite: `tests.test_c*::*` takes 2,359 tests
+    in 100 modules. A `*` may only come after `::`, with the whole classname
+    written out before it, so an entry exempts at most that one class or
+    module."""
     classname, sep, name = entry.partition("::")
     function = name.partition("[")[0]
-    before_star, star, _ = entry.partition("*")
     return (
         bool(sep)
+        and bool(classname)
+        and "*" not in classname
         and not re.search(r"\s", classname + function)
         and not re.search(r"\]\s+#", entry)
-        and (not star or "::" in before_star or _NAMED_MODULE.fullmatch(before_star) is not None)
     )
 
 
@@ -771,9 +769,16 @@ def _is_one_test_id(entry: str) -> bool:
         ("tests.test_store.TestOpen::test_readonly[a]", True),
         ("tests.test_ingest_pasted_output_1691::test_prose_that_opens_like_output_is_kept[Owner | 3 +]", True),
         ("tests.t::test_x[/tmp/a b]", True),
-        ("tests.test_win*::*", True),
         ("tests.test_store::*", True),
+        ("tests.test_store.TestOpen::*", True),
         ("tests.test_store::test_readonly[*]", True),
+        ("tests.test_win*::*", False),
+        ("tests.test_c*::*", False),
+        ("tests.test_s*::*", False),
+        ("tests.test_store*::*", False),
+        ("tests.test_store.*::*", False),
+        ("::*", False),
+        ("::tests.*", False),
         ("*::*", False),
         ("tests.*::*", False),
         ("tests.test_*::*", False),
