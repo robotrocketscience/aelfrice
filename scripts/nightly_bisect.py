@@ -995,9 +995,10 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         prs = json.loads(r.stdout)
         if not isinstance(prs, list):
             raise ValueError("gh pr list did not return a list")
-        if len(prs) >= _PR_LIST_LIMIT:
+        rows = cast(list[dict[str, Any]], prs)
+        if len(rows) >= _PR_LIST_LIMIT:
             raise ValueError(f"gh pr list returned its limit of {_PR_LIST_LIMIT}, so it may be cut short")
-        points = select_points(order, cast(list[dict[str, Any]], prs), bad)
+        points = select_points(order, rows, bad)
         if not points:
             raise ValueError("gh pr list names no merge in the range")
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError,
