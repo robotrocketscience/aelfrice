@@ -422,7 +422,7 @@ def has_violations(diffs: Iterable[LegDiff]) -> bool:
 def missing_report_error(current: dict[str, Any]) -> str | None:
     """What is wrong with a record from a run that was meant to report on
     every leg, or None when nothing is."""
-    legs = current.get("legs") or {}
+    legs: dict[str, Any] = current.get("legs") or {}
     if not legs:
         return "this run's record holds no leg"
     missing = sorted(leg for leg, record in legs.items() if record is None)
