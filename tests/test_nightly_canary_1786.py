@@ -1661,6 +1661,68 @@ def test_a_pointer_whose_record_is_gone_exits_1_until_a_green_night_moves_it(
     assert "::error::" not in capsys.readouterr().out
 
 
+def _point_at(tmp_path: Path, run_dir: str, sha: str, legs: tuple[str, ...] = ()) -> None:
+    """Hand-edit `last-green.json` so the canary entry, or these leg entries
+    alone, name a run directory."""
+    entry = {"sha": sha, "path": run_dir, "run_id": 1, "attempt": 1}
+    green = {"canary": None if legs else entry, "legs": {leg: entry for leg in legs}}
+    (tmp_path / "branch" / "last-green.json").write_text(json.dumps(green), encoding="utf-8")
+
+
+def test_a_pointer_naming_a_red_record_exits_1_until_a_green_night_moves_it(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, c1, c2), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 1, day=1), None) == 0
+    _point_at(tmp_path, "runs/2026-11-01-1-a1", c0)
+    capsys.readouterr()
+    assert _publish(tmp_path, repo, _red(c1, 2, day=2), None) == 1
+    assert "canary: names runs/2026-11-01-1-a1, which reads red there" in capsys.readouterr().out
+    assert _publish(tmp_path, repo, _green(c2, 3, day=3), None) == 0
+    assert "::error::" not in capsys.readouterr().out
+
+
+def test_a_leg_entry_naming_a_record_where_that_leg_was_red_exits_1(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`_red` leaves 3.12 green and 3.13 red, so only the 3.13 entry is wrong."""
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 1, day=1), None) == 0
+    _point_at(tmp_path, "runs/2026-11-01-1-a1", c0, legs=("3.12", "3.13"))
+    capsys.readouterr()
+    assert _publish(tmp_path, repo, _red(c1, 2, day=2), None) == 1
+    out = capsys.readouterr().out
+    assert "leg 3.13: names runs/2026-11-01-1-a1, which reads red there" in out
+    assert "leg 3.12: names" not in out
+
+
+@pytest.mark.parametrize("content", [b"not json", b"[]", b"\xff\xfe", b"[" * 200_000],
+                         ids=["corrupt", "array", "not-utf8", "too-deep"])
+def test_a_pointer_naming_a_corrupt_record_exits_1(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], content: bytes,
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 1, day=1), None) == 0
+    (tmp_path / "branch/runs/2026-11-01-1-a1/record.json").write_bytes(content)
+    capsys.readouterr()
+    assert _publish(tmp_path, repo, _red(c1, 2, day=2), None) == 1
+    assert "canary: names runs/2026-11-01-1-a1, whose record is unreadable" in capsys.readouterr().out
+    assert _publish(tmp_path, repo, _red(c1, 2, day=2), None, "--dry-run") == 1
+
+
+def test_a_pointer_naming_a_red_record_is_no_baseline(tmp_path: Path) -> None:
+    triage = _regress_on(tmp_path, _POINTS_AT_X, json.dumps(_red(SHA1, 1)).encode())
+    assert triage["events"][0]["kind"] == "no-baseline"
+    assert triage["events"][0]["reason"] == "last-green.json names runs/x, a night that reads red, not green"
+
+
+def test_a_good_pointer_reports_no_record_problem() -> None:
+    green_record = _green(SHA1, 1)
+    entry = {"sha": SHA1, "path": "runs/a", "run_id": 1}
+    assert nc.record_problems({"canary": entry, "legs": {"3.12": entry}}, lambda p: (green_record, None)) == []
+    assert nc.record_problems({}, lambda p: (None, "never read")) == []
+
+
 def test_the_record_this_publish_writes_counts_as_present(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
