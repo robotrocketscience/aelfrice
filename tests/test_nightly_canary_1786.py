@@ -968,7 +968,7 @@ def test_regressions_on_a_broken_results_branch_is_a_usage_error(tmp_path: Path)
     current.write_text(json.dumps(_night(SHA2, {"3.12": ({_A: tor.FAILED}, None)})), encoding="utf-8")
     branch = tmp_path / "branch"
     branch.mkdir()
-    (branch / "last-green.json").write_text(json.dumps({"canary": {"sha": SHA1, "path": "runs/gone"}}),
+    (branch / "last-green.json").write_text(json.dumps({"canary": {"sha": SHA1, "path": "runs/gone", "run_id": 1}}),
                                             encoding="utf-8")
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(branch),
                     "--out", str(tmp_path / "t.json")]) == 2
@@ -986,10 +986,8 @@ def _git(repo: Path, *args: str) -> str:
     return r.stdout.strip()
 
 
-@pytest.fixture
-def main_repo(tmp_path: Path) -> tuple[Path, list[str], str]:
+def _make_main_repo(repo: Path) -> tuple[Path, list[str], str]:
     """A main branch c0 -> c1 -> c2, and a commit off c0 that is not on it."""
-    repo = tmp_path / "main"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
     shas = []
@@ -998,6 +996,13 @@ def main_repo(tmp_path: Path) -> tuple[Path, list[str], str]:
         shas.append(_git(repo, "rev-parse", "HEAD"))
     side = _git(repo, "commit-tree", f"{shas[0]}^{{tree}}", "-p", shas[0], "-m", "side")
     return repo, shas, side
+
+
+@pytest.fixture(scope="module")
+def main_repo(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[str], str]:
+    """One repository for the module; the tests read it. A test that moves a ref
+    builds its own with `_make_main_repo`."""
+    return _make_main_repo(tmp_path_factory.mktemp("main-repo") / "main")
 
 
 def _publish(tmp_path: Path, repo: Path, record: dict[str, Any], triage: dict[str, Any] | None,
@@ -1317,10 +1322,8 @@ def test_a_pointer_git_cannot_place_is_repaired_the_same_way(
     assert _last_green(tmp_path)["canary"]["sha"] == c2
 
 
-def test_main_is_origin_main_before_a_local_main_and_the_flag_overrides_both(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str],
-) -> None:
-    repo, (c0, c1, c2), side = main_repo
+def test_main_is_origin_main_before_a_local_main_and_the_flag_overrides_both(tmp_path: Path) -> None:
+    repo, (c0, c1, c2), side = _make_main_repo(tmp_path / "main")
     _git(repo, "update-ref", "refs/remotes/origin/main", c1)
     assert nc.resolve_main_ref(repo, None) == "origin/main"
     assert _publish(tmp_path, repo, _green(c2, 100, day=1), None) == 1
@@ -1370,17 +1373,12 @@ def test_publish_dry_run_writes_nothing(
     assert "would write last-green.json" in printed
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [lambda r: r.pop("nightly"), lambda r: r["nightly"].update(created_at="Nov 4")],
-    ids=["no-nightly-key", "bad-date"],
-)
-def test_publish_refuses_a_record_it_cannot_place(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str], mutate: Any,
+def test_publish_refuses_a_record_with_no_nightly_key(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
     repo, (c0, _, _), _ = main_repo
     record = _green(c0, 100)
-    mutate(record)
+    record.pop("nightly")
     assert _publish(tmp_path, repo, record, None) == 2
     assert list((tmp_path / "branch").iterdir()) == []
 
@@ -1407,6 +1405,159 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
         "sha": c0,
         "legs": {"3.13": {"tests": [_A], "node_ids": [node], "unmapped": [], "collection_errors": []}},
     }
+
+
+# -------------------------------------------------------------- JSON shapes
+
+def _with(key: str, value: object) -> dict[str, Any]:
+    """A good red record with one `nightly` key replaced, or one top-level key
+    for `sha` and `legs`."""
+    record = _night(SHA1, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.PASSED}, None)})
+    if key in ("sha", "legs", "nightly"):
+        record[key] = value
+    else:
+        record["nightly"][key] = value
+    return record
+
+
+_BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
+    ("nightly-list", _with("nightly", [])),
+    ("nightly-str", _with("nightly", "x")),
+    ("sha-null", _with("sha", None)),
+    ("sha-empty", _with("sha", "")),
+    ("sha-not-hex", _with("sha", "--upload-pack=x")),
+    ("legs-list", _with("legs", [])),
+    ("leg-str", _with("legs", {"3.12": "x"})),
+    ("leg-tests-list", _with("legs", {"3.12": {"tests": [], "counts": {}}})),
+    ("leg-no-counts", _with("legs", {"3.12": {"tests": {}}})),
+    ("status-list", _with("status", [])),
+    ("status-unknown", _with("status", {"3.12": "fine"})),
+    ("confirmed-list", _with("confirmed", [])),
+    ("confirmed-str", _with("confirmed", {"3.12": "x"})),
+    ("flaky-list", _with("flaky", [])),
+    ("roles-list", _with("roles", [])),
+    ("roles-unknown", _with("roles", {"3.12": "boss"})),
+    ("mass-list", _with("mass_failure", [])),
+    ("verdict-unknown", _with("verdict", "maybe")),
+    ("run-id-str", _with("run_id", "x")),
+    ("run-id-bool", _with("run_id", True)),
+    ("attempt-null", _with("run_attempt", None)),
+    ("created-at-null", _with("created_at", None)),
+    ("created-at-word", _with("created_at", "Nov 4")),
+    ("green-over-confirmed", _with("status", {"3.12": nc.GREEN, "3.13": nc.GREEN})),
+    ("verdict-green-over-red-leg", _with("verdict", nc.GREEN)),
+]
+
+
+@pytest.mark.parametrize("record", [r for _, r in _BAD_RECORDS], ids=[i for i, _ in _BAD_RECORDS])
+def test_a_record_of_the_wrong_shape_is_a_usage_error_for_each_reader(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], record: dict[str, Any],
+) -> None:
+    """Exit 1 means a checked condition, and an uncaught exception exits 1."""
+    repo, _, _ = main_repo
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(record), encoding="utf-8")
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "none"),
+                    "--out", str(tmp_path / "t.json")]) == 2
+    assert _publish(tmp_path, repo, record, None) == 2
+    assert list((tmp_path / "branch").iterdir()) == []
+
+
+@pytest.mark.parametrize("record", [r for _, r in _BAD_RECORDS], ids=[i for i, _ in _BAD_RECORDS])
+def test_a_baseline_of_the_wrong_shape_is_a_usage_error(tmp_path: Path, record: dict[str, Any]) -> None:
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps(_night(SHA2, {"3.12": ({_A: tor.FAILED}, None)})), encoding="utf-8")
+    branch = tmp_path / "branch"
+    (branch / "runs" / "x").mkdir(parents=True)
+    (branch / "runs" / "x" / "record.json").write_text(json.dumps(record), encoding="utf-8")
+    (branch / "last-green.json").write_text(
+        json.dumps({"canary": {"sha": SHA1, "path": "runs/x", "run_id": 1}, "legs": {}}), encoding="utf-8",
+    )
+    assert nc.main(["regressions", "--current", str(good), "--last-green-dir", str(branch),
+                    "--out", str(tmp_path / "t.json")]) == 2
+
+
+def test_the_records_this_script_writes_pass_its_own_check(tmp_path: Path) -> None:
+    for record in (_green(SHA1, 1), _red(SHA1, 2), _night(SHA1, {"3.12": (None, None)})):
+        nc.validate_record(json.loads(json.dumps(record)), "test")
+
+
+_BAD_POINTERS = [
+    ("array", "[]"), ("corrupt", "oops"), ("canary-str", '{"canary": "x"}'), ("canary-list", '{"canary": ["x"]}'),
+    ("no-path", json.dumps({"canary": {"sha": SHA1, "run_id": 1}})),
+    ("no-sha", json.dumps({"canary": {"path": "runs/x", "run_id": 1}})),
+    ("no-run-id", json.dumps({"canary": {"sha": SHA1, "path": "runs/x"}})),
+    ("attempt-str", json.dumps({"canary": {"sha": SHA1, "path": "runs/x", "run_id": 1, "attempt": "x"}})),
+    ("legs-list", '{"canary": null, "legs": []}'),
+    ("leg-str", '{"canary": null, "legs": {"3.12": "x"}}'),
+]
+
+
+@pytest.mark.parametrize("text", [t for _, t in _BAD_POINTERS], ids=[i for i, _ in _BAD_POINTERS])
+def test_a_last_green_file_of_the_wrong_shape_is_a_usage_error_for_each_reader(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], text: str,
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    (branch / "last-green.json").write_text(text, encoding="utf-8")
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_red(c0, 100)), encoding="utf-8")
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(branch),
+                    "--out", str(tmp_path / "t.json")]) == 2
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 2
+    assert sorted(p.name for p in branch.iterdir()) == ["last-green.json"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["oops", "[]", '{"events": null}', '{"events": ["x"]}', '{"events": [{}]}', '{"events": [{"key": 1}]}'],
+    ids=["corrupt", "array", "events-null", "event-str", "event-no-key", "key-not-str"],
+)
+def test_a_triage_file_of_the_wrong_shape_is_a_usage_error(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], text: str,
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    rec, tri = tmp_path / "record.json", tmp_path / "triage.json"
+    rec.write_text(json.dumps(_red(c0, 100)), encoding="utf-8")
+    tri.write_text(text, encoding="utf-8")
+    assert nc.main(["publish", "--record", str(rec), "--triage", str(tri), "--branch-dir", str(branch),
+                    "--main-repo", str(repo)]) == 2
+    assert list(branch.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "line", ["oops", "[]", '{"x": 1}', '{"run_id": "x", "run_attempt": 1}', '{"run_id": 1}'],
+    ids=["corrupt", "array", "no-run", "run-str", "no-attempt"],
+)
+def test_an_index_line_of_the_wrong_shape_is_a_usage_error(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], line: str,
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    (branch / "index.jsonl").write_text(line + "\n", encoding="utf-8")
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 2
+    assert sorted(p.name for p in branch.iterdir()) == ["index.jsonl"]
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [OSError("x"), ValueError("x"), KeyError("x"), IndexError("x"), TypeError("x"), AttributeError("x"),
+     RecursionError("x"), nc.ElementTree.ParseError("x")],
+    ids=lambda e: type(e).__name__,
+)
+def test_main_turns_each_failure_it_can_meet_into_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception,
+) -> None:
+    """An uncaught exception exits 1, which the docstring keeps for a checked condition."""
+    def fail(args: Any) -> int:
+        raise exc
+
+    monkeypatch.setattr(nc, "cmd_env", fail)
+    assert nc.main(["env", "--out", str(tmp_path / "e.json")]) == 2
 
 
 # --------------------------------------------------------------------- env

@@ -159,7 +159,9 @@ against temporary files and a temporary git repository.
 
 Exit status: 0; 1 for a checked condition (`failed-ids` has nothing to
 rerun, `verdict` finds the leg is not green, `publish` left a pointer problem
-behind); 2 for a usage error or an unreadable input.
+behind); 2 for a usage error or an unreadable input, which includes JSON that
+parses but does not have the shape a record, a triage file, `last-green.json`
+or `index.jsonl` has.
 """
 from __future__ import annotations
 
@@ -218,6 +220,10 @@ _GIT_TIMEOUT_SECONDS = 60
 _UV_TIMEOUT_SECONDS = 30
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SHA = re.compile(r"[0-9a-f]{7,64}")
+
+_LEG_STATUSES = (GREEN, RED, BROKEN, MISSING)
+_NIGHT_VERDICTS = (GREEN, RED, INCOMPLETE)
 
 
 # --------------------------------------------------------------- failed-ids
@@ -593,6 +599,87 @@ def find_regressions(
     return triage
 
 
+# --------------------------------------------------------------- JSON shapes
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_map(value: object, check: Callable[[Any], bool]) -> bool:
+    """A dict from strings to values `check` accepts."""
+    return isinstance(value, dict) and all(isinstance(k, str) and check(v) for k, v in value.items())  # pyright: ignore[reportUnknownVariableType]
+
+
+def _is_leg_record(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    tests: object = value.get("tests")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    counts: object = value.get("counts")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    return _is_map(tests, lambda v: isinstance(v, str)) and _is_map(counts, _is_int)
+
+
+def validate_record(record: dict[str, Any], where: str) -> None:
+    """Raise ValueError unless `record` has the shape `build_nightly_record`
+    writes and its verdict agrees with its legs. Everything after this reads
+    the record without checking."""
+    def require(ok: bool, what: str) -> None:
+        if not ok:
+            raise ValueError(f"{where}: {what}")
+
+    sha = record.get("sha")
+    require(isinstance(sha, str) and _SHA.fullmatch(sha) is not None, "sha is not a commit id")
+    require(_is_map(record.get("legs"), _is_leg_record), "legs is not a map of leg records")
+    nightly = record.get("nightly")
+    require(isinstance(nightly, dict), "nightly is not an object")
+    require(_is_int(nightly.get("run_id")) and _is_int(nightly.get("run_attempt")), "the run id or attempt is not a number")
+    created_at = nightly.get("created_at")
+    require(isinstance(created_at, str) and _DATE.fullmatch(created_at[:10]) is not None, "created_at holds no date")
+    require(_is_map(nightly.get("roles"), lambda v: v in ROLES), "roles is not a map of leg roles")
+    require(_is_map(nightly.get("status"), lambda v: v in _LEG_STATUSES), "status is not a map of leg statuses")
+    require(_is_map(nightly.get("flaky"), _is_str_list), "flaky is not a map of test lists")
+    require(_is_map(nightly.get("confirmed"), _is_str_list), "confirmed is not a map of test lists")
+    require(_is_map(nightly.get("mass_failure"), lambda v: isinstance(v, bool)), "mass_failure is not a map of flags")
+    verdict = nightly.get("verdict")
+    require(verdict in _NIGHT_VERDICTS, f"verdict {verdict!r} is not a night's verdict")
+    status: dict[str, str] = nightly["status"]
+    confirmed: dict[str, list[str]] = nightly["confirmed"]
+    for leg, leg_state in status.items():
+        require(leg_state != GREEN or not confirmed.get(leg), f"leg {leg} is green with a confirmed failure")
+    if verdict == GREEN:
+        canary = [leg for leg, role in nightly["roles"].items() if role == CANARY]
+        require(bool(canary) and all(status.get(leg) == GREEN for leg in canary), "the night is green over a canary leg that is not")
+
+
+def _is_pointer(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    sha: object = value.get("sha")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    path: object = value.get("path")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    attempt: object = value.get("attempt", 0)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    run_id: object = value.get("run_id")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    return (
+        isinstance(sha, str) and _SHA.fullmatch(sha) is not None
+        and isinstance(path, str) and bool(path)
+        and _is_int(run_id) and _is_int(attempt)
+    )
+
+
+def validate_last_green(green: dict[str, Any], where: str) -> None:
+    canary = green.get("canary")
+    if canary is not None and not _is_pointer(canary):
+        raise ValueError(f"{where}: canary is not a pointer")
+    if not _is_map(green.get("legs", {}), _is_pointer):
+        raise ValueError(f"{where}: legs is not a map of pointers")
+
+
+def validate_triage(triage: dict[str, Any], where: str) -> None:
+    events = triage.get("events", [])
+    if not isinstance(events, list) or not all(isinstance(e, dict) and isinstance(e.get("key"), str) for e in events):  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+        raise ValueError(f"{where}: events is not a list of keyed events")
+
+
 # ------------------------------------------------------------------ publish
 
 def run_date(created_at: str) -> str:
@@ -633,6 +720,8 @@ def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
         if not line.strip():
             continue
         data = json.loads(line)
+        if not isinstance(data, dict) or not _is_int(data.get("run_id")) or not _is_int(data.get("run_attempt")):
+            raise ValueError(f"index.jsonl holds a line with no run: {line[:80]!r}")
         if int(data["run_id"]) != entry["run_id"]:
             kept.append(line)
         elif int(data["run_attempt"]) > entry["run_attempt"]:
@@ -987,14 +1076,20 @@ def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] 
     pointer_file = directory / "last-green.json"
     if not pointer_file.is_file():
         return None, None
-    meta = _read_json(pointer_file).get("canary")
+    green = _read_json(pointer_file)
+    validate_last_green(green, str(pointer_file))
+    meta = green.get("canary")
     if not meta:
         return None, None
-    return _read_json(directory / str(meta["path"]) / "record.json"), dict(meta)
+    record_file = directory / str(meta["path"]) / "record.json"
+    record = _read_json(record_file)
+    validate_record(record, str(record_file))
+    return record, dict(meta)
 
 
 def cmd_regressions(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
+    validate_record(current, str(args.current))
     last_green, meta = _last_green(args.last_green_dir)
     root: Path = args.repo_root
     if not root.is_dir():
@@ -1020,11 +1115,11 @@ def cmd_regressions(args: argparse.Namespace) -> int:
 
 def cmd_publish(args: argparse.Namespace) -> int:
     record = _read_json(args.record)
-    if "nightly" not in record:
-        raise ValueError(f"{args.record} has no nightly key")
+    validate_record(record, str(args.record))
     triage: dict[str, Any] | None = None
     if args.triage.is_file():
         triage = _read_json(args.triage)
+        validate_triage(triage, str(args.triage))
     else:
         print(f"::notice::no triage at {args.triage}; publishing the record without event keys", file=sys.stderr)
     branch: Path = args.branch_dir
@@ -1036,6 +1131,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
     index = merge_index(lines, index_entry(record, triage))
     green_file = branch / "last-green.json"
     old_green = _read_json(green_file) if green_file.is_file() else None
+    if old_green is not None:
+        validate_last_green(old_green, str(green_file))
     main_ref = resolve_main_ref(args.main_repo, args.main_ref)
     placed: dict[str, bool | None] = {}
 
@@ -1134,8 +1231,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))
-    except (OSError, ValueError, KeyError, TypeError, ElementTree.ParseError) as exc:
-        print(f"nightly_canary: {exc}", file=sys.stderr)
+    # The validators above refuse a bad shape with a ValueError. The rest is a
+    # backstop: an uncaught exception exits 1, which means a checked condition.
+    except (OSError, ValueError, ElementTree.ParseError, LookupError, TypeError, AttributeError, RecursionError) as exc:
+        print(f"nightly_canary: {exc!r}", file=sys.stderr)
         return 2
 
 
