@@ -1515,7 +1515,7 @@ def test_a_tree_reads_match_installs_first_and_skips_the_echo() -> None:
     steps = _pytest_job_steps()
     installs = [
         step for step in steps
-        if any("astral-sh/setup-uv@" in line or line.strip() == "run: uv sync --frozen --group dev --extra archive" for line in step)
+        if any("astral-sh/setup-uv@" in line or line.strip() == "run: uv sync --frozen --group dev --extra archive --extra onboard-llm" for line in step)
     ]
     assert len(installs) == 2, f"expected the setup-uv and uv sync steps, found {len(installs)}"
     for step in installs:

@@ -183,7 +183,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - if: steps.filter.outputs.code == 'true' || steps.filter.outputs.tree_reads == 'true' || github.event_name == 'workflow_dispatch'
-        run: uv sync --frozen --group dev --extra archive
+        run: uv sync --frozen --group dev --extra archive --extra onboard-llm
       # The uninstall `--archive` tests guard themselves with
       # `pytest.importorskip("cryptography")` (#1529), so a CI job that lost the
       # `[archive]` extra would report green while silently skipping six tests
@@ -192,6 +192,13 @@ jobs:
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         name: The [archive] extra must be present, or the archive tests skip
         run: uv run python -c "import cryptography"
+      # tests/test_anthropic_sdk_contract_1844.py checks the classifier's
+      # call against the installed SDK and skips when `anthropic` is absent,
+      # so a job without the `[onboard-llm]` extra would pass a Dependabot
+      # bump to an SDK that rejects the call, as #1827 did.
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+        name: The [onboard-llm] extra must be present, or the SDK contract tests skip
+        run: uv run python -c "import anthropic"
       # The interpreter, SQLite and runner image a leg actually used, so a
       # failure on one leg can be compared against a green one without
       # re-running it. uv can resolve the image's own Python as well as a
