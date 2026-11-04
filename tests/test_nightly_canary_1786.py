@@ -1072,7 +1072,8 @@ def test_a_bad_or_repeated_leg_is_a_usage_error(tmp_path: Path, legs: tuple[str,
     assert rc == 2 and record is None
 
 
-@pytest.mark.parametrize("created_at", ["Nov 4", "2026/11/04", ""], ids=["word", "slashes", "empty-is-now"])
+@pytest.mark.parametrize("created_at", ["Nov 4", "2026/11/04", "20261104", "2026-W45-3", ""],
+                         ids=["word", "slashes", "iso-basic", "iso-week", "empty-is-now"])
 def test_a_created_at_with_no_date_is_a_usage_error(tmp_path: Path, created_at: str) -> None:
     bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
     out = tmp_path / "r.json"
