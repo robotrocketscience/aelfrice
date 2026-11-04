@@ -7,9 +7,10 @@ night to a checkout of the `test-results` branch. These tests run its pure
 functions on synthetic JUnit reports in the shapes pytest 9 writes
 (classname and name of a module test, a nested class, parameter ids with
 dots, brackets, spaces and `::`, and a collection error with an empty
-classname, each checked against a real run), and run its subcommands
-against temporary files and a temporary git repository. Nothing here
-calls the network or `gh`.
+classname), and run its subcommands against temporary files and a temporary
+git repository. Two tests run real pytest over a small project, so the
+synthetic shapes cannot drift from what pytest writes without one of them
+failing. Nothing here calls the network or `gh`.
 """
 from __future__ import annotations
 
@@ -334,6 +335,103 @@ def test_ids_that_would_not_round_trip_stay_out_and_the_rerun_does_not_exit_4(
     )
     assert set(verdict["confirmed"]) == unmappable
     assert len(verdict["flaky"]) == 7
+
+
+_REAL_MODULE = _FAILS_ON_FLAG + (
+    "import pytest\n"
+    "def test_pass():\n    pass\n"
+    "def test_always_fails():\n    assert False\n"
+    "def test_flaky():\n    assert not BAD\n"
+    "def test_skip():\n    pytest.skip('not here')\n"
+    "@pytest.mark.xfail(reason='known')\n"
+    "def test_xfail():\n    assert False\n"
+    "@pytest.mark.parametrize('v', ['a.b', 'c d'])\n"
+    "def test_param(v):\n    assert not BAD\n"
+    "class TestGroup:\n    def test_in_class(self):\n        assert False\n"
+)
+
+
+@pytest.mark.timeout(120)
+def test_real_pytest_output_runs_through_failed_ids_and_verdict(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8")
+    (project / "tests" / "test_m.py").write_text(_REAL_MODULE, encoding="utf-8")
+    full = _pytest(project, "--junitxml=junit.xml", fail=True)
+    assert full.returncode == 1, full.stdout
+    junit = project / "junit.xml"
+    assert tor.parse_junit(junit.read_text(encoding="utf-8")) == {
+        "tests.test_m::test_pass": tor.PASSED,
+        "tests.test_m::test_always_fails": tor.FAILED,
+        "tests.test_m::test_flaky": tor.FAILED,
+        "tests.test_m::test_skip": tor.SKIPPED,
+        "tests.test_m::test_xfail": tor.XFAILED,
+        "tests.test_m::test_param[a.b]": tor.FAILED,
+        "tests.test_m::test_param[c d]": tor.FAILED,
+        "tests.test_m.TestGroup::test_in_class": tor.FAILED,
+    }
+    ids = tmp_path / "ids.txt"
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(project), "--out", str(ids)]) == 0
+    assert ids.read_text(encoding="utf-8").splitlines() == [
+        "tests/test_m.py::TestGroup::test_in_class",
+        "tests/test_m.py::test_always_fails",
+        "tests/test_m.py::test_flaky",
+        "tests/test_m.py::test_param[a.b]",
+        "tests/test_m.py::test_param[c d]",
+    ]
+    rerun = _pytest(project, f"@{ids}", "--junitxml=rerun.xml")
+    assert rerun.returncode == 1, rerun.stdout
+    out = tmp_path / "verdict.json"
+    assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--rerun", str(project / "rerun.xml"),
+                    "--rerun-rc", "1", "--out", str(out)]) == 1
+    verdict = json.loads(out.read_text(encoding="utf-8"))
+    assert verdict["confirmed"] == ["tests.test_m.TestGroup::test_in_class", "tests.test_m::test_always_fails"]
+    assert verdict["flaky"] == ["tests.test_m::test_flaky", "tests.test_m::test_param[a.b]",
+                                "tests.test_m::test_param[c d]"]
+    assert verdict["status"] == nc.RED
+
+
+@pytest.mark.timeout(120)
+def test_a_real_collection_error_reaches_triage_with_the_module_to_collect(tmp_path: Path) -> None:
+    """pytest stops with exit 2, and the report holds only the module's id."""
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8")
+    (project / "tests" / "test_m.py").write_text("def test_pass():\n    pass\n", encoding="utf-8")
+    (project / "tests" / "test_broken.py").write_text("raise ImportError('regression')\n", encoding="utf-8")
+    full = _pytest(project, "--junitxml=junit.xml")
+    assert full.returncode == 2, full.stdout
+    junit = project / "junit.xml"
+    assert tor.parse_junit(junit.read_text(encoding="utf-8")) == {"::tests.test_broken": tor.ERROR}
+    ids = tmp_path / "ids.txt"
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(project), "--out", str(ids)]) == 1
+    assert not ids.exists()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "junit.xml").write_bytes(junit.read_bytes())
+    assert nc.main(["verdict", "--rc", "2", "--junit", str(junit), "--out", str(bundle / "verdict.json")]) == 1
+    clean = _bundle(tmp_path / "clean", {"tests.test_m::test_pass": tor.PASSED})
+    record_file = tmp_path / "record.json"
+    assert nc.main(["record", "--leg", f"3.13={bundle}", "--leg", f"3.12={clean}", "--sha", SHA2,
+                    "--run-id", "9", "--run-attempt", "1", "--created-at", CREATED, "--out", str(record_file)]) == 0
+    record = json.loads(record_file.read_text(encoding="utf-8"))
+    assert record["nightly"]["status"] == {"3.12": nc.GREEN, "3.13": nc.RED}
+    assert record["nightly"]["verdict"] == nc.RED
+    green = tmp_path / "branch" / "runs" / "x"
+    green.mkdir(parents=True)
+    (green / "record.json").write_text(json.dumps(_green(SHA1, 1)), encoding="utf-8")
+    (tmp_path / "branch" / "last-green.json").write_text(
+        json.dumps({"canary": {"sha": SHA1, "path": "runs/x", "run_id": 1}, "legs": {}}), encoding="utf-8",
+    )
+    out = tmp_path / "triage.json"
+    assert nc.main(["regressions", "--current", str(record_file), "--last-green-dir", str(tmp_path / "branch"),
+                    "--repo-root", str(project), "--out", str(out)]) == 0
+    triage = json.loads(out.read_text(encoding="utf-8"))
+    assert triage["collection_errors"] == [
+        {"test": "::tests.test_broken", "module": "tests/test_broken.py", "legs": ["3.13"]},
+    ]
+    assert triage["drift_check"]["legs"]["3.13"]["collection_errors"] == ["tests/test_broken.py"]
+    assert triage["candidates"] == [] and triage["new_failing"] == []
 
 
 # ---------------------------------------------------------------- verdict
@@ -716,6 +814,18 @@ def test_a_leg_spec_names_a_role_only_by_a_role_suffix(spec: str, parsed: tuple[
 def test_a_bad_or_repeated_leg_is_a_usage_error(tmp_path: Path, legs: tuple[str, ...]) -> None:
     rc, record = _record_cmd(tmp_path, *legs)
     assert rc == 2 and record is None
+
+
+@pytest.mark.parametrize("created_at", ["Nov 4", "2026/11/04", ""], ids=["word", "slashes", "empty-is-now"])
+def test_a_created_at_with_no_date_is_a_usage_error(tmp_path: Path, created_at: str) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    out = tmp_path / "r.json"
+    status = nc.main(["record", "--leg", f"3.12={bundle}", "--sha", SHA1, "--run-id", "1", "--run-attempt", "1",
+                      "--created-at", created_at, "--out", str(out)])
+    if created_at:
+        assert status == 2 and not out.exists()
+    else:
+        assert status == 0 and out.exists()
 
 
 def test_record_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1104,6 +1214,12 @@ def test_a_red_reattempt_leaves_last_green_on_the_green_record_unchanged(
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--out", str(out)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["events"][0]["key"] == f"drift-{c0[:12]}"
+
+
+def test_the_same_attempt_published_again_replaces_its_own_index_line() -> None:
+    lines = nc.merge_index([], nc.index_entry(_red(SHA1, 100), None))
+    again = nc.merge_index(lines, nc.index_entry(_green(SHA1, 100), None))
+    assert [json.loads(line)["verdict"] for line in again] == [nc.GREEN]
 
 
 def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
