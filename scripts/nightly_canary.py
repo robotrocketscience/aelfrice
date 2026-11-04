@@ -286,7 +286,7 @@ def plan_rerun(
         "count": len(red),
         "rerun": bool(ids),
         "mass_failure": False,
-        "ids": sorted(set(ids)),
+        "ids": sorted(ids),
         "unmapped": unmapped,
     }
 
