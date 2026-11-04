@@ -54,10 +54,10 @@ _spec.loader.exec_module(cdf)
 # outside the tree, so they are stated here rather than derived.
 _REQUIRED_NAMES = {"pytest (3.12)", "pytest (3.13)"}
 
-_UPLOAD_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
-# A checkout sha pin and the release it names. The release is not pinned:
+# Sha pins and the releases they name. The release is not pinned:
 # Dependabot bumps both, and tests/test_workflow_supply_chain_1786.py holds
 # the pin rule for every `uses:` line in the tree.
+_UPLOAD_PIN = re.compile(r"actions/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+")
 _CHECKOUT_PIN = re.compile(r"actions/checkout@[0-9a-f]{40} # v\d+\.\d+\.\d+")
 
 # The one test the required legs skip. `derived-figures` runs its producers.
@@ -273,7 +273,8 @@ def test_the_junit_report_is_named_per_matrix_leg() -> None:
 def test_the_report_is_uploaded_even_when_the_suite_fails() -> None:
     step = _upload_step()
     assert _field(step, "if") == "always()"
-    assert _field(step, "uses") == f"actions/upload-artifact@{_UPLOAD_SHA} # v4.6.2"
+    uses = _field(step, "uses") or ""
+    assert _UPLOAD_PIN.fullmatch(uses), uses
     assert _field(step, "retention-days") == "30"
     steps = _steps()
     assert steps.index(step) > steps.index(_pytest_step())
