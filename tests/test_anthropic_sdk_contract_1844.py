@@ -8,10 +8,11 @@ treated it as a transient error, and onboard fell back to the regex
 classifier with no message. Dependabot's bump to 2.3.0 (#1827) was green for
 that reason.
 
-Both tests take the keywords from the classifier's own call, not from a
+Each test takes the keywords from the classifier's own call, not from a
 hand-copied list. The first records the call on a fake client and checks
 each keyword against the installed `Messages.create` signature. The second
-runs the real SDK client over a mock transport from the SDK's own HTTP
+checks that the recorded call sends temperature 0. The third runs the real
+SDK client over a mock transport from the SDK's own HTTP
 package, so the installed SDK builds and serializes the request and nothing
 reaches the network. That package is `httpx` before 1.0 and `httpx2` from
 1.0 on, so the test reads it off `anthropic.DefaultHttpxClient`.
@@ -104,6 +105,14 @@ def test_installed_messages_create_takes_every_classifier_keyword() -> None:
         f"anthropic {anthropic.__version__} Messages.create has no parameter "
         f"{missing}; the classifier sends {sorted(sent)}. The call raises "
         "TypeError and onboard falls back to the regex classifier (#1844)."
+    )
+
+
+def test_the_classifier_sends_temperature_zero() -> None:
+    """Classification stays deterministic; the operator ruled temperature 0 stays."""
+    sent = _recorded_create_kwargs()
+    assert sent.get("temperature") == 0, (
+        f"the classifier sends temperature={sent.get('temperature')!r}, not 0"
     )
 
 
