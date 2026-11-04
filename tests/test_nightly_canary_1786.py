@@ -711,6 +711,7 @@ _BAD_FILES = [
     ("verdict.json", b'{"rc": 0, "red": "x", "flaky": [], "confirmed": [], "mass_failure": false, "status": "green"}'),
     ("verdict.json", b'{"rc": true, "red": [], "flaky": [], "confirmed": [], "mass_failure": false, "status": "green"}'),
     ("verdict.json", b'{"rc": 0, "red": [], "flaky": [], "confirmed": [], "status": "green"}'),
+    ("verdict.json", b'{"rc": 0, "red": [], "flaky": null, "confirmed": [], "mass_failure": false, "status": "green"}'),
     ("verdict.json", b"\xff\xfe"),
     ("env.json", b"oops"),
     ("env.json", b"[]"),
@@ -719,7 +720,7 @@ _BAD_FILES = [
     ("junit.xml", b"<html></html>"),
 ]
 _BAD_IDS = ["verdict-corrupt", "verdict-array", "verdict-empty", "verdict-red-not-a-list", "verdict-rc-bool",
-            "verdict-no-mass-flag", "verdict-not-utf8", "env-corrupt", "env-array", "junit-not-utf8",
+            "verdict-no-mass-flag", "verdict-flaky-null", "verdict-not-utf8", "env-corrupt", "env-array", "junit-not-utf8",
             "junit-truncated", "junit-html"]
 
 
@@ -774,6 +775,33 @@ def test_a_verdict_that_marks_a_red_test_flaky_without_listing_it_red_is_refused
     assert nc.check_verdict(verdict, outcomes) is None
     assert nc.check_verdict({**verdict, "flaky": [], "confirmed": []}, outcomes) is not None
     assert nc.check_verdict({**verdict, "status": nc.RED}, outcomes) is not None
+    assert nc.check_verdict({**verdict, "red": []}, outcomes) is not None
+
+
+def test_a_verdict_rc_that_is_a_boolean_is_refused() -> None:
+    """False equals 0, so the status check alone would accept it."""
+    outcomes = {_A: tor.PASSED}
+    assert nc.check_verdict({**nc.classify_leg(0, outcomes, None), "rc": False}, outcomes) == "verdict.json holds no pytest rc"
+
+
+def test_an_unreadable_report_beside_an_empty_verdict_is_a_missing_leg(tmp_path: Path) -> None:
+    """The verdict is dropped with the report, so nothing reads its fields."""
+    specs = _three_legs(tmp_path)
+    (tmp_path / "3.13" / "junit.xml").write_bytes(b"\xff\xfe")
+    (tmp_path / "3.13" / "verdict.json").write_bytes(b"{}")
+    rc, record = _record_cmd(tmp_path, *specs)
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.MISSING
+
+
+def test_a_verdict_with_no_report_is_a_missing_leg() -> None:
+    verdict = nc.classify_leg(0, {_A: tor.PASSED}, None)
+    record = nc.build_nightly_record(
+        {"3.12": None}, {"3.12": verdict}, {"3.12": None}, {"3.12": nc.CANARY}, {"3.12": None},
+        SHA1, 1, 1, "schedule", CREATED, required=("3.12",),
+    )
+    assert record["nightly"]["status"]["3.12"] == nc.MISSING
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
 
 
 def test_an_absent_env_file_is_a_null_environment_not_a_bad_leg(tmp_path: Path) -> None:
@@ -1026,6 +1054,26 @@ def test_a_mass_failure_on_one_leg_samples_that_leg_and_marks_the_night() -> Non
     assert len(legs["3.12"]["tests"]) == 20 and set(legs["3.12"]["tests"]) <= set(tests)
 
 
+def test_a_mass_failure_on_one_leg_does_not_sample_the_other() -> None:
+    tests = {f"tests.test_a::test_{i:02}": tor.PASSED for i in range(60)}
+    green = _night(SHA1, {"3.12": (tests, None), "3.13": (tests, None)})
+    thirty = [f"tests.test_a::test_{i:02}" for i in range(30)]
+    tonight = _night(SHA2, {
+        "3.12": ({t: tor.FAILED for t in tests}, None),
+        "3.13": ({**tests, **{t: tor.FAILED for t in thirty}}, None),
+    })
+    assert tonight["nightly"]["mass_failure"] == {"3.12": True, "3.13": False}
+    legs = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)["drift_check"]["legs"]
+    assert len(legs["3.12"]["tests"]) == 20
+    assert legs["3.13"]["tests"] == thirty
+
+
+def test_the_sample_does_not_depend_on_input_order() -> None:
+    items = [f"t::{i:03}" for i in range(137)]
+    assert nc.even_sample(list(reversed(items)), 20) == nc.even_sample(items, 20)
+    assert len(set(nc.even_sample(items, 20))) == 20
+
+
 def test_each_test_is_drift_checked_on_the_leg_that_failed_it() -> None:
     green = _night(SHA1, {"3.12": ({_A: tor.PASSED, _B: tor.PASSED, _C: tor.PASSED}, None),
                           "3.13": ({_A: tor.PASSED, _B: tor.PASSED, _C: tor.PASSED}, None)})
@@ -1255,6 +1303,16 @@ def test_a_late_older_attempt_at_the_same_commit_does_not_take_the_pointer(
     assert _index(tmp_path)[0]["run_attempt"] == 2
 
 
+def test_the_same_run_and_attempt_on_a_later_date_leaves_the_pointer(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """`created_at` defaults to now, so a republish can land in a new directory."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, day=4), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, day=5), None) == 0
+    assert _last_green(tmp_path)["canary"]["path"] == "runs/2026-11-04-100-a1"
+
+
 def test_a_late_older_run_at_the_same_commit_does_not_take_the_pointer(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
@@ -1342,6 +1400,20 @@ def test_the_record_this_publish_writes_counts_as_present(
     repo, (c0, _, _), _ = main_repo
     assert _publish(tmp_path, repo, _green(c0, 100), None, "--dry-run") == 0
     assert _publish(tmp_path, repo, _green(c0, 100), None) == 0
+
+
+def test_a_night_that_moves_nothing_leaves_the_pointer_file_untouched(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
+    green_file = tmp_path / "branch" / "last-green.json"
+    spaced = json.dumps(json.loads(green_file.read_text(encoding="utf-8")), indent=4)
+    green_file.write_text(spaced, encoding="utf-8")
+    both_red = _night(c1, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)},
+                      run_id=101, created_at="2026-11-02T02:17:00Z")
+    assert _publish(tmp_path, repo, both_red, None) == 0
+    assert green_file.read_text(encoding="utf-8") == spaced
 
 
 def test_an_incomplete_night_does_not_move_the_pointer(
@@ -1468,6 +1540,13 @@ def test_next_last_green_asks_about_each_entry_it_would_move() -> None:
     assert calls == [(SHA1, SHA2)]
     assert notes[0] == f"last green canary: {SHA1[:12]} -> {SHA2[:12]}"
     assert problems == []
+
+
+def test_ancestry_git_cannot_answer_keeps_the_pointer_and_is_a_problem() -> None:
+    old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 1}, "legs": {}}
+    new, _, problems = nc.next_last_green(old, _green(SHA2, 2), lambda a, b: None, lambda sha: True)
+    assert new["canary"]["sha"] == SHA1
+    assert f"canary: stays at {SHA1[:12]}, ancestry against {SHA2[:12]} unknown" in problems
 
 
 def test_a_missing_triage_still_publishes_the_record(
