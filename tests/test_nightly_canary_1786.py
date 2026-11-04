@@ -351,11 +351,12 @@ def test_ids_that_would_not_round_trip_stay_out_and_the_rerun_does_not_exit_4(
         (2, {"::tests.test_broken": tor.ERROR}, None, 1, nc.RED, [], ["::tests.test_broken"]),
         (2, {_A: tor.PASSED}, None, 1, nc.BROKEN, [], []),
         (5, {}, None, 1, nc.BROKEN, [], []),
+        (0, {}, None, 1, nc.BROKEN, [], []),
         (1, {_A: tor.PASSED}, None, 1, nc.BROKEN, [], []),
         (1, {_A: tor.FAILED}, {_A: tor.PASSED}, 0, nc.GREEN, [_A], []),
     ],
     ids=["clean", "flaky", "confirmed", "no-rerun", "absent-from-rerun", "skipped-on-rerun",
-         "flaky-and-confirmed", "collection-error", "interrupted", "no-tests", "rc1-nothing-red",
+         "flaky-and-confirmed", "collection-error", "interrupted", "no-tests", "rc0-no-tests", "rc1-nothing-red",
          "all-flaky"],
 )
 def test_verdict_sorts_flaky_from_confirmed_and_exits_on_anything_not_green(
@@ -389,6 +390,28 @@ def test_verdict_dry_run_writes_nothing_and_keeps_the_exit_status(tmp_path: Path
     out = tmp_path / "verdict.json"
     assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--out", str(out), "--dry-run"]) == 1
     assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["<html><body>502 Bad Gateway</body></html>", "<testcase classname='a' name='b'/>", "<x><testsuites/></x>"],
+    ids=["html", "bare-testcase", "wrapped"],
+)
+def test_xml_that_is_not_a_junit_report_is_unreadable_for_both_readers(tmp_path: Path, text: str) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(text, encoding="utf-8")
+    assert nc.main(["verdict", "--rc", "0", "--junit", str(junit)]) == 2
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(tmp_path),
+                    "--out", str(tmp_path / "ids.txt")]) == 2
+
+
+@pytest.mark.parametrize("root", ["testsuites", "testsuite"])
+def test_a_report_with_either_junit_root_and_no_test_is_broken(tmp_path: Path, root: str) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(f"<{root}></{root}>", encoding="utf-8")
+    out = tmp_path / "verdict.json"
+    assert nc.main(["verdict", "--rc", "0", "--junit", str(junit), "--out", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["status"] == nc.BROKEN
 
 
 def test_verdict_on_an_unreadable_report_is_a_usage_error(tmp_path: Path) -> None:

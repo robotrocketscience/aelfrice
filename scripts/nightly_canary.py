@@ -58,9 +58,11 @@ the outcomes that turn a pytest leg red. A red test whose rerun outcome is
 `passed` is flaky; every other red test is confirmed. More than `--max` red
 tests is a mass failure: the rerun is skipped and every red test is
 confirmed. The leg's status is `green` when nothing is confirmed and pytest
-exited 0 or 1, `red` when a test is confirmed, and `broken` when pytest
-exited with any other status, or with 1 and no red test, and nothing is
-confirmed. The exit status is 1 unless the leg is green.
+exited 0 or 1, `red` when a test is confirmed, and `broken` when nothing is
+confirmed and pytest exited with any other status, or with 1 and no red
+test, or the report holds no test. The exit status is 1 unless the leg is
+green. XML that is not a JUnit report, such as an HTML error page, is an
+unreadable input.
 
 `record` writes a format-1 record that `test_outcome_record.py` reads,
 with every leg, plus a `nightly` key holding the run, each leg's role,
@@ -173,6 +175,15 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # --------------------------------------------------------------- failed-ids
 
+def parse_report(text: str) -> dict[str, str]:
+    """`parse_junit`, refusing XML whose root is not a JUnit one: it holds
+    no `<testcase>`, so it would read as a run with nothing wrong."""
+    root = ElementTree.fromstring(text)
+    if root.tag not in ("testsuites", "testsuite"):
+        raise ValueError(f"not a JUnit report: the root element is <{root.tag}>")
+    return tor.parse_junit(text)
+
+
 def red_ids(outcomes: dict[str, str]) -> list[str]:
     """The test ids with a red outcome, sorted."""
     return sorted(t for t, o in outcomes.items() if o in RED_OUTCOMES)
@@ -232,6 +243,14 @@ def github_output_lines(plan: dict[str, Any]) -> list[str]:
 
 # ------------------------------------------------------------------ verdict
 
+def leg_status(rc: int, outcomes: dict[str, str], confirmed: list[str]) -> str:
+    if confirmed:
+        return RED
+    if rc not in _TEST_RC or (rc == 1 and not red_ids(outcomes)) or not outcomes:
+        return BROKEN
+    return GREEN
+
+
 def classify_leg(
     rc: int,
     outcomes: dict[str, str],
@@ -246,19 +265,13 @@ def classify_leg(
     else:
         flaky = [t for t in red if rerun.get(t) == tor.PASSED]
     confirmed = [t for t in red if t not in flaky]
-    if confirmed:
-        status = RED
-    elif rc not in _TEST_RC or (rc == 1 and not red):
-        status = BROKEN
-    else:
-        status = GREEN
     return {
         "rc": rc,
         "red": red,
         "flaky": flaky,
         "confirmed": confirmed,
         "mass_failure": mass,
-        "status": status,
+        "status": leg_status(rc, outcomes, confirmed),
     }
 
 
@@ -609,7 +622,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _read_junit(path: Path) -> dict[str, str]:
-    return tor.parse_junit(path.read_text(encoding="utf-8"))
+    return parse_report(path.read_text(encoding="utf-8"))
 
 
 def cmd_env(args: argparse.Namespace) -> int:
