@@ -18,7 +18,8 @@ workflows install and what the documentation tells a human to install
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set — it reaches a local venv only as a transitive
 dependency of optional extras, so an `import yaml` here passes locally and
-fails under CI's `uv sync --frozen --group dev --extra archive`. The parser
+fails under CI's
+`uv sync --frozen --group dev --extra archive --extra onboard-llm`. The parser
 is small enough to be wrong quietly, so `test_parse_sync_extras_*` pins its
 shape directly instead of trusting it through the assertions above.
 """

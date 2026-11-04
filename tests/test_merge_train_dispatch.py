@@ -28,7 +28,7 @@ dispatch that exists and covers the wrong set, or fires at the wrong moment:
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set — it reaches a local venv only as a transitive dep of
 optional extras, so `import yaml` here passes locally and fails under CI's
-`uv sync --frozen --group dev --extra archive`. Same trap as
+`uv sync --frozen --group dev --extra archive --extra onboard-llm`. Same trap as
 `tests/test_ci_manual_dispatch.py`, whose helpers this file reuses in shape.
 """
 

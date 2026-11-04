@@ -23,7 +23,8 @@ notices when dispatching has stopped working) read it from this one place.
 Pure stdlib on purpose, and parsed as text rather than with PyYAML: `yaml` is
 not in this project's dependency set — it reaches a local venv only as a
 transitive dep of optional extras, so `import yaml` passes locally and fails
-under CI's `uv sync --frozen --group dev --extra archive`. The same trap is
+under CI's `uv sync --frozen --group dev --extra archive --extra onboard-llm`.
+The same trap is
 recorded in `tests/test_ci_manual_dispatch.py`.
 
 The parse is deliberately narrow. `branches:` under `on: push:` is the whole

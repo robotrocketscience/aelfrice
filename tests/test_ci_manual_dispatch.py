@@ -24,7 +24,7 @@ a list against itself (the tautological-guard failure of #1161).
 Parsed by line rather than with PyYAML on purpose: `yaml` is not in this
 project's dependency set — it reaches a local venv only as a transitive dep of
 optional extras, so a `import yaml` here passes locally and fails under CI's
-`uv sync --frozen --group dev --extra archive`.
+`uv sync --frozen --group dev --extra archive --extra onboard-llm`.
 """
 from __future__ import annotations
 
