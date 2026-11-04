@@ -611,6 +611,22 @@ def test_run_given_points_with_no_pr_in_the_range_tests_every_commit(
     assert "::warning::" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(("count", "kept"), [(500, False), (499, True)])
+def test_merge_points_at_the_list_limit_means_every_commit(
+    env: Env, tmp_path: Path, capsys: pytest.CaptureFixture[str], count: int, kept: bool,
+) -> None:
+    """`gh` returned exactly its limit with 509 merges in range, and the
+    points it left out moved the culprit to the wrong PR."""
+    shas = env.repo(_LINEAR)
+    prs = [{"number": 1000 + i, "mergeCommit": {"oid": f"{i:040x}"}} for i in range(count - 1)]
+    _write(env.gh_out, [{"number": 12, "mergeCommit": {"oid": shas[5]}}, *prs])
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    points = json.loads(out.read_text(encoding="utf-8"))
+    assert points == ({shas[5]: 12, shas[7]: None} if kept else {})
+    assert ("::warning::" in capsys.readouterr().err) is not kept
+
+
 def test_merge_points_dry_run_calls_no_api(env: Env, tmp_path: Path) -> None:
     shas = env.repo(_LINEAR)
     out = tmp_path / "points.json"

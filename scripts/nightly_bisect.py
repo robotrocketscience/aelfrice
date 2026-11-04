@@ -27,8 +27,9 @@ ancestry path from `--good` to `--bad` and keeps those that are the merge
 commit of a PR merged since the day before `--good` was committed, as
 `gh pr list --state merged` reports them. `--bad` is always kept. The
 output maps each kept commit to its PR number, or to null for `--bad`
-when no PR merged it, in history order. When the `gh` call fails, or no
-PR merged a commit in the range, the output is `{}` with a warning, and
+when no PR merged it, in history order. When the `gh` call fails, returns
+as many PRs as its `--limit` (the list may be cut short), or names no merge
+in the range, the output is `{}` with a warning, and
 `run` then tests every commit. `run` reads a points file with no PR in the
 range the same way, since blaming `--bad` would test nothing.
 
@@ -728,6 +729,8 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         prs = json.loads(r.stdout)
         if not isinstance(prs, list):
             raise ValueError("gh pr list did not return a list")
+        if len(prs) >= _PR_LIST_LIMIT:
+            raise ValueError(f"gh pr list returned its limit of {_PR_LIST_LIMIT}, so it may be cut short")
         points = select_points(order, cast(list[dict[str, Any]], prs), bad)
         if not points:
             raise ValueError("gh pr list names no merge in the range")
