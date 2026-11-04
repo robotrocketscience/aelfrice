@@ -794,11 +794,17 @@ def missing_records(green: dict[str, Any], has_record: Callable[[str], bool]) ->
 def off_main_pointers(green: dict[str, Any], on_main: Callable[[str], bool | None]) -> list[str]:
     """A problem per entry of `last-green.json` whose commit is not on main."""
     entries = [("canary", green.get("canary")), *((f"leg {leg}", p) for leg, p in sorted(green.get("legs", {}).items()))]
-    return [
-        f"{what}: names {str(pointer['sha'])[:12]}, which is not on main; the next green night on main re-points it"
-        for what, pointer in entries
-        if pointer is not None and on_main(str(pointer["sha"])) is not True
-    ]
+    problems: list[str] = []
+    for what, pointer in entries:
+        if pointer is None:
+            continue
+        answer = on_main(str(pointer["sha"]))
+        if answer is not True:
+            why = "is not on main" if answer is False else "could not be checked against main"
+            problems.append(
+                f"{what}: names {str(pointer['sha'])[:12]}, which {why}; the next green night on main re-points it"
+            )
+    return problems
 
 
 def next_last_green(

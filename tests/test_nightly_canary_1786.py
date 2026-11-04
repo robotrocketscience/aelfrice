@@ -1391,13 +1391,16 @@ def test_the_first_pointer_needs_a_commit_on_main_too(
     assert _last_green(tmp_path)["canary"]["sha"] == c2
 
 
-def test_a_missing_main_repo_moves_nothing_and_exits_1(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+def test_a_missing_main_repo_moves_nothing_exits_1_and_blames_no_commit(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo, (c0, c1, _), _ = main_repo
     assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
+    capsys.readouterr()
     assert _publish(tmp_path, tmp_path / "no-repo", _green(c1, 101, day=2), None) == 1
     assert _last_green(tmp_path)["canary"]["sha"] == c0
+    out = capsys.readouterr().out
+    assert "could not be checked against main" in out and "is not on main" not in out
 
 
 def test_a_pointer_off_main_exits_1_each_night_until_a_green_night_repoints_it(
