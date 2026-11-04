@@ -142,20 +142,24 @@ _C = "tests.test_b::test_three"
         ("tests.sub.deep.test_p::test_param[[q]]", "tests/sub/deep/test_p.py::test_param[[q]]"),
         ("tests.sub.deep.test_p::test_param[a::b]", "tests/sub/deep/test_p.py::test_param[a::b]"),
         ("tests.sub.deep.test_p::test_param[\\xe9]", "tests/sub/deep/test_p.py::test_param[\\xe9]"),
-        ("tests.foo.test_bar::test_y", "tests/foo/test_bar.py::test_y"),
         ("tests.foo.TestF::test_z", "tests/foo.py::TestF::test_z"),
+        ("tests.pkg.test_c::test_y", "tests/pkg/test_c.py::test_y"),
+        ("tests.foo.test_bar::test_y", None),
+        ("tests.dep[x].test_br::test_y", None),
+        ("tests.foo.2.test_d::test_y", None),
         ("::tests.test_broken", None),
         ("tests.gone::test_x", None),
         ("tests.test_a", None),
     ],
     ids=["module", "class", "nested-class", "param-dot", "param-space", "param-brackets",
-         "param-colons", "param-escape", "longest-prefix-dir", "module-beside-dir",
+         "param-colons", "param-escape", "module-beside-dir", "module-in-dir",
+         "two-prefixes-are-files", "bracket-in-path", "dotted-dir-over-a-file",
          "collection-error", "deleted-module", "no-name"],
 )
 def test_a_junit_id_maps_to_the_node_id_pytest_reruns(tmp_path: Path, test: str, expected: str | None) -> None:
-    """Each shape pytest 9 writes. A module that shares its name with a
-    package resolves to the longer path first."""
-    root = _tree(tmp_path, "tests/test_a.py", "tests/sub/deep/test_p.py", "tests/foo.py", "tests/foo/test_bar.py")
+    """Each shape pytest 9 writes, and the shapes pytest would refuse."""
+    root = _tree(tmp_path, "tests/test_a.py", "tests/sub/deep/test_p.py", "tests/foo.py", "tests/foo/test_bar.py",
+                 "tests/pkg/test_c.py", "tests/dep[x]/test_br.py")
     assert nc.node_id(test, lambda rel: (root / rel).is_file()) == expected
 
 
@@ -273,6 +277,63 @@ def test_failed_ids_needs_a_readable_report_and_a_repo_root(tmp_path: Path) -> N
     assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(tmp_path), "--out", out]) == 2
     junit.write_text(_junit({_A: tor.PASSED}), encoding="utf-8")
     assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(tmp_path / "no"), "--out", out]) == 2
+
+
+def _pytest(project: Path, *args: str, fail: bool = False) -> subprocess.CompletedProcess[str]:
+    """Real pytest in a throwaway project. Tests read FAIL from the environment."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_") and k != "FAIL"}
+    if fail:
+        env["FAIL"] = "1"
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", *args],
+        cwd=project, env=env, capture_output=True, text=True, timeout=90,
+    )
+
+
+_FAILS_ON_FLAG = "import os\nBAD = os.environ.get('FAIL') == '1'\n"
+
+
+@pytest.mark.timeout(120)
+def test_ids_that_would_not_round_trip_stay_out_and_the_rerun_does_not_exit_4(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Real pytest: a class sharing a name with a same-stem file, a directory
+    holding `[x]` and one holding a dot. Before this rule one of them in the
+    file made pytest exit 4, so every flaky test in the rerun read as confirmed."""
+    project = tmp_path / "project"
+    files = {
+        "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+        "tests/test_col.py": _FAILS_ON_FLAG + "class TestX:\n    def test_y(self):\n        assert not BAD\n",
+        "tests/test_col/TestX.py": "",
+        "tests/test_dep[x]/test_br.py": _FAILS_ON_FLAG + "def test_br():\n    assert not BAD\n",
+        "tests/v1.2/test_dot.py": _FAILS_ON_FLAG + "def test_dot():\n    assert not BAD\n",
+        "tests/test_p.py": _FAILS_ON_FLAG + (
+            "import pytest\n"
+            "@pytest.mark.parametrize('v', ['a.b', 'x y', '[q]', 'c::d', '--opt', '@file', '#c'])\n"
+            "def test_v(v):\n    assert not BAD\n"
+        ),
+    }
+    for rel, body in files.items():
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_text(body, encoding="utf-8")
+    full = _pytest(project, "--junitxml=junit.xml", fail=True)
+    assert full.returncode == 1, full.stdout
+    out = tmp_path / "ids.txt"
+    assert nc.main(["failed-ids", "--junit", str(project / "junit.xml"), "--repo-root", str(project),
+                    "--out", str(out)]) == 0
+    unmappable = {"tests.test_col.TestX::test_y", "tests.test_dep[x].test_br::test_br", "tests.v1.2.test_dot::test_dot"}
+    notices = capsys.readouterr().err
+    assert all(test in notices for test in unmappable)
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 7
+    rerun = _pytest(project, f"@{out}", "--junitxml=rerun.xml")
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    verdict = nc.classify_leg(
+        1,
+        tor.parse_junit((project / "junit.xml").read_text(encoding="utf-8")),
+        tor.parse_junit((project / "rerun.xml").read_text(encoding="utf-8")),
+    )
+    assert set(verdict["confirmed"]) == unmappable
+    assert len(verdict["flaky"]) == 7
 
 
 # ---------------------------------------------------------------- verdict

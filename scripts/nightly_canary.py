@@ -36,12 +36,16 @@ under the leg's interpreter with `uv run`), `junit.xml` from the full run,
 
 `failed-ids` names the tests to rerun. A JUnit test id is
 `classname::name`, with the module path dotted in `classname`. The node id
-takes the longest prefix of `classname` that is a file
-`<repo-root>/a/b.py`; the rest of `classname` is class names, and `name`
-keeps its parameter brackets. A test whose module no longer exists, or a
-collection error (pytest writes it with an empty `classname`), maps to no
-node id. It is left out of the file, so the rerun does not run it and the
-verdict counts it as confirmed. The exit status carries the rerun decision:
+takes the one prefix of `classname` that is a file `<repo-root>/a/b.py`; the
+rest of `classname` is class names, and `name` keeps its parameter brackets.
+An id maps to no node id when it would not round-trip through pytest: its
+module no longer exists, it is a collection error (pytest writes those with
+an empty `classname`), two prefixes are files (a class sharing its name with
+a file in a same-stem directory), the path holds `[` or `]` (pytest refuses
+those), or a directory holds a dot (its parts read as class names). One such
+id in the file would make pytest exit 4 for the whole rerun, so each is left
+out and named in a `::notice::`, and the verdict counts it as confirmed. The
+exit status carries the rerun decision:
 0 means the file holds at least one node id, and 1 means there is nothing to
 rerun (no mapped red test, or more than `--max` red tests) and the file does
 not exist, a stale one included. No empty file is ever written, because
@@ -178,18 +182,19 @@ def node_id(test: str, is_file: Callable[[str], bool]) -> str | None:
     """The pytest node id for a JUnit `classname::name`, or None.
 
     `is_file` says whether a path relative to the repo root is a file. The
-    module is the longest dotted prefix of `classname` that names a `.py`
-    file; the parts after it are classes.
+    module is the one dotted prefix of `classname` that names a `.py` file;
+    the parts after it are classes. None when pytest could not select the
+    result: no such prefix, more than one, a bracket in the path, or a part
+    after the module that cannot be a class name.
     """
     classname, sep, name = test.partition("::")
-    if not sep or not classname or not name:
+    if not sep or not classname or not name or "[" in classname or "]" in classname:
         return None
     parts = classname.split(".")
-    for cut in range(len(parts), 0, -1):
-        module = "/".join(parts[:cut]) + ".py"
-        if is_file(module):
-            return "::".join([module, *parts[cut:], name])
-    return None
+    cuts = [cut for cut in range(1, len(parts) + 1) if is_file("/".join(parts[:cut]) + ".py")]
+    if len(cuts) != 1 or not all(part.isidentifier() for part in parts[cuts[0]:]):
+        return None
+    return "::".join(["/".join(parts[:cuts[0]]) + ".py", *parts[cuts[0]:], name])
 
 
 def plan_rerun(
