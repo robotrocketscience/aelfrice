@@ -47,7 +47,8 @@ from the exit status of `git bisect run`, which is nonzero both when it
 stops on skipped commits and when a step aborts it. The bad commit is the
 culprit when the merge point before it is good. The script then runs the
 step once more on the culprit, which has to fail, and on that merge point,
-which has to pass. When either disagrees the tests get a range event.
+which has to pass. When either disagrees the tests get a range event. When
+the deadline stops a check, the range is the one the bisect narrowed to.
 `git bisect reset` runs in a `finally` after every round. The worktree
 stays after the run; the next run removes it first.
 
@@ -738,9 +739,11 @@ class Bisector:
             record.update(culprit=outcome.culprit, verify={
                 "culprit_rc": culprit_rc, "preceding": outcome.good, "preceding_rc": before_rc,
             })
+            if STEP_ABORT in (culprit_rc, before_rc):
+                add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
+                return
             if culprit_rc != STEP_BAD or before_rc != STEP_GOOD:
-                reason = REASON_BUDGET if STEP_ABORT in (culprit_rc, before_rc) else REASON_UNVERIFIED
-                add_event(self.events, event_for_range(lo, self.bad, remaining, reason))
+                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
                 return
             broke = failed or remaining
             add_event(self.events, event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), broke))

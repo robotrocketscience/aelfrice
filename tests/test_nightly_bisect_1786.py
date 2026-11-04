@@ -490,6 +490,17 @@ def test_a_hung_recheck_ends_on_time_with_nothing_left_running(
     assert _survivors(env.pids()) == []
 
 
+def test_a_deadline_during_the_recheck_keeps_the_narrowed_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bisect had finished, yet the result named the whole range."""
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_ABORT_CHECK", "1")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
+
+
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
@@ -579,7 +590,7 @@ def test_the_step_gets_git_dir_and_its_children_do_not(env: Env, tmp_path: Path,
     the worktree's git directory, and the suite's tests do that."""
     shas = env.repo(["", "", "", "a", "a"])
     points: dict[str, int | None] = {shas[i]: 20 + i for i in range(1, 5)}
-    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, extra=())[0] == 0
+    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points)[0] == 0
     seen = env.env_log.read_text(encoding="utf-8").splitlines()
     assert any(row.startswith("step bisect ") and not row.endswith(" None") for row in seen), seen
     env.env_log.unlink()
