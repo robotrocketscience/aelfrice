@@ -151,6 +151,10 @@ _C = "tests.test_b::test_three"
         ("tests.pkg.test_c::test_y", "tests/pkg/test_c.py::test_y"),
         ("tests.foo.test_bar::test_y", None),
         ("tests.dep[x].test_br::test_y", None),
+        ("tests.dep[x.test_open::test_y", None),
+        ("tests.dep]x.test_close::test_y", None),
+        ("tests.test_a::", None),
+        ("test_top::test_y", "test_top.py::test_y"),
         ("tests.foo.2.test_d::test_y", None),
         ("::tests.test_broken", None),
         ("tests.gone::test_x", None),
@@ -158,13 +162,15 @@ _C = "tests.test_b::test_three"
     ],
     ids=["module", "class", "nested-class", "param-dot", "param-space", "param-brackets",
          "param-colons", "param-escape", "module-beside-dir", "module-in-dir",
-         "two-prefixes-are-files", "bracket-in-path", "dotted-dir-over-a-file",
+         "two-prefixes-are-files", "bracket-in-path", "open-bracket-in-path", "close-bracket-in-path", "no-test-name",
+         "module-at-the-root", "dotted-dir-over-a-file",
          "collection-error", "deleted-module", "no-name"],
 )
 def test_a_junit_id_maps_to_the_node_id_pytest_reruns(tmp_path: Path, test: str, expected: str | None) -> None:
     """Each shape pytest 9 writes, and the shapes pytest would refuse."""
     root = _tree(tmp_path, "tests/test_a.py", "tests/sub/deep/test_p.py", "tests/foo.py", "tests/foo/test_bar.py",
-                 "tests/pkg/test_c.py", "tests/dep[x]/test_br.py")
+                 "tests/pkg/test_c.py", "tests/dep[x]/test_br.py", "tests/dep[x/test_open.py", "tests/dep]x/test_close.py",
+                 "test_top.py")
     assert nc.node_id(test, lambda rel: (root / rel).is_file()) == expected
 
 
@@ -858,6 +864,17 @@ def test_an_extra_leg_the_script_cannot_probe_keeps_the_nights_green_record(
     assert "denied" in " ".join(record["nightly"]["notes"]["3.14"])
 
 
+def test_verdict_with_no_out_writes_nothing_and_warns_of_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.PASSED}), encoding="utf-8")
+    assert nc.main(["verdict", "--rc", "0", "--junit", str(junit)]) == 0
+    out = capsys.readouterr().out
+    assert "::warning::" not in out and "leg green" in out
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["junit.xml"]
+
+
 def test_a_non_ascii_test_id_survives_an_ascii_stdout(tmp_path: Path) -> None:
     """Run as a process, since the encoding belongs to the interpreter's stream."""
     junit = tmp_path / "junit.xml"
@@ -996,13 +1013,23 @@ def test_an_unreadable_report_beside_an_empty_verdict_is_a_missing_leg(tmp_path:
 
 
 def test_a_verdict_with_no_report_is_a_missing_leg() -> None:
-    verdict = nc.classify_leg(0, {_A: tor.PASSED}, None)
+    verdict = nc.classify_leg(3, {_A: tor.PASSED}, None)
     record = nc.build_nightly_record(
         {"3.12": None}, {"3.12": verdict}, {"3.12": None}, {"3.12": nc.CANARY}, {"3.12": None},
         SHA1, 1, 1, "schedule", CREATED, required=("3.12",),
     )
     assert record["nightly"]["status"]["3.12"] == nc.MISSING
     assert record["nightly"]["verdict"] == nc.INCOMPLETE
+    assert record["nightly"]["rc"]["3.12"] == 3
+    assert record["nightly"]["mass_failure"]["3.12"] is False
+
+
+def test_the_record_holds_each_legs_rc_and_mass_flag() -> None:
+    many = {f"t::{i}": tor.FAILED for i in range(60)}
+    record = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": (many, None), "3.14": (None, None)},
+                    roles={"3.14": nc.EXTRA})
+    assert record["nightly"]["rc"] == {"3.12": 0, "3.13": 1, "3.14": None}
+    assert record["nightly"]["mass_failure"] == {"3.12": False, "3.13": True, "3.14": False}
 
 
 def test_an_absent_env_file_is_a_null_environment_not_a_bad_leg(tmp_path: Path) -> None:
@@ -1069,9 +1096,7 @@ def test_record_refuses_a_run_it_could_not_publish(tmp_path: Path, bad: list[str
     bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
     out = tmp_path / "r.json"
     args = {"--sha": SHA1, "--run-id": "1", "--run-attempt": "1", "--created-at": CREATED, bad[0]: bad[1]}
-    flat = [part for pair in args.items() for part in (pair[0], pair[1])]
-    assert nc.main(["record", "--leg", f"3.12={bundle}", *[f"{k}={v}" for k, v in args.items()],
-                    "--out", str(out)]) == 2, flat
+    assert nc.main(["record", "--leg", f"3.12={bundle}", *[f"{k}={v}" for k, v in args.items()], "--out", str(out)]) == 2
     assert not out.exists()
 
 
@@ -1374,6 +1399,47 @@ def test_a_mass_failure_on_one_leg_does_not_sample_the_other() -> None:
     assert legs["3.13"]["tests"] == thirty
 
 
+def test_a_short_list_is_the_whole_sample_in_order() -> None:
+    assert nc.even_sample(["b", "a"], 20) == ["a", "b"]
+    items = [f"t{i:02}" for i in range(20)]
+    assert nc.even_sample(items, 20) == items
+
+
+def test_a_mass_failures_drift_check_names_only_the_sample(tmp_path: Path) -> None:
+    root = _tree(tmp_path, "tests/test_a.py")
+    tests = {f"tests.test_a::test_{i:02}": tor.PASSED for i in range(60)}
+    gone = "tests.test_gone::test_x"
+    green = _night(SHA1, {"3.12": ({**tests, gone: tor.PASSED}, None), "3.13": (tests, None)})
+    tonight = _night(SHA2, {"3.12": ({**{t: tor.FAILED for t in tests}, gone: tor.FAILED}, None), "3.13": (tests, None)})
+    leg = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                              lambda rel: (root / rel).is_file())["drift_check"]["legs"]["3.12"]
+    assert len(leg["tests"]) == 20
+    assert len(leg["node_ids"]) + len(leg["unmapped"]) == 20
+
+
+def test_a_leg_collects_only_the_collection_errors_it_had(tmp_path: Path) -> None:
+    root = _tree(tmp_path, "tests/test_one.py", "tests/test_two.py")
+    green = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)})
+    tonight = _night(SHA2, {"3.12": ({"::tests.test_one": tor.ERROR}, None), "3.13": ({"::tests.test_two": tor.ERROR}, None)},
+                     rcs={"3.12": 2, "3.13": 2})
+    legs = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                               lambda rel: (root / rel).is_file())["drift_check"]["legs"]
+    assert legs["3.12"]["collection_errors"] == ["tests/test_one.py"]
+    assert legs["3.13"]["collection_errors"] == ["tests/test_two.py"]
+
+
+def test_a_listed_leg_the_record_does_not_hold_is_a_broken_canary_leg_with_no_mass_failure() -> None:
+    """`record --canary-legs 3.13` then `regressions` with the default: 3.12 has no
+    role, status or mass flag there, and must read as missing, not as green."""
+    tonight = _night(SHA2, {"3.13": ({_A: tor.PASSED}, None)})
+    for key in ("roles", "status", "mass_failure", "confirmed", "flaky", "rc", "env", "attempts", "notes"):
+        tonight["nightly"][key].pop("3.12", None)
+    triage = nc.find_regressions(tonight, None, None, _LEGS)
+    assert triage["canary_legs"] == _LEGS
+    assert triage["events"][0]["legs"] == ["3.12"]
+    assert triage["mass_failure"] is False
+
+
 def test_the_sample_does_not_depend_on_input_order() -> None:
     items = [f"t::{i:03}" for i in range(137)]
     assert nc.even_sample(list(reversed(items)), 20) == nc.even_sample(items, 20)
@@ -1452,6 +1518,13 @@ def test_a_listed_leg_the_record_marks_extra_is_not_refused(tmp_path: Path) -> N
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--canary-legs", "3.12,3.13", "--out", str(out)]) == 0
     assert json.loads(out.read_text(encoding="utf-8"))["events"] == []
+
+
+def test_a_pointer_file_with_no_canary_entry_yet_is_the_night_before_the_first_green_one(tmp_path: Path) -> None:
+    """A first red night writes `{"canary": null, "legs": {}}`."""
+    triage = _regress_on(tmp_path, json.dumps({"canary": None, "legs": {}}), None)
+    assert triage["events"][0]["reason"] == "no last green night yet"
+    assert triage["last_green"] is None
 
 
 def test_a_last_green_dir_that_does_not_exist_is_a_usage_error(tmp_path: Path) -> None:
@@ -2007,6 +2080,35 @@ def test_a_leg_tonight_names_is_checked_even_when_it_is_extra(
     assert _publish(tmp_path, repo, _with_extra(c0, 2, tor.FAILED, 2), None) == 1
     out = capsys.readouterr().out
     assert "leg 3.14: names runs/gone" in out and f"leg 3.14: names {side[:12]}" in out
+
+
+@pytest.mark.parametrize(("answer", "says"), [(False, "is not on main"), (None, "could not be checked against main")],
+                         ids=["not-on-main", "cannot-place"])
+def test_a_pointer_main_does_not_place_is_a_problem_saying_which_way(answer: bool | None, says: str) -> None:
+    entry = {"sha": SHA1, "path": "runs/a", "run_id": 1}
+    problems = nc.off_main_pointers({"canary": entry, "legs": {"3.12": entry}}, lambda sha: answer, {"3.12": nc.CANARY})
+    assert len(problems) == 2
+    assert problems[0].startswith(f"canary: names {SHA1[:12]}, which {says};")
+    assert problems[1].startswith(f"leg 3.12: names {SHA1[:12]}, which {says};")
+    assert nc.off_main_pointers({"canary": entry, "legs": {}}, lambda sha: True, {}) == []
+
+
+def test_an_entry_with_no_attempt_counts_as_older_than_the_first_attempt() -> None:
+    old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 5}, "legs": {}}
+    new, _, _ = nc.next_last_green(old, _green(SHA1, 5, run_attempt=1), lambda a, b: True, lambda sha: True)
+    assert new["canary"]["attempt"] == 1
+
+
+def test_a_branch_dir_that_does_not_exist_is_a_usage_error(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    rec = tmp_path / "record.json"
+    rec.write_text(json.dumps(_green(c0, 100)), encoding="utf-8")
+    missing = tmp_path / "typo"
+    assert nc.main(["publish", "--record", str(rec), "--triage", str(tmp_path / "t.json"), "--branch-dir", str(missing),
+                    "--main-repo", str(repo)]) == 2
+    assert not missing.exists()
 
 
 def test_the_record_this_publish_writes_counts_as_present(
