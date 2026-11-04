@@ -882,6 +882,8 @@ class _FakeApi:
 
     def json(self, path: str) -> Any:
         self.paths.append(path)
+        if "/compare/" in path:
+            return {"merge_base_commit": {"sha": self.commits[0]}}
         if "/commits?" in path:
             return [{"sha": sha} for sha in self.commits]
         m = re.search(r"head_sha=([^&]+)&status=success", path)
@@ -1255,13 +1257,104 @@ def test_no_baseline_flag_at_all_passes_for_a_local_run(tmp_path: Path, capsys: 
     assert "::warning::test outcomes: no baseline: no baseline file given" in capsys.readouterr().out
 
 
-def test_baseline_with_no_base_commit_writes_a_marker_without_the_api(tmp_path: Path) -> None:
-    """A dispatch run has an empty `pull_request.base.sha`."""
+def test_baseline_with_neither_commit_is_a_lookup_error_without_the_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to walk from, so the ratchet cannot have held."""
+    def _no_api() -> None:
+        raise AssertionError("built an API client with no commit to ask about")
+
+    monkeypatch.setattr(tor, "GhApi", _no_api)
     out = tmp_path / "baseline.json"
-    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "", "--out", str(out)]) == 0
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "", "--out", str(out)]) == 2
     marker = json.loads(out.read_text(encoding="utf-8"))
-    assert marker["found"] is False
+    assert tor.is_lookup_error(marker)
     assert "no base commit" in marker["notice"]
+
+
+def _dispatch_api() -> _FakeApi:
+    """main's history below the merge base, whose run reported `t::test_70`."""
+    return _FakeApi(["merge_base"], {"merge_base": [{"id": 7}]}, {7: [_artifact(70, "junit-3.12-m1")]})
+
+
+def _dispatch_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api: _FakeApi) -> Path:
+    """`baseline` as the step runs it on a dispatch: an empty base and the tested head."""
+    monkeypatch.setattr(tor, "GhApi", lambda: api)
+    out = tmp_path / "baseline.json"
+    argv = ["baseline", "--repo", "o/r", "--base-sha", "", "--head-sha", "head", "--legs", "3.12", "--out", str(out)]
+    assert tor.main(argv) == 0
+    return out
+
+
+def test_a_dispatch_walks_from_the_merge_base_of_main_and_its_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _dispatch_api()
+    out = _dispatch_baseline(tmp_path, monkeypatch, api)
+    record = json.loads(out.read_text(encoding="utf-8"))
+    assert record["sha"] == "merge_base" and tor.is_baseline_record(record)
+    assert api.paths[:2] == [
+        "/repos/o/r/compare/main...head?per_page=1",
+        "/repos/o/r/commits?sha=merge_base&per_page=30",
+    ]
+
+
+def test_a_pull_request_does_not_ask_for_the_merge_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The event names its base; the head flag is only read when it does not."""
+    api = _dispatch_api()
+    monkeypatch.setattr(tor, "GhApi", lambda: api)
+    out = tmp_path / "baseline.json"
+    argv = ["baseline", "--repo", "o/r", "--base-sha", "merge_base", "--head-sha", "head", "--legs", "3.12", "--out", str(out)]
+    assert tor.main(argv) == 0
+    assert api.paths[0] == "/repos/o/r/commits?sha=merge_base&per_page=30"
+    assert not [p for p in api.paths if "/compare/" in p]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "rc"),
+    [(tor.SKIPPED, 1), (tor.PASSED, 0)],
+    ids=["regressing-head", "clean-head"],
+)
+def test_a_dispatch_runs_the_same_diff_as_a_pull_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], outcome: str, rc: int,
+) -> None:
+    """A dispatch on a regressing head fails too, so its row cannot read as a
+    pass over the pull request's failure."""
+    base = _dispatch_baseline(tmp_path, monkeypatch, _dispatch_api())
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.12": {"t::test_70": outcome}})), encoding="utf-8")
+    capsys.readouterr()
+    assert tor.main(["diff", "--current", str(current), "--baseline", str(base), "--block"]) == rc
+    out = capsys.readouterr().out
+    assert ("::error::test outcome ratchet, leg 3.12: t::test_70 passed -> skipped" in out) is (rc == 1)
+    assert "no baseline" not in out.lower()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{}, {"merge_base_commit": {}}, {"merge_base_commit": None}],
+    ids=["no-key", "no-sha", "null"],
+)
+def test_a_compare_answer_without_a_merge_base_fails_the_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: dict[str, Any],
+) -> None:
+    class _NoMergeBase(_FakeApi):
+        def json(self, path: str) -> Any:
+            return answer if "/compare/" in path else super().json(path)
+
+    monkeypatch.setattr(tor, "GhApi", lambda: _NoMergeBase(["x"], {}, {}))
+    out = tmp_path / "baseline.json"
+    argv = ["baseline", "--repo", "o/r", "--base-sha", "", "--head-sha", "head", "--out", str(out)]
+    assert tor.main(argv) == 2
+    assert tor.is_lookup_error(json.loads(out.read_text(encoding="utf-8")))
+
+
+def test_a_failed_compare_request_fails_the_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tor.subprocess, "run", _FakeGh(1, b"", b"HTTP 404"))
+    out = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "", "--head-sha", "h", "--out", str(out)]) == 2
+    marker = json.loads(out.read_text(encoding="utf-8"))
+    assert tor.is_lookup_error(marker) and "HTTP 404" in marker["notice"]
 
 
 def test_baseline_passes_its_flags_to_the_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1327,9 +1420,18 @@ def test_dry_run_record_prints_the_counts_and_writes_nothing(
     assert "leg 3.13: passed 3, failed 1, error 1, skipped 1, xfailed 1, xpassed 1, never executed 2, total 10" in text
 
 
-@pytest.mark.parametrize("base_sha", ["base", ""], ids=["pull-request", "dispatch"])
+@pytest.mark.parametrize(
+    ("base_sha", "head_sha", "says"),
+    [
+        ("base", "head", "gh api /repos/o/r/commits?sha=base&per_page=7"),
+        ("", "head", "gh api /repos/o/r/compare/main...head?per_page=1"),
+        ("", "", "no base commit and no head commit"),
+    ],
+    ids=["pull-request", "dispatch", "neither"],
+)
 def test_dry_run_baseline_calls_no_api_and_writes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], base_sha: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    base_sha: str, head_sha: str, says: str,
 ) -> None:
     def _no_api() -> None:
         raise AssertionError("a dry run built an API client")
@@ -1337,15 +1439,13 @@ def test_dry_run_baseline_calls_no_api_and_writes_nothing(
     monkeypatch.setattr(tor, "GhApi", _no_api)
     out = tmp_path / "baseline.json"
     assert tor.main([
-        "baseline", "--repo", "o/r", "--base-sha", base_sha, "--max-commits", "7", "--out", str(out), "--dry-run",
+        "baseline", "--repo", "o/r", "--base-sha", base_sha, "--head-sha", head_sha,
+        "--max-commits", "7", "--out", str(out), "--dry-run",
     ]) == 0
     assert not out.exists()
     text = capsys.readouterr().out
     assert f"dry run: would write {out}" in text
-    if base_sha:
-        assert "gh api /repos/o/r/commits?sha=base&per_page=7" in text
-    else:
-        assert "no base commit" in text
+    assert says in text
 
 
 def test_dry_run_diff_prints_the_summary_appends_nothing_and_keeps_the_exit_status(
@@ -1489,7 +1589,11 @@ def test_the_job_reads_other_runs_artifacts_with_a_read_token() -> None:
     assert "GH_TOKEN: ${{ github.token }}" in baseline_steps[0]
     assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in baseline_steps[0]
     assert '--base-sha "$BASE_SHA"' in baseline_steps[0]
-    assert '[ -z "${BASE_SHA}" ]' in baseline_steps[0], "a dispatch has no base (#1436)"
+    # A dispatch has no base in its payload (#1436); the script finds it from
+    # the tested commit.
+    assert '[ -z "${BASE_SHA}" ]' in baseline_steps[0]
+    assert "HEAD_SHA: ${{ github.sha }}" in baseline_steps[0]
+    assert '--head-sha "$HEAD_SHA"' in baseline_steps[0]
     assert "write" not in body and "secrets." not in body
     # The 2026-10-21 ruling puts harden-runner only on jobs that hold a
     # write token or a secret; the two asserts above say this job holds none.

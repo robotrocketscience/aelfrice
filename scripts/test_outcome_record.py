@@ -10,8 +10,8 @@ Usage:
     test_outcome_record.py record --junit LEG=PATH [--junit LEG=PATH ...]
         [--sha SHA] --out RECORD.json [--dry-run]
     test_outcome_record.py baseline --repo OWNER/NAME --base-sha SHA
-        [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30] --out RECORD.json
-        [--dry-run]
+        [--head-sha SHA] [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30]
+        --out RECORD.json [--dry-run]
     test_outcome_record.py diff --current RECORD.json --baseline RECORD.json
         [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
 
@@ -81,6 +81,11 @@ dispatch it is the tested commit, so artifacts are matched on the
 `junit-<leg>-` prefix only.
 Artifacts expire after 30 days and a docs-only PR uploads none; when the
 walk finds no artifact the output says so and `diff` reports no baseline.
+A dispatch carries an empty `--base-sha`, so `baseline` asks the compare API
+for the merge base of main and `--head-sha` and walks from there. Without
+that, a dispatch would report no baseline and pass, and the merge train,
+which keeps the newest row per name, would read the pass over a pull
+request's failure. With neither commit the lookup has failed.
 
 Standard library only, so the job runs on the runner's own interpreter
 without `uv sync`. The functions above `GhApi` are pure and take their
@@ -612,6 +617,16 @@ def commits_path(repo: str, base_sha: str, max_commits: int) -> str:
     return f"/repos/{repo}/commits?sha={base_sha}&per_page={max_commits}"
 
 
+def merge_base_path(repo: str, head_sha: str) -> str:
+    """The compare request whose answer names the merge base. `per_page=1`
+    keeps the response small; the merge base does not depend on it."""
+    return f"/repos/{repo}/compare/main...{head_sha}?per_page=1"
+
+
+def fetch_merge_base(api: GhApi, repo: str, head_sha: str) -> str:
+    return str(api.json(merge_base_path(repo, head_sha))["merge_base_commit"]["sha"])
+
+
 def fetch_baseline(
     api: GhApi,
     repo: str,
@@ -704,18 +719,22 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if args.dry_run:
         if args.base_sha:
             print(f"dry run: would walk main with gh api {commits_path(args.repo, args.base_sha, args.max_commits)}")
+        elif args.head_sha:
+            print(f"dry run: would find the base commit with gh api {merge_base_path(args.repo, args.head_sha)}")
         else:
-            print("dry run: no base commit, so no API call")
+            print("dry run: no base commit and no head commit, so no API call")
         print(f"dry run: would write {args.out}")
         return 0
-    if not args.base_sha:
-        # A `workflow_dispatch` run carries no pull request, so there is no
-        # base commit to walk from.
-        record = no_baseline_marker("this run has no base commit (not a pull_request event)")
+    if not args.base_sha and not args.head_sha:
+        record = lookup_error_marker("this run has no base commit and no head commit to find one from")
     else:
         try:
-            record = fetch_baseline(GhApi(), args.repo, args.base_sha, args.workflow, legs, args.max_commits)
-        except (OSError, RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+            api = GhApi()
+            # A `workflow_dispatch` run carries no pull request, so its base
+            # is the merge base of main and the commit it tested.
+            base_sha = args.base_sha or fetch_merge_base(api, args.repo, args.head_sha)
+            record = fetch_baseline(api, args.repo, base_sha, args.workflow, legs, args.max_commits)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.TimeoutExpired) as exc:
             record = lookup_error_marker(f"the baseline lookup failed: {exc}")
     _write_json(args.out, record)
     # A log line only: the diff step reads the marker and writes the annotation.
@@ -774,6 +793,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("baseline", parents=[common], help="fetch the last green main record through gh api")
     p.add_argument("--repo", required=True)
     p.add_argument("--base-sha", required=True)
+    p.add_argument("--head-sha", default="")
     p.add_argument("--workflow", default="ci.yml")
     p.add_argument("--legs", default="3.12,3.13")
     p.add_argument("--max-commits", type=int, default=30)

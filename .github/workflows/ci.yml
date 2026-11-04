@@ -365,7 +365,12 @@ jobs:
   # the diff warns "no baseline" and the job stays green. A lookup that does
   # not finish (an API error, an unreadable artifact or report) is not that:
   # the baseline step exits 2 and leaves a marker, its `continue-on-error`
-  # lets the diff run, and the diff exits 2 on the marker. Shape B's
+  # lets the diff run, and the diff exits 2 on the marker. A dispatch has no
+  # base commit in its payload, so the script asks the compare API for the
+  # merge base of main and the tested commit. It uses the API rather than
+  # `git merge-base` because this job's checkout is shallow. Without this a
+  # dispatch would report "no baseline" and pass, and the train, which keeps
+  # the newest row per name, would read that pass over a PR's failure. Shape B's
   # nightly on main will write records to a `test-results` branch, which
   # then replaces this walk as the baseline source.
   test-outcomes:
@@ -375,8 +380,7 @@ jobs:
     # which would still start this job after `concurrency` cancels the run
     # for a newer push. Not guarded to `pull_request`: a dispatched run must
     # emit a real row under this name, not a `skipped` one (#1436 AC5,
-    # tests/test_ci_manual_dispatch.py). A dispatch carries no base commit,
-    # so its summary says "no baseline".
+    # tests/test_ci_manual_dispatch.py), and it runs the same diff.
     if: ${{ !cancelled() }}
     # No job-level `continue-on-error`: a blocked run is a failed run, and the
     # baseline walk, which reads only successful runs, skips its commit.
@@ -432,15 +436,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        # An empty base is a dispatch; the script then writes the no-baseline
-        # marker without calling the API, and the diff's warning says why.
+          # Only read on a dispatch, where BASE_SHA is empty and `github.sha`
+          # is the tested commit (#1436).
+          HEAD_SHA: ${{ github.sha }}
         run: |
           if [ -z "${BASE_SHA}" ]; then
-              echo "::notice::${GITHUB_EVENT_NAME} run: no base commit, so no baseline"
+              echo "::notice::${GITHUB_EVENT_NAME} run: no base commit in the payload, so finding the merge base with main"
           fi
           python3 scripts/test_outcome_record.py baseline \
               --repo "$GITHUB_REPOSITORY" --base-sha "$BASE_SHA" \
-              --out baseline-record.json
+              --head-sha "$HEAD_SHA" --out baseline-record.json
       # Both records, so a reader can rerun the diff and shape B can reuse
       # the format. Named by `github.sha` like the JUnit artifacts. Before
       # the diff, because a step after a failed one does not run, and a

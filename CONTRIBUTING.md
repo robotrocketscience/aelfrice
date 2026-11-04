@@ -276,8 +276,10 @@ each leg. The step summary lists each test, and the
 If the job finds no baseline, it warns and passes: JUnit artifacts expire after
 30 days, and a docs-only pull request uploads none. If the lookup itself fails,
 for example on a GitHub API error, the job fails and its first annotation says
-why, so rerun the job. The docstring of `scripts/test_outcome_record.py` has
-the full rules.
+why, so rerun the job. A dispatched run finds its base from the merge base of
+`main` and the tested commit and runs the same diff, so dispatching a head that
+regresses fails too. The docstring of `scripts/test_outcome_record.py` has the
+full rules.
 
 ### Changelog entries — one file per entry
 

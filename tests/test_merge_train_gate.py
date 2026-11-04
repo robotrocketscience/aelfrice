@@ -418,6 +418,29 @@ def test_a_failed_or_cancelled_test_outcomes_job_fails_the_head(conclusion: str)
     assert evaluate(runs, REQUIRED)["failing"] == [_TEST_OUTCOMES]
 
 
+def _outcome_rows(*conclusions: str) -> list[dict[str, Any]]:
+    """`test-outcomes` rows on one head, oldest first, on the rest of a green floor."""
+    runs = [r for r in _all_floor_green() if r["name"] != _TEST_OUTCOMES]
+    runs += [
+        _run(_TEST_OUTCOMES, conclusion, started_at=f"2026-11-04T10:{minute:02d}:00Z")
+        for minute, conclusion in enumerate(conclusions)
+    ]
+    return runs
+
+
+def test_a_dispatch_on_a_regressing_head_keeps_the_head_failing() -> None:
+    """The gate keeps the newest row per name, and a dispatch on the head adds
+    a row. It runs the same diff as the pull request (#1786), so on a head
+    that regresses the newer row fails as well."""
+    assert evaluate(_outcome_rows("failure", "failure"), REQUIRED)["failing"] == [_TEST_OUTCOMES]
+
+
+def test_a_newer_passing_row_is_what_clears_a_ratchet_failure() -> None:
+    """Why a dispatch has to run the real diff: the gate reads only the newest
+    row, so a dispatch that passed without one would clear this failure."""
+    assert evaluate(_outcome_rows("failure", "success"), REQUIRED)["failing"] == []
+
+
 def test_a_head_without_a_test_outcomes_row_is_missing_it() -> None:
     assert _TEST_OUTCOMES in FLOOR_NAMES
     runs = [r for r in _all_floor_green() if r["name"] != _TEST_OUTCOMES]
