@@ -81,10 +81,7 @@ _SKIP_PLAIN = '<skipped type="pytest.skip" message="needs sqlite 3.45">t.py:3: n
 _SKIP_PERF = (
     '<skipped type="pytest.skip" message="perf-gated: pass --run-perf to run">t.py:3: perf</skipped>'
 )
-_SKIP_BENCH = (
-    '<skipped type="pytest.skip" message="AELFRICE_CORPUS_ROOT not set or not a directory; '
-    'skipping bench-gate test (lab corpus absent by design)">t.py:3: corpus</skipped>'
-)
+_SKIP_BENCH = f'<skipped type="pytest.skip" message="{tor.BENCH_GATE_SKIP_REASON}">t.py:3: corpus</skipped>'
 _SKIP_MODULE = (
     '<skipped type="pytest.skip" message="corpus module \'retrieve\' missing under /x">t.py:3: m</skipped>'
 )
@@ -237,9 +234,31 @@ def test_the_perf_wordings_above_are_every_one_the_suite_uses() -> None:
     "--run-perf",
     "TODO re-enable, see --run-perf docs",
     "perf test gated on --run-perf until #1786 lands",
+    "TODO flaky on CI, skipping bench-gate test for now",
+    "temporarily off: corpus module 'x' missing under review",
+    "corpus module 'x' missing under review",
+    "corpus module 'x' gone under /corpus",
+    "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test",
+    "skipping bench-gate test (lab corpus absent by design)",
 ])
 def test_an_ordinary_skip_reason_is_not_never_executed(reason: str) -> None:
     assert not tor.is_never_executed_reason(reason)
+
+
+@pytest.mark.parametrize("extra", ["TODO: ", " until next week"], ids=["prefix", "suffix"])
+def test_the_bench_gate_reason_matches_only_whole(extra: str) -> None:
+    reason = tor.BENCH_GATE_SKIP_REASON
+    assert tor.is_never_executed_reason(reason)
+    assert not tor.is_never_executed_reason(extra + reason if extra.endswith(" ") else reason + extra)
+
+
+def test_the_bench_gate_shapes_are_the_ones_conftest_writes() -> None:
+    """The script cannot import conftest, so it holds a copy."""
+    from tests.conftest import BENCH_GATE_SKIP_REASON, CORPUS_ENV_VAR, CORPUS_SKIP_STATES
+
+    assert tor.BENCH_GATE_SKIP_REASON == BENCH_GATE_SKIP_REASON
+    assert tor.BENCH_GATE_SKIP_REASON.startswith(f"{CORPUS_ENV_VAR} ")
+    assert set(tor.CORPUS_SKIP_STATES) == set(CORPUS_SKIP_STATES)
 
 
 def test_an_ordinary_skip_that_mentions_the_perf_flag_is_a_skip_and_a_violation() -> None:

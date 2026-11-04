@@ -23,9 +23,9 @@ Outcomes. Each test case in the report is one of `passed`, `failed`,
 `error`, `skipped`, `xfailed`, `xpassed` or `never executed`. The last one
 is a skip whose reason says the test is left out by design: the latency
 tests behind `--run-perf` and the bench-gate tier that skips without the
-lab corpus. A perf skip reason has to match whole, so an ordinary skip that
-only mentions the flag stays `skipped`, as does a skip with any other
-reason. pytest writes an
+lab corpus. A reason has to match one of those shapes whole, so an ordinary
+skip that only mentions the flag or quotes a shape stays `skipped`, as does
+a skip with any other reason. pytest writes an
 xfail as `<skipped type="pytest.xfail">`, and a strict xpass as a failure
 whose message starts with `[XPASS(strict)]`; `xfail_strict = true` in
 pyproject.toml makes every xpass strict, so a lenient xpass, which pytest
@@ -153,11 +153,18 @@ PERF_SKIP_REASONS: frozenset[str] = frozenset({
     "perf test gated on --run-perf",
     "perf-gated: pass --run-perf to run",
 })
-# `BENCH_GATE_SKIP_REASON` and `skip_corpus_module` in tests/conftest.py.
-NEVER_EXECUTED_REASONS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"skipping bench-gate test"),
-    re.compile(r"corpus module '[^']+' [a-z][a-z-]* under "),
+# The bench-gate tier's two shapes, copied because this script runs without
+# the suite's dependencies: `BENCH_GATE_SKIP_REASON` and the reason
+# `skip_corpus_module` writes for each of `CORPUS_SKIP_STATES`, in
+# tests/conftest.py. A test pins these to that file. The corpus root is an
+# absolute path on every leg that can reach the shape.
+BENCH_GATE_SKIP_REASON = (
+    "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test "
+    "(lab corpus absent by design \u2014 see #1420 \u00a73; the corpus is private and "
+    "this repository is public)"
 )
+CORPUS_SKIP_STATES: tuple[str, ...] = ("empty", "missing", "underfilled", "ungradeable")
+_CORPUS_SKIP_REASON = re.compile(rf"corpus module '[^']+' (?:{'|'.join(CORPUS_SKIP_STATES)}) under /.*")
 
 _XPASS_STRICT_PREFIX = "[XPASS(strict)]"
 _XPASS_LEGACY_MESSAGE = "xfail-marked test passes unexpectedly"
@@ -207,7 +214,11 @@ def classify_testcase(testcase: ElementTree.Element) -> str:
 
 
 def is_never_executed_reason(reason: str) -> bool:
-    return reason in PERF_SKIP_REASONS or any(p.search(reason) for p in NEVER_EXECUTED_REASONS)
+    return (
+        reason in PERF_SKIP_REASONS
+        or reason == BENCH_GATE_SKIP_REASON
+        or _CORPUS_SKIP_REASON.fullmatch(reason) is not None
+    )
 
 
 def test_id(testcase: ElementTree.Element) -> str:
