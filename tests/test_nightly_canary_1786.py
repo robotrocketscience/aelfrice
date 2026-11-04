@@ -2094,6 +2094,15 @@ def test_a_pointer_main_does_not_place_is_a_problem_saying_which_way(answer: boo
     assert nc.off_main_pointers({"canary": entry, "legs": {}}, lambda sha: True, {}) == []
 
 
+def test_an_older_run_at_the_pointers_commit_leaves_it_with_no_index_to_say_so() -> None:
+    """The index may be corrupt or pruned, so the order check stands on its own."""
+    old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 10, "attempt": 1}, "legs": {}}
+    new, notes, problems = nc.next_last_green(old, _green(SHA1, 9), lambda a, b: True, lambda sha: True)
+    assert new["canary"]["run_id"] == 10
+    assert notes[0].startswith("last green canary: stays at run (10, 1)")
+    assert problems == []
+
+
 def test_an_entry_with_no_attempt_counts_as_older_than_the_first_attempt() -> None:
     old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 5}, "legs": {}}
     new, _, _ = nc.next_last_green(old, _green(SHA1, 5, run_attempt=1), lambda a, b: True, lambda sha: True)
@@ -2475,7 +2484,8 @@ def test_a_record_of_the_wrong_shape_is_a_usage_error_for_each_reader(
     repo, _, _ = main_repo
     current = tmp_path / "current.json"
     current.write_text(json.dumps(record), encoding="utf-8")
-    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "none"),
+    (tmp_path / "empty").mkdir()
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "empty"),
                     "--out", str(tmp_path / "t.json")]) == 2
     assert _publish(tmp_path, repo, record, None) == 2
     assert list((tmp_path / "branch").iterdir()) == []
