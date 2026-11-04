@@ -23,7 +23,9 @@ Outcomes. Each test case in the report is one of `passed`, `failed`,
 `error`, `skipped`, `xfailed`, `xpassed` or `never executed`. The last one
 is a skip whose reason says the test is left out by design: the latency
 tests behind `--run-perf` and the bench-gate tier that skips without the
-lab corpus. A skip with any other reason is `skipped`. pytest writes an
+lab corpus. A perf skip reason has to match whole, so an ordinary skip that
+only mentions the flag stays `skipped`, as does a skip with any other
+reason. pytest writes an
 xfail as `<skipped type="pytest.xfail">`, and a strict xpass as a failure
 whose message starts with `[XPASS(strict)]`; `xfail_strict = true` in
 pyproject.toml makes every xpass strict, so a lenient xpass, which pytest
@@ -118,12 +120,16 @@ OUTCOMES: tuple[str, ...] = (
 RATCHETED_OUTCOMES: frozenset[str] = frozenset({SKIPPED, XFAILED, NEVER_EXECUTED})
 
 # Skip reasons that mean "left out by design", as the suite writes them.
-# `--run-perf` is the opt-in registered in tests/conftest.py; the latency
-# tests behind it word their skip reason in more than one way, and every
-# wording names the flag. The other two shapes are `BENCH_GATE_SKIP_REASON`
-# and `skip_corpus_module` in tests/conftest.py.
+# `--run-perf` is the opt-in registered in tests/conftest.py. The latency
+# tests behind it write their own skip reason, in these wordings; a test
+# pins this set against every perf-gated skip in tests/.
+PERF_SKIP_REASONS: frozenset[str] = frozenset({
+    "perf benchmark; pass --run-perf to enable",
+    "perf test gated on --run-perf",
+    "perf-gated: pass --run-perf to run",
+})
+# `BENCH_GATE_SKIP_REASON` and `skip_corpus_module` in tests/conftest.py.
 NEVER_EXECUTED_REASONS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"--run-perf"),
     re.compile(r"skipping bench-gate test"),
     re.compile(r"corpus module '[^']+' [a-z][a-z-]* under "),
 )
@@ -176,7 +182,7 @@ def classify_testcase(testcase: ElementTree.Element) -> str:
 
 
 def is_never_executed_reason(reason: str) -> bool:
-    return any(p.search(reason) for p in NEVER_EXECUTED_REASONS)
+    return reason in PERF_SKIP_REASONS or any(p.search(reason) for p in NEVER_EXECUTED_REASONS)
 
 
 def test_id(testcase: ElementTree.Element) -> str:

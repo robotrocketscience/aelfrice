@@ -167,7 +167,7 @@ _PERF_SKIP_WORDINGS = (
 
 @pytest.mark.parametrize("reason", _PERF_SKIP_WORDINGS)
 def test_every_perf_skip_wording_in_the_suite_is_never_executed(reason: str) -> None:
-    """The latency tests word the reason in more than one way; all name the flag."""
+    """The latency tests word the reason in more than one way."""
     assert tor.is_never_executed_reason(reason)
 
 
@@ -226,7 +226,7 @@ def test_the_perf_wordings_above_are_every_one_the_suite_uses() -> None:
     assert len(gated) >= len(_PERF_SKIP_WORDINGS), gated
     assert {site: r for site, r in gated.items() if not tor.is_never_executed_reason(r)} == {}
     assert gated == naming
-    assert set(gated.values()) == set(_PERF_SKIP_WORDINGS)
+    assert set(gated.values()) == set(_PERF_SKIP_WORDINGS) == tor.PERF_SKIP_REASONS
 
 
 @pytest.mark.parametrize("reason", [
@@ -234,9 +234,21 @@ def test_the_perf_wordings_above_are_every_one_the_suite_uses() -> None:
     "requires the 'archive' extra",
     "perf",
     "bench-gate",
+    "--run-perf",
+    "TODO re-enable, see --run-perf docs",
+    "perf test gated on --run-perf until #1786 lands",
 ])
 def test_an_ordinary_skip_reason_is_not_never_executed(reason: str) -> None:
     assert not tor.is_never_executed_reason(reason)
+
+
+def test_an_ordinary_skip_that_mentions_the_perf_flag_is_a_skip_and_a_violation() -> None:
+    """A skip that names the flag in passing must not reach the
+    never-executed exemption."""
+    body = '<skipped type="pytest.skip" message="TODO re-enable, see --run-perf docs">t.py:3: x</skipped>'
+    outcomes = tor.parse_junit(_report(_case("tests.test_a", "test_x", body)))
+    assert outcomes == {"tests.test_a::test_x": tor.SKIPPED}
+    assert [t.test for t in tor.diff_leg("3.12", outcomes, {}).violations] == ["tests.test_a::test_x"]
 
 
 def _bench_gate_skip_reasons() -> dict[str, str]:
