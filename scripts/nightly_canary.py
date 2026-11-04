@@ -164,10 +164,10 @@ main that descends from the old one, the first pointer included. Main is
 green night on a commit that is not on main, or that git cannot place, moves
 nothing, and `publish` exits 1. A later commit already named stays named,
 which is the ordinary case of a late run: that exits 0. At one commit, the
-newer run and attempt hold the pointer, and when `index.jsonl` already holds a
+newer run and attempt hold the pointer. When `index.jsonl` already holds a
 newer run or attempt of the commit, a late older one moves nothing, an empty
-pointer included, since the newer one may have been red. So a late older attempt cannot take
-it. An entry holds `attempt` beside `run_id` for that comparison. The record
+pointer included, since the newer one may have been red. An entry holds
+`attempt` beside `run_id` for that comparison. The record
 an entry names does not change: republishing the same run and attempt with
 different content, a new `created_at` date included, exits 1 and writes
 nothing. The same content is a no-op, whichever triage file comes with it: a
@@ -180,8 +180,8 @@ exits 1 on every night that leaves it in place, naming it. A commit git cannot
 place is not proof of that: a stale or shallow clone has not fetched every
 commit on main. So the recovery rule is the same for both answers: a green
 night on main re-points the entry with a `::warning::` and exits 0 only when
-its run is newer than the entry's by (run_id, attempt), which the first night
-after a real rewrite always is. An older or equal run is refused, moves
+its run is newer than the entry's by (run_id, attempt), which the next
+scheduled night after a real rewrite is, since run ids ascend. An older or equal run is refused, moves
 nothing and exits 1. `--main-repo` should hold main's full history: a newer run
 of an older commit in a stale clone is the one case this rule cannot tell from
 a rewrite. An entry whose
@@ -197,6 +197,13 @@ What this does not catch, by design. A passing test that later skips or is
 deleted produces no event; the outcome ratchet in `test_outcome_record.py`
 covers skips. A regression that depends on test order, and is the only failure
 on its leg, passes on the rerun, so it reads as flaky and the leg stays green.
+
+Two id shapes `failed-ids` can get wrong, neither reachable on today's suite,
+and both fail safe. A dotted directory beside a module of the same stem
+(`tests/a.py` and `tests/a.d/test_b.py`) maps to a node id in the wrong file, and
+a parameter id that differs per process, such as one holding a pid, names a test
+the rerun does not collect. Either makes the rerun exit 4, so the rerun does not
+count and every red test stays confirmed.
 
 Standard library only, so the publish job runs it on the runner's own
 interpreter. It imports `parse_junit`, `build_record` and `diff_records`
