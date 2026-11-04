@@ -18,7 +18,7 @@ Usage:
         [--rerun RERUN.xml --rerun-rc RC] [--max 50] [--out VERDICT.json] [--dry-run]
     nightly_canary.py record --leg LEG=DIR[:ROLE] [--leg ...] --sha SHA
         --run-id ID --run-attempt N [--event NAME] [--created-at ISO8601]
-        --out RECORD.json [--dry-run]
+        [--canary-legs 3.12,3.13] --out RECORD.json [--dry-run]
     nightly_canary.py regressions --current RECORD.json --last-green-dir DIR
         [--canary-legs 3.12,3.13] --out TRIAGE.json [--dry-run]
     nightly_canary.py publish --record RECORD.json --triage TRIAGE.json
@@ -78,9 +78,10 @@ were downloaded into; in the second case the bundle is the subdirectory
 leg is `missing`, with a note saying why, when `junit.xml` or `verdict.json`
 is absent or unreadable, when `env.json` is unreadable, or when
 `verdict.json` disagrees with `junit.xml` (a green verdict over a report
-with a failure, for one). The night is `green` when every canary
-leg is green, `incomplete` when a canary leg is missing or there is no
-canary leg, and `red` otherwise. `--created-at` defaults to the current
+with a failure, for one). A leg in `--canary-legs` that no `--leg` names
+reads as missing too. The night is `green` when every canary leg is green and
+every leg in `--canary-legs` is a canary leg, `incomplete` when one of those
+is missing or there is no canary leg at all, and `red` otherwise. `--created-at` defaults to the current
 UTC time and `--event` to `GITHUB_EVENT_NAME`.
 
 `regressions` compares the canary legs of the record with the last green
@@ -158,6 +159,9 @@ MASS_FAILURE_THRESHOLD = 50
 
 #: Candidates the drift check runs after a mass failure.
 MASS_FAILURE_SAMPLE = 20
+
+#: The legs a night needs before it can read as green.
+DEFAULT_CANARY_LEGS: tuple[str, ...] = ("3.12", "3.13")
 
 CANARY = "canary"
 EXTRA = "extra"
@@ -317,9 +321,13 @@ def newest_bundle(names: Iterable[str], leg: str, sha: str) -> str | None:
     return None if best is None else best[1]
 
 
-def night_verdict(roles: dict[str, str], status: dict[str, str]) -> str:
+def night_verdict(
+    roles: dict[str, str], status: dict[str, str], required: Iterable[str] = DEFAULT_CANARY_LEGS,
+) -> str:
     canary = [leg for leg, role in roles.items() if role == CANARY]
-    if not canary or any(status.get(leg, MISSING) == MISSING for leg in canary):
+    if not canary or any(roles.get(leg) != CANARY for leg in required):
+        return INCOMPLETE
+    if any(status.get(leg, MISSING) == MISSING for leg in canary):
         return INCOMPLETE
     if all(status[leg] == GREEN for leg in canary):
         return GREEN
@@ -359,8 +367,17 @@ def build_nightly_record(
     event: str,
     created_at: str,
     bundle_notes: dict[str, list[str]] | None = None,
+    required: Iterable[str] = DEFAULT_CANARY_LEGS,
 ) -> dict[str, Any]:
-    """The format-1 record for one night with its additive `nightly` key."""
+    """The format-1 record for one night with its additive `nightly` key. A
+    leg in `required` that the other arguments do not name reads as missing."""
+    required = list(required)
+    unnamed = [leg for leg in required if leg not in roles]
+    roles = {**roles, **{leg: CANARY for leg in unnamed}}
+    junit = {**junit, **{leg: None for leg in unnamed}}
+    envs = {**envs, **{leg: None for leg in unnamed}}
+    attempts = {**attempts, **{leg: None for leg in unnamed}}
+    bundle_notes = {**(bundle_notes or {}), **{leg: ["no --leg names this canary leg"] for leg in unnamed}}
     record = tor.build_record(junit, sha)
     status: dict[str, str] = {}
     flaky: dict[str, list[str]] = {}
@@ -370,7 +387,7 @@ def build_nightly_record(
     notes: dict[str, list[str]] = {}
     for leg in sorted(roles):
         v = verdicts.get(leg)
-        notes[leg] = list((bundle_notes or {}).get(leg, []))
+        notes[leg] = list(bundle_notes.get(leg, []))
         if v and v.get("rerun_note"):
             notes[leg].append(str(v["rerun_note"]))
         if junit.get(leg) is None or v is None:
@@ -399,7 +416,7 @@ def build_nightly_record(
         "notes": notes,
         "flaky": flaky,
         "confirmed": confirmed,
-        "verdict": night_verdict(roles, status),
+        "verdict": night_verdict(roles, status, required),
     }
     return record
 
@@ -817,13 +834,14 @@ def cmd_record(args: argparse.Namespace) -> int:
     event = args.event if args.event is not None else os.environ.get("GITHUB_EVENT_NAME", "")
     record = build_nightly_record(
         junit, verdicts, envs, roles, attempts, args.sha, args.run_id, args.run_attempt, event, created_at, notes,
+        [leg for leg in args.canary_legs.split(",") if leg],
     )
     nightly = record["nightly"]
     if args.dry_run:
         print(f"dry run: would write {args.out}")
-    for leg in sorted(roles):
+    for leg in sorted(nightly["roles"]):
         print(
-            f"leg {leg} ({roles[leg]}): {nightly['status'][leg]}, "
+            f"leg {leg} ({nightly['roles'][leg]}): {nightly['status'][leg]}, "
             f"{len(nightly['flaky'][leg])} flaky, {len(nightly['confirmed'][leg])} confirmed"
         )
     print(f"night: {nightly['verdict']}")
@@ -933,13 +951,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-attempt", required=True, type=int)
     p.add_argument("--event", default=None)
     p.add_argument("--created-at", default=None)
+    p.add_argument("--canary-legs", default=",".join(DEFAULT_CANARY_LEGS))
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser("regressions", parents=[common], help="compare the canary legs with the last green night")
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--last-green-dir", required=True, type=Path)
-    p.add_argument("--canary-legs", default="3.12,3.13")
+    p.add_argument("--canary-legs", default=",".join(DEFAULT_CANARY_LEGS))
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_regressions)
 

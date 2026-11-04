@@ -514,7 +514,7 @@ def test_the_record_takes_each_legs_newest_attempt(tmp_path: Path) -> None:
     _bundle(root / f"nightly-3.12-{SHA1}-a10", {_A: tor.PASSED})
     _bundle(root / f"nightly-3.12-{SHA2}-a11", {_A: tor.FAILED})
     _bundle(root / f"nightly-3.13-{SHA1}-a3", {_A: tor.FAILED})
-    rc, record = _record_cmd(tmp_path, f"3.12={root}", f"3.1={root}")
+    rc, record = _record_cmd(tmp_path, f"3.12={root}", f"3.1={root}", extra=["--canary-legs", "3.12"])
     assert rc == 0 and record is not None
     assert record["nightly"]["attempts"] == {"3.1": None, "3.12": 10}
     assert record["nightly"]["status"] == {"3.1": nc.MISSING, "3.12": nc.GREEN}
@@ -554,6 +554,47 @@ def test_the_record_says_why_a_rerun_did_not_count(tmp_path: Path) -> None:
     assert rc == 0 and record is not None
     assert record["nightly"]["confirmed"]["3.12"] == [_A]
     assert record["nightly"]["notes"]["3.12"] == ["the rerun exited 4, so every red test stays confirmed"]
+
+
+def test_one_named_canary_leg_is_not_a_green_night(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={bundle}")
+    assert rc == 0 and record is not None
+    nightly = record["nightly"]
+    assert nightly["verdict"] == nc.INCOMPLETE
+    assert nightly["status"] == {"3.12": nc.GREEN, "3.13": nc.MISSING}
+    assert nightly["roles"]["3.13"] == nc.CANARY
+    assert record["legs"]["3.13"] is None
+    assert nightly["notes"]["3.13"] == ["no --leg names this canary leg"]
+
+
+def test_the_flag_names_which_legs_a_green_night_needs(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={bundle}", extra=["--canary-legs", "3.12"])
+    assert rc == 0 and record is not None
+    assert record["nightly"]["verdict"] == nc.GREEN
+
+
+def test_a_required_leg_given_the_extra_role_is_not_a_green_night(tmp_path: Path) -> None:
+    a, b = _bundle(tmp_path / "a", {_A: tor.PASSED}), _bundle(tmp_path / "b", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={a}", f"3.13={b}:extra")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
+
+
+def test_a_night_with_zero_tests_on_both_canary_legs_is_not_green(tmp_path: Path) -> None:
+    a, b = _bundle(tmp_path / "a", {}), _bundle(tmp_path / "b", {})
+    rc, record = _record_cmd(tmp_path, f"3.12={a}", f"3.13={b}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"] == {"3.12": nc.BROKEN, "3.13": nc.BROKEN}
+    assert record["nightly"]["verdict"] == nc.RED
+
+
+@pytest.mark.parametrize("required", [(), ("3.12", "3.13")], ids=["nothing-required", "default"])
+def test_a_night_of_only_extra_legs_is_incomplete(required: tuple[str, ...]) -> None:
+    """`all()` over no canary leg is True, which is the way this could read green."""
+    assert nc.night_verdict({"3.14": nc.EXTRA}, {"3.14": nc.GREEN}, required) == nc.INCOMPLETE
+    assert nc.night_verdict({}, {}, required) == nc.INCOMPLETE
 
 
 def test_a_broken_canary_leg_makes_the_night_red(tmp_path: Path) -> None:
@@ -679,7 +720,7 @@ def test_a_bad_or_repeated_leg_is_a_usage_error(tmp_path: Path, legs: tuple[str,
 
 def test_record_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _bundle(tmp_path / "b", {_A: tor.FAILED})
-    rc, record = _record_cmd(tmp_path, f"3.12={tmp_path / 'b'}", extra=["--dry-run"])
+    rc, record = _record_cmd(tmp_path, f"3.12={tmp_path / 'b'}", extra=["--dry-run", "--canary-legs", "3.12"])
     assert rc == 0 and record is None
     assert "night: red" in capsys.readouterr().out
 
