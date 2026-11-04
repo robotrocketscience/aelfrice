@@ -378,8 +378,8 @@ def test_diff_leg_sorts_transitions_into_violations_recovered_red_added_removed(
     assert d.baseline_present and d.notice is None
 
 
-def _violations(d: tor.LegDiff) -> list[tuple[str, str | None, str | None, str | None]]:
-    return [(t.test, t.before, t.after, t.renamed_from) for t in d.violations]
+def _violations(d: tor.LegDiff) -> list[tuple[str, str | None, str | None]]:
+    return [(t.test, t.before, t.after) for t in d.violations]
 
 
 def test_a_new_test_that_is_never_executed_is_not_a_violation() -> None:
@@ -392,12 +392,12 @@ def test_a_new_test_that_is_never_executed_is_not_a_violation() -> None:
 @pytest.mark.parametrize("after", [tor.SKIPPED, tor.XFAILED])
 def test_a_new_test_that_skips_or_xfails_is_a_violation(after: str) -> None:
     d = tor.diff_leg("3.12", {"t::a": tor.PASSED, "t::new": after}, {"t::a": tor.PASSED})
-    assert _violations(d) == [("t::new", None, after, None)]
+    assert _violations(d) == [("t::new", None, after)]
 
 
 def test_a_passing_test_that_becomes_never_executed_is_still_a_violation() -> None:
     d = tor.diff_leg("3.12", {"t::a": tor.NEVER_EXECUTED}, {"t::a": tor.PASSED})
-    assert _violations(d) == [("t::a", tor.PASSED, tor.NEVER_EXECUTED, None)]
+    assert _violations(d) == [("t::a", tor.PASSED, tor.NEVER_EXECUTED)]
 
 
 # The two tests #1833 added, as the cmd.exe shim and the real Windows spawn
@@ -477,50 +477,100 @@ def test_a_renamed_skip_keeps_its_skip() -> None:
 
 @pytest.mark.parametrize("after", sorted(tor.RATCHETED_OUTCOMES))
 def test_a_passing_test_renamed_into_a_ratcheted_outcome_is_a_violation(after: str) -> None:
-    """The rename carries the removed test's outcome, so a skip or a perf
-    gate added under a new id does not pass as a new test."""
+    """The outcomes differ, so nothing pairs: a skip or a perf gate added
+    under a new id does not pass as a rename."""
     d = tor.diff_leg("3.12", {"t::f[new]": after}, {"t::f[old]": tor.PASSED})
-    assert _violations(d) == [("t::f[new]", tor.PASSED, after, "t::f[old]")]
+    assert _violations(d) == [("t::f[new]", None, after)] and d.renamed == 0
 
 
-def test_a_new_test_pairs_with_a_removed_test_of_its_own_outcome_first() -> None:
-    """Sorted id order alone would pair `f[c]` with the passing `f[a]`."""
-    baseline = {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}
-    d = tor.diff_leg("3.12", {"t::f[c]": tor.SKIPPED}, baseline)
+@pytest.mark.parametrize("after", sorted(tor.RATCHETED_OUTCOMES))
+def test_a_removed_sibling_cannot_absorb_a_passing_test_renamed_into_its_outcome(after: str) -> None:
+    """`f[a]` passing and `f[b]` in `after` become one `f[x]` in `after`. The
+    removed `f[b]` does not explain the passing test that went with it."""
+    d = tor.diff_leg("3.12", {"t::f[x]": after}, {"t::f[a]": tor.PASSED, "t::f[b]": after})
+    assert _violations(d) == [("t::f[x]", None, after)] and d.renamed == 0
+
+
+@pytest.mark.parametrize("count", [0, 1, 2], ids=["none-kept", "one-kept", "two-kept"])
+def test_a_partial_rename_with_unchanged_siblings_is_clean(count: int) -> None:
+    """Siblings that keep their ids stay out of the comparison."""
+    kept = {f"t::f[k{i}]": tor.PASSED for i in range(count)}
+    d = tor.diff_leg("3.12", {**kept, "t::f[new]": tor.SKIPPED}, {**kept, "t::f[old]": tor.SKIPPED})
     assert d.violations == [] and d.renamed == 1
 
 
-def test_a_removed_test_pairs_once() -> None:
+def test_an_even_swap_cannot_be_seen_and_reads_as_a_rename() -> None:
+    """The limit the module docstring names: the outcomes are unchanged as a
+    multiset, so a passing test that became a skip here passes."""
+    baseline = {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}
+    d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED, "t::f[y]": tor.PASSED}, baseline)
+    assert d.violations == [] and d.renamed == 2
+
+
+def test_counts_that_differ_pair_nothing() -> None:
     d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED, "t::f[y]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
-    assert _violations(d) == [("t::f[y]", None, tor.SKIPPED, None)]
+    assert _violations(d) == [("t::f[x]", None, tor.SKIPPED), ("t::f[y]", None, tor.SKIPPED)]
+    assert d.renamed == 0
+
+
+def test_an_allowlist_entry_is_the_way_out_of_a_mix_that_does_not_pair() -> None:
+    d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED}, {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}, ["t::f[x]"])
+    assert d.violations == []
+
+
+@pytest.mark.parametrize(
+    ("current", "baseline"),
+    [
+        ({"t::f[c]": tor.NEVER_EXECUTED}, {"t::f[a]": tor.PASSED, "t::f[b]": tor.NEVER_EXECUTED}),
+        ({"t::f[n]": tor.NEVER_EXECUTED, "t::f[z]": tor.PASSED}, {"t::f[o]": tor.PASSED}),
+    ],
+    ids=["sibling-deleted", "new-passing-sibling"],
+)
+def test_a_function_that_lost_a_test_gets_no_never_executed_exemption(
+    current: dict[str, str], baseline: dict[str, str],
+) -> None:
+    """The lost test may be the one that moved behind the gate."""
+    d = tor.diff_leg("3.12", current, baseline)
+    assert [(t.before, t.after) for t in d.violations] == [(None, tor.NEVER_EXECUTED)]
+
+
+def test_a_perf_test_that_gains_a_parameter_while_renamed_stays_exempt() -> None:
+    """Only never-executed tests left the function, so nothing moved behind
+    the gate, though the counts differ and nothing pairs."""
+    baseline = {"t::f[old]": tor.NEVER_EXECUTED}
+    d = tor.diff_leg("3.12", {"t::f[x]": tor.NEVER_EXECUTED, "t::f[y]": tor.NEVER_EXECUTED}, baseline)
+    assert d.violations == [] and d.renamed == 0
+
+
+def test_a_removal_in_another_function_leaves_the_exemption_alone() -> None:
+    """The operator's ruling: removals stay outside the ratchet."""
+    d = tor.diff_leg("3.12", {"t::g": tor.NEVER_EXECUTED}, {"t::f": tor.PASSED})
+    assert d.violations == [] and d.removed == 1
 
 
 def test_a_new_skip_does_not_pair_with_a_sibling_that_still_exists() -> None:
     """Only a removed test can be renamed. `f[a]` still runs under its own
     id, so a new skipped `f[b]` is a new skip, not `f[a]` under a new name."""
     d = tor.diff_leg("3.12", {"t::f[a]": tor.SKIPPED, "t::f[b]": tor.SKIPPED}, {"t::f[a]": tor.SKIPPED})
-    assert _violations(d) == [("t::f[b]", None, tor.SKIPPED, None)]
+    assert _violations(d) == [("t::f[b]", None, tor.SKIPPED)]
     assert d.renamed == 0
 
 
 def test_a_rename_pairs_only_within_one_test_function() -> None:
     d = tor.diff_leg("3.12", {"t::g[new]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
-    assert _violations(d) == [("t::g[new]", None, tor.SKIPPED, None)] and d.renamed == 0
+    assert _violations(d) == [("t::g[new]", None, tor.SKIPPED)] and d.renamed == 0
 
 
-def test_a_passing_new_test_takes_only_a_removed_test_of_its_own_outcome() -> None:
-    """The second pass pairs only ratcheted new tests, so a passing one does
-    not take the removed test its skipped sibling renames, and does not read
-    as recovered."""
+def test_a_new_passing_test_does_not_read_as_recovered_through_a_removed_skip() -> None:
     d = tor.diff_leg("3.12", {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED}, {"t::f[old]": tor.XFAILED})
-    assert _violations(d) == [("t::f[b]", tor.XFAILED, tor.SKIPPED, "t::f[old]")]
+    assert _violations(d) == [("t::f[b]", None, tor.SKIPPED)]
     assert d.recovered == []
 
 
 def test_the_pairing_does_not_depend_on_dict_order() -> None:
-    added = {"t::f[b]": tor.SKIPPED, "t::f[a]": tor.SKIPPED, "t::g[z]": tor.XFAILED}
-    removed = {"t::f[y]": tor.SKIPPED, "t::f[x]": tor.PASSED, "t::g[w]": tor.PASSED}
-    expected = {"t::f[a]": "t::f[y]", "t::f[b]": "t::f[x]", "t::g[z]": "t::g[w]"}
+    added = {"t::f[b]": tor.SKIPPED, "t::f[a]": tor.PASSED, "t::f[c]": tor.SKIPPED, "t::g[z]": tor.XFAILED}
+    removed = {"t::f[z]": tor.SKIPPED, "t::f[y]": tor.PASSED, "t::f[x]": tor.SKIPPED, "t::g[w]": tor.XFAILED}
+    expected = {"t::f[a]": "t::f[y]", "t::f[b]": "t::f[x]", "t::f[c]": "t::f[z]", "t::g[z]": "t::g[w]"}
     assert tor.pair_renames(added, removed) == expected
     assert tor.pair_renames(dict(reversed(added.items())), dict(reversed(removed.items()))) == expected
 
@@ -530,15 +580,13 @@ def test_a_removed_test_is_never_a_violation() -> None:
     assert d.violations == [] and d.removed == 2
 
 
-def test_a_violation_through_a_rename_names_the_removed_test_shortened() -> None:
-    old = f"{_PERF_FN}[{'.' * 200_000}]"
-    current = _record(**{"3.12": {f"{_PERF_FN}[line0]": tor.SKIPPED}})
-    baseline = _record(**{"3.12": {old: tor.PASSED}})
+def test_the_summary_counts_a_rename_and_lists_no_violation_for_it() -> None:
+    current = _record(**{"3.12": {f"{_PERF_FN}[line0]": tor.NEVER_EXECUTED}})
+    baseline = _record(**{"3.12": {f"{_PERF_FN}[{'.' * 200_000}]": tor.NEVER_EXECUTED}})
     diffs = tor.diff_records(current, baseline)
     text = tor.render_summary(diffs, baseline, None, block=True)
-    assert f"| `{_PERF_FN}[line0]` | passed as `{old[:117]}...` -> skipped |" in text
-    assert "1 ratchet violation(s), 0 recovered, 1 added, 1 removed, 1 renamed." in text
-    assert all(len(line) < 1_000 for line in tor.render_annotations(diffs, None, block=True))
+    assert "0 ratchet violation(s), 0 recovered, 1 added, 1 removed, 1 renamed." in text
+    assert tor.render_annotations(diffs, None, block=True) == []
 
 
 @pytest.mark.parametrize("after", [*tor.OUTCOMES, None])

@@ -12,9 +12,11 @@
 # which then matches nothing.
 #
 # Two cases need no entry. A new test that is never executed (behind
-# `--run-perf`, or a bench-gate test) is not a violation. A new id that
-# renames a removed id of the same test function, as a pytest upgrade does
-# to parameter ids, keeps the removed test's outcome. Every other new skip
+# `--run-perf`, or a bench-gate test) is not a violation, unless its test
+# function lost a test with another outcome. New ids that rename removed ids
+# of one test function, as a pytest upgrade does to parameter ids, are not
+# violations when both hold the same outcomes the same number of times.
+# Every other new skip
 # needs an entry, a platform skip included: the ratchet reads the outcome,
 # never the skip reason.
 

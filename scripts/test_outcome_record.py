@@ -39,15 +39,18 @@ on every CI leg (#1825). No skip reason earns that pass, a platform skip
 included, so a new `skipif(not WIN32)` test needs an allowlist entry
 (#1833). A removed test is counted and is never a violation.
 
-Renames. The diff pairs a new test with a removed test of the same test
-function, the id up to its first `[`, and reads the removed test's
-outcome as the new test's earlier one. pytest renames parameter ids
-between releases, and pytest 9.2 renamed every id of a perf test (#1825).
-A new test pairs first with a removed test of its own outcome. A new test
-that is skipped, xfailed or never executed and still unpaired then pairs
-with any removed test of its function that is left, so a passing test
-renamed into a skip is still a violation. Each removed test pairs at most
-once, in sorted order.
+Renames. pytest renames parameter ids between releases, and pytest 9.2
+renamed every id of a perf test (#1825). Within one test function, the id up
+to its first `[`, the diff reads the new tests as renames of the removed
+ones only when both groups hold the same outcomes the same number of times.
+Any other mix pairs nothing: the new tests read as new and the removed ones
+as removed, so a new skip or xfail in that function is a violation and an
+allowlist entry is the way out. A new never-executed test is a violation
+there too when the function lost a test with another outcome, since that
+test may be the one that moved behind the gate. An even swap cannot be seen:
+`f[a]` passing and `f[b]` skipped becoming `f[x]` skipped and `f[y]` passing
+leaves the same outcomes, so it reads as a rename though a passing test may
+have become a skip.
 
 The allowlist file holds one test id per line, in which `*` matches any
 run of characters and every other character, `[` and `?` included,
@@ -259,8 +262,6 @@ class Transition:
     test: str
     before: str | None
     after: str | None
-    # The removed test this one renames, when the diff paired the two.
-    renamed_from: str | None = None
 
 
 @dataclass
@@ -306,28 +307,27 @@ def function_id(test: str) -> str:
     return test.partition("[")[0]
 
 
+def _by_function(outcomes: dict[str, str]) -> dict[str, list[str]]:
+    """Each test function's ids, ordered by outcome and then by id."""
+    groups: dict[str, list[str]] = {}
+    for test in sorted(outcomes, key=lambda t: (outcomes[t], t)):
+        groups.setdefault(function_id(test), []).append(test)
+    return groups
+
+
 def pair_renames(added: dict[str, str], removed: dict[str, str]) -> dict[str, str]:
     """Each new test id the diff reads as a rename, to the removed id it renames.
 
-    Both arguments map a test id to its outcome. A new test pairs first with
-    a removed test of its own function and outcome. A new test in a
-    ratcheted outcome that is still unpaired then pairs with any removed
-    test of its function that is left. Each removed test pairs at most once,
-    and both passes go in sorted id order.
+    Both arguments map a test id to its outcome. A function's ids pair only
+    when its new and removed tests hold the same outcomes the same number of
+    times, so a pair always has one outcome on both sides.
     """
-    free: dict[str, list[str]] = {}
-    for test in sorted(removed):
-        free.setdefault(function_id(test), []).append(test)
+    old_groups = _by_function(removed)
     pairs: dict[str, str] = {}
-    for same_outcome in (True, False):
-        for test in sorted(added):
-            if test in pairs or (not same_outcome and added[test] not in RATCHETED_OUTCOMES):
-                continue
-            pool = free.get(function_id(test), [])
-            match = next((r for r in pool if not same_outcome or removed[r] == added[test]), None)
-            if match is not None:
-                pool.remove(match)
-                pairs[test] = match
+    for function, new in _by_function(added).items():
+        old = old_groups.get(function, [])
+        if [added[t] for t in new] == [removed[t] for t in old]:
+            pairs.update(zip(new, old))
     return pairs
 
 
@@ -357,6 +357,13 @@ def diff_leg(
     removed = {test: outcome for test, outcome in baseline.items() if test not in current}
     renames = pair_renames({t: o for t, o in current.items() if t not in baseline}, removed)
     out.renamed = len(renames)
+    renamed_ids = set(renames.values())
+    # Functions that lost a test which was not already left out by design: a
+    # new never-executed test there may be that test behind the gate.
+    lost = {
+        function_id(test) for test, outcome in removed.items()
+        if test not in renamed_ids and outcome != NEVER_EXECUTED
+    }
     for test in sorted(set(current) | set(baseline)):
         before = baseline.get(test)
         after = current.get(test)
@@ -365,13 +372,11 @@ def diff_leg(
         if after is None:
             out.removed += 1
             continue
-        renamed_from = renames.get(test)
-        if renamed_from is not None:
-            before = removed[renamed_from]
-        if before == after:
+        if before == after or test in renames:
             continue
-        t = Transition(test, before, after, renamed_from)
-        if is_violation(before, after) and not is_allowlisted(test, allow):
+        t = Transition(test, before, after)
+        moved_behind_gate = before is None and after == NEVER_EXECUTED and function_id(test) in lost
+        if (is_violation(before, after) or moved_behind_gate) and not is_allowlisted(test, allow):
             out.violations.append(t)
         elif before in RATCHETED_OUTCOMES and after == PASSED:
             out.recovered.append(t)
@@ -416,23 +421,8 @@ def missing_report_error(current: dict[str, Any]) -> str | None:
     return f"the full suite ran and no JUnit report reached this job for leg {', '.join(missing)}"
 
 
-# Characters of a renamed test's id that a description quotes. pytest
-# writes a parameter's whole value into the id, and one perf test's ids
-# run past 200,000 characters (#1825).
-_RENAMED_ID_CHARS = 120
-
-
-def _short(test: str) -> str:
-    if len(test) <= _RENAMED_ID_CHARS:
-        return test
-    return test[: _RENAMED_ID_CHARS - 3] + "..."
-
-
 def _describe(t: Transition) -> str:
-    before = t.before or "absent"
-    if t.renamed_from is not None:
-        before = f"{before} as `{_short(t.renamed_from)}`"
-    return f"{before} -> {t.after or 'absent'}"
+    return f"{t.before or 'absent'} -> {t.after or 'absent'}"
 
 
 def _table_cell(text: str) -> str:
@@ -510,7 +500,7 @@ def render_summary(
             lines.append("| Test | Outcome |")
             lines.append("|---|---|")
             lines.extend(_capped([
-                f"| `{_table_cell(t.test)}` | {_table_cell(_describe(t))} |" for t in d.violations
+                f"| `{_table_cell(t.test)}` | {_describe(t)} |" for t in d.violations
             ]))
         if d.recovered:
             lines.append("Recovered:")

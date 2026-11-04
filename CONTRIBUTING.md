@@ -259,10 +259,13 @@ The job passes in these cases:
 
 - A new test never executes. The latency tests behind `--run-perf` and the
   bench-gate tests skip on every CI leg by design.
-- A test is renamed. The job pairs a new test ID with a removed ID of the
-  same test function, and compares the new test with the removed test's
-  outcome. A pytest upgrade that renames parameter IDs passes, and a passing
-  test renamed into a skip still fails.
+- A test is renamed. Within one test function, the job reads new test IDs as
+  renames of removed ones when both groups hold the same outcomes the same
+  number of times, so a pytest upgrade that renames parameter IDs passes. Any
+  other mix pairs nothing, and a new skip in that function fails. A passing
+  test renamed into a skip fails unless another test in that function goes the
+  other way at the same time: the outcomes then match, and the job cannot see
+  the swap.
 - A test is removed. The job counts removals and never fails on them, by
   operator ruling. So a passing test removed in the same change as an unrelated
   new never-executed test passes too, and the review has to catch that.
