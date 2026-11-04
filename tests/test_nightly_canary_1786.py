@@ -1057,6 +1057,32 @@ def test_a_created_at_with_no_date_is_a_usage_error(tmp_path: Path, created_at: 
         assert status == 0 and out.exists()
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [["--sha", "notasha"], ["--sha", "abc123"], ["--sha", "--evil"], ["--sha", "A" * 40],
+     ["--run-id", "0"], ["--run-id", "-7"], ["--run-attempt", "0"], ["--run-attempt", "-1"],
+     ["--created-at", "9999-99-99"], ["--created-at", "2026-02-30T00:00:00Z"]],
+    ids=["sha-word", "sha-too-short", "sha-flag", "sha-upper", "run-0", "run-negative", "attempt-0", "attempt-negative",
+         "date-impossible", "date-no-such-day"],
+)
+def test_record_refuses_a_run_it_could_not_publish(tmp_path: Path, bad: list[str]) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    out = tmp_path / "r.json"
+    args = {"--sha": SHA1, "--run-id": "1", "--run-attempt": "1", "--created-at": CREATED, bad[0]: bad[1]}
+    flat = [part for pair in args.items() for part in (pair[0], pair[1])]
+    assert nc.main(["record", "--leg", f"3.12={bundle}", *[f"{k}={v}" for k, v in args.items()],
+                    "--out", str(out)]) == 2, flat
+    assert not out.exists()
+
+
+def test_record_takes_the_shortest_commit_id_and_the_first_run(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    out = tmp_path / "r.json"
+    assert nc.main(["record", "--leg", f"3.12={bundle}", "--sha", "abc1234", "--run-id", "1", "--run-attempt", "1",
+                    "--created-at", CREATED, "--canary-legs", "3.12", "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["sha"] == "abc1234"
+
+
 def test_record_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _bundle(tmp_path / "b", {_A: tor.FAILED})
     rc, record = _record_cmd(tmp_path, f"3.12={tmp_path / 'b'}", extra=["--dry-run", "--canary-legs", "3.12"])
@@ -2312,6 +2338,10 @@ _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("verdict-unknown", _with("verdict", "maybe")),
     ("run-id-str", _with("run_id", "x")),
     ("run-id-bool", _with("run_id", True)),
+    ("run-id-0", _with("run_id", 0)),
+    ("attempt-negative", _with("run_attempt", -1)),
+    ("created-at-impossible", _with("created_at", "9999-99-99T00:00:00Z")),
+    ("sha-too-short", _with("sha", "abc123")),
     ("attempt-null", _with("run_attempt", None)),
     ("created-at-null", _with("created_at", None)),
     ("created-at-word", _with("created_at", "Nov 4")),

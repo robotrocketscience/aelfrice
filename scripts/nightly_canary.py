@@ -86,7 +86,9 @@ rerun that does not count). A leg in `--canary-legs` that no `--leg` names
 reads as missing too. The night is `green` when every canary leg is green and
 every leg in `--canary-legs` is a canary leg, `incomplete` when one of those
 is missing or there is no canary leg at all, and `red` otherwise. `--created-at` defaults to the current
-UTC time and `--event` to `GITHUB_EVENT_NAME`.
+UTC time and `--event` to `GITHUB_EVENT_NAME`. A `--sha` that is not a commit
+id, a `--created-at` that is not a real date, and a run id or attempt below 1
+exit 2.
 
 `regressions` compares the canary legs of the record with the last green
 record that `last-green.json` in `--last-green-dir` points to. A leg named
@@ -738,9 +740,11 @@ def validate_record(record: dict[str, Any], where: str) -> None:
     if not isinstance(raw_nightly, dict):
         raise ValueError(f"{where}: nightly is not an object")
     nightly = cast("dict[str, Any]", raw_nightly)
-    require(_is_int(nightly.get("run_id")) and _is_int(nightly.get("run_attempt")), "the run id or attempt is not a number")
+    run_id, run_attempt = nightly.get("run_id"), nightly.get("run_attempt")
+    require(_is_int(run_id) and _is_int(run_attempt), "the run id or attempt is not a number")
+    require(cast(int, run_id) >= 1 and cast(int, run_attempt) >= 1, "the run id or attempt is below 1")
     created_at = nightly.get("created_at")
-    require(isinstance(created_at, str) and _DATE.fullmatch(created_at[:10]) is not None, "created_at holds no date")
+    require(isinstance(created_at, str) and _is_date(created_at), "created_at holds no date")
     require(_is_map(nightly.get("roles"), lambda v: v in ROLES), "roles is not a map of leg roles")
     require(_is_map(nightly.get("status"), lambda v: v in _LEG_STATUSES), "status is not a map of leg statuses")
     require(_is_map(nightly.get("flaky"), _is_str_list), "flaky is not a map of test lists")
@@ -795,11 +799,21 @@ def validate_triage(triage: dict[str, Any], where: str) -> None:
 
 # ------------------------------------------------------------------ publish
 
+def _is_date(value: str) -> bool:
+    """Whether `value` starts with a real YYYY-MM-DD date."""
+    if _DATE.fullmatch(value[:10]) is None:
+        return False
+    try:
+        datetime.date.fromisoformat(value[:10])
+    except ValueError:
+        return False
+    return True
+
+
 def run_date(created_at: str) -> str:
-    date = created_at[:10]
-    if not _DATE.fullmatch(date):
+    if not _is_date(created_at):
         raise ValueError(f"created_at {created_at!r} does not start with YYYY-MM-DD")
-    return date
+    return created_at[:10]
 
 
 def run_path(record: dict[str, Any]) -> str:
@@ -1232,6 +1246,10 @@ def _listed_legs(value: str) -> list[str]:
 
 
 def cmd_record(args: argparse.Namespace) -> int:
+    if _SHA.fullmatch(args.sha) is None:
+        raise ValueError(f"--sha {args.sha!r} is not a commit id")
+    if args.run_id < 1 or args.run_attempt < 1:
+        raise ValueError(f"--run-id {args.run_id} and --run-attempt {args.run_attempt} must be at least 1")
     required = _listed_legs(args.canary_legs)
     specs = [parse_leg_spec(v) for v in args.leg]
     seen = [leg for leg, _, _ in specs]
