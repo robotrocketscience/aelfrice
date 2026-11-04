@@ -9516,9 +9516,13 @@ def _print_doctor_store_check(out: object) -> None:
     graph, so the user can have all-green hooks and zero beliefs and
     not know it. Printed even on a clean settings run; never affects
     exit status (broken settings are the only exit-1 trigger).
+
+    The store is resolved once, so the count, the path and the rule
+    describe the same store even if a marker changes mid-check (#1843).
     """
     try:
-        store = _open_store()
+        selection = resolve_store()
+        store = _open_store(selection)
     except Exception:  # pragma: no cover - defensive
         return
     try:
@@ -9546,12 +9550,12 @@ def _print_doctor_store_check(out: object) -> None:
         )
     else:
         print(
-            f"store: {n} belief(s) at {db_path()}",
+            f"store: {n} belief(s) at {selection.path}",
             file=out,  # type: ignore[arg-type]
         )
     # #1796: the rule that chose the store, and the marker file if one did.
     print(
-        f"store rule: {resolve_store().describe()}",
+        f"store rule: {selection.describe()}",
         file=out,  # type: ignore[arg-type]
     )
     _print_doctor_lock_expiry(expiring, last_sweep, out)

@@ -1120,8 +1120,15 @@ def repo_identity() -> str:
     )
 
 
-def _open_store() -> MemoryStore:
-    selection = resolve_store()
+def _open_store(selection: StoreSelection | None = None) -> MemoryStore:
+    """Open the store for writing, `selection` if given (#1843).
+
+    A caller that also reports which store it chose resolves once and
+    passes the selection, so a marker that changes in between can't
+    split its output.
+    """
+    if selection is None:
+        selection = resolve_store()
     p = selection.path
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
