@@ -20,7 +20,7 @@ Usage:
         --run-id ID --run-attempt N [--event NAME] [--created-at ISO8601]
         [--canary-legs 3.12,3.13] --out RECORD.json [--dry-run]
     nightly_canary.py regressions --current RECORD.json --last-green-dir DIR
-        [--canary-legs 3.12,3.13] --out TRIAGE.json [--dry-run]
+        [--canary-legs 3.12,3.13] [--repo-root .] --out TRIAGE.json [--dry-run]
     nightly_canary.py publish --record RECORD.json --triage TRIAGE.json
         --branch-dir DIR [--main-repo .] [--main-ref REF] [--dry-run]
 
@@ -100,10 +100,15 @@ event. The output carries:
   same leg, with their outcome there. A test that failed there and was
   flaky counts as `passed`.
 - `new_failing`: confirmed tests the last green record does not hold.
+  Each entry of this list and of `candidates` holds `test`, the JUnit id the
+  records use, and `node_id`, the id pytest takes, mapped against
+  `--repo-root` as `failed-ids` maps it, or null when it would not round-trip.
 - `drift_check`: the candidates the workflow reruns at the last green
   commit, per leg, under that leg's Python, since a test failing only on 3.12
   says nothing when it runs on 3.13. A leg that had a mass failure samples 20
-  of its own candidates; the other leg keeps all of its.
+  of its own candidates; the other leg keeps all of its. Each leg holds
+  `tests`, `node_ids` to hand pytest, which rejects a JUnit id with exit 4,
+  and `unmapped`, the tests with no node id, which stay candidates unchecked.
 
 `publish` writes the night to a checkout of the results branch:
 `runs/<YYYY-MM-DD>-<run_id>-a<run_attempt>/record.json` and `triage.json`,
@@ -477,8 +482,10 @@ def find_regressions(
     last_green: dict[str, Any] | None,
     last_green_meta: dict[str, Any] | None,
     listed_legs: Iterable[str],
+    is_file: Callable[[str], bool] = lambda rel: False,
 ) -> dict[str, Any]:
-    """The triage input for one night. Only canary legs are read."""
+    """The triage input for one night. Only canary legs are read. `is_file`
+    is what `node_id` needs; by default no test gets a node id."""
     nightly = current.get("nightly", {})
     sha = str(current.get("sha") or "")
     legs = canary_legs_of(current, listed_legs)
@@ -532,17 +539,25 @@ def find_regressions(
             if before is None:
                 new_failing.setdefault(test, []).append(leg)
             else:
-                entry = candidates.setdefault(test, {"test": test, "legs": [], "before": {}})
+                entry = candidates.setdefault(test, {"test": test, "node_id": node_id(test, is_file), "legs": [], "before": {}})
                 entry["legs"].append(leg)
                 entry["before"][leg] = before
     triage["candidates"] = [candidates[t] for t in sorted(candidates)]
-    triage["new_failing"] = [{"test": t, "legs": new_failing[t]} for t in sorted(new_failing)]
+    triage["new_failing"] = [
+        {"test": t, "node_id": node_id(t, is_file), "legs": new_failing[t]} for t in sorted(new_failing)
+    ]
     mass_legs = nightly.get("mass_failure", {})
     by_leg: dict[str, dict[str, Any]] = {}
     for leg in legs:
         ids = [c["test"] for c in triage["candidates"] if leg in c["legs"]]
         if ids:
-            by_leg[leg] = {"tests": even_sample(ids, MASS_FAILURE_SAMPLE) if mass_legs.get(leg) else ids}
+            chosen = even_sample(ids, MASS_FAILURE_SAMPLE) if mass_legs.get(leg) else ids
+            mapped = {t: node_id(t, is_file) for t in chosen}
+            by_leg[leg] = {
+                "tests": chosen,
+                "node_ids": sorted(n for n in mapped.values() if n is not None),
+                "unmapped": [t for t, n in mapped.items() if n is None],
+            }
     if by_leg:
         triage["drift_check"] = {"sha": green_sha, "legs": by_leg}
     return triage
@@ -951,8 +966,11 @@ def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] 
 def cmd_regressions(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
     last_green, meta = _last_green(args.last_green_dir)
+    root: Path = args.repo_root
+    if not root.is_dir():
+        raise ValueError(f"--repo-root {root} is not a directory")
     listed = [leg for leg in args.canary_legs.split(",") if leg]
-    triage = find_regressions(current, last_green, meta, listed)
+    triage = find_regressions(current, last_green, meta, listed, lambda rel: (root / rel).is_file())
     if meta is None:
         print("no last green night yet")
     else:
@@ -1064,6 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("regressions", parents=[common], help="compare the canary legs with the last green night")
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--last-green-dir", required=True, type=Path)
+    p.add_argument("--repo-root", default=Path("."), type=Path)
     p.add_argument("--canary-legs", default=",".join(DEFAULT_CANARY_LEGS))
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_regressions)

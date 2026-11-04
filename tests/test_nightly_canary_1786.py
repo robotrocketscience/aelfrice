@@ -735,7 +735,7 @@ def test_a_flaky_failure_on_the_last_green_night_counts_as_passed() -> None:
     assert green["nightly"]["verdict"] == nc.GREEN
     tonight = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.FAILED}, {_A: tor.FAILED})})
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
-    assert triage["candidates"] == [{"test": _A, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
+    assert triage["candidates"] == [{"test": _A, "node_id": None, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
     assert triage["new_failing"] == []
     assert triage["events"] == []
 
@@ -754,16 +754,16 @@ def test_a_new_test_that_fails_is_new_failing_and_skips_the_drift_check() -> Non
         "3.13": ({_A: tor.PASSED, _C: tor.FAILED}, None),
     })
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
-    assert triage["new_failing"] == [{"test": _C, "legs": ["3.12", "3.13"]}]
+    assert triage["new_failing"] == [{"test": _C, "node_id": None, "legs": ["3.12", "3.13"]}]
     assert [c["test"] for c in triage["candidates"]] == [_A]
-    assert triage["drift_check"] == {"sha": SHA1, "legs": {"3.12": {"tests": [_A]}}}
+    assert triage["drift_check"] == {"sha": SHA1, "legs": {"3.12": {"tests": [_A], "node_ids": [], "unmapped": [_A]}}}
 
 
 def test_a_test_skipped_on_the_last_green_night_that_now_fails_is_a_candidate() -> None:
     green = _night(SHA1, {"3.12": ({_A: tor.SKIPPED}, None), "3.13": ({_A: tor.PASSED}, None)})
     tonight = _night(SHA2, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.PASSED}, None)})
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
-    assert triage["candidates"] == [{"test": _A, "legs": ["3.12"], "before": {"3.12": tor.SKIPPED}}]
+    assert triage["candidates"] == [{"test": _A, "node_id": None, "legs": ["3.12"], "before": {"3.12": tor.SKIPPED}}]
 
 
 @pytest.mark.parametrize("listed", [_LEGS, [*_LEGS, "3.14", "macos"]])
@@ -834,7 +834,8 @@ def test_a_mass_failure_drift_checks_an_even_sample_of_twenty() -> None:
     assert triage["mass_failure"] is True
     assert len(triage["candidates"]) == 60
     sample = [f"tests.test_a::test_{i:02}" for i in range(0, 60, 3)]
-    assert triage["drift_check"]["legs"] == {"3.12": {"tests": sample}, "3.13": {"tests": sample}}
+    legs = triage["drift_check"]["legs"]
+    assert legs["3.12"]["tests"] == sample and legs["3.13"]["tests"] == sample
 
 
 def test_a_mass_failure_on_one_leg_samples_that_leg_and_marks_the_night() -> None:
@@ -852,7 +853,7 @@ def test_a_mass_failure_on_one_leg_samples_that_leg_and_marks_the_night() -> Non
     assert tonight["nightly"]["mass_failure"] == {"3.12": True, "3.13": False}
     assert triage["mass_failure"] is True
     legs = triage["drift_check"]["legs"]
-    assert legs["3.13"] == {"tests": [only_313]}
+    assert legs["3.13"]["tests"] == [only_313]
     assert len(legs["3.12"]["tests"]) == 20 and set(legs["3.12"]["tests"]) <= set(tests)
 
 
@@ -863,7 +864,25 @@ def test_each_test_is_drift_checked_on_the_leg_that_failed_it() -> None:
                             "3.13": ({_A: tor.PASSED, _B: tor.FAILED, _C: tor.FAILED}, None)})
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["mass_failure"] is False
-    assert triage["drift_check"]["legs"] == {"3.12": {"tests": [_A, _C]}, "3.13": {"tests": [_B, _C]}}
+    legs = triage["drift_check"]["legs"]
+    assert (legs["3.12"]["tests"], legs["3.13"]["tests"]) == ([_A, _C], [_B, _C])
+
+
+def test_the_drift_check_hands_pytest_node_ids_and_names_what_has_none(tmp_path: Path) -> None:
+    """pytest refuses a JUnit id with exit 4, so `tests` alone could not be run."""
+    root = _tree(tmp_path, "tests/test_a.py", "tests/test_b.py")
+    gone = "tests.test_gone::test_x"
+    before = {_A: tor.PASSED, _C: tor.PASSED, gone: tor.PASSED}
+    green = _night(SHA1, {"3.12": (before, None), "3.13": (before, None)})
+    tonight = _night(SHA2, {"3.12": ({**before, _A: tor.FAILED, gone: tor.FAILED, "tests.test_b::test_new": tor.FAILED}, None),
+                            "3.13": (before, None)})
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                                 lambda rel: (root / rel).is_file())
+    assert triage["drift_check"]["legs"]["3.12"] == {
+        "tests": [_A, gone], "node_ids": ["tests/test_a.py::test_one"], "unmapped": [gone],
+    }
+    assert {c["test"]: c["node_id"] for c in triage["candidates"]} == {_A: "tests/test_a.py::test_one", gone: None}
+    assert triage["new_failing"][0]["node_id"] == "tests/test_b.py::test_new"
 
 
 def test_below_the_threshold_every_candidate_is_drift_checked() -> None:
@@ -872,7 +891,8 @@ def test_below_the_threshold_every_candidate_is_drift_checked() -> None:
     tonight = _night(SHA2, {"3.12": (tests, None), "3.13": ({t: tor.FAILED for t in tests}, None)})
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["mass_failure"] is False
-    assert triage["drift_check"]["legs"] == {"3.13": {"tests": sorted(tests)}}
+    assert list(triage["drift_check"]["legs"]) == ["3.13"]
+    assert triage["drift_check"]["legs"]["3.13"]["tests"] == sorted(tests)
 
 
 def test_regressions_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -1314,13 +1334,17 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
     current = tmp_path / "tonight.json"
     current.write_text(json.dumps(_red(c1, 101, day=2)), encoding="utf-8")
     out = tmp_path / "triage-out.json"
-    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
-                    "--canary-legs", "3.12,3.13", "--out", str(out)]) == 0
+    root = _tree(tmp_path / "repo", "tests/test_a.py")
+    args = ["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+            "--canary-legs", "3.12,3.13", "--out", str(out)]
+    assert nc.main([*args, "--repo-root", str(tmp_path / "no-such-dir")]) == 2
+    assert nc.main([*args, "--repo-root", str(root)]) == 0
     triage = json.loads(out.read_text(encoding="utf-8"))
     assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100-a1", "run_id": 100, "attempt": 1,
                                     "date": "2026-11-01"}
-    assert triage["candidates"] == [{"test": _A, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
-    assert triage["drift_check"] == {"sha": c0, "legs": {"3.13": {"tests": [_A]}}}
+    node = "tests/test_a.py::test_one"
+    assert triage["candidates"] == [{"test": _A, "node_id": node, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
+    assert triage["drift_check"] == {"sha": c0, "legs": {"3.13": {"tests": [_A], "node_ids": [node], "unmapped": []}}}
 
 
 # --------------------------------------------------------------------- env
