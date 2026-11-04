@@ -670,11 +670,11 @@ def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_
     """One range merged 50 `budget` tests and 5 `cap` tests, and the cap
     tests read as `budget`."""
     shas = env.repo(_LINEAR)
-    ids = [f"tests/test_x.py::test_n{i}" for i in range(nb.MAX_TESTS + 5)]
+    ids = [f"tests/test_x.py::test_n{i}" for i in range(55)]
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, points=_linear_points(shas),
                             extra=("--budget-seconds", "0"))
     assert rc == 1
-    expected = {t: nb.REASON_BUDGET for t in ids[:nb.MAX_TESTS]} | {t: nb.REASON_CAP for t in ids[nb.MAX_TESTS:]}
+    expected = {t: nb.REASON_BUDGET for t in ids[:50]} | {t: nb.REASON_CAP for t in ids[50:]}
     assert [(e["key"], e["reasons"], sorted(e["tests"])) for e in result["events"]] == [
         (f"range-{shas[0][:12]}-{shas[7][:12]}", expected, sorted(ids)),
     ]
