@@ -103,12 +103,23 @@ event. The output carries:
   Each entry of this list and of `candidates` holds `test`, the JUnit id the
   records use, and `node_id`, the id pytest takes, mapped against
   `--repo-root` as `failed-ids` maps it, or null when it would not round-trip.
+- `collection_errors`: confirmed ids of the form `::tests.test_x`, which is
+  how pytest reports a module it could not import. pytest then stops with
+  exit 2, so the suite did not run on that leg and the leg's report holds
+  little else. These are neither candidates nor new failures: nothing passed
+  or failed. Each entry holds `test`, `legs` and `module`, the path
+  `tests/test_x.py` under `--repo-root` or null. `module` is the one form of
+  the id a later step hands pytest. The bisect's `step` takes it as an id with
+  no `::` and reads `pytest --collect-only -q <module>`: exit 2 is bad, exit 0
+  is good, and a file not in that commit is good. It accepts no other form,
+  not `tests.test_x` and not `::tests.test_x`.
 - `drift_check`: the candidates the workflow reruns at the last green
   commit, per leg, under that leg's Python, since a test failing only on 3.12
   says nothing when it runs on 3.13. A leg that had a mass failure samples 20
   of its own candidates; the other leg keeps all of its. Each leg holds
   `tests`, `node_ids` to hand pytest, which rejects a JUnit id with exit 4,
-  and `unmapped`, the tests with no node id, which stay candidates unchecked.
+  `unmapped`, the tests with no node id, which stay candidates unchecked, and
+  `collection_errors`, the modules to collect there.
 
 `publish` writes the night to a checkout of the results branch:
 `runs/<YYYY-MM-DD>-<run_id>-a<run_attempt>/record.json` and `triage.json`,
@@ -469,6 +480,12 @@ def baseline_outcome(last_green: dict[str, Any], leg: str, test: str) -> str | N
     return outcome
 
 
+def collection_module(test: str, is_file: Callable[[str], bool]) -> str | None:
+    """The file behind a collection error id `::tests.test_x`, or None."""
+    rel = test.removeprefix("::").replace(".", "/") + ".py"
+    return rel if is_file(rel) else None
+
+
 def even_sample(items: list[str], n: int) -> list[str]:
     """`n` items spread evenly over the sorted list, or all of them."""
     ordered = sorted(items)
@@ -502,6 +519,7 @@ def find_regressions(
         "events": [],
         "candidates": [],
         "new_failing": [],
+        "collection_errors": [],
         "drift_check": None,
     }
     broken = [leg for leg in legs if status.get(leg, MISSING) in (MISSING, BROKEN)]
@@ -511,6 +529,14 @@ def find_regressions(
     if not tests:
         return triage
     failing_legs = sorted(leg for leg, ids in confirmed_by_leg.items() if ids)
+    collection: dict[str, list[str]] = {}
+    for leg in legs:
+        for test in confirmed_by_leg[leg]:
+            if test.startswith("::"):
+                collection.setdefault(test, []).append(leg)
+    triage["collection_errors"] = [
+        {"test": t, "module": collection_module(t, is_file), "legs": collection[t]} for t in sorted(collection)
+    ]
     if last_green is None or last_green_meta is None:
         triage["events"].append({
             "key": f"no-baseline-{sha[:12]}", "kind": "no-baseline", "legs": failing_legs, "tests": tests,
@@ -533,6 +559,8 @@ def find_regressions(
     new_failing: dict[str, list[str]] = {}
     for leg in legs:
         for test in confirmed_by_leg[leg]:
+            if test in collection:
+                continue
             before = red_before.get((leg, test))
             if before is not None:
                 before = baseline_outcome(last_green, leg, test)
@@ -550,13 +578,15 @@ def find_regressions(
     by_leg: dict[str, dict[str, Any]] = {}
     for leg in legs:
         ids = [c["test"] for c in triage["candidates"] if leg in c["legs"]]
-        if ids:
+        modules = [e["module"] for e in triage["collection_errors"] if leg in e["legs"] and e["module"]]
+        if ids or modules:
             chosen = even_sample(ids, MASS_FAILURE_SAMPLE) if mass_legs.get(leg) else ids
             mapped = {t: node_id(t, is_file) for t in chosen}
             by_leg[leg] = {
                 "tests": chosen,
                 "node_ids": sorted(n for n in mapped.values() if n is not None),
                 "unmapped": [t for t, n in mapped.items() if n is None],
+                "collection_errors": modules,
             }
     if by_leg:
         triage["drift_check"] = {"sha": green_sha, "legs": by_leg}
@@ -977,7 +1007,10 @@ def cmd_regressions(args: argparse.Namespace) -> int:
         print(f"last green: {str(meta['sha'])[:12]} ({meta['path']})")
     for e in triage["events"]:
         print(f"event {e['key']}: {len(e['tests'])} test(s)")
-    print(f"{len(triage['candidates'])} candidate(s), {len(triage['new_failing'])} new failing")
+    print(
+        f"{len(triage['candidates'])} candidate(s), {len(triage['new_failing'])} new failing, "
+        f"{len(triage['collection_errors'])} collection error(s)"
+    )
     if args.dry_run:
         print(f"dry run: would write {args.out}")
         return 0

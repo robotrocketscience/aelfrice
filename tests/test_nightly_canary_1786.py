@@ -756,7 +756,10 @@ def test_a_new_test_that_fails_is_new_failing_and_skips_the_drift_check() -> Non
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["new_failing"] == [{"test": _C, "node_id": None, "legs": ["3.12", "3.13"]}]
     assert [c["test"] for c in triage["candidates"]] == [_A]
-    assert triage["drift_check"] == {"sha": SHA1, "legs": {"3.12": {"tests": [_A], "node_ids": [], "unmapped": [_A]}}}
+    assert triage["drift_check"] == {
+        "sha": SHA1,
+        "legs": {"3.12": {"tests": [_A], "node_ids": [], "unmapped": [_A], "collection_errors": []}},
+    }
 
 
 def test_a_test_skipped_on_the_last_green_night_that_now_fails_is_a_candidate() -> None:
@@ -824,6 +827,62 @@ def test_a_missing_or_broken_canary_leg_is_canary_broken(
     assert triage["events"] == [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": []}]
 
 
+_BROKEN_MODULE = "::tests.test_broken"
+
+
+def _collection_error_night() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A last green night, and a night whose 3.13 leg stopped on an import error."""
+    green = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)})
+    tonight = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_BROKEN_MODULE: tor.ERROR}, None)},
+                     rcs={"3.13": 2})
+    return green, tonight
+
+
+def test_a_collection_error_is_its_own_entry_with_the_module_to_collect(tmp_path: Path) -> None:
+    """pytest stopped with exit 2: the suite did not run, nothing passed or failed."""
+    root = _tree(tmp_path, "tests/test_broken.py")
+    green, tonight = _collection_error_night()
+    assert tonight["nightly"]["verdict"] == nc.RED
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                                 lambda rel: (root / rel).is_file())
+    assert triage["collection_errors"] == [
+        {"test": _BROKEN_MODULE, "module": "tests/test_broken.py", "legs": ["3.13"]},
+    ]
+    assert (triage["candidates"], triage["new_failing"], triage["events"]) == ([], [], [])
+    assert triage["drift_check"]["legs"]["3.13"]["collection_errors"] == ["tests/test_broken.py"]
+
+
+def test_a_collection_error_with_no_file_keeps_its_entry_and_has_nothing_to_collect() -> None:
+    green, tonight = _collection_error_night()
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
+    assert triage["collection_errors"] == [{"test": _BROKEN_MODULE, "module": None, "legs": ["3.13"]}]
+    assert triage["drift_check"] is None
+
+
+def test_a_collection_error_with_no_baseline_is_listed_and_in_the_event(tmp_path: Path) -> None:
+    root = _tree(tmp_path, "tests/test_broken.py")
+    _, tonight = _collection_error_night()
+    triage = nc.find_regressions(tonight, None, None, _LEGS, lambda rel: (root / rel).is_file())
+    assert triage["events"][0]["kind"] == "no-baseline" and triage["events"][0]["tests"] == [_BROKEN_MODULE]
+    assert triage["collection_errors"][0]["module"] == "tests/test_broken.py"
+
+
+def test_a_collection_error_beside_ordinary_failures_splits_them(tmp_path: Path) -> None:
+    """With `--continue-on-collection-errors` both appear in one report."""
+    root = _tree(tmp_path, "tests/test_broken.py", "tests/test_a.py")
+    green = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)})
+    tonight = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None),
+                            "3.13": ({_A: tor.FAILED, _BROKEN_MODULE: tor.ERROR}, None)})
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                                 lambda rel: (root / rel).is_file())
+    assert [c["test"] for c in triage["candidates"]] == [_A]
+    assert [e["test"] for e in triage["collection_errors"]] == [_BROKEN_MODULE]
+    assert triage["new_failing"] == []
+    leg = triage["drift_check"]["legs"]["3.13"]
+    assert leg["node_ids"] == ["tests/test_a.py::test_one"]
+    assert leg["collection_errors"] == ["tests/test_broken.py"]
+
+
 def test_a_mass_failure_drift_checks_an_even_sample_of_twenty() -> None:
     tests = {f"tests.test_a::test_{i:02}": tor.PASSED for i in range(60)}
     green = _night(SHA1, {"3.12": (tests, None), "3.13": (tests, None)})
@@ -879,7 +938,7 @@ def test_the_drift_check_hands_pytest_node_ids_and_names_what_has_none(tmp_path:
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
                                  lambda rel: (root / rel).is_file())
     assert triage["drift_check"]["legs"]["3.12"] == {
-        "tests": [_A, gone], "node_ids": ["tests/test_a.py::test_one"], "unmapped": [gone],
+        "tests": [_A, gone], "node_ids": ["tests/test_a.py::test_one"], "unmapped": [gone], "collection_errors": [],
     }
     assert {c["test"]: c["node_id"] for c in triage["candidates"]} == {_A: "tests/test_a.py::test_one", gone: None}
     assert triage["new_failing"][0]["node_id"] == "tests/test_b.py::test_new"
@@ -1344,7 +1403,10 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
                                     "date": "2026-11-01"}
     node = "tests/test_a.py::test_one"
     assert triage["candidates"] == [{"test": _A, "node_id": node, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
-    assert triage["drift_check"] == {"sha": c0, "legs": {"3.13": {"tests": [_A], "node_ids": [node], "unmapped": []}}}
+    assert triage["drift_check"] == {
+        "sha": c0,
+        "legs": {"3.13": {"tests": [_A], "node_ids": [node], "unmapped": [], "collection_errors": []}},
+    }
 
 
 # --------------------------------------------------------------------- env
