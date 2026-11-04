@@ -79,7 +79,9 @@ were downloaded into; in the second case the bundle is the subdirectory
 leg is `missing`, with a note saying why, when `junit.xml` or `verdict.json`
 is absent or unreadable, when `env.json` is unreadable, or when
 `verdict.json` disagrees with `junit.xml` (a green verdict over a report
-with a failure, for one). A leg in `--canary-legs` that no `--leg` names
+with a failure, for one) or `rerun.xml` (a flaky test the rerun did not show
+passing, or flaky tests with no rerun report, on a mass failure, or from a
+rerun that does not count). A leg in `--canary-legs` that no `--leg` names
 reads as missing too. The night is `green` when every canary leg is green and
 every leg in `--canary-legs` is a canary leg, `incomplete` when one of those
 is missing or there is no canary leg at all, and `red` otherwise. `--created-at` defaults to the current
@@ -408,8 +410,11 @@ def _is_str_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(x, str) for x in value)  # pyright: ignore[reportUnknownVariableType]
 
 
-def check_verdict(verdict: dict[str, Any], outcomes: dict[str, str]) -> str | None:
-    """Why `verdict` cannot be trusted over the report it came from, or None."""
+def check_verdict(
+    verdict: dict[str, Any], outcomes: dict[str, str], rerun: dict[str, str] | None,
+) -> str | None:
+    """Why `verdict` cannot be trusted over the reports it came from, or None.
+    `rerun` is the rerun's outcomes, or None when it left no readable report."""
     rc = verdict.get("rc")
     if not isinstance(rc, int) or isinstance(rc, bool):
         return "verdict.json holds no pytest rc"
@@ -420,6 +425,19 @@ def check_verdict(verdict: dict[str, Any], outcomes: dict[str, str]) -> str | No
     red = red_ids(outcomes)
     if sorted(verdict["red"]) != red or sorted(verdict["flaky"] + verdict["confirmed"]) != red:
         return "verdict.json does not name the red tests in junit.xml"
+    if rc == 0 and red:
+        return "verdict.json says pytest exited 0 over the red tests in junit.xml"
+    flaky: list[str] = verdict["flaky"]
+    if flaky:
+        rerun_rc = verdict.get("rerun_rc")
+        if verdict["mass_failure"]:
+            return "verdict.json lists flaky tests on a mass failure, which has no rerun"
+        if rerun_rc is not None and rerun_rc not in _TEST_RC:
+            return f"verdict.json lists flaky tests from a rerun that exited {rerun_rc}"
+        if rerun is None:
+            return "verdict.json lists flaky tests and there is no readable rerun.xml"
+        if any(rerun.get(test) != tor.PASSED for test in flaky):
+            return "verdict.json lists flaky tests that rerun.xml does not show passing"
     if verdict.get("status") != leg_status(rc, outcomes, verdict["confirmed"]):
         return f"verdict.json says {verdict.get('status')!r}, which junit.xml and its rc do not support"
     return None
@@ -1097,6 +1115,11 @@ def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str
         verdict = _read_json(bundle / "verdict.json")
     except _UNREADABLE as exc:
         notes.append(f"verdict.json is unreadable: {exc}")
+    rerun: dict[str, str] | None = None
+    try:
+        rerun = _read_junit(bundle / "rerun.xml")
+    except _UNREADABLE:
+        pass  # Only a verdict that lists flaky tests needs it, and that check says so.
     env: dict[str, Any] | None = None
     env_ok = True
     try:
@@ -1106,7 +1129,7 @@ def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str
         env_ok = False
         notes.append(f"env.json is unreadable: {exc}")
     if verdict is not None and outcomes is not None:
-        problem = check_verdict(verdict, outcomes)
+        problem = check_verdict(verdict, outcomes, rerun)
         if problem is not None:
             notes.append(problem)
             verdict = None

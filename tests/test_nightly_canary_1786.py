@@ -95,6 +95,8 @@ def _bundle(
             rc = 1 if nc.red_ids(outcomes) else 0
         verdict = nc.classify_leg(rc, outcomes, rerun)
         (directory / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+        if rerun is not None:
+            (directory / "rerun.xml").write_text(_junit(rerun), encoding="utf-8")
     (directory / "env.json").write_text(json.dumps(env or {"python": "3.x"}), encoding="utf-8")
     return directory
 
@@ -839,17 +841,67 @@ def test_a_green_verdict_over_a_report_that_is_not_green_reads_incomplete(tmp_pa
 
 def test_a_verdict_that_marks_a_red_test_flaky_without_listing_it_red_is_refused() -> None:
     outcomes = {_A: tor.FAILED}
-    verdict = nc.classify_leg(1, outcomes, {_A: tor.PASSED})
-    assert nc.check_verdict(verdict, outcomes) is None
-    assert nc.check_verdict({**verdict, "flaky": [], "confirmed": []}, outcomes) is not None
-    assert nc.check_verdict({**verdict, "status": nc.RED}, outcomes) is not None
-    assert nc.check_verdict({**verdict, "red": []}, outcomes) is not None
+    rerun = {_A: tor.PASSED}
+    verdict = nc.classify_leg(1, outcomes, rerun)
+    assert nc.check_verdict(verdict, outcomes, rerun) is None
+    assert nc.check_verdict({**verdict, "flaky": [], "confirmed": []}, outcomes, rerun) is not None
+    assert nc.check_verdict({**verdict, "status": nc.RED}, outcomes, rerun) is not None
+    assert nc.check_verdict({**verdict, "red": []}, outcomes, rerun) is not None
+
+
+def _flaky_verdict(**fields: Any) -> dict[str, Any]:
+    """A verdict over `_A` failing, marked flaky, with these fields replaced."""
+    return {**nc.classify_leg(1, {_A: tor.FAILED}, {_A: tor.PASSED}), **fields}
+
+
+@pytest.mark.parametrize(
+    ("fields", "rerun", "says"),
+    [
+        ({}, None, "no readable rerun.xml"),
+        ({}, {_B: tor.PASSED}, "does not show passing"),
+        ({}, {_A: tor.FAILED}, "does not show passing"),
+        ({"mass_failure": True}, {_A: tor.PASSED}, "mass failure"),
+        ({"rc": 0}, {_A: tor.PASSED}, "exited 0"),
+        ({"rerun_rc": 4}, {_A: tor.PASSED}, "a rerun that exited 4"),
+    ],
+    ids=["no-rerun-report", "rerun-lacks-it", "rerun-failed-it", "mass-failure", "rc-0-over-red", "rerun-exit-4"],
+)
+def test_a_flaky_list_needs_a_rerun_that_shows_those_tests_passing(
+    fields: dict[str, Any], rerun: dict[str, str] | None, says: str,
+) -> None:
+    problem = nc.check_verdict(_flaky_verdict(**fields), {_A: tor.FAILED}, rerun)
+    assert problem is not None and says in problem
+
+
+def test_rc_0_over_a_red_report_is_refused_with_nothing_flaky(tmp_path: Path) -> None:
+    verdict = {**nc.classify_leg(1, {_A: tor.FAILED}, None), "rc": 0}
+    assert "exited 0" in (nc.check_verdict(verdict, {_A: tor.FAILED}, None) or "")
+
+
+def test_a_forged_flaky_list_reads_as_a_missing_leg_not_a_green_one(tmp_path: Path) -> None:
+    forged = _bundle(tmp_path / "3.13", {_A: tor.FAILED})
+    (forged / "verdict.json").write_text(json.dumps(_flaky_verdict()), encoding="utf-8")
+    good = _bundle(tmp_path / "3.12", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={good}", f"3.13={forged}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.MISSING
+    assert record["nightly"]["verdict"] == nc.INCOMPLETE
+    assert "no readable rerun.xml" in record["nightly"]["notes"]["3.13"][0]
+
+
+def test_a_bundle_whose_rerun_shows_the_flaky_test_passing_reads_green(tmp_path: Path) -> None:
+    flaky = _bundle(tmp_path / "3.13", {_A: tor.FAILED}, rerun={_A: tor.PASSED})
+    good = _bundle(tmp_path / "3.12", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={good}", f"3.13={flaky}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["flaky"]["3.13"] == [_A]
+    assert record["nightly"]["verdict"] == nc.GREEN
 
 
 def test_a_verdict_rc_that_is_a_boolean_is_refused() -> None:
     """False equals 0, so the status check alone would accept it."""
     outcomes = {_A: tor.PASSED}
-    assert nc.check_verdict({**nc.classify_leg(0, outcomes, None), "rc": False}, outcomes) == "verdict.json holds no pytest rc"
+    assert nc.check_verdict({**nc.classify_leg(0, outcomes, None), "rc": False}, outcomes, None) == "verdict.json holds no pytest rc"
 
 
 def test_an_unreadable_report_beside_an_empty_verdict_is_a_missing_leg(tmp_path: Path) -> None:
