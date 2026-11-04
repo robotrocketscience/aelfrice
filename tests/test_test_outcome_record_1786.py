@@ -323,6 +323,10 @@ def test_the_perf_pin_misses_a_renamed_gate_and_the_run_time_rule_still_blocks_i
     "corpus module 'x' underfilled under /corpus: 3 rows < 5 floor\nTODO re-enable next week",
     "corpus module 'x' ungradeable under /corpus",
     "corpus module 'x' ungradeable under /corpus: TODO re-enable next week",
+    "corpus module 'x' underfilled under /corpus: TODO rows < 5 floor",
+    "corpus module 'x' underfilled under /corpus: 3 'y'-labeled rows < 5 floor; TODO re-enable next week",
+    "corpus module 'x' ungradeable under /corpus: all 3 rows render verbatim, so there is no "
+    "reduction to measure; TODO re-enable next week",
     "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test",
     "skipping bench-gate test (lab corpus absent by design)",
 ])
