@@ -174,38 +174,50 @@ _PERF_GATE_NAMES = frozenset({"_has_run_perf", "run_perf"})
 
 
 def _skip_reason(node: Any) -> str | None:
-    """The reason of a `pytest.skip(...)` call, `""` for a non-literal one,
-    and None for any other node."""
+    """The reason of a `pytest.skip(...)` or `...skipif(..., reason=...)`
+    call: its text, the literal parts of an f-string, or `""` for any other
+    expression. None for any other node, or a call with no reason."""
     import ast
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return None
-    if node.func.attr != "skip" or not node.args:
+    if node.func.attr not in ("skip", "skipif"):
         return None
-    arg = node.args[0]
-    return arg.value if isinstance(arg, ast.Constant) and isinstance(arg.value, str) else ""
+    arg = next((kw.value for kw in node.keywords if kw.arg == "reason"), None)
+    if arg is None and node.func.attr == "skip" and node.args:
+        arg = node.args[0]
+    if arg is None:
+        return None
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value
+    if isinstance(arg, ast.JoinedStr):
+        return "".join(v.value for v in arg.values if isinstance(v, ast.Constant))
+    return ""
 
 
-def _perf_skip_sites_in_the_suite() -> tuple[dict[str, str], dict[str, str]]:
-    """Every `pytest.skip(...)` under tests/ as `path:line -> reason`, twice:
-    the sites inside an `if` on a perf gate, and the sites whose reason
-    names `--run-perf`."""
+def _is_perf_gate(test: Any) -> bool:
+    """An `if` test that reads a perf-gate name or names the flag itself."""
+    import ast
+    for node in ast.walk(test):
+        if isinstance(node, ast.Name) and node.id in _PERF_GATE_NAMES:
+            return True
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "--run-perf" in node.value:
+            return True
+    return False
+
+
+def _perf_skip_sites(source: str, rel: str) -> tuple[dict[str, str], dict[str, str]]:
+    """The skips in one module as `path:line -> reason`, twice: those in
+    either branch of an `if` on a perf gate, and those whose reason names
+    `--run-perf`."""
     import ast
     gated: dict[str, str] = {}
     naming: dict[str, str] = {}
-    for path in sorted((_REPO / "tests").rglob("*.py")):
-        if path.name == Path(__file__).name:
-            continue
-        rel = path.relative_to(_REPO).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            reason = _skip_reason(node)
-            if reason is not None and "--run-perf" in reason:
-                naming[f"{rel}:{node.lineno}"] = reason
-            if not isinstance(node, ast.If):
-                continue
-            names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
-            if not names & _PERF_GATE_NAMES:
-                continue
-            for stmt in node.body:
+    for node in ast.walk(ast.parse(source)):
+        reason = _skip_reason(node)
+        if reason is not None and "--run-perf" in reason:
+            naming[f"{rel}:{node.lineno}"] = reason
+        if isinstance(node, ast.If) and _is_perf_gate(node.test):
+            for stmt in [*node.body, *node.orelse]:
                 for sub in ast.walk(stmt):
                     reason = _skip_reason(sub)
                     if reason is not None:
@@ -213,17 +225,71 @@ def _perf_skip_sites_in_the_suite() -> tuple[dict[str, str], dict[str, str]]:
     return gated, naming
 
 
+def _perf_skip_sites_in_the_suite() -> tuple[dict[str, str], dict[str, str]]:
+    gated: dict[str, str] = {}
+    naming: dict[str, str] = {}
+    for path in sorted((_REPO / "tests").rglob("*.py")):
+        if path.name == Path(__file__).name:
+            continue
+        module_gated, module_naming = _perf_skip_sites(
+            path.read_text(encoding="utf-8"), path.relative_to(_REPO).as_posix(),
+        )
+        gated.update(module_gated)
+        naming.update(module_naming)
+    return gated, naming
+
+
+def _perf_pin_is_clean(gated: dict[str, str], naming: dict[str, str]) -> bool:
+    """Every skip that names the flag or sits behind a gate uses a known wording."""
+    return gated == naming and set(gated.values()) <= tor.PERF_SKIP_REASONS
+
+
 def test_the_perf_wordings_above_are_every_one_the_suite_uses() -> None:
     """A new wording, or a site that stops naming the flag, shows up here.
 
-    The sites are found by their gate, not by their wording, so a gated
-    skip whose reason drops `--run-perf` fails the second assert even when
-    other sites still use its old wording."""
+    It reads a skip written as `pytest.skip("...")`, `pytest.skip(reason=...)`,
+    `skipif(..., reason=...)` or an f-string, in either branch of an `if` that
+    reads `_has_run_perf` or `run_perf` or names the flag. It does not see a
+    gate behind a helper with another name that never names the flag. A skip
+    it misses still fails closed: its reason is not one of the exact wordings,
+    so at run time it reads as `skipped` and a new one blocks."""
     gated, naming = _perf_skip_sites_in_the_suite()
     assert len(gated) >= len(_PERF_SKIP_WORDINGS), gated
-    assert {site: r for site, r in gated.items() if not tor.is_never_executed_reason(r)} == {}
-    assert gated == naming
+    assert _perf_pin_is_clean(gated, naming), (gated, naming)
     assert set(gated.values()) == set(_PERF_SKIP_WORDINGS) == tor.PERF_SKIP_REASONS
+
+
+_PERF_FORMS = {
+    "new-wording-omits-flag": 'if not _has_run_perf(r):\n    pytest.skip("perf brand new wording")\n',
+    "new-wording-names-flag": 'if not _has_run_perf(r):\n    pytest.skip("perf new wording --run-perf")\n',
+    "reason-keyword": 'if not _has_run_perf(r):\n    pytest.skip(reason="perf new wording --run-perf")\n',
+    "skipif-marker": '@pytest.mark.skipif(True, reason="perf new wording --run-perf")\ndef test_p():\n    pass\n',
+    "inline-getoption": 'if not r.config.getoption("--run-perf"):\n    pytest.skip("perf brand new wording")\n',
+    "else-branch": 'if run_perf:\n    pass\nelse:\n    pytest.skip("perf brand new wording")\n',
+    "f-string": 'if not r.config.getoption("--run-perf"):\n    pytest.skip(f"perf {n} wording --run-perf")\n',
+    "non-literal": 'if not _has_run_perf(r):\n    pytest.skip(reason)\n',
+    "known-wording-without-gate": 'pytest.skip("perf test gated on --run-perf")\n',
+}
+
+
+@pytest.mark.parametrize("source", list(_PERF_FORMS.values()), ids=list(_PERF_FORMS))
+def test_the_perf_pin_refuses_each_form_it_claims_to_read(source: str) -> None:
+    assert not _perf_pin_is_clean(*_perf_skip_sites(source, "t.py"))
+
+
+@pytest.mark.parametrize("wording", sorted(tor.PERF_SKIP_REASONS))
+def test_the_perf_pin_accepts_a_known_wording_behind_a_gate(wording: str) -> None:
+    source = f'if not _has_run_perf(r):\n    pytest.skip("{wording}")\n'
+    gated, naming = _perf_skip_sites(source, "t.py")
+    assert gated == naming == {"t.py:2": wording}
+    assert _perf_pin_is_clean(gated, naming)
+
+
+def test_the_perf_pin_misses_a_renamed_gate_and_the_run_time_rule_still_blocks_it() -> None:
+    """The limit the pin's docstring states, and why it fails closed."""
+    source = 'if not _perf_on(r):\n    pytest.skip("perf brand new wording")\n'
+    assert _perf_skip_sites(source, "t.py") == ({}, {})
+    assert not tor.is_never_executed_reason("perf brand new wording")
 
 
 @pytest.mark.parametrize("reason", [
