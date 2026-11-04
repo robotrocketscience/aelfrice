@@ -108,11 +108,11 @@ event. The output carries:
   exit 2, so the suite did not run on that leg and the leg's report holds
   little else. These are neither candidates nor new failures: nothing passed
   or failed. Each entry holds `test`, `legs` and `module`, the path
-  `tests/test_x.py` under `--repo-root` or null. `module` is the one form of
-  the id a later step hands pytest. The bisect's `step` takes it as an id with
-  no `::` and reads `pytest --collect-only -q <module>`: exit 2 is bad, exit 0
-  is good, and a file not in that commit is good. It accepts no other form,
-  not `tests.test_x` and not `::tests.test_x`.
+  `tests/test_x.py` under `--repo-root` or null. `module` is the form a later
+  step hands pytest, and the one the bisect's `step` gets rather than
+  `tests.test_x` or `::tests.test_x`: an id with no `::` is a module, read by
+  `pytest --collect-only -q <module>`, where exit 2 is bad, exit 0 is good,
+  and a file not in that commit is good.
 - `drift_check`: the candidates the workflow reruns at the last green
   commit, per leg, under that leg's Python, since a test failing only on 3.12
   says nothing when it runs on 3.13. A leg that had a mass failure samples 20
@@ -149,6 +149,11 @@ night on main re-points it with a `::warning::` and exits 0. An entry whose
 record file is gone exits 1 the same way, naming the path, until a green
 night moves it. Exit 1 comes after the writes, so the workflow can commit the
 night's record before it fails the job.
+
+What this does not catch, by design. A passing test that later skips or is
+deleted produces no event; the outcome ratchet in `test_outcome_record.py`
+covers skips. A regression that depends on test order, and is the only failure
+on its leg, passes on the rerun, so it reads as flaky and the leg stays green.
 
 Standard library only, so the publish job runs it on the runner's own
 interpreter. It imports `parse_junit`, `build_record` and `diff_records`
