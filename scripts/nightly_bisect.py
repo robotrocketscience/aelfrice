@@ -1,0 +1,719 @@
+#!/usr/bin/env python3
+"""Bisect a nightly canary regression to the merge that caused it (#1786).
+
+The nightly canary runs the full suite on main. When a test that passed on
+the last green commit fails tonight, and still passes when it runs on that
+commit again, the cause is a commit between the two. This script finds it.
+
+Usage:
+    nightly_bisect.py merge-points --good SHA --bad SHA --out POINTS.json
+        [--repo OWNER/NAME] [--repo-root DIR] [--dry-run]
+    nightly_bisect.py run --good SHA --bad SHA --tests IDS.txt --out RESULT.json
+        [--points POINTS.json] [--repo-root DIR] [--worktree DIR]
+        [--budget-seconds 1200] [--step-timeout 300] [--step-cmd CMD]
+        [--python VERSION] [--extra NAME ...] [--dry-run]
+    nightly_bisect.py step --tests IDS.txt --deadline EPOCH
+        [--step-timeout 300] [--failed-out FILE] [--python VERSION]
+        [--extra NAME ...] [--dry-run]
+
+`--dry-run` writes no file, calls no API and changes no git state. It
+prints what the subcommand would do and exits as a real run would on
+success.
+
+Merge points. The merge train fast-forwards main, so a merged PR's merge
+commit is its head commit, and the commits before it in the same PR were
+never on main on their own. `merge-points` lists the commits on the
+ancestry path from `--good` to `--bad` and keeps those that are the merge
+commit of a PR merged since the day before `--good` was committed, as
+`gh pr list --state merged` reports them. `--bad` is always kept. The
+output maps each kept commit to its PR number, or to null for `--bad`
+when no PR merged it, in history order. When the `gh` call fails the
+output is `{}`, and `run` then tests every commit.
+
+The run. `run` adds a detached worktree at `--good` (`.bisect` under the
+repository root by default, removed first if a previous run left it), and
+in it runs `git bisect start BAD GOOD`, marks every commit that is not a
+merge point with `git bisect skip`, and runs `git bisect run` with the
+step. The step is this script's `step` subcommand, invoked by its absolute
+path, because `git bisect run` runs it inside the worktree, where
+`scripts/` holds the bisected commit's files. `--step-cmd` replaces the
+step command; the tests use it to run a fake in place of uv and pytest.
+
+The result comes from `refs/bisect/bad` and `refs/bisect/good-*`, never
+from the exit status of `git bisect run`, which is nonzero both when it
+stops on skipped commits and when a step aborts it. The bad commit is the
+culprit when the merge point before it is good. The script then runs the
+step once more on the culprit, which has to fail, and on that merge point,
+which has to pass. When either disagrees the tests get a range event.
+`git bisect reset` runs in a `finally` after every round. The worktree
+stays after the run; the next run removes it first.
+
+Several culprits. The step fails when any of its tests fails, so the
+first round finds the first commit that broke one of them. The check on
+the culprit writes which tests failed there. Tests that still pass at the
+culprit broke later, and get a new round from the culprit to `--bad`, up
+to three rounds within the budget. What is left after the last round gets
+a range event.
+
+The step. Its exit status follows `git bisect run`: 0 good, 1 bad, 125
+skip, 255 abort. Past `--deadline` it exits 255, which stops the bisect;
+the result then names the range it had narrowed to. Otherwise it runs
+`uv sync --frozen` (125 when that fails), collects the test files with
+`pytest --collect-only -q` (125 when collection fails) and keeps the ids
+it collected. When none is collected the commit predates the tests and is
+good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
+status or a timeout is a skip. `--step-timeout` bounds the whole step. A
+step that cannot read its input exits 255 rather than 2, which `git bisect
+run` would read as a bad commit.
+
+Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300)
+each step, and at most 50 tests are bisected; the others get a range
+event.
+
+Events. The result names one event per culprit or range, with the event
+keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
+`commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
+when no culprit was found. Each event lists its tests. Each round keeps
+its `git bisect log`.
+
+Standard library only. The functions above `Git` are pure; the tests in
+`tests/test_nightly_bisect_1786.py` run them on values, and run the
+subcommands on temporary git repositories with a fake step, a fake `uv`
+and a fake `gh`.
+
+Exit status (`merge-points`, `run`): 0, or 1 for `run` when any test got
+a range event, or 2 for a usage error, an unreadable input or a git
+command that failed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, cast
+from xml.etree import ElementTree
+
+RESULT_FORMAT = 1
+
+# `git bisect run`'s protocol.
+STEP_GOOD = 0
+STEP_BAD = 1
+STEP_SKIP = 125
+STEP_ABORT = 255
+
+DEFAULT_BUDGET_SECONDS = 1200
+DEFAULT_STEP_TIMEOUT = 300
+MAX_TESTS = 50
+MAX_ROUNDS = 3
+
+# pytest's status when it collected no test.
+_PYTEST_NO_TESTS = 5
+_GIT_TIMEOUT_SECONDS = 120
+_API_TIMEOUT_SECONDS = 60
+_PR_LIST_LIMIT = 500
+# Revisions per `git bisect skip`, to keep each command line short.
+_SKIP_CHUNK = 200
+# `git bisect run` gets the rest of the budget, one more step, and this.
+_RUN_MARGIN_SECONDS = 60
+# Lines of `git bisect run` output a round keeps.
+_OUTPUT_TAIL_LINES = 40
+
+REASON_BUDGET = "budget"
+REASON_INCONCLUSIVE = "inconclusive"
+REASON_UNVERIFIED = "unverified"
+REASON_ROUNDS = "rounds"
+REASON_CAP = "cap"
+REASON_PASSES_AT_BAD = "passes at bad"
+
+
+# ------------------------------------------------------------------ step
+
+def step_verdict(
+    *,
+    past_deadline: bool,
+    sync_rc: int | None = 0,
+    collect_rc: int | None = 0,
+    present: Sequence[str] = (),
+    run_rc: int | None = None,
+) -> int:
+    """The step's exit status. A status of None is a timeout.
+
+    `collect_rc` is pytest's status for `--collect-only`, or 0 when no
+    test file exists to collect; `present` holds the ids it collected.
+    """
+    if past_deadline:
+        return STEP_ABORT
+    if sync_rc != 0:
+        return STEP_SKIP
+    if collect_rc not in (0, _PYTEST_NO_TESTS):
+        return STEP_SKIP
+    if not present:
+        return STEP_GOOD
+    if run_rc == 0:
+        return STEP_GOOD
+    if run_rc == 1:
+        return STEP_BAD
+    return STEP_SKIP
+
+
+def test_files(ids: Iterable[str]) -> list[str]:
+    """The file part of each node id, once each, in order."""
+    out: list[str] = []
+    for node_id in ids:
+        path = node_id.split("::", 1)[0]
+        if path not in out:
+            out.append(path)
+    return out
+
+
+def collected_ids(stdout: str) -> set[str]:
+    """The node ids `pytest --collect-only -q` printed, one per line."""
+    return {line.strip() for line in stdout.splitlines() if "::" in line}
+
+
+def present_ids(candidates: Iterable[str], collected: set[str]) -> list[str]:
+    return [c for c in candidates if c in collected]
+
+
+def junit_key(node_id: str) -> str:
+    """The `classname::name` a JUnit report gives a node id.
+
+    `tests/a/test_b.py::TestC::test_d[x]` is `tests.a.test_b.TestC::test_d[x]`.
+    A `::` inside the parameter brackets stays in the name.
+    """
+    path, _, rest = node_id.partition("::")
+    bracket = rest.find("[")
+    head, params = (rest, "") if bracket < 0 else (rest[:bracket], rest[bracket:])
+    parts = head.split("::")
+    module = path[:-3] if path.endswith(".py") else path
+    classname = ".".join([module.replace("/", "."), *parts[:-1]])
+    return f"{classname}::{parts[-1]}{params}"
+
+
+def failing_ids(junit_text: str, ids: Iterable[str]) -> list[str]:
+    """The ids, in order, that the report shows as failed or errored."""
+    root = ElementTree.fromstring(junit_text)
+    red: set[str] = set()
+    for case in root.iter("testcase"):
+        if case.find("failure") is not None or case.find("error") is not None:
+            red.add(f"{case.get('classname') or ''}::{case.get('name') or ''}")
+    return [i for i in ids if junit_key(i) in red]
+
+
+# ----------------------------------------------------------------- range
+
+def select_points(order: Sequence[str], prs: Iterable[dict[str, Any]], bad: str) -> dict[str, int | None]:
+    """Commit to PR number for each commit of `order` that a PR merged,
+    plus `bad`, in history order."""
+    by_oid: dict[str, int] = {}
+    for pr in prs:
+        merge = pr.get("mergeCommit")
+        if isinstance(merge, dict) and cast(dict[str, Any], merge).get("oid"):
+            by_oid[str(cast(dict[str, Any], merge)["oid"])] = int(pr["number"])
+    return {sha: by_oid.get(sha) for sha in order if sha in by_oid or sha == bad}
+
+
+def merged_since(committed_at: int) -> str:
+    """The search date for `gh pr list`: the UTC day before the commit,
+    so a committer's time zone cannot move a merge out of the window."""
+    day = datetime.fromtimestamp(committed_at, tz=timezone.utc) - timedelta(days=1)
+    return day.strftime("%Y-%m-%d")
+
+
+def pr_list_argv(since: str, repo: str | None) -> list[str]:
+    argv = [
+        "gh", "pr", "list", "--state", "merged",
+        "--search", f"merged:>={since}",
+        "--json", "number,mergeCommit,title,url",
+        "--limit", str(_PR_LIST_LIMIT),
+    ]
+    if repo:
+        argv += ["--repo", repo]
+    return argv
+
+
+def skip_list(in_range: Sequence[str], points: set[str] | None) -> list[str]:
+    """Commits to `git bisect skip`: none without merge-point data."""
+    if points is None:
+        return []
+    return [c for c in in_range if c not in points]
+
+
+def preceding_point(order: Sequence[str], points: set[str] | None, sha: str, lo: str) -> str:
+    """The merge point before `sha` on `order`, or `lo` when none is.
+    `order` runs oldest first and leaves `lo` out."""
+    for commit in reversed(order[: order.index(sha)]):
+        if points is None or commit in points:
+            return commit
+    return lo
+
+
+def points_between(order: Sequence[str], points: set[str] | None, bad: str) -> list[str]:
+    """Merge points the bisect has to test: those on `order` before `bad`."""
+    return [c for c in order[: order.index(bad)] if points is None or c in points]
+
+
+@dataclass(frozen=True)
+class Outcome:
+    culprit: str | None
+    good: str
+    bad: str
+
+
+def read_outcome(
+    order: Sequence[str], points: set[str] | None, lo: str, bad_ref: str, good_refs: Iterable[str],
+) -> Outcome:
+    """What the bisect refs say. The bad commit is the culprit when the
+    merge point before it is good; otherwise the range runs from the
+    newest good commit to the bad one."""
+    position = {sha: i for i, sha in enumerate(order)}
+    goods = {g for g in good_refs if g in position and position[g] < position[bad_ref]}
+    newest_good = max(goods, key=position.__getitem__) if goods else lo
+    before = preceding_point(order, points, bad_ref, lo)
+    if before == lo or before in goods:
+        return Outcome(culprit=bad_ref, good=before, bad=bad_ref)
+    return Outcome(culprit=None, good=newest_good, bad=bad_ref)
+
+
+def event_for_culprit(sha: str, pr: int | None, tests: list[str]) -> dict[str, Any]:
+    if pr is not None:
+        return {"key": f"pr-{pr}", "kind": "pr", "pr": pr, "sha": sha, "tests": tests}
+    return {"key": f"commit-{sha[:12]}", "kind": "commit", "sha": sha, "tests": tests}
+
+
+def event_for_range(good: str, bad: str, tests: list[str], reason: str) -> dict[str, Any]:
+    return {
+        "key": f"range-{good[:12]}-{bad[:12]}", "kind": "range",
+        "good": good, "bad": bad, "reason": reason, "tests": tests,
+    }
+
+
+def add_event(events: list[dict[str, Any]], event: dict[str, Any]) -> None:
+    """Append `event`, or merge its tests into the event with its key."""
+    for existing in events:
+        if existing["key"] == event["key"]:
+            existing["tests"] = [*existing["tests"], *(t for t in event["tests"] if t not in existing["tests"])]
+            return
+    events.append(event)
+
+
+def parse_tests(text: str) -> list[str]:
+    """One node id per line; blank lines and `#` comments are ignored."""
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and line not in out:
+            out.append(line)
+    return out
+
+
+def parse_points(data: Any) -> dict[str, int | None]:
+    if not isinstance(data, dict):
+        raise ValueError("the points file must hold a JSON object")
+    out: dict[str, int | None] = {}
+    for sha, pr in cast(dict[str, Any], data).items():
+        if pr is not None and (not isinstance(pr, int) or isinstance(pr, bool)):
+            raise ValueError(f"the points file maps {sha} to {pr!r}, not a PR number or null")
+        out[sha] = pr
+    return out
+
+
+# ------------------------------------------------------------------- git
+
+class Git:
+    """`git` in one directory, with a timeout on every call."""
+
+    def __init__(self, cwd: Path) -> None:
+        self.cwd = cwd
+
+    def run(self, *args: str, check: bool = True, timeout: float = _GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
+        r = subprocess.run(
+            ["git", *args], cwd=self.cwd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False, timeout=timeout,
+        )
+        if check and r.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
+        return r
+
+    def out(self, *args: str) -> str:
+        return self.run(*args).stdout.strip()
+
+    def commit(self, rev: str) -> str:
+        return self.out("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+
+    def lines(self, *args: str) -> list[str]:
+        return [line for line in self.out(*args).splitlines() if line]
+
+
+def ancestry(git: Git, good: str, bad: str) -> list[str]:
+    return git.lines("rev-list", "--reverse", "--ancestry-path", f"{good}..{bad}")
+
+
+def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
+    """Both commits as full shas, with `good` a proper ancestor of `bad`."""
+    good_sha, bad_sha = git.commit(good), git.commit(bad)
+    if good_sha == bad_sha:
+        raise ValueError(f"--good and --bad are the same commit {good_sha[:12]}")
+    if git.run("merge-base", "--is-ancestor", good_sha, bad_sha, check=False).returncode != 0:
+        raise ValueError(f"{good_sha[:12]} is not an ancestor of {bad_sha[:12]}")
+    return good_sha, bad_sha
+
+
+# ------------------------------------------------------------- the step
+
+def _bounded(argv: list[str], end: float, capture: bool = False) -> tuple[int | None, str]:
+    """Run `argv` until `end` (epoch seconds). Status None is a timeout;
+    a missing program is status 127."""
+    try:
+        r = subprocess.run(
+            argv, capture_output=capture, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=max(1.0, end - time.time()),
+        )
+    except subprocess.TimeoutExpired:
+        return None, ""
+    except FileNotFoundError:
+        return 127, ""
+    return r.returncode, r.stdout if capture else ""
+
+
+def _sync_argv(python: str | None, extras: Sequence[str]) -> list[str]:
+    argv = ["uv", "sync", "--frozen"]
+    for extra in extras:
+        argv += ["--extra", extra]
+    if python:
+        argv += ["--python", python]
+    return argv
+
+
+_PYTEST = ["uv", "run", "--no-sync", "pytest", "-p", "no:cacheprovider"]
+
+
+def cmd_step(args: argparse.Namespace) -> int:
+    ids = parse_tests(args.tests.read_text(encoding="utf-8"))
+    sync = _sync_argv(args.python, args.extra)
+    if args.dry_run:
+        print(f"dry run: would run {shlex.join(sync)}")
+        print(f"dry run: would collect {len(ids)} test id(s) from {len(test_files(ids))} file(s) and run those present")
+        return 0
+    now = time.time()
+    if now >= args.deadline:
+        print("nightly_bisect step: past the deadline; aborting the bisect", file=sys.stderr)
+        return step_verdict(past_deadline=True)
+    end = min(args.deadline, now + args.step_timeout)
+    failed: list[str] = []
+    try:
+        sync_rc, _ = _bounded(sync, end)
+        if sync_rc != 0:
+            return step_verdict(past_deadline=False, sync_rc=sync_rc)
+        files = [f for f in test_files(ids) if Path(f).is_file()]
+        if not files:
+            return step_verdict(past_deadline=False)
+        collect_rc, listing = _bounded([*_PYTEST, "--collect-only", "-q", *files], end, capture=True)
+        present = present_ids(ids, collected_ids(listing))
+        if collect_rc not in (0, _PYTEST_NO_TESTS) or not present:
+            return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present)
+        with tempfile.TemporaryDirectory() as tmp:
+            junit = Path(tmp) / "step.xml"
+            run_rc, _ = _bounded([*_PYTEST, "-q", f"--junitxml={junit}", *present], end)
+            if junit.is_file():
+                try:
+                    failed = failing_ids(junit.read_text(encoding="utf-8"), present)
+                except ElementTree.ParseError:
+                    failed = []
+        return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present, run_rc=run_rc)
+    finally:
+        if args.failed_out is not None:
+            args.failed_out.write_text("".join(f"{t}\n" for t in failed), encoding="utf-8")
+
+
+# -------------------------------------------------------------- the run
+
+def default_step_cmd() -> list[str]:
+    """This script's `step`, by absolute path: `git bisect run` runs it in
+    the worktree, where a relative path names the bisected commit's copy."""
+    return [sys.executable, str(Path(__file__).resolve()), "step"]
+
+
+@dataclass
+class Bisector:
+    git: Git
+    worktree: Path
+    bad: str
+    points: dict[str, int | None]
+    step_cmd: list[str]
+    step_args: list[str]
+    deadline: float
+    step_timeout: int
+    scratch: Path
+    events: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    rounds: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+
+    @property
+    def point_set(self) -> set[str] | None:
+        """The merge points, `bad` included, or None without data."""
+        return set(self.points) | {self.bad} if self.points else None
+
+    def _wt(self) -> Git:
+        return Git(self.worktree)
+
+    def _step(self, tests_file: Path, failed_out: Path | None = None) -> list[str]:
+        argv = [
+            *self.step_cmd, "--tests", str(tests_file),
+            "--deadline", f"{self.deadline:.3f}", "--step-timeout", str(self.step_timeout),
+            *self.step_args,
+        ]
+        if failed_out is not None:
+            argv += ["--failed-out", str(failed_out)]
+        return argv
+
+    def _write_tests(self, name: str, tests: list[str]) -> Path:
+        path = self.scratch / name
+        path.write_text("".join(f"{t}\n" for t in tests), encoding="utf-8")
+        return path
+
+    def _check(self, sha: str, tests_file: Path, failed_out: Path) -> int:
+        """The step's status at `sha`, run outside a bisect."""
+        failed_out.write_text("", encoding="utf-8")
+        self._wt().run("checkout", "-q", "--force", "--detach", sha)
+        try:
+            r = subprocess.run(
+                self._step(tests_file, failed_out), cwd=self.worktree, check=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=self.step_timeout + _RUN_MARGIN_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return STEP_SKIP
+        return r.returncode
+
+    def bisect_round(self, lo: str, tests: list[str], n: int) -> tuple[Outcome, dict[str, Any]]:
+        """One `git bisect` from `lo` to `bad` over `tests`."""
+        order = ancestry(self.git, lo, self.bad)
+        points = self.point_set
+        tests_file = self._write_tests(f"round-{n}.txt", tests)
+        record: dict[str, Any] = {"good": lo, "bad": self.bad, "tests": tests}
+        if not points_between(order, points, self.bad):
+            # Nothing between the two to test: `bad` follows `lo` directly.
+            record.update(log="", output="")
+            return Outcome(culprit=self.bad, good=lo, bad=self.bad), record
+        wt = self._wt()
+        in_range = self.git.lines("rev-list", f"{lo}..{self.bad}")
+        skips = skip_list(in_range, points)
+        record["skipped"] = len(skips)
+        try:
+            wt.run("bisect", "start", self.bad, lo)
+            for i in range(0, len(skips), _SKIP_CHUNK):
+                wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
+            remaining = self.deadline - time.time()
+            try:
+                run = wt.run(
+                    "bisect", "run", *self._step(tests_file), check=False,
+                    timeout=max(1.0, remaining) + self.step_timeout + _RUN_MARGIN_SECONDS,
+                )
+                output = run.stdout + run.stderr
+            except subprocess.TimeoutExpired:
+                output = "git bisect run timed out"
+            bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
+            goods = [
+                sha for sha, ref in (line.split(" ", 1) for line in wt.lines(
+                    "for-each-ref", "--format=%(objectname) %(refname)", "refs/bisect/",
+                ))
+                if ref.startswith("refs/bisect/good-")
+            ]
+            record["log"] = wt.run("bisect", "log", check=False).stdout
+            record["output"] = "\n".join(output.splitlines()[-_OUTPUT_TAIL_LINES:])
+        finally:
+            wt.run("bisect", "reset", check=False)
+        return read_outcome(order, points, lo, bad_ref, goods), record
+
+    def bisect(self, good: str, tests: list[str]) -> None:
+        lo, remaining = good, list(tests)
+        for n in range(1, MAX_ROUNDS + 1):
+            if not remaining:
+                return
+            if lo == self.bad:
+                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_PASSES_AT_BAD))
+                return
+            if time.time() >= self.deadline:
+                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_BUDGET))
+                return
+            outcome, record = self.bisect_round(lo, remaining, n)
+            self.rounds.append(record)
+            if outcome.culprit is None:
+                record["culprit"] = None
+                add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_INCONCLUSIVE))
+                return
+            tests_file = self.scratch / f"round-{n}.txt"
+            failed_out = self.scratch / f"round-{n}-failed.txt"
+            culprit_rc = self._check(outcome.culprit, tests_file, failed_out)
+            failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in remaining]
+            before_rc = self._check(outcome.good, tests_file, self.scratch / f"round-{n}-before.txt")
+            record.update(culprit=outcome.culprit, verify={
+                "culprit_rc": culprit_rc, "preceding": outcome.good, "preceding_rc": before_rc,
+            })
+            if culprit_rc != STEP_BAD or before_rc != STEP_GOOD:
+                reason = REASON_BUDGET if STEP_ABORT in (culprit_rc, before_rc) else REASON_UNVERIFIED
+                add_event(self.events, event_for_range(lo, self.bad, remaining, reason))
+                return
+            broke = failed or remaining
+            add_event(self.events, event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), broke))
+            remaining = [t for t in remaining if t not in broke]
+            lo = outcome.culprit
+        if remaining:
+            add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
+
+
+def _prepare_worktree(git: Git, path: Path, good: str) -> None:
+    """A detached worktree at `good`, replacing one a previous run left."""
+    if path.exists():
+        git.run("worktree", "remove", "--force", "--force", str(path), check=False)
+        git.run("worktree", "prune", check=False)
+    if path.exists():
+        raise ValueError(f"{path} exists and is not a worktree this script can remove")
+    git.run("worktree", "add", "--detach", str(path), good)
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+
+
+def cmd_merge_points(args: argparse.Namespace) -> int:
+    git = Git(args.repo_root)
+    good, bad = resolve_range(git, args.good, args.bad)
+    order = ancestry(git, good, bad)
+    since = merged_since(int(git.out("show", "-s", "--format=%ct", good)))
+    argv = pr_list_argv(since, args.repo)
+    if args.dry_run:
+        print(f"dry run: {len(order)} commit(s) from {good[:12]} to {bad[:12]}")
+        print(f"dry run: would run {shlex.join(argv)}")
+        print(f"dry run: would write {args.out}")
+        return 0
+    try:
+        r = subprocess.run(
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=_API_TIMEOUT_SECONDS,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or f"exit status {r.returncode}")
+        prs = json.loads(r.stdout)
+        if not isinstance(prs, list):
+            raise ValueError("gh pr list did not return a list")
+        points = select_points(order, cast(list[dict[str, Any]], prs), bad)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError,
+            subprocess.TimeoutExpired) as exc:
+        print(f"::warning::merge points unavailable, so the bisect tests every commit: {exc}", file=sys.stderr)
+        points = {}
+    _write_json(args.out, points)
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    git = Git(args.repo_root)
+    good, bad = resolve_range(git, args.good, args.bad)
+    tests = parse_tests(args.tests.read_text(encoding="utf-8"))
+    if not tests:
+        raise ValueError(f"{args.tests} names no test")
+    points = parse_points(_read_json(args.points)) if args.points is not None else {}
+    bisected, over_cap = tests[:MAX_TESTS], tests[MAX_TESTS:]
+    step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
+    step_args = _step_passthrough(args)
+    worktree = args.worktree if args.worktree is not None else args.repo_root / ".bisect"
+    if args.dry_run:
+        in_range = git.lines("rev-list", f"{good}..{bad}")
+        point_set = set(points) | {bad} if points else None
+        print(f"dry run: {len(in_range)} commit(s) from {good[:12]} to {bad[:12]}, "
+              f"{len(in_range) - len(skip_list(in_range, point_set))} to test, {len(bisected)} test(s)")
+        print(f"dry run: would add the worktree {worktree} and run {shlex.join([*step_cmd, *step_args])}")
+        print(f"dry run: would write {args.out}")
+        return 0
+    deadline = time.time() + args.budget_seconds
+    with tempfile.TemporaryDirectory() as scratch:
+        bisector = Bisector(
+            git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
+            step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
+        )
+        _prepare_worktree(git, worktree, good)
+        bisector.bisect(good, bisected)
+    if over_cap:
+        add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+    result = {
+        "format": RESULT_FORMAT, "good": good, "bad": bad, "tests": tests,
+        "merge_points": len(points), "events": bisector.events, "rounds": bisector.rounds,
+    }
+    _write_json(args.out, result)
+    for event in bisector.events:
+        print(f"{event['key']}: {len(event['tests'])} test(s)")
+    return 1 if any(e["kind"] == "range" for e in bisector.events) else 0
+
+
+def _step_passthrough(args: argparse.Namespace) -> list[str]:
+    out: list[str] = []
+    for extra in args.extra:
+        out += ["--extra", extra]
+    if args.python:
+        out += ["--python", args.python]
+    return out
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--dry-run", action="store_true", help="write no file, call no API, change no git state")
+    env = argparse.ArgumentParser(add_help=False)
+    env.add_argument("--python", default=None, help="the Python version uv syncs")
+    env.add_argument("--extra", action="append", default=[], help="an extra uv syncs; repeatable")
+    env.add_argument("--step-timeout", type=int, default=DEFAULT_STEP_TIMEOUT)
+
+    p = sub.add_parser("merge-points", parents=[common], help="list the commits PRs merged between two commits")
+    p.add_argument("--good", required=True)
+    p.add_argument("--bad", required=True)
+    p.add_argument("--repo", default=None, help="OWNER/NAME for gh; the checkout's remote when omitted")
+    p.add_argument("--repo-root", type=Path, default=Path("."))
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(func=cmd_merge_points)
+
+    p = sub.add_parser("run", parents=[common, env], help="bisect the tests from --good to --bad")
+    p.add_argument("--good", required=True)
+    p.add_argument("--bad", required=True)
+    p.add_argument("--tests", required=True, type=Path, help="one node id per line")
+    p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
+    p.add_argument("--repo-root", type=Path, default=Path("."))
+    p.add_argument("--worktree", type=Path, default=None, help="default: .bisect under --repo-root")
+    p.add_argument("--budget-seconds", type=int, default=DEFAULT_BUDGET_SECONDS)
+    p.add_argument("--step-cmd", default=None, help="a command line that replaces this script's step")
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("step", parents=[common, env], help="judge the checked-out commit for git bisect run")
+    p.add_argument("--tests", required=True, type=Path)
+    p.add_argument("--deadline", required=True, type=float, help="epoch seconds; past it the step exits 255")
+    p.add_argument("--failed-out", type=Path, default=None, help="write the ids that failed here")
+    p.set_defaults(func=cmd_step)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return int(args.func(args))
+    except (OSError, ValueError, KeyError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print(f"nightly_bisect: {exc}", file=sys.stderr)
+        # `git bisect run` reads 2 as a bad commit, so a step that cannot
+        # judge its commit stops the bisect instead.
+        return STEP_ABORT if args.command == "step" else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
