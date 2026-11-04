@@ -164,6 +164,11 @@ def test_a_junit_id_maps_to_the_node_id_pytest_reruns(tmp_path: Path, test: str,
     assert nc.node_id(test, lambda rel: (root / rel).is_file()) == expected
 
 
+def test_a_collection_error_never_maps_even_beside_a_file_named_dot_py(tmp_path: Path) -> None:
+    root = _tree(tmp_path, ".py")
+    assert nc.node_id("::tests.test_broken", lambda rel: (root / rel).is_file()) is None
+
+
 def test_failed_ids_writes_every_red_node_id_and_the_outputs(tmp_path: Path) -> None:
     root = _tree(tmp_path / "repo", "tests/test_a.py", "tests/test_b.py")
     junit = tmp_path / "junit.xml"
