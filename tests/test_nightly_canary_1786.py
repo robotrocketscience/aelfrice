@@ -878,7 +878,7 @@ def test_verdict_with_no_out_writes_nothing_and_warns_of_nothing(
 def test_a_non_ascii_test_id_survives_an_ascii_stdout(tmp_path: Path) -> None:
     """Run as a process, since the encoding belongs to the interpreter's stream."""
     junit = tmp_path / "junit.xml"
-    test = "tests.test_a::test_caf\u00e9"
+    test = "tests.test_a::test_\u00e9"
     junit.write_text(_junit({test: tor.FAILED}), encoding="utf-8")
     out = tmp_path / "v.json"
     r = subprocess.run(
@@ -887,7 +887,7 @@ def test_a_non_ascii_test_id_survives_an_ascii_stdout(tmp_path: Path) -> None:
         capture_output=True, timeout=60,
     )
     assert r.returncode == 1, r.stderr
-    assert b"confirmed: tests.test_a::test_caf\\xe9" in r.stdout
+    assert b"confirmed: tests.test_a::test_\\xe9" in r.stdout
     assert json.loads(out.read_text(encoding="utf-8"))["confirmed"] == [test]
 
 

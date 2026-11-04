@@ -626,7 +626,10 @@ def find_regressions(
     broken = [leg for leg in legs if status.get(leg, MISSING) in (MISSING, BROKEN)]
     if broken:
         record_legs: dict[str, Any] = current.get("legs") or {}
-        reported = {leg: red_ids((record_legs.get(leg) or {}).get("tests", {})) for leg in broken}
+        reported: dict[str, list[str]] = {}
+        for leg in broken:
+            leg_record: dict[str, Any] = record_legs.get(leg) or {}
+            reported[leg] = red_ids(leg_record.get("tests", {}))
         red_tests = sorted({t for ids in reported.values() for t in ids})
         triage["events"].append({
             "key": "canary-broken", "kind": "canary-broken", "legs": broken, "tests": red_tests,
@@ -1002,7 +1005,7 @@ def next_last_green(
     night, which a newer run of its commit came after, moves nothing."""
     nightly = record["nightly"]
     old = current or {}
-    pointer = {
+    pointer: dict[str, Any] = {
         "sha": str(record["sha"]),
         "path": run_path(record),
         "run_id": int(nightly["run_id"]),
@@ -1026,7 +1029,7 @@ def next_last_green(
     roles: dict[str, str] = nightly["roles"]
     notes.extend(
         f"::notice::last green leg {leg}: no such leg tonight, so its entry is not checked"
-        for leg in new_green["legs"] if leg not in roles
+        for leg in sorted(legs) if leg not in roles
     )
     problems.extend(off_main_pointers(new_green, on_main, roles))
     return new_green, notes, problems
