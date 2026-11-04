@@ -91,10 +91,15 @@ in `--canary-legs` that the record gives the `extra` role is not a canary
 leg, and neither is a leg the flag leaves out: extra legs never produce an
 event. A `--last-green-dir` that is not a directory exits 2, since a mistyped
 path would read as no baseline; a directory with no `last-green.json` is the
-night before the first green one. The output carries:
+night before the first green one. A `last-green.json` or a record it names
+that cannot be read is a night with no baseline: the triage is still written,
+because only a green night moves the pointer and a lasting regression would
+otherwise never get one. `publish` then reports the bad file. The output
+carries:
 
 - `events`: `canary-broken` when a canary leg is missing or broken;
-  `no-baseline-<sha12>` when there is no last green night yet;
+  `no-baseline-<sha12>` when there is no last green night to compare with,
+  and `reason` says why;
   `drift-<lastgreen12>` when tonight's commit is the last green commit,
   since only the environment can have changed. Each of the last two holds
   every confirmed test.
@@ -225,6 +230,10 @@ _BUNDLE_FILES = ("junit.xml", "verdict.json", "env.json")
 
 _GIT_TIMEOUT_SECONDS = 60
 _UV_TIMEOUT_SECONDS = 30
+
+#: What reading a file can raise when the file is bad: absent, unreadable, not
+#: UTF-8, not well formed, of the wrong shape, or nested too deep to parse.
+_UNREADABLE: tuple[type[Exception], ...] = (OSError, ValueError, ElementTree.ParseError, RecursionError)
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SHA = re.compile(r"[0-9a-f]{7,64}")
@@ -513,9 +522,11 @@ def find_regressions(
     last_green_meta: dict[str, Any] | None,
     listed_legs: Iterable[str],
     is_file: Callable[[str], bool] = lambda rel: False,
+    baseline_problem: str | None = None,
 ) -> dict[str, Any]:
     """The triage input for one night. Only canary legs are read. `is_file`
-    is what `node_id` needs; by default no test gets a node id."""
+    is what `node_id` needs; by default no test gets a node id.
+    `baseline_problem` says why a last green night could not be read."""
     nightly = current.get("nightly", {})
     sha = str(current.get("sha") or "")
     legs = canary_legs_of(current, listed_legs)
@@ -554,6 +565,7 @@ def find_regressions(
     if last_green is None or last_green_meta is None:
         triage["events"].append({
             "key": f"no-baseline-{sha[:12]}", "kind": "no-baseline", "legs": failing_legs, "tests": tests,
+            "reason": baseline_problem or "no last green night yet",
         })
         return triage
     green_sha = str(last_green_meta.get("sha") or "")
@@ -1106,34 +1118,53 @@ def cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
-def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """The last green record and its pointer, or (None, None)."""
+def _load_record(file: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """The results-branch record in `file`, or None and why it cannot be read."""
+    try:
+        if not file.is_file():
+            return None, "which holds no record"
+        record = _read_json(file)
+        validate_record(record, str(file))
+    except _UNREADABLE as exc:
+        return None, f"whose record is unreadable: {exc}"
+    return record, None
+
+
+def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """The last green record and its pointer. Both are None with no pointer
+    yet, and then the third value says why when a file is bad."""
     if not directory.is_dir():
         raise ValueError(f"--last-green-dir {directory} is not a directory")
     pointer_file = directory / "last-green.json"
-    if not pointer_file.is_file():
-        return None, None
-    green = _read_json(pointer_file)
-    validate_last_green(green, str(pointer_file))
+    try:
+        if not pointer_file.is_file():
+            return None, None, None
+        green = _read_json(pointer_file)
+        validate_last_green(green, str(pointer_file))
+    except _UNREADABLE as exc:
+        return None, None, f"last-green.json is unreadable: {exc}"
     meta = green.get("canary")
     if not meta:
-        return None, None
-    record_file = directory / str(meta["path"]) / "record.json"
-    record = _read_json(record_file)
-    validate_record(record, str(record_file))
-    return record, dict(meta)
+        return None, None, None
+    path = str(meta["path"])
+    record, why = _load_record(directory / path / "record.json")
+    if record is None:
+        return None, None, f"last-green.json names {path}, {why}"
+    return record, dict(meta), None
 
 
 def cmd_regressions(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
     validate_record(current, str(args.current))
-    last_green, meta = _last_green(args.last_green_dir)
+    last_green, meta, problem = _last_green(args.last_green_dir)
     root: Path = args.repo_root
     if not root.is_dir():
         raise ValueError(f"--repo-root {root} is not a directory")
     listed = [leg for leg in args.canary_legs.split(",") if leg]
-    triage = find_regressions(current, last_green, meta, listed, lambda rel: (root / rel).is_file())
-    if meta is None:
+    triage = find_regressions(current, last_green, meta, listed, lambda rel: (root / rel).is_file(), problem)
+    if problem is not None:
+        print(f"::warning::no baseline tonight: {problem}")
+    elif meta is None:
         print("no last green night yet")
     else:
         print(f"last green: {str(meta['sha'])[:12]} ({meta['path']})")

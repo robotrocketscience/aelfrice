@@ -937,7 +937,7 @@ def test_no_last_green_night_is_one_no_baseline_event_with_every_confirmed_test(
                             "3.13": ({_C: tor.FAILED}, None)})
     triage = nc.find_regressions(tonight, None, None, _LEGS)
     assert triage["events"] == [{"key": f"no-baseline-{SHA2[:12]}", "kind": "no-baseline",
-                                 "legs": ["3.12", "3.13"], "tests": [_A, _C]}]
+                                 "legs": ["3.12", "3.13"], "tests": [_A, _C], "reason": "no last green night yet"}]
     assert triage["candidates"] == [] and triage["drift_check"] is None
 
 
@@ -1136,15 +1136,40 @@ def test_a_last_green_dir_that_does_not_exist_is_a_usage_error(tmp_path: Path) -
     assert not out.exists()
 
 
-def test_regressions_on_a_broken_results_branch_is_a_usage_error(tmp_path: Path) -> None:
+def _regress_on(tmp_path: Path, pointer: str, record: bytes | None) -> dict[str, Any]:
+    """`regressions` for a red night over a results branch with this
+    `last-green.json` and, when given, this record at `runs/x`."""
     current = tmp_path / "record.json"
-    current.write_text(json.dumps(_night(SHA2, {"3.12": ({_A: tor.FAILED}, None)})), encoding="utf-8")
+    current.write_text(json.dumps(_red(SHA2, 100)), encoding="utf-8")
     branch = tmp_path / "branch"
-    branch.mkdir()
-    (branch / "last-green.json").write_text(json.dumps({"canary": {"sha": SHA1, "path": "runs/gone", "run_id": 1}}),
-                                            encoding="utf-8")
-    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(branch),
-                    "--out", str(tmp_path / "t.json")]) == 2
+    (branch / "runs" / "x").mkdir(parents=True)
+    (branch / "last-green.json").write_text(pointer, encoding="utf-8")
+    if record is not None:
+        (branch / "runs" / "x" / "record.json").write_bytes(record)
+    out = tmp_path / "t.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(branch), "--out", str(out)]) == 0
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+_POINTS_AT_X = json.dumps({"canary": {"sha": SHA1, "path": "runs/x", "run_id": 1, "attempt": 1}, "legs": {}})
+
+
+@pytest.mark.parametrize(
+    ("record", "why"),
+    [(None, "holds no record"), (b"oops", "unreadable"), (b"\xff\xfe", "unreadable"), (b"[" * 200_000, "unreadable")],
+    ids=["gone", "corrupt", "not-utf8", "too-deep"],
+)
+def test_a_last_green_record_that_cannot_be_read_is_a_no_baseline_event_with_the_reason(
+    tmp_path: Path, record: bytes | None, why: str,
+) -> None:
+    """Only a green night moves the pointer, so a lasting regression that lost
+    its triage here would never produce one."""
+    triage = _regress_on(tmp_path, _POINTS_AT_X, record)
+    [event] = triage["events"]
+    assert (event["key"], event["kind"]) == (f"no-baseline-{SHA2[:12]}", "no-baseline")
+    assert event["tests"] == [_A]
+    assert "runs/x" in event["reason"] and why in event["reason"]
+    assert triage["last_green"] is None
 
 
 # ----------------------------------------------------------------- publish
@@ -1677,17 +1702,9 @@ def test_a_record_of_the_wrong_shape_is_a_usage_error_for_each_reader(
 
 
 @pytest.mark.parametrize("record", [r for _, r in _BAD_RECORDS], ids=[i for i, _ in _BAD_RECORDS])
-def test_a_baseline_of_the_wrong_shape_is_a_usage_error(tmp_path: Path, record: dict[str, Any]) -> None:
-    good = tmp_path / "good.json"
-    good.write_text(json.dumps(_night(SHA2, {"3.12": ({_A: tor.FAILED}, None)})), encoding="utf-8")
-    branch = tmp_path / "branch"
-    (branch / "runs" / "x").mkdir(parents=True)
-    (branch / "runs" / "x" / "record.json").write_text(json.dumps(record), encoding="utf-8")
-    (branch / "last-green.json").write_text(
-        json.dumps({"canary": {"sha": SHA1, "path": "runs/x", "run_id": 1}, "legs": {}}), encoding="utf-8",
-    )
-    assert nc.main(["regressions", "--current", str(good), "--last-green-dir", str(branch),
-                    "--out", str(tmp_path / "t.json")]) == 2
+def test_a_baseline_of_the_wrong_shape_is_a_night_with_no_baseline(tmp_path: Path, record: dict[str, Any]) -> None:
+    triage = _regress_on(tmp_path, _POINTS_AT_X, json.dumps(record).encode())
+    assert triage["events"][0]["kind"] == "no-baseline" and "unreadable" in triage["events"][0]["reason"]
 
 
 def test_the_records_this_script_writes_pass_its_own_check(tmp_path: Path) -> None:
@@ -1707,17 +1724,20 @@ _BAD_POINTERS = [
 
 
 @pytest.mark.parametrize("text", [t for _, t in _BAD_POINTERS], ids=[i for i, _ in _BAD_POINTERS])
-def test_a_last_green_file_of_the_wrong_shape_is_a_usage_error_for_each_reader(
+def test_a_last_green_file_of_the_wrong_shape_is_a_night_with_no_baseline(tmp_path: Path, text: str) -> None:
+    triage = _regress_on(tmp_path, text, None)
+    assert triage["events"][0]["kind"] == "no-baseline"
+    assert triage["events"][0]["reason"].startswith("last-green.json is unreadable")
+
+
+@pytest.mark.parametrize("text", [t for _, t in _BAD_POINTERS], ids=[i for i, _ in _BAD_POINTERS])
+def test_a_last_green_file_of_the_wrong_shape_stops_publish(
     tmp_path: Path, main_repo: tuple[Path, list[str], str], text: str,
 ) -> None:
     repo, (c0, _, _), _ = main_repo
     branch = tmp_path / "branch"
     branch.mkdir()
     (branch / "last-green.json").write_text(text, encoding="utf-8")
-    current = tmp_path / "current.json"
-    current.write_text(json.dumps(_red(c0, 100)), encoding="utf-8")
-    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(branch),
-                    "--out", str(tmp_path / "t.json")]) == 2
     assert _publish(tmp_path, repo, _red(c0, 100), None) == 2
     assert sorted(p.name for p in branch.iterdir()) == ["last-green.json"]
 
