@@ -65,7 +65,7 @@ the rerun does not count, every red test stays confirmed, `rerun_note` in
 the verdict says why, and the verdict is still written. The leg's status is `green` when nothing is confirmed and pytest
 exited 0 or 1, `red` when a test is confirmed, and `broken` when nothing is
 confirmed and pytest exited with any other status, or with 1 and no red
-test, or the report holds no test. The exit status is 1 unless the leg is
+test, or no test in the report ran, as when every one skipped. The exit status is 1 unless the leg is
 green. XML that is not a JUnit report, such as an HTML error page, is an
 unreadable input.
 
@@ -326,7 +326,8 @@ def github_output_lines(plan: dict[str, Any]) -> list[str]:
 def leg_status(rc: int, outcomes: dict[str, str], confirmed: list[str]) -> str:
     if confirmed:
         return RED
-    if rc not in _TEST_RC or (rc == 1 and not red_ids(outcomes)) or not outcomes:
+    ran = any(outcome != tor.SKIPPED for outcome in outcomes.values())
+    if rc not in _TEST_RC or (rc == 1 and not red_ids(outcomes)) or not ran:
         return BROKEN
     return GREEN
 

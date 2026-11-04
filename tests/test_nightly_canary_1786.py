@@ -706,6 +706,19 @@ def test_a_night_of_only_extra_legs_is_incomplete(required: tuple[str, ...]) -> 
     assert nc.night_verdict({}, {}, required) == nc.INCOMPLETE
 
 
+def test_a_leg_where_every_test_skipped_is_broken_and_cannot_move_the_pointer(tmp_path: Path) -> None:
+    """A missing dependency can skip the whole suite with exit 0."""
+    assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.SKIPPED}, None)["status"] == nc.BROKEN
+    assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.PASSED}, None)["status"] == nc.GREEN
+    assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.XFAILED}, None)["status"] == nc.GREEN
+    a = _bundle(tmp_path / "a", {_A: tor.SKIPPED}, rc=0)
+    b = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={a}", f"3.13={b}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.12"] == nc.BROKEN
+    assert record["nightly"]["verdict"] == nc.RED
+
+
 def test_a_broken_canary_leg_makes_the_night_red(tmp_path: Path) -> None:
     _bundle(tmp_path / "3.12", {_A: tor.PASSED})
     _bundle(tmp_path / "3.13", {_A: tor.PASSED}, rc=2)
