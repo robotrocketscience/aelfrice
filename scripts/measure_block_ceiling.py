@@ -1415,7 +1415,8 @@ def _hermetic_home() -> Iterator[Path]:
     """Point ``HOME`` (and ``USERPROFILE``) at a fresh empty directory (#1716).
 
     ``AELFRICE_USER_DB`` is pointed at a missing file in that directory as
-    well (#1681), so no user lock store reaches a figure.
+    well (#1681), so no user lock store reaches a figure, and
+    ``AELF_NO_SIDECAR_WARM`` is set (#1847).
 
     The hook reads per-user state: a ``~/.aelfrice.toml`` makes SessionStart
     add the #1652 ignored-config line, which put about 40 tokens on the
@@ -1425,7 +1426,9 @@ def _hermetic_home() -> Iterator[Path]:
     """
     saved = {
         k: os.environ.get(k)
-        for k in ("HOME", "USERPROFILE", "AELFRICE_USER_DB")
+        for k in (
+            "HOME", "USERPROFILE", "AELFRICE_USER_DB", "AELF_NO_SIDECAR_WARM",
+        )
     }
     home = Path(tempfile.mkdtemp(prefix="aelf-ceiling-home-"))
     os.environ["HOME"] = str(home)
@@ -1434,6 +1437,11 @@ def _hermetic_home() -> Iterator[Path]:
     # `AELFRICE_USER_DB` would put its locks in every figure. Point it at
     # a path inside the empty home that no one creates.
     os.environ["AELFRICE_USER_DB"] = str(home / "no-user-store" / "memory.db")
+    # #1847: `session_start` spawns a detached sidecar warm that opens the
+    # fire's store after the fire returns and writes its BM25 sidecar
+    # beside it. No figure reads it, and each fire's folder has to be
+    # finished with when the fire returns.
+    os.environ["AELF_NO_SIDECAR_WARM"] = "1"
     try:
         yield home
     finally:
