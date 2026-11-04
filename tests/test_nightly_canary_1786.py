@@ -947,7 +947,7 @@ def test_publish_writes_the_run_the_index_and_the_last_green_pointer(
         "counts": {leg: record["legs"][leg]["counts"] for leg in _LEGS},
         "flaky": {"3.12": [], "3.13": []}, "events": ["pr-1786"],
     }
-    pointer = {"sha": shas[0], "path": "runs/2026-11-04-100-a1", "run_id": 100, "date": "2026-11-04"}
+    pointer = {"sha": shas[0], "path": "runs/2026-11-04-100-a1", "run_id": 100, "attempt": 1, "date": "2026-11-04"}
     assert _last_green(tmp_path) == {"canary": pointer, "legs": {"3.12": pointer, "3.13": pointer}}
 
 
@@ -1007,13 +1007,42 @@ def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
     assert _last_green(tmp_path)["legs"]["3.13"]["sha"] == c0
     assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
     assert _last_green(tmp_path)["canary"] == {"sha": c2, "path": "runs/2026-11-03-102-a1", "run_id": 102,
-                                               "date": "2026-11-03"}
+                                               "attempt": 1, "date": "2026-11-03"}
     assert _publish(tmp_path, repo, _green(c1, 103, day=4), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c2
     assert _publish(tmp_path, repo, _green(side, 104, day=5), None) == 1
     assert _last_green(tmp_path)["canary"]["sha"] == c2
     assert _publish(tmp_path, repo, _green(c2, 105, day=6), None) == 0
     assert _last_green(tmp_path)["canary"]["run_id"] == 105
+
+
+def test_a_late_older_attempt_at_the_same_commit_does_not_take_the_pointer(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=2), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=1), None) == 0
+    assert _last_green(tmp_path)["canary"]["path"] == "runs/2026-11-04-100-a2"
+    assert _last_green(tmp_path)["legs"]["3.13"]["path"] == "runs/2026-11-04-100-a2"
+    assert _index(tmp_path)[0]["run_attempt"] == 2
+
+
+def test_a_late_older_run_at_the_same_commit_does_not_take_the_pointer(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 101, day=5), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, day=4), None) == 0
+    assert _last_green(tmp_path)["canary"]["run_id"] == 101
+
+
+def test_a_newer_attempt_at_the_same_commit_takes_the_pointer(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=1), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=2), None) == 0
+    assert _last_green(tmp_path)["canary"]["path"] == "runs/2026-11-04-100-a2"
 
 
 def test_an_incomplete_night_does_not_move_the_pointer(
@@ -1189,7 +1218,8 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--canary-legs", "3.12,3.13", "--out", str(out)]) == 0
     triage = json.loads(out.read_text(encoding="utf-8"))
-    assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100-a1", "run_id": 100, "date": "2026-11-01"}
+    assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100-a1", "run_id": 100, "attempt": 1,
+                                    "date": "2026-11-01"}
     assert triage["candidates"] == [{"test": _A, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
     assert triage["drift_check"] == {"sha": c0, "python": "3.13", "tests": [_A]}
 

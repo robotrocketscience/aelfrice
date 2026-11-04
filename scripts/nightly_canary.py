@@ -118,8 +118,10 @@ The `canary` entry of `last-green.json` moves only on a green night and each
 main that descends from the old one, the first pointer included. Main is
 `--main-ref` in `--main-repo`, by default `origin/main` or else `main`. A
 green night on a commit that is not on main, or that git cannot place, moves
-nothing, and `publish` exits 1. A later or equal commit already named stays
-named, which is the ordinary case of a late run: that exits 0.
+nothing, and `publish` exits 1. A later commit already named stays named,
+which is the ordinary case of a late run: that exits 0. At one commit, the
+newer run and attempt hold the pointer, so a late older attempt cannot take
+it. An entry holds `attempt` beside `run_id` for that comparison.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
@@ -591,6 +593,10 @@ def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
     return [*kept, json.dumps(entry, sort_keys=True, separators=(",", ":"))]
 
 
+def _run_order(pointer: dict[str, Any]) -> tuple[int, int]:
+    return int(pointer["run_id"]), int(pointer.get("attempt", 0))
+
+
 def _moved(
     old: dict[str, Any] | None,
     new: dict[str, Any],
@@ -617,6 +623,12 @@ def _moved(
     if on_main(old_sha) is not True:
         notes.append(f"::warning::last green {what}: {old_sha[:12]} is not on main, re-pointed to {new_sha[:12]}")
         return new
+    if old_sha == new_sha:
+        if _run_order(new) > _run_order(old):
+            notes.append(f"last green {what}: run {_run_order(old)} -> {_run_order(new)} at {new_sha[:12]}")
+            return new
+        notes.append(f"last green {what}: stays at run {_run_order(old)}, not older than {_run_order(new)}")
+        return old
     answer = is_ancestor(old_sha, new_sha)
     if answer is True:
         notes.append(f"last green {what}: {old_sha[:12]} -> {new_sha[:12]}")
@@ -652,6 +664,7 @@ def next_last_green(
         "sha": str(record["sha"]),
         "path": run_path(record),
         "run_id": int(nightly["run_id"]),
+        "attempt": int(nightly["run_attempt"]),
         "date": run_date(str(nightly["created_at"])),
     }
     notes: list[str] = []
