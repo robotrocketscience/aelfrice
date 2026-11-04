@@ -55,7 +55,10 @@ _spec.loader.exec_module(cdf)
 _REQUIRED_NAMES = {"pytest (3.12)", "pytest (3.13)"}
 
 _UPLOAD_SHA = "ea165f8d65b6e75b540449e92b4886f43607fa02"
-_CHECKOUT_SHA = "34e114876b0b11c390a56381ad16ebd13914f8d5"
+# A checkout sha pin and the release it names. The release is not pinned:
+# Dependabot bumps both, and tests/test_workflow_supply_chain_1786.py holds
+# the pin rule for every `uses:` line in the tree.
+_CHECKOUT_PIN = re.compile(r"actions/checkout@[0-9a-f]{40} # v\d+\.\d+\.\d+")
 
 # The one test the required legs skip. `derived-figures` runs its producers.
 _DESELECTED = (
@@ -236,7 +239,8 @@ def test_checkout_is_pinned_and_does_not_persist_credentials() -> None:
         if "actions/checkout@" in (_field(s, "uses") or "")
     ]
     assert len(found) == 1
-    assert _field(found[0], "uses") == f"actions/checkout@{_CHECKOUT_SHA} # v4.3.1"
+    uses = _field(found[0], "uses") or ""
+    assert _CHECKOUT_PIN.fullmatch(uses), uses
     assert _field(found[0], "persist-credentials") == "false"
 
 
