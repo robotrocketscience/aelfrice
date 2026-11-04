@@ -321,6 +321,19 @@ def test_regressions_survives_ids_too_long_for_a_path(tmp_path: Path) -> None:
     assert {f["test"]: f["node_id"] for f in triage["events"][0]["failures"]}[_LONG_ID] is None
 
 
+@pytest.mark.parametrize("command", ["failed-ids", "verdict"])
+@pytest.mark.parametrize(("value", "status"), [("-1", 2), ("0", 1)], ids=["negative", "zero"])
+def test_max_refuses_a_negative_value(tmp_path: Path, command: str, value: str, status: int) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
+    args = {"failed-ids": ["--repo-root", str(tmp_path), "--out", str(tmp_path / "ids.txt")], "verdict": ["--rc", "1"]}
+    try:
+        code = nc.main([command, "--junit", str(junit), "--max", value, *args[command]])
+    except SystemExit as exc:
+        code = exc.code
+    assert code == status
+
+
 def _pytest(project: Path, *args: str, fail: bool = False) -> subprocess.CompletedProcess[str]:
     """Real pytest in a throwaway project. Tests read FAIL from the environment."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_") and k != "FAIL"}

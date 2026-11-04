@@ -1438,6 +1438,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _max_red(value: str) -> int:
+    """`--max`: a negative one would read every leg, even a green one, as a mass failure."""
+    limit = int(value)
+    if limit < 0:
+        raise argparse.ArgumentTypeError(f"{limit} is negative")
+    return limit
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1452,7 +1460,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--junit", required=True, type=Path)
     p.add_argument("--repo-root", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
-    p.add_argument("--max", type=int, default=MASS_FAILURE_THRESHOLD)
+    p.add_argument("--max", type=_max_red, default=MASS_FAILURE_THRESHOLD)
     p.add_argument("--github-output", default=None, type=Path)
     p.set_defaults(func=cmd_failed_ids)
 
@@ -1461,7 +1469,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--junit", required=True, type=Path)
     p.add_argument("--rerun", default=None, type=Path)
     p.add_argument("--rerun-rc", default=None, type=int)
-    p.add_argument("--max", type=int, default=MASS_FAILURE_THRESHOLD)
+    p.add_argument("--max", type=_max_red, default=MASS_FAILURE_THRESHOLD)
     p.add_argument("--out", default=None, type=Path)
     p.set_defaults(func=cmd_verdict)
 
