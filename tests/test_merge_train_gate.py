@@ -428,16 +428,17 @@ def _outcome_rows(*conclusions: str) -> list[dict[str, Any]]:
     return runs
 
 
-def test_a_dispatch_on_a_regressing_head_keeps_the_head_failing() -> None:
-    """The gate keeps the newest row per name, and a dispatch on the head adds
-    a row. It runs the same diff as the pull request (#1786), so on a head
-    that regresses the newer row fails as well."""
+def test_the_gate_reads_a_newer_failing_outcomes_row_as_failing() -> None:
+    """Gate behavior only: this says nothing about whether a dispatch's diff
+    fails. `test_a_dispatch_runs_the_same_diff_as_a_pull_request` in
+    tests/test_test_outcome_record_1786.py is the test of that."""
     assert evaluate(_outcome_rows("failure", "failure"), REQUIRED)["failing"] == [_TEST_OUTCOMES]
 
 
-def test_a_newer_passing_row_is_what_clears_a_ratchet_failure() -> None:
-    """Why a dispatch has to run the real diff: the gate reads only the newest
-    row, so a dispatch that passed without one would clear this failure."""
+def test_the_gate_reads_only_the_newest_outcomes_row() -> None:
+    """Gate behavior only, and the reason a dispatch has to run the real diff:
+    a newer passing row clears the failure. This passes with or without that
+    dispatch fix."""
     assert evaluate(_outcome_rows("failure", "success"), REQUIRED)["failing"] == []
 
 

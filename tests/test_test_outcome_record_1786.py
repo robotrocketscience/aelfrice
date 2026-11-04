@@ -1622,8 +1622,9 @@ def test_a_pull_request_does_not_ask_for_the_merge_base(tmp_path: Path, monkeypa
 def test_a_dispatch_runs_the_same_diff_as_a_pull_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], outcome: str, rc: int,
 ) -> None:
-    """A dispatch on a regressing head fails too, so its row cannot read as a
-    pass over the pull request's failure."""
+    """The proof of the dispatch fix: an empty base and a regressing head fail
+    the diff, so the row cannot read as a pass over a pull request's failure.
+    Without the merge-base lookup the walk has nothing to read and this fails."""
     base = _dispatch_baseline(tmp_path, monkeypatch, _dispatch_api())
     current = tmp_path / "current.json"
     current.write_text(json.dumps(_record(**{"3.12": {"t::test_70": outcome}})), encoding="utf-8")
