@@ -1120,8 +1120,19 @@ def test_regressions_dry_run_writes_nothing(tmp_path: Path) -> None:
     current = tmp_path / "record.json"
     current.write_text(json.dumps(_night(SHA2, {"3.12": ({_A: tor.FAILED}, None)})), encoding="utf-8")
     out = tmp_path / "triage.json"
+    (tmp_path / "branch").mkdir()
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--out", str(out), "--dry-run"]) == 0
+    assert not out.exists()
+
+
+def test_a_last_green_dir_that_does_not_exist_is_a_usage_error(tmp_path: Path) -> None:
+    """A mistyped path must not read as the night before the first green one."""
+    current = tmp_path / "record.json"
+    current.write_text(json.dumps(_red(SHA2, 100)), encoding="utf-8")
+    out = tmp_path / "triage.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "typo"),
+                    "--out", str(out)]) == 2
     assert not out.exists()
 
 

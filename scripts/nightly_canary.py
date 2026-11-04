@@ -89,7 +89,9 @@ UTC time and `--event` to `GITHUB_EVENT_NAME`.
 record that `last-green.json` in `--last-green-dir` points to. A leg named
 in `--canary-legs` that the record gives the `extra` role is not a canary
 leg, and neither is a leg the flag leaves out: extra legs never produce an
-event. The output carries:
+event. A `--last-green-dir` that is not a directory exits 2, since a mistyped
+path would read as no baseline; a directory with no `last-green.json` is the
+night before the first green one. The output carries:
 
 - `events`: `canary-broken` when a canary leg is missing or broken;
   `no-baseline-<sha12>` when there is no last green night yet;
@@ -1106,6 +1108,8 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """The last green record and its pointer, or (None, None)."""
+    if not directory.is_dir():
+        raise ValueError(f"--last-green-dir {directory} is not a directory")
     pointer_file = directory / "last-green.json"
     if not pointer_file.is_file():
         return None, None
