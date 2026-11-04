@@ -101,8 +101,9 @@ event. The output carries:
   flaky counts as `passed`.
 - `new_failing`: confirmed tests the last green record does not hold.
 - `drift_check`: the candidates the workflow reruns at the last green
-  commit, with the Python of the failing leg (the newest one when both
-  fail); a mass failure samples 20 of them.
+  commit, per leg, under that leg's Python, since a test failing only on 3.12
+  says nothing when it runs on 3.13. A leg that had a mass failure samples 20
+  of its own candidates; the other leg keeps all of its.
 
 `publish` writes the night to a checkout of the results branch:
 `runs/<YYYY-MM-DD>-<run_id>-a<run_attempt>/record.json` and `triage.json`,
@@ -471,10 +472,6 @@ def even_sample(items: list[str], n: int) -> list[str]:
     return [ordered[i * len(ordered) // n] for i in range(n)]
 
 
-def _version_key(leg: str) -> tuple[int, ...]:
-    return tuple(int(p) for p in re.findall(r"\d+", leg))
-
-
 def find_regressions(
     current: dict[str, Any],
     last_green: dict[str, Any] | None,
@@ -540,12 +537,14 @@ def find_regressions(
                 entry["before"][leg] = before
     triage["candidates"] = [candidates[t] for t in sorted(candidates)]
     triage["new_failing"] = [{"test": t, "legs": new_failing[t]} for t in sorted(new_failing)]
-    if candidates:
-        cand_legs = sorted({leg for c in candidates.values() for leg in c["legs"]}, key=_version_key)
-        ids = sorted(candidates)
-        if triage["mass_failure"]:
-            ids = even_sample(ids, MASS_FAILURE_SAMPLE)
-        triage["drift_check"] = {"sha": green_sha, "python": cand_legs[-1], "tests": ids}
+    mass_legs = nightly.get("mass_failure", {})
+    by_leg: dict[str, dict[str, Any]] = {}
+    for leg in legs:
+        ids = [c["test"] for c in triage["candidates"] if leg in c["legs"]]
+        if ids:
+            by_leg[leg] = {"tests": even_sample(ids, MASS_FAILURE_SAMPLE) if mass_legs.get(leg) else ids}
+    if by_leg:
+        triage["drift_check"] = {"sha": green_sha, "legs": by_leg}
     return triage
 
 

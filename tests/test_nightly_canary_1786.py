@@ -756,7 +756,7 @@ def test_a_new_test_that_fails_is_new_failing_and_skips_the_drift_check() -> Non
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["new_failing"] == [{"test": _C, "legs": ["3.12", "3.13"]}]
     assert [c["test"] for c in triage["candidates"]] == [_A]
-    assert triage["drift_check"] == {"sha": SHA1, "python": "3.12", "tests": [_A]}
+    assert triage["drift_check"] == {"sha": SHA1, "legs": {"3.12": {"tests": [_A]}}}
 
 
 def test_a_test_skipped_on_the_last_green_night_that_now_fails_is_a_candidate() -> None:
@@ -833,9 +833,37 @@ def test_a_mass_failure_drift_checks_an_even_sample_of_twenty() -> None:
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["mass_failure"] is True
     assert len(triage["candidates"]) == 60
-    check = triage["drift_check"]
-    assert check["python"] == "3.13"
-    assert check["tests"] == [f"tests.test_a::test_{i:02}" for i in range(0, 60, 3)]
+    sample = [f"tests.test_a::test_{i:02}" for i in range(0, 60, 3)]
+    assert triage["drift_check"]["legs"] == {"3.12": {"tests": sample}, "3.13": {"tests": sample}}
+
+
+def test_a_mass_failure_on_one_leg_samples_that_leg_and_marks_the_night() -> None:
+    """A sample taken over both legs held none of the tests that failed on the
+    other leg's Python, so the drift check there proved nothing."""
+    tests = {f"tests.test_a::test_{i:02}": tor.PASSED for i in range(60)}
+    only_313 = "tests.test_z::test_only_313"
+    everything = {**tests, only_313: tor.PASSED}
+    green = _night(SHA1, {"3.12": (everything, None), "3.13": (everything, None)})
+    tonight = _night(SHA2, {
+        "3.12": ({**everything, **{t: tor.FAILED for t in tests}}, None),
+        "3.13": ({**everything, only_313: tor.FAILED}, None),
+    })
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
+    assert tonight["nightly"]["mass_failure"] == {"3.12": True, "3.13": False}
+    assert triage["mass_failure"] is True
+    legs = triage["drift_check"]["legs"]
+    assert legs["3.13"] == {"tests": [only_313]}
+    assert len(legs["3.12"]["tests"]) == 20 and set(legs["3.12"]["tests"]) <= set(tests)
+
+
+def test_each_test_is_drift_checked_on_the_leg_that_failed_it() -> None:
+    green = _night(SHA1, {"3.12": ({_A: tor.PASSED, _B: tor.PASSED, _C: tor.PASSED}, None),
+                          "3.13": ({_A: tor.PASSED, _B: tor.PASSED, _C: tor.PASSED}, None)})
+    tonight = _night(SHA2, {"3.12": ({_A: tor.FAILED, _B: tor.PASSED, _C: tor.FAILED}, None),
+                            "3.13": ({_A: tor.PASSED, _B: tor.FAILED, _C: tor.FAILED}, None)})
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
+    assert triage["mass_failure"] is False
+    assert triage["drift_check"]["legs"] == {"3.12": {"tests": [_A, _C]}, "3.13": {"tests": [_B, _C]}}
 
 
 def test_below_the_threshold_every_candidate_is_drift_checked() -> None:
@@ -844,7 +872,7 @@ def test_below_the_threshold_every_candidate_is_drift_checked() -> None:
     tonight = _night(SHA2, {"3.12": (tests, None), "3.13": ({t: tor.FAILED for t in tests}, None)})
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["mass_failure"] is False
-    assert triage["drift_check"]["tests"] == sorted(tests)
+    assert triage["drift_check"]["legs"] == {"3.13": {"tests": sorted(tests)}}
 
 
 def test_regressions_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -1292,7 +1320,7 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
     assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100-a1", "run_id": 100, "attempt": 1,
                                     "date": "2026-11-01"}
     assert triage["candidates"] == [{"test": _A, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
-    assert triage["drift_check"] == {"sha": c0, "python": "3.13", "tests": [_A]}
+    assert triage["drift_check"] == {"sha": c0, "legs": {"3.13": {"tests": [_A]}}}
 
 
 # --------------------------------------------------------------------- env
