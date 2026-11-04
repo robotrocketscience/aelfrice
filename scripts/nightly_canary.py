@@ -97,7 +97,8 @@ because only a green night moves the pointer and a lasting regression would
 otherwise never get one. `publish` then reports the bad file. The output
 carries:
 
-- `events`: `canary-broken` when a canary leg is missing or broken;
+- `events`: `canary-broken` when a canary leg is missing or broken, with the
+  red tests its report holds, since a missing leg confirms nothing;
   `no-baseline-<sha12>` when there is no last green night to compare with,
   and `reason` says why;
   `drift-<lastgreen12>` when tonight's commit is the last green commit,
@@ -558,7 +559,13 @@ def find_regressions(
     }
     broken = [leg for leg in legs if status.get(leg, MISSING) in (MISSING, BROKEN)]
     if broken:
-        triage["events"].append({"key": "canary-broken", "kind": "canary-broken", "legs": broken, "tests": []})
+        record_legs: dict[str, Any] = current.get("legs") or {}
+        reported = {leg: red_ids((record_legs.get(leg) or {}).get("tests", {})) for leg in broken}
+        red_tests = sorted({t for ids in reported.values() for t in ids})
+        triage["events"].append({
+            "key": "canary-broken", "kind": "canary-broken", "legs": broken, "tests": red_tests,
+            "failures": failure_entries(reported, is_file),
+        })
     tests = sorted({t for ids in confirmed_by_leg.values() for t in ids})
     if not tests:
         return triage

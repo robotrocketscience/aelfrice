@@ -988,7 +988,24 @@ def test_a_missing_or_broken_canary_leg_is_canary_broken(
     tonight = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": leg_13}, rcs={"3.13": rc})
     assert tonight["nightly"]["status"]["3.13"] in (nc.MISSING, nc.BROKEN)
     triage = nc.find_regressions(tonight, None, None, _LEGS)
-    assert triage["events"] == [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": []}]
+    assert triage["events"] == [{"key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": [],
+                                 "failures": []}]
+
+
+def test_a_canary_leg_with_a_bad_verdict_names_the_failures_its_report_holds(tmp_path: Path) -> None:
+    """Its verdict is gone, so nothing is confirmed, but `junit.xml` still reads."""
+    root = _tree(tmp_path, "tests/test_a.py")
+    bad = _bundle(tmp_path / "3.13", {_A: tor.FAILED, _B: tor.PASSED})
+    (bad / "verdict.json").write_text("{bad", encoding="utf-8")
+    good = _bundle(tmp_path / "3.12", {_A: tor.PASSED, _B: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={good}", f"3.13={bad}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["status"]["3.13"] == nc.MISSING
+    triage = nc.find_regressions(record, None, None, _LEGS, lambda rel: (root / rel).is_file())
+    assert triage["events"] == [{
+        "key": "canary-broken", "kind": "canary-broken", "legs": ["3.13"], "tests": [_A],
+        "failures": [{"test": _A, "node_id": "tests/test_a.py::test_one", "legs": ["3.13"]}],
+    }]
 
 
 _BROKEN_MODULE = "::tests.test_broken"
