@@ -1564,14 +1564,36 @@ def test_a_late_older_attempt_at_the_same_commit_does_not_take_the_pointer(
     assert _index(tmp_path)[0]["run_attempt"] == 2
 
 
-def test_the_same_run_and_attempt_on_a_later_date_leaves_the_pointer(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+@pytest.mark.parametrize("night", [_green, _red], ids=["green", "red"])
+def test_the_same_run_and_attempt_on_a_later_date_writes_nothing(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], night: Any,
 ) -> None:
-    """`created_at` defaults to now, so a republish can land in a new directory."""
+    """`created_at` defaults to now, so a republish lands in a new directory,
+    which a refusal keyed on the path would not see."""
     repo, (c0, _, _), _ = main_repo
     assert _publish(tmp_path, repo, _green(c0, 100, day=4), None) == 0
-    assert _publish(tmp_path, repo, _green(c0, 100, day=5), None) == 0
-    assert _last_green(tmp_path)["canary"]["path"] == "runs/2026-11-04-100-a1"
+    branch = tmp_path / "branch"
+    before = {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()}
+    assert _publish(tmp_path, repo, night(c0, 100, day=5), None) == 1
+    assert {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()} == before
+    assert "::error::last green names runs/2026-11-04-100-a1" in capsys.readouterr().out
+
+
+def test_a_refusal_needs_the_same_attempt_as_well_as_the_same_run(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=1), None) == 0
+    assert _publish(tmp_path, repo, _red(c0, 100, run_attempt=2), None) == 0
+    assert (tmp_path / "branch/runs/2026-11-04-100-a2/record.json").is_file()
+
+
+def test_named_runs_reads_the_canary_entry_and_the_leg_entries() -> None:
+    a = {"sha": SHA1, "path": "runs/a", "run_id": 5, "attempt": 2}
+    b = {"sha": SHA1, "path": "runs/b", "run_id": 6, "attempt": 1}
+    assert nc.named_runs({"canary": a, "legs": {"3.12": b}}, (5, 2)) == ["runs/a"]
+    assert nc.named_runs({"canary": a, "legs": {"3.12": b}}, (6, 1)) == ["runs/b"]
+    assert nc.named_runs({"canary": None, "legs": {}}, (5, 2)) == []
 
 
 def test_a_late_older_run_at_the_same_commit_does_not_take_the_pointer(

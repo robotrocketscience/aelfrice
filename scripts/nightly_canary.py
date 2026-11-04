@@ -164,7 +164,8 @@ which is the ordinary case of a late run: that exits 0. At one commit, the
 newer run and attempt hold the pointer, so a late older attempt cannot take
 it. An entry holds `attempt` beside `run_id` for that comparison. The record
 an entry names does not change: republishing the same run and attempt with
-different content exits 1 and writes nothing. The same content is a no-op.
+different content, a new `created_at` date included, exits 1 and writes
+nothing. The same content is a no-op.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
@@ -897,10 +898,10 @@ def _moved(
     return old
 
 
-def pointed_at(green: dict[str, Any]) -> set[str]:
-    """The run directories `last-green.json` names."""
+def named_runs(green: dict[str, Any], run: tuple[int, int]) -> list[str]:
+    """The run directories `last-green.json` names for this (run_id, attempt)."""
     entries = [green.get("canary"), *green.get("legs", {}).values()]
-    return {str(entry["path"]) for entry in entries if entry is not None}
+    return sorted({str(entry["path"]) for entry in entries if entry is not None and _run_order(entry) == run})
 
 
 def _live_entries(green: dict[str, Any], roles: dict[str, str]) -> list[tuple[str, str | None, dict[str, Any]]]:
@@ -1362,13 +1363,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
             old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
         )
     record_file = branch / path / "record.json"
-    if (
-        path in pointed_at(old_green or {})
-        and record_file.is_file()
-        and record_file.read_text(encoding="utf-8") != _dumps(record)
-    ):
-        print(f"::error::last green names {path}, so its record stays as it is; nothing was written")
-        return 1
+    this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
+    for named in named_runs(old_green or {}, this_run):
+        named_file = branch / named / "record.json"
+        if named_file.is_file() and named_file.read_bytes() != _dumps(record).encode("utf-8"):
+            print(f"::error::last green names {named}, so its record stays as it is; nothing was written")
+            return 1
     writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
     if triage is not None:
         writes.append((branch / path / "triage.json", _dumps(triage)))
