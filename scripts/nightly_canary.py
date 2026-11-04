@@ -128,9 +128,10 @@ different content exits 1 and writes nothing. The same content is a no-op.
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
 exits 1 on every night that leaves it in place, naming it. The next green
-night on main re-points it with a `::warning::` and exits 0. Exit 1 comes
-after the writes, so the workflow can commit the night's record before it
-fails the job.
+night on main re-points it with a `::warning::` and exits 0. An entry whose
+record file is gone exits 1 the same way, naming the path, until a green
+night moves it. Exit 1 comes after the writes, so the workflow can commit the
+night's record before it fails the job.
 
 Standard library only, so the publish job runs it on the runner's own
 interpreter. It imports `parse_junit`, `build_record` and `diff_records`
@@ -648,6 +649,11 @@ def pointed_at(green: dict[str, Any]) -> set[str]:
     return {str(entry["path"]) for entry in entries if entry is not None}
 
 
+def missing_records(green: dict[str, Any], has_record: Callable[[str], bool]) -> list[str]:
+    """A problem per run directory `last-green.json` names with no record."""
+    return [f"names {path}, which holds no record" for path in sorted(pointed_at(green)) if not has_record(path)]
+
+
 def off_main_pointers(green: dict[str, Any], on_main: Callable[[str], bool | None]) -> list[str]:
     """A problem per entry of `last-green.json` whose commit is not on main."""
     entries = [("canary", green.get("canary")), *((f"leg {leg}", p) for leg, p in sorted(green.get("legs", {}).items()))]
@@ -1005,6 +1011,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     writes.append((index_file, "".join(f"{line}\n" for line in index)))
     if new_green != old_green:
         writes.append((green_file, _dumps(new_green)))
+    problems.extend(missing_records(new_green, lambda p: p == path or (branch / p / "record.json").is_file()))
     for note in notes:
         print(note)
     for target, text in writes:

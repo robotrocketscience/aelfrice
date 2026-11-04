@@ -1093,6 +1093,29 @@ def test_republishing_a_run_no_entry_names_replaces_it(
     assert _index(tmp_path)[0]["verdict"] == nc.GREEN
 
 
+def test_a_pointer_whose_record_is_gone_exits_1_until_a_green_night_moves_it(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, c1, c2), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
+    (tmp_path / "branch/runs/2026-11-01-100-a1/record.json").unlink()
+    both_red = _night(c1, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)},
+                      run_id=101, created_at="2026-11-02T02:17:00Z")
+    assert _publish(tmp_path, repo, both_red, None) == 1
+    assert "names runs/2026-11-01-100-a1, which holds no record" in capsys.readouterr().out
+    assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
+    assert "::error::" not in capsys.readouterr().out
+
+
+def test_the_record_this_publish_writes_counts_as_present(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """The first pointer names a directory that exists only after the writes."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100), None, "--dry-run") == 0
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 0
+
+
 def test_an_incomplete_night_does_not_move_the_pointer(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
