@@ -85,8 +85,7 @@ jobs:
           # to existing already-signed commits, not adding new ones.
           token: ${{ secrets.GITHUB_TOKEN }}
           # Kept on purpose: the FF step below runs `git push origin` with
-          # the token this checkout writes to .git/config (zizmor
-          # `artipacked`).
+          # the token this checkout persists (zizmor `artipacked`).
           persist-credentials: true
 
       - name: Attempt merge-train FF
