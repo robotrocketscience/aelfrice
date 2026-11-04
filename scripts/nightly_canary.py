@@ -558,9 +558,8 @@ def find_regressions(
     # the flaky rule above then reads a flaky failure there as a pass.
     red_before: dict[tuple[str, str], str | None] = {}
     for d in tor.diff_records(current, last_green):
-        if d.leg in legs:
-            for t in d.red:
-                red_before[(d.leg, t.test)] = t.before
+        for t in d.red:
+            red_before[(d.leg, t.test)] = t.before
     candidates: dict[str, dict[str, Any]] = {}
     new_failing: dict[str, list[str]] = {}
     for leg in legs:
