@@ -220,8 +220,9 @@ def test_pinning_did_not_move_a_tag_checkout_to_an_older_release() -> None:
 # --- checkout credentials ----------------------------------------------------
 
 
-# Jobs whose checkout leaves the token in `.git/config` because a later step
-# pushes with it. Every other checkout sets `persist-credentials: false`, so
+# Jobs whose checkout keeps the token because a later step pushes with it.
+# Each says so with an explicit `persist-credentials: true`, and a test
+# fails if the line goes. Every other checkout sets `persist-credentials: false`, so
 # no later step or action can read the token from the working tree (zizmor
 # `artipacked`). A fetch needs no token: the repository is public, and
 # publish.yml and replay-soak-gate.yml already fetch without one.
@@ -231,6 +232,7 @@ _PUSHING_CHECKOUTS = {
     ("replay-soak.yml", "soak"): "pushes the soak record to replay-soak-status",
 }
 _PERSIST_FALSE = re.compile(r"^\s+persist-credentials:\s*false\s*$")
+_PERSIST_TRUE = re.compile(r"^\s+persist-credentials:\s*true\s*$")
 _GIT_PUSH = re.compile(r"\bgit\s+push\b")
 
 
@@ -251,6 +253,10 @@ def _drops_token(step: str) -> bool:
     return any(_PERSIST_FALSE.match(line.split(" #")[0]) for line in step.splitlines())
 
 
+def _keeps_token(step: str) -> bool:
+    return any(_PERSIST_TRUE.match(line.split(" #")[0]) for line in step.splitlines())
+
+
 def test_the_checkout_reader_sees_each_step_shape() -> None:
     text = (
         "jobs:\n"
@@ -262,10 +268,14 @@ def test_the_checkout_reader_sees_each_step_shape() -> None:
         "        with:\n"
         "          persist-credentials: false  # why\n"
         "      - run: echo persist-credentials: false\n"
+        "      - uses: actions/checkout@0000000000000000000000000000000000000000 # v4.4.0\n"
+        "        with:\n"
+        "          persist-credentials: true  # why\n"
     )
     found = _checkouts(text)
-    assert [job for job, _step in found] == ["a", "a"], found
-    assert [_drops_token(step) for _job, step in found] == [False, True], found
+    assert [job for job, _step in found] == ["a", "a", "a"], found
+    assert [_drops_token(step) for _job, step in found] == [False, True, False], found
+    assert [_keeps_token(step) for _job, step in found] == [False, False, True], found
 
 
 def test_every_checkout_drops_its_token_unless_the_job_pushes() -> None:
@@ -277,7 +287,9 @@ def test_every_checkout_drops_its_token_unless_the_job_pushes() -> None:
         for job, step in _checkouts(text):
             seen.add((path.name, job))
             if (path.name, job) in _PUSHING_CHECKOUTS:
-                assert not _drops_token(step), f"{path.name}:{job} pushes; its checkout needs the token"
+                assert _keeps_token(step) and not _drops_token(step), (
+                    f"{path.name}:{job} pushes; its checkout must set `persist-credentials: true`"
+                )
                 pushes = [line for line in jobs[job] if _GIT_PUSH.search(line.split("#")[0])]
                 assert pushes, f"{path.name}:{job} is allowlisted to push but runs no `git push`"
             elif not _drops_token(step):
