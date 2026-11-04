@@ -46,7 +46,8 @@ _D = "tests/test_x.py::test_d"
 # FAKE_FLAKES is a JSON list of {sha, test, phase, as, nth}: at that commit
 # and phase the test reads as `as` (bad or ok), on the visits in `nth` or on
 # every visit without it. FAKE_ABORT_AFTER=N exits 255 from the (N+1)th call
-# on, FAKE_ABORT_CHECK exits 255 in the check phase, FAKE_NO_FAILED leaves
+# on, FAKE_ABORT_CHECK exits 255 in the check phase (given a sha, at that
+# commit only), FAKE_NO_FAILED leaves
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
 # phase, and FAKE_HANG=<seconds> sleeps first, with a child that sleeps too.
 _FAKE_STEP = '''\
@@ -77,7 +78,7 @@ if hang:
 abort_after = int(os.environ.get("FAKE_ABORT_AFTER", "0"))
 if abort_after and len(calls) > abort_after:
     sys.exit(255)
-if phase == "check" and os.environ.get("FAKE_ABORT_CHECK"):
+if phase == "check" and os.environ.get("FAKE_ABORT_CHECK") in ("1", head):
     sys.exit(255)
 state = dict(row.split("=", 1) for row in Path("state.txt").read_text(encoding="utf-8").split())
 ids = [row for row in Path(args.tests).read_text(encoding="utf-8").split() if row]
@@ -544,6 +545,42 @@ def test_a_false_good_step_is_caught_at_the_preceding_point(
     assert rc == 1
     assert result["rounds"][0]["culprit"] == shas[3]
     assert result["events"] == [nb.event_for_range(shas[0], shas[3], [_A], nb.REASON_UNVERIFIED)]
+
+
+def test_a_false_bad_at_the_bisect_and_the_recheck_is_caught_at_the_next_point(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The commit the bisect visits first reads bad every time, though the
+    break comes later. The next merge point passes, which a break cannot."""
+    shas = env.repo(["", "", "", "", "", "", "a", "a"])
+    points: dict[str, int | None] = {shas[i]: 30 + i for i in range(1, 8)}
+    false_bad = _git(tmp_path / "repo", "rev-list", "--bisect", shas[7], f"^{shas[0]}").stdout.strip()
+    assert shas.index(false_bad) < 5
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": false_bad, "test": "test_a", "phase": p, "as": "bad"} for p in ("bisect", "check")]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
+    assert rc == 1
+    assert result["rounds"][0]["culprit"] == false_bad
+    assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
+
+
+def test_a_deadline_at_the_next_point_keeps_the_narrowed_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    points: dict[str, int | None] = {shas[2]: 11, shas[5]: 12, shas[6]: 13, shas[7]: 14}
+    monkeypatch.setenv("FAKE_ABORT_CHECK", shas[6])
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
+    assert env.stepped()[-1] == shas[6]
+
+
+def test_following_point() -> None:
+    order = ["c1", "c2", "c3"]
+    assert nb.following_point(order, {"c1", "c3"}, "c1") == "c3"
+    assert nb.following_point(order, None, "c1") == "c2"
+    assert nb.following_point(order, None, "c3") is None
 
 
 def test_a_status_of_one_with_no_test_named_blames_them_all(

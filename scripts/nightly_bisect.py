@@ -54,7 +54,9 @@ has to fail, and on the merge point before it, which has to pass. A test
 that fails at that merge point too gets a range event up to the culprit.
 The tests that failed at the culprit then run there a second time, and only
 a test that fails both times is blamed on it. One that passes the second
-time flaked, and goes to the next round.
+time flaked, and goes to the next round. A real break stays broken, so the
+blamed tests also run at the merge point after the culprit, unless that is
+`--bad`: one that passes there gets a range event.
 `git bisect reset` runs in a `finally` after every round. The worktree
 stays after the run; the next run removes it first.
 
@@ -360,6 +362,14 @@ def preceding_point(order: Sequence[str], points: set[str] | None, sha: str, lo:
         if points is None or commit in points:
             return commit
     return lo
+
+
+def following_point(order: Sequence[str], points: set[str] | None, sha: str) -> str | None:
+    """The merge point after `sha` on `order`, or None when none is."""
+    for commit in order[order.index(sha) + 1 :]:
+        if points is None or commit in points:
+            return commit
+    return None
 
 
 def points_between(order: Sequence[str], points: set[str] | None, bad: str) -> list[str]:
@@ -763,7 +773,30 @@ class Bisector:
                 return None
             if again.rc == STEP_BAD:
                 blamed = again.failed or broke
-        return blamed, [t for t in remaining if t not in blamed and t not in earlier]
+        settled = [*earlier, *blamed]
+        blamed = self._still_broken(lo, outcome, blamed, record)
+        return blamed, [t for t in remaining if t not in settled]
+
+    def _still_broken(self, lo: str, outcome: Outcome, blamed: list[str], record: dict[str, Any]) -> list[str]:
+        """Those of `blamed` that do not pass at the merge point after the
+        culprit. The others get a range event: a false bad twice at the
+        culprit looks like a break until a later commit passes."""
+        culprit = cast(str, outcome.culprit)
+        after = following_point(ancestry(self.git, lo, self.bad), self.point_set, culprit)
+        if not blamed or after is None or after == self.bad:
+            return blamed
+        later = self._check(after, blamed)
+        record["verify"].update(following=after, following_rc=later.rc)
+        if later.rc == STEP_ABORT:
+            add_event(self.events, event_for_range(outcome.good, outcome.bad, blamed, REASON_BUDGET))
+            return []
+        if later.rc not in (STEP_GOOD, STEP_BAD):
+            return blamed  # This commit cannot be judged, which says nothing about the culprit.
+        red = (later.failed or blamed) if later.rc == STEP_BAD else []
+        passed = [t for t in blamed if t not in red]
+        if passed:
+            add_event(self.events, event_for_range(lo, self.bad, passed, REASON_UNVERIFIED))
+        return [t for t in blamed if t in red]
 
     def bisect(self, good: str, tests: list[str]) -> None:
         lo, remaining = good, list(tests)
