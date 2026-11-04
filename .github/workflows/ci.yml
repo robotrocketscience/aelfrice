@@ -340,16 +340,14 @@ jobs:
   # removed id of the same test function keeps the removed test's outcome.
   # The script's docstring has the rules.
   #
-  # Blocking, by the 2026-11-04 ruling: the diff step passes `--block` and
-  # carries no `continue-on-error`, so a violation is an `::error::`, the
-  # step fails, and the job's check-run reads `failure`. The merge train
-  # floors `test-outcomes` (scripts/merge_train_gate.py), so it waits for
-  # the row and gates on it. Every other step keeps its step-level
-  # `continue-on-error`: a failed download, record or baseline lookup leaves
-  # the diff to report "no baseline" or "no JUnit report". A diff that cannot
-  # read this run's record at all exits 2 and fails the check too. The
-  # job-level `continue-on-error` keeps the workflow run green, not the
-  # check-run (https://github.com/orgs/community/discussions/15452).
+  # Blocking, by the 2026-11-04 ruling: the diff step passes `--block`, and
+  # neither it nor the job carries `continue-on-error`, so a violation is an
+  # `::error::` and the step, the job and its check-run all read `failure`.
+  # The merge train floors `test-outcomes` (scripts/merge_train_gate.py), so
+  # it waits for the row and gates on it. The download, record, baseline and
+  # upload steps keep a step-level `continue-on-error`, so the diff still
+  # runs after one of them fails and can say what is missing. A diff that
+  # cannot read this run's record exits 2 and fails the check too.
   # `.github/test-outcome-allowlist.txt` names the tests the ratchet leaves
   # alone.
   #
@@ -377,23 +375,18 @@ jobs:
     # tests/test_ci_manual_dispatch.py). A dispatch carries no base commit,
     # so its summary says "no baseline".
     if: ${{ !cancelled() }}
-    # Job-level, for the workflow run only: a failed job then leaves the run
-    # `success`, so the baseline walk, which reads only successful runs, can
-    # still take this commit. The step-level lines below keep the check-run
-    # off `failure`; this one does not.
-    continue-on-error: true
+    # No job-level `continue-on-error`: a blocked run is a failed run, and the
+    # baseline walk, which reads only successful runs, skips its commit.
     runs-on: ubuntu-latest
     # Three API walks and two small downloads; a green run takes under two
     # minutes. A job that reaches this cap ends `cancelled`, and so does the
     # run, whatever `continue-on-error` says: mutation.yml's 60-minute
-    # timeouts on runs 41401037793 and 39564214136 ended that way. The
-    # baseline walk then skips the commit. So every step carries its own
-    # `timeout-minutes`, and the steps' caps add up to less than this one.
-    # A step past its cap ends `failure`, its `continue-on-error` turns that
-    # into `success` (`ApplyContinueOnError` in actions/runner,
-    # src/Runner.Worker/ExecutionContext.cs), and the run stays `success`.
-    # The diff step has no `continue-on-error`, so past its cap it fails the
-    # check-run, and the job-level line keeps the run `success`.
+    # timeouts on runs 41401037793 and 39564214136 ended that way. So every
+    # step carries its own `timeout-minutes`, and the steps' caps add up to
+    # less than this one. A step past its cap ends `failure`. A step-level
+    # `continue-on-error` turns that into `success` (`ApplyContinueOnError`
+    # in actions/runner, src/Runner.Worker/ExecutionContext.cs); the checkout
+    # and the diff have none, so past its cap either one fails the job.
     timeout-minutes: 15
     permissions:
       contents: read
@@ -403,7 +396,6 @@ jobs:
     # hold a write token or a secret, and this job holds neither.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        continue-on-error: true
         timeout-minutes: 1
         with:
           persist-credentials: false

@@ -12,9 +12,9 @@ workflow tests do.
 
 The ruling of 2026-10-21 made the skip/xfail ratchet advisory first; the
 ruling of 2026-11-04 turns blocking on once the rules are fixed. The
-workflow tests here pin the blocking wiring: `--block` on the diff step and
-no `continue-on-error` on it, `continue-on-error` on every other step and
-on the job, and a job name inside the merge train's floor.
+workflow tests here pin the blocking wiring: `--block` on the diff step, no
+`continue-on-error` on it or on the job, and a job name inside the merge
+train's floor.
 """
 from __future__ import annotations
 
@@ -1325,12 +1325,10 @@ def test_the_job_exists_runs_after_pytest_and_also_on_a_dispatch() -> None:
 
 
 def test_every_step_times_out_before_the_job_does() -> None:
-    """A job that reaches its own `timeout-minutes` ends `cancelled`, and so
-    does the workflow run, job-level `continue-on-error` or not. The
-    baseline walk reads only successful runs, so it would skip that commit.
-    A step past its own cap ends `failure`, which the step's
-    `continue-on-error` turns into `success`. So each step carries a cap,
-    and the caps add up to less than the job's."""
+    """A job that reaches its own `timeout-minutes` ends `cancelled`, and a
+    floor name that ends `cancelled` fails the head with no reason given. A
+    step past its own cap ends `failure` and names the step. So each step
+    carries a cap, and the caps add up to less than the job's."""
     caps: list[int] = []
     for step in _steps("test-outcomes"):
         m = re.search(r"\n        timeout-minutes: (\d+)\n", step + "\n")
@@ -1340,25 +1338,36 @@ def test_every_step_times_out_before_the_job_does() -> None:
 
 
 def test_the_diff_step_blocks_by_the_2026_11_04_ruling() -> None:
-    """`--block` and no `continue-on-error` on the diff step, and a name in the floor.
-
-    The job-level line keeps the workflow run green, so the baseline walk
-    can still read the run, but the job's check-run reads `failure` when a
-    step fails, and `merge_train_gate.evaluate` counts that check-run as
-    failing. Every step but the diff keeps a step-level line, so a failed
-    lookup reaches the diff as "no baseline" rather than failing the check."""
+    """`--block` and no `continue-on-error` on the diff step or the job, and
+    a name in the floor. A step that fails with neither line fails the job,
+    and `merge_train_gate.evaluate` counts its check-run as failing."""
     diff = _one_step("test_outcome_record.py diff")
     assert "continue-on-error" not in diff, diff
     assert re.search(r" --block$", diff, re.MULTILINE), diff
     assert "--allowlist .github/test-outcome-allowlist.txt" in diff
     assert '--summary "$GITHUB_STEP_SUMMARY"' in diff
-    for step in _steps("test-outcomes"):
-        if step != diff:
-            assert "\n        continue-on-error: true" in step, step
-    assert _job_keys("test-outcomes").get("continue-on-error") == "true"
+    assert "continue-on-error" not in _job_keys("test-outcomes")
     assert "name" not in _job_keys("test-outcomes")
     assert "test-outcomes" in FLOOR_NAMES
     assert "test-outcomes" not in NONGATING_WHILE_PENDING
+
+
+# The steps the diff has to outlive. It runs after them and says what is
+# missing, so a failure in one of them must not skip it.
+_TOLERATED_STEPS = (
+    "actions/download-artifact@",
+    "test_outcome_record.py record",
+    "test_outcome_record.py baseline",
+    "actions/upload-artifact@",
+)
+
+
+def test_only_the_steps_the_diff_outlives_tolerate_a_failure() -> None:
+    steps = _steps("test-outcomes")
+    for step in steps:
+        tolerated = any(marker in step for marker in _TOLERATED_STEPS)
+        assert ("\n        continue-on-error: true" in step) is tolerated, step
+    assert sum("continue-on-error" in step for step in steps) == len(_TOLERATED_STEPS)
 
 
 def test_the_records_upload_before_the_diff_can_fail() -> None:
