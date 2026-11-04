@@ -932,6 +932,11 @@ def test_an_outside_git_dir_does_not_redirect_the_script(
     assert _merge_points(tmp_path / "repo", shas[0], shas[7], out, "--dry-run") == 0
 
 
+def test_the_default_worktree_is_ignored() -> None:
+    """A real run showed `?? .bisect/` in the checkout."""
+    assert _git(_REPO, "check-ignore", "-q", ".bisect/").returncode == 0
+
+
 def test_dry_run_changes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(_LINEAR)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
