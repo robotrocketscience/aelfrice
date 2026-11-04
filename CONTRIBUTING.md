@@ -241,6 +241,42 @@ If you change retrieval ranking, compression, or clustering behavior, say so
 in the PR body. Expect the quality evidence to come from a corpus-bearing run
 rather than from a green CI run.
 
+### A test that starts to skip fails `test-outcomes`
+
+The `test-outcomes` job in `ci.yml` compares the outcome of every test in your
+pull request with the last green run on `main` (#1786). The merge train waits
+for its check-run and refuses a head where the job fails.
+
+The job fails when a test does one of these things:
+
+- Moves from any other outcome to skipped, xfailed, or never executed.
+- Arrives new as skipped or xfailed.
+
+The job passes in these cases:
+
+- A new test never executes. The latency tests behind `--run-perf` and the
+  bench-gate tests skip on every CI leg by design.
+- A test is renamed. The job pairs a new test ID with a removed ID of the
+  same test function, and compares the new test with the removed test's
+  outcome. A pytest upgrade that renames parameter IDs passes, and a passing
+  test renamed into a skip still fails.
+- A test is removed. The job counts removals and never fails on them.
+- A test fails, errors, or passes while marked xfail. The `pytest` legs fail
+  on those.
+
+If a test is meant to skip on the CI legs, such as a Windows-only test on the
+Linux runners, add its ID to `.github/test-outcome-allowlist.txt` with a `#`
+line above it that says why. The job reads the outcome and not the skip
+reason, so a `skipif` marker alone does not exempt the test. Copy the ID from
+the job's step summary; the file header describes the `*` wildcard.
+
+When the job fails, read its first annotation, which counts the violations on
+each leg. The step summary lists each test, and the
+`test-outcome-record-<sha>` artifact holds every test's outcome on both legs.
+If the job finds no baseline, the step summary says so and the job passes.
+JUnit artifacts expire after 30 days, and a docs-only pull request uploads
+none. The docstring of `scripts/test_outcome_record.py` has the full rules.
+
 ### Changelog entries — one file per entry
 
 **Add a file under `CHANGELOG/unreleased/`. Do not edit the
