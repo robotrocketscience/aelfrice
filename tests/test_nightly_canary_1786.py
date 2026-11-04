@@ -33,6 +33,8 @@ sys.path.insert(0, str(_REPO / "scripts"))
 import nightly_canary as nc  # noqa: E402
 import test_outcome_record as tor  # noqa: E402
 
+pytestmark = pytest.mark.timeout(120)
+
 SHA1 = "1" * 40
 SHA2 = "2" * 40
 CREATED = "2026-11-04T02:17:00Z"
@@ -299,7 +301,6 @@ def _pytest(project: Path, *args: str, fail: bool = False) -> subprocess.Complet
 _FAILS_ON_FLAG = "import os\nBAD = os.environ.get('FAIL') == '1'\n"
 
 
-@pytest.mark.timeout(120)
 def test_ids_that_would_not_round_trip_stay_out_and_the_rerun_does_not_exit_4(
     tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -356,7 +357,6 @@ _REAL_MODULE = _FAILS_ON_FLAG + (
 )
 
 
-@pytest.mark.timeout(120)
 def test_real_pytest_output_runs_through_failed_ids_and_verdict(tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "tests").mkdir(parents=True)
@@ -396,7 +396,6 @@ def test_real_pytest_output_runs_through_failed_ids_and_verdict(tmp_path: Path) 
     assert verdict["status"] == nc.RED
 
 
-@pytest.mark.timeout(120)
 def test_a_real_collection_error_reaches_triage_with_the_module_to_collect(tmp_path: Path) -> None:
     """pytest stops with exit 2, and the report holds only the module's id."""
     project = tmp_path / "project"
