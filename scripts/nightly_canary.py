@@ -150,8 +150,9 @@ run, the newest attempt's, and names that attempt's directory. A missing
 triage file is a notice: the night's record is still published, with no
 event keys.
 
-The `canary` entry of `last-green.json` moves only on a green night and each
-`legs` entry only when that leg is green. Either moves only to a commit on
+Only a green night moves `last-green.json`: the `canary` entry, and each
+`legs` entry whose leg is green. A red or incomplete night changes no entry,
+even for a leg that was green. An entry moves only to a commit on
 main that descends from the old one, the first pointer included. Main is
 `--main-ref` in `--main-repo`, by default `origin/main` or else `main`. A
 green night on a commit that is not on main, or that git cannot place, moves
@@ -164,8 +165,15 @@ different content exits 1 and writes nothing. The same content is a no-op.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
-exits 1 on every night that leaves it in place, naming it. The next green
-night on main re-points it with a `::warning::` and exits 0. An entry whose
+exits 1 on every night that leaves it in place, naming it. A commit git cannot
+place is not proof of that: a stale or shallow clone has not fetched every
+commit on main. So the recovery rule is the same for both answers: a green
+night on main re-points the entry with a `::warning::` and exits 0 only when
+its run is newer than the entry's by (run_id, attempt), which the first night
+after a real rewrite always is. An older or equal run is refused, moves
+nothing and exits 1. `--main-repo` should hold main's full history: a newer run
+of an older commit in a stale clone is the one case this rule cannot tell from
+a rewrite. An entry whose
 record file is gone exits 1 the same way, naming the path, until a green
 night moves it. Exit 1 comes after the writes, so the workflow can commit the
 night's record before it fails the job.
@@ -854,11 +862,17 @@ def _moved(
         notes.append(f"last green {what}: set to {new_sha[:12]}")
         return new
     old_sha = str(old["sha"])
-    # git just placed `new`, so it can read main: a commit it cannot place is
-    # not on main either.
     if on_main(old_sha) is not True:
-        notes.append(f"::warning::last green {what}: {old_sha[:12]} is not on main, re-pointed to {new_sha[:12]}")
-        return new
+        # A commit git cannot place may only be missing from this clone, so
+        # just a newer run may replace it.
+        if _run_order(new) > _run_order(old):
+            notes.append(f"::warning::last green {what}: {old_sha[:12]} is not on main, re-pointed to {new_sha[:12]}")
+            return new
+        problems.append(
+            f"{what}: refused {new_sha[:12]}: run {_run_order(new)} is not newer than run {_run_order(old)} "
+            f"at {old_sha[:12]}, which main does not place"
+        )
+        return old
     if old_sha == new_sha:
         if _run_order(new) > _run_order(old):
             notes.append(f"last green {what}: run {_run_order(old)} -> {_run_order(new)} at {new_sha[:12]}")
@@ -898,7 +912,7 @@ def off_main_pointers(green: dict[str, Any], on_main: Callable[[str], bool | Non
         if answer is not True:
             why = "is not on main" if answer is False else "could not be checked against main"
             problems.append(
-                f"{what}: names {str(pointer['sha'])[:12]}, which {why}; the next green night on main re-points it"
+                f"{what}: names {str(pointer['sha'])[:12]}, which {why}; a green night on main from a newer run re-points it"
             )
     return problems
 
@@ -923,14 +937,14 @@ def next_last_green(
     notes: list[str] = []
     problems: list[str] = []
     canary = old.get("canary")
+    legs: dict[str, Any] = dict(old.get("legs") or {})
     if nightly["verdict"] == GREEN:
         canary = _moved(canary, pointer, is_ancestor, on_main, "canary", notes, problems)
-    legs: dict[str, Any] = dict(old.get("legs") or {})
-    for leg, status in sorted(nightly["status"].items()):
-        if status == GREEN:
-            moved = _moved(legs.get(leg), pointer, is_ancestor, on_main, f"leg {leg}", notes, problems)
-            if moved is not None:
-                legs[leg] = moved
+        for leg, status in sorted(nightly["status"].items()):
+            if status == GREEN:
+                moved = _moved(legs.get(leg), pointer, is_ancestor, on_main, f"leg {leg}", notes, problems)
+                if moved is not None:
+                    legs[leg] = moved
     new_green = {"canary": canary, "legs": dict(sorted(legs.items()))}
     problems.extend(off_main_pointers(new_green, on_main))
     return new_green, notes, problems

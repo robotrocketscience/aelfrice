@@ -1539,8 +1539,8 @@ def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
     assert _last_green(tmp_path)["canary"]["sha"] == c0
     assert _publish(tmp_path, repo, _red(c1, 101, day=2), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c0
-    # The red night's 3.12 leg was green, so that leg's pointer moved.
-    assert _last_green(tmp_path)["legs"]["3.12"]["sha"] == c1
+    # The red night's 3.12 leg was green, and a red night changes no entry.
+    assert _last_green(tmp_path)["legs"]["3.12"]["sha"] == c0
     assert _last_green(tmp_path)["legs"]["3.13"]["sha"] == c0
     assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
     assert _last_green(tmp_path)["canary"] == {"sha": c2, "path": "runs/2026-11-03-102-a1", "run_id": 102,
@@ -1604,15 +1604,22 @@ def test_a_red_republish_of_the_run_and_attempt_last_green_names_writes_nothing(
     assert "::error::last green names runs/2026-11-04-100-a1" in capsys.readouterr().out
 
 
+def _with_extra(sha: str, run_id: int, extra: str, day: int) -> dict[str, Any]:
+    """A night with green canary legs and an extra 3.14 leg with this outcome."""
+    return _night(sha, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None), "3.14": ({_A: extra}, None)},
+                  roles={"3.14": nc.EXTRA}, run_id=run_id, created_at=f"2026-11-{day:02}T02:17:00Z")
+
+
 def test_a_leg_entry_protects_its_record_as_well(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
-    """A red night's green leg points at that night's record."""
-    repo, (c0, _, _), _ = main_repo
-    assert _publish(tmp_path, repo, _red(c0, 100), None) == 0
-    assert _last_green(tmp_path)["canary"] is None
-    other = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
-    assert _publish(tmp_path, repo, other, None) == 1
+    """The extra leg went red, so its entry alone still names the first night."""
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _with_extra(c0, 100, tor.PASSED, 1), None) == 0
+    assert _publish(tmp_path, repo, _with_extra(c1, 101, tor.FAILED, 2), None) == 0
+    green = _last_green(tmp_path)
+    assert (green["canary"]["run_id"], green["legs"]["3.14"]["run_id"]) == (101, 100)
+    assert _publish(tmp_path, repo, _red(c0, 100, day=1), None) == 1
 
 
 def test_republishing_the_same_content_is_a_no_op(
@@ -1751,8 +1758,8 @@ def test_a_pointer_off_main_exits_1_each_night_until_a_green_night_repoints_it(
     assert _publish(tmp_path, repo, _red(c0, 100, day=1), None) == 1
     out = capsys.readouterr().out
     assert f"::error::last green canary: names {side[:12]}" in out
-    assert f"::error::last green leg 3.12: names {side[:12]}" not in out  # the green 3.12 leg re-pointed itself
-    assert _last_green(tmp_path)["canary"] == stale
+    assert f"::error::last green leg 3.12: names {side[:12]}" in out  # a red night changes no entry, green leg or not
+    assert _last_green(tmp_path) == frozen
     assert _publish(tmp_path, repo, _red(c1, 101, day=2), None) == 1
     capsys.readouterr()
     assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
@@ -1772,6 +1779,89 @@ def test_a_pointer_git_cannot_place_is_repaired_the_same_way(
     (branch / "last-green.json").write_text(json.dumps({"canary": stale, "legs": {}}), encoding="utf-8")
     assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c2
+
+
+def _stale_clone(tmp_path: Path, full: Path, at: str) -> Path:
+    """A repository whose main is `full`'s history up to `at`, so it has never
+    fetched the commits after that."""
+    _git(full, "branch", "--force", "up-to", at)
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    _git(stale, "init", "-q", "-b", "other")
+    _git(stale, "fetch", "-q", str(full), "up-to:refs/heads/main")
+    return stale
+
+
+def test_a_stale_clone_cannot_move_a_newer_pointer_back(tmp_path: Path) -> None:
+    """The pointer is a commit this clone never fetched, which says nothing about main."""
+    full, (_, c1, c2), _ = _make_main_repo(tmp_path / "full")
+    assert _publish(tmp_path, full, _green(c2, 10, day=2), None) == 0
+    before = _last_green(tmp_path)
+    stale = _stale_clone(tmp_path, full, c1)
+    assert nc.git_is_ancestor(stale, c2, "main") is None
+    assert _publish(tmp_path, stale, _green(c1, 9, day=1), None) == 1
+    assert _last_green(tmp_path) == before
+    assert _publish(tmp_path, stale, _red(c1, 11, day=3), None) == 1
+    assert _last_green(tmp_path) == before
+
+
+def test_a_shallow_clone_moves_a_pointer_only_on_a_newer_run(tmp_path: Path) -> None:
+    full, (c0, _, c2), _ = _make_main_repo(tmp_path / "full")
+    assert _publish(tmp_path, full, _green(c0, 5, day=1), None) == 0
+    _git(full.parent, "clone", "-q", "--depth", "1", f"file://{full}", "shallow")
+    shallow = full.parent / "shallow"
+    assert nc.git_is_ancestor(shallow, c0, "origin/main") is None
+    assert _publish(tmp_path, shallow, _green(c2, 4, day=2), None) == 1
+    assert _last_green(tmp_path)["canary"]["sha"] == c0
+    assert _publish(tmp_path, shallow, _green(c2, 6, day=3), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c2
+
+
+def test_a_history_rewrite_is_recovered_by_a_newer_run_and_not_an_older_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (_, _, c2), side = _make_main_repo(tmp_path / "main")
+    assert _publish(tmp_path, repo, _green(c2, 10, day=1), None) == 0
+    _git(repo, "update-ref", "refs/heads/main", side)
+    assert nc.git_is_ancestor(repo, c2, "main") is False
+    capsys.readouterr()
+    assert _publish(tmp_path, repo, _green(side, 9, day=2), None) == 1
+    out = capsys.readouterr().out
+    assert _last_green(tmp_path)["canary"]["sha"] == c2
+    assert f"canary: refused {side[:12]}: run (9, 1) is not newer than run (10, 1)" in out
+    assert _publish(tmp_path, repo, _green(side, 11, day=3), None) == 0
+    out = capsys.readouterr().out
+    assert _last_green(tmp_path)["canary"]["sha"] == side
+    assert f"::warning::last green canary: {c2[:12]} is not on main, re-pointed to {side[:12]}" in out
+    assert "::error::" not in out
+
+
+@pytest.mark.parametrize("answer", [False, None], ids=["not-on-main", "cannot-place"])
+@pytest.mark.parametrize(
+    ("run", "moves"),
+    [((10, 1), False), ((10, 2), True), ((9, 3), False), ((11, 1), True)],
+    ids=["same-run-and-attempt", "newer-attempt", "older-run", "newer-run"],
+)
+def test_recovery_needs_a_newer_run_whichever_way_git_answers(
+    answer: bool | None, run: tuple[int, int], moves: bool,
+) -> None:
+    old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 10, "attempt": 1}, "legs": {}}
+    new, _, problems = nc.next_last_green(
+        old, _green(SHA2, run[0], run_attempt=run[1]), lambda a, b: True, lambda sha: True if sha == SHA2 else answer,
+    )
+    assert new["canary"]["sha"] == (SHA2 if moves else SHA1)
+    assert any("refused" in p for p in problems) is not moves
+
+
+@pytest.mark.parametrize("night", ["red", "incomplete"])
+def test_a_night_that_is_not_green_changes_no_leg_entry_even_for_a_green_leg(night: str) -> None:
+    """3.12 is green tonight, and a repair of its unplaceable entry waits for a green night."""
+    old = {"canary": None, "legs": {"3.12": {"sha": SHA1, "path": "runs/a", "run_id": 1, "attempt": 1}}}
+    record = (_red(SHA2, 2) if night == "red"
+              else _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": (None, None)}, run_id=2))
+    assert record["nightly"]["status"]["3.12"] == nc.GREEN
+    new, notes, _ = nc.next_last_green(old, record, lambda a, b: True, lambda sha: None if sha == SHA1 else True)
+    assert new == old and notes == []
 
 
 def test_main_is_origin_main_before_a_local_main_and_the_flag_overrides_both(tmp_path: Path) -> None:
