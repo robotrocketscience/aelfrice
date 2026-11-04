@@ -676,6 +676,57 @@ def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect:
     assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
 
 
+def test_a_dirty_tree_does_not_stop_the_reset(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step dirties a file that differs between commits: the bisect
+    cannot go on, and a plain `git bisect reset` refuses too."""
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_DIRTY", "bisect")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert result["reset_errors"] == []
+    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
+    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+
+
+def _fail_git(monkeypatch: pytest.MonkeyPatch, *prefix: str) -> None:
+    """Make every `git` call of the script that starts with `prefix` fail."""
+    real = nb.Git.run
+
+    def run(self: nb.Git, *args: str, check: bool = True, timeout: float = 120) -> subprocess.CompletedProcess[str]:
+        if args[: len(prefix)] != prefix:
+            return real(self, *args, check=check, timeout=timeout)
+        if check:
+            raise RuntimeError(f"git {' '.join(args)} failed in the test")
+        return subprocess.CompletedProcess(["git", *args], 1, "", "refused by the test")
+
+    monkeypatch.setattr(nb.Git, "run", run)
+
+
+def test_a_reset_that_fails_is_reported(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(_LINEAR)
+    _fail_git(monkeypatch, "bisect", "reset")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert result["reset_errors"] == ["refused by the test"]
+    assert "::warning::git bisect reset failed: refused by the test" in capsys.readouterr().err
+    assert rc == 0
+
+
+def test_the_bisect_is_reset_when_the_round_raises(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    _fail_git(monkeypatch, "rev-parse", "--verify", "refs/bisect/bad")
+    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 2
+    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
+    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+
+
 def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}

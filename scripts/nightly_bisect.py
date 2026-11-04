@@ -78,8 +78,11 @@ What the checks cannot detect:
   left for git's similarity check: the new name reads as a new test.
 - A test that breaks, recovers and breaks again. The bisect finds one change
   from pass to fail, not all of them.
-`git bisect reset` runs in a `finally` after every round. The worktree
-stays after the run; the next run removes it first.
+`git bisect reset` runs in a `finally` after every round. A test that
+dirties a tracked file can make it fail, so it runs again after `git reset
+--hard`; a reset that still fails is a warning and lands in the result's
+`reset_errors`. The worktree stays after the run; the next run removes it
+first.
 
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
@@ -700,6 +703,7 @@ class Bisector:
     scratch: Path
     events: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     rounds: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    reset_errors: list[str] = field(default_factory=list[str])
 
     @property
     def point_set(self) -> set[str] | None:
@@ -777,8 +781,20 @@ class Bisector:
             record["log"] = wt.run("bisect", "log", check=False).stdout
             record["output"] = "\n".join(output.splitlines()[-_OUTPUT_TAIL_LINES:])
         finally:
-            wt.run("bisect", "reset", check=False)
+            self._reset(wt)
         return read_outcome(order, points, lo, bad_ref, goods), record
+
+    def _reset(self, wt: Git) -> None:
+        """End the bisect, on a clean tree when the first try fails."""
+        r = wt.run("bisect", "reset", check=False)
+        if r.returncode == 0:
+            return
+        wt.run("reset", "-q", "--hard", check=False)
+        r = wt.run("bisect", "reset", check=False)
+        if r.returncode != 0:
+            error = r.stderr.strip() or f"exit status {r.returncode}"
+            self.reset_errors.append(error)
+            print(f"::warning::git bisect reset failed: {error}", file=sys.stderr)
 
     def attribute(
         self, lo: str, outcome: Outcome, remaining: list[str], record: dict[str, Any],
@@ -1002,6 +1018,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     result = {
         "format": RESULT_FORMAT, "good": good, "bad": bad, "tests": tests,
         "merge_points": len(points), "events": bisector.events, "rounds": bisector.rounds,
+        "reset_errors": bisector.reset_errors,
     }
     _write_json(args.out, result)
     for event in bisector.events:
