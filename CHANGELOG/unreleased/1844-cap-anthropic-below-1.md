@@ -1,0 +1,3 @@
+### Fixed
+
+- **The `[onboard-llm]` extra installs an anthropic SDK the classifier can call ([#1844](https://github.com/robotrocketscience/aelfrice/issues/1844)).** The extra required `anthropic>=0.40`, so a new install could resolve SDK 1.0 or later. SDK 1.0 removed `temperature` from `messages.create()`, so every classifier request raised `TypeError` before it was sent, and `aelf onboard --llm-classify` fell back to the regex classifier without an error. The extra now requires `anthropic>=0.40,<1`. If your environment already has SDK 1.0 or later, run `pip install 'anthropic>=0.40,<1'`. Support for SDK 2.x is tracked in [#1845](https://github.com/robotrocketscience/aelfrice/issues/1845).

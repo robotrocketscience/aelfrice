@@ -206,7 +206,7 @@ The boundary policy is therefore non-negotiable.
 
 - **New optional extra `[onboard-llm]`** in `pyproject.toml`:
   ```toml
-  onboard-llm = ["anthropic>=0.40"]
+  onboard-llm = ["anthropic>=0.40,<1"]
   ```
 - The default `pip install aelfrice` install does **not** pull
   `anthropic`. Only `pip install aelfrice[onboard-llm]` does.
@@ -586,7 +586,10 @@ The implementation PR may not merge unless:
   call the new classifier inline, in the same loop where it currently
   calls `classify_sentence`. The polymorphic handshake remains for
   the host-LLM-in-context use case.
-- External: `anthropic>=0.40` (in the `[onboard-llm]` extra only).
+- External: `anthropic>=0.40,<1` (in the `[onboard-llm]` extra only).
+  SDK 1.0 removed the `temperature` parameter this classifier sends, so
+  the extra stays below 1.0 until the move to SDK 2.x
+  ([#1845](https://github.com/robotrocketscience/aelfrice/issues/1845)).
 - Activates: `benchmarks/mab_llm_entity_adapter.py` (port from lab).
 
 ## 11. Open questions deferred to implementation
