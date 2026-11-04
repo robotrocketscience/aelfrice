@@ -370,13 +370,10 @@ def diff_leg(
     removed = {test: outcome for test, outcome in baseline.items() if test not in current}
     renames = pair_renames({t: o for t, o in current.items() if t not in baseline}, removed)
     out.renamed = len(renames)
-    renamed_ids = set(renames.values())
     # Functions that lost a test which was not already left out by design: a
-    # new never-executed test there may be that test behind the gate.
-    lost = {
-        function_id(test) for test, outcome in removed.items()
-        if test not in renamed_ids and outcome != NEVER_EXECUTED
-    }
+    # new never-executed test there that did not pair may be that test behind
+    # the gate.
+    lost = {function_id(test) for test, outcome in removed.items() if outcome != NEVER_EXECUTED}
     for test in sorted(set(current) | set(baseline)):
         before = baseline.get(test)
         after = current.get(test)
