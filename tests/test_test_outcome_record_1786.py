@@ -1473,6 +1473,58 @@ def test_the_diff_requires_both_inputs(
     assert missing in capsys.readouterr().err
 
 
+def _error_baseline(tmp_path: Path, kind: str) -> Path:
+    base = tmp_path / "baseline.json"
+    if kind == "error-marker":
+        base.write_text(json.dumps(tor.lookup_error_marker("HTTP 502")), encoding="utf-8")
+    elif kind == "junk-file":
+        base.write_text("{}", encoding="utf-8")
+    return base
+
+
+_BASELINE_ERRORS = ["error-marker", "missing-file", "junk-file"]
+
+
+@pytest.mark.parametrize("kind", _BASELINE_ERRORS)
+def test_a_docs_only_run_passes_a_failed_lookup_with_a_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], kind: str,
+) -> None:
+    """No report, so nothing to compare: failing here would only be a false
+    positive from a transient API error."""
+    current = _record_from_reports(tmp_path)
+    capsys.readouterr()
+    assert tor.main([
+        *_DIFF, "--current", str(current), "--baseline", str(_error_baseline(tmp_path, kind)), "--block",
+    ]) == 0
+    annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
+    assert len(annotations) == 1 and annotations[0].startswith("::warning::test outcomes: no baseline: ")
+
+
+@pytest.mark.parametrize("kind", _BASELINE_ERRORS)
+@pytest.mark.parametrize(
+    ("reports", "full_suite", "result"),
+    [
+        (("3.12", "3.13"), "true", "success"),
+        (("3.12", "3.13"), "false", "success"),
+        (("3.12",), "false", "success"),
+        ((), "false", "failure"),
+        ((), "true", "success"),
+    ],
+    ids=["suite-with-reports", "false-with-reports", "false-with-one-report", "job-failed", "reports-lost"],
+)
+def test_every_other_run_fails_on_a_failed_lookup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    kind: str, reports: tuple[str, ...], full_suite: str, result: str,
+) -> None:
+    current = _record_from_reports(tmp_path, *reports)
+    capsys.readouterr()
+    assert tor.main([
+        *_DIFF, "--current", str(current), "--baseline", str(_error_baseline(tmp_path, kind)),
+        "--full-suite", full_suite, "--pytest-result", result, "--block",
+    ]) == 2
+    assert "::error::test outcomes: " in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", ""])
 def test_a_false_output_from_a_failed_job_does_not_excuse_a_lost_report(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], result: str,

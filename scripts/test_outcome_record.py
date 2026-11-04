@@ -76,7 +76,9 @@ does not finish is a different case. On an API error, an answer without
 the key it should hold, or an artifact or a report that cannot be read,
 `baseline` writes a marker that says so and
 exits 2, and `diff` exits 2 on that marker, on a baseline file that is
-missing and on one that holds neither a record nor a no-baseline marker.
+missing and on one that holds neither a record nor a no-baseline marker. A
+docs-only run is the exception: it has no report to compare, so a failed
+lookup there is a warning and passes.
 
 A leg with no JUnit report is either a docs-only run or a lost report. Both
 look the same in the record, and the `pytest` job's result is `success` in
@@ -801,6 +803,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
             baseline_notice = str(data.get("notice") or "no baseline record")
         else:
             lookup_error = str(data.get("notice") or f"baseline file {args.baseline} holds no record")
+    if lookup_error is not None and reports_optional and not any((current.get("legs") or {}).values()):
+        # A docs-only run: no report, so the failed lookup cost no comparison.
+        baseline_notice, lookup_error = lookup_error, None
     allowlist = parse_allowlist(args.allowlist.read_text(encoding="utf-8")) if args.allowlist else []
     diffs = diff_records(current, baseline, allowlist)
     summary = render_summary(diffs, baseline, baseline_notice, args.block, lookup_error, report_error)
