@@ -148,7 +148,10 @@ of a run gets its own directory, so a red re-attempt never overwrites the
 green record `last-green.json` points at. The index keeps one line per
 run, the newest attempt's, and names that attempt's directory. A missing
 triage file is a notice: the night's record is still published, with no
-event keys.
+event keys. A corrupt `index.jsonl` or `last-green.json` does not lose the night
+either: the record and triage are written, the corrupt file stays as it is for
+inspection, and `publish` names it and exits 1. A corrupt `last-green.json` moves
+no pointer until someone repairs it.
 
 Only a green night moves `last-green.json`: the `canary` entry, and each
 `legs` entry whose leg is green. A red or incomplete night changes no entry,
@@ -195,10 +198,10 @@ runs them on synthetic reports and records, and runs the `cmd_*` functions
 against temporary files and a temporary git repository.
 
 Exit status: 0; 1 for a checked condition (`failed-ids` has nothing to
-rerun, `verdict` finds the leg is not green, `publish` left a pointer problem
-behind); 2 for a usage error or an unreadable input, which includes JSON that
-parses but does not have the shape a record, a triage file, `last-green.json`
-or `index.jsonl` has.
+rerun, `verdict` finds the leg is not green, `publish` left a pointer or a
+results-branch file it could not read); 2 for a usage error or an unreadable
+input, which includes JSON that parses but does not have the shape a record or
+a triage file has.
 """
 from __future__ import annotations
 
@@ -1325,13 +1328,24 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not branch.is_dir():
         raise ValueError(f"--branch-dir {branch} is not a directory")
     path = run_path(record)
+    problems: list[str] = []
     index_file = branch / "index.jsonl"
-    lines = index_file.read_text(encoding="utf-8").splitlines() if index_file.is_file() else []
-    index = merge_index(lines, index_entry(record, triage))
+    index: list[str] | None = None
+    try:
+        lines = index_file.read_text(encoding="utf-8").splitlines() if index_file.is_file() else []
+        index = merge_index(lines, index_entry(record, triage))
+    except _UNREADABLE as exc:
+        problems.append(f"index.jsonl is unreadable, so it stays as it is for inspection: {exc}")
     green_file = branch / "last-green.json"
-    old_green = _read_json(green_file) if green_file.is_file() else None
-    if old_green is not None:
-        validate_last_green(old_green, str(green_file))
+    old_green: dict[str, Any] | None = None
+    green_readable = True
+    try:
+        if green_file.is_file():
+            old_green = _read_json(green_file)
+            validate_last_green(old_green, str(green_file))
+    except _UNREADABLE as exc:
+        old_green, green_readable = None, False
+        problems.append(f"last-green.json is unreadable, so it stays as it is and no pointer moved: {exc}")
     main_ref = resolve_main_ref(args.main_repo, args.main_ref)
     placed: dict[str, bool | None] = {}
 
@@ -1340,9 +1354,13 @@ def cmd_publish(args: argparse.Namespace) -> int:
             placed[sha] = None if main_ref is None else git_is_ancestor(args.main_repo, sha, main_ref)
         return placed[sha]
 
-    new_green, notes, problems = next_last_green(
-        old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
-    )
+    new_green: dict[str, Any] = {}
+    notes: list[str] = []
+    pointer_problems: list[str] = []
+    if green_readable:
+        new_green, notes, pointer_problems = next_last_green(
+            old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
+        )
     record_file = branch / path / "record.json"
     if (
         path in pointed_at(old_green or {})
@@ -1354,8 +1372,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
     writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
     if triage is not None:
         writes.append((branch / path / "triage.json", _dumps(triage)))
-    writes.append((index_file, "".join(f"{line}\n" for line in index)))
-    if new_green != old_green:
+    if index is not None:
+        writes.append((index_file, "".join(f"{line}\n" for line in index)))
+    if green_readable and new_green != old_green:
         writes.append((green_file, _dumps(new_green)))
     loaded: dict[str, tuple[dict[str, Any] | None, str | None]] = {path: (record, None)}
 
@@ -1364,7 +1383,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
             loaded[run_dir] = _load_record(branch / run_dir / "record.json")
         return loaded[run_dir]
 
-    problems.extend(record_problems(new_green, load, record["nightly"]["roles"]))
+    if green_readable:
+        pointer_problems.extend(record_problems(new_green, load, record["nightly"]["roles"]))
+    problems.extend(f"last green {problem}" for problem in pointer_problems)
     for note in notes:
         print(note)
     for target, text in writes:
@@ -1373,7 +1394,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         else:
             _write(target, text)
     for problem in problems:
-        print(f"::error::last green {problem}")
+        print(f"::error::{problem}")
     return 1 if problems else 0
 
 

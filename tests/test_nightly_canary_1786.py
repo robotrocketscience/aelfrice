@@ -2135,15 +2135,35 @@ def test_a_last_green_file_of_the_wrong_shape_is_a_night_with_no_baseline(tmp_pa
 
 
 @pytest.mark.parametrize("text", [t for _, t in _BAD_POINTERS], ids=[i for i, _ in _BAD_POINTERS])
-def test_a_last_green_file_of_the_wrong_shape_stops_publish(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str], text: str,
+def test_a_corrupt_last_green_file_still_publishes_the_night_and_exits_1(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], text: str,
 ) -> None:
+    """One bad file used to block every night's record until someone repaired it."""
     repo, (c0, _, _), _ = main_repo
     branch = tmp_path / "branch"
     branch.mkdir()
     (branch / "last-green.json").write_text(text, encoding="utf-8")
-    assert _publish(tmp_path, repo, _red(c0, 100), None) == 2
-    assert sorted(p.name for p in branch.iterdir()) == ["last-green.json"]
+    triage = {"events": [{"key": "pr-1"}]}
+    assert _publish(tmp_path, repo, _green(c0, 100), triage) == 1
+    assert (branch / "last-green.json").read_text(encoding="utf-8") == text
+    assert (branch / "runs/2026-11-04-100-a1/record.json").is_file()
+    assert (branch / "runs/2026-11-04-100-a1/triage.json").is_file()
+    assert _index(tmp_path)[0]["events"] == ["pr-1"]
+    assert "::error::last-green.json is unreadable" in capsys.readouterr().out
+    assert _publish(tmp_path, repo, _green(c0, 101, day=5), None, "--dry-run") == 1
+    assert not (branch / "runs/2026-11-05-101-a1").exists()
+
+
+def test_the_next_night_after_repairing_the_pointer_file_moves_it(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    (tmp_path / "branch").mkdir()
+    (tmp_path / "branch" / "last-green.json").write_text("oops", encoding="utf-8")
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 1
+    (tmp_path / "branch" / "last-green.json").unlink()
+    assert _publish(tmp_path, repo, _green(c1, 101, day=5), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c1
 
 
 @pytest.mark.parametrize(
@@ -2169,15 +2189,28 @@ def test_a_triage_file_of_the_wrong_shape_is_a_usage_error(
     "line", ["oops", "[]", '{"x": 1}', '{"run_id": "x", "run_attempt": 1}', '{"run_id": 1}'],
     ids=["corrupt", "array", "no-run", "run-str", "no-attempt"],
 )
-def test_an_index_line_of_the_wrong_shape_is_a_usage_error(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str], line: str,
+def test_a_corrupt_index_still_publishes_the_night_moves_the_pointer_and_exits_1(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], line: str,
 ) -> None:
     repo, (c0, _, _), _ = main_repo
     branch = tmp_path / "branch"
     branch.mkdir()
     (branch / "index.jsonl").write_text(line + "\n", encoding="utf-8")
-    assert _publish(tmp_path, repo, _red(c0, 100), None) == 2
-    assert sorted(p.name for p in branch.iterdir()) == ["index.jsonl"]
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 1
+    assert (branch / "index.jsonl").read_text(encoding="utf-8") == line + "\n"
+    assert (branch / "runs/2026-11-04-100-a1/record.json").is_file()
+    assert _last_green(tmp_path)["canary"]["sha"] == c0
+    assert "::error::index.jsonl is unreadable" in capsys.readouterr().out
+
+
+def test_an_index_too_deep_to_parse_is_corrupt_rather_than_fatal(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    (tmp_path / "branch").mkdir()
+    (tmp_path / "branch" / "index.jsonl").write_text("[" * 200_000 + "\n", encoding="utf-8")
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 1
+    assert (tmp_path / "branch/runs/2026-11-04-100-a1/record.json").is_file()
 
 
 @pytest.mark.parametrize(
