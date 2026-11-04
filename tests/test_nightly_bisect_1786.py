@@ -1,7 +1,7 @@
 """#1786: the nightly canary's bisect, `scripts/nightly_bisect.py`.
 
 The pure functions run on values. The subcommands run on temporary git
-repositories whose `state.txt` says, per commit, which of two tests fail.
+repositories whose `state.txt` says, per commit, which tests fail.
 A fake step stands in for uv and pytest through `--step-cmd` and logs the
 commit each call ran on, so a test can name every commit the bisect
 tested. One test runs the real step under a fake `uv` on PATH, and the
@@ -34,34 +34,72 @@ pytestmark = pytest.mark.timeout(120)
 
 _A = "tests/test_x.py::test_a"
 _B = "tests/test_x.py::test_b"
+_C = "tests/test_x.py::test_c"
+_D = "tests/test_x.py::test_d"
 
-# The fake step: logs HEAD, fails each test whose name `state.txt` marks
-# bad, and writes the failing ids to `--failed-out`. FAKE_ABORT_AFTER=N
-# exits 255 from the (N+1)th call on. FAKE_FLAKY_SHA names a commit where
-# the failures show only on the first call there.
+# The fake step: logs HEAD and its phase, `bisect` under `git bisect run`
+# or `check` when given `--failed-out`. A test fails when `state.txt` marks
+# it bad, and counts as absent when its file is missing or `state.txt` marks
+# it absent; `--failed-out` and `--absent-out` name those tests.
+#
+# FAKE_FLAKES is a JSON list of {sha, test, phase, as, nth}: at that commit
+# and phase the test reads as `as` (bad or ok), on the visits in `nth` or on
+# every visit without it. FAKE_ABORT_AFTER=N exits 255 from the (N+1)th call
+# on, FAKE_ABORT_CHECK exits 255 in the check phase, FAKE_NO_FAILED leaves
+# `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
+# phase, and FAKE_HANG=<seconds> sleeps first, with a child that sleeps too.
 _FAKE_STEP = '''\
-import argparse, os, subprocess, sys
+import argparse, json, os, subprocess, sys, time
 from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument("--tests", required=True)
 p.add_argument("--failed-out", default=None)
+p.add_argument("--absent-out", default=None)
 args, _ = p.parse_known_args()
 head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                       timeout=30, check=True).stdout.strip()
+phase = "check" if args.failed_out else "bisect"
+line = f"{head} {phase}"
 log = Path(os.environ["FAKE_STEP_LOG"])
 with log.open("a", encoding="utf-8") as fh:
-    fh.write(head + "\\n")
-calls = log.read_text(encoding="utf-8").split()
+    fh.write(line + "\\n")
+calls = log.read_text(encoding="utf-8").splitlines()
+hang = os.environ.get("FAKE_HANG")
+if hang:
+    child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({hang})"])
+    with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\\n{child.pid}\\n")
+    time.sleep(float(hang))
+    sys.exit(125)
 abort_after = int(os.environ.get("FAKE_ABORT_AFTER", "0"))
 if abort_after and len(calls) > abort_after:
     sys.exit(255)
-state = dict(line.split("=", 1) for line in Path("state.txt").read_text(encoding="utf-8").split())
-ids = [line for line in Path(args.tests).read_text(encoding="utf-8").split() if line]
-failing = [i for i in ids if state.get(i.split("::")[-1]) == "bad"]
-if os.environ.get("FAKE_FLAKY_SHA") == head and calls.count(head) > 1:
-    failing = []
+if phase == "check" and os.environ.get("FAKE_ABORT_CHECK"):
+    sys.exit(255)
+state = dict(row.split("=", 1) for row in Path("state.txt").read_text(encoding="utf-8").split())
+ids = [row for row in Path(args.tests).read_text(encoding="utf-8").split() if row]
+visit = calls.count(line)
+flakes = json.loads(os.environ.get("FAKE_FLAKES", "[]"))
+failing, absent = [], []
+for i in ids:
+    name = i.split("::")[-1]
+    if not Path(i.split("::")[0]).is_file() or state.get(name) == "absent":
+        absent.append(i)
+        continue
+    bad = state.get(name) == "bad"
+    for f in flakes:
+        if f["sha"] == head and f["test"] == name and f["phase"] == phase and visit in f.get("nth", [visit]):
+            bad = f["as"] == "bad"
+    if bad:
+        failing.append(i)
 if args.failed_out:
-    Path(args.failed_out).write_text("".join(i + "\\n" for i in failing), encoding="utf-8")
+    written = [] if os.environ.get("FAKE_NO_FAILED") else failing
+    Path(args.failed_out).write_text("".join(i + "\\n" for i in written), encoding="utf-8")
+if args.absent_out:
+    Path(args.absent_out).write_text("".join(i + "\\n" for i in absent), encoding="utf-8")
+if os.environ.get("FAKE_DIRTY") == phase:
+    with open("state.txt", "a", encoding="utf-8") as fh:
+        fh.write("dirty=1\\n")
 sys.exit(1 if failing else 0)
 '''
 
@@ -137,7 +175,8 @@ def _executable(path: Path, source: str) -> Path:
 
 # Repositories built once per module, keyed by their history: building
 # one costs a git call per step, and copying it is cheaper.
-_Built = dict[tuple[str, ...], tuple[Path, list[str]]]
+_Edit = tuple[int, str, "str | None"]
+_Built = dict[tuple[tuple[str, ...], tuple[_Edit, ...]], tuple[Path, list[str]]]
 
 
 class Env:
@@ -154,13 +193,13 @@ class Env:
         self.gh_out = root / "gh.json"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
-    def repo(self, bad_tests: list[str]) -> list[str]:
-        """A copy of the repository for `bad_tests` at `root / "repo"`;
-        see `_build_repo`. Returns its commit shas."""
-        key = tuple(bad_tests)
+    def repo(self, bad_tests: list[str], edits: tuple[_Edit, ...] = ()) -> list[str]:
+        """A copy of the repository for `bad_tests` and `edits` at
+        `root / "repo"`; see `_build_repo`. Returns its commit shas."""
+        key = (tuple(bad_tests), edits)
         if key not in self.built:
             root = self.factory.mktemp("bisect-repo") / "repo"
-            self.built[key] = (root, _build_repo(root, bad_tests))
+            self.built[key] = (root, _build_repo(root, bad_tests, edits))
         root, shas = self.built[key]
         shutil.copytree(root, self.root / "repo", symlinks=True)
         return list(shas)
@@ -170,9 +209,10 @@ class Env:
         return shlex.join([sys.executable, str(self.fake_step)])
 
     def stepped(self) -> list[str]:
+        """The commit of each step call, in order."""
         if not self.step_log.is_file():
             return []
-        return self.step_log.read_text(encoding="utf-8").split()
+        return [row.split()[0] for row in self.step_log.read_text(encoding="utf-8").splitlines()]
 
     def gh_calls(self) -> list[list[str]]:
         if not self.gh_log.is_file():
@@ -209,16 +249,19 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_UV_LOG", str(e.uv_log))
     monkeypatch.setenv("FAKE_GH_LOG", str(e.gh_log))
     monkeypatch.setenv("FAKE_GH_OUT", str(e.gh_out))
-    for var in ("FAKE_ABORT_AFTER", "FAKE_FLAKY_SHA", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+    for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
+                "FAKE_HANG", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
     return e
 
 
-def _build_repo(root: Path, bad_tests: list[str]) -> list[str]:
-    """One commit per entry, oldest first; each entry names the tests
-    (`a`, `b`) that fail at that commit, and `m` makes `tests/test_y.py`
-    fail to import. Returns the commit shas, which
-    the fixed dates make the same on every build."""
+def _build_repo(root: Path, bad_tests: list[str], edits: tuple[_Edit, ...] = ()) -> list[str]:
+    """One commit per entry, oldest first. Each entry names the tests (`a`
+    to `d`) that fail at that commit; an upper-case letter marks that test
+    absent, and `m` makes `tests/test_y.py` fail to import. Each edit is
+    (commit, path, content) and writes that file at that commit, or deletes
+    it when the content is None. Returns the commit shas, which the fixed
+    dates make the same on every build."""
     home = root.parent / "home"
     home.mkdir(exist_ok=True)
     git_env = {**os.environ, "HOME": str(home), "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
@@ -233,13 +276,24 @@ def _build_repo(root: Path, bad_tests: list[str]) -> list[str]:
     ):
         assert _git(root, *args, env=git_env).returncode == 0
     (root / "tests").mkdir()
-    (root / "tests" / "test_x.py").write_text("def test_a():\n    pass\n\n\ndef test_b():\n    pass\n", encoding="utf-8")
+    source = "\n\n".join(f"def test_{t}():\n    pass\n" for t in "abcd")
+    (root / "tests" / "test_x.py").write_text(source, encoding="utf-8")
     shas: list[str] = []
     for i, bad in enumerate(bad_tests):
-        state = "".join(f"test_{t}={'bad' if t in bad else 'ok'}\n" for t in "ab")
+        state = "".join(
+            f"test_{t}={'absent' if t.upper() in bad else 'bad' if t in bad else 'ok'}\n" for t in "abcd"
+        )
         (root / "state.txt").write_text(f"{state}n={i}\n", encoding="utf-8")
         broken = "import BROKEN\n\n\n" if "m" in bad else ""
         (root / "tests" / "test_y.py").write_text(f"{broken}def test_c():\n    pass\n", encoding="utf-8")
+        for at, path, content in edits:
+            if at != i:
+                continue
+            target = root / path
+            if content is None:
+                target.unlink()
+            else:
+                target.write_text(content, encoding="utf-8")
         assert _git(root, "add", "-A", env=git_env).returncode == 0
         date = f"2026-11-01T00:{i:02d}:00+00:00"
         r = _git(root, "commit", "-q", "-m", f"c{i}",
@@ -358,7 +412,8 @@ def test_a_culprit_that_passes_when_checked_again_is_a_range(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(_LINEAR)
-    monkeypatch.setenv("FAKE_FLAKY_SHA", shas[5])
+    monkeypatch.setenv("FAKE_FLAKES", json.dumps(
+        [{"sha": shas[5], "test": "test_a", "phase": "check", "as": "ok"}]))
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
     assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
