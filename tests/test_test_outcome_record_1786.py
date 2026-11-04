@@ -304,6 +304,7 @@ def test_the_perf_pin_misses_a_renamed_gate_and_the_run_time_rule_still_blocks_i
     "temporarily off: corpus module 'x' missing under review",
     "corpus module 'x' missing under review",
     "corpus module 'x' gone under /corpus",
+    "TODO: corpus module 'x' missing under /corpus",
     "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test",
     "skipping bench-gate test (lab corpus absent by design)",
 ])
