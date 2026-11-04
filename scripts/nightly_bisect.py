@@ -27,8 +27,10 @@ ancestry path from `--good` to `--bad` and keeps those that are the merge
 commit of a PR merged since the day before `--good` was committed, as
 `gh pr list --state merged` reports them. `--bad` is always kept. The
 output maps each kept commit to its PR number, or to null for `--bad`
-when no PR merged it, in history order. When the `gh` call fails the
-output is `{}`, and `run` then tests every commit.
+when no PR merged it, in history order. When the `gh` call fails, or no
+PR merged a commit in the range, the output is `{}` with a warning, and
+`run` then tests every commit. `run` reads a points file with no PR in the
+range the same way, since blaming `--bad` would test nothing.
 
 The run. `run` adds a detached worktree at `--good` (`.bisect` under the
 repository root by default, removed first if a previous run left it), and
@@ -287,13 +289,21 @@ def failing_ids(junit_text: str, ids: Iterable[str]) -> list[str]:
 
 def select_points(order: Sequence[str], prs: Iterable[dict[str, Any]], bad: str) -> dict[str, int | None]:
     """Commit to PR number for each commit of `order` that a PR merged,
-    plus `bad`, in history order."""
+    plus `bad`, in history order. Empty when no PR merged one of them: the
+    list says nothing about the range, so `bad` alone would be a false claim."""
     by_oid: dict[str, int] = {}
     for pr in prs:
         merge = pr.get("mergeCommit")
         if isinstance(merge, dict) and cast(dict[str, Any], merge).get("oid"):
             by_oid[str(cast(dict[str, Any], merge)["oid"])] = int(pr["number"])
+    if not any(sha in by_oid for sha in order):
+        return {}
     return {sha: by_oid.get(sha) for sha in order if sha in by_oid or sha == bad}
+
+
+def usable_points(points: dict[str, int | None], order: Sequence[str]) -> dict[str, int | None]:
+    """`points`, or `{}` when none of them names a PR on `order`."""
+    return points if any(points.get(sha) is not None for sha in order) else {}
 
 
 def merged_since(committed_at: int) -> str:
@@ -719,6 +729,8 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         if not isinstance(prs, list):
             raise ValueError("gh pr list did not return a list")
         points = select_points(order, cast(list[dict[str, Any]], prs), bad)
+        if not points:
+            raise ValueError("gh pr list names no merge in the range")
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError,
             subprocess.TimeoutExpired) as exc:
         print(f"::warning::merge points unavailable, so the bisect tests every commit: {exc}", file=sys.stderr)
@@ -733,7 +745,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     tests = parse_tests(args.tests.read_text(encoding="utf-8"))
     if not tests:
         raise ValueError(f"{args.tests} names no test")
-    points = parse_points(_read_json(args.points)) if args.points is not None else {}
+    given_points = parse_points(_read_json(args.points)) if args.points is not None else {}
+    points = usable_points(given_points, ancestry(git, good, bad))
+    if given_points and not points:
+        print("::warning::the points file names no PR in the range, so the bisect tests every commit", file=sys.stderr)
     mapped, unmapped = map_ids(tests, set(git.lines("ls-tree", "-r", "--name-only", bad)))
     canonical = list(mapped)
     bisected, over_cap = canonical[:MAX_TESTS], canonical[MAX_TESTS:]

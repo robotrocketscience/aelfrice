@@ -584,6 +584,33 @@ def test_merge_points_api_failure_means_every_commit(
     assert result["events"][0]["key"] == f"commit-{shas[4][:12]}"
 
 
+@pytest.mark.parametrize("prs", ["empty", "elsewhere"])
+def test_merge_points_with_no_merge_in_the_range_means_every_commit(
+    env: Env, tmp_path: Path, run_bisect: Runner, capsys: pytest.CaptureFixture[str], prs: str,
+) -> None:
+    """A successful, empty answer used to leave `bad` alone as a point, and
+    the run blamed it with nothing tested between it and good."""
+    shas = env.repo(_LINEAR)
+    _write(env.gh_out, [] if prs == "empty" else [{"number": 9, "mergeCommit": {"oid": shas[0]}}])
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+    assert "::warning::" in capsys.readouterr().err
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points={})
+    assert rc == 0
+    assert result["events"][0]["key"] == f"commit-{shas[4][:12]}"
+
+
+def test_run_given_points_with_no_pr_in_the_range_tests_every_commit(
+    env: Env, tmp_path: Path, run_bisect: Runner, capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(_LINEAR)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points={shas[7]: None, "f" * 40: 5})
+    assert rc == 0
+    assert result["events"][0]["key"] == f"commit-{shas[4][:12]}"
+    assert "::warning::" in capsys.readouterr().err
+
+
 def test_merge_points_dry_run_calls_no_api(env: Env, tmp_path: Path) -> None:
     shas = env.repo(_LINEAR)
     out = tmp_path / "points.json"
@@ -847,6 +874,19 @@ def test_read_outcome() -> None:
     # Without merge-point data, every commit is one.
     assert nb.read_outcome(order, None, "c0", "c3", ["c2"]) == nb.Outcome("c3", "c2", "c3")
     assert nb.read_outcome(order, None, "c0", "c3", ["c1"]) == nb.Outcome(None, "c1", "c3")
+
+
+def test_select_points() -> None:
+    prs: list[dict[str, Any]] = [{"number": 1, "mergeCommit": {"oid": "c1"}}]
+    assert nb.select_points(["c1", "c2"], prs, "c2") == {"c1": 1, "c2": None}
+    assert nb.select_points(["c1", "c2"], [], "c2") == {}
+    assert nb.select_points(["c2"], prs, "c2") == {}
+
+
+def test_a_pr_that_only_merged_bad_is_a_merge_point() -> None:
+    assert nb.select_points(["c1", "c2"], [{"number": 1, "mergeCommit": {"oid": "c2"}}], "c2") == {"c2": 1}
+    assert nb.usable_points({"c2": 1}, ["c1", "c2"]) == {"c2": 1}
+    assert nb.usable_points({"c2": None}, ["c1", "c2"]) == {}
 
 
 def test_skip_list_and_points_between() -> None:
