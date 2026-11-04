@@ -58,6 +58,11 @@ culprit broke later, and get a new round from the culprit to `--bad`, up
 to three rounds within the budget. What is left after the last round gets
 a range event.
 
+`git bisect run` exports `GIT_DIR` to the step. A test that runs `git init`
+in a temporary directory under that variable re-initializes the worktree's
+git directory instead, so the step's children, and every git call here, run
+without git's repository variables.
+
 The step. Its exit status follows `git bisect run`: 0 good, 1 bad, 125
 skip, 255 abort. Past `--deadline` it exits 255, which stops the bisect;
 the result then names the range it had narrowed to. Otherwise it runs
@@ -423,6 +428,21 @@ def parse_points(data: Any) -> dict[str, int | None]:
 
 # ------------------------------------------------------------------- git
 
+# What `git rev-parse --local-env-vars` lists: the variables that tie a
+# process to one repository, plus the prefix `git bisect run` exports.
+_GIT_REPO_VARS = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_GRAFT_FILE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX", "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE", "GIT_WORK_TREE",
+})
+
+
+def repo_free_env() -> dict[str, str]:
+    """This process's environment without git's repository variables."""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+
+
 class Git:
     """`git` in one directory, with a timeout on every call."""
 
@@ -431,7 +451,7 @@ class Git:
 
     def run(self, *args: str, check: bool = True, timeout: float = _GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
         r = subprocess.run(
-            ["git", *args], cwd=self.cwd, capture_output=True, text=True,
+            ["git", *args], cwd=self.cwd, capture_output=True, text=True, env=repo_free_env(),
             encoding="utf-8", errors="replace", check=False, timeout=timeout,
         )
         if check and r.returncode != 0:
@@ -488,7 +508,7 @@ def run_group(
     with tempfile.TemporaryFile() as out:
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                argv, cwd=cwd, env=repo_free_env(), stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
                 start_new_session=True,
             )

@@ -65,6 +65,8 @@ log = Path(os.environ["FAKE_STEP_LOG"])
 with log.open("a", encoding="utf-8") as fh:
     fh.write(line + "\\n")
 calls = log.read_text(encoding="utf-8").splitlines()
+with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(f"step {phase} {os.environ.get('GIT_DIR')}\\n")
 hang = os.environ.get("FAKE_HANG")
 if hang:
     child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({hang})"])
@@ -117,6 +119,8 @@ argv = sys.argv[1:]
 with open(os.environ["FAKE_UV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(argv) + "\\n")
 stage = "sync" if argv[0] == "sync" else "collect" if "--collect-only" in argv else "run"
+with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(f"uv {stage} {os.environ.get('GIT_DIR')}\\n")
 if os.environ.get("FAKE_UV_HANG") == stage:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
@@ -201,6 +205,7 @@ class Env:
         self.gh_log = root / "gh.log"
         self.gh_out = root / "gh.json"
         self.pids_file = root / "pids.txt"
+        self.env_log = root / "env.log"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
     def repo(self, bad_tests: list[str], edits: tuple[_Edit, ...] = ()) -> list[str]:
@@ -266,6 +271,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_GH_LOG", str(e.gh_log))
     monkeypatch.setenv("FAKE_GH_OUT", str(e.gh_out))
     monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
+    monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
                 "FAKE_HANG", "FAKE_UV_HANG", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
@@ -566,6 +572,32 @@ def test_a_hyphenated_module_id_is_judged_by_its_file(env: Env, tmp_path: Path, 
                             points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
     assert rc == 0, result
     assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-22", ["::tests.test-y"])]
+
+
+def test_the_step_gets_git_dir_and_its_children_do_not(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """Under `GIT_DIR`, `git init` in a test's temporary directory re-creates
+    the worktree's git directory, and the suite's tests do that."""
+    shas = env.repo(["", "", "", "a", "a"])
+    points: dict[str, int | None] = {shas[i]: 20 + i for i in range(1, 5)}
+    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, extra=())[0] == 0
+    seen = env.env_log.read_text(encoding="utf-8").splitlines()
+    assert any(row.startswith("step bisect ") and not row.endswith(" None") for row in seen), seen
+    env.env_log.unlink()
+    shutil.rmtree(tmp_path / "repo")
+    env.repo(["", "", "", "a", "a"])
+    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, step=False)[0] == 0
+    seen = env.env_log.read_text(encoding="utf-8").splitlines()
+    assert any(row.startswith("uv ") for row in seen)
+    assert [row for row in seen if not row.endswith(" None")] == []
+
+
+def test_an_outside_git_dir_does_not_redirect_the_script(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere"))
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out, "--dry-run") == 0
 
 
 def test_dry_run_changes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
