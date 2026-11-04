@@ -1491,11 +1491,11 @@ def test_a_rerun_of_the_same_run_leaves_one_index_line(
     assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(100, 2)]
     assert _publish(tmp_path, repo, _red(shas[2], 101, day=5), None) == 0
     assert _publish(tmp_path, repo, _red(shas[1], 100, run_attempt=3), None) == 0
-    assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(101, 1), (100, 3)]
-    assert _index(tmp_path)[1]["path"] == "runs/2026-11-04-100-a3"
+    assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(100, 3), (101, 1)]
+    assert _index(tmp_path)[0]["path"] == "runs/2026-11-04-100-a3"
     # An older attempt published late leaves the newest attempt's line.
     assert _publish(tmp_path, repo, _red(shas[1], 100, run_attempt=2), None) == 0
-    assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(101, 1), (100, 3)]
+    assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(100, 3), (101, 1)]
 
 
 def test_a_red_reattempt_leaves_last_green_on_the_green_record_unchanged(
@@ -1654,6 +1654,91 @@ def test_republishing_the_same_content_is_a_no_op(
     assert _publish(tmp_path, repo, record, None) == 0
     assert _last_green(tmp_path) == pointer
     assert len(_index(tmp_path)) == 1
+
+
+def _tree_bytes(tmp_path: Path) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in (tmp_path / "branch").rglob("*") if p.is_file()}
+
+
+_PR_1 = {"events": [{"key": "pr-1"}]}
+
+
+def test_republishing_is_byte_for_byte_a_no_op_with_or_without_triage(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    first = _red(c0, 100, day=1)
+    assert _publish(tmp_path, repo, first, _PR_1) == 0
+    assert _publish(tmp_path, repo, _green(c1, 101, day=2), None) == 0
+    before = _tree_bytes(tmp_path)
+    # An older run: the index order must not change.
+    assert _publish(tmp_path, repo, first, _PR_1) == 0
+    assert _tree_bytes(tmp_path) == before
+    # No triage this time: the events on its index line and its triage file stay.
+    assert _publish(tmp_path, repo, first, None) == 0
+    assert _tree_bytes(tmp_path) == before
+    assert _index(tmp_path)[0]["events"] == ["pr-1"]
+
+
+def test_republishing_a_pointed_record_with_another_triage_keeps_the_first(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    record = _green(c0, 100)
+    assert _publish(tmp_path, repo, record, _PR_1) == 0
+    before = _tree_bytes(tmp_path)
+    assert _publish(tmp_path, repo, record, {"events": [{"key": "pr-2"}]}) == 0
+    assert _tree_bytes(tmp_path) == before
+
+
+def test_a_triage_can_still_join_a_record_published_without_one(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    record = _red(c0, 100)
+    assert _publish(tmp_path, repo, record, None) == 0
+    assert _publish(tmp_path, repo, record, _PR_1) == 0
+    assert (tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").is_file()
+    assert _index(tmp_path)[0]["events"] == ["pr-1"]
+
+
+def test_a_changed_unpointed_record_takes_its_new_triage_and_events(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
+    assert _publish(tmp_path, repo, both_red, _PR_1) == 0
+    assert _publish(tmp_path, repo, _red(c0, 100), {"events": [{"key": "pr-2"}]}) == 0
+    assert _index(tmp_path)[0]["events"] == ["pr-2"]
+    assert json.loads((tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").read_text(encoding="utf-8")) == {
+        "events": [{"key": "pr-2"}],
+    }
+
+
+def test_a_changed_unpointed_record_with_no_triage_keeps_the_runs_events(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
+    assert _publish(tmp_path, repo, both_red, _PR_1) == 0
+    assert _publish(tmp_path, repo, _red(c0, 100), None) == 0
+    assert _index(tmp_path)[0]["events"] == ["pr-1"]
+    assert (tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").is_file()
+
+
+def test_a_new_attempt_does_not_inherit_the_events_of_the_last_one() -> None:
+    lines = nc.merge_index([], {**nc.index_entry(_red(SHA1, 100, run_attempt=1), None), "events": ["pr-1"]})
+    merged = nc.merge_index(lines, nc.index_entry(_red(SHA1, 100, run_attempt=2), None), keep_events=True)
+    assert json.loads(merged[0])["events"] == []
+    late = nc.merge_index(merged, nc.index_entry(_red(SHA1, 100, run_attempt=1), None), keep_events=True)
+    assert late == merged
+
+
+def test_the_index_is_ordered_by_run_and_skips_blank_lines() -> None:
+    lines = nc.merge_index([], nc.index_entry(_red(SHA1, 9), None))
+    lines = nc.merge_index(["", *lines, "  "], nc.index_entry(_red(SHA1, 10), None))
+    lines = nc.merge_index(lines, nc.index_entry(_red(SHA1, 2), None))
+    assert [json.loads(line)["run_id"] for line in lines] == [2, 9, 10]
 
 
 def test_republishing_a_run_no_entry_names_replaces_it(

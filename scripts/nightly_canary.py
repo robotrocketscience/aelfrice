@@ -165,7 +165,9 @@ newer run and attempt hold the pointer, so a late older attempt cannot take
 it. An entry holds `attempt` beside `run_id` for that comparison. The record
 an entry names does not change: republishing the same run and attempt with
 different content, a new `created_at` date included, exits 1 and writes
-nothing. The same content is a no-op.
+nothing. The same content is a no-op, whichever triage file comes with it: a
+triage already written stays. A republish with no triage keeps the run's
+triage and the event keys on its index line. The index stays ordered by run.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
@@ -830,19 +832,22 @@ def _index_line_run(line: str) -> tuple[int, int]:
     raise ValueError(f"index.jsonl holds a line with no run: {line[:80]!r}")
 
 
-def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
-    """The index with one line per run: an older attempt's line of
-    `entry`'s run is replaced by `entry`, last; a newer one is kept."""
-    kept: list[str] = []
+def merge_index(lines: list[str], entry: dict[str, Any], keep_events: bool = False) -> list[str]:
+    """The index with one line per run, ordered by run: `entry` replaces an
+    older attempt's line and leaves a newer one. With `keep_events`, it takes
+    the event keys of its own attempt's line."""
+    runs: dict[int, tuple[int, str]] = {}
     for line in lines:
-        if not line.strip():
-            continue
-        run_id, attempt = _index_line_run(line)
-        if run_id != entry["run_id"]:
-            kept.append(line)
-        elif attempt > entry["run_attempt"]:
-            return [ln for ln in lines if ln.strip()]
-    return [*kept, json.dumps(entry, sort_keys=True, separators=(",", ":"))]
+        if line.strip():
+            run_id, attempt = _index_line_run(line)
+            runs[run_id] = (attempt, line)
+    run_id, attempt = int(entry["run_id"]), int(entry["run_attempt"])
+    old_attempt, old_line = runs.get(run_id, (0, ""))
+    if old_attempt <= attempt:
+        if keep_events and old_attempt == attempt:
+            entry = {**entry, "events": json.loads(old_line).get("events", [])}
+        runs[run_id] = (attempt, json.dumps(entry, sort_keys=True, separators=(",", ":")))
+    return [runs[run][1] for run in sorted(runs)]
 
 
 def _run_order(pointer: dict[str, Any]) -> tuple[int, int]:
@@ -1330,11 +1335,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
         raise ValueError(f"--branch-dir {branch} is not a directory")
     path = run_path(record)
     problems: list[str] = []
+    record_file = branch / path / "record.json"
+    triage_file = branch / path / "triage.json"
+    same_record = record_file.is_file() and record_file.read_bytes() == _dumps(record).encode("utf-8")
+    keep_triage = triage is None or (same_record and triage_file.is_file())
     index_file = branch / "index.jsonl"
     index: list[str] | None = None
     try:
         lines = index_file.read_text(encoding="utf-8").splitlines() if index_file.is_file() else []
-        index = merge_index(lines, index_entry(record, triage))
+        index = merge_index(lines, index_entry(record, None if keep_triage else triage), keep_triage)
     except _UNREADABLE as exc:
         problems.append(f"index.jsonl is unreadable, so it stays as it is for inspection: {exc}")
     green_file = branch / "last-green.json"
@@ -1362,7 +1371,6 @@ def cmd_publish(args: argparse.Namespace) -> int:
         new_green, notes, pointer_problems = next_last_green(
             old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
         )
-    record_file = branch / path / "record.json"
     this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
     for named in named_runs(old_green or {}, this_run):
         named_file = branch / named / "record.json"
@@ -1370,8 +1378,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
             print(f"::error::last green names {named}, so its record stays as it is; nothing was written")
             return 1
     writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
-    if triage is not None:
-        writes.append((branch / path / "triage.json", _dumps(triage)))
+    if triage is not None and not keep_triage:
+        writes.append((triage_file, _dumps(triage)))
     if index is not None:
         writes.append((index_file, "".join(f"{line}\n" for line in index)))
     if green_readable and new_green != old_green:
