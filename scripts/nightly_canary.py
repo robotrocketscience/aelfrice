@@ -180,7 +180,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -545,9 +545,10 @@ def find_regressions(
         for test in confirmed_by_leg[leg]:
             if test.startswith("::"):
                 collection.setdefault(test, []).append(leg)
-    triage["collection_errors"] = [
+    collection_errors: list[dict[str, Any]] = [
         {"test": t, "module": collection_module(t, is_file), "legs": collection[t]} for t in sorted(collection)
     ]
+    triage["collection_errors"] = collection_errors
     if last_green is None or last_green_meta is None:
         triage["events"].append({
             "key": f"no-baseline-{sha[:12]}", "kind": "no-baseline", "legs": failing_legs, "tests": tests,
@@ -588,7 +589,7 @@ def find_regressions(
     by_leg: dict[str, dict[str, Any]] = {}
     for leg in legs:
         ids = [c["test"] for c in triage["candidates"] if leg in c["legs"]]
-        modules = [e["module"] for e in triage["collection_errors"] if leg in e["legs"] and e["module"]]
+        modules = [e["module"] for e in collection_errors if leg in e["legs"] and e["module"]]
         if ids or modules:
             chosen = even_sample(ids, MASS_FAILURE_SAMPLE) if mass_legs.get(leg) else ids
             mapped = {t: node_id(t, is_file) for t in chosen}
@@ -609,6 +610,10 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_str(value: object) -> bool:
+    return isinstance(value, str)
+
+
 def _is_map(value: object, check: Callable[[Any], bool]) -> bool:
     """A dict from strings to values `check` accepts."""
     return isinstance(value, dict) and all(isinstance(k, str) and check(v) for k, v in value.items())  # pyright: ignore[reportUnknownVariableType]
@@ -619,9 +624,8 @@ def _is_leg_record(value: object) -> bool:
         return True
     if not isinstance(value, dict):
         return False
-    tests: object = value.get("tests")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    counts: object = value.get("counts")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    return _is_map(tests, lambda v: isinstance(v, str)) and _is_map(counts, _is_int)
+    leg = cast("dict[str, Any]", value)
+    return _is_map(leg.get("tests"), _is_str) and _is_map(leg.get("counts"), _is_int)
 
 
 def validate_record(record: dict[str, Any], where: str) -> None:
@@ -635,8 +639,10 @@ def validate_record(record: dict[str, Any], where: str) -> None:
     sha = record.get("sha")
     require(isinstance(sha, str) and _SHA.fullmatch(sha) is not None, "sha is not a commit id")
     require(_is_map(record.get("legs"), _is_leg_record), "legs is not a map of leg records")
-    nightly = record.get("nightly")
-    require(isinstance(nightly, dict), "nightly is not an object")
+    raw_nightly = record.get("nightly")
+    if not isinstance(raw_nightly, dict):
+        raise ValueError(f"{where}: nightly is not an object")
+    nightly = cast("dict[str, Any]", raw_nightly)
     require(_is_int(nightly.get("run_id")) and _is_int(nightly.get("run_attempt")), "the run id or attempt is not a number")
     created_at = nightly.get("created_at")
     require(isinstance(created_at, str) and _DATE.fullmatch(created_at[:10]) is not None, "created_at holds no date")
@@ -649,24 +655,23 @@ def validate_record(record: dict[str, Any], where: str) -> None:
     require(verdict in _NIGHT_VERDICTS, f"verdict {verdict!r} is not a night's verdict")
     status: dict[str, str] = nightly["status"]
     confirmed: dict[str, list[str]] = nightly["confirmed"]
+    roles: dict[str, str] = nightly["roles"]
     for leg, leg_state in status.items():
         require(leg_state != GREEN or not confirmed.get(leg), f"leg {leg} is green with a confirmed failure")
     if verdict == GREEN:
-        canary = [leg for leg, role in nightly["roles"].items() if role == CANARY]
+        canary = [leg for leg, role in roles.items() if role == CANARY]
         require(bool(canary) and all(status.get(leg) == GREEN for leg in canary), "the night is green over a canary leg that is not")
 
 
 def _is_pointer(value: object) -> bool:
     if not isinstance(value, dict):
         return False
-    sha: object = value.get("sha")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    path: object = value.get("path")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    attempt: object = value.get("attempt", 0)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-    run_id: object = value.get("run_id")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    pointer = cast("dict[str, Any]", value)
+    sha, path = pointer.get("sha"), pointer.get("path")
     return (
         isinstance(sha, str) and _SHA.fullmatch(sha) is not None
         and isinstance(path, str) and bool(path)
-        and _is_int(run_id) and _is_int(attempt)
+        and _is_int(pointer.get("run_id")) and _is_int(pointer.get("attempt", 0))
     )
 
 
@@ -678,9 +683,18 @@ def validate_last_green(green: dict[str, Any], where: str) -> None:
         raise ValueError(f"{where}: legs is not a map of pointers")
 
 
+def _is_keyed(event: object) -> bool:
+    return isinstance(event, dict) and _is_str(cast("dict[str, Any]", event).get("key"))
+
+
+def _is_event_list(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    return all(_is_keyed(event) for event in cast("list[object]", value))
+
+
 def validate_triage(triage: dict[str, Any], where: str) -> None:
-    events = triage.get("events", [])
-    if not isinstance(events, list) or not all(isinstance(e, dict) and isinstance(e.get("key"), str) for e in events):  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+    if not _is_event_list(triage.get("events", [])):
         raise ValueError(f"{where}: events is not a list of keyed events")
 
 
@@ -716,6 +730,17 @@ def index_entry(record: dict[str, Any], triage: dict[str, Any] | None) -> dict[s
     }
 
 
+def _index_line_run(line: str) -> tuple[int, int]:
+    """The run id and attempt of a line of `index.jsonl`."""
+    data = json.loads(line)
+    if isinstance(data, dict):
+        fields = cast("dict[str, Any]", data)
+        run_id, attempt = fields.get("run_id"), fields.get("run_attempt")
+        if isinstance(run_id, int) and isinstance(attempt, int):
+            return run_id, attempt
+    raise ValueError(f"index.jsonl holds a line with no run: {line[:80]!r}")
+
+
 def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
     """The index with one line per run: an older attempt's line of
     `entry`'s run is replaced by `entry`, last; a newer one is kept."""
@@ -723,12 +748,10 @@ def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
     for line in lines:
         if not line.strip():
             continue
-        data = json.loads(line)
-        if not isinstance(data, dict) or not _is_int(data.get("run_id")) or not _is_int(data.get("run_attempt")):
-            raise ValueError(f"index.jsonl holds a line with no run: {line[:80]!r}")
-        if int(data["run_id"]) != entry["run_id"]:
+        run_id, attempt = _index_line_run(line)
+        if run_id != entry["run_id"]:
             kept.append(line)
-        elif int(data["run_attempt"]) > entry["run_attempt"]:
+        elif attempt > entry["run_attempt"]:
             return [ln for ln in lines if ln.strip()]
     return [*kept, json.dumps(entry, sort_keys=True, separators=(",", ":"))]
 
