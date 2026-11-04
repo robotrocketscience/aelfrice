@@ -895,6 +895,7 @@ def main_repo(tmp_path: Path) -> tuple[Path, list[str], str]:
 
 def _publish(tmp_path: Path, repo: Path, record: dict[str, Any], triage: dict[str, Any] | None,
              *extra: str) -> int:
+    """`publish` on a checkout of the results branch at `tmp_path/branch`."""
     branch = tmp_path / "branch"
     branch.mkdir(exist_ok=True)
     rec, tri = tmp_path / "record.json", tmp_path / "triage.json"
@@ -1009,7 +1010,7 @@ def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
                                                "date": "2026-11-03"}
     assert _publish(tmp_path, repo, _green(c1, 103, day=4), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c2
-    assert _publish(tmp_path, repo, _green(side, 104, day=5), None) == 0
+    assert _publish(tmp_path, repo, _green(side, 104, day=5), None) == 1
     assert _last_green(tmp_path)["canary"]["sha"] == c2
     assert _publish(tmp_path, repo, _green(c2, 105, day=6), None) == 0
     assert _last_green(tmp_path)["canary"]["run_id"] == 105
@@ -1029,11 +1030,100 @@ def test_an_incomplete_night_does_not_move_the_pointer(
 def test_an_unknown_ancestry_keeps_the_pointer(tmp_path: Path, main_repo: tuple[Path, list[str], str]) -> None:
     repo, (c0, _, _), _ = main_repo
     assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
-    assert _publish(tmp_path, repo, _green("f" * 40, 101, day=2), None) == 0
+    assert _publish(tmp_path, repo, _green("f" * 40, 101, day=2), None) == 1
     assert _last_green(tmp_path)["canary"]["sha"] == c0
     not_a_repo = tmp_path / "plain"
     not_a_repo.mkdir()
     assert nc.git_is_ancestor(not_a_repo, c0, c0) is None
+
+
+def test_a_green_night_on_a_feature_commit_above_the_pointer_moves_nothing(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The commit descends from the pointer, so forward-only alone would take it."""
+    repo, (_, _, c2), _ = main_repo
+    feature = _git(repo, "commit-tree", f"{c2}^{{tree}}", "-p", c2, "-m", "feature")
+    assert _publish(tmp_path, repo, _green(c2, 100, day=1), None) == 0
+    before = _last_green(tmp_path)
+    assert _publish(tmp_path, repo, _green(feature, 101, day=2), None) == 1
+    assert _last_green(tmp_path) == before
+    assert "is not on main" in capsys.readouterr().out
+    assert (tmp_path / "branch" / "runs" / "2026-11-02-101-a1" / "record.json").is_file()
+
+
+@pytest.mark.parametrize("off_main", ["side", "unknown"])
+def test_the_first_pointer_needs_a_commit_on_main_too(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], off_main: str,
+) -> None:
+    repo, (_, _, c2), side = main_repo
+    sha = side if off_main == "side" else "f" * 40
+    assert _publish(tmp_path, repo, _green(sha, 100, day=1), None) == 1
+    assert _last_green(tmp_path) == {"canary": None, "legs": {}}
+    assert _publish(tmp_path, repo, _green(c2, 101, day=2), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c2
+
+
+def test_a_missing_main_repo_moves_nothing_and_exits_1(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
+    assert _publish(tmp_path, tmp_path / "no-repo", _green(c1, 101, day=2), None) == 1
+    assert _last_green(tmp_path)["canary"]["sha"] == c0
+
+
+def test_a_pointer_off_main_exits_1_each_night_until_a_green_night_repoints_it(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No commit on main descends from it, so forward-only alone freezes it for good."""
+    repo, (c0, c1, c2), side = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    (branch / "runs" / "old").mkdir(parents=True)
+    (branch / "runs" / "old" / "record.json").write_text("{}", encoding="utf-8")
+    stale = {"sha": side, "path": "runs/old", "run_id": 1, "date": "2026-10-01"}
+    frozen = {"canary": stale, "legs": {"3.12": stale}}
+    (branch / "last-green.json").write_text(json.dumps(frozen), encoding="utf-8")
+    assert _publish(tmp_path, repo, _red(c0, 100, day=1), None) == 1
+    out = capsys.readouterr().out
+    assert f"::error::last green canary: names {side[:12]}" in out
+    assert f"::error::last green leg 3.12: names {side[:12]}" not in out  # the green 3.12 leg re-pointed itself
+    assert _last_green(tmp_path)["canary"] == stale
+    assert _publish(tmp_path, repo, _red(c1, 101, day=2), None) == 1
+    capsys.readouterr()
+    assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
+    out = capsys.readouterr().out
+    assert f"::warning::last green canary: {side[:12]} is not on main, re-pointed to {c2[:12]}" in out
+    assert "::error::" not in out
+    assert _last_green(tmp_path)["canary"]["sha"] == c2
+
+
+def test_a_pointer_git_cannot_place_is_repaired_the_same_way(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (_, _, c2), _ = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    stale = {"sha": "f" * 40, "path": "runs/old", "run_id": 1, "date": "2026-10-01"}
+    (branch / "last-green.json").write_text(json.dumps({"canary": stale, "legs": {}}), encoding="utf-8")
+    assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c2
+
+
+def test_main_is_origin_main_before_a_local_main_and_the_flag_overrides_both(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, c2), side = main_repo
+    _git(repo, "update-ref", "refs/remotes/origin/main", c1)
+    assert nc.resolve_main_ref(repo, None) == "origin/main"
+    assert _publish(tmp_path, repo, _green(c2, 100, day=1), None) == 1
+    assert _last_green(tmp_path)["canary"] is None
+    _git(repo, "update-ref", "refs/heads/other", side)
+    assert _publish(tmp_path, repo, _green(side, 101, day=2), None, "--main-ref", "other") == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == side
+    assert nc.resolve_main_ref(repo, "no-such-ref") is None
+    assert _publish(tmp_path, repo, _green(c0, 102, day=3), None, "--main-ref", "no-such-ref") == 1
+    assert _last_green(tmp_path)["canary"]["sha"] == side
 
 
 def test_next_last_green_asks_about_each_entry_it_would_move() -> None:
@@ -1044,10 +1134,11 @@ def test_next_last_green_asks_about_each_entry_it_would_move() -> None:
         return True
 
     old = {"canary": {"sha": SHA1, "path": "runs/a", "run_id": 1, "date": "2026-11-03"}, "legs": {}}
-    new, notes = nc.next_last_green(old, _green(SHA2, 2), is_ancestor)
+    new, notes, problems = nc.next_last_green(old, _green(SHA2, 2), is_ancestor, lambda sha: True)
     assert new["canary"]["sha"] == SHA2 and set(new["legs"]) == {"3.12", "3.13"}
     assert calls == [(SHA1, SHA2)]
-    assert notes[0] == f"canary: {SHA1[:12]} -> {SHA2[:12]}"
+    assert notes[0] == f"last green canary: {SHA1[:12]} -> {SHA2[:12]}"
+    assert problems == []
 
 
 def test_a_missing_triage_still_publishes_the_record(

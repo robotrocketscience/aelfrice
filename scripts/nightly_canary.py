@@ -22,11 +22,12 @@ Usage:
     nightly_canary.py regressions --current RECORD.json --last-green-dir DIR
         [--canary-legs 3.12,3.13] --out TRIAGE.json [--dry-run]
     nightly_canary.py publish --record RECORD.json --triage TRIAGE.json
-        --branch-dir DIR [--main-repo .] [--dry-run]
+        --branch-dir DIR [--main-repo .] [--main-ref REF] [--dry-run]
 
 `--dry-run` writes no file and changes no git state. Each subcommand then
 prints what it would write, with the exit status a real run gives.
-`publish` still runs `git merge-base --is-ancestor`, which reads only.
+`publish` still runs `git rev-parse` and `git merge-base --is-ancestor`,
+which read only.
 
 A leg's bundle. The suite job of a leg writes `env.json` (from `env`, run
 under the leg's interpreter with `uv run`), `junit.xml` from the full run,
@@ -108,11 +109,24 @@ event. The output carries:
 one line in `index.jsonl` per night, and `last-green.json`. Each attempt
 of a run gets its own directory, so a red re-attempt never overwrites the
 green record `last-green.json` points at. The index keeps one line per
-run, the newest attempt's, and names that attempt's directory. The `canary` entry of `last-green.json` moves only on a
-green night, and each `legs` entry only when that leg is green, and either
-moves only when the old commit is an ancestor of the new one in
-`--main-repo`. A missing triage file is a notice: the night's record is
-still published, with no event keys.
+run, the newest attempt's, and names that attempt's directory. A missing
+triage file is a notice: the night's record is still published, with no
+event keys.
+
+The `canary` entry of `last-green.json` moves only on a green night and each
+`legs` entry only when that leg is green. Either moves only to a commit on
+main that descends from the old one, the first pointer included. Main is
+`--main-ref` in `--main-repo`, by default `origin/main` or else `main`. A
+green night on a commit that is not on main, or that git cannot place, moves
+nothing, and `publish` exits 1. A later or equal commit already named stays
+named, which is the ordinary case of a late run: that exits 0.
+
+A pointer can fall off main through a history rewrite or a hand edit. Such a
+pointer would freeze, since no commit descends from it on main, so `publish`
+exits 1 on every night that leaves it in place, naming it. The next green
+night on main re-points it with a `::warning::` and exits 0. Exit 1 comes
+after the writes, so the workflow can commit the night's record before it
+fails the job.
 
 Standard library only, so the publish job runs it on the runner's own
 interpreter. It imports `parse_junit`, `build_record` and `diff_records`
@@ -122,8 +136,8 @@ runs them on synthetic reports and records, and runs the `cmd_*` functions
 against temporary files and a temporary git repository.
 
 Exit status: 0; 1 for a checked condition (`failed-ids` has nothing to
-rerun, `verdict` finds the leg is not green); 2 for a usage error or an
-unreadable input.
+rerun, `verdict` finds the leg is not green, `publish` left a pointer problem
+behind); 2 for a usage error or an unreadable input.
 """
 from __future__ import annotations
 
@@ -581,30 +595,57 @@ def _moved(
     old: dict[str, Any] | None,
     new: dict[str, Any],
     is_ancestor: Callable[[str, str], bool | None],
+    on_main: Callable[[str], bool | None],
     what: str,
     notes: list[str],
-) -> dict[str, Any]:
-    """`new` when `old` is absent or an ancestor of it, else `old`."""
+    problems: list[str],
+) -> dict[str, Any] | None:
+    """The entry after a green night at `new`: `new` when it is on main and
+    `old` is absent, off main, or an ancestor of it; otherwise `old`."""
+    new_sha = str(new["sha"])
+    answer = on_main(new_sha)
+    if answer is not True:
+        why = "is not on main" if answer is False else "could not be checked against main"
+        problems.append(f"{what}: refused {new_sha[:12]}, which {why}")
+        return old
     if old is None:
-        notes.append(f"{what}: set to {new['sha'][:12]}")
+        notes.append(f"last green {what}: set to {new_sha[:12]}")
         return new
-    answer = is_ancestor(str(old["sha"]), str(new["sha"]))
+    old_sha = str(old["sha"])
+    # git just placed `new`, so it can read main: a commit it cannot place is
+    # not on main either.
+    if on_main(old_sha) is not True:
+        notes.append(f"::warning::last green {what}: {old_sha[:12]} is not on main, re-pointed to {new_sha[:12]}")
+        return new
+    answer = is_ancestor(old_sha, new_sha)
     if answer is True:
-        notes.append(f"{what}: {str(old['sha'])[:12]} -> {new['sha'][:12]}")
+        notes.append(f"last green {what}: {old_sha[:12]} -> {new_sha[:12]}")
         return new
     if answer is False:
-        notes.append(f"{what}: stays at {str(old['sha'])[:12]}, not an ancestor of {new['sha'][:12]}")
+        notes.append(f"last green {what}: stays at {old_sha[:12]}, which is later than {new_sha[:12]}")
     else:
-        notes.append(f"{what}: stays at {str(old['sha'])[:12]}, ancestry against {new['sha'][:12]} unknown")
+        problems.append(f"{what}: stays at {old_sha[:12]}, ancestry against {new_sha[:12]} unknown")
     return old
+
+
+def off_main_pointers(green: dict[str, Any], on_main: Callable[[str], bool | None]) -> list[str]:
+    """A problem per entry of `last-green.json` whose commit is not on main."""
+    entries = [("canary", green.get("canary")), *((f"leg {leg}", p) for leg, p in sorted(green.get("legs", {}).items()))]
+    return [
+        f"{what}: names {str(pointer['sha'])[:12]}, which is not on main; the next green night on main re-points it"
+        for what, pointer in entries
+        if pointer is not None and on_main(str(pointer["sha"])) is not True
+    ]
 
 
 def next_last_green(
     current: dict[str, Any] | None,
     record: dict[str, Any],
     is_ancestor: Callable[[str, str], bool | None],
-) -> tuple[dict[str, Any], list[str]]:
-    """`last-green.json` after this night, and a note per entry it touched."""
+    on_main: Callable[[str], bool | None],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """`last-green.json` after this night, a printable note per entry it
+    touched, and a problem per entry that needs an operator."""
     nightly = record["nightly"]
     old = current or {}
     pointer = {
@@ -614,14 +655,19 @@ def next_last_green(
         "date": run_date(str(nightly["created_at"])),
     }
     notes: list[str] = []
+    problems: list[str] = []
     canary = old.get("canary")
     if nightly["verdict"] == GREEN:
-        canary = _moved(canary, pointer, is_ancestor, "canary", notes)
+        canary = _moved(canary, pointer, is_ancestor, on_main, "canary", notes, problems)
     legs: dict[str, Any] = dict(old.get("legs") or {})
-    for leg, leg_status in sorted(nightly["status"].items()):
-        if leg_status == GREEN:
-            legs[leg] = _moved(legs.get(leg), pointer, is_ancestor, f"leg {leg}", notes)
-    return {"canary": canary, "legs": dict(sorted(legs.items()))}, notes
+    for leg, status in sorted(nightly["status"].items()):
+        if status == GREEN:
+            moved = _moved(legs.get(leg), pointer, is_ancestor, on_main, f"leg {leg}", notes, problems)
+            if moved is not None:
+                legs[leg] = moved
+    new_green = {"canary": canary, "legs": dict(sorted(legs.items()))}
+    problems.extend(off_main_pointers(new_green, on_main))
+    return new_green, notes, problems
 
 
 # --------------------------------------------------------------------- I/O
@@ -659,6 +705,21 @@ def git_is_ancestor(repo: Path, old: str, new: str) -> bool | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return {0: True, 1: False}.get(r.returncode)
+
+
+def resolve_main_ref(repo: Path, requested: str | None) -> str | None:
+    """The ref that names main in `repo`, or None when none resolves."""
+    for ref in [requested] if requested else ["origin/main", "main"]:
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                cwd=repo, capture_output=True, check=False, timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode == 0:
+            return ref
+    return None
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -898,8 +959,16 @@ def cmd_publish(args: argparse.Namespace) -> int:
     index = merge_index(lines, index_entry(record, triage))
     green_file = branch / "last-green.json"
     old_green = _read_json(green_file) if green_file.is_file() else None
-    new_green, notes = next_last_green(
-        old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new),
+    main_ref = resolve_main_ref(args.main_repo, args.main_ref)
+    placed: dict[str, bool | None] = {}
+
+    def on_main(sha: str) -> bool | None:
+        if sha not in placed:
+            placed[sha] = None if main_ref is None else git_is_ancestor(args.main_repo, sha, main_ref)
+        return placed[sha]
+
+    new_green, notes, problems = next_last_green(
+        old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
     )
     writes: list[tuple[Path, str]] = [(branch / path / "record.json", _dumps(record))]
     if triage is not None:
@@ -908,13 +977,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if new_green != old_green:
         writes.append((green_file, _dumps(new_green)))
     for note in notes:
-        print(f"last green {note}")
+        print(note)
     for target, text in writes:
         if args.dry_run:
             print(f"dry run: would write {target.relative_to(branch).as_posix()}")
         else:
             _write(target, text)
-    return 0
+    for problem in problems:
+        print(f"::error::last green {problem}")
+    return 1 if problems else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -967,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--triage", required=True, type=Path)
     p.add_argument("--branch-dir", required=True, type=Path)
     p.add_argument("--main-repo", default=Path("."), type=Path)
+    p.add_argument("--main-ref", default=None)
     p.set_defaults(func=cmd_publish)
     return parser
 
