@@ -1625,7 +1625,7 @@ def test_every_other_run_fails_on_a_failed_lookup(
         *_DIFF, "--current", str(current), "--baseline", str(_error_baseline(tmp_path, kind)),
         "--full-suite", full_suite, "--pytest-result", result, "--block",
     ]) == 2
-    assert "::error::test outcomes: " in capsys.readouterr().out
+    assert "::error::test outcomes: no usable baseline: " in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", ""])
