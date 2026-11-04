@@ -2070,8 +2070,8 @@ def test_the_diff_learns_whether_the_suite_ran_from_the_pytest_job() -> None:
     diff = _one_step("test_outcome_record.py diff")
     assert "FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}" in diff
     assert '--full-suite "$FULL_SUITE"' in diff
-    assert "PYTEST_RESULT: ${{ needs.pytest.result }}" in diff
-    assert '--pytest-result "$PYTEST_RESULT"' in diff
+    assert "JOB_RESULT: ${{ needs.pytest.result }}" in diff
+    assert '--pytest-result "$JOB_RESULT"' in diff
     lines = _job_lines("pytest")
     output = [ln.strip().removeprefix("full_suite: ") for ln in lines if ln.strip().startswith("full_suite: ")]
     assert len(output) == 1
@@ -2103,7 +2103,7 @@ def test_the_diff_step_runs_only_the_diff() -> None:
     assert _block_lines(_one_step("test_outcome_record.py diff"), "run") == [
         "python3 scripts/test_outcome_record.py diff \\",
         "--current current-record.json --baseline baseline-record.json \\",
-        '--full-suite "$FULL_SUITE" --pytest-result "$PYTEST_RESULT" \\',
+        '--full-suite "$FULL_SUITE" --pytest-result "$JOB_RESULT" \\',
         "--allowlist .github/test-outcome-allowlist.txt \\",
         '--summary "$GITHUB_STEP_SUMMARY" --block',
     ]

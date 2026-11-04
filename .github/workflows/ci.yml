@@ -475,10 +475,10 @@ jobs:
         timeout-minutes: 1
         env:
           FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}
-          PYTEST_RESULT: ${{ needs.pytest.result }}
+          JOB_RESULT: ${{ needs.pytest.result }}
         run: |
           python3 scripts/test_outcome_record.py diff \
               --current current-record.json --baseline baseline-record.json \
-              --full-suite "$FULL_SUITE" --pytest-result "$PYTEST_RESULT" \
+              --full-suite "$FULL_SUITE" --pytest-result "$JOB_RESULT" \
               --allowlist .github/test-outcome-allowlist.txt \
               --summary "$GITHUB_STEP_SUMMARY" --block
