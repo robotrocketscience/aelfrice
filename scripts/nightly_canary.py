@@ -161,7 +161,9 @@ main that descends from the old one, the first pointer included. Main is
 green night on a commit that is not on main, or that git cannot place, moves
 nothing, and `publish` exits 1. A later commit already named stays named,
 which is the ordinary case of a late run: that exits 0. At one commit, the
-newer run and attempt hold the pointer, so a late older attempt cannot take
+newer run and attempt hold the pointer, and when `index.jsonl` already holds a
+newer run or attempt of the commit, a late older one moves nothing, an empty
+pointer included, since the newer one may have been red. So a late older attempt cannot take
 it. An entry holds `attempt` beside `run_id` for that comparison. The record
 an entry names does not change: republishing the same run and attempt with
 different content, a new `created_at` date included, exits 1 and writes
@@ -850,6 +852,16 @@ def merge_index(lines: list[str], entry: dict[str, Any], keep_events: bool = Fal
     return [runs[run][1] for run in sorted(runs)]
 
 
+def superseded_at_commit(lines: list[str], record: dict[str, Any]) -> bool:
+    """Whether `index.jsonl` holds a newer run or attempt of this night's commit."""
+    nightly = record["nightly"]
+    this_run = (int(nightly["run_id"]), int(nightly["run_attempt"]))
+    return any(
+        line.strip() and _index_line_run(line) > this_run and json.loads(line).get("sha") == record["sha"]
+        for line in lines
+    )
+
+
 def _run_order(pointer: dict[str, Any]) -> tuple[int, int]:
     return int(pointer["run_id"]), int(pointer.get("attempt", 0))
 
@@ -958,9 +970,11 @@ def next_last_green(
     record: dict[str, Any],
     is_ancestor: Callable[[str, str], bool | None],
     on_main: Callable[[str], bool | None],
+    superseded: bool = False,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     """`last-green.json` after this night, a printable note per entry it
-    touched, and a problem per entry that needs an operator."""
+    touched, and a problem per entry that needs an operator. A `superseded`
+    night, which a newer run of its commit came after, moves nothing."""
     nightly = record["nightly"]
     old = current or {}
     pointer = {
@@ -974,7 +988,9 @@ def next_last_green(
     problems: list[str] = []
     canary = old.get("canary")
     legs: dict[str, Any] = dict(old.get("legs") or {})
-    if nightly["verdict"] == GREEN:
+    if nightly["verdict"] == GREEN and superseded:
+        notes.append(f"last green: nothing moved, since a newer run of {pointer['sha'][:12]} came after this one")
+    elif nightly["verdict"] == GREEN:
         canary = _moved(canary, pointer, is_ancestor, on_main, "canary", notes, problems)
         for leg, status in sorted(nightly["status"].items()):
             if status == GREEN:
@@ -1341,9 +1357,11 @@ def cmd_publish(args: argparse.Namespace) -> int:
     keep_triage = triage is None or (same_record and triage_file.is_file())
     index_file = branch / "index.jsonl"
     index: list[str] | None = None
+    superseded = False
     try:
         lines = index_file.read_text(encoding="utf-8").splitlines() if index_file.is_file() else []
         index = merge_index(lines, index_entry(record, None if keep_triage else triage), keep_triage)
+        superseded = superseded_at_commit(lines, record)
     except _UNREADABLE as exc:
         problems.append(f"index.jsonl is unreadable, so it stays as it is for inspection: {exc}")
     green_file = branch / "last-green.json"
@@ -1369,7 +1387,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     pointer_problems: list[str] = []
     if green_readable:
         new_green, notes, pointer_problems = next_last_green(
-            old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main,
+            old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main, superseded,
         )
     this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
     for named in named_runs(old_green or {}, this_run):

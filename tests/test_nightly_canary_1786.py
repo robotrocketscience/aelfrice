@@ -1596,6 +1596,47 @@ def test_named_runs_reads_the_canary_entry_and_the_leg_entries() -> None:
     assert nc.named_runs({"canary": None, "legs": {}}, (5, 2)) == []
 
 
+def test_a_late_green_attempt_cannot_take_an_empty_pointer_after_a_newer_red_one(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 100, run_attempt=2), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=1), None) == 0
+    assert _last_green(tmp_path) == {"canary": None, "legs": {}}
+    assert "nothing moved" in capsys.readouterr().out
+    assert [line["run_attempt"] for line in _index(tmp_path)] == [2]
+
+
+def test_a_late_green_run_cannot_take_a_pointer_after_a_newer_red_run_of_its_commit(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 90, day=1), None) == 0
+    assert _publish(tmp_path, repo, _red(c1, 101, day=3), None) == 0
+    assert _publish(tmp_path, repo, _green(c1, 100, day=2), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c0
+
+
+def test_a_late_run_of_another_commit_is_not_superseded(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Run 101 is newer but tested a different commit, so it says nothing about c0."""
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c1, 101, day=3), None) == 0
+    assert _publish(tmp_path, repo, _green(c0, 100, day=2), None) == 0
+    assert _last_green(tmp_path)["canary"]["sha"] == c0
+
+
+def test_superseded_at_commit_reads_each_part_of_the_order() -> None:
+    lines = nc.merge_index([], nc.index_entry(_red(SHA1, 100, run_attempt=2), None))
+    assert nc.superseded_at_commit(lines, _green(SHA1, 100, run_attempt=1)) is True
+    assert nc.superseded_at_commit(lines, _green(SHA1, 99, run_attempt=9)) is True
+    assert nc.superseded_at_commit(lines, _green(SHA1, 100, run_attempt=2)) is False
+    assert nc.superseded_at_commit(lines, _green(SHA1, 100, run_attempt=3)) is False
+    assert nc.superseded_at_commit(lines, _green(SHA2, 99)) is False
+    assert nc.superseded_at_commit(["", *lines], _green(SHA2, 99)) is False
+
+
 def test_a_late_older_run_at_the_same_commit_does_not_take_the_pointer(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
