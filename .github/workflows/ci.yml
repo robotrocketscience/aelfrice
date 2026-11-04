@@ -99,7 +99,7 @@ jobs:
       # the #1160 lesson: a skipped job must never report a pass that looks
       # like a run.
       - if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
