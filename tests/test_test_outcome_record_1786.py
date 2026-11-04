@@ -713,6 +713,14 @@ def test_a_function_that_lost_a_test_gets_no_never_executed_exemption(
     assert [(t.before, t.after) for t in d.violations] == [(None, tor.NEVER_EXECUTED)]
 
 
+@pytest.mark.parametrize("lost", [tor.SKIPPED, tor.XFAILED, tor.FAILED, tor.ERROR, tor.XPASSED])
+def test_a_lost_test_that_did_not_pass_also_costs_the_exemption(lost: str) -> None:
+    """Only a lost never-executed test leaves the exemption in place. The test
+    that moved behind the gate need not have been passing."""
+    d = tor.diff_leg("3.12", {"t::f[new]": tor.NEVER_EXECUTED}, {"t::f[old]": lost})
+    assert [(t.before, t.after) for t in d.violations] == [(None, tor.NEVER_EXECUTED)]
+
+
 def test_a_perf_test_that_gains_a_parameter_while_renamed_stays_exempt() -> None:
     """Only never-executed tests left the function, so nothing moved behind
     the gate, though the counts differ and nothing pairs."""
