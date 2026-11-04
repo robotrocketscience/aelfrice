@@ -1133,7 +1133,9 @@ def _open_store() -> MemoryStore:
     )
 
 
-def open_store_for_read() -> MemoryStore:
+def open_store_for_read(
+    selection: StoreSelection | None = None,
+) -> MemoryStore:
     """Open the store for a command whose contract is observational.
 
     #1416. `aelf search` against a readable-but-not-writable store died
@@ -1156,6 +1158,10 @@ def open_store_for_read() -> MemoryStore:
 
     Raises `ReadOnlyStoreUnavailable` when the fallback cannot be opened
     either; callers turn that into a message rather than a traceback.
+
+    `selection` opens that store instead of resolving again, for a
+    caller that reports which store it chose, so a marker that changes
+    in between can't split its output (#1834).
 
     #1571 amends what #1416's matrix may assert about this. That matrix
     asked that a routed read command perform no preliminary writable
@@ -1197,7 +1203,8 @@ def open_store_for_read() -> MemoryStore:
 
     from aelfrice.store import is_readonly_open_failure
 
-    selection = resolve_store()
+    if selection is None:
+        selection = resolve_store()
     p = selection.path
     # Deliberately no `create=True`: this function exists for the case
     # where `.git/` is not writable, and an observational command has no

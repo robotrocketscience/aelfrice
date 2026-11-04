@@ -167,7 +167,9 @@ def test_cli_status_prints_phantom_line(
     # re-route cannot silently point this test at the live store —
     # which is what it did (46k beliefs) when only one was patched.
     monkeypatch.setattr("aelfrice.cli._open_store", lambda: store)
-    monkeypatch.setattr("aelfrice.cli.open_store_for_read", lambda: store)
+    monkeypatch.setattr(
+        "aelfrice.cli.open_store_for_read", lambda selection=None: store,
+    )
     monkeypatch.setattr(store, "close", lambda: None)
 
     buf = io.StringIO()
@@ -189,7 +191,9 @@ def test_cli_status_phantom_line_empty_store(
     # re-route cannot silently point this test at the live store —
     # which is what it did (46k beliefs) when only one was patched.
     monkeypatch.setattr("aelfrice.cli._open_store", lambda: store)
-    monkeypatch.setattr("aelfrice.cli.open_store_for_read", lambda: store)
+    monkeypatch.setattr(
+        "aelfrice.cli.open_store_for_read", lambda selection=None: store,
+    )
     monkeypatch.setattr(store, "close", lambda: None)
 
     buf = io.StringIO()

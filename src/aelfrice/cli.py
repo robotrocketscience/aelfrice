@@ -5031,8 +5031,10 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     _ = args
     from aelfrice import __version__ as _aelf_version  # noqa: PLC0415
 
+    # #1834: resolve once, so the store and rule lines name the store
+    # the counts and the HRR line come from.
     selection = resolve_store()
-    store = open_store_for_read()
+    store = open_store_for_read(selection)
     try:
         n_beliefs = store.count_beliefs()
         n_threads = store.count_edges()
@@ -5060,12 +5062,16 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
         f"(latest: {ph_latest})",
         file=out,
     )
-    print(_format_hrr_persist_status_line(), file=out)  # type: ignore[arg-type]
+    print(_format_hrr_persist_status_line(selection.path), file=out)  # type: ignore[arg-type]
     return 0
 
 
-def _format_hrr_persist_status_line() -> str:
-    """Return the ``hrr.persist_state`` summary line for ``aelf status`` (#696)."""
+def _format_hrr_persist_status_line(store_path: Path) -> str:
+    """Return the ``hrr.persist_state`` summary line for ``aelf status`` (#696).
+
+    `store_path` is the store `aelf status` already resolved, rather
+    than a fresh `db_path()`, so the line reports the same store (#1834).
+    """
     from aelfrice.hrr_index import (  # noqa: PLC0415
         HRRStructIndexCache,
         last_build_seconds as _last_build_seconds,
@@ -5075,7 +5081,7 @@ def _format_hrr_persist_status_line() -> str:
         _store = _MemoryStore(":memory:")
         try:
             cache = HRRStructIndexCache(
-                store=_store, dim=512, store_path=str(db_path()),
+                store=_store, dim=512, store_path=str(store_path),
             )
             state = cache.resolve_persist_state()
         finally:
