@@ -687,6 +687,40 @@ def test_reasons_use_the_ids_as_given(env: Env, tmp_path: Path, run_bisect: Runn
     assert result["events"] == [nb.event_for_range(shas[0], shas[1], [junit], nb.REASON_BUDGET)]
 
 
+def test_a_run_that_raises_keeps_what_it_found(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first round found its culprit; the second round raises."""
+    shas = env.repo(["", "", "a", "a", "ab", "ab"])
+    real = nb.Bisector.bisect_round
+
+    def second_round_raises(self: nb.Bisector, lo: str, tests: list[str], n: int) -> Any:
+        if n == 2:
+            raise RuntimeError("git failed in the test")
+        return real(self, lo, tests, n)
+
+    monkeypatch.setattr(nb.Bisector, "bisect_round", second_round_raises)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, _B,
+                            points={shas[i]: 30 + i for i in range(1, 6)})
+    assert rc == 2
+    assert result["complete"] is False
+    assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-32", [_A])]
+
+
+def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
+    env: Env, tmp_path: Path,
+) -> None:
+    shas = env.repo(["", "a"])
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(out_dir / "r.json"),
+                  "--step-cmd", env.step_cmd])
+    assert rc == 0
+    assert [p.name for p in out_dir.iterdir()] == ["r.json"]
+    assert json.loads((out_dir / "r.json").read_text(encoding="utf-8"))["complete"] is True
+
+
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,

@@ -137,7 +137,9 @@ runs it on Linux and macOS.
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
-when no culprit was found. Each event lists its tests, and a range event
+when no culprit was found. The result file is replaced atomically after
+every change, with `complete` false until the run ends, so a run that dies
+keeps what it found. Each event lists its tests, and a range event
 maps each test to the reason it has no culprit: `budget`, `inconclusive`,
 `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed` or
 `returned`. Each round keeps its `git bisect log`.
@@ -711,6 +713,7 @@ class Bisector:
     events: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     rounds: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     reset_errors: list[str] = field(default_factory=list[str])
+    on_change: Callable[[], None] = lambda: None
 
     @property
     def point_set(self) -> set[str] | None:
@@ -791,6 +794,10 @@ class Bisector:
             self._reset(wt)
         return read_outcome(order, points, lo, bad_ref, goods), record
 
+    def _event(self, event: dict[str, Any]) -> None:
+        add_event(self.events, event)
+        self.on_change()
+
     def _reset(self, wt: Git) -> None:
         """End the bisect, on a clean tree when the first try fails."""
         r = wt.run("bisect", "reset", check=False)
@@ -813,27 +820,27 @@ class Bisector:
         before = self._check(outcome.good, remaining)
         record.update(verify={"culprit_rc": first.rc, "preceding": outcome.good, "preceding_rc": before.rc})
         if STEP_ABORT in (first.rc, before.rc):
-            add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
+            self._event(event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
             return None
         if first.rc != STEP_BAD or before.rc not in (STEP_GOOD, STEP_BAD):
-            add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
+            self._event(event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
             return None
         # A status of 1 with no test named blames all of them.
         broke = first.failed or remaining
         red_before = (before.failed or remaining) if before.rc == STEP_BAD else []
         earlier = [t for t in broke if t in red_before]
         if earlier:
-            add_event(self.events, event_for_range(lo, culprit, earlier, REASON_UNVERIFIED))
+            self._event(event_for_range(lo, culprit, earlier, REASON_UNVERIFIED))
         broke = [t for t in broke if t not in earlier]
         blamed: list[str] = []
         if broke:
             again = self._check(culprit, broke)
             record["verify"]["again_rc"] = again.rc
             if again.rc == STEP_ABORT:
-                add_event(self.events, event_for_range(outcome.good, outcome.bad, broke, REASON_BUDGET))
+                self._event(event_for_range(outcome.good, outcome.bad, broke, REASON_BUDGET))
                 return None
             if again.rc not in (STEP_GOOD, STEP_BAD):
-                add_event(self.events, event_for_range(lo, self.bad, broke, REASON_UNVERIFIED))
+                self._event(event_for_range(lo, self.bad, broke, REASON_UNVERIFIED))
                 return None
             if again.rc == STEP_BAD:
                 blamed = again.failed or broke
@@ -855,7 +862,7 @@ class Bisector:
         )
         moved = [t for t in absent if t.split("::", 1)[0] in moved_files]
         if moved:
-            add_event(self.events, event_for_range(lo, culprit, moved, REASON_RENAMED))
+            self._event(event_for_range(lo, culprit, moved, REASON_RENAMED))
         returned: list[str] = []
         unexplained = [t for t in absent if t not in moved]
         if unexplained and outcome.good != lo:
@@ -863,7 +870,7 @@ class Bisector:
             if origin.rc in (STEP_GOOD, STEP_BAD):
                 returned = [t for t in unexplained if t not in origin.absent]
         if returned:
-            add_event(self.events, event_for_range(lo, culprit, returned, REASON_RETURNED))
+            self._event(event_for_range(lo, culprit, returned, REASON_RETURNED))
         return [t for t in blamed if t not in moved and t not in returned]
 
     def _still_broken(self, lo: str, outcome: Outcome, blamed: list[str], record: dict[str, Any]) -> list[str]:
@@ -877,14 +884,14 @@ class Bisector:
         later = self._check(after, blamed)
         record["verify"].update(following=after, following_rc=later.rc)
         if later.rc == STEP_ABORT:
-            add_event(self.events, event_for_range(outcome.good, outcome.bad, blamed, REASON_BUDGET))
+            self._event(event_for_range(outcome.good, outcome.bad, blamed, REASON_BUDGET))
             return []
         if later.rc not in (STEP_GOOD, STEP_BAD):
             return blamed  # This commit cannot be judged, which says nothing about the culprit.
         red = (later.failed or blamed) if later.rc == STEP_BAD else []
         passed = [t for t in blamed if t not in red]
         if passed:
-            add_event(self.events, event_for_range(lo, self.bad, passed, REASON_UNVERIFIED))
+            self._event(event_for_range(lo, self.bad, passed, REASON_UNVERIFIED))
         return [t for t in blamed if t in red]
 
     def bisect(self, good: str, tests: list[str]) -> None:
@@ -893,16 +900,16 @@ class Bisector:
             if not remaining:
                 return
             if lo == self.bad:
-                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_PASSES_AT_BAD))
+                self._event(event_for_range(lo, self.bad, remaining, REASON_PASSES_AT_BAD))
                 return
             if time.time() >= self.deadline:
-                add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_BUDGET))
+                self._event(event_for_range(lo, self.bad, remaining, REASON_BUDGET))
                 return
             outcome, record = self.bisect_round(lo, remaining, n)
             self.rounds.append(record)
             if outcome.culprit is None:
                 record["culprit"] = None
-                add_event(self.events, event_for_range(outcome.good, outcome.bad, remaining, REASON_INCONCLUSIVE))
+                self._event(event_for_range(outcome.good, outcome.bad, remaining, REASON_INCONCLUSIVE))
                 return
             record["culprit"] = outcome.culprit
             attributed = self.attribute(lo, outcome, remaining, record)
@@ -910,10 +917,10 @@ class Bisector:
                 return
             blamed, remaining = attributed
             if blamed:
-                add_event(self.events, event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), blamed))
+                self._event(event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), blamed))
             lo = outcome.culprit
         if remaining:
-            add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
+            self._event(event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
 
 
 def map_ids(tests: Iterable[str], files: set[str]) -> tuple[dict[str, list[str]], list[str]]:
@@ -957,7 +964,12 @@ def _read_json(path: Path) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    """Replace `path` in one step, from a temporary file beside it."""
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.resolve().parent, prefix=f".{path.name}.", delete=False,
+    ) as tmp:
+        tmp.write(json.dumps(data, indent=1) + "\n")
+    os.replace(tmp.name, path)
 
 
 def cmd_merge_points(args: argparse.Namespace) -> int:
@@ -1023,10 +1035,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"dry run: would write {args.out}")
         return 0
     deadline = time.time() + args.budget_seconds
+
+    def save(complete: bool) -> None:
+        _write_json(args.out, {
+            "format": RESULT_FORMAT, "complete": complete, "good": good, "bad": bad, "tests": tests,
+            "merge_points": len(points), "events": [_as_given(e, mapped) for e in bisector.events],
+            "rounds": bisector.rounds, "reset_errors": bisector.reset_errors,
+        })
+
     with tempfile.TemporaryDirectory() as scratch:
         bisector = Bisector(
             git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
+            on_change=lambda: save(False),
         )
         _prepare_worktree(git, worktree, good)
         bisector.bisect(good, bisected)
@@ -1034,21 +1055,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
     if unmapped:
         add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
-    for event in bisector.events:
-        event["tests"] = [given for test in event["tests"] for given in mapped.get(test, [test])]
-        if "reasons" in event:
-            event["reasons"] = {
-                given: reason for test, reason in event["reasons"].items() for given in mapped.get(test, [test])
-            }
-    result = {
-        "format": RESULT_FORMAT, "good": good, "bad": bad, "tests": tests,
-        "merge_points": len(points), "events": bisector.events, "rounds": bisector.rounds,
-        "reset_errors": bisector.reset_errors,
-    }
-    _write_json(args.out, result)
+    save(True)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0
+
+
+def _as_given(event: dict[str, Any], mapped: dict[str, list[str]]) -> dict[str, Any]:
+    """`event` with its tests named as `--tests` named them."""
+    out = dict(event)
+    out["tests"] = [given for test in event["tests"] for given in mapped.get(test, [test])]
+    if "reasons" in event:
+        out["reasons"] = {
+            given: reason for test, reason in event["reasons"].items() for given in mapped.get(test, [test])
+        }
+    return out
 
 
 def _step_passthrough(args: argparse.Namespace) -> list[str]:
