@@ -18,10 +18,12 @@ train's floor.
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +311,18 @@ def test_the_perf_pin_misses_a_renamed_gate_and_the_run_time_rule_still_blocks_i
     "corpus module 'x' missing under review",
     "corpus module 'x' gone under /corpus",
     "TODO: corpus module 'x' missing under /corpus",
+    "corpus module 'x' missing under relroot",
+    "corpus module 'x' missing under /tmp until I fix the flake",
+    "corpus module 'x' empty under /TODO re-enable next week",
+    "corpus module 'x' missing under /corpus\nTODO re-enable next week",
+    "corpus module 'x' missing under /corpus: 3 rows < 5 floor",
+    "corpus module 'x' underfilled under /corpus",
+    "corpus module 'x' underfilled under /corpus: TODO re-enable next week",
+    "corpus module 'x' underfilled under /corpus: 3 rows < 5 floor, TODO re-enable next week",
+    "corpus module 'x' underfilled under /corpus: 3 rows < 5 floor; TODO re-enable next week",
+    "corpus module 'x' underfilled under /corpus: 3 rows < 5 floor\nTODO re-enable next week",
+    "corpus module 'x' ungradeable under /corpus",
+    "corpus module 'x' ungradeable under /corpus: TODO re-enable next week",
     "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test",
     "skipping bench-gate test (lab corpus absent by design)",
 ])
@@ -341,21 +355,89 @@ def test_an_ordinary_skip_that_mentions_the_perf_flag_is_a_skip_and_a_violation(
     assert [t.test for t in tor.diff_leg("3.12", outcomes, {}).violations] == ["tests.test_a::test_x"]
 
 
-def _bench_gate_skip_reasons() -> dict[str, str]:
-    """The bench-gate skip reasons as tests/conftest.py writes them: the
-    whole-tier `BENCH_GATE_SKIP_REASON`, and one `skip_corpus_module`
-    reason per corpus state it accepts, keyed by a short label."""
-    from tests.conftest import BENCH_GATE_SKIP_REASON, CORPUS_SKIP_STATES, skip_corpus_module
+def _rendered_detail(node: Any) -> str:
+    """A `detail=` argument's text, with each f-string value filled in."""
+    import ast
+    if isinstance(node, ast.Constant):
+        return str(node.value)
+    assert isinstance(node, ast.JoinedStr), ast.dump(node)
+    parts: list[str] = []
+    for value in node.values:
+        if isinstance(value, ast.Constant):
+            parts.append(str(value.value))
+        else:
+            assert isinstance(value, ast.FormattedValue)
+            parts.append("'label'" if value.conversion == ord("r") else "7")
+    return "".join(parts)
 
-    reasons = {"whole-tier": BENCH_GATE_SKIP_REASON}
-    for why in sorted(CORPUS_SKIP_STATES):
-        with pytest.raises(pytest.skip.Exception) as info:
-            skip_corpus_module("retrieve", why, Path("/corpus"), "a detail")
-        reasons[f"module-{why}"] = str(info.value.msg)
+
+def _corpus_skip_calls() -> dict[str, tuple[str, str, str]]:
+    """Every corpus skip in tests/bench_gate as `path:line -> (helper, state,
+    detail)`. It reads calls by the helper's bare name, which is how every
+    module there imports them."""
+    import ast
+    calls: dict[str, tuple[str, str, str]] = {}
+    for path in sorted((_REPO / "tests" / "bench_gate").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            if node.func.id == "require_min_rows":
+                state = "underfilled"
+            elif node.func.id == "skip_corpus_module":
+                state = ast.literal_eval(node.args[1])
+            else:
+                continue
+            detail = next((_rendered_detail(kw.value) for kw in node.keywords if kw.arg == "detail"), "")
+            calls[f"{path.name}:{node.lineno}"] = (node.func.id, state, detail)
+    return calls
+
+
+def _skip_message(action: Callable[[], object]) -> str:
+    with pytest.raises(pytest.skip.Exception) as info:
+        action()
+    return str(info.value.msg)
+
+
+def _bench_gate_skip_reasons() -> dict[str, str]:
+    """The bench-gate skip reasons as the suite writes them: the whole-tier
+    `BENCH_GATE_SKIP_REASON`, what `load_corpus_module` passes, a floor with no
+    detail, and every call in tests/bench_gate through the real helpers."""
+    from tests.conftest import BENCH_GATE_SKIP_REASON, require_min_rows, skip_corpus_module
+
+    root = Path("/corpus")
+    reasons = {
+        "whole-tier": BENCH_GATE_SKIP_REASON,
+        "module-missing": _skip_message(lambda: skip_corpus_module("retrieve", "missing", root)),
+        "module-empty": _skip_message(lambda: skip_corpus_module("retrieve", "empty", root)),
+        "module-floor": _skip_message(lambda: require_min_rows([], module="retrieve", minimum=7, root=root)),
+    }
+    for site, (helper, state, detail) in _corpus_skip_calls().items():
+        if helper == "require_min_rows":
+            action = functools.partial(require_min_rows, [], module="retrieve", minimum=7, root=root, detail=detail)
+        else:
+            action = functools.partial(skip_corpus_module, "retrieve", state, root, detail)
+        reasons[site] = _skip_message(action)
     return reasons
 
 
 _BENCH_GATE_REASONS = _bench_gate_skip_reasons()
+
+
+def test_the_floor_details_are_the_ones_the_bench_gate_passes() -> None:
+    """Exact in both directions, so a new detail and a stale one both show up."""
+    calls = _corpus_skip_calls().values()
+    assert {detail for helper, _, detail in calls if helper == "require_min_rows"} == set(tor.CORPUS_FLOOR_DETAILS)
+    assert {state for helper, state, _ in calls if helper == "skip_corpus_module"} == {"underfilled", "ungradeable"}
+
+
+def test_the_conftest_module_skips_carry_no_detail(tmp_path: Path) -> None:
+    from tests.conftest import load_corpus_module
+
+    missing = _skip_message(lambda: load_corpus_module(Path("/nonexistent-corpus"), "retrieve"))
+    (tmp_path / "retrieve").mkdir()
+    empty = _skip_message(lambda: load_corpus_module(tmp_path, "retrieve"))
+    assert missing == "corpus module 'retrieve' missing under /nonexistent-corpus"
+    assert empty == f"corpus module 'retrieve' empty under {tmp_path}"
 
 
 @pytest.mark.parametrize("reason", list(_BENCH_GATE_REASONS.values()), ids=list(_BENCH_GATE_REASONS))

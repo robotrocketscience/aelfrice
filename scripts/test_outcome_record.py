@@ -162,15 +162,41 @@ PERF_SKIP_REASONS: frozenset[str] = frozenset({
 # The bench-gate tier's two shapes, copied because this script runs without
 # the suite's dependencies: `BENCH_GATE_SKIP_REASON` and the reason
 # `skip_corpus_module` writes for each of `CORPUS_SKIP_STATES`, in
-# tests/conftest.py. A test pins these to that file. The corpus root is an
-# absolute path on every leg that can reach the shape.
+# tests/conftest.py, with the detail each caller in tests/bench_gate/ passes.
+# Tests pin these to those files. The corpus root is an absolute path on every
+# leg that can reach the shape. A root with a space in it reads as `skipped`,
+# since nothing else stops free text after `under /`.
 BENCH_GATE_SKIP_REASON = (
     "AELFRICE_CORPUS_ROOT not set or not a directory; skipping bench-gate test "
     "(lab corpus absent by design \u2014 see #1420 \u00a73; the corpus is private and "
     "this repository is public)"
 )
-CORPUS_SKIP_STATES: tuple[str, ...] = ("empty", "missing", "underfilled", "ungradeable")
-_CORPUS_SKIP_REASON = re.compile(rf"corpus module '[^']+' (?:{'|'.join(CORPUS_SKIP_STATES)}) under /.*")
+CORPUS_FLOOR_DETAILS: tuple[str, ...] = (
+    "non-seed rows, for stable rate-difference measurement",
+    "non-seed rows, for stable recall measurement",
+    "non-seed rows, for stable uplift measurement",
+    "the bar requires it per docs/design/v2_enforcement.md \u00a7 H1",
+    "the validity guard needs the same floor as the gate it guards",
+)
+_CORPUS_FLOOR_DETAIL = "|".join(re.escape(detail) for detail in CORPUS_FLOOR_DETAILS)
+_CORPUS_DETAIL_BY_STATE: dict[str, str] = {
+    "empty": "",
+    "missing": "",
+    "underfilled": (
+        rf": \d+ (?:rows < \d+ floor(?:; (?:{_CORPUS_FLOOR_DETAIL}))?"
+        r"|'[^']+'-labeled rows < \d+ floor for stable recall measurement)"
+    ),
+    "ungradeable": (
+        r": all \d+ rows render verbatim, so there is no reduction to measure; "
+        r"add snapshot/transient rows to exercise the headline/stub strategies"
+    ),
+}
+CORPUS_SKIP_STATES: tuple[str, ...] = tuple(_CORPUS_DETAIL_BY_STATE)
+_CORPUS_SKIP_REASON = re.compile(
+    "corpus module '[^']+' (?:"
+    + "|".join(rf"{state} under /\S*{detail}" for state, detail in _CORPUS_DETAIL_BY_STATE.items())
+    + ")"
+)
 
 _XPASS_STRICT_PREFIX = "[XPASS(strict)]"
 _XPASS_LEGACY_MESSAGE = "xfail-marked test passes unexpectedly"
