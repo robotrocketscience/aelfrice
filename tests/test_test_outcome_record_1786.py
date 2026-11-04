@@ -39,12 +39,19 @@ from merge_train_gate import FLOOR_NAMES  # noqa: E402
 # the pin rule for every `uses:` line in the tree.
 _DOWNLOAD_PIN = re.compile(r"actions/download-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+")
 _UPLOAD_PIN = re.compile(r"actions/upload-artifact@[0-9a-f]{40} # v\d+\.\d+\.\d+")
-_USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(.*?)\s*$", re.MULTILINE)
 
 
 def _uses(step: str) -> str:
-    """The one `uses:` value in a step."""
-    values = _USES.findall(step)
+    """The one `uses:` value at the step's own key indent.
+
+    The key sits on the `- ` line or two past it. A `uses:` line inside a
+    block scalar (`run: |`) is indented deeper and does not count.
+    """
+    lines = step.splitlines()
+    key_indent = _indent(lines[0]) + 2
+    candidates = [lines[0].lstrip()[2:]]
+    candidates += [line[key_indent:] for line in lines[1:] if _indent(line) == key_indent]
+    values = [m.group(1) for c in candidates if (m := re.fullmatch(r"uses:\s*(.*?)\s*", c))]
     assert len(values) == 1, step
     return values[0]
 
@@ -1184,6 +1191,23 @@ def test_the_job_downloads_this_runs_reports_by_the_merge_sha_pattern() -> None:
         assert f"--junit {leg}=current/junit-{leg}.xml" in record_steps[0]
     assert "HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in record_steps[0]
     assert '--sha "$HEAD_SHA"' in record_steps[0]
+
+
+def test_the_uses_reader_skips_block_scalar_content() -> None:
+    step = "\n".join([
+        "      - name: upload",
+        "        uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v4.6.2",
+        "        with:",
+        "          path: |",
+        "            uses: actions/upload-artifact@v4",
+    ])
+    assert _uses(step).startswith("actions/upload-artifact@0000"), step
+    run_only = "\n".join([
+        "      - run: |",
+        "          uses: actions/upload-artifact@v4",
+    ])
+    with pytest.raises(AssertionError):
+        _uses(run_only)
 
 
 def test_the_job_keeps_the_records_as_an_artifact() -> None:

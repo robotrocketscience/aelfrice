@@ -231,9 +231,50 @@ _PUSHING_CHECKOUTS = {
     ("merge-train.yml", "merge"): "fast-forwards main with `git push origin`",
     ("replay-soak.yml", "soak"): "pushes the soak record to replay-soak-status",
 }
-_PERSIST_FALSE = re.compile(r"^\s+persist-credentials:\s*false\s*$")
-_PERSIST_TRUE = re.compile(r"^\s+persist-credentials:\s*true\s*$")
 _GIT_PUSH = re.compile(r"\bgit\s+push\b")
+
+
+def _step_lines(step: str) -> tuple[int, list[tuple[int, str]]]:
+    """The step's key indent, and (indent, text) for each line, comments cut.
+
+    The `- ` line's text is read at the key indent, so a key on it counts
+    like a key on the lines below. Block-scalar content (`run: |`,
+    `sparse-checkout: |`) is indented deeper than the key that holds it, so
+    a reader that matches on an exact indent never sees it as a key.
+    """
+    lines = step.splitlines()
+    key_indent = _indent(lines[0]) + 2
+    out = [(key_indent, lines[0].lstrip()[2:])]
+    out += [(_indent(line), line.strip()) for line in lines[1:] if line.strip()]
+    return key_indent, [(indent, text.split(" #")[0].strip()) for indent, text in out]
+
+
+def _step_uses(step: str) -> str | None:
+    """The step's own `uses:` ref, or None."""
+    key_indent, lines = _step_lines(step)
+    for indent, text in lines:
+        match = re.fullmatch(r"uses:\s*(\S+)", text)
+        if indent == key_indent and match:
+            return match.group(1)
+    return None
+
+
+def _with_input(step: str, name: str) -> str | None:
+    """The value of `with: <name>:` on the step, or None.
+
+    Only a direct child of the step's `with:` counts: indent exactly two
+    past the `with:` key.
+    """
+    key_indent, lines = _step_lines(step)
+    inside = False
+    for indent, text in lines:
+        if indent <= key_indent:
+            inside = indent == key_indent and text == "with:"
+            continue
+        key, sep, value = text.partition(":")
+        if inside and sep and indent == key_indent + 2 and key == name:
+            return value.strip()
+    return None
 
 
 def _checkouts(text: str) -> list[tuple[str, str]]:
@@ -242,19 +283,16 @@ def _checkouts(text: str) -> list[tuple[str, str]]:
         (job, step)
         for job, job_lines in _jobs(text).items()
         for step in _steps(job_lines)
-        if any(
-            (match := _USES.match(line)) and match.group("ref").startswith("actions/checkout@")
-            for line in step.splitlines()
-        )
+        if (_step_uses(step) or "").startswith("actions/checkout@")
     ]
 
 
 def _drops_token(step: str) -> bool:
-    return any(_PERSIST_FALSE.match(line.split(" #")[0]) for line in step.splitlines())
+    return _with_input(step, "persist-credentials") == "false"
 
 
 def _keeps_token(step: str) -> bool:
-    return any(_PERSIST_TRUE.match(line.split(" #")[0]) for line in step.splitlines())
+    return _with_input(step, "persist-credentials") == "true"
 
 
 def test_the_checkout_reader_sees_each_step_shape() -> None:
@@ -276,6 +314,33 @@ def test_the_checkout_reader_sees_each_step_shape() -> None:
     assert [job for job, _step in found] == ["a", "a", "a"], found
     assert [_drops_token(step) for _job, step in found] == [False, True, False], found
     assert [_keeps_token(step) for _job, step in found] == [False, False, True], found
+
+
+def test_the_checkout_reader_skips_block_scalar_content() -> None:
+    """A `uses:` line inside `run: |` is not the step's action, and a
+    `persist-credentials:` line inside `sparse-checkout: |` is not an input."""
+    text = (
+        "jobs:\n"
+        "  a:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          echo hi\n"
+        "          uses: actions/checkout@0000000000000000000000000000000000000000 # v4.4.0\n"
+        "      - uses: actions/checkout@0000000000000000000000000000000000000000 # v4.4.0\n"
+        "        with:\n"
+        "          sparse-checkout: |\n"
+        "            persist-credentials: true\n"
+        "            persist-credentials: false\n"
+        "      - name: run block names a checkout\n"
+        "        run: |\n"
+        "          uses: actions/checkout@0000000000000000000000000000000000000000 # v4.4.0\n"
+    )
+    found = _checkouts(text)
+    assert len(found) == 1, found
+    step = found[0][1]
+    assert "sparse-checkout" in step, step
+    assert not _keeps_token(step), step
+    assert not _drops_token(step), step
 
 
 def test_every_checkout_drops_its_token_unless_the_job_pushes() -> None:
