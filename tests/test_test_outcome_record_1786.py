@@ -1132,6 +1132,30 @@ def test_an_unparseable_baseline_report_writes_a_marker_and_exits_2(
     assert "a JUnit report of run 5 could not be parsed" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "broken",
+    ["workflow_runs", "artifacts"],
+)
+def test_an_answer_without_its_key_is_a_lookup_error_not_an_empty_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str,
+) -> None:
+    """A 200 with no `workflow_runs` or `artifacts` says nothing about the
+    run, so reading it as an empty list would turn it into "no baseline"."""
+    class _NoKey(_FakeApi):
+        def json(self, path: str) -> Any:
+            answer = super().json(path)
+            if isinstance(answer, dict):
+                answer.pop(broken, None)
+            return answer
+
+    api = _NoKey(["base"], {"base": [{"id": 7}]}, {7: [_artifact(70, "junit-3.12-m1")]})
+    monkeypatch.setattr(tor, "GhApi", lambda: api)
+    out = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--legs", "3.12", "--out", str(out)]) == 2
+    marker = json.loads(out.read_text(encoding="utf-8"))
+    assert tor.is_lookup_error(marker) and broken in marker["notice"]
+
+
 def test_fetch_baseline_asks_for_max_commits_of_history() -> None:
     api = _FakeApi(["base"], {}, {})
     tor.fetch_baseline(api, "o/r", "base", "ci.yml", ["3.12"], 7)  # type: ignore[arg-type]

@@ -70,8 +70,9 @@ be added on purpose.
 
 A walk that finishes and finds no baseline is a `::warning::` and passes in
 both modes: artifacts expire, and the first run has none. A lookup that
-does not finish is a different case. On an API error, or an artifact or a
-report that cannot be read, `baseline` writes a marker that says so and
+does not finish is a different case. On an API error, an answer without
+the key it should hold, or an artifact or a report that cannot be read,
+`baseline` writes a marker that says so and
 exits 2, and `diff` exits 2 on that marker, on a baseline file that is
 missing and on one that holds neither a record nor a no-baseline marker.
 
@@ -682,11 +683,11 @@ def fetch_baseline(
             f"/repos/{repo}/actions/workflows/{workflow}/runs"
             f"?head_sha={sha}&status=success&per_page=5"
         )
-        return list(data.get("workflow_runs", []))
+        return list(data["workflow_runs"])
 
     def artifacts_for(run_id: int) -> list[dict[str, Any]]:
         data = api.json(f"/repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100")
-        return list(data.get("artifacts", []))
+        return list(data["artifacts"])
 
     ref = choose_baseline(commits, runs_for, artifacts_for, legs)
     if ref is None:
