@@ -16,9 +16,9 @@
 # function lost a test with another outcome. New ids that rename removed ids
 # of one test function, as a pytest upgrade does to parameter ids, are not
 # violations when both hold the same outcomes the same number of times.
-# Every other new skip
-# needs an entry, a platform skip included: the ratchet reads the outcome,
-# never the skip reason.
+# Every other new skip needs an entry, a platform skip included. A skip reason
+# counts only when it is exactly one of the perf or bench-gate reasons in
+# `scripts/test_outcome_record.py`, which make a test never executed.
 
 # Windows-only (#1833): `skipif(not WIN32)`, so both Linux legs skip them.
 tests.test_core_gate_background_windows_1761::test_a_cmd_shim_receives_the_argv_intact

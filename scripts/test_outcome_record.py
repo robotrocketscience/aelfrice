@@ -35,9 +35,10 @@ The ratchet. A test whose outcome moves to `skipped`, `xfailed` or `never
 executed` from any other outcome, or that is new as `skipped` or
 `xfailed`, is a violation unless the allowlist names it. A new test that is
 `never executed` is not one: the perf and bench-gate tests skip by design
-on every CI leg (#1825). No skip reason earns that pass, a platform skip
-included, so a new `skipif(not WIN32)` test needs an allowlist entry
-(#1833). A removed test is counted and is never a violation.
+on every CI leg (#1825). A skip reason matters only there, where one of the
+exact shapes above makes a skip `never executed`. A platform skip is not one
+of them, so a new `skipif(not WIN32)` test needs an allowlist entry (#1833).
+A removed test is counted and is never a violation.
 
 Renames. pytest renames parameter ids between releases, and pytest 9.2
 renamed every id of a perf test (#1825). Within one test function, the id up
@@ -547,7 +548,8 @@ def render_annotations(
         entry = f"an entry in {allowlist}" if allowlist else "an allowlist entry"
         out.append(
             f"::{level}::test outcome ratchet: {total} violation(s) ({', '.join(per_leg)}). "
-            f"The step summary lists each one. A test that is meant to skip needs {entry}."
+            f"The step summary names the first {SUMMARY_MAX_ROWS} of each leg and the record artifact names "
+            f"every test. A test that is meant to skip needs {entry}."
         )
     if baseline_notice:
         out.append(f"::warning::test outcomes: no baseline: {baseline_notice}")

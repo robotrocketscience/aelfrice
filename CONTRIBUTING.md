@@ -258,7 +258,9 @@ docs-only pull request runs no full suite and writes no report, and it passes.
 The job passes in these cases:
 
 - A new test never executes. The latency tests behind `--run-perf` and the
-  bench-gate tests skip on every CI leg by design.
+  bench-gate tests skip on every CI leg by design. This pass does not hold when
+  the same test function lost a test with another outcome, since that test may
+  be the one that moved behind the gate.
 - A test is renamed. Within one test function, the job reads new test IDs as
   renames of removed ones when both groups hold the same outcomes the same
   number of times, so a pytest upgrade that renames parameter IDs passes. Any
@@ -274,13 +276,16 @@ The job passes in these cases:
 
 If a test is meant to skip on the CI legs, such as a Windows-only test on the
 Linux runners, add its ID to `.github/test-outcome-allowlist.txt` with a `#`
-line above it that says why. The job reads the outcome and not the skip
-reason, so a `skipif` marker alone does not exempt the test. Copy the ID from
-the job's step summary; the file header describes the `*` wildcard.
+line above it that says why. A skip reason counts only when it is exactly one of
+the perf or bench-gate reasons, which make a test never executed. Any other
+reason reads as skipped, so a `skipif` marker alone does not exempt the test.
+Copy the ID from the job's step summary; the file header describes the `*`
+wildcard.
 
-When the job fails, read its first annotation, which counts the violations on
-each leg. The step summary lists each test, and the
-`test-outcome-record-<sha>` artifact holds every test's outcome on both legs.
+When the job fails, read its first annotation, which says what failed and counts
+any violations on each leg. The step summary names the first 50 tests of each
+list on each leg, and the `test-outcome-record-<sha>` artifact holds every
+test's outcome on both legs.
 If the job finds no baseline, it warns and passes: JUnit artifacts expire after
 30 days, and a docs-only pull request uploads none. If the lookup itself fails,
 for example on a GitHub API error, the job fails and its first annotation says

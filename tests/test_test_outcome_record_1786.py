@@ -885,7 +885,8 @@ def test_annotations_are_warnings_when_advisory_and_errors_when_blocking() -> No
     baseline = _record(**{"3.13": {"t::a": tor.PASSED}})
     diffs = tor.diff_records(current, baseline)
     assert tor.render_annotations(diffs, None, block=False) == [
-        "::warning::test outcome ratchet: 1 violation(s) (leg 3.13: 1). The step summary lists each one. "
+        "::warning::test outcome ratchet: 1 violation(s) (leg 3.13: 1). The step summary names the first "
+        "50 of each leg and the record artifact names every test. "
         "A test that is meant to skip needs an allowlist entry.",
         "::warning::test outcome ratchet, leg 3.13: t::a passed -> skipped",
     ]
@@ -911,7 +912,8 @@ def test_the_count_comes_first_so_the_annotation_cap_cannot_hide_it() -> None:
     assert len(lines) == 31
     assert lines[0] == (
         "::error::test outcome ratchet: 30 violation(s) (leg 3.12: 15, leg 3.13: 15). "
-        "The step summary lists each one. A test that is meant to skip needs an entry in .github/allow.txt."
+        "The step summary names the first 50 of each leg and the record artifact names every test. "
+        "A test that is meant to skip needs an entry in .github/allow.txt."
     )
     assert lines[1] == "::error::test outcome ratchet, leg 3.12: t::test_00 passed -> skipped"
     assert not any("violation(s)" in line for line in lines[1:])
