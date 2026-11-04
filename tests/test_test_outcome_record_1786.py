@@ -592,6 +592,13 @@ def test_an_even_swap_cannot_be_seen_and_reads_as_a_rename() -> None:
     assert d.violations == [] and d.renamed == 2
 
 
+def test_an_id_still_in_the_baseline_is_not_a_new_test_to_pair() -> None:
+    """`f[a]` moved under its own id. The removed `f[b]` holds the outcome it
+    moved to, and pairing the two would hide the move."""
+    d = tor.diff_leg("3.12", {"t::f[a]": tor.SKIPPED}, {"t::f[a]": tor.PASSED, "t::f[b]": tor.SKIPPED})
+    assert _violations(d) == [("t::f[a]", tor.PASSED, tor.SKIPPED)] and d.renamed == 0
+
+
 def test_counts_that_differ_pair_nothing() -> None:
     d = tor.diff_leg("3.12", {"t::f[x]": tor.SKIPPED, "t::f[y]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
     assert _violations(d) == [("t::f[x]", None, tor.SKIPPED), ("t::f[y]", None, tor.SKIPPED)]
@@ -732,18 +739,28 @@ def test_only_a_star_in_an_allowlist_entry_is_a_wildcard() -> None:
     assert not tor.is_allowlisted("tests.t::test_y[p-1]", ["tests.t::test_x[*]"])
 
 
+# Text before an entry's first `*` that names at least one whole test module.
+_NAMED_MODULE = re.compile(r"tests\.(?:\w+\.)*test_\w+")
+
+
 def _is_one_test_id(entry: str) -> bool:
     """`::` present, no whitespace in the classname or the function name,
     and no comment after the id: `parse_allowlist` keeps a same-line `# ...`
     as part of the entry, which then matches nothing. A parameter may hold
     whitespace and `#` (`[Let's move on to PR #869]`), so the check looks for
-    the comment after the closing bracket, not anywhere in the entry."""
+    the comment after the closing bracket, not anywhere in the entry.
+
+    `*` crosses `.` and `::` when the ratchet matches, so `*::*`, `tests.*::*`
+    and `tests.test_*::*` exempt the whole suite. A `*` has to come after
+    `::` or after a module name, which bounds what the entry can exempt."""
     classname, sep, name = entry.partition("::")
     function = name.partition("[")[0]
+    before_star, star, _ = entry.partition("*")
     return (
         bool(sep)
         and not re.search(r"\s", classname + function)
         and not re.search(r"\]\s+#", entry)
+        and (not star or "::" in before_star or _NAMED_MODULE.fullmatch(before_star) is not None)
     )
 
 
@@ -754,6 +771,13 @@ def _is_one_test_id(entry: str) -> bool:
         ("tests.test_ingest_pasted_output_1691::test_prose_that_opens_like_output_is_kept[Owner | 3 +]", True),
         ("tests.t::test_x[/tmp/a b]", True),
         ("tests.test_win*::*", True),
+        ("tests.test_store::*", True),
+        ("tests.test_store::test_readonly[*]", True),
+        ("*::*", False),
+        ("tests.*::*", False),
+        ("tests.test_*::*", False),
+        ("*::test_readonly", False),
+        ("*", False),
         ("tests.test_store", False),
         ("tests.test_store test_readonly", False),
         ("tests.test_store # why::test_readonly", False),
@@ -1856,6 +1880,35 @@ def test_the_diff_learns_whether_the_suite_ran_from_the_pytest_job() -> None:
     junit = next(i for i, ln in enumerate(lines) if "--junitxml=" in ln)
     condition = lines[junit - 1].strip().removeprefix("- if: ")
     assert output[0] == "${{ " + condition + " }}"
+
+
+def test_the_steps_run_in_the_order_each_needs_the_last() -> None:
+    """A record built before the download would read an empty directory and
+    report no leg, and a step after the diff would not run when it fails."""
+    markers = [
+        "actions/checkout@",
+        "actions/download-artifact@",
+        "test_outcome_record.py record",
+        "test_outcome_record.py baseline",
+        "actions/upload-artifact@",
+        "test_outcome_record.py diff",
+    ]
+    steps = _steps("test-outcomes")
+    assert len(steps) == len(markers)
+    for step, marker in zip(steps, markers):
+        assert marker in step, (marker, step)
+
+
+def test_the_diff_step_runs_only_the_diff() -> None:
+    """A `trap`, a trailing command or an `|| true` in this block would turn
+    the script's exit status into the step's success."""
+    assert _block_lines(_one_step("test_outcome_record.py diff"), "run") == [
+        "python3 scripts/test_outcome_record.py diff \\",
+        "--current current-record.json --baseline baseline-record.json \\",
+        '--full-suite "$FULL_SUITE" \\',
+        "--allowlist .github/test-outcome-allowlist.txt \\",
+        '--summary "$GITHUB_STEP_SUMMARY" --block',
+    ]
 
 
 def test_only_the_steps_the_diff_outlives_tolerate_a_failure() -> None:
