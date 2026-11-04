@@ -362,7 +362,10 @@ jobs:
   # PR, which never lands on main, and on a dispatch the tested commit, so
   # the lookup matches the `junit-<leg>-` prefix only. Artifacts expire after 30 days; when the
   # walk finds none, or the base is a docs-only PR chain with no report,
-  # the summary says "no baseline" and the job stays green. Shape B's
+  # the diff warns "no baseline" and the job stays green. A lookup that does
+  # not finish (an API error, an unreadable artifact or report) is not that:
+  # the baseline step exits 2 and leaves a marker, its `continue-on-error`
+  # lets the diff run, and the diff exits 2 on the marker. Shape B's
   # nightly on main will write records to a `test-results` branch, which
   # then replaces this walk as the baseline source.
   test-outcomes:
@@ -430,7 +433,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         # An empty base is a dispatch; the script then writes the no-baseline
-        # marker without calling the API, and the notice says why.
+        # marker without calling the API, and the diff's warning says why.
         run: |
           if [ -z "${BASE_SHA}" ]; then
               echo "::notice::${GITHUB_EVENT_NAME} run: no base commit, so no baseline"

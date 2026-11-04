@@ -273,9 +273,11 @@ the job's step summary; the file header describes the `*` wildcard.
 When the job fails, read its first annotation, which counts the violations on
 each leg. The step summary lists each test, and the
 `test-outcome-record-<sha>` artifact holds every test's outcome on both legs.
-If the job finds no baseline, the step summary says so and the job passes.
-JUnit artifacts expire after 30 days, and a docs-only pull request uploads
-none. The docstring of `scripts/test_outcome_record.py` has the full rules.
+If the job finds no baseline, it warns and passes: JUnit artifacts expire after
+30 days, and a docs-only pull request uploads none. If the lookup itself fails,
+for example on a GitHub API error, the job fails and its first annotation says
+why, so rerun the job. The docstring of `scripts/test_outcome_record.py` has
+the full rules.
 
 ### Changelog entries — one file per entry
 

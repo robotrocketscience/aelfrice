@@ -824,7 +824,13 @@ def test_annotations_are_warnings_when_advisory_and_errors_when_blocking() -> No
     ]
     assert all(line.startswith("::error::") for line in tor.render_annotations(diffs, None, block=True))
     assert tor.render_annotations([], "gone", block=False) == [
-        "::notice::test outcomes: no baseline: gone",
+        "::warning::test outcomes: no baseline: gone",
+    ]
+    assert tor.render_annotations([], "gone", block=True) == [
+        "::warning::test outcomes: no baseline: gone",
+    ]
+    assert tor.render_annotations([], None, False, None, "HTTP 502\nretry") == [
+        "::error::test outcomes: no usable baseline: HTTP 502 retry",
     ]
 
 
@@ -974,17 +980,18 @@ def test_fetch_baseline_degrades_to_a_marker_that_names_the_retention() -> None:
     assert marker["found"] is False
     assert "30 days" in marker["notice"]
     assert not tor.is_baseline_record(marker)
+    assert not tor.is_lookup_error(marker)
 
 
-def test_fetch_baseline_degrades_when_the_artifact_is_not_a_zip() -> None:
-    """A redirect body or a truncated download must not fail the step."""
+def test_fetch_baseline_reports_a_lookup_error_when_the_artifact_is_not_a_zip() -> None:
+    """A redirect body or a truncated download: a baseline exists and was not read."""
     class _BadBytes(_FakeApi):
         def bytes(self, path: str) -> bytes:
             return b"<html>moved</html>"
 
     api = _BadBytes(["green"], {"green": [{"id": 5}]}, {5: [_artifact(50, "junit-3.12-m0")]})
     marker = tor.fetch_baseline(api, "o/r", "green", "ci.yml", ["3.12"], 30)  # type: ignore[arg-type]
-    assert marker["found"] is False
+    assert marker["found"] is False and tor.is_lookup_error(marker)
     assert "artifact 50 of run 5 could not be read" in marker["notice"]
 
 
@@ -1005,14 +1012,14 @@ def test_junit_from_zip_requires_exactly_one_xml(names: tuple[str, ...]) -> None
     assert tor.junit_from_zip(_zip("notes.txt", "junit.xml")) == "<a />"
 
 
-def test_fetch_baseline_degrades_when_the_artifact_holds_no_report() -> None:
+def test_fetch_baseline_reports_a_lookup_error_when_the_artifact_holds_no_report() -> None:
     class _NoXml(_FakeApi):
         def bytes(self, path: str) -> bytes:
             return _zip("notes.txt")
 
     api = _NoXml(["green"], {"green": [{"id": 5}]}, {5: [_artifact(50, "junit-3.12-m0")]})
     marker = tor.fetch_baseline(api, "o/r", "green", "ci.yml", ["3.12"], 30)  # type: ignore[arg-type]
-    assert marker["found"] is False
+    assert marker["found"] is False and tor.is_lookup_error(marker)
     assert "artifact 50 of run 5 could not be read" in marker["notice"]
 
 
@@ -1036,24 +1043,24 @@ _UNPARSEABLE = ["<testsuites><testsuite><testcase", "not xml"]
 
 
 @pytest.mark.parametrize("xml", _UNPARSEABLE, ids=["truncated", "not-xml"])
-def test_fetch_baseline_degrades_when_the_report_does_not_parse(xml: str) -> None:
+def test_fetch_baseline_reports_a_lookup_error_when_the_report_does_not_parse(xml: str) -> None:
     marker = tor.fetch_baseline(_BadXml(xml), "o/r", "green", "ci.yml", ["3.12"], 30)  # type: ignore[arg-type]
-    assert marker["found"] is False
+    assert marker["found"] is False and tor.is_lookup_error(marker)
     assert "a JUnit report of run 5 could not be parsed" in marker["notice"]
 
 
 @pytest.mark.parametrize("xml", _UNPARSEABLE, ids=["truncated", "not-xml"])
-def test_an_unparseable_baseline_report_writes_a_marker_and_exits_0(
+def test_an_unparseable_baseline_report_writes_a_marker_and_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], xml: str,
 ) -> None:
-    """The diff step after it then reports "no baseline" rather than never running."""
+    """The step's `continue-on-error` lets the diff run, and the diff fails on the marker."""
     monkeypatch.setattr(tor, "GhApi", lambda: _BadXml(xml))
     out = tmp_path / "baseline.json"
     argv = ["baseline", "--repo", "o/r", "--base-sha", "green", "--legs", "3.12", "--out", str(out)]
-    assert tor.main(argv) == 0
+    assert tor.main(argv) == 2
     marker = json.loads(out.read_text(encoding="utf-8"))
-    assert marker["found"] is False
-    assert "::notice::a JUnit report of run 5 could not be parsed" in capsys.readouterr().err
+    assert marker["found"] is False and tor.is_lookup_error(marker)
+    assert "a JUnit report of run 5 could not be parsed" in capsys.readouterr().err
 
 
 def test_fetch_baseline_asks_for_max_commits_of_history() -> None:
@@ -1093,14 +1100,14 @@ def test_gh_api_raises_with_gh_stderr_when_gh_fails(monkeypatch: pytest.MonkeyPa
         tor.GhApi().bytes("/repos/o/r/x")
 
 
-def test_a_gh_failure_through_gh_api_becomes_a_no_baseline_marker(
+def test_a_gh_failure_through_gh_api_becomes_a_lookup_error_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(tor.subprocess, "run", _FakeGh(1, b"", b"HTTP 502"))
     out = tmp_path / "baseline.json"
-    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 0
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 2
     marker = json.loads(out.read_text(encoding="utf-8"))
-    assert marker["found"] is False and "HTTP 502" in marker["notice"]
+    assert tor.is_lookup_error(marker) and "HTTP 502" in marker["notice"]
 
 
 # ------------------------------------------------------------------ CLI
@@ -1171,7 +1178,81 @@ def test_block_mode_passes_without_violations_and_with_no_baseline(tmp_path: Pat
         "diff", "--current", str(current), "--baseline", str(marker), "--block", "--summary", str(summary),
     ]) == 0
     assert "No baseline: expired." in summary.read_text(encoding="utf-8")
-    assert tor.main(["diff", "--current", str(current), "--baseline", str(tmp_path / "none"), "--block"]) == 0
+
+
+def _one_test_record(tmp_path: Path) -> Path:
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps(_record(**{"3.12": {"t::a": tor.PASSED}})), encoding="utf-8")
+    return current
+
+
+@pytest.mark.parametrize("block", [True, False], ids=["block", "advisory"])
+def test_a_walk_that_finds_no_baseline_warns_and_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], block: bool,
+) -> None:
+    """First runs and expired artifacts: nothing failed, and nothing is known."""
+    monkeypatch.setattr(tor, "GhApi", lambda: _FakeApi(["base"], {}, {}))
+    base = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(base)]) == 0
+    capsys.readouterr()
+    summary = tmp_path / "summary.md"
+    args = ["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
+    assert tor.main([*args, "--block"] if block else args) == 0
+    out = capsys.readouterr().out
+    assert "::warning::test outcomes: no baseline: no successful ci.yml run" in out
+    assert "::error::" not in out and "::notice::" not in out
+    assert "No baseline: no successful ci.yml run" in summary.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("block", [True, False], ids=["block", "advisory"])
+def test_a_failed_lookup_fails_the_baseline_step_and_the_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], block: bool,
+) -> None:
+    """A baseline may exist that the lookup never read, so a pass would say
+    the ratchet held when nothing compared the two."""
+    monkeypatch.setattr(tor.subprocess, "run", _FakeGh(1, b"", b"HTTP 502\nBad Gateway"))
+    base = tmp_path / "baseline.json"
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(base)]) == 2
+    capsys.readouterr()
+    summary = tmp_path / "summary.md"
+    args = ["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--summary", str(summary)]
+    assert tor.main([*args, "--block"] if block else args) == 2
+    annotations = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("::")]
+    assert len(annotations) == 1
+    assert annotations[0].startswith("::error::test outcomes: no usable baseline: the baseline lookup failed:")
+    assert annotations[0].endswith("HTTP 502 Bad Gateway")
+    text = summary.read_text(encoding="utf-8")
+    assert "No usable baseline: the baseline lookup failed:" in text
+    assert "so this check fails." in text
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "{}", '{"format": 1, "sha": "x"}', '{"found": true}'],
+    ids=["missing-file", "empty-object", "no-legs", "found-no-legs"],
+)
+def test_a_baseline_file_that_holds_nothing_usable_fails_the_diff(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], content: str | None,
+) -> None:
+    """The baseline step died before it wrote, or wrote something else. Only
+    an explicit no-baseline marker passes."""
+    base = tmp_path / "baseline.json"
+    if content is not None:
+        base.write_text(content, encoding="utf-8")
+    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
+    assert "::error::test outcomes: no usable baseline: baseline file" in capsys.readouterr().out
+
+
+def test_a_baseline_file_that_is_not_json_fails_the_diff(tmp_path: Path) -> None:
+    base = tmp_path / "baseline.json"
+    base.write_text("not json", encoding="utf-8")
+    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--baseline", str(base), "--block"]) == 2
+
+
+def test_no_baseline_flag_at_all_passes_for_a_local_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`ci.yml` always passes the flag; a local diff without it has nothing to compare."""
+    assert tor.main(["diff", "--current", str(_one_test_record(tmp_path)), "--block"]) == 0
+    assert "::warning::test outcomes: no baseline: no baseline file given" in capsys.readouterr().out
 
 
 def test_baseline_with_no_base_commit_writes_a_marker_without_the_api(tmp_path: Path) -> None:
@@ -1209,10 +1290,11 @@ def test_baseline_passes_its_flags_to_the_walk(tmp_path: Path, monkeypatch: pyte
         KeyError("sha"),
         json.JSONDecodeError("Expecting value", "", 0),
         subprocess.TimeoutExpired(["gh", "api"], 60),
+        FileNotFoundError("gh"),
     ],
-    ids=["gh-failed", "value", "key", "json", "timeout"],
+    ids=["gh-failed", "value", "key", "json", "timeout", "no-gh"],
 )
-def test_a_failed_baseline_lookup_writes_a_marker_and_exits_0(
+def test_a_failed_baseline_lookup_writes_a_marker_and_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], exc: Exception,
 ) -> None:
     class _Failing(_FakeApi):
@@ -1221,11 +1303,11 @@ def test_a_failed_baseline_lookup_writes_a_marker_and_exits_0(
 
     monkeypatch.setattr(tor, "GhApi", lambda: _Failing([], {}, {}))
     out = tmp_path / "baseline.json"
-    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 0
+    assert tor.main(["baseline", "--repo", "o/r", "--base-sha", "base", "--out", str(out)]) == 2
     marker = json.loads(out.read_text(encoding="utf-8"))
-    assert marker["found"] is False
+    assert marker["found"] is False and tor.is_lookup_error(marker)
     assert marker["notice"].startswith("the baseline lookup failed: ")
-    assert "::notice::the baseline lookup failed" in capsys.readouterr().err
+    assert "the baseline lookup failed" in capsys.readouterr().err
 
 
 def test_dry_run_record_prints_the_counts_and_writes_nothing(

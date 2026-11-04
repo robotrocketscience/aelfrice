@@ -59,8 +59,14 @@ still shows its counts; the record names every test. Without `--block` the exit 
 whatever the diff says and each violation is a `::warning::`; with it the
 exit status is 1 when a violation exists and each is an `::error::`.
 GitHub shows 10 annotations of a level per step, so one annotation that
-counts the violations per leg comes before the per-test ones. A missing
-baseline is a notice, never a failure, in both modes.
+counts the violations per leg comes before the per-test ones.
+
+A walk that finishes and finds no baseline is a `::warning::` and passes in
+both modes: artifacts expire, and the first run has none. A lookup that
+does not finish is a different case. On an API error, or an artifact or a
+report that cannot be read, `baseline` writes a marker that says so and
+exits 2, and `diff` exits 2 on that marker, on a baseline file that is
+missing and on one that holds neither a record nor a no-baseline marker.
 
 The baseline. `ci.yml` runs on `pull_request` and on `workflow_dispatch`,
 never on a push to main. The merge train fast-forwards, so a merged PR's
@@ -84,7 +90,7 @@ the client it is given, and the `cmd_*` functions read and write files
 and print; the tests run those against a fake `gh` and temporary files.
 
 Exit status: 0, or 1 for a ratchet violation under `--block`, or 2 for a
-usage error or an unreadable input.
+usage error, an unreadable input or a failed baseline lookup.
 """
 from __future__ import annotations
 
@@ -428,12 +434,15 @@ def render_summary(
     baseline: dict[str, Any] | None,
     baseline_notice: str | None,
     block: bool,
+    lookup_error: str | None = None,
 ) -> str:
     """The step-summary Markdown, at most `SUMMARY_MAX_BYTES` long. Each
     list of a leg names its first `SUMMARY_MAX_ROWS` tests; the counts
     table and each list's total always show."""
     lines = [f"## Test outcomes ({'blocking' if block else 'advisory'})", ""]
-    if baseline is None:
+    if lookup_error is not None:
+        lines.append(f"No usable baseline: {lookup_error}. The ratchet was not evaluated, so this check fails.")
+    elif baseline is None:
         lines.append(f"No baseline: {baseline_notice or 'none given'}. The ratchet was not evaluated.")
     else:
         lines.append(f"Baseline: main @ `{baseline.get('sha') or 'unknown'}`.")
@@ -480,13 +489,18 @@ def render_annotations(
     baseline_notice: str | None,
     block: bool,
     allowlist: str | None = None,
+    lookup_error: str | None = None,
 ) -> list[str]:
     """Workflow commands: one that counts the violations, first, then one
-    per violation, and one for a missing baseline. GitHub shows 10
-    annotations of a level per step, so the count goes first and a long
-    list cannot hide it. `allowlist` is the path the count names."""
+    per violation, one for a missing baseline, and an error for a failed
+    lookup. GitHub shows 10 annotations of a level per step, so the count
+    goes first and a long list cannot hide it. `allowlist` is the path the
+    count names."""
     level = "error" if block else "warning"
     out: list[str] = []
+    if lookup_error is not None:
+        # A command ends at its line; gh's stderr can span several.
+        out.append(f"::error::test outcomes: no usable baseline: {' '.join(lookup_error.split())}")
     per_leg = [f"leg {d.leg}: {len(d.violations)}" for d in diffs if d.violations]
     if per_leg:
         total = sum(len(d.violations) for d in diffs)
@@ -496,7 +510,7 @@ def render_annotations(
             f"The step summary lists each one. A test that is meant to skip needs {entry}."
         )
     if baseline_notice:
-        out.append(f"::notice::test outcomes: no baseline: {baseline_notice}")
+        out.append(f"::warning::test outcomes: no baseline: {baseline_notice}")
     for d in diffs:
         for t in d.violations:
             out.append(f"::{level}::test outcome ratchet, leg {d.leg}: {t.test} {_describe(t)}")
@@ -554,11 +568,21 @@ def junit_from_zip(data: bytes) -> str:
 
 
 def no_baseline_marker(notice: str) -> dict[str, Any]:
+    """The walk finished and found no record to compare with."""
     return {"format": RECORD_FORMAT, "found": False, "notice": notice}
+
+
+def lookup_error_marker(notice: str) -> dict[str, Any]:
+    """The lookup did not finish, so a baseline may exist that it never read."""
+    return {**no_baseline_marker(notice), "error": True}
 
 
 def is_baseline_record(data: dict[str, Any]) -> bool:
     return data.get("found", True) is not False and "legs" in data
+
+
+def is_lookup_error(data: dict[str, Any]) -> bool:
+    return data.get("error") is True
 
 
 class GhApi:
@@ -596,7 +620,8 @@ def fetch_baseline(
     legs: list[str],
     max_commits: int,
 ) -> dict[str, Any]:
-    """The baseline record, or a no-baseline marker saying why."""
+    """The baseline record, a no-baseline marker when the walk finds none,
+    or a lookup-error marker when an artifact or a report cannot be read."""
     commits_json = api.json(commits_path(repo, base_sha, max_commits))
     commits = [c["sha"] for c in commits_json]
 
@@ -624,13 +649,13 @@ def fetch_baseline(
         try:
             texts[leg] = junit_from_zip(data)
         except (zipfile.BadZipFile, ValueError) as exc:
-            return no_baseline_marker(
+            return lookup_error_marker(
                 f"artifact {artifact_id} of run {ref.run_id} could not be read: {exc}"
             )
     try:
         record = build_record(texts, ref.sha)
     except ElementTree.ParseError as exc:
-        return no_baseline_marker(f"a JUnit report of run {ref.run_id} could not be parsed: {exc}")
+        return lookup_error_marker(f"a JUnit report of run {ref.run_id} could not be parsed: {exc}")
     record["run_id"] = ref.run_id
     return record
 
@@ -690,31 +715,35 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     else:
         try:
             record = fetch_baseline(GhApi(), args.repo, args.base_sha, args.workflow, legs, args.max_commits)
-        except (RuntimeError, ValueError, KeyError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
-            record = no_baseline_marker(f"the baseline lookup failed: {exc}")
+        except (OSError, RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+            record = lookup_error_marker(f"the baseline lookup failed: {exc}")
     _write_json(args.out, record)
+    # A log line only: the diff step reads the marker and writes the annotation.
     if record.get("found") is False:
-        print(f"::notice::{record['notice']}", file=sys.stderr)
-    return 0
+        print(record["notice"], file=sys.stderr)
+    return 2 if is_lookup_error(record) else 0
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
     baseline: dict[str, Any] | None = None
     baseline_notice: str | None = None
+    lookup_error: str | None = None
     if args.baseline is None:
         baseline_notice = "no baseline file given"
     elif not args.baseline.is_file():
-        baseline_notice = f"baseline file {args.baseline} is missing"
+        lookup_error = f"baseline file {args.baseline} is missing"
     else:
         data = _read_json(args.baseline)
         if is_baseline_record(data):
             baseline = data
-        else:
+        elif data.get("found") is False and not is_lookup_error(data):
             baseline_notice = str(data.get("notice") or "no baseline record")
+        else:
+            lookup_error = str(data.get("notice") or f"baseline file {args.baseline} holds no record")
     allowlist = parse_allowlist(args.allowlist.read_text(encoding="utf-8")) if args.allowlist else []
     diffs = diff_records(current, baseline, allowlist)
-    summary = render_summary(diffs, baseline, baseline_notice, args.block)
+    summary = render_summary(diffs, baseline, baseline_notice, args.block, lookup_error)
     if args.summary is not None and not args.dry_run:
         with args.summary.open("a", encoding="utf-8") as fh:
             fh.write(summary)
@@ -722,8 +751,11 @@ def cmd_diff(args: argparse.Namespace) -> int:
         if args.summary is not None:
             print(f"dry run: would append the summary to {args.summary}")
         sys.stdout.write(summary)
-    for line in render_annotations(diffs, baseline_notice, args.block, str(args.allowlist) if args.allowlist else None):
+    allowlist_name = str(args.allowlist) if args.allowlist else None
+    for line in render_annotations(diffs, baseline_notice, args.block, allowlist_name, lookup_error):
         print(line)
+    if lookup_error is not None:
+        return 2
     return 1 if args.block and has_violations(diffs) else 0
 
 
