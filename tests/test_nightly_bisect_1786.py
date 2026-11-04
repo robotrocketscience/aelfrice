@@ -158,14 +158,16 @@ for a in argv:
 sys.exit(1 if red else 0)
 '''
 
-# The fake `gh`: logs its arguments, then prints FAKE_GH_OUT's file or,
-# with FAKE_GH_FAIL set, fails.
+# The fake `gh`: logs its arguments, then prints FAKE_GH_OUT's file. With
+# FAKE_GH_FAIL set it fails; set to `with-output`, it prints the file first.
 _FAKE_GH = '''\
 import json, os, sys
 from pathlib import Path
 with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
 if os.environ.get("FAKE_GH_FAIL"):
+    if os.environ["FAKE_GH_FAIL"] == "with-output":
+        print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
     print("HTTP 502", file=sys.stderr)
     sys.exit(1)
 print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
@@ -721,6 +723,60 @@ def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
     assert json.loads((out_dir / "r.json").read_text(encoding="utf-8"))["complete"] is True
 
 
+def test_tests_left_after_the_last_round_get_a_range(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a", "ab", "abc", "abcd", "abcd"])
+    points = {shas[i]: 30 + i for i in range(1, 6)}
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, _B, _C, _D, points=points)
+    assert rc == 1
+    assert result["events"] == [
+        nb.event_for_culprit(shas[1], 31, [_A]),
+        nb.event_for_culprit(shas[2], 32, [_B]),
+        nb.event_for_culprit(shas[3], 33, [_C]),
+        nb.event_for_range(shas[3], shas[5], [_D], nb.REASON_ROUNDS),
+    ]
+    assert len(result["rounds"]) == nb.MAX_ROUNDS
+
+
+def test_a_test_that_passes_at_bad_gets_a_range(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "", "a"])
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[2], _A, _B, points={shas[1]: 31, shas[2]: 32})
+    assert rc == 1
+    assert result["events"] == [
+        nb.event_for_culprit(shas[2], 32, [_A]),
+        nb.event_for_range(shas[2], shas[2], [_B], nb.REASON_PASSES_AT_BAD),
+    ]
+
+
+def test_bad_is_never_skipped_when_the_points_file_leaves_it_out(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    shas = env.repo(["", "", "", "", "", "", "", "a"])
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points={shas[2]: 11, shas[5]: 12})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[7], None, [_A])]
+    # Commits 1, 3, 4 and 6, and never bad itself.
+    assert result["rounds"][0]["skipped"] == 4
+
+
+def test_adjacent_commits_run_only_the_checks(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """Git has nothing to bisect, and `git bisect run` would step `good`."""
+    shas = env.repo(["", "a"])
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A])]
+    assert env.stepped() == [shas[1], shas[0], shas[1]]
+
+
+def test_a_recheck_survives_a_dirty_tree(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_DIRTY", "check")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A])]
+
+
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
@@ -1058,6 +1114,40 @@ def test_merge_points_at_the_list_limit_means_every_commit(
     points = json.loads(out.read_text(encoding="utf-8"))
     assert points == ({shas[5]: 12, shas[7]: None} if kept else {})
     assert ("::warning::" in capsys.readouterr().err) is not kept
+
+
+def test_merge_points_ignores_output_from_a_failed_gh(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(_LINEAR)
+    _write(env.gh_out, [{"number": 12, "mergeCommit": {"oid": shas[5]}}])
+    monkeypatch.setenv("FAKE_GH_FAIL", "with-output")
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+    assert "HTTP 502" in capsys.readouterr().err
+
+
+def test_merge_points_leaves_out_a_merged_side_branch(env: Env, tmp_path: Path) -> None:
+    """A side branch from before `good` is in `good..bad` but not on the
+    ancestry path, so a bisect could not call it good or bad."""
+    shas = env.repo(["", "", "", ""])
+    repo = tmp_path / "repo"
+    for args in (["checkout", "-q", "-b", "side", shas[0]], ["commit", "-q", "--allow-empty", "-m", "side"]):
+        assert _git(repo, *args).returncode == 0
+    side = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    for args in (["checkout", "-q", "main"], ["merge", "-q", "--no-ff", "--no-edit", "side"]):
+        r = _git(repo, *args)
+        assert r.returncode == 0, r.stderr
+    merge = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _write(env.gh_out, [
+        {"number": 5, "mergeCommit": {"oid": side}},
+        {"number": 6, "mergeCommit": {"oid": merge}},
+        {"number": 7, "mergeCommit": {"oid": shas[2]}},
+    ])
+    out = tmp_path / "points.json"
+    assert _merge_points(repo, shas[1], merge, out) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {shas[2]: 7, merge: 6}
 
 
 def test_merge_points_dry_run_calls_no_api(env: Env, tmp_path: Path) -> None:
