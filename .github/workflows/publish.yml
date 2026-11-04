@@ -54,7 +54,7 @@ jobs:
           # A release job must not restore a cache another workflow wrote.
           # That cache is a path into the published build.
           enable-cache: false
-      - run: uv sync --frozen --group dev --extra archive
+      - run: uv sync --frozen --group dev --extra archive --extra onboard-llm
       - run: uv run pytest tests/ -q
       - run: uv build
       - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1.4.4
