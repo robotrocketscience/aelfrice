@@ -220,11 +220,11 @@ def test_pinning_did_not_move_a_tag_checkout_to_an_older_release() -> None:
 # --- checkout credentials ----------------------------------------------------
 
 
-# Jobs whose checkout keeps the token because a later step pushes with it.
-# Each says so with an explicit `persist-credentials: true`, and a test
-# fails if the line goes. Every other checkout sets `persist-credentials: false`, so
-# no later step or action can read the token from the working tree (zizmor
-# `artipacked`). A fetch needs no token: the repository is public, and
+# Jobs whose checkout persists the token for later steps because one of them
+# pushes with it. Each says so with an explicit `persist-credentials: true`,
+# and the test below fails if the line goes. Every other checkout sets
+# `persist-credentials: false`, so no later step or action can read the
+# token (zizmor `artipacked`). A fetch needs no token: the repository is public, and
 # publish.yml and replay-soak-gate.yml already fetch without one.
 _PUSHING_CHECKOUTS = {
     ("bench-canonical.yml", "canonical"): "pushes the results snapshot to bench-canonical-results",
