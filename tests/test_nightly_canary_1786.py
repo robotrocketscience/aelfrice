@@ -590,9 +590,9 @@ def _publish(tmp_path: Path, repo: Path, record: dict[str, Any], triage: dict[st
                     "--main-repo", str(repo), *extra])
 
 
-def _green(sha: str, run_id: int, day: int = 4) -> dict[str, Any]:
+def _green(sha: str, run_id: int, day: int = 4, run_attempt: int = 1) -> dict[str, Any]:
     return _night(sha, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)},
-                  run_id=run_id, created_at=f"2026-11-{day:02}T02:17:00Z")
+                  run_id=run_id, run_attempt=run_attempt, created_at=f"2026-11-{day:02}T02:17:00Z")
 
 
 def _red(sha: str, run_id: int, day: int = 4, run_attempt: int = 1) -> dict[str, Any]:
@@ -619,17 +619,17 @@ def test_publish_writes_the_run_the_index_and_the_last_green_pointer(
     assert _publish(tmp_path, repo, record, triage) == 0
     branch = tmp_path / "branch"
     assert sorted(p.relative_to(branch).as_posix() for p in branch.rglob("*") if p.is_file()) == [
-        "index.jsonl", "last-green.json", "runs/2026-11-04-100/record.json", "runs/2026-11-04-100/triage.json",
+        "index.jsonl", "last-green.json", "runs/2026-11-04-100-a1/record.json", "runs/2026-11-04-100-a1/triage.json",
     ]
-    assert json.loads((branch / "runs/2026-11-04-100/record.json").read_text(encoding="utf-8")) == record
+    assert json.loads((branch / "runs/2026-11-04-100-a1/record.json").read_text(encoding="utf-8")) == record
     [line] = _index(tmp_path)
     assert line == {
-        "run_id": 100, "run_attempt": 1, "date": "2026-11-04", "path": "runs/2026-11-04-100", "sha": shas[0],
+        "run_id": 100, "run_attempt": 1, "date": "2026-11-04", "path": "runs/2026-11-04-100-a1", "sha": shas[0],
         "verdict": nc.GREEN, "status": {"3.12": nc.GREEN, "3.13": nc.GREEN},
         "counts": {leg: record["legs"][leg]["counts"] for leg in _LEGS},
         "flaky": {"3.12": [], "3.13": []}, "events": ["pr-1786"],
     }
-    pointer = {"sha": shas[0], "path": "runs/2026-11-04-100", "run_id": 100, "date": "2026-11-04"}
+    pointer = {"sha": shas[0], "path": "runs/2026-11-04-100-a1", "run_id": 100, "date": "2026-11-04"}
     assert _last_green(tmp_path) == {"canary": pointer, "legs": {"3.12": pointer, "3.13": pointer}}
 
 
@@ -643,6 +643,37 @@ def test_a_rerun_of_the_same_run_leaves_one_index_line(
     assert _publish(tmp_path, repo, _red(shas[2], 101, day=5), None) == 0
     assert _publish(tmp_path, repo, _red(shas[1], 100, run_attempt=3), None) == 0
     assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(101, 1), (100, 3)]
+    assert _index(tmp_path)[1]["path"] == "runs/2026-11-04-100-a3"
+    # An older attempt published late leaves the newest attempt's line.
+    assert _publish(tmp_path, repo, _red(shas[1], 100, run_attempt=2), None) == 0
+    assert [(e["run_id"], e["run_attempt"]) for e in _index(tmp_path)] == [(101, 1), (100, 3)]
+
+
+def test_a_red_reattempt_leaves_last_green_on_the_green_record_unchanged(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Attempt 1 is green and moves the pointer; attempt 2 of the same run
+    is red. The pointer still names attempt 1's record, which still exists,
+    is byte-for-byte what attempt 1 wrote, and is green."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, run_attempt=1), None) == 0
+    pointer = _last_green(tmp_path)["canary"]
+    green_file = tmp_path / "branch" / pointer["path"] / "record.json"
+    green_bytes = green_file.read_bytes()
+    assert _publish(tmp_path, repo, _red(c0, 100, run_attempt=2), None) == 0
+    assert _last_green(tmp_path)["canary"] == pointer
+    assert green_file.read_bytes() == green_bytes
+    assert json.loads(green_bytes)["nightly"]["verdict"] == nc.GREEN
+    assert (tmp_path / "branch/runs/2026-11-04-100-a2/record.json").is_file()
+    [line] = _index(tmp_path)
+    assert (line["run_attempt"], line["verdict"], line["path"]) == (2, nc.RED, "runs/2026-11-04-100-a2")
+    # regressions reads the green attempt as the last green night.
+    current = tmp_path / "tonight.json"
+    current.write_text(json.dumps(_red(c0, 100, run_attempt=2)), encoding="utf-8")
+    out = tmp_path / "triage-out.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+                    "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["events"][0]["key"] == f"drift-{c0[:12]}"
 
 
 def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
@@ -657,7 +688,7 @@ def test_the_last_green_pointer_moves_only_on_green_and_only_forward(
     assert _last_green(tmp_path)["legs"]["3.12"]["sha"] == c1
     assert _last_green(tmp_path)["legs"]["3.13"]["sha"] == c0
     assert _publish(tmp_path, repo, _green(c2, 102, day=3), None) == 0
-    assert _last_green(tmp_path)["canary"] == {"sha": c2, "path": "runs/2026-11-03-102", "run_id": 102,
+    assert _last_green(tmp_path)["canary"] == {"sha": c2, "path": "runs/2026-11-03-102-a1", "run_id": 102,
                                                "date": "2026-11-03"}
     assert _publish(tmp_path, repo, _green(c1, 103, day=4), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c2
@@ -707,8 +738,8 @@ def test_a_missing_triage_still_publishes_the_record(
 ) -> None:
     repo, (c0, _, _), _ = main_repo
     assert _publish(tmp_path, repo, _red(c0, 100), None) == 0
-    assert (tmp_path / "branch/runs/2026-11-04-100/record.json").is_file()
-    assert not (tmp_path / "branch/runs/2026-11-04-100/triage.json").exists()
+    assert (tmp_path / "branch/runs/2026-11-04-100-a1/record.json").is_file()
+    assert not (tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").exists()
     assert _index(tmp_path)[0]["events"] == []
     assert "no triage" in capsys.readouterr().err
 
@@ -720,7 +751,7 @@ def test_publish_dry_run_writes_nothing(
     assert _publish(tmp_path, repo, _green(c0, 100), None, "--dry-run") == 0
     assert list((tmp_path / "branch").iterdir()) == []
     printed = capsys.readouterr().out
-    assert "would write runs/2026-11-04-100/record.json" in printed
+    assert "would write runs/2026-11-04-100-a1/record.json" in printed
     assert "would write last-green.json" in printed
 
 
@@ -750,7 +781,7 @@ def test_regressions_reads_the_last_green_night_publish_wrote(
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--canary-legs", "3.12,3.13", "--out", str(out)]) == 0
     triage = json.loads(out.read_text(encoding="utf-8"))
-    assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100", "run_id": 100, "date": "2026-11-01"}
+    assert triage["last_green"] == {"sha": c0, "path": "runs/2026-11-01-100-a1", "run_id": 100, "date": "2026-11-01"}
     assert triage["candidates"] == [{"test": _A, "legs": ["3.13"], "before": {"3.13": tor.PASSED}}]
     assert triage["drift_check"] == {"sha": c0, "python": "3.13", "tests": [_A]}
 

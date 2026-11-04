@@ -87,9 +87,11 @@ event. The output carries:
   fail); a mass failure samples 20 of them.
 
 `publish` writes the night to a checkout of the results branch:
-`runs/<YYYY-MM-DD>-<run_id>/record.json` and `triage.json`, one line in
-`index.jsonl` per night (a rerun of the same run replaces its line), and
-`last-green.json`. The `canary` entry of `last-green.json` moves only on a
+`runs/<YYYY-MM-DD>-<run_id>-a<run_attempt>/record.json` and `triage.json`,
+one line in `index.jsonl` per night, and `last-green.json`. Each attempt
+of a run gets its own directory, so a red re-attempt never overwrites the
+green record `last-green.json` points at. The index keeps one line per
+run, the newest attempt's, and names that attempt's directory. The `canary` entry of `last-green.json` moves only on a
 green night, and each `legs` entry only when that leg is green, and either
 moves only when the old commit is an ancestor of the new one in
 `--main-repo`. A missing triage file is a notice: the night's record is
@@ -456,7 +458,8 @@ def run_date(created_at: str) -> str:
 
 def run_path(record: dict[str, Any]) -> str:
     nightly = record["nightly"]
-    return f"runs/{run_date(str(nightly['created_at']))}-{int(nightly['run_id'])}"
+    date = run_date(str(nightly["created_at"]))
+    return f"runs/{date}-{int(nightly['run_id'])}-a{int(nightly['run_attempt'])}"
 
 
 def index_entry(record: dict[str, Any], triage: dict[str, Any] | None) -> dict[str, Any]:
@@ -477,8 +480,17 @@ def index_entry(record: dict[str, Any], triage: dict[str, Any] | None) -> dict[s
 
 
 def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
-    """The index with any line of the same run replaced by `entry`, last."""
-    kept = [line for line in lines if line.strip() and int(json.loads(line)["run_id"]) != entry["run_id"]]
+    """The index with one line per run: an older attempt's line of
+    `entry`'s run is replaced by `entry`, last; a newer one is kept."""
+    kept: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        if int(data["run_id"]) != entry["run_id"]:
+            kept.append(line)
+        elif int(data["run_attempt"]) > entry["run_attempt"]:
+            return [ln for ln in lines if ln.strip()]
     return [*kept, json.dumps(entry, sort_keys=True, separators=(",", ":"))]
 
 
