@@ -74,7 +74,7 @@ def _report(*cases: str) -> str:
 
 # The diff subcommand with the inputs it requires, as a docs-only run gives
 # them. A test that needs another value passes the flag again; the last wins.
-_DIFF = ["diff", "--full-suite", "false"]
+_DIFF = ["diff", "--full-suite", "false", "--pytest-result", "success"]
 
 _FAIL = '<failure message="AssertionError: boom">assert 1 == 2</failure>'
 _ERROR = '<error message="failed on setup with RuntimeError">RuntimeError</error>'
@@ -1458,12 +1458,34 @@ def test_only_a_baseline_that_lacks_one_leg_warns_per_leg(with_record: bool) -> 
     assert [ln for ln in tor.render_annotations(diffs, None, block=True) if "leg 3." in ln] == []
 
 
-def test_the_diff_requires_full_suite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """A default would hand a caller that omits the flag the docs-only pass."""
+@pytest.mark.parametrize(
+    ("given", "missing"),
+    [(["--pytest-result", "success"], "--full-suite"), (["--full-suite", "false"], "--pytest-result")],
+    ids=["no-full-suite", "no-pytest-result"],
+)
+def test_the_diff_requires_both_inputs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], given: list[str], missing: str,
+) -> None:
+    """A default would hand a caller that omits a flag the docs-only pass."""
     with pytest.raises(SystemExit) as info:
-        tor.main(["diff", "--current", str(_record_from_reports(tmp_path)), "--block"])
+        tor.main(["diff", "--current", str(_record_from_reports(tmp_path)), "--block", *given])
     assert info.value.code == 2
-    assert "--full-suite" in capsys.readouterr().err
+    assert missing in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", ""])
+def test_a_false_output_from_a_failed_job_does_not_excuse_a_lost_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], result: str,
+) -> None:
+    """A leg that died before the filter step computes `false`, and if it
+    finishes last its value is the job's, while another leg lost its report."""
+    current = _record_from_reports(tmp_path, "3.12")
+    capsys.readouterr()
+    assert tor.main([
+        *_DIFF, "--current", str(current), "--baseline", str(_passing_baseline(tmp_path)),
+        "--pytest-result", result, "--block",
+    ]) == 2
+    assert "::error::test outcomes: " in capsys.readouterr().out
 
 
 def test_a_docs_only_run_with_no_reports_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1893,6 +1915,8 @@ def test_the_diff_learns_whether_the_suite_ran_from_the_pytest_job() -> None:
     diff = _one_step("test_outcome_record.py diff")
     assert "FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}" in diff
     assert '--full-suite "$FULL_SUITE"' in diff
+    assert "PYTEST_RESULT: ${{ needs.pytest.result }}" in diff
+    assert '--pytest-result "$PYTEST_RESULT"' in diff
     lines = _job_lines("pytest")
     output = [ln.strip().removeprefix("full_suite: ") for ln in lines if ln.strip().startswith("full_suite: ")]
     assert len(output) == 1
@@ -1924,7 +1948,7 @@ def test_the_diff_step_runs_only_the_diff() -> None:
     assert _block_lines(_one_step("test_outcome_record.py diff"), "run") == [
         "python3 scripts/test_outcome_record.py diff \\",
         "--current current-record.json --baseline baseline-record.json \\",
-        '--full-suite "$FULL_SUITE" \\',
+        '--full-suite "$FULL_SUITE" --pytest-result "$PYTEST_RESULT" \\',
         "--allowlist .github/test-outcome-allowlist.txt \\",
         '--summary "$GITHUB_STEP_SUMMARY" --block',
     ]

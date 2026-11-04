@@ -13,7 +13,8 @@ Usage:
         [--head-sha SHA] [--workflow ci.yml] [--legs 3.12,3.13] [--max-commits 30]
         --out RECORD.json [--dry-run]
     test_outcome_record.py diff --current RECORD.json --baseline RECORD.json
-        --full-suite VALUE [--allowlist FILE] [--summary FILE] [--block] [--dry-run]
+        --full-suite VALUE --pytest-result VALUE [--allowlist FILE] [--summary FILE]
+        [--block] [--dry-run]
 
 `--dry-run` writes no file and calls no API. `record` prints each leg's
 counts, `baseline` prints the first request of its walk, and `diff` prints
@@ -79,10 +80,11 @@ missing and on one that holds neither a record nor a no-baseline marker.
 
 A leg with no JUnit report is either a docs-only run or a lost report. Both
 look the same in the record, and the `pytest` job's result is `success` in
-both, so the job's `full_suite` output tells them apart. `diff --full-suite`
-takes it: `false` means no leg was meant to report, and a leg with no report
-passes. Any other value, an empty one included, means every leg was meant to
-report, and `diff` exits 2 on a leg without one.
+both, so the job's `full_suite` output tells them apart. That output alone is
+not enough: a leg that dies before the filter step computes `false`, and the
+last leg to finish decides the value. So `diff` takes `--full-suite` and
+`--pytest-result`, and a leg may lack a report only when they are exactly
+`false` and `success`. In any other case `diff` exits 2 on a leg without one.
 
 The baseline. `ci.yml` runs on `pull_request` and on `workflow_dispatch`,
 never on a push to main. The merge train fast-forwards, so a merged PR's
@@ -782,7 +784,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 def cmd_diff(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
-    report_error = None if args.full_suite == "false" else missing_report_error(current)
+    reports_optional = args.full_suite == "false" and args.pytest_result == "success"
+    report_error = None if reports_optional else missing_report_error(current)
     baseline: dict[str, Any] | None = None
     baseline_notice: str | None = None
     lookup_error: str | None = None
@@ -843,7 +846,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline", default=None, type=Path)
     p.add_argument(
         "--full-suite", required=True,
-        help="the pytest job's full_suite output; any value but `false` requires a report on every leg",
+        help="the pytest job's full_suite output",
+    )
+    p.add_argument(
+        "--pytest-result", required=True,
+        help="the pytest job's result; a leg may lack a report only with `--full-suite false` and `success` here",
     )
     p.add_argument("--allowlist", default=None, type=Path)
     p.add_argument("--summary", default=None, type=Path)

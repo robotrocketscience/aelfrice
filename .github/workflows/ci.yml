@@ -76,8 +76,10 @@ jobs:
     # Whether this run was meant to write a JUnit report, the same test as the
     # `--junitxml` step's `if:` (a test ties them). `test-outcomes` reads it
     # to tell a docs-only run from a lost report: this job's result is
-    # `success` for both. Both legs compute the same value, so it does not
-    # matter which leg's output a matrix job keeps.
+    # `success` for both. The legs agree only when both reach the filter step.
+    # A leg that dies first computes `false`, and the last leg to finish
+    # decides the value, so `test-outcomes` trusts a `false` only when this
+    # job's result is `success`.
     outputs:
       full_suite: ${{ steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch' }}
     strategy:
@@ -473,9 +475,10 @@ jobs:
         timeout-minutes: 1
         env:
           FULL_SUITE: ${{ needs.pytest.outputs.full_suite }}
+          PYTEST_RESULT: ${{ needs.pytest.result }}
         run: |
           python3 scripts/test_outcome_record.py diff \
               --current current-record.json --baseline baseline-record.json \
-              --full-suite "$FULL_SUITE" \
+              --full-suite "$FULL_SUITE" --pytest-result "$PYTEST_RESULT" \
               --allowlist .github/test-outcome-allowlist.txt \
               --summary "$GITHUB_STEP_SUMMARY" --block
