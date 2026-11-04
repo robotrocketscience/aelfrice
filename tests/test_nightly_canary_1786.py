@@ -1029,15 +1029,55 @@ def test_a_collection_error_is_its_own_entry_with_the_module_to_collect(tmp_path
     assert triage["collection_errors"] == [
         {"test": _BROKEN_MODULE, "module": "tests/test_broken.py", "legs": ["3.13"]},
     ]
-    assert (triage["candidates"], triage["new_failing"], triage["events"]) == ([], [], [])
+    assert (triage["candidates"], triage["new_failing"]) == ([], [])
+    assert triage["events"] == [{"key": f"collection-error-{SHA2[:12]}", "kind": "collection-error",
+                                 "legs": ["3.13"], "tests": [_BROKEN_MODULE]}]
     assert triage["drift_check"]["legs"]["3.13"]["collection_errors"] == ["tests/test_broken.py"]
 
 
-def test_a_collection_error_with_no_file_keeps_its_entry_and_has_nothing_to_collect() -> None:
+def test_a_collection_error_with_no_file_keeps_its_entry_and_its_event() -> None:
     green, tonight = _collection_error_night()
     triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS)
     assert triage["collection_errors"] == [{"test": _BROKEN_MODULE, "module": None, "legs": ["3.13"]}]
     assert triage["drift_check"] is None
+    assert triage["events"][0]["tests"] == [_BROKEN_MODULE]
+
+
+def test_a_real_broken_nested_conftest_gets_its_directory_and_an_event(tmp_path: Path) -> None:
+    """pytest names the directory, `::tests.sub`, which no `.py` file matches."""
+    project = tmp_path / "project"
+    (project / "tests" / "sub").mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8")
+    (project / "tests" / "test_m.py").write_text("def test_pass():\n    pass\n", encoding="utf-8")
+    (project / "tests" / "sub" / "conftest.py").write_text("raise ImportError('regression')\n", encoding="utf-8")
+    (project / "tests" / "sub" / "test_s.py").write_text("def test_s():\n    pass\n", encoding="utf-8")
+    full = _pytest(project, "--junitxml=junit.xml")
+    assert full.returncode == 2, full.stdout
+    outcomes = tor.parse_junit((project / "junit.xml").read_text(encoding="utf-8"))
+    assert outcomes == {"::tests.sub": tor.ERROR}
+    green = _night(SHA1, {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None)})
+    tonight = _night(SHA2, {"3.12": ({_A: tor.PASSED}, None), "3.13": (outcomes, None)}, rcs={"3.13": 2})
+    triage = nc.find_regressions(tonight, green, {"sha": SHA1, "path": "runs/x"}, _LEGS,
+                                 lambda rel: (project / rel).is_file(), None, lambda rel: (project / rel).is_dir())
+    assert triage["collection_errors"] == [{"test": "::tests.sub", "module": "tests/sub/", "legs": ["3.13"]}]
+    assert triage["events"][0]["kind"] == "collection-error"
+    assert triage["drift_check"]["legs"]["3.13"]["collection_errors"] == ["tests/sub/"]
+    # Named on the command line, the conftest fails at startup: exit 4, not 2.
+    assert _pytest(project, "--collect-only", "-q", "tests/sub/").returncode == 4
+    (project / "tests" / "sub" / "conftest.py").write_text("", encoding="utf-8")
+    assert _pytest(project, "--collect-only", "-q", "tests/sub/").returncode == 0
+
+
+def test_regressions_finds_the_directory_of_a_collection_error(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "repo", "tests/sub/test_s.py")
+    tonight = _night(SHA2, {"3.12": ({"::tests.sub": tor.ERROR}, None), "3.13": ({_A: tor.PASSED}, None)}, rcs={"3.12": 2})
+    current = tmp_path / "record.json"
+    current.write_text(json.dumps(tonight), encoding="utf-8")
+    (tmp_path / "branch").mkdir()
+    out = tmp_path / "t.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+                    "--repo-root", str(root), "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["collection_errors"][0]["module"] == "tests/sub/"
 
 
 def test_a_collection_error_with_no_baseline_is_listed_and_in_the_event(tmp_path: Path) -> None:

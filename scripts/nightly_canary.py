@@ -113,15 +113,22 @@ carries:
   records use, and `node_id`, the id pytest takes, mapped against
   `--repo-root` as `failed-ids` maps it, or null when it would not round-trip.
 - `collection_errors`: confirmed ids of the form `::tests.test_x`, which is
-  how pytest reports a module it could not import. pytest then stops with
+  how pytest reports a module it could not import, or `::tests.sub` for a
+  directory whose `conftest.py` it could not import. pytest then stops with
   exit 2, so the suite did not run on that leg and the leg's report holds
   little else. These are neither candidates nor new failures: nothing passed
-  or failed. Each entry holds `test`, `legs` and `module`, the path
-  `tests/test_x.py` under `--repo-root` or null. `module` is the form a later
-  step hands pytest, and the one the bisect's `step` gets rather than
-  `tests.test_x` or `::tests.test_x`: an id with no `::` is a module, read by
-  `pytest --collect-only -q <module>`, where exit 2 is bad, exit 0 is good,
-  and a file not in that commit is good.
+  or failed. Each entry holds `test`, `legs` and `module`: the path
+  `tests/test_x.py` or `tests/sub/` under `--repo-root`, or null when neither
+  exists. `module` is the form a later step hands pytest, and the one the
+  bisect's `step` gets rather than `tests.test_x` or `::tests.test_x`: an id
+  with no `::` is a target, read by `pytest --collect-only -q <module>`, where
+  exit 0 is good and a path not in that commit is good. Exit 2 is bad for a
+  module; for a directory the bad status is 4, since pytest imports a
+  `conftest.py` on the command line at startup. When
+  there is a baseline to compare with, the night also carries one
+  `collection-error-<sha12>` event holding these ids, so none of them depends
+  on the target to be seen; without one, the no-baseline or drift event holds
+  them.
 - `drift_check`: the candidates the workflow reruns at the last green
   commit, per leg, under that leg's Python, since a test failing only on 3.12
   says nothing when it runs on 3.13. A leg that had a mass failure samples 20
@@ -504,10 +511,15 @@ def baseline_outcome(last_green: dict[str, Any], leg: str, test: str) -> str | N
     return outcome
 
 
-def collection_module(test: str, is_file: Callable[[str], bool]) -> str | None:
-    """The file behind a collection error id `::tests.test_x`, or None."""
-    rel = test.removeprefix("::").replace(".", "/") + ".py"
-    return rel if is_file(rel) else None
+def collection_module(
+    test: str, is_file: Callable[[str], bool], is_dir: Callable[[str], bool],
+) -> str | None:
+    """What pytest collects for a collection error id: the module of
+    `::tests.test_x`, the directory of `::tests.sub`, or None."""
+    rel = test.removeprefix("::").replace(".", "/")
+    if is_file(f"{rel}.py"):
+        return f"{rel}.py"
+    return f"{rel}/" if is_dir(rel) else None
 
 
 def failure_entries(by_leg: dict[str, list[str]], is_file: Callable[[str], bool]) -> list[dict[str, Any]]:
@@ -534,9 +546,11 @@ def find_regressions(
     listed_legs: Iterable[str],
     is_file: Callable[[str], bool] = lambda rel: False,
     baseline_problem: str | None = None,
+    is_dir: Callable[[str], bool] = lambda rel: False,
 ) -> dict[str, Any]:
     """The triage input for one night. Only canary legs are read. `is_file`
-    is what `node_id` needs; by default no test gets a node id.
+    is what `node_id` needs, by default no test gets a node id, and `is_dir`
+    finds the directory behind a collection error.
     `baseline_problem` says why a last green night could not be read."""
     nightly = current.get("nightly", {})
     sha = str(current.get("sha") or "")
@@ -576,7 +590,7 @@ def find_regressions(
             if test.startswith("::"):
                 collection.setdefault(test, []).append(leg)
     collection_errors: list[dict[str, Any]] = [
-        {"test": t, "module": collection_module(t, is_file), "legs": collection[t]} for t in sorted(collection)
+        {"test": t, "module": collection_module(t, is_file, is_dir), "legs": collection[t]} for t in sorted(collection)
     ]
     triage["collection_errors"] = collection_errors
     failures = failure_entries(confirmed_by_leg, is_file)
@@ -593,6 +607,11 @@ def find_regressions(
             "failures": failures,
         })
         return triage
+    if collection:
+        triage["events"].append({
+            "key": f"collection-error-{sha[:12]}", "kind": "collection-error",
+            "legs": sorted({leg for legs_of in collection.values() for leg in legs_of}), "tests": sorted(collection),
+        })
     # `diff_records` names each red test with its outcome on the baseline;
     # the flaky rule above then reads a flaky failure there as a pass.
     red_before: dict[tuple[str, str], str | None] = {}
@@ -1180,7 +1199,9 @@ def cmd_regressions(args: argparse.Namespace) -> int:
     if not root.is_dir():
         raise ValueError(f"--repo-root {root} is not a directory")
     listed = [leg for leg in args.canary_legs.split(",") if leg]
-    triage = find_regressions(current, last_green, meta, listed, lambda rel: (root / rel).is_file(), problem)
+    triage = find_regressions(
+        current, last_green, meta, listed, lambda rel: (root / rel).is_file(), problem, lambda rel: (root / rel).is_dir(),
+    )
     if problem is not None:
         print(f"::warning::no baseline tonight: {problem}")
     elif meta is None:
