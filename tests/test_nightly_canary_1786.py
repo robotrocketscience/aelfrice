@@ -1719,8 +1719,39 @@ def test_a_pointer_naming_a_red_record_is_no_baseline(tmp_path: Path) -> None:
 def test_a_good_pointer_reports_no_record_problem() -> None:
     green_record = _green(SHA1, 1)
     entry = {"sha": SHA1, "path": "runs/a", "run_id": 1}
-    assert nc.record_problems({"canary": entry, "legs": {"3.12": entry}}, lambda p: (green_record, None)) == []
-    assert nc.record_problems({}, lambda p: (None, "never read")) == []
+    roles = green_record["nightly"]["roles"]
+    assert nc.record_problems({"canary": entry, "legs": {"3.12": entry}}, lambda p: (green_record, None), roles) == []
+    assert nc.record_problems({}, lambda p: (None, "never read"), roles) == []
+
+
+def test_a_retired_legs_entry_exits_0_with_one_notice_each_night(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No night names the leg, so it could never move and exit 1 would never clear."""
+    repo, (c0, c1, _), side = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    retired = {"sha": side, "path": "runs/gone", "run_id": 1, "attempt": 1}
+    (branch / "last-green.json").write_text(json.dumps({"canary": None, "legs": {"3.11": retired}}), encoding="utf-8")
+    for run_id, sha in ((2, c0), (3, c1)):
+        capsys.readouterr()
+        assert _publish(tmp_path, repo, _green(sha, run_id, day=run_id), None) == 0
+        out = capsys.readouterr().out
+        assert out.count("::notice::last green leg 3.11") == 1 and "::error::" not in out
+    assert _last_green(tmp_path)["legs"]["3.11"] == retired
+
+
+def test_a_leg_tonight_names_is_checked_even_when_it_is_extra(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, _, _), side = main_repo
+    branch = tmp_path / "branch"
+    branch.mkdir()
+    entry = {"sha": side, "path": "runs/gone", "run_id": 1, "attempt": 1}
+    (branch / "last-green.json").write_text(json.dumps({"canary": None, "legs": {"3.14": entry}}), encoding="utf-8")
+    assert _publish(tmp_path, repo, _with_extra(c0, 2, tor.FAILED, 2), None) == 1
+    out = capsys.readouterr().out
+    assert "leg 3.14: names runs/gone" in out and f"leg 3.14: names {side[:12]}" in out
 
 
 def test_the_record_this_publish_writes_counts_as_present(
