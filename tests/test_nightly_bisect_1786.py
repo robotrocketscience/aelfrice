@@ -67,8 +67,9 @@ sys.exit(1 if failing else 0)
 
 # The fake `uv`: `sync` passes unless FAKE_UV_SYNC_FAIL is set; `run
 # --no-sync pytest --collect-only -q FILES` prints the `def test_*` ids of
-# each file; `run --no-sync pytest ... IDS` fails the ids `state.txt` marks
-# bad and writes a JUnit report for `--junitxml=`. Each call is logged.
+# each file, and exits 2 when one holds `import BROKEN`; `run --no-sync
+# pytest ... IDS` fails the ids `state.txt` marks bad and writes a JUnit
+# report for `--junitxml=`. Each call is logged.
 _FAKE_UV = '''\
 import json, os, re, sys
 from pathlib import Path
@@ -79,10 +80,16 @@ if argv[0] == "sync":
     sys.exit(1 if os.environ.get("FAKE_UV_SYNC_FAIL") else 0)
 args = [a for a in argv[4:] if not a.startswith("-") and a != "no:cacheprovider"]
 if "--collect-only" in argv:
+    broken = False
     for f in args:
-        for name in re.findall(r"^def (test_\\w+)", Path(f).read_text(encoding="utf-8"), re.M):
+        text = Path(f).read_text(encoding="utf-8")
+        if "import BROKEN" in text:
+            print(f"ERROR {f}")
+            broken = True
+            continue
+        for name in re.findall(r"^def (test_\\w+)", text, re.M):
             print(f"{f}::{name}")
-    sys.exit(0)
+    sys.exit(2 if broken else 0)
 state = dict(line.split("=", 1) for line in Path("state.txt").read_text(encoding="utf-8").split())
 cases, red = [], 0
 for i in args:
@@ -209,7 +216,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
 
 def _build_repo(root: Path, bad_tests: list[str]) -> list[str]:
     """One commit per entry, oldest first; each entry names the tests
-    (`a`, `b`) that fail at that commit. Returns the commit shas, which
+    (`a`, `b`) that fail at that commit, and `m` makes `tests/test_y.py`
+    fail to import. Returns the commit shas, which
     the fixed dates make the same on every build."""
     home = root.parent / "home"
     home.mkdir(exist_ok=True)
@@ -230,6 +238,8 @@ def _build_repo(root: Path, bad_tests: list[str]) -> list[str]:
     for i, bad in enumerate(bad_tests):
         state = "".join(f"test_{t}={'bad' if t in bad else 'ok'}\n" for t in "ab")
         (root / "state.txt").write_text(f"{state}n={i}\n", encoding="utf-8")
+        broken = "import BROKEN\n\n\n" if "m" in bad else ""
+        (root / "tests" / "test_y.py").write_text(f"{broken}def test_c():\n    pass\n", encoding="utf-8")
         assert _git(root, "add", "-A", env=git_env).returncode == 0
         date = f"2026-11-01T00:{i:02d}:00+00:00"
         r = _git(root, "commit", "-q", "-m", f"c{i}",
@@ -391,6 +401,20 @@ def test_the_default_step_runs_by_absolute_path(env: Env, tmp_path: Path, run_bi
     assert cmd[2] == "step"
 
 
+@pytest.mark.parametrize("module_id", ["tests.test_y", "::tests.test_y"])
+def test_a_module_that_stops_importing_is_bisected_by_its_file(
+    env: Env, tmp_path: Path, run_bisect: Runner, module_id: str,
+) -> None:
+    """pytest's JUnit names a module that fails to import by its dotted
+    path alone. The step judges that id by whether the module's file
+    collects, so the culprit is the merge that broke the import."""
+    shas = env.repo(["", "", "", "m", "m", "m"])
+    points: dict[str, int | None] = {shas[1]: 41, shas[3]: 42, shas[5]: 43}
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], module_id, points=points, step=False)
+    assert rc == 0, result
+    assert result["events"] == [{"key": "pr-42", "kind": "pr", "pr": 42, "sha": shas[3], "tests": [module_id]}]
+
+
 def test_dry_run_changes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(_LINEAR)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
@@ -503,10 +527,19 @@ def test_merge_points_unknown_sha_exits_2(env: Env, tmp_path: Path) -> None:
         ({"past_deadline": False, "present": [_A], "run_rc": 2}, nb.STEP_SKIP),
         ({"past_deadline": False, "present": [_A], "run_rc": 4}, nb.STEP_SKIP),
         ({"past_deadline": False, "present": [_A], "run_rc": None}, nb.STEP_SKIP),
+        ({"past_deadline": False, "module_rcs": [2]}, nb.STEP_BAD),
+        ({"past_deadline": False, "module_rcs": [0, 2], "present": [_A], "run_rc": 0}, nb.STEP_BAD),
+        ({"past_deadline": False, "module_rcs": [0, 5]}, nb.STEP_GOOD),
+        ({"past_deadline": False, "module_rcs": [0], "present": [_A], "run_rc": 1}, nb.STEP_BAD),
+        ({"past_deadline": False, "module_rcs": [None]}, nb.STEP_SKIP),
+        ({"past_deadline": False, "module_rcs": [4]}, nb.STEP_SKIP),
+        ({"past_deadline": True, "module_rcs": [2]}, nb.STEP_ABORT),
+        ({"past_deadline": False, "sync_rc": 1, "module_rcs": [2]}, nb.STEP_SKIP),
     ],
     ids=["deadline", "deadline-first", "sync-fails", "sync-timeout", "collect-error", "collect-timeout",
          "nothing-collected", "no-id-present", "run-passes", "run-fails", "run-interrupted",
-         "run-usage", "run-timeout"],
+         "run-usage", "run-timeout", "module-error", "module-error-wins", "module-collects",
+         "module-collects-run-fails", "module-timeout", "module-usage", "module-deadline", "module-sync"],
 )
 def test_step_exit_mapping(kwargs: dict[str, Any], status: int) -> None:
     assert nb.step_verdict(**kwargs) == status
@@ -562,6 +595,29 @@ def test_step_names_the_failing_tests(env: Env, tmp_path: Path) -> None:
     assert run[-2:] == [_A, _B]
 
 
+@pytest.mark.parametrize(("bad_tests", "status", "failed"), [
+    (["m"], nb.STEP_BAD, "tests.test_y\n"),
+    ([""], nb.STEP_GOOD, ""),
+])
+def test_step_judges_a_module_id_by_its_file(
+    env: Env, tmp_path: Path, bad_tests: list[str], status: int, failed: str,
+) -> None:
+    env.repo(bad_tests)
+    _tests_file(tmp_path / "ids.txt", "tests.test_y", _B)
+    out = tmp_path / "failed.txt"
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--failed-out", str(out)) == status
+    assert out.read_text(encoding="utf-8") == failed
+    collects = [c[-1] for c in env.uv_calls() if "--collect-only" in c]
+    assert collects == ["tests/test_y.py", "tests/test_x.py"]
+
+
+def test_step_with_an_absent_module_file_is_good(env: Env, tmp_path: Path) -> None:
+    env.repo(["m"])
+    _tests_file(tmp_path / "ids.txt", "tests.test_gone")
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_GOOD
+    assert [c[0] for c in env.uv_calls()] == ["sync"]
+
+
 def test_step_that_cannot_read_its_input_aborts(env: Env, tmp_path: Path) -> None:
     env.repo(["a"])
     assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_ABORT
@@ -587,6 +643,27 @@ def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
 )
 def test_junit_key(node_id: str, key: str) -> None:
     assert nb.junit_key(node_id) == key
+
+
+@pytest.mark.parametrize(
+    ("test_id", "path"),
+    [
+        ("tests.test_x", "tests/test_x.py"),
+        ("::tests.sub.test_x", "tests/sub/test_x.py"),
+        ("tests/test_x.py", "tests/test_x.py"),
+        ("tests/test_x.py::test_a", None),
+        ("tests/test_x.py::TestC::test_a[a.b]", None),
+        ("tests.test_x::test_a", None),
+        ("::", None),
+        ("tests.test-x", None),
+    ],
+)
+def test_module_file(test_id: str, path: str | None) -> None:
+    assert nb.module_file(test_id) == path
+
+
+def test_test_files_leaves_module_ids_out() -> None:
+    assert nb.test_files(["tests.test_y", _A, "tests/test_z.py"]) == ["tests/test_x.py"]
 
 
 def test_failing_ids_reads_failures_and_errors() -> None:

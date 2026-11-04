@@ -62,7 +62,10 @@ the result then names the range it had narrowed to. Otherwise it runs
 `pytest --collect-only -q` (125 when collection fails) and keeps the ids
 it collected. When none is collected the commit predates the tests and is
 good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
-status or a timeout is a skip. `--step-timeout` bounds the whole step. A
+status or a timeout is a skip. A module that fails to import reaches the
+step as a module id (`tests.test_x`, the name pytest's JUnit report gives
+a collection error). The step collects that module's file alone: a
+collection error is bad, and a file that is absent or collects is good. `--step-timeout` bounds the whole step. A
 step that cannot read its input exits 255 rather than 2, which `git bisect
 run` would read as a bad commit.
 
@@ -114,8 +117,9 @@ DEFAULT_STEP_TIMEOUT = 300
 MAX_TESTS = 50
 MAX_ROUNDS = 3
 
-# pytest's status when it collected no test.
+# pytest's status when it collected no test, and when collection failed.
 _PYTEST_NO_TESTS = 5
+_PYTEST_COLLECTION_ERROR = 2
 _GIT_TIMEOUT_SECONDS = 120
 _API_TIMEOUT_SECONDS = 60
 _PR_LIST_LIMIT = 500
@@ -143,16 +147,24 @@ def step_verdict(
     collect_rc: int | None = 0,
     present: Sequence[str] = (),
     run_rc: int | None = None,
+    module_rcs: Sequence[int | None] = (),
 ) -> int:
     """The step's exit status. A status of None is a timeout.
 
-    `collect_rc` is pytest's status for `--collect-only`, or 0 when no
-    test file exists to collect; `present` holds the ids it collected.
+    `collect_rc` is pytest's status for `--collect-only` over the files of
+    the node ids, or 0 when none of them exists; `present` holds the ids
+    it collected. `module_rcs` holds the `--collect-only` status of each
+    module id's file that exists: a collection error there (2) makes the
+    commit bad whatever the other tests do.
     """
     if past_deadline:
         return STEP_ABORT
     if sync_rc != 0:
         return STEP_SKIP
+    if any(rc not in (0, _PYTEST_COLLECTION_ERROR, _PYTEST_NO_TESTS) for rc in module_rcs):
+        return STEP_SKIP
+    if _PYTEST_COLLECTION_ERROR in module_rcs:
+        return STEP_BAD
     if collect_rc not in (0, _PYTEST_NO_TESTS):
         return STEP_SKIP
     if not present:
@@ -164,10 +176,30 @@ def step_verdict(
     return STEP_SKIP
 
 
+def module_file(test_id: str) -> str | None:
+    """The file a module-level collection error names, or None for a node id.
+
+    pytest reports a module that fails to import as a JUnit case with an
+    empty classname and the module's dotted path as its name, so the id
+    arrives as `tests.test_x` or `::tests.test_x`; a bare `tests/test_x.py`
+    is read the same way. Any id that names a function or class is a node id.
+    """
+    rest = test_id[2:] if test_id.startswith("::") else test_id
+    if not rest or "::" in rest:
+        return None
+    if rest.endswith(".py"):
+        return rest
+    if all(part.isidentifier() for part in rest.split(".")):
+        return rest.replace(".", "/") + ".py"
+    return None
+
+
 def test_files(ids: Iterable[str]) -> list[str]:
-    """The file part of each node id, once each, in order."""
+    """The file part of each node id, once each, in order; module ids are left out."""
     out: list[str] = []
     for node_id in ids:
+        if module_file(node_id) is not None:
+            continue
         path = node_id.split("::", 1)[0]
         if path not in out:
             out.append(path)
@@ -413,22 +445,35 @@ def cmd_step(args: argparse.Namespace) -> int:
         sync_rc, _ = _bounded(sync, end)
         if sync_rc != 0:
             return step_verdict(past_deadline=False, sync_rc=sync_rc)
+        # A module id is judged by whether its file collects: absent or
+        # collecting is good, a collection error is bad.
+        module_rcs: list[int | None] = []
+        for test_id in ids:
+            path = module_file(test_id)
+            if path is None or not Path(path).is_file():
+                continue
+            rc, _ = _bounded([*_PYTEST, "--collect-only", "-q", path], end, capture=True)
+            module_rcs.append(rc)
+            if rc == _PYTEST_COLLECTION_ERROR:
+                failed.append(test_id)
         files = [f for f in test_files(ids) if Path(f).is_file()]
         if not files:
-            return step_verdict(past_deadline=False)
+            return step_verdict(past_deadline=False, module_rcs=module_rcs)
         collect_rc, listing = _bounded([*_PYTEST, "--collect-only", "-q", *files], end, capture=True)
         present = present_ids(ids, collected_ids(listing))
         if collect_rc not in (0, _PYTEST_NO_TESTS) or not present:
-            return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present)
+            return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present, module_rcs=module_rcs)
         with tempfile.TemporaryDirectory() as tmp:
             junit = Path(tmp) / "step.xml"
             run_rc, _ = _bounded([*_PYTEST, "-q", f"--junitxml={junit}", *present], end)
             if junit.is_file():
                 try:
-                    failed = failing_ids(junit.read_text(encoding="utf-8"), present)
+                    failed += failing_ids(junit.read_text(encoding="utf-8"), present)
                 except ElementTree.ParseError:
-                    failed = []
-        return step_verdict(past_deadline=False, collect_rc=collect_rc, present=present, run_rc=run_rc)
+                    pass
+        return step_verdict(
+            past_deadline=False, collect_rc=collect_rc, present=present, run_rc=run_rc, module_rcs=module_rcs,
+        )
     finally:
         if args.failed_out is not None:
             args.failed_out.write_text("".join(f"{t}\n" for t in failed), encoding="utf-8")
