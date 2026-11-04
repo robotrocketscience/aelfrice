@@ -470,6 +470,40 @@ def test_a_module_that_stops_importing_is_bisected_by_its_file(
     assert result["events"] == [{"key": "pr-42", "kind": "pr", "pr": 42, "sha": shas[3], "tests": [module_id]}]
 
 
+def test_a_junit_id_is_bisected_like_its_node_id(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """`test_outcome_record.py` names a test `tests.test_x::test_a`. Read as
+    a path, that names no file, and the step called every commit good."""
+    shas = env.repo(["", "", "a", "a"])
+    junit = "tests.test_x::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], junit,
+                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
+    assert rc == 0, result
+    assert result["events"] == [{"key": "pr-22", "kind": "pr", "pr": 22, "sha": shas[2], "tests": [junit]}]
+
+
+def test_ids_that_name_no_file_get_a_range_without_a_step(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "", "a", "a"])
+    unread = ["tests.test_gone::test_a", "::tests.test-gone", "tests/test_gone.py::test_a"]
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], *unread,
+                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
+    assert rc == 1
+    assert [(e["key"], e["tests"], e["reason"]) for e in result["events"]] == [
+        (f"range-{shas[0][:12]}-{shas[3][:12]}", unread, nb.REASON_UNMAPPED),
+    ]
+    assert env.stepped() == []
+
+
+def test_a_hyphenated_module_id_is_judged_by_its_file(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "", "", ""], edits=(
+        (0, "tests/test-y.py", "def test_c():\n    pass\n"),
+        (2, "tests/test-y.py", "import BROKEN\n\n\ndef test_c():\n    pass\n"),
+    ))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], "::tests.test-y",
+                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
+    assert rc == 0, result
+    assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-22", ["::tests.test-y"])]
+
+
 def test_dry_run_changes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(_LINEAR)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
@@ -590,11 +624,14 @@ def test_merge_points_unknown_sha_exits_2(env: Env, tmp_path: Path) -> None:
         ({"past_deadline": False, "module_rcs": [4]}, nb.STEP_SKIP),
         ({"past_deadline": True, "module_rcs": [2]}, nb.STEP_ABORT),
         ({"past_deadline": False, "sync_rc": 1, "module_rcs": [2]}, nb.STEP_SKIP),
+        ({"past_deadline": False, "unmapped": True}, nb.STEP_SKIP),
+        ({"past_deadline": True, "unmapped": True}, nb.STEP_ABORT),
     ],
     ids=["deadline", "deadline-first", "sync-fails", "sync-timeout", "collect-error", "collect-timeout",
          "nothing-collected", "no-id-present", "run-passes", "run-fails", "run-interrupted",
          "run-usage", "run-timeout", "module-error", "module-error-wins", "module-collects",
-         "module-collects-run-fails", "module-timeout", "module-usage", "module-deadline", "module-sync"],
+         "module-collects-run-fails", "module-timeout", "module-usage", "module-deadline", "module-sync",
+         "unmapped", "unmapped-deadline"],
 )
 def test_step_exit_mapping(kwargs: dict[str, Any], status: int) -> None:
     assert nb.step_verdict(**kwargs) == status
@@ -673,6 +710,23 @@ def test_step_with_an_absent_module_file_is_good(env: Env, tmp_path: Path) -> No
     assert [c[0] for c in env.uv_calls()] == ["sync"]
 
 
+def test_step_given_a_junit_id_maps_it_to_the_checked_out_tree(env: Env, tmp_path: Path) -> None:
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", "tests.test_x::test_a")
+    failed = tmp_path / "failed.txt"
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--failed-out", str(failed)) == nb.STEP_BAD
+    assert failed.read_text(encoding="utf-8") == "tests.test_x::test_a\n"
+    assert env.uv_calls()[-1][-1] == _A
+
+
+@pytest.mark.parametrize("unread", ["tests.test_gone::test_a", "tests..test_x::test_a", "::a::b"])
+def test_step_given_an_id_with_no_file_skips(env: Env, tmp_path: Path, unread: str) -> None:
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", unread)
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_SKIP
+    assert env.uv_calls() == []
+
+
 def test_step_that_cannot_read_its_input_aborts(env: Env, tmp_path: Path) -> None:
     env.repo(["a"])
     assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_ABORT
@@ -710,11 +764,49 @@ def test_junit_key(node_id: str, key: str) -> None:
         ("tests/test_x.py::TestC::test_a[a.b]", None),
         ("tests.test_x::test_a", None),
         ("::", None),
-        ("tests.test-x", None),
+        ("::tests.test-y", "tests/test-y.py"),
+        ("tests..test_x", None),
+        ("/etc/test_x.py", None),
+        ("tests/../../test_x.py", None),
+        ("tests/test x", None),
     ],
 )
 def test_module_file(test_id: str, path: str | None) -> None:
     assert nb.module_file(test_id) == path
+
+
+@pytest.mark.parametrize(
+    ("test_id", "canonical"),
+    [
+        ("tests/test_x.py::test_a", "tests/test_x.py::test_a"),
+        ("tests/test_gone.py::test_a", "tests/test_gone.py::test_a"),
+        ("tests.test_x::test_a", "tests/test_x.py::test_a"),
+        ("tests.test_x.TestC::test_a[p.q]", "tests/test_x.py::TestC::test_a[p.q]"),
+        ("tests.test_x.TestC.TestD::test_a", "tests/test_x.py::TestC::TestD::test_a"),
+        ("tests.sub.test_z::test_a[a::b]", "tests/sub/test_z.py::test_a[a::b]"),
+        ("tests.test_x", "tests/test_x.py"),
+        ("::tests.test_x", "tests/test_x.py"),
+        ("tests.test_gone::test_a", None),
+        ("tests.test-y::test_a", None),
+        ("tests..test_x::test_a", None),
+        ("tests/test_x::test_a", None),
+        ("/etc/test_x.py::test_a", None),
+        ("tests/../test_x.py::test_a", None),
+        ("::", None),
+    ],
+)
+def test_canonical_id(test_id: str, canonical: str | None) -> None:
+    files = {"tests/test_x.py", "tests/sub/test_z.py"}
+    assert nb.canonical_id(test_id, files.__contains__) == canonical
+
+
+def test_map_ids_keeps_each_given_form() -> None:
+    mapped, unmapped = nb.map_ids(
+        ["tests.test_x::test_a", _A, "tests/test_gone.py::test_a", "tests.test_gone", "tests.test_gone::test_a"],
+        {"tests/test_x.py"},
+    )
+    assert mapped == {_A: ["tests.test_x::test_a", _A]}
+    assert unmapped == ["tests/test_gone.py::test_a", "tests.test_gone", "tests.test_gone::test_a"]
 
 
 def test_test_files_leaves_module_ids_out() -> None:

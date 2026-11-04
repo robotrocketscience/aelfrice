@@ -65,9 +65,22 @@ good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
 status or a timeout is a skip. A module that fails to import reaches the
 step as a module id (`tests.test_x`, the name pytest's JUnit report gives
 a collection error). The step collects that module's file alone: a
-collection error is bad, and a file that is absent or collects is good. `--step-timeout` bounds the whole step. A
-step that cannot read its input exits 255 rather than 2, which `git bisect
-run` would read as a bad commit.
+collection error is bad, and a file that is absent or collects is good.
+`--step-timeout` bounds the whole step. A step that cannot read its input
+exits 255 rather than 2, which `git bisect run` would read as a bad commit.
+
+Test ids. `--tests` takes three forms: a node id
+(`tests/test_x.py::TestC::test_a[p]`), a JUnit id
+(`tests.test_x.TestC::test_a[p]`, what `test_outcome_record.py` records),
+and a module id (`tests.test_x`, `::tests.test_x` or `tests/test_x.py`).
+`run` maps each to a node id against the tree of `--bad`, where a test that
+failed tonight has to exist, and the result lists the ids as given. An id
+that names no file there gets a range event with the reason `unmapped`
+without any step. Given a JUnit id directly, `step` maps it against the
+checked-out tree and exits 125 when it names no file there, because it
+cannot tell a test that does not exist yet from an id it cannot read. A
+node id or module id whose file is absent means the test does not exist at
+that commit, which is good.
 
 Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300)
 each step, and at most 50 tests are bisected; the others get a range
@@ -97,7 +110,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -136,6 +149,7 @@ REASON_UNVERIFIED = "unverified"
 REASON_ROUNDS = "rounds"
 REASON_CAP = "cap"
 REASON_PASSES_AT_BAD = "passes at bad"
+REASON_UNMAPPED = "unmapped"
 
 
 # ------------------------------------------------------------------ step
@@ -148,6 +162,7 @@ def step_verdict(
     present: Sequence[str] = (),
     run_rc: int | None = None,
     module_rcs: Sequence[int | None] = (),
+    unmapped: bool = False,
 ) -> int:
     """The step's exit status. A status of None is a timeout.
 
@@ -155,11 +170,12 @@ def step_verdict(
     the node ids, or 0 when none of them exists; `present` holds the ids
     it collected. `module_rcs` holds the `--collect-only` status of each
     module id's file that exists: a collection error there (2) makes the
-    commit bad whatever the other tests do.
+    commit bad whatever the other tests do. `unmapped` says an id names no
+    file, so the commit cannot be judged.
     """
     if past_deadline:
         return STEP_ABORT
-    if sync_rc != 0:
+    if unmapped or sync_rc != 0:
         return STEP_SKIP
     if any(rc not in (0, _PYTEST_COLLECTION_ERROR, _PYTEST_NO_TESTS) for rc in module_rcs):
         return STEP_SKIP
@@ -185,12 +201,39 @@ def module_file(test_id: str) -> str | None:
     is read the same way. Any id that names a function or class is a node id.
     """
     rest = test_id[2:] if test_id.startswith("::") else test_id
-    if not rest or "::" in rest:
+    if not rest or "::" in rest or any(c.isspace() for c in rest):
         return None
     if rest.endswith(".py"):
-        return rest
-    if all(part.isidentifier() for part in rest.split(".")):
-        return rest.replace(".", "/") + ".py"
+        return rest if _is_relative(rest) else None
+    parts = rest.split(".")
+    if "/" in rest or "\\" in rest or not all(parts):
+        return None
+    return "/".join(parts) + ".py"
+
+
+def _is_relative(path: str) -> bool:
+    return not path.startswith("/") and ".." not in path.split("/")
+
+
+def canonical_id(test_id: str, is_file: Callable[[str], bool]) -> str | None:
+    """`test_id` as a node id, or as a module's file; None when it names no file.
+
+    A JUnit id's classname mixes the module path with the class names. The
+    longest prefix that `is_file` accepts is the module, as `pytest`'s report
+    joins the path to the classes with dots.
+    """
+    head, sep, rest = test_id.partition("::")
+    if not sep or not head:
+        return module_file(test_id)
+    if head.endswith(".py"):
+        return test_id if _is_relative(head) else None
+    parts = head.split(".")
+    if "/" in head or not all(parts):
+        return None
+    for end in range(len(parts), 0, -1):
+        path = "/".join(parts[:end]) + ".py"
+        if is_file(path):
+            return "::".join([path, *parts[end:], rest])
     return None
 
 
@@ -429,8 +472,11 @@ _PYTEST = ["uv", "run", "--no-sync", "pytest", "-p", "no:cacheprovider"]
 
 
 def cmd_step(args: argparse.Namespace) -> int:
-    ids = parse_tests(args.tests.read_text(encoding="utf-8"))
+    given = parse_tests(args.tests.read_text(encoding="utf-8"))
     sync = _sync_argv(args.python, args.extra)
+    mapped = {test: canonical_id(test, lambda path: Path(path).is_file()) for test in given}
+    ids = [test for test in mapped.values() if test is not None]
+    as_given = {canon: test for test, canon in mapped.items() if canon is not None}
     if args.dry_run:
         print(f"dry run: would run {shlex.join(sync)}")
         print(f"dry run: would collect {len(ids)} test id(s) from {len(test_files(ids))} file(s) and run those present")
@@ -439,6 +485,10 @@ def cmd_step(args: argparse.Namespace) -> int:
     if now >= args.deadline:
         print("nightly_bisect step: past the deadline; aborting the bisect", file=sys.stderr)
         return step_verdict(past_deadline=True)
+    if None in mapped.values():
+        unread = [test for test, canon in mapped.items() if canon is None]
+        print(f"nightly_bisect step: no file for {unread}; skipping this commit", file=sys.stderr)
+        return step_verdict(past_deadline=False, unmapped=True)
     end = min(args.deadline, now + args.step_timeout)
     failed: list[str] = []
     try:
@@ -476,7 +526,7 @@ def cmd_step(args: argparse.Namespace) -> int:
         )
     finally:
         if args.failed_out is not None:
-            args.failed_out.write_text("".join(f"{t}\n" for t in failed), encoding="utf-8")
+            args.failed_out.write_text("".join(f"{as_given[t]}\n" for t in failed), encoding="utf-8")
 
 
 # -------------------------------------------------------------- the run
@@ -615,6 +665,20 @@ class Bisector:
             add_event(self.events, event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
 
 
+def map_ids(tests: Iterable[str], files: set[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """Each id that names a file in `files` under its canonical id, with the
+    ids given for it, and the ids that name none."""
+    mapped: dict[str, list[str]] = {}
+    unmapped: list[str] = []
+    for test in tests:
+        canon = canonical_id(test, files.__contains__)
+        if canon is None or canon.split("::", 1)[0] not in files:
+            unmapped.append(test)
+        else:
+            mapped.setdefault(canon, []).append(test)
+    return mapped, unmapped
+
+
 def _prepare_worktree(git: Git, path: Path, good: str) -> None:
     """A detached worktree at `good`, replacing one a previous run left."""
     if path.exists():
@@ -670,7 +734,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not tests:
         raise ValueError(f"{args.tests} names no test")
     points = parse_points(_read_json(args.points)) if args.points is not None else {}
-    bisected, over_cap = tests[:MAX_TESTS], tests[MAX_TESTS:]
+    mapped, unmapped = map_ids(tests, set(git.lines("ls-tree", "-r", "--name-only", bad)))
+    canonical = list(mapped)
+    bisected, over_cap = canonical[:MAX_TESTS], canonical[MAX_TESTS:]
     step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
     step_args = _step_passthrough(args)
     worktree = args.worktree if args.worktree is not None else args.repo_root / ".bisect"
@@ -679,6 +745,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         point_set = set(points) | {bad} if points else None
         print(f"dry run: {len(in_range)} commit(s) from {good[:12]} to {bad[:12]}, "
               f"{len(in_range) - len(skip_list(in_range, point_set))} to test, {len(bisected)} test(s)")
+        if unmapped:
+            print(f"dry run: {len(unmapped)} id(s) name no file at {bad[:12]}: {unmapped}")
         print(f"dry run: would add the worktree {worktree} and run {shlex.join([*step_cmd, *step_args])}")
         print(f"dry run: would write {args.out}")
         return 0
@@ -692,6 +760,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         bisector.bisect(good, bisected)
     if over_cap:
         add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+    if unmapped:
+        add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
+    for event in bisector.events:
+        event["tests"] = [given for test in event["tests"] for given in mapped.get(test, [test])]
     result = {
         "format": RESULT_FORMAT, "good": good, "bad": bad, "tests": tests,
         "merge_points": len(points), "events": bisector.events, "rounds": bisector.rounds,
@@ -732,7 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", parents=[common, env], help="bisect the tests from --good to --bad")
     p.add_argument("--good", required=True)
     p.add_argument("--bad", required=True)
-    p.add_argument("--tests", required=True, type=Path, help="one node id per line")
+    p.add_argument("--tests", required=True, type=Path, help="one node, JUnit or module id per line")
     p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
     p.add_argument("--repo-root", type=Path, default=Path("."))
     p.add_argument("--worktree", type=Path, default=None, help="default: .bisect under --repo-root")
