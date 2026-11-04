@@ -1,0 +1,836 @@
+#!/usr/bin/env python3
+"""The nightly canary's record, triage input and results branch (#1786).
+
+The nightly canary runs the full suite on main every night, on two canary
+legs (Python 3.12 and 3.13) and on extra legs that are tracked but never
+open an issue. Each leg reruns its failures once in the same job, so a
+failure that passes on the rerun is flaky and one that fails again is
+confirmed. This script turns each leg's bundle into one record, finds the
+confirmed failures that are new since the last green night, and writes the
+night to the `test-results` branch. It does not run pytest, git bisect or
+`gh`; the workflow and `scripts/nightly_bisect.py` do.
+
+Usage:
+    nightly_canary.py env --out ENV.json [--dry-run]
+    nightly_canary.py failed-ids --junit JUNIT.xml --repo-root DIR --out IDS.txt
+        [--max 50] [--github-output FILE] [--dry-run]
+    nightly_canary.py verdict --rc RC --junit JUNIT.xml [--rerun RERUN.xml]
+        [--max 50] [--out VERDICT.json] [--dry-run]
+    nightly_canary.py record --leg LEG=DIR[:ROLE] [--leg ...] --sha SHA
+        --run-id ID --run-attempt N [--event NAME] [--created-at ISO8601]
+        --out RECORD.json [--dry-run]
+    nightly_canary.py regressions --current RECORD.json --last-green-dir DIR
+        [--canary-legs 3.12,3.13] --out TRIAGE.json [--dry-run]
+    nightly_canary.py publish --record RECORD.json --triage TRIAGE.json
+        --branch-dir DIR [--main-repo .] [--dry-run]
+
+`--dry-run` writes no file and changes no git state. Each subcommand then
+prints what it would write, with the exit status a real run gives.
+`publish` still runs `git merge-base --is-ancestor`, which reads only.
+
+A leg's bundle. The suite job of a leg writes `env.json` (from `env`, run
+under the leg's interpreter with `uv run`), `junit.xml` from the full run,
+`failed-ids.txt` and `rerun.xml` when the full run exited 1, and
+`verdict.json` (from `verdict --out`). It uploads them as the artifact
+`nightly-<leg>-<sha>-a<run_attempt>`.
+
+`failed-ids` names the tests to rerun. A JUnit test id is
+`classname::name`, with the module path dotted in `classname`. The node id
+takes the longest prefix of `classname` that is a file
+`<repo-root>/a/b.py`; the rest of `classname` is class names, and `name`
+keeps its parameter brackets. A test whose module no longer exists, or a
+collection error (pytest writes it with an empty `classname`), maps to no
+node id. It is left out of the file, so the rerun does not run it and the
+verdict counts it as confirmed. When the run has more than `--max` red
+tests the file is empty and the GitHub output says `rerun=false`. The rerun
+step must test that output: pytest given an empty `@file` runs the whole
+suite.
+
+`verdict` reads one leg. Red outcomes are `failed`, `error` and `xpassed`,
+the outcomes that turn a pytest leg red. A red test whose rerun outcome is
+`passed` is flaky; every other red test is confirmed. More than `--max` red
+tests is a mass failure: the rerun is skipped and every red test is
+confirmed. The leg's status is `green` when nothing is confirmed and pytest
+exited 0 or 1, `red` when a test is confirmed, and `broken` when pytest
+exited with any other status, or with 1 and no red test, and nothing is
+confirmed. The exit status is 1 unless the leg is green.
+
+`record` writes a format-1 record that `test_outcome_record.py` reads,
+with every leg, plus a `nightly` key holding the run, each leg's role,
+environment, rc, status, flaky and confirmed tests, and the night's
+verdict. `DIR` is either one leg's bundle or the directory the artifacts
+were downloaded into; in the second case the bundle is the subdirectory
+`nightly-<leg>-<sha>-a<N>` with the highest `N`. `ROLE` is `canary`
+(the default) or `extra`. A leg with no `junit.xml`, an unparseable one,
+or no `verdict.json` is `missing`. The night is `green` when every canary
+leg is green, `incomplete` when a canary leg is missing or there is no
+canary leg, and `red` otherwise. `--created-at` defaults to the current
+UTC time and `--event` to `GITHUB_EVENT_NAME`.
+
+`regressions` compares the canary legs of the record with the last green
+record that `last-green.json` in `--last-green-dir` points to. A leg named
+in `--canary-legs` that the record gives the `extra` role is not a canary
+leg, and neither is a leg the flag leaves out: extra legs never produce an
+event. The output carries:
+
+- `events`: `canary-broken` when a canary leg is missing or broken;
+  `no-baseline-<sha12>` when there is no last green night yet;
+  `drift-<lastgreen12>` when tonight's commit is the last green commit,
+  since only the environment can have changed. Each of the last two holds
+  every confirmed test.
+- `candidates`: confirmed tests that the last green record holds on the
+  same leg, with their outcome there. A test that failed there and was
+  flaky counts as `passed`.
+- `new_failing`: confirmed tests the last green record does not hold.
+- `drift_check`: the candidates the workflow reruns at the last green
+  commit, with the Python of the failing leg (the newest one when both
+  fail); a mass failure samples 20 of them.
+
+`publish` writes the night to a checkout of the results branch:
+`runs/<YYYY-MM-DD>-<run_id>/record.json` and `triage.json`, one line in
+`index.jsonl` per night (a rerun of the same run replaces its line), and
+`last-green.json`. The `canary` entry of `last-green.json` moves only on a
+green night, and each `legs` entry only when that leg is green, and either
+moves only when the old commit is an ancestor of the new one in
+`--main-repo`. A missing triage file is a notice: the night's record is
+still published, with no event keys.
+
+Standard library only, so the publish job runs it on the runner's own
+interpreter. It imports `parse_junit`, `build_record` and `diff_records`
+from `test_outcome_record.py` next to it. The functions above `uv_version`
+are pure and take their inputs as values; `tests/test_nightly_canary_1786.py`
+runs them on synthetic reports and records, and runs the `cmd_*` functions
+against temporary files and a temporary git repository.
+
+Exit status: 0; 1 when `verdict` finds the leg is not green; 2 for a usage
+error or an unreadable input.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import test_outcome_record as tor  # noqa: E402
+
+TRIAGE_FORMAT = 1
+
+#: Outcomes that turn a pytest leg red (`LegDiff.red` in test_outcome_record).
+RED_OUTCOMES: frozenset[str] = frozenset({tor.FAILED, tor.ERROR, tor.XPASSED})
+
+#: More red tests than this on one leg is a mass failure: no rerun.
+MASS_FAILURE_THRESHOLD = 50
+
+#: Candidates the drift check runs after a mass failure.
+MASS_FAILURE_SAMPLE = 20
+
+CANARY = "canary"
+EXTRA = "extra"
+ROLES: tuple[str, ...] = (CANARY, EXTRA)
+
+GREEN = "green"
+RED = "red"
+BROKEN = "broken"
+MISSING = "missing"
+INCOMPLETE = "incomplete"
+
+#: pytest exit statuses for "all passed" and "some tests failed".
+_TEST_RC = (0, 1)
+
+_BUNDLE_FILES = ("junit.xml", "verdict.json", "env.json")
+
+_GIT_TIMEOUT_SECONDS = 60
+_UV_TIMEOUT_SECONDS = 30
+
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+# --------------------------------------------------------------- failed-ids
+
+def red_ids(outcomes: dict[str, str]) -> list[str]:
+    """The test ids with a red outcome, sorted."""
+    return sorted(t for t, o in outcomes.items() if o in RED_OUTCOMES)
+
+
+def node_id(test: str, is_file: Callable[[str], bool]) -> str | None:
+    """The pytest node id for a JUnit `classname::name`, or None.
+
+    `is_file` says whether a path relative to the repo root is a file. The
+    module is the longest dotted prefix of `classname` that names a `.py`
+    file; the parts after it are classes.
+    """
+    classname, sep, name = test.partition("::")
+    if not sep or not classname or not name:
+        return None
+    parts = classname.split(".")
+    for cut in range(len(parts), 0, -1):
+        module = "/".join(parts[:cut]) + ".py"
+        if is_file(module):
+            return "::".join([module, *parts[cut:], name])
+    return None
+
+
+def plan_rerun(
+    outcomes: dict[str, str], is_file: Callable[[str], bool], max_ids: int,
+) -> dict[str, Any]:
+    """What the rerun step runs: node ids, the ids left unmapped, and
+    whether to rerun at all."""
+    red = red_ids(outcomes)
+    if len(red) > max_ids:
+        return {"count": len(red), "rerun": False, "mass_failure": True, "ids": [], "unmapped": []}
+    ids: list[str] = []
+    unmapped: list[str] = []
+    for test in red:
+        nid = node_id(test, is_file)
+        if nid is None:
+            unmapped.append(test)
+        else:
+            ids.append(nid)
+    return {
+        "count": len(red),
+        "rerun": bool(ids),
+        "mass_failure": False,
+        "ids": sorted(set(ids)),
+        "unmapped": unmapped,
+    }
+
+
+def github_output_lines(plan: dict[str, Any]) -> list[str]:
+    return [
+        f"count={plan['count']}",
+        f"rerun={'true' if plan['rerun'] else 'false'}",
+        f"mass_failure={'true' if plan['mass_failure'] else 'false'}",
+    ]
+
+
+# ------------------------------------------------------------------ verdict
+
+def classify_leg(
+    rc: int,
+    outcomes: dict[str, str],
+    rerun: dict[str, str] | None,
+    max_ids: int = MASS_FAILURE_THRESHOLD,
+) -> dict[str, Any]:
+    """One leg's verdict from the full run's outcomes and the rerun's."""
+    red = red_ids(outcomes)
+    mass = len(red) > max_ids
+    if mass or rerun is None:
+        flaky: list[str] = []
+    else:
+        flaky = [t for t in red if rerun.get(t) == tor.PASSED]
+    confirmed = [t for t in red if t not in flaky]
+    if confirmed:
+        status = RED
+    elif rc not in _TEST_RC or (rc == 1 and not red):
+        status = BROKEN
+    else:
+        status = GREEN
+    return {
+        "rc": rc,
+        "red": red,
+        "flaky": flaky,
+        "confirmed": confirmed,
+        "mass_failure": mass,
+        "status": status,
+    }
+
+
+# ------------------------------------------------------------------- record
+
+def parse_leg_spec(value: str) -> tuple[str, str, str]:
+    """`LEG=DIR[:ROLE]` as (leg, dir, role). A `:` suffix that is not a role
+    is part of the directory."""
+    leg, sep, rest = value.partition("=")
+    if not sep or not leg or not rest:
+        raise ValueError(f"expected LEG=DIR[:ROLE], got {value!r}")
+    head, colon, tail = rest.rpartition(":")
+    if colon and head and tail in ROLES:
+        return leg, head, tail
+    return leg, rest, CANARY
+
+
+def bundle_attempt(name: str, leg: str, sha: str) -> int | None:
+    """N for an artifact directory `nightly-<leg>-<sha>-a<N>`, else None."""
+    m = re.fullmatch(re.escape(f"nightly-{leg}-{sha}-a") + r"(\d+)", name)
+    return int(m.group(1)) if m else None
+
+
+def newest_bundle(names: Iterable[str], leg: str, sha: str) -> str | None:
+    """The artifact directory of the leg's highest attempt, or None."""
+    best: tuple[int, str] | None = None
+    for name in names:
+        n = bundle_attempt(name, leg, sha)
+        if n is not None and (best is None or n > best[0]):
+            best = (n, name)
+    return None if best is None else best[1]
+
+
+def night_verdict(roles: dict[str, str], status: dict[str, str]) -> str:
+    canary = [leg for leg, role in roles.items() if role == CANARY]
+    if not canary or any(status.get(leg, MISSING) == MISSING for leg in canary):
+        return INCOMPLETE
+    if all(status[leg] == GREEN for leg in canary):
+        return GREEN
+    return RED
+
+
+def build_nightly_record(
+    junit: dict[str, str | None],
+    verdicts: dict[str, dict[str, Any] | None],
+    envs: dict[str, dict[str, Any] | None],
+    roles: dict[str, str],
+    attempts: dict[str, int | None],
+    sha: str,
+    run_id: int,
+    run_attempt: int,
+    event: str,
+    created_at: str,
+) -> dict[str, Any]:
+    """The format-1 record for one night with its additive `nightly` key."""
+    record = tor.build_record(junit, sha)
+    status: dict[str, str] = {}
+    flaky: dict[str, list[str]] = {}
+    confirmed: dict[str, list[str]] = {}
+    rc: dict[str, int | None] = {}
+    mass: dict[str, bool] = {}
+    for leg in sorted(roles):
+        v = verdicts.get(leg)
+        if junit.get(leg) is None or v is None:
+            status[leg] = MISSING
+            flaky[leg] = []
+            confirmed[leg] = []
+            rc[leg] = None if v is None else int(v["rc"])
+            mass[leg] = False
+            continue
+        status[leg] = str(v["status"])
+        flaky[leg] = sorted(v["flaky"])
+        confirmed[leg] = sorted(v["confirmed"])
+        rc[leg] = int(v["rc"])
+        mass[leg] = bool(v["mass_failure"])
+    record["nightly"] = {
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "event": event,
+        "created_at": created_at,
+        "roles": dict(sorted(roles.items())),
+        "attempts": dict(sorted(attempts.items())),
+        "env": dict(sorted(envs.items())),
+        "rc": rc,
+        "status": status,
+        "mass_failure": mass,
+        "flaky": flaky,
+        "confirmed": confirmed,
+        "verdict": night_verdict(roles, status),
+    }
+    return record
+
+
+# -------------------------------------------------------------- regressions
+
+def canary_legs_of(record: dict[str, Any], listed: Iterable[str]) -> list[str]:
+    """The listed legs the record does not mark `extra`, in order."""
+    roles = record.get("nightly", {}).get("roles", {})
+    return [leg for leg in listed if roles.get(leg, CANARY) == CANARY]
+
+
+def baseline_outcome(last_green: dict[str, Any], leg: str, test: str) -> str | None:
+    """A test's outcome on a leg of the last green record; a failure that
+    was flaky there counts as `passed`. None when the record lacks it."""
+    legs: dict[str, Any] = last_green.get("legs") or {}
+    leg_record: dict[str, Any] | None = legs.get(leg)
+    if not leg_record:
+        return None
+    tests: dict[str, str] = leg_record.get("tests", {})
+    flaky: list[str] = last_green.get("nightly", {}).get("flaky", {}).get(leg, [])
+    outcome = tests.get(test)
+    if outcome in RED_OUTCOMES and test in flaky:
+        return tor.PASSED
+    return outcome
+
+
+def even_sample(items: list[str], n: int) -> list[str]:
+    """`n` items spread evenly over the sorted list, or all of them."""
+    ordered = sorted(items)
+    if len(ordered) <= n:
+        return ordered
+    return [ordered[i * len(ordered) // n] for i in range(n)]
+
+
+def _version_key(leg: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", leg))
+
+
+def find_regressions(
+    current: dict[str, Any],
+    last_green: dict[str, Any] | None,
+    last_green_meta: dict[str, Any] | None,
+    listed_legs: Iterable[str],
+) -> dict[str, Any]:
+    """The triage input for one night. Only canary legs are read."""
+    nightly = current.get("nightly", {})
+    sha = str(current.get("sha") or "")
+    legs = canary_legs_of(current, listed_legs)
+    status = nightly.get("status", {})
+    confirmed_by_leg = {leg: list(nightly.get("confirmed", {}).get(leg, [])) for leg in legs}
+    triage: dict[str, Any] = {
+        "format": TRIAGE_FORMAT,
+        "sha": sha,
+        "run_id": nightly.get("run_id"),
+        "verdict": nightly.get("verdict"),
+        "canary_legs": legs,
+        "last_green": last_green_meta,
+        "mass_failure": any(nightly.get("mass_failure", {}).get(leg, False) for leg in legs),
+        "events": [],
+        "candidates": [],
+        "new_failing": [],
+        "drift_check": None,
+    }
+    broken = [leg for leg in legs if status.get(leg, MISSING) in (MISSING, BROKEN)]
+    if broken:
+        triage["events"].append({"key": "canary-broken", "kind": "canary-broken", "legs": broken, "tests": []})
+    tests = sorted({t for ids in confirmed_by_leg.values() for t in ids})
+    if not tests:
+        return triage
+    failing_legs = sorted(leg for leg, ids in confirmed_by_leg.items() if ids)
+    if last_green is None or last_green_meta is None:
+        triage["events"].append({
+            "key": f"no-baseline-{sha[:12]}", "kind": "no-baseline", "legs": failing_legs, "tests": tests,
+        })
+        return triage
+    green_sha = str(last_green_meta.get("sha") or "")
+    if green_sha == sha:
+        triage["events"].append({
+            "key": f"drift-{green_sha[:12]}", "kind": "drift", "legs": failing_legs, "tests": tests,
+        })
+        return triage
+    # `diff_records` names each red test with its outcome on the baseline;
+    # the flaky rule above then reads a flaky failure there as a pass.
+    red_before: dict[tuple[str, str], str | None] = {}
+    for d in tor.diff_records(current, last_green):
+        if d.leg in legs:
+            for t in d.red:
+                red_before[(d.leg, t.test)] = t.before
+    candidates: dict[str, dict[str, Any]] = {}
+    new_failing: dict[str, list[str]] = {}
+    for leg in legs:
+        for test in confirmed_by_leg[leg]:
+            before = red_before.get((leg, test))
+            if before is not None:
+                before = baseline_outcome(last_green, leg, test)
+            if before is None:
+                new_failing.setdefault(test, []).append(leg)
+            else:
+                entry = candidates.setdefault(test, {"test": test, "legs": [], "before": {}})
+                entry["legs"].append(leg)
+                entry["before"][leg] = before
+    triage["candidates"] = [candidates[t] for t in sorted(candidates)]
+    triage["new_failing"] = [{"test": t, "legs": new_failing[t]} for t in sorted(new_failing)]
+    if candidates:
+        cand_legs = sorted({leg for c in candidates.values() for leg in c["legs"]}, key=_version_key)
+        ids = sorted(candidates)
+        if triage["mass_failure"]:
+            ids = even_sample(ids, MASS_FAILURE_SAMPLE)
+        triage["drift_check"] = {"sha": green_sha, "python": cand_legs[-1], "tests": ids}
+    return triage
+
+
+# ------------------------------------------------------------------ publish
+
+def run_date(created_at: str) -> str:
+    date = created_at[:10]
+    if not _DATE.fullmatch(date):
+        raise ValueError(f"created_at {created_at!r} does not start with YYYY-MM-DD")
+    return date
+
+
+def run_path(record: dict[str, Any]) -> str:
+    nightly = record["nightly"]
+    return f"runs/{run_date(str(nightly['created_at']))}-{int(nightly['run_id'])}"
+
+
+def index_entry(record: dict[str, Any], triage: dict[str, Any] | None) -> dict[str, Any]:
+    nightly = record["nightly"]
+    legs = record.get("legs", {})
+    return {
+        "run_id": int(nightly["run_id"]),
+        "run_attempt": int(nightly["run_attempt"]),
+        "date": run_date(str(nightly["created_at"])),
+        "path": run_path(record),
+        "sha": record.get("sha"),
+        "verdict": nightly["verdict"],
+        "status": nightly["status"],
+        "counts": {leg: (None if data is None else data["counts"]) for leg, data in sorted(legs.items())},
+        "flaky": nightly["flaky"],
+        "events": [] if triage is None else [str(e["key"]) for e in triage.get("events", [])],
+    }
+
+
+def merge_index(lines: list[str], entry: dict[str, Any]) -> list[str]:
+    """The index with any line of the same run replaced by `entry`, last."""
+    kept = [line for line in lines if line.strip() and int(json.loads(line)["run_id"]) != entry["run_id"]]
+    return [*kept, json.dumps(entry, sort_keys=True, separators=(",", ":"))]
+
+
+def _moved(
+    old: dict[str, Any] | None,
+    new: dict[str, Any],
+    is_ancestor: Callable[[str, str], bool | None],
+    what: str,
+    notes: list[str],
+) -> dict[str, Any]:
+    """`new` when `old` is absent or an ancestor of it, else `old`."""
+    if old is None:
+        notes.append(f"{what}: set to {new['sha'][:12]}")
+        return new
+    answer = is_ancestor(str(old["sha"]), str(new["sha"]))
+    if answer is True:
+        notes.append(f"{what}: {str(old['sha'])[:12]} -> {new['sha'][:12]}")
+        return new
+    if answer is False:
+        notes.append(f"{what}: stays at {str(old['sha'])[:12]}, not an ancestor of {new['sha'][:12]}")
+    else:
+        notes.append(f"{what}: stays at {str(old['sha'])[:12]}, ancestry against {new['sha'][:12]} unknown")
+    return old
+
+
+def next_last_green(
+    current: dict[str, Any] | None,
+    record: dict[str, Any],
+    is_ancestor: Callable[[str, str], bool | None],
+) -> tuple[dict[str, Any], list[str]]:
+    """`last-green.json` after this night, and a note per entry it touched."""
+    nightly = record["nightly"]
+    old = current or {}
+    pointer = {
+        "sha": str(record["sha"]),
+        "path": run_path(record),
+        "run_id": int(nightly["run_id"]),
+        "date": run_date(str(nightly["created_at"])),
+    }
+    notes: list[str] = []
+    canary = old.get("canary")
+    if nightly["verdict"] == GREEN:
+        canary = _moved(canary, pointer, is_ancestor, "canary", notes)
+    legs: dict[str, Any] = dict(old.get("legs") or {})
+    for leg, leg_status in sorted(nightly["status"].items()):
+        if leg_status == GREEN:
+            legs[leg] = _moved(legs.get(leg), pointer, is_ancestor, f"leg {leg}", notes)
+    return {"canary": canary, "legs": dict(sorted(legs.items()))}, notes
+
+
+# --------------------------------------------------------------------- I/O
+
+def uv_version() -> str | None:
+    try:
+        r = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, check=False, timeout=_UV_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def environment() -> dict[str, Any]:
+    return {
+        "python": sys.version,
+        "sqlite_version": sqlite3.sqlite_version,
+        "ImageOS": os.environ.get("ImageOS"),
+        "ImageVersion": os.environ.get("ImageVersion"),
+        "uv": uv_version(),
+    }
+
+
+def git_is_ancestor(repo: Path, old: str, new: str) -> bool | None:
+    """`git merge-base --is-ancestor`: True, False, or None when git cannot
+    tell (an unknown commit, a missing repository)."""
+    try:
+        r = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", old, new],
+            cwd=repo, capture_output=True, check=False, timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {0: True, 1: False}.get(r.returncode)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    return data  # pyright: ignore[reportUnknownVariableType]
+
+
+def _dumps(data: dict[str, Any]) -> str:
+    return json.dumps(data, indent=1, sort_keys=True) + "\n"
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _read_junit(path: Path) -> dict[str, str]:
+    return tor.parse_junit(path.read_text(encoding="utf-8"))
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    text = _dumps(environment())
+    if args.dry_run:
+        print(f"dry run: would write {args.out}")
+        sys.stdout.write(text)
+        return 0
+    _write(args.out, text)
+    return 0
+
+
+def cmd_failed_ids(args: argparse.Namespace) -> int:
+    root: Path = args.repo_root
+    if not root.is_dir():
+        raise ValueError(f"--repo-root {root} is not a directory")
+    plan = plan_rerun(_read_junit(args.junit), lambda rel: (root / rel).is_file(), args.max)
+    text = "".join(f"{nid}\n" for nid in plan["ids"])
+    for test in plan["unmapped"]:
+        print(f"::notice::no node id for {test}; it is not rerun and stays confirmed", file=sys.stderr)
+    if plan["mass_failure"]:
+        print(f"::warning::{plan['count']} red tests, more than {args.max}: mass failure, no rerun", file=sys.stderr)
+    outputs = github_output_lines(plan)
+    if args.dry_run:
+        print(f"dry run: would write {len(plan['ids'])} node id(s) to {args.out}")
+        sys.stdout.write(text)
+        if args.github_output is not None:
+            print(f"dry run: would append to {args.github_output}:")
+        for line in outputs:
+            print(line)
+        return 0
+    _write(args.out, text)
+    if args.github_output is not None:
+        with args.github_output.open("a", encoding="utf-8") as fh:
+            fh.write("".join(f"{line}\n" for line in outputs))
+    return 0
+
+
+def cmd_verdict(args: argparse.Namespace) -> int:
+    outcomes = _read_junit(args.junit)
+    rerun = None if args.rerun is None else _read_junit(args.rerun)
+    verdict = classify_leg(args.rc, outcomes, rerun, args.max)
+    print(
+        f"pytest rc {verdict['rc']}: {len(verdict['red'])} red, {len(verdict['flaky'])} flaky, "
+        f"{len(verdict['confirmed'])} confirmed; leg {verdict['status']}"
+        + (" (mass failure, no rerun)" if verdict["mass_failure"] else "")
+    )
+    for test in verdict["flaky"]:
+        print(f"flaky: {test}")
+    for test in verdict["confirmed"]:
+        print(f"confirmed: {test}")
+    if args.out is not None:
+        if args.dry_run:
+            print(f"dry run: would write {args.out}")
+        else:
+            _write(args.out, _dumps(verdict))
+    return 0 if verdict["status"] == GREEN else 1
+
+
+def _load_bundle(base: Path, leg: str, sha: str) -> tuple[Path | None, int | None]:
+    """The bundle directory for a leg under `base`, and its attempt."""
+    if any((base / name).is_file() for name in _BUNDLE_FILES):
+        return base, None
+    if not base.is_dir():
+        return None, None
+    name = newest_bundle((p.name for p in base.iterdir() if p.is_dir()), leg, sha)
+    if name is None:
+        return None, None
+    return base / name, bundle_attempt(name, leg, sha)
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    specs = [parse_leg_spec(v) for v in args.leg]
+    seen = [leg for leg, _, _ in specs]
+    if len(set(seen)) != len(seen):
+        raise ValueError(f"a leg is named twice: {seen}")
+    junit: dict[str, str | None] = {}
+    verdicts: dict[str, dict[str, Any] | None] = {}
+    envs: dict[str, dict[str, Any] | None] = {}
+    roles: dict[str, str] = {}
+    attempts: dict[str, int | None] = {}
+    for leg, directory, role in specs:
+        roles[leg] = role
+        bundle, attempt = _load_bundle(Path(directory), leg, args.sha)
+        attempts[leg] = attempt
+        junit[leg], verdicts[leg], envs[leg] = None, None, None
+        if bundle is None:
+            print(f"::notice::no bundle for leg {leg} under {directory}", file=sys.stderr)
+            continue
+        if (bundle / "junit.xml").is_file():
+            text = (bundle / "junit.xml").read_text(encoding="utf-8")
+            try:
+                tor.parse_junit(text)
+                junit[leg] = text
+            except ElementTree.ParseError as exc:
+                print(f"::notice::leg {leg}: junit.xml does not parse: {exc}", file=sys.stderr)
+        if (bundle / "verdict.json").is_file():
+            verdicts[leg] = _read_json(bundle / "verdict.json")
+        if (bundle / "env.json").is_file():
+            envs[leg] = _read_json(bundle / "env.json")
+    created_at = args.created_at or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_date(created_at)
+    event = args.event if args.event is not None else os.environ.get("GITHUB_EVENT_NAME", "")
+    record = build_nightly_record(
+        junit, verdicts, envs, roles, attempts, args.sha, args.run_id, args.run_attempt, event, created_at,
+    )
+    nightly = record["nightly"]
+    if args.dry_run:
+        print(f"dry run: would write {args.out}")
+    for leg in sorted(roles):
+        print(
+            f"leg {leg} ({roles[leg]}): {nightly['status'][leg]}, "
+            f"{len(nightly['flaky'][leg])} flaky, {len(nightly['confirmed'][leg])} confirmed"
+        )
+    print(f"night: {nightly['verdict']}")
+    if not args.dry_run:
+        _write(args.out, _dumps(record))
+    return 0
+
+
+def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The last green record and its pointer, or (None, None)."""
+    pointer_file = directory / "last-green.json"
+    if not pointer_file.is_file():
+        return None, None
+    meta = _read_json(pointer_file).get("canary")
+    if not meta:
+        return None, None
+    return _read_json(directory / str(meta["path"]) / "record.json"), dict(meta)
+
+
+def cmd_regressions(args: argparse.Namespace) -> int:
+    current = _read_json(args.current)
+    last_green, meta = _last_green(args.last_green_dir)
+    listed = [leg for leg in args.canary_legs.split(",") if leg]
+    triage = find_regressions(current, last_green, meta, listed)
+    if meta is None:
+        print("no last green night yet")
+    else:
+        print(f"last green: {str(meta['sha'])[:12]} ({meta['path']})")
+    for e in triage["events"]:
+        print(f"event {e['key']}: {len(e['tests'])} test(s)")
+    print(f"{len(triage['candidates'])} candidate(s), {len(triage['new_failing'])} new failing")
+    if args.dry_run:
+        print(f"dry run: would write {args.out}")
+        return 0
+    _write(args.out, _dumps(triage))
+    return 0
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    record = _read_json(args.record)
+    if "nightly" not in record:
+        raise ValueError(f"{args.record} has no nightly key")
+    triage: dict[str, Any] | None = None
+    if args.triage.is_file():
+        triage = _read_json(args.triage)
+    else:
+        print(f"::notice::no triage at {args.triage}; publishing the record without event keys", file=sys.stderr)
+    branch: Path = args.branch_dir
+    if not branch.is_dir():
+        raise ValueError(f"--branch-dir {branch} is not a directory")
+    path = run_path(record)
+    index_file = branch / "index.jsonl"
+    lines = index_file.read_text(encoding="utf-8").splitlines() if index_file.is_file() else []
+    index = merge_index(lines, index_entry(record, triage))
+    green_file = branch / "last-green.json"
+    old_green = _read_json(green_file) if green_file.is_file() else None
+    new_green, notes = next_last_green(
+        old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new),
+    )
+    writes: list[tuple[Path, str]] = [(branch / path / "record.json", _dumps(record))]
+    if triage is not None:
+        writes.append((branch / path / "triage.json", _dumps(triage)))
+    writes.append((index_file, "".join(f"{line}\n" for line in index)))
+    if new_green != old_green:
+        writes.append((green_file, _dumps(new_green)))
+    for note in notes:
+        print(f"last green {note}")
+    for target, text in writes:
+        if args.dry_run:
+            print(f"dry run: would write {target.relative_to(branch).as_posix()}")
+        else:
+            _write(target, text)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--dry-run", action="store_true", help="write no file, change no git state, print what would happen")
+
+    p = sub.add_parser("env", parents=[common], help="write this interpreter's environment")
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(func=cmd_env)
+
+    p = sub.add_parser("failed-ids", parents=[common], help="write the node ids of a run's red tests")
+    p.add_argument("--junit", required=True, type=Path)
+    p.add_argument("--repo-root", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--max", type=int, default=MASS_FAILURE_THRESHOLD)
+    p.add_argument("--github-output", default=None, type=Path)
+    p.set_defaults(func=cmd_failed_ids)
+
+    p = sub.add_parser("verdict", parents=[common], help="sort one leg's red tests into flaky and confirmed")
+    p.add_argument("--rc", required=True, type=int)
+    p.add_argument("--junit", required=True, type=Path)
+    p.add_argument("--rerun", default=None, type=Path)
+    p.add_argument("--max", type=int, default=MASS_FAILURE_THRESHOLD)
+    p.add_argument("--out", default=None, type=Path)
+    p.set_defaults(func=cmd_verdict)
+
+    p = sub.add_parser("record", parents=[common], help="build the night's record from the leg bundles")
+    p.add_argument("--leg", action="append", required=True, metavar="LEG=DIR[:ROLE]")
+    p.add_argument("--sha", required=True)
+    p.add_argument("--run-id", required=True, type=int)
+    p.add_argument("--run-attempt", required=True, type=int)
+    p.add_argument("--event", default=None)
+    p.add_argument("--created-at", default=None)
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("regressions", parents=[common], help="compare the canary legs with the last green night")
+    p.add_argument("--current", required=True, type=Path)
+    p.add_argument("--last-green-dir", required=True, type=Path)
+    p.add_argument("--canary-legs", default="3.12,3.13")
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(func=cmd_regressions)
+
+    p = sub.add_parser("publish", parents=[common], help="write the night to a results-branch checkout")
+    p.add_argument("--record", required=True, type=Path)
+    p.add_argument("--triage", required=True, type=Path)
+    p.add_argument("--branch-dir", required=True, type=Path)
+    p.add_argument("--main-repo", default=Path("."), type=Path)
+    p.set_defaults(func=cmd_publish)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return int(args.func(args))
+    except (OSError, ValueError, KeyError, TypeError, ElementTree.ParseError) as exc:
+        print(f"nightly_canary: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
