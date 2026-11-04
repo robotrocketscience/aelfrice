@@ -677,6 +677,13 @@ def test_the_flag_names_which_legs_a_green_night_needs(tmp_path: Path) -> None:
     assert record["nightly"]["verdict"] == nc.GREEN
 
 
+def test_record_refuses_an_empty_flag(tmp_path: Path) -> None:
+    """Otherwise one canary leg alone could read as a green night."""
+    bundle = _bundle(tmp_path / "b", {_A: tor.PASSED})
+    rc, record = _record_cmd(tmp_path, f"3.12={bundle}", extra=["--canary-legs", ""])
+    assert rc == 2 and record is None
+
+
 def test_a_required_leg_given_the_extra_role_is_not_a_green_night(tmp_path: Path) -> None:
     a, b = _bundle(tmp_path / "a", {_A: tor.PASSED}), _bundle(tmp_path / "b", {_A: tor.PASSED})
     rc, record = _record_cmd(tmp_path, f"3.12={a}", f"3.13={b}:extra")
@@ -1203,6 +1210,32 @@ def test_regressions_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
                     "--out", str(out), "--dry-run"]) == 0
     assert not out.exists()
+
+
+@pytest.mark.parametrize("flag", ["3.12,3.13", "3.13", ""], ids=["third-leg-unlisted", "second-leg-unlisted", "empty"])
+def test_regressions_refuses_a_flag_that_would_hide_a_canary_leg(tmp_path: Path, flag: str) -> None:
+    """The night reads red over that leg and `events` would be empty with exit 0."""
+    legs = {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.PASSED}, None)}
+    if flag == "3.12,3.13":
+        legs["3.14"] = ({_A: tor.FAILED}, None)
+    current = tmp_path / "record.json"
+    current.write_text(json.dumps(_night(SHA2, legs)), encoding="utf-8")
+    (tmp_path / "branch").mkdir()
+    out = tmp_path / "t.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+                    "--canary-legs", flag, "--out", str(out)]) == 2
+    assert not out.exists()
+
+
+def test_a_listed_leg_the_record_marks_extra_is_not_refused(tmp_path: Path) -> None:
+    legs = {"3.12": ({_A: tor.PASSED}, None), "3.13": ({_A: tor.PASSED}, None), "3.14": ({_A: tor.FAILED}, None)}
+    current = tmp_path / "record.json"
+    current.write_text(json.dumps(_night(SHA2, legs, roles={"3.14": nc.EXTRA})), encoding="utf-8")
+    (tmp_path / "branch").mkdir()
+    out = tmp_path / "t.json"
+    assert nc.main(["regressions", "--current", str(current), "--last-green-dir", str(tmp_path / "branch"),
+                    "--canary-legs", "3.12,3.13", "--out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["events"] == []
 
 
 def test_a_last_green_dir_that_does_not_exist_is_a_usage_error(tmp_path: Path) -> None:

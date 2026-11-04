@@ -88,8 +88,10 @@ UTC time and `--event` to `GITHUB_EVENT_NAME`.
 `regressions` compares the canary legs of the record with the last green
 record that `last-green.json` in `--last-green-dir` points to. A leg named
 in `--canary-legs` that the record gives the `extra` role is not a canary
-leg, and neither is a leg the flag leaves out: extra legs never produce an
-event. A `--last-green-dir` that is not a directory exits 2, since a mistyped
+leg: extra legs never produce an event. An empty `--canary-legs`, here or on
+`record`, exits 2, and so does a flag that leaves out a leg the record gives
+the `canary` role, since that leg's red night would produce no event at all.
+A `--last-green-dir` that is not a directory exits 2, since a mistyped
 path would read as no baseline; a directory with no `last-green.json` is the
 night before the first green one. A `last-green.json` or a record it names
 that cannot be read is a night with no baseline: the triage is still written,
@@ -1113,7 +1115,16 @@ def _load_leg(bundle: Path) -> tuple[str | None, dict[str, Any] | None, dict[str
     return text, verdict, env, notes
 
 
+def _listed_legs(value: str) -> list[str]:
+    """The legs `--canary-legs` names, of which there must be one."""
+    listed = [leg for leg in value.split(",") if leg]
+    if not listed:
+        raise ValueError("--canary-legs names no leg")
+    return listed
+
+
 def cmd_record(args: argparse.Namespace) -> int:
+    required = _listed_legs(args.canary_legs)
     specs = [parse_leg_spec(v) for v in args.leg]
     seen = [leg for leg, _, _ in specs]
     if len(set(seen)) != len(seen):
@@ -1140,7 +1151,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     event = args.event if args.event is not None else os.environ.get("GITHUB_EVENT_NAME", "")
     record = build_nightly_record(
         junit, verdicts, envs, roles, attempts, args.sha, args.run_id, args.run_attempt, event, created_at, notes,
-        [leg for leg in args.canary_legs.split(",") if leg],
+        required,
     )
     nightly = record["nightly"]
     if args.dry_run:
@@ -1194,11 +1205,15 @@ def _last_green(directory: Path) -> tuple[dict[str, Any] | None, dict[str, Any] 
 def cmd_regressions(args: argparse.Namespace) -> int:
     current = _read_json(args.current)
     validate_record(current, str(args.current))
+    listed = _listed_legs(args.canary_legs)
+    roles: dict[str, str] = current["nightly"]["roles"]
+    unlisted = sorted(leg for leg, role in roles.items() if role == CANARY and leg not in listed)
+    if unlisted:
+        raise ValueError(f"--canary-legs leaves out the canary leg(s) {', '.join(unlisted)}")
     last_green, meta, problem = _last_green(args.last_green_dir)
     root: Path = args.repo_root
     if not root.is_dir():
         raise ValueError(f"--repo-root {root} is not a directory")
-    listed = [leg for leg in args.canary_legs.split(",") if leg]
     triage = find_regressions(
         current, last_green, meta, listed, lambda rel: (root / rel).is_file(), problem, lambda rel: (root / rel).is_dir(),
     )
