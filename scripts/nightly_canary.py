@@ -124,7 +124,12 @@ from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# A dry run writes no file, and that includes `__pycache__` beside this script.
+_write_bytecode = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
 import test_outcome_record as tor  # noqa: E402
+
+sys.dont_write_bytecode = _write_bytecode
 
 TRIAGE_FORMAT = 1
 

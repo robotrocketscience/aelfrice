@@ -17,6 +17,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -827,6 +828,30 @@ def test_uv_version_is_null_when_uv_does_not_answer(monkeypatch: pytest.MonkeyPa
 
 
 # ------------------------------------------------------------------ shape
+
+def test_a_dry_run_leaves_no_bytecode_beside_the_script(tmp_path: Path) -> None:
+    """Run as a process on a copy, with bytecode allowed, so the import of
+    the sibling module is what would write `__pycache__`."""
+    copy = tmp_path / "scripts"
+    copy.mkdir()
+    shutil.copy(_SCRIPT, copy)
+    shutil.copy(_REPO / "scripts" / "test_outcome_record.py", copy)
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+    r = subprocess.run(
+        [sys.executable, str(copy / "nightly_canary.py"), "env", "--out", str(tmp_path / "env.json"), "--dry-run"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert sorted(p.name for p in copy.iterdir()) == ["nightly_canary.py", "test_outcome_record.py"]
+
+
+def test_importing_the_script_leaves_bytecode_writing_as_it_found_it() -> None:
+    """The flag is process-wide; the test suite imports this module."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"}
+    code = f"import sys; sys.path.insert(0, {str(_SCRIPT.parent)!r}); import nightly_canary; print(sys.dont_write_bytecode)"
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+    assert r.stdout.strip() == "False", r.stderr
+
 
 def test_no_subcommand_is_a_usage_error() -> None:
     with pytest.raises(SystemExit) as exc:
