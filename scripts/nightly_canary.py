@@ -41,10 +41,13 @@ takes the longest prefix of `classname` that is a file
 keeps its parameter brackets. A test whose module no longer exists, or a
 collection error (pytest writes it with an empty `classname`), maps to no
 node id. It is left out of the file, so the rerun does not run it and the
-verdict counts it as confirmed. When the run has more than `--max` red
-tests the file is empty and the GitHub output says `rerun=false`. The rerun
-step must test that output: pytest given an empty `@file` runs the whole
-suite.
+verdict counts it as confirmed. The exit status carries the rerun decision:
+0 means the file holds at least one node id, and 1 means there is nothing to
+rerun (no mapped red test, or more than `--max` red tests) and the file does
+not exist, a stale one included. No empty file is ever written, because
+pytest given an empty `@file` runs the whole suite and given a missing one
+exits 4. The decision also prints as `rerun=true|false`, and goes to
+`--github-output` when that is given. The rerun step runs only on exit 0.
 
 `verdict` reads one leg. Red outcomes are `failed`, `error` and `xpassed`,
 the outcomes that turn a pytest leg red. A red test whose rerun outcome is
@@ -104,8 +107,9 @@ are pure and take their inputs as values; `tests/test_nightly_canary_1786.py`
 runs them on synthetic reports and records, and runs the `cmd_*` functions
 against temporary files and a temporary git repository.
 
-Exit status: 0; 1 when `verdict` finds the leg is not green; 2 for a usage
-error or an unreadable input.
+Exit status: 0; 1 for a checked condition (`failed-ids` has nothing to
+rerun, `verdict` finds the leg is not green); 2 for a usage error or an
+unreadable input.
 """
 from __future__ import annotations
 
@@ -624,19 +628,28 @@ def cmd_failed_ids(args: argparse.Namespace) -> int:
     if plan["mass_failure"]:
         print(f"::warning::{plan['count']} red tests, more than {args.max}: mass failure, no rerun", file=sys.stderr)
     outputs = github_output_lines(plan)
+    exit_status = 0 if plan["rerun"] else 1
     if args.dry_run:
-        print(f"dry run: would write {len(plan['ids'])} node id(s) to {args.out}")
+        if plan["rerun"]:
+            print(f"dry run: would write {len(plan['ids'])} node id(s) to {args.out}")
+        else:
+            print(f"dry run: would write no ids and remove any {args.out}")
         sys.stdout.write(text)
         if args.github_output is not None:
             print(f"dry run: would append to {args.github_output}:")
         for line in outputs:
             print(line)
-        return 0
-    _write(args.out, text)
+        return exit_status
+    if plan["rerun"]:
+        _write(args.out, text)
+    else:
+        args.out.unlink(missing_ok=True)
+    for line in outputs:
+        print(line)
     if args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as fh:
             fh.write("".join(f"{line}\n" for line in outputs))
-    return 0
+    return exit_status
 
 
 def cmd_verdict(args: argparse.Namespace) -> int:

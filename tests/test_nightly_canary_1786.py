@@ -183,17 +183,20 @@ def test_failed_ids_writes_every_red_node_id_and_the_outputs(tmp_path: Path) -> 
     assert gh_out.read_text(encoding="utf-8") == "earlier=1\ncount=4\nrerun=true\nmass_failure=false\n"
 
 
-@pytest.mark.parametrize(("n", "rerun", "ids"), [(50, "true", 50), (51, "false", 0)])
+@pytest.mark.parametrize(("n", "rerun", "exit_status"), [(50, "true", 0), (51, "false", 1)])
 def test_more_than_fifty_red_tests_is_a_mass_failure_with_no_rerun(
-    tmp_path: Path, n: int, rerun: str, ids: int,
+    tmp_path: Path, n: int, rerun: str, exit_status: int,
 ) -> None:
     root = _tree(tmp_path / "repo", "tests/test_a.py")
     junit = tmp_path / "junit.xml"
     junit.write_text(_report(*(_case("tests.test_a", f"test_{i}", _FAIL) for i in range(n))), encoding="utf-8")
     out, gh_out = tmp_path / "ids.txt", tmp_path / "gh_output"
     assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(root), "--out", str(out),
-                    "--github-output", str(gh_out)]) == 0
-    assert len(out.read_text(encoding="utf-8").splitlines()) == ids
+                    "--github-output", str(gh_out)]) == exit_status
+    if exit_status == 0:
+        assert len(out.read_text(encoding="utf-8").splitlines()) == n
+    else:
+        assert not out.exists()
     assert f"rerun={rerun}\n" in gh_out.read_text(encoding="utf-8")
     assert f"mass_failure={'true' if n > 50 else 'false'}\n" in gh_out.read_text(encoding="utf-8")
 
@@ -202,6 +205,52 @@ def test_a_run_whose_only_red_test_maps_to_nothing_is_not_rerun(tmp_path: Path) 
     """An empty `@file` would make pytest run the whole suite."""
     plan = nc.plan_rerun({"::tests.test_gone": tor.ERROR}, lambda rel: False, 50)
     assert plan == {"count": 1, "rerun": False, "mass_failure": False, "ids": [], "unmapped": ["::tests.test_gone"]}
+
+
+@pytest.mark.parametrize(
+    "cases",
+    [
+        [_case("tests.test_a", f"test_{i}", _FAIL) for i in range(51)],
+        [_case("", "tests.test_gone", _COLLECT_ERROR)],
+        [_case("tests.test_a", "test_pass")],
+    ],
+    ids=["mass-failure", "nothing-maps", "nothing-red"],
+)
+def test_with_nothing_to_rerun_no_file_exists_and_the_exit_status_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], cases: list[str],
+) -> None:
+    """pytest given an empty `@file` runs the whole suite; given none it
+    exits 4. A stale file from an earlier step goes too."""
+    root = _tree(tmp_path / "repo", "tests/test_a.py")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_report(*cases), encoding="utf-8")
+    out = tmp_path / "ids.txt"
+    out.write_text("tests/test_a.py::stale\n", encoding="utf-8")
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(root), "--out", str(out)]) == 1
+    assert not out.exists()
+    assert "rerun=false" in capsys.readouterr().out
+
+
+def test_with_something_to_rerun_the_decision_prints_without_a_github_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _tree(tmp_path / "repo", "tests/test_a.py")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({"tests.test_a::test_x": tor.FAILED}), encoding="utf-8")
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(root),
+                    "--out", str(tmp_path / "ids.txt")]) == 0
+    assert "rerun=true" in capsys.readouterr().out
+
+
+def test_a_dry_run_keeps_the_exit_status_and_a_stale_file(tmp_path: Path) -> None:
+    root = _tree(tmp_path / "repo", "tests/test_a.py")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({"tests.test_a::test_x": tor.PASSED}), encoding="utf-8")
+    out = tmp_path / "ids.txt"
+    out.write_text("stale\n", encoding="utf-8")
+    assert nc.main(["failed-ids", "--junit", str(junit), "--repo-root", str(root), "--out", str(out),
+                    "--dry-run"]) == 1
+    assert out.read_text(encoding="utf-8") == "stale\n"
 
 
 def test_failed_ids_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
