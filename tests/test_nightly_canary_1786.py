@@ -368,7 +368,7 @@ def test_verdict_sorts_flaky_from_confirmed_and_exits_on_anything_not_green(
     argv = ["verdict", "--rc", str(rc), "--junit", str(junit), "--out", str(tmp_path / "verdict.json")]
     if rerun is not None:
         (tmp_path / "rerun.xml").write_text(_junit(rerun), encoding="utf-8")
-        argv += ["--rerun", str(tmp_path / "rerun.xml")]
+        argv += ["--rerun", str(tmp_path / "rerun.xml"), "--rerun-rc", "1" if nc.red_ids(rerun) else "0"]
     assert nc.main(argv) == exit_status
     verdict = json.loads((tmp_path / "verdict.json").read_text(encoding="utf-8"))
     assert (verdict["status"], verdict["flaky"], verdict["confirmed"]) == (status, flaky, confirmed)
@@ -382,6 +382,59 @@ def test_a_mass_failure_ignores_the_rerun_and_confirms_every_red_test(n: int, ma
     assert verdict["mass_failure"] is mass
     assert len(verdict["confirmed"]) == (n if mass else 0)
     assert len(verdict["flaky"]) == (0 if mass else n)
+
+
+def _verdict_with_rerun(tmp_path: Path, rerun_rc: str, report: str | None) -> tuple[int, dict[str, Any]]:
+    """`verdict` on one test red in the full run, with a rerun that exited
+    `rerun_rc` and left `report` (None for no file)."""
+    junit, rerun, out = tmp_path / "junit.xml", tmp_path / "rerun.xml", tmp_path / "verdict.json"
+    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
+    if report is not None:
+        rerun.write_text(report, encoding="utf-8")
+    status = nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--rerun", str(rerun),
+                      "--rerun-rc", rerun_rc, "--out", str(out)])
+    return status, json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("report", "reason"),
+    [(None, "no readable report"), ("<testsuites><testcase", "no readable report"),
+     ("<html></html>", "no readable report")],
+    ids=["crashed", "truncated", "not-junit"],
+)
+def test_a_rerun_with_no_usable_report_keeps_the_red_tests_confirmed_and_writes_the_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], report: str | None, reason: str,
+) -> None:
+    status, verdict = _verdict_with_rerun(tmp_path, "137", report)
+    assert status == 1
+    assert (verdict["confirmed"], verdict["flaky"], verdict["status"]) == ([_A], [], nc.RED)
+    assert reason in verdict["rerun_note"]
+    assert reason in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("rerun_rc", [2, 3, 4, 5, 137])
+def test_a_rerun_that_exited_other_than_0_or_1_keeps_the_red_tests_confirmed(tmp_path: Path, rerun_rc: int) -> None:
+    """pytest exit 4 can leave a report in which a test passed; it does not
+    make the test flaky."""
+    status, verdict = _verdict_with_rerun(tmp_path, str(rerun_rc), _junit({_A: tor.PASSED}))
+    assert status == 1
+    assert (verdict["confirmed"], verdict["flaky"]) == ([_A], [])
+    assert verdict["rerun_rc"] == rerun_rc
+    assert f"exited {rerun_rc}" in verdict["rerun_note"]
+
+
+@pytest.mark.parametrize(("rerun_rc", "flaky"), [("0", [_A]), ("1", [_A])])
+def test_a_rerun_that_exited_0_or_1_counts(tmp_path: Path, rerun_rc: str, flaky: list[str]) -> None:
+    status, verdict = _verdict_with_rerun(tmp_path, rerun_rc, _junit({_A: tor.PASSED}))
+    assert status == 0
+    assert verdict["flaky"] == flaky and verdict["rerun_note"] is None
+
+
+@pytest.mark.parametrize("flags", [["--rerun", "r.xml"], ["--rerun-rc", "0"]], ids=["no-rc", "no-report"])
+def test_the_rerun_flags_go_together(tmp_path: Path, flags: list[str]) -> None:
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
+    assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), *flags]) == 2
 
 
 def test_verdict_dry_run_writes_nothing_and_keeps_the_exit_status(tmp_path: Path) -> None:
@@ -417,8 +470,6 @@ def test_a_report_with_either_junit_root_and_no_test_is_broken(tmp_path: Path, r
 def test_verdict_on_an_unreadable_report_is_a_usage_error(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
     assert nc.main(["verdict", "--rc", "1", "--junit", str(junit)]) == 2
-    junit.write_text(_junit({_A: tor.FAILED}), encoding="utf-8")
-    assert nc.main(["verdict", "--rc", "1", "--junit", str(junit), "--rerun", str(tmp_path / "none.xml")]) == 2
 
 
 # ----------------------------------------------------------------- record
@@ -493,6 +544,16 @@ def test_the_night_is_green_only_when_every_canary_leg_is(
     rc, record = _record_cmd(tmp_path, *specs)
     assert rc == 0 and record is not None
     assert record["nightly"]["verdict"] == verdict
+
+
+def test_the_record_says_why_a_rerun_did_not_count(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "b", {_A: tor.FAILED})
+    verdict = nc.classify_leg(1, {_A: tor.FAILED}, {_A: tor.PASSED}, rerun_rc=4)
+    (bundle / "verdict.json").write_text(json.dumps(verdict), encoding="utf-8")
+    rc, record = _record_cmd(tmp_path, f"3.12={bundle}")
+    assert rc == 0 and record is not None
+    assert record["nightly"]["confirmed"]["3.12"] == [_A]
+    assert record["nightly"]["notes"]["3.12"] == ["the rerun exited 4, so every red test stays confirmed"]
 
 
 def test_a_broken_canary_leg_makes_the_night_red(tmp_path: Path) -> None:

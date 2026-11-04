@@ -14,8 +14,8 @@ Usage:
     nightly_canary.py env --out ENV.json [--dry-run]
     nightly_canary.py failed-ids --junit JUNIT.xml --repo-root DIR --out IDS.txt
         [--max 50] [--github-output FILE] [--dry-run]
-    nightly_canary.py verdict --rc RC --junit JUNIT.xml [--rerun RERUN.xml]
-        [--max 50] [--out VERDICT.json] [--dry-run]
+    nightly_canary.py verdict --rc RC --junit JUNIT.xml
+        [--rerun RERUN.xml --rerun-rc RC] [--max 50] [--out VERDICT.json] [--dry-run]
     nightly_canary.py record --leg LEG=DIR[:ROLE] [--leg ...] --sha SHA
         --run-id ID --run-attempt N [--event NAME] [--created-at ISO8601]
         --out RECORD.json [--dry-run]
@@ -57,7 +57,11 @@ exits 4. The decision also prints as `rerun=true|false`, and goes to
 the outcomes that turn a pytest leg red. A red test whose rerun outcome is
 `passed` is flaky; every other red test is confirmed. More than `--max` red
 tests is a mass failure: the rerun is skipped and every red test is
-confirmed. The leg's status is `green` when nothing is confirmed and pytest
+confirmed. A rerun counts only when pytest exited 0 or 1 and left a readable
+report. `--rerun` and `--rerun-rc` go together, since exit 4 (an id pytest
+cannot resolve) can leave a report that says nothing about the others. When
+the rerun does not count, every red test stays confirmed, `rerun_note` in
+the verdict says why, and the verdict is still written. The leg's status is `green` when nothing is confirmed and pytest
 exited 0 or 1, `red` when a test is confirmed, and `broken` when nothing is
 confirmed and pytest exited with any other status, or with 1 and no red
 test, or the report holds no test. The exit status is 1 unless the leg is
@@ -66,8 +70,8 @@ unreadable input.
 
 `record` writes a format-1 record that `test_outcome_record.py` reads,
 with every leg, plus a `nightly` key holding the run, each leg's role,
-environment, rc, status, flaky and confirmed tests, and the night's
-verdict. `DIR` is either one leg's bundle or the directory the artifacts
+environment, rc, status, flaky and confirmed tests, notes saying why a leg
+reads as it does, and the night's verdict. `DIR` is either one leg's bundle or the directory the artifacts
 were downloaded into; in the second case the bundle is the subdirectory
 `nightly-<leg>-<sha>-a<N>` with the highest `N`. `ROLE` is `canary`
 (the default) or `extra`. A leg with no `junit.xml`, an unparseable one,
@@ -256,11 +260,14 @@ def classify_leg(
     outcomes: dict[str, str],
     rerun: dict[str, str] | None,
     max_ids: int = MASS_FAILURE_THRESHOLD,
+    rerun_rc: int | None = None,
 ) -> dict[str, Any]:
-    """One leg's verdict from the full run's outcomes and the rerun's."""
+    """One leg's verdict from the full run's outcomes and the rerun's. A
+    `rerun_rc` other than 0 or 1 voids the rerun."""
     red = red_ids(outcomes)
     mass = len(red) > max_ids
-    if mass or rerun is None:
+    usable = rerun_rc is None or rerun_rc in _TEST_RC
+    if mass or rerun is None or not usable:
         flaky: list[str] = []
     else:
         flaky = [t for t in red if rerun.get(t) == tor.PASSED]
@@ -272,6 +279,8 @@ def classify_leg(
         "confirmed": confirmed,
         "mass_failure": mass,
         "status": leg_status(rc, outcomes, confirmed),
+        "rerun_rc": rerun_rc,
+        "rerun_note": None if usable else f"the rerun exited {rerun_rc}, so every red test stays confirmed",
     }
 
 
@@ -333,8 +342,10 @@ def build_nightly_record(
     confirmed: dict[str, list[str]] = {}
     rc: dict[str, int | None] = {}
     mass: dict[str, bool] = {}
+    notes: dict[str, list[str]] = {}
     for leg in sorted(roles):
         v = verdicts.get(leg)
+        notes[leg] = [str(v["rerun_note"])] if v and v.get("rerun_note") else []
         if junit.get(leg) is None or v is None:
             status[leg] = MISSING
             flaky[leg] = []
@@ -358,6 +369,7 @@ def build_nightly_record(
         "rc": rc,
         "status": status,
         "mass_failure": mass,
+        "notes": notes,
         "flaky": flaky,
         "confirmed": confirmed,
         "verdict": night_verdict(roles, status),
@@ -671,14 +683,26 @@ def cmd_failed_ids(args: argparse.Namespace) -> int:
 
 
 def cmd_verdict(args: argparse.Namespace) -> int:
+    if (args.rerun is None) != (args.rerun_rc is None):
+        raise ValueError("--rerun and --rerun-rc go together")
     outcomes = _read_junit(args.junit)
-    rerun = None if args.rerun is None else _read_junit(args.rerun)
-    verdict = classify_leg(args.rc, outcomes, rerun, args.max)
+    rerun: dict[str, str] | None = None
+    unreadable: str | None = None
+    if args.rerun is not None:
+        try:
+            rerun = _read_junit(args.rerun)
+        except (OSError, ValueError, ElementTree.ParseError) as exc:
+            unreadable = f"the rerun left no readable report ({exc}), so every red test stays confirmed"
+    verdict = classify_leg(args.rc, outcomes, rerun, args.max, args.rerun_rc)
+    if unreadable is not None:
+        verdict["rerun_note"] = unreadable
     print(
         f"pytest rc {verdict['rc']}: {len(verdict['red'])} red, {len(verdict['flaky'])} flaky, "
         f"{len(verdict['confirmed'])} confirmed; leg {verdict['status']}"
         + (" (mass failure, no rerun)" if verdict["mass_failure"] else "")
     )
+    if verdict["rerun_note"]:
+        print(f"::warning::{verdict['rerun_note']}")
     for test in verdict["flaky"]:
         print(f"flaky: {test}")
     for test in verdict["confirmed"]:
@@ -841,6 +865,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rc", required=True, type=int)
     p.add_argument("--junit", required=True, type=Path)
     p.add_argument("--rerun", default=None, type=Path)
+    p.add_argument("--rerun-rc", default=None, type=int)
     p.add_argument("--max", type=int, default=MASS_FAILURE_THRESHOLD)
     p.add_argument("--out", default=None, type=Path)
     p.set_defaults(func=cmd_verdict)
