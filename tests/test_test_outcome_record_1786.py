@@ -495,6 +495,14 @@ def test_a_removed_test_pairs_once() -> None:
     assert _violations(d) == [("t::f[y]", None, tor.SKIPPED, None)]
 
 
+def test_a_new_skip_does_not_pair_with_a_sibling_that_still_exists() -> None:
+    """Only a removed test can be renamed. `f[a]` still runs under its own
+    id, so a new skipped `f[b]` is a new skip, not `f[a]` under a new name."""
+    d = tor.diff_leg("3.12", {"t::f[a]": tor.SKIPPED, "t::f[b]": tor.SKIPPED}, {"t::f[a]": tor.SKIPPED})
+    assert _violations(d) == [("t::f[b]", None, tor.SKIPPED, None)]
+    assert d.renamed == 0
+
+
 def test_a_rename_pairs_only_within_one_test_function() -> None:
     d = tor.diff_leg("3.12", {"t::g[new]": tor.SKIPPED}, {"t::f[old]": tor.SKIPPED})
     assert _violations(d) == [("t::g[new]", None, tor.SKIPPED, None)] and d.renamed == 0
