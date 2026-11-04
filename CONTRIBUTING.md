@@ -260,7 +260,9 @@ The job passes in these cases:
   same test function, and compares the new test with the removed test's
   outcome. A pytest upgrade that renames parameter IDs passes, and a passing
   test renamed into a skip still fails.
-- A test is removed. The job counts removals and never fails on them.
+- A test is removed. The job counts removals and never fails on them, by
+  operator ruling. So a passing test removed in the same change as an unrelated
+  new never-executed test passes too, and the review has to catch that.
 - A test fails, errors, or passes while marked xfail. The `pytest` legs fail
   on those.
 
