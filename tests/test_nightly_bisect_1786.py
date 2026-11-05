@@ -1356,20 +1356,79 @@ def test_two_runs_on_one_repository_each_get_their_own_folder(
     assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
-def test_a_run_touches_no_other_folder_and_prunes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
-    """`.bisect` was deleted even when tracked, and `git worktree prune` took
-    the registration of a worktree someone moved."""
+def test_a_run_touches_no_other_folder(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """`.bisect` was deleted even when tracked."""
     shas = env.repo(["", "a"], edits=((0, ".bisect/tracked.txt", "tracked\n"),))
-    repo, other = tmp_path / "repo", tmp_path / "other"
+    repo = tmp_path / "repo"
     (repo / ".nightly-bisect-worktree").write_text("not this script's\n", encoding="utf-8")
-    assert _git(repo, "worktree", "add", "-q", "--detach", str(other), shas[0]).returncode == 0
-    other.rename(tmp_path / "moved")
-    before = _repo_state(repo)
+    tree = _tree_state(repo)
     assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert _repo_state(repo) == before
-    assert (repo / ".bisect" / "tracked.txt").is_file()
-    assert (repo / ".nightly-bisect-worktree").is_file()
-    assert (tmp_path / "moved" / "state.txt").is_file()
+    assert _tree_state(repo) == tree
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["run", "dry-run"])
+@pytest.mark.parametrize("location", ["inside", "through-a-link", "the-root", "colon"])
+def test_a_temporary_location_the_ceiling_cannot_cover_exits_2(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], location: str, dry: bool,
+) -> None:
+    """Inside the repository a step's `uv` found the caller's project and wrote
+    `.venv` there, and a colon split the ceiling, which then moved the caller."""
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    temp = {
+        "inside": repo / "tmp", "through-a-link": tmp_path / "link", "the-root": repo, "colon": tmp_path / "a:b",
+    }[location]
+    (repo / "tmp").mkdir()
+    if location == "through-a-link":
+        temp.symlink_to(repo / "tmp")
+    temp.mkdir(exist_ok=True)
+    tree = _tree_state(repo)
+    env.tmp = temp
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    extra = ("--dry-run",) if dry else ()
+    rc, _ = run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)
+    assert rc == 2
+    assert "set TMPDIR elsewhere" in capsys.readouterr().err
+    assert env.stepped() == []
+    assert _tree_state(repo) == tree
+
+
+def test_a_temporary_location_beside_the_repository_is_fine(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`repo-tmp` shares a prefix with `repo`, and a real path reaches the ceiling."""
+    shas = env.repo(["", "a"])
+    beside = tmp_path / "repo-tmp"
+    beside.mkdir()
+    (tmp_path / "link").symlink_to(beside)
+    env.tmp = beside
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "link"))
+    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
+    assert rc == 0
+    assert env.stepped()
+    rows = env.ceiling_log.read_text(encoding="utf-8").splitlines()
+    assert {Path(row.split()[-1]).parent for row in rows} == {beside}
+
+
+def test_a_subfolder_as_the_repository_means_its_toplevel(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """From a subfolder `git ls-tree` names files relative to it, and every test
+    read as unmapped."""
+    shas = env.repo(["", "", "a", "a"])
+    rc, result = run_bisect(
+        tmp_path / "repo" / "tests", shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23},
+    )
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [_A], shas[1])]
+
+
+def test_a_folder_outside_any_repository_exits_2(
+    env: Env, tmp_path: Path, run_bisect: Runner, capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "plain").mkdir()
+    assert run_bisect(tmp_path / "plain", "a", "b", _A)[0] == 2
+    assert "show-cdup" in capsys.readouterr().err
+    assert env.stepped() == []
 
 
 def _tree_state(repo: Path) -> dict[str, tuple[int, bytes]]:

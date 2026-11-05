@@ -55,7 +55,12 @@ step is this script's `step` subcommand, invoked by its absolute path, because
 commit's files. `--step-cmd` replaces the step command; the tests use it to run
 a fake in place of uv and pytest.
 
-`--repo-root` can be a linked worktree or a bare repository. The clone borrows
+The temporary location cannot be inside `--repo-root`, where `uv` and `pytest`
+looking upward find the caller's project, or hold a colon, which splits
+`GIT_CEILING_DIRECTORIES`. Either exits 2 before any work.
+
+`--repo-root` can be a subfolder, which means its toplevel, a linked worktree or
+a bare repository. The clone borrows
 its objects, so a commit no ref reaches resolves there, and a `git gc
 --prune=now` in `--repo-root` during the run can take it away. A shallow
 repository lends nothing and gives only what its refs reach, so `--good` or
@@ -1280,10 +1285,21 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
     return 0
 
 
+def _temp_location(root: Path) -> Path:
+    """The real path of the temporary location, which `root` must not contain."""
+    temp = Path(tempfile.gettempdir()).resolve()
+    if temp.is_relative_to(root):
+        raise ValueError(f"the temporary location {temp} is inside {root}; set TMPDIR elsewhere")
+    if ":" in str(temp):
+        raise ValueError(f"the temporary location {temp} holds a colon; set TMPDIR elsewhere")
+    return temp
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.dry_run:
         args.out.unlink(missing_ok=True)
-    root = args.repo_root.resolve()
+    root = (args.repo_root / Git(args.repo_root).out("rev-parse", "--show-cdup")).resolve()
+    temp = _temp_location(root)
     git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
     files = tree_paths(git.paths("ls-tree", "-r", "--name-only", bad))
@@ -1328,7 +1344,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         })
 
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-"))
+    folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-", dir=temp))
     clone = folder / _CLONE_NAME
     bisector = Bisector(
         git=git, clone=clone, bad=bad, points=points, step_cmd=step_cmd,
