@@ -1320,14 +1320,16 @@ def test_a_run_touches_no_other_folder_and_prunes_nothing(env: Env, tmp_path: Pa
     assert (tmp_path / "moved" / "state.txt").is_file()
 
 
+@pytest.mark.parametrize("via_link", [False, True], ids=["direct", "through-a-link"])
 @pytest.mark.parametrize("phase", ["bisect", "check"])
 def test_a_lost_git_file_cannot_reach_the_repository_above_it(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], phase: str,
+    capsys: pytest.CaptureFixture[str], phase: str, via_link: bool,
 ) -> None:
     """`git checkout --force` walked up to the caller's repository and moved its
     checkout, losing a modified and a staged file. The temporary folder sits
-    inside that repository here, so only the ceiling stops git."""
+    inside that repository here, so only the ceiling stops git. Git resolves a
+    link in the ceiling itself, as macOS's `/tmp` and `/var` are."""
     shas = env.repo(_LINEAR)
     repo = tmp_path / "repo"
     _a_checkout_with_work(repo)
@@ -1335,8 +1337,10 @@ def test_a_lost_git_file_cannot_reach_the_repository_above_it(
     del before["worktree list --porcelain"]
     inside = repo / "tmp"
     inside.mkdir()
-    env.tmp = inside
-    monkeypatch.setattr(tempfile, "tempdir", str(inside))
+    if via_link:
+        (tmp_path / "link").symlink_to(inside)
+    env.tmp = tmp_path / "link" if via_link else inside
+    monkeypatch.setattr(tempfile, "tempdir", str(env.tmp))
     monkeypatch.setenv("FAKE_RM_GIT", phase)
     rc, result = run_bisect(repo, shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 2

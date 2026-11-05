@@ -1281,8 +1281,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         })
 
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    # Resolved, as git compares `GIT_CEILING_DIRECTORIES` with real paths.
-    folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-")).resolve()
+    folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-"))
     worktree = folder / _WORKTREE_NAME
     bisector = Bisector(
         git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
