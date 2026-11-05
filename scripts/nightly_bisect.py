@@ -53,9 +53,13 @@ the one the bisect narrowed to.
 dirties a tracked file can make it fail, so it runs again after `git reset
 --hard`; a reset that still fails is a warning and lands in the result's
 `reset_errors`. The worktree stays after the run; the next run removes it
-first, including when its folder or its `.git` file is gone. A folder at
-`--worktree` that git does not list as a worktree is left alone and the run
-exits 2, unless it is the default `.bisect`, which belongs to this script.
+first, including when its folder or its `.git` file is gone.
+
+This script removes only a folder it owns: the default `.bisect`, or a folder
+holding the `.nightly-bisect-worktree` file a run wrote when it created that
+worktree. Any other `--worktree` that holds files, the repository root and
+another worktree among them, exits 2 with nothing touched, in a dry run too.
+A folder that is missing or empty is used. A symbolic link exits 2.
 
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
@@ -217,6 +221,7 @@ _RUN_MARGIN_SECONDS = 15
 _TERM_GRACE_SECONDS = 2
 # Lines of `git bisect run` output a round keeps.
 _OUTPUT_TAIL_LINES = 40
+_WORKTREE_MARKER = ".nightly-bisect-worktree"
 
 REASON_BUDGET = "budget"
 REASON_INCONCLUSIVE = "inconclusive"
@@ -979,26 +984,35 @@ def map_triage(triage: Any, files: set[str]) -> tuple[dict[str, list[str]], list
     return mapped, unmapped
 
 
-def _prepare_worktree(git: Git, path: Path, good: str) -> None:
+def worktree_refusal(path: Path, default: Path) -> str | None:
+    """Why `run` may not use `path` as its worktree, or None. A folder this
+    script does not own may hold someone's work, so it is never removed."""
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        return f"{path} is not a folder"
+    if path == default or (path / _WORKTREE_MARKER).is_file():
+        return None
+    if path.exists() and any(path.iterdir()):
+        return f"{path} holds files and this script did not create a worktree there"
+    return None
+
+
+def _prepare_worktree(git: Git, path: Path, default: Path, good: str) -> None:
     """A detached worktree at `good`, replacing what a previous run left: a
     worktree, a registered folder missing its `.git` file, or a registration
-    whose folder is gone."""
-    registered = _is_registered(git, path)
-    if registered:
-        git.run("worktree", "remove", "--force", "--force", str(path), check=False)
-    if path.exists() and (registered or path == git.cwd / ".bisect"):
-        shutil.rmtree(path)
-    git.run("worktree", "prune")
+    whose folder is gone. `worktree_refusal` has passed `path`."""
     if path.exists() and any(path.iterdir()):
-        raise ValueError(f"{path} exists and git does not list it as a worktree")
+        # A test can leave a read-only folder, which would stop the removal.
+        subprocess.run(["chmod", "-R", "u+rwx", str(path)], capture_output=True, check=False,
+                       timeout=_GIT_TIMEOUT_SECONDS)
+        git.run("worktree", "remove", "--force", "--force", str(path), check=False)
+        if path.exists():
+            shutil.rmtree(path)
+    git.run("worktree", "prune")
     git.run("worktree", "add", "--detach", str(path), good)
-
-
-def _is_registered(git: Git, path: Path) -> bool:
-    return any(
-        line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == path
-        for line in git.lines("worktree", "list", "--porcelain")
-    )
+    if path != default:
+        # The default needs no marker, and an untracked file there could
+        # fail a test that reads `git status`.
+        (path / _WORKTREE_MARKER).write_text(f"{git.cwd}\n", encoding="utf-8")
 
 
 def _read_json(path: Path) -> Any:
@@ -1070,7 +1084,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
     step_args = _step_passthrough(args)
     # Git runs in `root`, so a relative path would land under it.
-    worktree = args.worktree.resolve() if args.worktree is not None else root / ".bisect"
+    default_worktree = root / ".bisect"
+    worktree = args.worktree.resolve() if args.worktree is not None else default_worktree
+    refusal = worktree_refusal(worktree, default_worktree)
+    if refusal is not None:
+        raise ValueError(refusal)
     if args.dry_run:
         in_range = git.lines("rev-list", f"{good}..{bad}")
         point_set = set(points) | {bad} if points else None
@@ -1096,7 +1114,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
             on_change=lambda: save(False),
         )
-        _prepare_worktree(git, worktree, good)
+        _prepare_worktree(git, worktree, default_worktree, good)
         bisector.bisect(good, bisected)
     if over_cap:
         add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))

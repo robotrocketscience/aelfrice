@@ -901,6 +901,86 @@ def test_a_folder_that_is_not_a_worktree_is_left_alone(env: Env, tmp_path: Path)
     assert env.stepped() == []
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_the_repository_root_is_refused_as_a_worktree(
+    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
+) -> None:
+    """`--worktree REPO_ROOT` removed the checkout, `.git` included."""
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    extra = ("--worktree", str(repo), *(("--dry-run",) if dry_run else ()))
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
+    assert (repo / ".git").is_dir()
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == shas[1]
+    assert env.stepped() == []
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_another_worktree_is_refused_with_its_work_intact(
+    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
+) -> None:
+    """`--worktree` naming a registered worktree removed its uncommitted work."""
+    shas = env.repo(["", "a"])
+    repo, other = tmp_path / "repo", tmp_path / "other"
+    assert _git(repo, "worktree", "add", "-q", "--detach", str(other), shas[0]).returncode == 0
+    work = other / "UNCOMMITTED.txt"
+    work.write_text("work", encoding="utf-8")
+    extra = ("--worktree", str(other), *(("--dry-run",) if dry_run else ()))
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
+    assert work.read_text(encoding="utf-8") == "work"
+    assert env.stepped() == []
+
+
+def test_a_symbolic_link_at_the_default_worktree_is_refused(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    shas = env.repo(["", "a"])
+    repo, target = tmp_path / "repo", tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    (repo / ".bisect").symlink_to(target)
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 2
+    assert (target / "keep.txt").is_file()
+
+
+def test_a_worktree_this_script_created_elsewhere_is_replaced(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """An empty folder is used, and the marker a run writes there lets the next run replace it."""
+    shas = env.repo(["", "a"])
+    repo, mine = tmp_path / "repo", tmp_path / "mine"
+    mine.mkdir()
+    extra = ("--worktree", str(mine))
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 0
+    assert (mine / nb._WORKTREE_MARKER).is_file()
+    leftover = mine / "left-by-a-test.txt"
+    leftover.write_text("x", encoding="utf-8")
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 0
+    assert not leftover.exists()
+    assert (mine / nb._WORKTREE_MARKER).is_file()
+
+
+def test_the_default_worktree_gets_no_marker(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """An untracked file there would fail a test that reads `git status`."""
+    shas = env.repo(["", "a"])
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert not (tmp_path / "repo" / ".bisect" / nb._WORKTREE_MARKER).exists()
+
+
+def test_a_read_only_folder_a_test_left_does_not_stop_the_next_run(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    locked = repo / ".bisect" / "locked"
+    locked.mkdir()
+    (locked / "file.txt").write_text("x", encoding="utf-8")
+    locked.chmod(0o555)
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert not locked.exists()
+
+
 def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "", "a", "a"])
     points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
