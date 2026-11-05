@@ -1586,6 +1586,53 @@ def test_a_step_that_replaces_the_clone_at_the_last_check_names_no_culprit(
     assert _tree_state(repo) == tree
 
 
+def _replace_the_folder(folder: Path, caller: Path) -> None:
+    if not folder.is_symlink():
+        folder.rename(folder.with_name("moved"))
+        folder.symlink_to(caller)
+
+
+@pytest.mark.parametrize("moment", ["after-the-clone", "after-the-round", "after-the-attribution"])
+def test_the_script_confirms_the_clone_before_it_writes_or_checks_out(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moment: str,
+) -> None:
+    """Only a process that left the step's group can change the clone between
+    steps, and the scratch files and `git bisect reset` would follow it."""
+    shas = env.repo(_TWO_ROUNDS)
+    repo = tmp_path / "repo"
+    tree = _tree_state(repo)
+    real_clone, real_round, real_attribute = nb._clone, nb.Bisector.bisect_round, nb.Bisector.attribute
+
+    def clone(git: nb.Git, target: Path, good: str, bad: str) -> None:
+        real_clone(git, target, good, bad)
+        _replace_the_folder(target.parent, repo)
+
+    def bisect_round(self: nb.Bisector, *args: Any) -> Any:
+        value = real_round(self, *args)
+        _replace_the_folder(self.clone.parent, repo)
+        return value
+
+    def attribute(self: nb.Bisector, *args: Any) -> Any:
+        value = real_attribute(self, *args)
+        _replace_the_folder(self.clone.parent, repo)
+        return value
+
+    if moment == "after-the-clone":
+        monkeypatch.setattr(nb, "_clone", clone)
+    elif moment == "after-the-round":
+        monkeypatch.setattr(nb.Bisector, "bisect_round", bisect_round)
+    else:
+        monkeypatch.setattr(nb.Bisector, "attribute", attribute)
+    out = tmp_path / "result.json"
+    rc = nb.main(["run", "--repo-root", str(repo), "--good", shas[0], "--bad", shas[5], "--out", str(out),
+                  "--tests", str(_tests_file(tmp_path / "ids.txt", _A, _B)), "--step-cmd", env.step_cmd,
+                  "--points", str(_write(tmp_path / "points.json", {shas[i]: 30 + i for i in range(1, 6)}))])
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert rc == 1
+    assert list(result["events"][-1]["reasons"].values())[-1] == nb.REASON_CLONE_CHANGED
+    assert _tree_state(repo) == tree
+
+
 def test_a_clone_that_lost_its_git_directory_finds_no_repository_above_it(tmp_path: Path) -> None:
     """The ceiling stops git in the gap before the next confirmation, and in
     whatever the step starts."""

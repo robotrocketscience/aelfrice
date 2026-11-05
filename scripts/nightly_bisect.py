@@ -132,10 +132,11 @@ The step runs the repository's own reviewed tests with the caller's permissions.
 This script defends against accidents. A test that means harm can write to the
 caller directly, and no script can stop that.
 
-The script confirms the clone before and after each step, from what git reports
-for the folder: the folder and the clone are no symbolic links, the git directory
-is the clone's own `.git` and the top level is the clone. A step can replace any
-of them, and a `checkout --force` would then write where they lead. On a mismatch
+The script confirms the clone before and after each step, from what git reports:
+the real paths of the git directory and the top level have to be the clone's own,
+so a symbolic link in place of the folder or the clone fails too. A step can
+replace any of them, and a `checkout --force` would then write where they lead. On
+a mismatch
 the script touches nothing more, drops that step's verdict, and gives the tests
 left a range with the reason `clone changed`. It cannot confirm between the steps
 of one `git bisect run`, which stops by itself once `.git` is replaced.
@@ -915,14 +916,11 @@ class Bisector:
     def _wt(self) -> Git:
         """The clone, confirmed to be the one this run made."""
         wt = Git(self.clone, ceiling=self.clone.parent)
-        real = self.clone.resolve()
-        found = ""
         try:
-            if not (self.clone.parent.is_symlink() or self.clone.is_symlink()):
-                found = wt.run("rev-parse", "--absolute-git-dir", "--show-toplevel", check=False).stdout
+            found = wt.run("rev-parse", "--absolute-git-dir", "--show-toplevel", check=False).stdout
         except OSError as exc:
             raise CloneChanged(f"{self.clone}: {exc}") from exc
-        if found != f"{real}/.git\n{real}\n":
+        if found != f"{self.clone}/.git\n{self.clone}\n":
             raise CloneChanged(f"{self.clone} is no longer the clone this run made")
         return wt
 
@@ -1225,7 +1223,6 @@ def _clone(git: Git, clone: Path, good: str, bad: str) -> None:
     """`clone` of `git`'s repository, at `good`. RuntimeError when it lacks `good` or `bad`."""
     git.run("clone", "--shared", "--no-checkout", str(git.cwd), str(clone))
     inside = Git(clone, ceiling=clone.parent)
-    inside.commit(good)
     inside.commit(bad)
     inside.run("remote", "remove", "origin")
     inside.run("checkout", "-q", "--detach", good)
