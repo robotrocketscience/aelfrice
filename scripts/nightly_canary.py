@@ -179,6 +179,9 @@ content, a new `created_at` date included, exits 1 and writes nothing, whether
 or not an entry names it. The same content is a no-op, whichever triage file comes with it: a
 triage already written stays. A republish with no triage keeps the run's
 triage and the event keys on its index line. The index stays ordered by run.
+When its runs and the runs under `runs/` differ, as after a deleted or repaired
+index, `publish` prints a `::warning::` naming the counts and does not rebuild
+it, since the 14-night promotion streak reads this index.
 
 A pointer can fall off main through a history rewrite or a hand edit. Such a
 pointer would freeze, since no commit descends from it on main, so `publish`
@@ -922,6 +925,17 @@ def superseded_at_commit(lines: list[str], record: dict[str, Any]) -> bool:
     )
 
 
+def index_gap(index: list[str], disk_runs: set[int]) -> str | None:
+    """What differs between the index's runs and the runs on disk, or None."""
+    indexed = {_index_line_run(line)[0] for line in index}
+    if indexed == disk_runs:
+        return None
+    return (
+        f"index.jsonl holds {len(indexed)} run(s) and runs/ holds {len(disk_runs)}: "
+        f"{len(disk_runs - indexed)} missing from the index, {len(indexed - disk_runs)} with no record"
+    )
+
+
 def _run_order(pointer: dict[str, Any]) -> tuple[int, int]:
     return int(pointer["run_id"]), int(pointer.get("attempt", 0))
 
@@ -1530,6 +1544,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
     problems.extend(f"last green {problem}" for problem in pointer_problems)
     for note in notes:
         print(note)
+    gap = None if index is None else index_gap(index, {order[0] for order, _ in on_disk} | {this_run[0]})
+    if gap is not None:
+        print(f"::warning::{gap}")
     for target, text in writes:
         if args.dry_run:
             print(f"dry run: would write {target.relative_to(branch).as_posix()}")

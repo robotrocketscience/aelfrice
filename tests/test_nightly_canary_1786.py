@@ -1967,6 +1967,47 @@ def test_a_new_attempt_does_not_inherit_the_events_of_the_last_one() -> None:
     assert late == merged
 
 
+def test_a_deleted_index_warns_with_the_counts_and_is_not_rebuilt(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, c1, c2), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 10, day=1), None) == 0
+    assert _publish(tmp_path, repo, _green(c1, 11, day=2), None) == 0
+    assert "::warning::" not in capsys.readouterr().out
+    (tmp_path / "branch" / "index.jsonl").unlink()
+    assert _publish(tmp_path, repo, _green(c2, 12, day=3), None) == 0
+    assert "::warning::index.jsonl holds 1 run(s) and runs/ holds 3: 2 missing from the index, 0 with no record" in capsys.readouterr().out
+    assert [line["run_id"] for line in _index(tmp_path)] == [12]
+
+
+def test_a_new_attempt_of_a_run_is_not_a_gap(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The index keeps one line per run and `runs/` one directory per attempt."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 10, run_attempt=1), None) == 0
+    assert _publish(tmp_path, repo, _red(c0, 10, run_attempt=2), None) == 0
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_a_corrupt_index_reports_itself_and_not_a_gap(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    (tmp_path / "branch").mkdir()
+    (tmp_path / "branch" / "index.jsonl").write_text("oops\n", encoding="utf-8")
+    assert _publish(tmp_path, repo, _red(c0, 10), None) == 1
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_an_index_gap_counts_each_direction() -> None:
+    lines = nc.merge_index([], nc.index_entry(_red(SHA1, 1), None))
+    lines = nc.merge_index(lines, nc.index_entry(_red(SHA1, 2), None))
+    assert nc.index_gap(lines, {1, 2}) is None
+    assert nc.index_gap(lines, {1}) == "index.jsonl holds 2 run(s) and runs/ holds 1: 0 missing from the index, 1 with no record"
+    assert nc.index_gap(lines, {1, 2, 3}) == "index.jsonl holds 2 run(s) and runs/ holds 3: 1 missing from the index, 0 with no record"
+
+
 def test_the_index_is_ordered_by_run_and_skips_blank_lines() -> None:
     lines = nc.merge_index([], nc.index_entry(_red(SHA1, 9), None))
     lines = nc.merge_index(["", *lines, "  "], nc.index_entry(_red(SHA1, 10), None))
