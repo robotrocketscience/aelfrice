@@ -709,6 +709,36 @@ def test_a_file_deleted_and_added_back_is_not_blamed_on_the_return(
     assert result["events"] == [nb.event_for_range(shas[0], shas[6], [z_id], nb.REASON_RETURNED)]
 
 
+def test_a_file_copied_after_the_break_is_not_blamed_on_the_copy(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """Git sees a copy when the source changes in the same commit."""
+    body = "".join(f"def test_{name}():\n    pass\n\n\n" for name in ("a", "b", "c", "d"))
+    shas = env.repo(["", "a", "a", "a", "a"], edits=(
+        (0, "tests/test_old.py", body),
+        (3, "tests/test_old.py", f"{body}def test_e():\n    pass\n"),
+        (3, "tests/test_new.py", body),
+    ))
+    new_id = "tests/test_new.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], new_id,
+                            points={shas[i]: 30 + i for i in range(1, 5)})
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [new_id], nb.REASON_RENAMED)]
+
+
+def test_a_next_point_that_cannot_be_judged_keeps_the_blame(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """That commit says nothing about the culprit."""
+    shas = env.repo(_LINEAR)
+    points: dict[str, int | None] = {shas[2]: 11, shas[5]: 12, shas[6]: 13, shas[7]: 14}
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[6], "phase": "check", "rc": 125}]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
+    assert result["rounds"][0]["verify"]["following_rc"] == 125
+
+
 def test_a_test_function_removed_and_added_back_is_not_blamed_on_the_return(
     env: Env, tmp_path: Path, run_bisect: Runner,
 ) -> None:
@@ -979,6 +1009,22 @@ def test_an_out_path_that_cannot_be_written_stops_before_any_work(
     assert env.stepped() == []
     assert not (tmp_path / "repo" / ".bisect").exists()
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(f".{out.name}.")] == []
+
+
+def test_the_result_is_replaced_in_one_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader polling the file during a run never sees half of it."""
+    real = os.replace
+    moves: list[tuple[Path, Path]] = []
+
+    def replace(src: str, dst: Path) -> None:
+        moves.append((Path(src), dst))
+        real(src, dst)
+
+    monkeypatch.setattr(nb.os, "replace", replace)
+    out = tmp_path / "r.json"
+    nb._write_json(out, {"a": 1})
+    assert [(src.parent, dst) for src, dst in moves] == [(tmp_path, out)]
+    assert json.loads(out.read_text(encoding="utf-8")) == {"a": 1}
 
 
 def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
@@ -1272,6 +1318,14 @@ def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect
     assert [e["key"] for e in result["events"]] == ["pr-22"]
 
 
+def test_python_and_extras_reach_the_step(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7}, step=False,
+                       extra=("--python", "3.13", "--extra", "archive", "--extra", "onboard-llm"))
+    assert rc == 0
+    assert env.uv_calls()[0] == ["sync", "--frozen", "--extra", "archive", "--extra", "onboard-llm", "--python", "3.13"]
+
+
 def test_the_default_step_runs_by_absolute_path(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """No `--step-cmd`: `git bisect run` runs this script's `step` inside
     the worktree, which has no `scripts/`, under the fake `uv`."""
@@ -1383,6 +1437,16 @@ def test_the_step_gets_git_dir_and_its_children_do_not(env: Env, tmp_path: Path,
     seen = env.env_log.read_text(encoding="utf-8").splitlines()
     assert any(row.startswith("uv ") for row in seen)
     assert [row for row in seen if not row.endswith(" None")] == []
+
+
+def test_the_children_lose_every_variable_git_ties_to_a_repository(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listed = _git(tmp_path, "rev-parse", "--local-env-vars").stdout.split()
+    assert "GIT_DIR" in listed
+    for var in {*listed, "GIT_PREFIX"}:
+        monkeypatch.setenv(var, "x")
+    assert [var for var in nb.repo_free_env() if var in {*listed, "GIT_PREFIX"}] == []
 
 
 def test_an_outside_git_dir_does_not_redirect_the_script(
@@ -1732,6 +1796,27 @@ def test_merge_points_leaves_out_a_merged_side_branch(env: Env, tmp_path: Path) 
     out = tmp_path / "points.json"
     assert _merge_points(repo, shas[1], merge, out) == 0
     assert json.loads(out.read_text(encoding="utf-8")) == {shas[2]: 7, merge: 6}
+
+
+def test_a_gh_that_hangs_means_every_commit(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(_LINEAR)
+    real = subprocess.run
+    timeouts: list[float] = []
+
+    def run(argv: list[str], **kwargs: Any) -> Any:
+        if argv[0] != "gh":
+            return real(argv, **kwargs)
+        timeouts.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(nb.subprocess, "run", run)
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    assert timeouts == [nb._API_TIMEOUT_SECONDS]
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+    assert "::warning::" in capsys.readouterr().err
 
 
 def test_gh_runs_in_the_repo_root_without_git_variables(
