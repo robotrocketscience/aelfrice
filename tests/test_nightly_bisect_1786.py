@@ -55,7 +55,8 @@ _D = "tests/test_x.py::test_d"
 # phase, FAKE_HANG=<seconds> sleeps first, with a child that sleeps too, and
 # FAKE_READONLY=<path> leaves in the check phase a read-only folder and a
 # symbolic link to that path. FAKE_RM_GIT=<phase> deletes the worktree's `.git`
-# file in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES.
+# file in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES,
+# and FAKE_STATUS_LOG one for the output of `git status --porcelain`.
 _FAKE_STEP = '''\
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
@@ -76,6 +77,10 @@ with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"step {phase} {os.environ.get('GIT_DIR')}\\n")
 with open(os.environ["FAKE_CEILING_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"step {phase} {os.environ.get('GIT_CEILING_DIRECTORIES')}\\n")
+if os.environ.get("FAKE_STATUS_LOG"):
+    status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, timeout=30, check=True)
+    with open(os.environ["FAKE_STATUS_LOG"], "a", encoding="utf-8") as fh:
+        fh.write(status.stdout)
 hang = os.environ.get("FAKE_HANG")
 if hang:
     child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({hang})"])
@@ -322,7 +327,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_STATUS_LOG", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
                 "FAKE_GH_HANG"):
         monkeypatch.delenv(var, raising=False)
     return e
@@ -1284,6 +1289,19 @@ def test_the_run_leaves_the_repository_as_it_found_it(
     assert _repo_state(repo) == before
     assert worktrees[0].parent.parent == env.tmp
     assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == "# edited\n"
+
+
+def test_the_step_sees_no_file_of_the_run_in_the_worktree(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An untracked file there could fail a test that reads `git status`."""
+    shas = env.repo(["", "", "a", "a"])
+    log = tmp_path / "status.log"
+    log.write_text("", encoding="utf-8")
+    monkeypatch.setenv("FAKE_STATUS_LOG", str(log))
+    assert run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})[0] == 0
+    assert env.stepped()
+    assert log.read_text(encoding="utf-8") == ""
 
 
 def test_two_runs_on_one_repository_each_get_their_own_folder(
