@@ -2466,6 +2466,15 @@ def _green_with(key: str, value: object) -> dict[str, Any]:
     return record
 
 
+def _forged_green(sha: str = SHA1, run_id: int = 1) -> dict[str, Any]:
+    """`_red` edited to read green: its `failed` test stays in `legs`, in no `flaky` list."""
+    record = _red(sha, run_id)
+    record["nightly"]["verdict"] = nc.GREEN
+    record["nightly"]["status"] = {leg: nc.GREEN for leg in record["nightly"]["status"]}
+    record["nightly"]["confirmed"] = {leg: [] for leg in record["nightly"]["confirmed"]}
+    return record
+
+
 _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("nightly-list", _with("nightly", [])),
     ("nightly-str", _with("nightly", "x")),
@@ -2497,6 +2506,14 @@ _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("green-over-confirmed", _with("status", {"3.12": nc.GREEN, "3.13": nc.GREEN})),
     ("verdict-green-over-red-leg", _with("verdict", nc.GREEN)),
     ("green-no-legs", _green_with("legs", {})),
+    ("green-over-unlisted-failure", _forged_green()),
+    ("green-over-no-test-that-ran", _green_with("legs", {
+        leg: {"tests": {_A: tor.SKIPPED}, "counts": {}} for leg in ("3.12", "3.13")
+    })),
+    ("flaky-not-in-the-report", _green_with("flaky", {"3.12": [_B], "3.13": []})),
+    ("red-leg-not-listing-its-failure", _with("confirmed", {"3.12": [], "3.13": []})),
+    ("confirmed-not-in-the-report", _with("confirmed", {"3.12": [_A, _B], "3.13": []})),
+    ("red-leg-with-no-report", _with("legs", {"3.13": None})),
     ("green-null-canary-leg", _green_with("legs", {"3.12": None, "3.13": None})),
     ("green-no-canary-role", _green_with("roles", {"3.12": nc.EXTRA, "3.13": nc.EXTRA})),
     ("green-no-roles", _green_with("roles", {})),
@@ -2525,8 +2542,28 @@ def test_a_baseline_of_the_wrong_shape_is_a_night_with_no_baseline(tmp_path: Pat
 
 
 def test_the_records_this_script_writes_pass_its_own_check(tmp_path: Path) -> None:
-    for record in (_green(SHA1, 1), _red(SHA1, 2), _night(SHA1, {"3.12": (None, None)})):
+    flaky = _night(SHA1, {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)})
+    broken = _night(SHA1, {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)}, rcs={"3.12": 2})
+    many = _night(SHA1, {"3.12": ({f"t::{i}": tor.FAILED for i in range(60)}, None), "3.13": ({_A: tor.PASSED}, None)})
+    assert (flaky["nightly"]["verdict"], broken["nightly"]["status"]["3.12"]) == (nc.GREEN, nc.BROKEN)
+    for record in (_green(SHA1, 1), _red(SHA1, 2), _night(SHA1, {"3.12": (None, None)}), flaky, broken, many):
         nc.validate_record(json.loads(json.dumps(record)), "test")
+
+
+def test_a_record_edited_to_green_over_a_failure_moves_nothing(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 1), None) == 0
+    before = _tree_bytes(tmp_path)
+    assert _publish(tmp_path, repo, _forged_green(c1, 2), None) == 2
+    assert _tree_bytes(tmp_path) == before
+
+
+def test_a_last_green_record_edited_to_green_is_no_baseline(tmp_path: Path) -> None:
+    triage = _regress_on(tmp_path, _POINTS_AT_X, json.dumps(_forged_green()).encode())
+    assert triage["events"][0]["kind"] == "no-baseline"
+    assert "does not sort the red tests" in triage["events"][0]["reason"]
 
 
 _BAD_POINTERS = [

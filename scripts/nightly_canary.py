@@ -102,7 +102,9 @@ path would read as no baseline; a directory with no `last-green.json` is the
 night before the first green one. A `last-green.json` or a record it names
 that cannot be read is a night with no baseline: the triage is still written,
 because only a green night moves the pointer and a lasting regression would
-otherwise never get one. `publish` then reports the bad file. The output
+otherwise never get one. `publish` then reports the bad file. A record
+whose `nightly` key disagrees with the tests in its `legs` is a bad file, here
+and for `--current` and `publish`, which exit 2 on it. The output
 carries:
 
 - `events`: `canary-broken` when a canary leg is missing or broken, with the
@@ -767,13 +769,28 @@ def validate_record(record: dict[str, Any], where: str) -> None:
     verdict = nightly.get("verdict")
     require(verdict in _NIGHT_VERDICTS, f"verdict {verdict!r} is not a night's verdict")
     status: dict[str, str] = nightly["status"]
+    flaky: dict[str, list[str]] = nightly["flaky"]
     confirmed: dict[str, list[str]] = nightly["confirmed"]
     roles: dict[str, str] = nightly["roles"]
+    legs: dict[str, Any] = record["legs"]
     for leg, leg_state in status.items():
         require(leg_state != GREEN or not confirmed.get(leg), f"leg {leg} is green with a confirmed failure")
+        if leg_state == MISSING:
+            continue
+        leg_record: dict[str, Any] | None = legs.get(leg)
+        if leg_record is None:
+            raise ValueError(f"{where}: leg {leg} reads {leg_state} with no report")
+        tests: dict[str, str] = leg_record["tests"]
+        require(
+            sorted(flaky.get(leg, []) + confirmed.get(leg, [])) == red_ids(tests),
+            f"leg {leg} does not sort the red tests in its report into flaky and confirmed",
+        )
+        require(
+            leg_state != GREEN or any(outcome in RAN_OUTCOMES for outcome in tests.values()),
+            f"leg {leg} is green with no test that ran",
+        )
     if verdict == GREEN:
         canary = [leg for leg, role in roles.items() if role == CANARY]
-        legs: dict[str, Any] = record["legs"]
         require(bool(canary), "the night is green with no canary leg")
         require(all(status.get(leg) == GREEN and legs.get(leg) for leg in canary), "the night is green over a canary leg that is not")
 
