@@ -1860,6 +1860,66 @@ def test_step_that_cannot_read_its_input_aborts(env: Env, tmp_path: Path) -> Non
     assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12") == nb.STEP_ABORT
 
 
+@pytest.mark.parametrize(
+    "flags",
+    [("--deadline", "abc"), ("--deadline", "nan"), ("--deadline", "inf"), ("--deadline", "9e12", "--step-timeout", "-5"),
+     ("--deadline", "9e12", "--step-timeout", "1" + "0" * 400), ("--deadline", "9e12", "--step-timeout", "1" + "0" * 5000),
+     ("--deadline", "9e12", "--no-such-flag")],
+    ids=["text", "nan", "inf", "negative", "400-digits", "too-long-for-int", "unknown"],
+)
+def test_step_with_a_bad_flag_skips(env: Env, tmp_path: Path, flags: tuple[str, ...]) -> None:
+    """`git bisect run` reads a usage error's 2, and a traceback's 1, as a bad commit."""
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", _A)
+    assert _step(tmp_path, tmp_path / "repo", *flags) == nb.STEP_SKIP
+    assert env.uv_calls() == []
+
+
+def test_step_given_no_flags_at_all_skips(tmp_path: Path) -> None:
+    assert nb.main(["step"]) == nb.STEP_SKIP
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [(OverflowError("in the test"), nb.STEP_SKIP), (ZeroDivisionError("in the test"), nb.STEP_SKIP),
+     (subprocess.TimeoutExpired("x", 1), nb.STEP_ABORT), (OSError("in the test"), nb.STEP_ABORT)],
+    ids=["overflow", "any-other-bug", "timeout", "unreadable"],
+)
+def test_step_errors_never_exit_as_a_bad_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, status: int,
+) -> None:
+    def raises(_: Any) -> int:
+        raise error
+
+    monkeypatch.setattr(nb, "cmd_step", raises)
+    assert nb.main(["step", "--tests", "ids.txt", "--deadline", "9e12"]) == status
+
+
+def test_run_turns_an_unexpected_error_into_a_status_of_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A traceback's status of 1 means "a test got a range"."""
+    def raises(_: Any) -> int:
+        raise OverflowError("in the test")
+
+    monkeypatch.setattr(nb, "cmd_run", raises)
+    assert nb.main(["run", "--good", "a", "--bad", "b", "--tests", "t", "--out", "o"]) == 2
+
+
+@pytest.mark.parametrize("flag", ["--budget-seconds", "--step-timeout"])
+@pytest.mark.parametrize("value", ["-5", "1" + "0" * 400, "x"], ids=["negative", "400-digits", "text"])
+def test_run_refuses_a_bad_number(tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str, value: str) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        nb.main(["run", "--good", "a", "--bad", "b", "--tests", "t", "--out", "o", flag, value])
+    assert exit_info.value.code == 2
+    assert flag in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["0", str(7 * 24 * 3600)])
+def test_seconds_takes_its_whole_range(value: str) -> None:
+    assert nb._seconds(value) == int(value)
+
+
 def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
     env.repo(["a"])
     _tests_file(tmp_path / "ids.txt", _A)

@@ -131,7 +131,8 @@ whose `conftest.py` does, reaches the step as a target (`tests.test_x`, the
 name pytest's JUnit report gives a collection error, or `tests/sub/`), judged
 by collecting it alone as below.
 `--step-timeout` bounds the whole step. A step that cannot read its input
-exits 255 rather than 2, which `git bisect run` would read as a bad commit.
+exits 255 rather than 2, which `git bisect run` would read as a bad commit, and
+a bad flag or any other uncaught error exits 125 for the same reason.
 
 Test ids. `--tests` takes three forms: a node id
 (`tests/test_x.py::TestC::test_a[p]`), a JUnit id
@@ -213,6 +214,7 @@ import argparse
 import contextlib
 import fcntl
 import json
+import math
 import os
 import shlex
 import shutil
@@ -261,6 +263,7 @@ _TERM_GRACE_SECONDS = 2
 # Lines of `git bisect run` output a round keeps.
 _OUTPUT_TAIL_LINES = 40
 _WORKTREE_MARKER = ".nightly-bisect-worktree"
+_MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
 REASON_INCONCLUSIVE = "inconclusive"
@@ -1314,6 +1317,21 @@ def _step_passthrough(args: argparse.Namespace) -> list[str]:
     return out
 
 
+def _seconds(text: str) -> int:
+    """A whole number of seconds that adding to the clock cannot overflow."""
+    value = int(text)
+    if not 0 <= value <= _MAX_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be from 0 to {_MAX_SECONDS}")
+    return value
+
+
+def _epoch(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("must be a finite number")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1322,7 +1340,7 @@ def build_parser() -> argparse.ArgumentParser:
     env = argparse.ArgumentParser(add_help=False)
     env.add_argument("--python", default=None, help="the Python version uv syncs")
     env.add_argument("--extra", action="append", default=[], help="an extra uv syncs; repeatable")
-    env.add_argument("--step-timeout", type=int, default=DEFAULT_STEP_TIMEOUT)
+    env.add_argument("--step-timeout", type=_seconds, default=DEFAULT_STEP_TIMEOUT)
 
     p = sub.add_parser("merge-points", parents=[common], help="list the commits PRs merged between two commits")
     p.add_argument("--good", required=True)
@@ -1341,14 +1359,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
     p.add_argument("--repo-root", type=Path, default=Path("."))
     p.add_argument("--worktree", type=Path, default=None, help="default: .bisect under --repo-root")
-    p.add_argument("--budget-seconds", type=int, default=DEFAULT_BUDGET_SECONDS)
+    p.add_argument("--budget-seconds", type=_seconds, default=DEFAULT_BUDGET_SECONDS)
     p.add_argument("--step-cmd", default=None, help="a command line that replaces this script's step")
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("step", parents=[common, env], help="judge the checked-out commit for git bisect run")
     p.add_argument("--tests", required=True, type=Path)
-    p.add_argument("--deadline", required=True, type=float, help="epoch seconds; past it the step exits 255")
+    p.add_argument("--deadline", required=True, type=_epoch, help="epoch seconds; past it the step exits 255")
     p.add_argument("--failed-out", type=Path, default=None, help="write the ids that failed here")
     p.add_argument("--absent-out", type=Path, default=None, help="write the ids that do not exist here")
     p.set_defaults(func=cmd_step)
@@ -1356,14 +1374,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    step = argv[:1] == ["step"]
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:
+        if step and exc.code:
+            return STEP_SKIP  # `git bisect run` reads a usage error's 2 as a bad commit.
+        raise
     try:
         return int(args.func(args))
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"nightly_bisect: {exc}", file=sys.stderr)
         # `git bisect run` reads 2 as a bad commit, so a step that cannot
         # judge its commit stops the bisect instead.
-        return STEP_ABORT if args.command == "step" else 2
+        return STEP_ABORT if step else 2
+    except Exception as exc:
+        # A traceback's status of 1 would read as a bad commit.
+        print(f"nightly_bisect: {exc!r}", file=sys.stderr)
+        return STEP_SKIP if step else 2
 
 
 if __name__ == "__main__":
