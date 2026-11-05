@@ -54,11 +54,12 @@ _D = "tests/test_x.py::test_d"
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
 # phase, FAKE_HANG=<seconds> sleeps first, with a child that sleeps too, and
 # FAKE_READONLY=<path> leaves in the check phase a read-only folder and a
-# symbolic link to that path. FAKE_RM_GIT=<phase> deletes the worktree's `.git`
-# file in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES,
+# symbolic link to that path. FAKE_RM_GIT=<phase> deletes the clone's `.git`
+# in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES,
 # and FAKE_STATUS_LOG one for the output of `git status --porcelain`.
+# FAKE_GIT_STATE changes the config, branches and stash, and pushes to `origin`.
 _FAKE_STEP = '''\
-import argparse, json, os, subprocess, sys, time
+import argparse, json, os, shutil, subprocess, sys, time
 from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument("--tests", required=True)
@@ -120,8 +121,14 @@ if args.absent_out:
 if os.environ.get("FAKE_DIRTY") == phase:
     with open("state.txt", "a", encoding="utf-8") as fh:
         fh.write("dirty=1\\n")
+if os.environ.get("FAKE_GIT_STATE"):
+    for cmd in (["config", "user.name", "hijacked"], ["update-ref", "refs/heads/main", head],
+                ["branch", "--force", "stray", head], ["push", "-q", "origin", "HEAD:refs/heads/pushed"]):
+        subprocess.run(["git", *cmd], capture_output=True, timeout=30, check=False)
+    Path("stashed.txt").write_text("z", encoding="utf-8")
+    subprocess.run(["git", "stash", "push", "-q", "-u"], capture_output=True, timeout=30, check=False)
 if os.environ.get("FAKE_RM_GIT") == phase:
-    Path(".git").unlink(missing_ok=True)
+    shutil.rmtree(".git", ignore_errors=True)
 if os.environ.get("FAKE_READONLY") and phase == "check" and not Path("link").is_symlink():
     Path("link").symlink_to(os.environ["FAKE_READONLY"])
     Path("locked").mkdir()
@@ -329,7 +336,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_STATUS_LOG", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_STATUS_LOG", "FAKE_GIT_STATE", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
                 "FAKE_GH_HANG"):
         monkeypatch.delenv(var, raising=False)
     return e
@@ -1112,13 +1119,13 @@ def test_an_earlier_result_is_replaced_before_any_work(
     shas = env.repo(["", "a"])
     _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
 
-    _fail_git(monkeypatch, "worktree", "add")
+    _fail_git(monkeypatch, "clone")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
     assert rc == 2
     assert (result["complete"], result["good"]) == (False, shas[0])
 
 
-def test_the_result_is_false_while_the_worktree_is_prepared(
+def test_the_result_is_false_while_the_clone_is_prepared(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(["", "a"])
@@ -1127,7 +1134,7 @@ def test_the_result_is_false_while_the_worktree_is_prepared(
     seen: list[dict[str, Any]] = []
 
     def spy(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ("worktree", "add"):
+        if args[0] == "clone":
             seen.append(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
         return real(self, *args, **kwargs)
 
@@ -1278,10 +1285,10 @@ def test_the_run_leaves_the_repository_as_it_found_it(
     _a_checkout_with_work(repo)
     before = _repo_state(repo)
     real = nb.Bisector.bisect
-    worktrees: list[Path] = []
+    clones: list[Path] = []
 
     def spy(self: nb.Bisector, good: str, tests: list[str]) -> None:
-        worktrees.append(self.worktree)
+        clones.append(self.clone)
         real(self, good, tests)
 
     monkeypatch.setattr(nb.Bisector, "bisect", spy)
@@ -1289,11 +1296,11 @@ def test_the_run_leaves_the_repository_as_it_found_it(
     assert rc == 0
     assert result["rounds"][0]["log"], "the round kept no bisect log"
     assert _repo_state(repo) == before
-    assert worktrees[0].parent.parent == env.tmp
+    assert clones[0].parent.parent == env.tmp
     assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == "# edited\n"
 
 
-def test_the_step_sees_no_file_of_the_run_in_the_worktree(
+def test_the_step_sees_no_file_of_the_run_in_the_clone(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An untracked file there could fail a test that reads `git status`."""
@@ -1313,9 +1320,9 @@ def test_two_runs_on_one_repository_each_get_their_own_folder(
     real = nb._remove_folder
     folders: list[Path] = []
 
-    def spy(git: nb.Git, folder: Path) -> None:
+    def spy(folder: Path) -> None:
         folders.append(folder)
-        real(git, folder)
+        real(folder)
 
     monkeypatch.setattr(nb, "_remove_folder", spy)
     for _ in range(2):
@@ -1372,7 +1379,7 @@ def test_a_lost_git_file_cannot_reach_the_repository_above_it(
     assert [(e["kind"], e["reasons"]) for e in result["events"]] == [("range", {_A: nb.REASON_STOPPED})]
 
 
-def test_the_step_and_its_children_cannot_find_a_repository_above_the_worktree(
+def test_the_step_and_its_children_cannot_find_a_repository_above_the_clone(
     env: Env, tmp_path: Path, run_bisect: Runner,
 ) -> None:
     """Fake step for the bisect and the checks, then the real step's `uv` children."""
@@ -1389,33 +1396,10 @@ def test_the_step_and_its_children_cannot_find_a_repository_above_the_worktree(
         assert Path(rows[0][1]).name.startswith("nightly-bisect-")
 
 
-@pytest.mark.parametrize(
-    "error", [RuntimeError("refused"), subprocess.TimeoutExpired("git", 120), OSError("gone")],
-    ids=["git-failed", "timed-out", "no-git"],
-)
-def test_a_worktree_git_cannot_remove_goes_by_its_path(
-    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], error: Exception,
-) -> None:
-    shas = env.repo(["", "a"])
-    real = nb.Git.run
-
-    def run(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ("worktree", "remove"):
-            raise error
-        return real(self, *args, **kwargs)
-
-    monkeypatch.setattr(nb.Git, "run", run)
-    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert "::warning::removing" in capsys.readouterr().err
-    assert env.folders() == []
-
-
 def test_a_read_only_folder_goes_and_a_link_is_not_followed(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A read-only folder stops `git worktree remove`; `chmod -R` runs next,
-    and what a symbolic link names is not this run's to change."""
+    """What a symbolic link names is not this run's to change."""
     shas = env.repo(["", "a"])
     victim = tmp_path / "victim"
     victim.mkdir()
@@ -1430,16 +1414,151 @@ def test_a_read_only_folder_goes_and_a_link_is_not_followed(
         victim.chmod(0o700)
 
 
+def _a_folder_to_remove(root: Path) -> Path:
+    """A folder holding a tree no plain rmtree can delete, a link and a hard link
+    to files outside it, each of those read-only."""
+    folder = root / "folder"
+    (folder / "a" / "b").mkdir(parents=True)
+    (folder / "a" / "b" / "f.txt").write_text("x", encoding="utf-8")
+    (root / "outside").mkdir()
+    (root / "outside" / "file.txt").write_text("keep", encoding="utf-8")
+    (root / "outside" / "file.txt").chmod(0o444)
+    (root / "outside").chmod(0o500)
+    (folder / "link").symlink_to(root / "outside")
+    (folder / "filelink").symlink_to(root / "outside" / "file.txt")
+    os.link(root / "outside" / "file.txt", folder / "hard")
+    (folder / "a" / "b").chmod(0)
+    (folder / "a").chmod(0o500)
+    folder.chmod(0)
+    return folder
+
+
+def test_the_removal_takes_mode_000_and_changes_nothing_outside(tmp_path: Path) -> None:
+    """`chmod -R` reached a caller's file through a hard link and through a link."""
+    folder = _a_folder_to_remove(tmp_path)
+    try:
+        nb._remove_folder(folder)
+        assert not folder.exists()
+        assert stat.S_IMODE((tmp_path / "outside").stat().st_mode) == 0o500
+        assert stat.S_IMODE((tmp_path / "outside" / "file.txt").stat().st_mode) == 0o444
+    finally:
+        (tmp_path / "outside").chmod(0o700)
+
+
+def test_the_removal_of_a_missing_folder_says_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    nb._remove_folder(tmp_path / "gone")
+    assert capsys.readouterr().err == ""
+
+
+def test_the_removal_starts_no_process_and_writes_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the temporary location read-only, its `chmod` raised and the final
+    save never ran."""
+    folder = tmp_path / "folder"
+    folder.mkdir()
+
+    def refuses(*_: Any, **__: Any) -> Any:
+        raise AssertionError("the removal needs nothing but the folder")
+
+    monkeypatch.setattr(nb, "run_group", refuses)
+    monkeypatch.setattr(subprocess, "Popen", refuses)
+    monkeypatch.setattr(tempfile, "mkstemp", refuses)
+    monkeypatch.setattr(tempfile, "TemporaryFile", refuses)
+    nb._remove_folder(folder)
+    assert not folder.exists()
+
+
+@pytest.mark.parametrize("stderr_breaks", [False, True], ids=["warns", "stderr-closed"])
 def test_a_folder_that_cannot_be_removed_is_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], stderr_breaks: bool,
 ) -> None:
     def refuses(_path: Path, ignore_errors: bool = False) -> None:
         if not ignore_errors:
             raise PermissionError("refused by the test")
 
+    class Broken:
+        def write(self, _text: str) -> int:
+            raise BrokenPipeError
+
     monkeypatch.setattr(nb.shutil, "rmtree", refuses)
-    nb._remove_folder(nb.Git(tmp_path), tmp_path)
+    if stderr_breaks:
+        monkeypatch.setattr(sys, "stderr", Broken())
+        nb._remove_folder(tmp_path)
+        return
+    nb._remove_folder(tmp_path)
     assert f"::warning::{tmp_path} could not be removed" in capsys.readouterr().err
+
+
+def _a_commit_no_ref_reaches(repo: Path) -> str:
+    """A commit on a detached HEAD, with `main` checked out again."""
+    for args in (["checkout", "-q", "--detach"], ["commit", "-q", "--allow-empty", "-m", "loose"]):
+        r = _git(repo, *args)
+        assert r.returncode == 0, r.stderr
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert _git(repo, "checkout", "-q", "main").returncode == 0
+    return sha
+
+
+def test_a_commit_no_ref_reaches_resolves_in_the_clone(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    loose = _a_commit_no_ref_reaches(tmp_path / "repo")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], loose, _A, points={shas[1]: 7, loose: 8})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A], shas[0])]
+
+
+def test_a_commit_missing_from_the_clone_exits_2(
+    env: Env, tmp_path: Path, run_bisect: Runner, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A shallow repository lends no objects, so its clone holds what refs reach."""
+    shas = env.repo(["", "", "a", "a"])
+    shallow = tmp_path / "shallow"
+    r = _git(tmp_path, "clone", "-q", "--depth", "2", f"file://{tmp_path / 'repo'}", str(shallow))
+    assert r.returncode == 0, r.stderr
+    for args in (["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"],
+                 ["config", "commit.gpgsign", "false"]):
+        assert _git(shallow, *args).returncode == 0
+    loose = _a_commit_no_ref_reaches(shallow)
+    rc, result = run_bisect(shallow, shas[2], loose, _A, points={loose: 8})
+    assert rc == 2
+    assert result["complete"] is False
+    assert f"{loose}^{{commit}}" in capsys.readouterr().err
+    assert env.stepped() == []
+
+
+@pytest.mark.parametrize("source", ["linked-worktree", "bare"])
+def test_the_repository_can_be_a_linked_worktree_or_bare(
+    env: Env, tmp_path: Path, run_bisect: Runner, source: str,
+) -> None:
+    shas = env.repo(["", "", "a", "a"])
+    root = tmp_path / source
+    if source == "bare":
+        r = _git(tmp_path, "clone", "-q", "--bare", str(tmp_path / "repo"), str(root))
+    else:
+        r = _git(tmp_path / "repo", "worktree", "add", "-q", "--detach", str(root), shas[0])
+    assert r.returncode == 0, r.stderr
+    before = _repo_state(tmp_path / "repo")
+    rc, result = run_bisect(root, shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [_A], shas[1])]
+    assert _repo_state(tmp_path / "repo") == before
+
+
+def test_what_a_step_does_to_git_state_stays_in_the_clone(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worktree shares config, branches and the stash, and a clone's `origin`
+    would take a push back to the caller."""
+    shas = env.repo(["", "", "a", "a"])
+    repo = tmp_path / "repo"
+    before = _repo_state(repo)
+    config = (repo / ".git" / "config").read_text(encoding="utf-8")
+    monkeypatch.setenv("FAKE_GIT_STATE", "1")
+    rc, result = run_bisect(repo, shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [_A], shas[1])]
+    assert _repo_state(repo) == before
+    assert (repo / ".git" / "config").read_text(encoding="utf-8") == config
+    assert not (repo / ".git" / "refs" / "stash").exists()
 
 
 def test_a_signal_cannot_stop_the_removal(
@@ -1449,9 +1568,9 @@ def test_a_signal_cannot_stop_the_removal(
     real = nb._remove_folder
     during: list[Any] = []
 
-    def spy(git: nb.Git, folder: Path) -> None:
+    def spy(folder: Path) -> None:
         during.append((signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)))
-        real(git, folder)
+        real(folder)
 
     monkeypatch.setattr(nb, "_remove_folder", spy)
     assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
@@ -1482,7 +1601,7 @@ def test_a_dirty_tree_stops_neither_the_reset_nor_the_removal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The last check dirties a file that differs between commits, so a plain
-    `git bisect reset` refuses, and so does `git worktree remove` without `--force`."""
+    `git bisect reset` refuses."""
     shas = env.repo(_TWO_ROUNDS)
     monkeypatch.setenv("FAKE_DIRTY", "check")
     rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
@@ -1608,7 +1727,7 @@ def test_python_and_extras_reach_the_step(env: Env, tmp_path: Path, run_bisect: 
 
 def test_the_default_step_runs_by_absolute_path(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """No `--step-cmd`: `git bisect run` runs this script's `step` inside
-    the worktree, which has no `scripts/`, under the fake `uv`."""
+    the clone, which has no `scripts/`, under the fake `uv`."""
     shas = env.repo(["", "", "a", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
                             points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
@@ -1702,20 +1821,18 @@ def test_a_hyphenated_module_id_is_judged_by_its_file(env: Env, tmp_path: Path, 
     assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-22", ["::tests.test-y"])]
 
 
-def test_the_step_gets_git_dir_and_its_children_do_not(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+@pytest.mark.parametrize("step", [True, False], ids=["fake-step", "real-step"])
+def test_the_step_and_its_children_run_without_a_callers_git_dir(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, step: bool,
+) -> None:
     """Under `GIT_DIR`, `git init` in a test's temporary directory re-creates
-    the worktree's git directory, and the suite's tests do that."""
+    the directory it names, and the suite's tests do that."""
     shas = env.repo(["", "", "", "a", "a"])
     points: dict[str, int | None] = {shas[i]: 20 + i for i in range(1, 5)}
-    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points)[0] == 0
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere"))
+    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, step=step)[0] == 0
     seen = env.env_log.read_text(encoding="utf-8").splitlines()
-    assert any(row.startswith("step bisect ") and not row.endswith(" None") for row in seen), seen
-    env.env_log.unlink()
-    shutil.rmtree(tmp_path / "repo")
-    env.repo(["", "", "", "a", "a"])
-    assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, step=False)[0] == 0
-    seen = env.env_log.read_text(encoding="utf-8").splitlines()
-    assert any(row.startswith("uv ") for row in seen)
+    assert any(row.startswith("step " if step else "uv ") for row in seen)
     assert [row for row in seen if not row.endswith(" None")] == []
 
 
@@ -1898,7 +2015,7 @@ def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(
     assert (result["events"], result["tests"], result["complete"]) == ([], [], True)
     assert env.stepped() == []
     assert env.folders() == []
-    assert "::warning::" not in capsys.readouterr().err, "there was no worktree to remove"
+    assert "::warning::" not in capsys.readouterr().err
 
 
 def test_tests_given_a_triage_exits_2(env: Env, tmp_path: Path) -> None:
@@ -2175,11 +2292,11 @@ def test_step_exit_mapping(kwargs: dict[str, Any], status: int) -> None:
     assert nb.step_verdict(**kwargs) == status
 
 
-def _step(tmp_path: Path, worktree: Path, *extra: str) -> int:
-    """The real step as `git bisect run` runs it: a child in the worktree."""
+def _step(tmp_path: Path, clone: Path, *extra: str) -> int:
+    """The real step as `git bisect run` runs it: a child in the clone."""
     r = subprocess.run(
         [*nb.default_step_cmd(), "--tests", str(tmp_path / "ids.txt"), *extra],
-        cwd=worktree, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=clone, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=60, check=False,
     )
     return r.returncode

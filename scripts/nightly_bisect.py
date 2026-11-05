@@ -45,14 +45,21 @@ before the culprit" only means something on such a chain, so a range holding a
 commit with more than one parent, or one off the ancestry path, tests nothing
 and gets a range event with the reason `nonlinear`.
 
-The run. `run` makes a folder with `tempfile.mkdtemp`, adds a detached
-worktree at `--good` inside it, and there runs `git bisect start BAD GOOD`,
-marks every commit that is not a merge point with `git bisect skip`, and runs
-`git bisect run` with the step. The step is this script's `step` subcommand,
-invoked by its absolute path, because `git bisect run` runs it inside the
-worktree, where `scripts/` holds the bisected commit's files. `--step-cmd`
-replaces the step command; the tests use it to run a fake in place of uv and
-pytest.
+The run. `run` makes a folder with `tempfile.mkdtemp`, clones `--repo-root` into
+it with `git clone --shared --no-checkout`, deletes the clone's `origin`, so a
+test's `git push origin` cannot reach `--repo-root`, and checks out `--good`. In
+the clone it runs `git bisect start BAD GOOD`, marks every commit that is not a
+merge point with `git bisect skip`, and runs `git bisect run` with the step. The
+step is this script's `step` subcommand, invoked by its absolute path, because
+`git bisect run` runs it inside the clone, where `scripts/` holds the bisected
+commit's files. `--step-cmd` replaces the step command; the tests use it to run
+a fake in place of uv and pytest.
+
+`--repo-root` can be a linked worktree or a bare repository. The clone borrows
+its objects, so a commit no ref reaches resolves there, and a `git gc
+--prune=now` in `--repo-root` during the run can take it away. A shallow
+repository lends nothing and gives only what its refs reach, so `--good` or
+`--bad` can be missing from the clone, and then the run exits 2.
 
 The result comes from `refs/bisect/bad` and `refs/bisect/good-*`, never
 from the exit status of `git bisect run`, which is nonzero both when it
@@ -63,16 +70,14 @@ with no verdict, gets the range the bisect narrowed to: with the reason `budget`
 past the deadline, and `step aborted` with time left.
 
 `git bisect reset` runs between rounds, and not after the last, since the
-worktree goes away. A test that dirties a tracked file can make it fail, so it
+clone goes away. A test that dirties a tracked file can make it fail, so it
 runs again after `git reset --hard`; a reset that still fails is a warning and
 lands in the result's `reset_errors`.
 
-`run` removes the folder it made when it ends, after an error or a signal too,
-with `git worktree remove --force`. When that fails, as it does once the `.git`
-file is gone, a warning names the error and the folder goes by its path, which
-can leave the worktree's registration in `git worktree list`. This script
-removes nothing else and never runs `git worktree prune`, which could also drop
-the registration of a worktree someone moved.
+`run` deletes the folder it made when it ends, after an error or a signal too,
+and nothing else. It makes only directories writable, found by `lstat`, so a
+file and whatever a link names keep their modes. A folder it cannot delete is a
+warning.
 
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
@@ -122,14 +127,13 @@ still pass at the culprit broke later, and get a new round from the culprit
 to `--bad`, up to three rounds within the budget. What is left after the
 last round gets a range event.
 
-`git bisect run` exports `GIT_DIR` to the step. A test that runs `git init`
-in a temporary directory under that variable re-initializes the worktree's
-git directory instead, so the step's children, and every git call here, run
-without git's repository variables. Every git call in the worktree, and the
-step and its children, also run with `GIT_CEILING_DIRECTORIES` set to the
-worktree's parent. A worktree that lost its `.git` file then gives "not a git
-repository", and git cannot find a repository above it, even with the temporary
-folder inside one. That git call failing exits 2 with a range event.
+A caller's `GIT_DIR`, as in a git hook, points git at the caller's repository, and
+a test that runs `git init` in a temporary directory under that variable
+re-initializes it. Every git call here, and the step and its children, run
+without git's repository variables. Every git call in the clone, and the step and its
+children, also run with `GIT_CEILING_DIRECTORIES` set to the clone's parent. A
+clone that lost its `.git` then gives "not a git repository", and git cannot find
+a repository above it, even with the temporary folder inside one.
 
 The step. `--failed-out` and `--absent-out` name the tests that failed and
 the tests that do not exist at the commit. Its exit status follows `git
@@ -195,14 +199,13 @@ SIGTERM kills its own children first. Other git calls are plain children with a
 started, such as a hook. Process groups make this script POSIX only; the canary
 runs it on Linux and macOS.
 
-SIGTERM or SIGINT to `run` ends the running child's group, removes the folder,
+SIGTERM or SIGINT to `run` ends the running child's group, deletes the folder,
 saves the partial result with the rest of the tests under the reason `stopped`,
-and exits 128 plus the signal. A `run` killed outright leaves its folder, the
-worktree's registration, and `git bisect run` and its step alive until they
-reach that run's deadline. A child that calls `setsid` leaves the group, and
-neither signal nor timeout reaches it. Runs do not share a bisect, since
-`refs/bisect/*` and the bisect state belong to one worktree, so what a killed run
-left cannot reach another run, and two runs can share a clone.
+and exits 128 plus the signal. A `run` killed outright leaves its folder, and
+`git bisect run` and its step alive until they reach that run's deadline. A
+child that calls `setsid` leaves the group, and neither signal nor timeout
+reaches it. Each run has its own clone, so what a killed run left cannot reach
+another run, and two runs can share a `--repo-root`.
 
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
@@ -238,6 +241,7 @@ import os
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -281,8 +285,8 @@ _RUN_MARGIN_SECONDS = 15
 _TERM_GRACE_SECONDS = 2
 # Lines of `git bisect run` output a round keeps.
 _OUTPUT_TAIL_LINES = 40
-# The worktree's name inside the folder `run` makes.
-_WORKTREE_NAME = "nightly-bisect"
+# The clone's name inside the folder `run` makes.
+_CLONE_NAME = "nightly-bisect"
 _MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
@@ -838,7 +842,7 @@ def cmd_step(args: argparse.Namespace) -> int:
 
 def default_step_cmd() -> list[str]:
     """This script's `step`, by absolute path: `git bisect run` runs it in
-    the worktree, where a relative path names the bisected commit's copy."""
+    the clone, where a relative path names the bisected commit's copy."""
     return [sys.executable, str(Path(__file__).resolve()), "step"]
 
 
@@ -859,7 +863,7 @@ class Check:
 @dataclass
 class Bisector:
     git: Git
-    worktree: Path
+    clone: Path
     bad: str
     points: dict[str, int | None]
     step_cmd: list[str]
@@ -877,7 +881,7 @@ class Bisector:
         return set(self.points) | {self.bad} if self.points else None
 
     def _wt(self) -> Git:
-        return Git(self.worktree, ceiling=self.worktree.parent)
+        return Git(self.clone, ceiling=self.clone.parent)
 
     def _step(self, tests_file: Path, failed_out: Path | None = None, absent_out: Path | None = None) -> list[str]:
         argv = [
@@ -892,7 +896,7 @@ class Bisector:
         return argv
 
     def _write_tests(self, name: str, tests: list[str]) -> Path:
-        path = self.worktree.parent / name
+        path = self.clone.parent / name
         path.write_text("".join(f"{t}\n" for t in tests), encoding="utf-8")
         return path
 
@@ -904,14 +908,14 @@ class Bisector:
         if left <= 0:
             return Check(STEP_ABORT, [], [])
         tests_file = self._write_tests("check.txt", tests)
-        failed_out = self.worktree.parent / "check-failed.txt"
-        absent_out = self.worktree.parent / "check-absent.txt"
+        failed_out = self.clone.parent / "check-failed.txt"
+        absent_out = self.clone.parent / "check-absent.txt"
         for path in (failed_out, absent_out):
             path.write_text("", encoding="utf-8")
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out, absent_out),
-            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.worktree, ceiling=self.worktree.parent,
+            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.clone, ceiling=self.clone.parent,
         )
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
         absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
@@ -947,7 +951,7 @@ class Bisector:
         if left > 0:
             rc, output = run_group(
                 ["git", "bisect", "run", *self._step(tests_file)],
-                left + _RUN_MARGIN_SECONDS, cwd=self.worktree, ceiling=self.worktree.parent,
+                left + _RUN_MARGIN_SECONDS, cwd=self.clone, ceiling=self.clone.parent,
             )
             if rc is None:
                 output += "\ngit bisect run timed out"
@@ -1171,19 +1175,36 @@ def _triage_rows(
     return out
 
 
-def _remove_folder(git: Git, folder: Path) -> None:
-    """Remove `folder`, which this run made, and the worktree inside it."""
-    worktree = folder / _WORKTREE_NAME
-    try:
-        if worktree.exists():
-            git.run("worktree", "remove", "--force", str(worktree))
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        print(f"::warning::removing {folder} by its path: {exc}", file=sys.stderr)
-        # A test can leave a read-only folder, which stops the removal.
-        run_group(["chmod", "-R", "u+rwx", str(folder)], _GIT_TIMEOUT_SECONDS)
+def _clone(git: Git, clone: Path, good: str, bad: str) -> None:
+    """`clone` of `git`'s repository, at `good`. RuntimeError when it lacks `good` or `bad`."""
+    git.run("clone", "--shared", "--no-checkout", str(git.cwd), str(clone))
+    inside = Git(clone, ceiling=clone.parent)
+    inside.commit(good)
+    inside.commit(bad)
+    inside.run("remote", "remove", "origin")
+    inside.run("checkout", "-q", "--detach", good)
+
+
+def _remove_folder(folder: Path) -> None:
+    """Delete `folder`, which this run made. It starts no process and writes no
+    file, so it works with the temporary location gone, and it never raises.
+    Deleting a file needs only its parent's write bit, so only directories are
+    made writable, and `lstat` keeps a link from taking the chmod elsewhere."""
+    pending = [str(folder)]
+    while pending:
+        path = pending.pop()
+        try:
+            if stat.S_ISDIR(os.lstat(path).st_mode):
+                os.chmod(path, 0o700)
+                pending += [os.path.join(path, name) for name in os.listdir(path)]
+        except OSError:
+            pass  # The rmtree below finds out what this means.
     shutil.rmtree(folder, ignore_errors=True)
-    if folder.exists():
-        print(f"::warning::{folder} could not be removed", file=sys.stderr)
+    if os.path.lexists(folder):
+        try:
+            print(f"::warning::{folder} could not be removed", file=sys.stderr)
+        except OSError:
+            pass
 
 
 def _read_json(path: Path) -> Any:
@@ -1268,7 +1289,7 @@ def cmd_run(args: argparse.Namespace) -> int:
               f"{len(in_range) - len(skip_list(in_range, point_set))} to test, {len(bisected)} test(s)")
         if unmapped:
             print(f"dry run: {len(unmapped)} id(s) name no file at {bad[:12]}: {unmapped}")
-        print(f"dry run: would add a worktree in a new temporary folder and run {shlex.join([*step_cmd, *step_args])}")
+        print(f"dry run: would clone into a new temporary folder and run {shlex.join([*step_cmd, *step_args])}")
         print(f"dry run: would write {args.out}")
         return 0
     deadline = time.monotonic() + args.budget_seconds
@@ -1282,9 +1303,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
     folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-"))
-    worktree = folder / _WORKTREE_NAME
+    clone = folder / _CLONE_NAME
     bisector = Bisector(
-        git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
+        git=git, clone=clone, bad=bad, points=points, step_cmd=step_cmd,
         step_args=step_args, deadline=deadline, step_timeout=args.step_timeout,
         on_change=lambda: save(False),
     )
@@ -1296,7 +1317,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         if bisected and not linear:
             add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
         elif bisected:
-            git.run("worktree", "add", "--detach", str(worktree), good)
+            _clone(git, clone, good, bad)
             bisector.bisect(good, bisected)
         complete = True
     except Interrupted as exc:
@@ -1307,7 +1328,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         for signum in previous:
             signal.signal(signum, signal.SIG_IGN)
         try:
-            _remove_folder(git, folder)
+            _remove_folder(folder)
             bisector.settle(good, bisected)
             if over_cap:
                 add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
