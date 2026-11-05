@@ -76,7 +76,8 @@ with every leg, plus a `nightly` key holding the run, each leg's role,
 environment, rc, status, flaky and confirmed tests, notes saying why a leg
 reads as it does, and the night's verdict. `DIR` is either one leg's bundle or the directory the artifacts
 were downloaded into; in the second case the bundle is the subdirectory
-`nightly-<leg>-<sha>-a<N>` with the highest `N`. `ROLE` is `canary`
+`nightly-<leg>-<sha>-a<N>` with the highest `N`, so a full re-run whose leg dies
+before upload reads the earlier attempt's green at the same commit. `ROLE` is `canary`
 (the default) or `extra`. One bad bundle never loses the night's record: a
 leg is `missing`, with a note saying why, when `junit.xml` or `verdict.json`
 is absent or unreadable, when `env.json` is unreadable, or when
