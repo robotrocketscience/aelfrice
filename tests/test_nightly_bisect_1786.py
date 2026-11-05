@@ -2227,7 +2227,7 @@ def test_step_timeout_ends_the_whole_child_group(
     env.repo(["a"])
     _tests_file(tmp_path / "ids.txt", _A)
     monkeypatch.setenv("FAKE_UV_HANG", stage)
-    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--step-timeout", "1") == nb.STEP_SKIP
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--step-timeout", "5") == nb.STEP_SKIP
     assert _survivors(env.pids()) == []
 
 
