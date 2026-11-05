@@ -213,7 +213,11 @@ runs it on Linux and macOS.
 
 SIGTERM or SIGINT to `run` ends the running child's group, deletes the folder,
 saves the partial result with the rest of the tests under the reason `stopped`,
-and exits 128 plus the signal. A `run` killed outright leaves its folder, and
+and exits 128 plus the signal. The handlers go in as the first thing `run` does.
+A signal before that, during interpreter start or `argparse`, kills it with
+nothing made, and one inside `mkdtemp` or just after it can leave an empty folder.
+A signal once the final cleanup has begun is ignored, and the run ends with its
+real result and status. A `run` killed outright leaves its folder, and
 `git bisect run` and its step alive until they reach that run's deadline. A
 child that calls `setsid` leaves the group, and neither signal nor timeout
 reaches it. Each run has its own clone, so what a killed run left cannot reach
@@ -1315,6 +1319,20 @@ def _refuse_out(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    for signum in previous:
+        signal.signal(signum, _interrupt)
+    try:
+        return _run(args)
+    except Interrupted as exc:
+        print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
+        return 128 + exc.signum
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _run(args: argparse.Namespace) -> int:
     _refuse_out(args)
     if not args.dry_run:
         _write_json(args.out, {
@@ -1366,7 +1384,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             "rounds": bisector.rounds, "reset_errors": bisector.reset_errors,
         })
 
-    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
     folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-", dir=temp))
     clone = folder / _CLONE_NAME
     bisector = Bisector(
@@ -1377,37 +1394,30 @@ def cmd_run(args: argparse.Namespace) -> int:
     complete = False
     stop_reason = REASON_STOPPED
     try:
-        for signum in previous:
-            signal.signal(signum, _interrupt)
-        save(False)
-        if bisected and not linear:
-            add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
-        elif bisected:
-            _clone(git, clone, good, bad)
-            bisector.bisect(good, bisected)
-        complete = True
-    except CloneChanged as exc:
-        print(f"::warning::{exc}", file=sys.stderr)
-        stop_reason = REASON_CLONE_CHANGED
-        complete = True
-    except Interrupted as exc:
-        print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
-        return 128 + exc.signum
-    finally:
-        # A signal from here on cannot stop the removal.
-        for signum in previous:
-            signal.signal(signum, signal.SIG_IGN)
         try:
-            _remove_folder(folder)
-            bisector.settle(good, bisected, stop_reason)
-            if over_cap:
-                add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
-            if unmapped:
-                add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
-            save(complete)
+            save(False)
+            if bisected and not linear:
+                add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
+            elif bisected:
+                _clone(git, clone, good, bad)
+                bisector.bisect(good, bisected)
+            complete = True
+        except CloneChanged as exc:
+            print(f"::warning::{exc}", file=sys.stderr)
+            stop_reason = REASON_CLONE_CHANGED
+            complete = True
         finally:
-            for signum, handler in previous.items():
-                signal.signal(signum, handler)
+            # A signal inside this loop still reaches the outer `finally`, and none can stop it.
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(signum, signal.SIG_IGN)
+    finally:
+        _remove_folder(folder)
+        bisector.settle(good, bisected, stop_reason)
+        if over_cap:
+            add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+        if unmapped:
+            add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
+        save(complete)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0

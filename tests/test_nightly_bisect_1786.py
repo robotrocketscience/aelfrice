@@ -2878,6 +2878,84 @@ def test_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path, run_bisect:
         signal.signal(signal.SIGINT, previous[1])
 
 
+def _in_each_phase(monkeypatch: pytest.MonkeyPatch, phase: str, action: Callable[[], None]) -> None:
+    """Run `action` at the start of `phase` of a run."""
+    if phase == "first-git-call":
+        real_git = nb.Git.run
+
+        def git(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            action()
+            return real_git(self, *args, **kwargs)
+
+        monkeypatch.setattr(nb.Git, "run", git)
+    elif phase == "mkdtemp":
+        real_temp = tempfile.mkdtemp
+
+        def mkdtemp(*args: Any, **kwargs: Any) -> str:
+            action()
+            return real_temp(*args, **kwargs)
+
+        monkeypatch.setattr(nb.tempfile, "mkdtemp", mkdtemp)
+    else:
+        real_signal = signal.signal
+
+        def set_handler(signum: int, handler: Any) -> Any:
+            if handler == signal.SIG_IGN:
+                action()
+            return real_signal(signum, handler)
+
+        monkeypatch.setattr(nb.signal, "signal", set_handler)
+
+
+@pytest.mark.parametrize("phase", ["first-git-call", "mkdtemp", "ignore-loop"])
+def test_a_signal_in_any_phase_ends_in_its_status_with_the_folder_gone(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    """SIGTERM before the handlers killed the run outright, and a signal between
+    the `finally` and its ignore loop left the folder and the result."""
+    shas = env.repo(["", "a"])
+    out = tmp_path / "result.json"
+    sent: list[int] = []
+
+    def send() -> None:
+        if not sent:
+            sent.append(signal.SIGTERM)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    previous = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    _in_each_phase(monkeypatch, phase, send)
+    try:
+        rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1], "--out", str(out),
+                      "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--step-cmd", env.step_cmd])
+    finally:
+        monkeypatch.undo()
+        signal.signal(signal.SIGTERM, previous[0])
+        signal.signal(signal.SIGINT, previous[1])
+    assert sent
+    assert rc == 128 + signal.SIGTERM
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert env.folders() == []
+    # The work had finished by the ignore loop, and the result says what it found.
+    assert result["complete"] is (phase == "ignore-loop")
+    assert [e["tests"] for e in result["events"]] == ([[_A]] if phase == "ignore-loop" else [])
+
+
+def test_a_signal_during_the_removal_is_ignored_and_the_run_keeps_its_result(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "", "a", "a"])
+    real = nb._remove_folder
+
+    def spy(folder: Path) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        real(folder)
+
+    monkeypatch.setattr(nb, "_remove_folder", spy)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
+    assert (rc, result["complete"]) == (0, True)
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [_A], shas[1])]
+
+
 def test_a_second_signal_cannot_stop_the_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     previous = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
     try:
