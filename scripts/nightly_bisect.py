@@ -172,9 +172,11 @@ runs it on Linux and macOS.
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
-when no culprit was found. The result file is replaced atomically after
-every change, with `complete` false until the run ends, so a run that dies
-keeps what it found. Each event lists its tests, and a range event maps
+when no culprit was found. The result file is written with `complete` false
+before any work, so a missing folder for `--out` exits 2 at once and an earlier
+run's result cannot pass for this one's. It is replaced atomically after every
+change, with `complete` false until the run ends, so a run that dies keeps
+what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `inconclusive`,
 `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed`,
 `returned`, `nonlinear` or `stopped`, for a run that raised. Every input test
@@ -1071,7 +1073,10 @@ def _write_json(path: Path, data: Any) -> None:
         "w", encoding="utf-8", dir=path.resolve().parent, prefix=f".{path.name}.", delete=False,
     ) as tmp:
         tmp.write(json.dumps(data, indent=1) + "\n")
-    os.replace(tmp.name, path)
+    try:
+        os.replace(tmp.name, path)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def cmd_merge_points(args: argparse.Namespace) -> int:
@@ -1163,6 +1168,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
             on_change=lambda: save(False),
         )
+        save(False)
         complete = False
         try:
             if bisected and not linear:

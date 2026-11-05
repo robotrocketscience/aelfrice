@@ -896,6 +896,54 @@ def test_every_input_test_ends_in_exactly_one_event(
     assert sorted(named) == sorted(ids), result["events"]
 
 
+def test_an_earlier_result_is_replaced_before_any_work(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old `complete: true` stayed during a new run and after it died."""
+    shas = env.repo(["", "a"])
+    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
+
+    def dies(*_: Any) -> None:
+        raise RuntimeError("died before the worktree")
+
+    monkeypatch.setattr(nb, "_prepare_worktree", dies)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
+    assert rc == 2
+    assert (result["complete"], result["good"]) == (False, shas[0])
+
+
+def test_the_result_is_false_while_the_worktree_is_prepared(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "a"])
+    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
+    real = nb._prepare_worktree
+    seen: list[dict[str, Any]] = []
+
+    def spy(*args: Any) -> None:
+        seen.append(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
+        real(*args)
+
+    monkeypatch.setattr(nb, "_prepare_worktree", spy)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert (seen[0]["complete"], seen[0]["good"]) == (False, shas[0])
+
+
+@pytest.mark.parametrize("target", ["missing-folder", "a-folder"])
+def test_an_out_path_that_cannot_be_written_stops_before_any_work(
+    env: Env, tmp_path: Path, target: str,
+) -> None:
+    shas = env.repo(["", "a"])
+    out = tmp_path / "nowhere" / "r.json" if target == "missing-folder" else tmp_path
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(out),
+                  "--step-cmd", env.step_cmd])
+    assert rc == 2
+    assert env.stepped() == []
+    assert not (tmp_path / "repo" / ".bisect").exists()
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(f".{out.name}.")] == []
+
+
 def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
     env: Env, tmp_path: Path,
 ) -> None:
