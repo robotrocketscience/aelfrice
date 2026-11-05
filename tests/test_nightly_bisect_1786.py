@@ -448,6 +448,45 @@ def test_past_the_budget_reports_the_range(env: Env, tmp_path: Path, run_bisect:
     assert env.stepped() == []
 
 
+def _merge_a_side_branch(repo: Path, fork: str) -> str:
+    """Merge a branch from `fork` into main. Returns the merge commit."""
+    for args in (["checkout", "-q", "-b", "side", fork], ["commit", "-q", "--allow-empty", "-m", "side"],
+                 ["checkout", "-q", "main"], ["merge", "-q", "--no-ff", "--no-edit", "side"]):
+        r = _git(repo, *args)
+        assert r.returncode == 0, r.stderr
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+@pytest.mark.parametrize("fork_at", [0, 1], ids=["before-good", "after-good"])
+def test_a_range_that_is_not_one_chain_tests_nothing_and_gets_a_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, fork_at: int,
+) -> None:
+    """A side commit forked before `--good` raised `ValueError` with no result,
+    and the commit before a merge point was its list neighbour, not a parent."""
+    shas = env.repo(["", "", "a"])
+    repo = tmp_path / "repo"
+    merge = _merge_a_side_branch(repo, shas[fork_at])
+    rc, result = run_bisect(repo, shas[1], merge, _A, "tests/test_gone.py::test_a")
+    assert rc == 1
+    assert [e["reasons"] for e in result["events"]] == [
+        {_A: nb.REASON_NONLINEAR, "tests/test_gone.py::test_a": nb.REASON_UNMAPPED},
+    ]
+    assert (result["events"][0]["good"], result["events"][0]["bad"]) == (shas[1], merge)
+    assert result["complete"] is True
+    assert env.stepped() == []
+    assert not (repo / ".bisect").exists()
+
+
+def test_a_dry_run_of_a_range_that_is_not_one_chain_says_so(
+    env: Env, tmp_path: Path, run_bisect: Runner, capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(["", "", "a"])
+    merge = _merge_a_side_branch(tmp_path / "repo", shas[0])
+    rc, _ = run_bisect(tmp_path / "repo", shas[1], merge, _A, extra=("--dry-run",))
+    assert rc == 0
+    assert "not one chain" in capsys.readouterr().out
+
+
 def test_a_step_that_aborts_reports_the_range_so_far(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

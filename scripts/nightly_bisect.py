@@ -33,6 +33,12 @@ in the range, the output is `{}` with a warning, and `run` then tests every
 commit. `run` reads a points file with no PR in the range the same way,
 since blaming `--bad` would test nothing.
 
+The run needs one chain of commits, which main is: its last 710 first-parent
+commits held no merge commit on 2026-11-04. The check on "the merge point
+before the culprit" only means something on such a chain, so a range holding a
+commit with more than one parent, or one off the ancestry path, tests nothing
+and gets a range event with the reason `nonlinear`.
+
 The run. `run` adds a detached worktree at `--good` (`.bisect` under the
 repository root by default, removed first if a previous run left it), and
 in it runs `git bisect start BAD GOOD`, marks every commit that is not a
@@ -161,8 +167,8 @@ when no culprit was found. The result file is replaced atomically after
 every change, with `complete` false until the run ends, so a run that dies
 keeps what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `inconclusive`,
-`unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed` or
-`returned`. Each round keeps its `git bisect log`.
+`unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed`,
+`returned` or `nonlinear`. Each round keeps its `git bisect log`.
 
 Standard library only. The functions above `Git` are pure; the tests in
 `tests/test_nightly_bisect_1786.py` run them on values, and run the
@@ -232,6 +238,7 @@ REASON_PASSES_AT_BAD = "passes at bad"
 REASON_UNMAPPED = "unmapped"
 REASON_RENAMED = "renamed"
 REASON_RETURNED = "returned"
+REASON_NONLINEAR = "nonlinear"
 
 
 # ------------------------------------------------------------------ step
@@ -547,6 +554,17 @@ def ancestry(git: Git, good: str, bad: str) -> list[str]:
     return git.lines("rev-list", "--reverse", "--ancestry-path", f"{good}..{bad}")
 
 
+def is_linear(git: Git, good: str, bad: str) -> bool:
+    """True when each commit of `good..bad` has the one before it as its only parent."""
+    previous = good
+    for row in git.lines("rev-list", "--reverse", "--parents", f"{good}..{bad}"):
+        sha, *parents = row.split()
+        if parents != [previous]:
+            return False
+        previous = sha
+    return True
+
+
 def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
     """Both commits as full shas, with `good` a proper ancestor of `bad`."""
     good_sha, bad_sha = git.commit(good), git.commit(bad)
@@ -790,8 +808,7 @@ class Bisector:
             record.update(log="", output="")
             return Outcome(culprit=self.bad, good=lo, bad=self.bad), record
         wt = self._wt()
-        in_range = self.git.lines("rev-list", f"{lo}..{self.bad}")
-        skips = skip_list(in_range, points)
+        skips = skip_list(order, points)
         record["skipped"] = len(skips)
         try:
             wt.run("bisect", "start", self.bad, lo)
@@ -1089,9 +1106,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     refusal = worktree_refusal(worktree, default_worktree)
     if refusal is not None:
         raise ValueError(refusal)
+    linear = is_linear(git, good, bad)
     if args.dry_run:
-        in_range = git.lines("rev-list", f"{good}..{bad}")
+        in_range = ancestry(git, good, bad)
         point_set = set(points) | {bad} if points else None
+        if not linear:
+            print("dry run: the range is not one chain of commits, so it would test nothing")
         print(f"dry run: {len(in_range)} commit(s) from {good[:12]} to {bad[:12]}, "
               f"{len(in_range) - len(skip_list(in_range, point_set))} to test, {len(bisected)} test(s)")
         if unmapped:
@@ -1114,8 +1134,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
             on_change=lambda: save(False),
         )
-        _prepare_worktree(git, worktree, default_worktree, good)
-        bisector.bisect(good, bisected)
+        if bisected and not linear:
+            add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
+        elif bisected:
+            _prepare_worktree(git, worktree, default_worktree, good)
+            bisector.bisect(good, bisected)
     if over_cap:
         add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
     if unmapped:
