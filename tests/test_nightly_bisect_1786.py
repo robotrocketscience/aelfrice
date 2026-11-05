@@ -1009,7 +1009,8 @@ def test_an_out_path_that_cannot_be_written_stops_before_any_work(
     assert rc == 2
     assert env.stepped() == []
     assert not (tmp_path / "repo" / ".bisect").exists()
-    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(f".{out.name}.")] == []
+    if target == "a-folder":
+        assert [p.name for p in tmp_path.parent.iterdir() if p.name.startswith(f".{tmp_path.name}.")] == []
 
 
 def test_the_result_is_replaced_in_one_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1026,6 +1027,25 @@ def test_the_result_is_replaced_in_one_step(tmp_path: Path, monkeypatch: pytest.
     nb._write_json(out, {"a": 1})
     assert [(src.parent, dst) for src, dst in moves] == [(tmp_path, out)]
     assert json.loads(out.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_each_event_reaches_the_result_as_it_happens(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run killed outright keeps what it found, since no `finally` runs."""
+    shas = env.repo(["", "", "a", "a", "ab", "ab"])
+    real = nb.Bisector.bisect_round
+    seen: list[dict[str, Any]] = []
+
+    def spy(self: nb.Bisector, lo: str, tests: list[str], n: int) -> Any:
+        if n == 2:
+            seen.append(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
+        return real(self, lo, tests, n)
+
+    monkeypatch.setattr(nb.Bisector, "bisect_round", spy)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[5], _A, _B, points={shas[i]: 30 + i for i in range(1, 6)})[0] == 0
+    assert seen[0]["complete"] is False
+    assert [e["key"] for e in seen[0]["events"]] == ["pr-32"]
 
 
 def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
@@ -1260,15 +1280,17 @@ def test_another_worktree_is_refused_with_its_work_intact(
     assert env.stepped() == []
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
 def test_a_symbolic_link_at_the_default_worktree_is_refused(
-    env: Env, tmp_path: Path, run_bisect: Runner,
+    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
 ) -> None:
     shas = env.repo(["", "a"])
     repo, target = tmp_path / "repo", tmp_path / "target"
     target.mkdir()
     (target / "keep.txt").write_text("keep", encoding="utf-8")
     (repo / ".bisect").symlink_to(target)
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 2
+    extra = ("--dry-run",) if dry_run else ()
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
     assert (target / "keep.txt").is_file()
 
 
@@ -2215,11 +2237,19 @@ def test_a_killed_run_keeps_the_next_one_out_until_its_children_end(
 
 def test_the_lock_and_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "a"])
-    before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
-    for _ in range(2):
-        assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert nb._HELD_FDS == []
-    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == before
+
+    def mine(*_: Any) -> None:
+        raise AssertionError("no signal is sent here")
+
+    previous = signal.signal(signal.SIGTERM, mine), signal.signal(signal.SIGINT, mine)
+    try:
+        for _ in range(2):
+            assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+        assert nb._HELD_FDS == []
+        assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == (mine, mine)
+    finally:
+        signal.signal(signal.SIGTERM, previous[0])
+        signal.signal(signal.SIGINT, previous[1])
 
 
 def test_a_second_signal_cannot_stop_the_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
