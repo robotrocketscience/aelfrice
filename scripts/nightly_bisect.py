@@ -126,24 +126,25 @@ narrowed to. Otherwise it runs
 `pytest --collect-only -q` (125 when collection fails) and keeps the ids
 it collected. When none is collected the commit predates the tests and is
 good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
-status or a timeout is a skip. A module that fails to import reaches the
-step as a module id (`tests.test_x`, the name pytest's JUnit report gives
-a collection error). The step collects that module's file alone: a
-collection error is bad, and a file that is absent or collects is good.
+status or a timeout is a skip. A module that fails to import, or a folder
+whose `conftest.py` does, reaches the step as a target (`tests.test_x`, the
+name pytest's JUnit report gives a collection error, or `tests/sub/`), judged
+by collecting it alone as below.
 `--step-timeout` bounds the whole step. A step that cannot read its input
 exits 255 rather than 2, which `git bisect run` would read as a bad commit.
 
 Test ids. `--tests` takes three forms: a node id
 (`tests/test_x.py::TestC::test_a[p]`), a JUnit id
 (`tests.test_x.TestC::test_a[p]`, what `test_outcome_record.py` records),
-and a module id (`tests.test_x`, `::tests.test_x` or `tests/test_x.py`).
+and a target (`tests.test_x`, `::tests.test_x`, `tests/test_x.py`, `::tests.sub`
+or `tests/sub/`, where a dotted id names the folder when no such module exists).
 `run` maps each to a node id against the tree of `--bad`, where a test that
 failed tonight has to exist, and the result lists the ids as given. An id
 that names no file there gets a range event with the reason `unmapped`
 without any step. Given a JUnit id directly, `step` maps it against the
 checked-out tree and exits 125 when it names no file there, because it
 cannot tell a test that does not exist yet from an id it cannot read. A
-node id or module id whose file is absent means the test does not exist at
+node id or target whose path is absent means the test does not exist at
 that commit, which is good.
 
 `--triage` reads what `nightly_canary.py regressions` writes, in place of
@@ -155,10 +156,11 @@ or missing one of those keys, exits 2, so a change in `regressions` output
 cannot pass as a run with nothing to do. `drift_check` is not read: the
 workflow decides what to bisect, and writes a triage holding only that.
 
-For a module id the step follows the contract in `nightly_canary.py`: exit 2
-from `pytest --collect-only -q <module>` is bad, exit 0 is good, and a file
-absent from the commit is good. Any other status there is a skip, as any
-status but 0 or 1 is when a node id runs.
+For a target the step follows the contract in `nightly_canary.py`: it checks
+the path exists, since one absent from the commit is good. From `pytest
+--collect-only -q <target>`, exit 2 (a module's import error) and 4 (a
+`conftest.py`'s, which pytest loads at startup) are bad, 0 and 5 are good, and
+any other status is a skip, as any status but 0 or 1 is when a node id runs.
 
 Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300) the
 whole of each step, sync and every collection included, and at most 50 tests
@@ -222,7 +224,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from xml.etree import ElementTree
 
@@ -241,9 +243,12 @@ DEFAULT_STEP_TIMEOUT = 300
 MAX_TESTS = 50
 MAX_ROUNDS = 3
 
-# pytest's status when it collected no test, and when collection failed.
+# pytest's status when it collected no test.
 _PYTEST_NO_TESTS = 5
-_PYTEST_COLLECTION_ERROR = 2
+# Its `--collect-only` statuses for a target: a module's import error is 2 and
+# a `conftest.py`'s is 4.
+_TARGET_BAD = (2, 4)
+_TARGET_GOOD = (0, _PYTEST_NO_TESTS)
 _GIT_TIMEOUT_SECONDS = 120
 _API_TIMEOUT_SECONDS = 60
 _PR_LIST_LIMIT = 500
@@ -287,17 +292,17 @@ def step_verdict(
     `collect_rc` is pytest's status for `--collect-only` over the files of
     the node ids, or 0 when none of them exists; `present` holds the ids
     it collected. `module_rcs` holds the `--collect-only` status of each
-    module id's file that exists: a collection error there (2) makes the
-    commit bad whatever the other tests do. `unmapped` says an id names no
+    target that exists: a bad status there makes the commit bad whatever
+    the other tests do. `unmapped` says an id names no
     file, so the commit cannot be judged.
     """
     if past_deadline:
         return STEP_ABORT
     if unmapped or sync_rc != 0:
         return STEP_SKIP
-    if any(rc not in (0, _PYTEST_COLLECTION_ERROR, _PYTEST_NO_TESTS) for rc in module_rcs):
+    if any(rc not in (*_TARGET_BAD, *_TARGET_GOOD) for rc in module_rcs):
         return STEP_SKIP
-    if _PYTEST_COLLECTION_ERROR in module_rcs:
+    if any(rc in _TARGET_BAD for rc in module_rcs):
         return STEP_BAD
     if collect_rc not in (0, _PYTEST_NO_TESTS):
         return STEP_SKIP
@@ -311,17 +316,18 @@ def step_verdict(
 
 
 def module_file(test_id: str) -> str | None:
-    """The file a module-level collection error names, or None for a node id.
+    """The path a collection error names, or None for a node id.
 
     pytest reports a module that fails to import as a JUnit case with an
     empty classname and the module's dotted path as its name, so the id
     arrives as `tests.test_x` or `::tests.test_x`; a bare `tests/test_x.py`
-    is read the same way. Any id that names a function or class is a node id.
+    or `tests/sub/` is read the same way. Any id that names a function or
+    class is a node id.
     """
     rest = test_id[2:] if test_id.startswith("::") else test_id
     if not rest or "::" in rest or any(c.isspace() for c in rest):
         return None
-    if rest.endswith(".py"):
+    if rest.endswith((".py", "/")):
         return rest if _is_relative(rest) else None
     parts = rest.split(".")
     if "/" in rest or "\\" in rest or not all(parts):
@@ -334,16 +340,21 @@ def _is_relative(path: str) -> bool:
 
 
 def canonical_id(test_id: str, is_file: Callable[[str], bool]) -> str | None:
-    """`test_id` as a node id, or as a module's file; None when it names no file.
+    """`test_id` as a node id, or as a target; None when it names no file.
 
     A JUnit id's classname joins the module path to the class names with
     dots. The one prefix that `is_file` accepts is the module; none, or more
     than one, names no file. `nightly_canary.py`'s `node_id` reads an id the
-    same way, so the two scripts agree on what is mapped.
+    same way, so the two scripts agree on what is mapped. `is_file` also
+    answers for a folder, named with a trailing slash: a dotted target with
+    no such module names that folder, as `collection_module` reads it there.
     """
     head, sep, rest = test_id.partition("::")
     if not sep or not head:
-        return module_file(test_id)
+        path = module_file(test_id)
+        if path is not None and path.endswith(".py") and not is_file(path) and is_file(f"{path[:-3]}/"):
+            return f"{path[:-3]}/"
+        return path
     if head.endswith(".py"):
         return test_id if _is_relative(head) else None
     parts = head.split(".")
@@ -709,6 +720,11 @@ def _bounded(argv: list[str], end: float, capture: bool = False) -> tuple[int | 
     return rc, output if capture else ""
 
 
+def _on_disk(path: str) -> bool:
+    """`canonical_id`'s `is_file` for the checked-out tree."""
+    return Path(path).is_dir() if path.endswith("/") else Path(path).is_file()
+
+
 def _sync_argv(python: str | None, extras: Sequence[str]) -> list[str]:
     argv = ["uv", "sync", "--frozen"]
     for extra in extras:
@@ -724,7 +740,7 @@ _PYTEST = ["uv", "run", "--no-sync", "pytest", "-p", "no:cacheprovider"]
 def cmd_step(args: argparse.Namespace) -> int:
     given = parse_tests(args.tests.read_text(encoding="utf-8"))
     sync = _sync_argv(args.python, args.extra)
-    mapped = {test: canonical_id(test, lambda path: Path(path).is_file()) for test in given}
+    mapped = {test: canonical_id(test, _on_disk) for test in given}
     ids = [test for test in mapped.values() if test is not None]
     as_given = {canon: test for test, canon in mapped.items() if canon is not None}
     if args.dry_run:
@@ -747,19 +763,19 @@ def cmd_step(args: argparse.Namespace) -> int:
         sync_rc, _ = _bounded(sync, end)
         if sync_rc != 0:
             return step_verdict(past_deadline=False, sync_rc=sync_rc)
-        # A module id is judged by whether its file collects: absent or
-        # collecting is good, a collection error is bad.
+        # A target is judged by whether it collects: absent or collecting
+        # is good, a collection error is bad.
         module_rcs: list[int | None] = []
         for test_id in ids:
             path = module_file(test_id)
             if path is None:
                 continue
-            if not Path(path).is_file():
+            if not _on_disk(path):
                 absent.append(test_id)
                 continue
             rc, _ = _bounded([*_PYTEST, "--collect-only", "-q", path], end, capture=True)
             module_rcs.append(rc)
-            if rc == _PYTEST_COLLECTION_ERROR:
+            if rc in _TARGET_BAD:
                 failed.append(test_id)
         node_ids = [i for i in ids if module_file(i) is None]
         files = [f for f in test_files(ids) if Path(f).is_file()]
@@ -1049,8 +1065,13 @@ class Bisector:
             self._event(event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
 
 
+def tree_paths(files: Iterable[str]) -> set[str]:
+    """`files`, and each folder above one with a trailing slash."""
+    return {*files, *(f"{parent}/" for name in files for parent in PurePosixPath(name).parents if parent.name)}
+
+
 def map_ids(tests: Iterable[str], files: set[str]) -> tuple[dict[str, list[str]], list[str]]:
-    """Each id that names a file in `files` under its canonical id, with the
+    """Each id that names a path in `files` under its canonical id, with the
     ids given for it, and the ids that name none."""
     mapped: dict[str, list[str]] = {}
     unmapped: list[str] = []
@@ -1192,7 +1213,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
-    files = set(git.lines("ls-tree", "-r", "--name-only", bad))
+    files = tree_paths(git.lines("ls-tree", "-r", "--name-only", bad))
     if args.triage is not None:
         mapped, unmapped = map_triage(_read_json(args.triage), files)
     else:

@@ -1262,6 +1262,21 @@ def test_a_module_that_stops_importing_is_bisected_by_its_file(
     assert result["events"] == [nb.event_for_culprit(shas[3], 42, [module_id], shas[1])]
 
 
+@pytest.mark.parametrize("target", ["::tests.sub", "tests/sub/"])
+def test_a_folder_whose_conftest_stops_importing_is_bisected(
+    env: Env, tmp_path: Path, run_bisect: Runner, target: str,
+) -> None:
+    """`tests/sub/` read as unmapped, and pytest's status 4 for it as a skip."""
+    shas = env.repo(["", "", "", ""], edits=(
+        (0, "tests/sub/conftest.py", ""),
+        (2, "tests/sub/conftest.py", "import BROKEN\n"),
+    ))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], target,
+                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
+    assert rc == 0, result
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [target], shas[1])]
+
+
 def test_a_junit_id_is_bisected_like_its_node_id(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """`test_outcome_record.py` names a test `tests.test_x::test_a`. Read as
     a path, that names no file, and the step called every commit good."""
@@ -1637,7 +1652,9 @@ def test_merge_points_unknown_sha_exits_2(env: Env, tmp_path: Path) -> None:
         ({"past_deadline": False, "module_rcs": [0, 5]}, nb.STEP_GOOD),
         ({"past_deadline": False, "module_rcs": [0], "present": [_A], "run_rc": 1}, nb.STEP_BAD),
         ({"past_deadline": False, "module_rcs": [None]}, nb.STEP_SKIP),
-        ({"past_deadline": False, "module_rcs": [4]}, nb.STEP_SKIP),
+        ({"past_deadline": False, "module_rcs": [4]}, nb.STEP_BAD),
+        ({"past_deadline": False, "module_rcs": [3]}, nb.STEP_SKIP),
+        ({"past_deadline": False, "module_rcs": [5, 4, 3]}, nb.STEP_SKIP),
         ({"past_deadline": True, "module_rcs": [2]}, nb.STEP_ABORT),
         ({"past_deadline": False, "sync_rc": 1, "module_rcs": [2]}, nb.STEP_SKIP),
         ({"past_deadline": False, "unmapped": True}, nb.STEP_SKIP),
@@ -1646,7 +1663,8 @@ def test_merge_points_unknown_sha_exits_2(env: Env, tmp_path: Path) -> None:
     ids=["deadline", "deadline-first", "sync-fails", "sync-timeout", "collect-error", "collect-timeout",
          "nothing-collected", "no-id-present", "run-passes", "run-fails", "run-interrupted",
          "run-usage", "run-timeout", "module-error", "module-error-wins", "module-collects",
-         "module-collects-run-fails", "module-timeout", "module-usage", "module-deadline", "module-sync",
+         "module-collects-run-fails", "module-timeout", "target-conftest", "target-internal-error",
+         "target-any-other-status", "module-deadline", "module-sync",
          "unmapped", "unmapped-deadline"],
 )
 def test_step_exit_mapping(kwargs: dict[str, Any], status: int) -> None:
@@ -1717,6 +1735,16 @@ def test_step_judges_a_module_id_by_its_file(
     assert out.read_text(encoding="utf-8") == failed
     collects = [c[-1] for c in env.uv_calls() if "--collect-only" in c]
     assert collects == ["tests/test_y.py", "tests/test_x.py"]
+
+
+@pytest.mark.parametrize("target", ["tests/sub/", "::tests.sub"])
+def test_step_with_an_absent_folder_is_good(env: Env, tmp_path: Path, target: str) -> None:
+    env.repo([""])
+    _tests_file(tmp_path / "ids.txt", target)
+    absent = tmp_path / "absent.txt"
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--absent-out", str(absent)) == nb.STEP_GOOD
+    assert absent.read_text(encoding="utf-8") == f"{target}\n"
+    assert [c[0] for c in env.uv_calls()] == ["sync"]
 
 
 def test_step_with_an_absent_module_file_is_good(env: Env, tmp_path: Path) -> None:
@@ -2050,6 +2078,8 @@ def test_junit_key(node_id: str, key: str) -> None:
         ("tests.test_x::test_a", None),
         ("::", None),
         ("::tests.test-y", "tests/test-y.py"),
+        ("tests/sub/", "tests/sub/"),
+        ("../sub/", None),
         ("tests..test_x", None),
         ("/etc/test_x.py", None),
         ("tests/../../test_x.py", None),
@@ -2071,6 +2101,9 @@ def test_module_file(test_id: str, path: str | None) -> None:
         ("tests.sub.test_z::test_a[a::b]", "tests/sub/test_z.py::test_a[a::b]"),
         ("tests.test_x", "tests/test_x.py"),
         ("::tests.test_x", "tests/test_x.py"),
+        ("::tests.sub", "tests/sub/"),
+        ("tests/sub/", "tests/sub/"),
+        ("::tests.nope", "tests/nope.py"),
         ("tests.test_gone::test_a", None),
         ("tests.test-y::test_a", None),
         ("tests.twice.test_z::test_a", None),
@@ -2085,8 +2118,12 @@ def test_module_file(test_id: str, path: str | None) -> None:
     ],
 )
 def test_canonical_id(test_id: str, canonical: str | None) -> None:
-    files = {"tests/test_x.py", "tests/sub/test_z.py", "tests/twice.py", "tests/twice/test_z.py"}
+    files = nb.tree_paths({"tests/test_x.py", "tests/sub/test_z.py", "tests/twice.py", "tests/twice/test_z.py"})
     assert nb.canonical_id(test_id, files.__contains__) == canonical
+
+
+def test_tree_paths_names_each_folder_with_a_slash() -> None:
+    assert nb.tree_paths(["a/b/c.py", "d.py"]) == {"a/b/c.py", "d.py", "a/", "a/b/"}
 
 
 def test_map_ids_keeps_each_given_form() -> None:
