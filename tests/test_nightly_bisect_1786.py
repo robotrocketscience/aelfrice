@@ -1413,7 +1413,11 @@ def test_a_read_only_folder_goes_and_a_link_is_not_followed(
 def test_a_folder_that_cannot_be_removed_is_a_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(nb.shutil, "rmtree", lambda *_, **__: None)
+    def refuses(_path: Path, ignore_errors: bool = False) -> None:
+        if not ignore_errors:
+            raise PermissionError("refused by the test")
+
+    monkeypatch.setattr(nb.shutil, "rmtree", refuses)
     nb._remove_folder(nb.Git(tmp_path), tmp_path)
     assert f"::warning::{tmp_path} could not be removed" in capsys.readouterr().err
 
