@@ -62,17 +62,17 @@ the step outside the bisect. A check that exits 255, or one the deadline stopped
 with no verdict, gets the range the bisect narrowed to: with the reason `budget`
 past the deadline, and `step aborted` with time left.
 
-`git bisect reset` runs before every round but the first, since the worktree
-goes away after the last. A test that dirties a tracked file can make it fail,
-so it runs again after `git reset --hard`; a reset that still fails is a warning
-and lands in the result's `reset_errors`.
+`git bisect reset` runs between rounds, and not after the last, since the
+worktree goes away. A test that dirties a tracked file can make it fail, so it
+runs again after `git reset --hard`; a reset that still fails is a warning and
+lands in the result's `reset_errors`.
 
 `run` removes the folder it made when it ends, after an error or a signal too,
 with `git worktree remove --force`. When that fails, as it does once the `.git`
 file is gone, a warning names the error and the folder goes by its path, which
-leaves the worktree's registration in `git worktree list`. This script removes
-nothing else and never runs `git worktree prune`, which could also drop the
-registration of a worktree someone moved.
+can leave the worktree's registration in `git worktree list`. This script
+removes nothing else and never runs `git worktree prune`, which could also drop
+the registration of a worktree someone moved.
 
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
