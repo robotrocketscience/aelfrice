@@ -22,16 +22,17 @@
    },
    "3.13": {
     "counts": {
-     "error": 1,
+     "error": 2,
      "failed": 0,
      "never executed": 0,
      "passed": 0,
      "skipped": 0,
-     "total": 1,
+     "total": 2,
      "xfailed": 0,
      "xpassed": 0
     },
     "tests": {
+     "::tests.sub": "error",
      "::tests.test_y": "error"
     }
    }
@@ -48,6 +49,7 @@
      "tests.test_x::test_b"
     ],
     "3.13": [
+     "::tests.sub",
      "::tests.test_y"
     ]
    },
@@ -212,6 +214,13 @@
     "legs": [
      "3.13"
     ],
+    "module": "tests/sub/",
+    "test": "::tests.sub"
+   },
+   {
+    "legs": [
+     "3.13"
+    ],
     "module": "tests/test_y.py",
     "test": "::tests.test_y"
    }
@@ -233,6 +242,7 @@
     },
     "3.13": {
      "collection_errors": [
+      "tests/sub/",
       "tests/test_y.py"
      ],
      "node_ids": [],
@@ -242,7 +252,19 @@
    },
    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
-  "events": [],
+  "events": [
+   {
+    "key": "collection-error-bbbbbbbbbbbb",
+    "kind": "collection-error",
+    "legs": [
+     "3.13"
+    ],
+    "tests": [
+     "::tests.sub",
+     "::tests.test_y"
+    ]
+   }
+  ],
   "format": 1,
   "last_green": {
    "attempt": 1,

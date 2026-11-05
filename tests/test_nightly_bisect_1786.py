@@ -1381,8 +1381,8 @@ def test_run_usage_errors_exit_2(env: Env, tmp_path: Path, case: str) -> None:
 # ------------------------------------------------- the canary's triage
 
 # Input and output of a real run of `nightly_canary.py regressions`, from
-# ci/issue-1786-nightly-canary-script at bdddcdb7, before that script reached
-# this branch. `--repo-root` held tests/test_x.py and tests/test_y.py.
+# ci/issue-1786-nightly-canary-script at 67ef5347, before that script reached
+# this branch. `--repo-root` held tests/test_x.py, tests/test_y.py and tests/sub/.
 _TRIAGE_FIXTURE = Path(__file__).parent / "fixtures" / "nightly_triage_1786.json"
 _CANARY_SCRIPT = _REPO / "scripts" / "nightly_canary.py"
 
@@ -1392,10 +1392,14 @@ def _triage_case() -> dict[str, Any]:
 
 
 def test_the_bisect_reads_the_canarys_real_triage(env: Env, tmp_path: Path) -> None:
-    """Test a breaks at 2, tests/test_y.py stops importing at 3, test b
-    breaks at 4, and tests/test_gone.py has no file. Each entry of the
-    triage takes its own path through the real step, under the fake `uv`."""
-    shas = env.repo(["", "", "a", "am", "abm", "abm"])
+    """Test a breaks at 2, tests/test_y.py and the conftest.py of tests/sub/
+    stop importing at 3, test b breaks at 4, and tests/test_gone.py has no
+    file. Each entry of the triage takes its own path through the real step,
+    under the fake `uv`."""
+    shas = env.repo(["", "", "a", "am", "abm", "abm"], edits=(
+        (0, "tests/sub/conftest.py", ""),
+        (3, "tests/sub/conftest.py", "import BROKEN\n"),
+    ))
     triage = _write(tmp_path / "triage.json", _triage_case()["triage"])
     points = _write(tmp_path / "points.json", {shas[i]: 30 + i for i in range(1, 6)})
     out = tmp_path / "result.json"
@@ -1405,7 +1409,7 @@ def test_the_bisect_reads_the_canarys_real_triage(env: Env, tmp_path: Path) -> N
     assert rc == 1, result
     assert result["events"] == [
         nb.event_for_culprit(shas[2], 32, ["tests.test_x::test_a"], shas[1]),
-        nb.event_for_culprit(shas[3], 33, ["::tests.test_y"], shas[2]),
+        nb.event_for_culprit(shas[3], 33, ["::tests.sub", "::tests.test_y"], shas[2]),
         nb.event_for_culprit(shas[4], 34, ["tests.test_x::test_b"], shas[3]),
         nb.event_for_range(shas[0], shas[5], ["tests.test_gone::test_a"], nb.REASON_UNMAPPED),
     ]
@@ -1422,6 +1426,7 @@ def test_the_triage_fixture_is_what_the_canary_writes(tmp_path: Path) -> None:
     (repo / "tests").mkdir(parents=True)
     for name in ("test_x.py", "test_y.py"):
         (repo / "tests" / name).write_text("", encoding="utf-8")
+    (repo / "tests" / "sub").mkdir()
     branch = tmp_path / "branch"
     run_dir = branch / case["pointer"]["canary"]["path"]
     run_dir.mkdir(parents=True)
