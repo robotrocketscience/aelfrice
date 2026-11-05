@@ -517,31 +517,48 @@ def test_a_culprit_that_passes_when_checked_again_is_a_range(
     assert result["rounds"][0]["verify"]["culprit_rc"] == nb.STEP_GOOD
 
 
-def test_a_hung_bisect_ends_on_time_with_nothing_left_running(
+def _timeout_once_the_fake_hangs(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wait on a long-running child reads as its timeout once the hanging
+    fake has started, so these tests depend on neither the clock nor the load."""
+    real_wait = subprocess.Popen.wait
+
+    def wait(self: subprocess.Popen[Any], timeout: float | None = None) -> int:
+        if timeout is None or timeout <= nb._TERM_GRACE_SECONDS or not isinstance(self.args, list):
+            return real_wait(self, timeout)
+        if self.args[:3] == ["git", "bisect", "run"] or "--failed-out" in self.args:
+            limit = time.monotonic() + 60
+            while not env.pids() and time.monotonic() < limit:
+                time.sleep(0.05)
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        return real_wait(self, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait)
+
+
+def test_a_hung_bisect_ends_with_nothing_left_running(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Budget 10 and step timeout 3 once took 73.5 s and left 3 processes."""
     shas = env.repo(_LINEAR)
-    monkeypatch.setattr(nb, "_RUN_MARGIN_SECONDS", 1)
     monkeypatch.setenv("FAKE_HANG", "30")
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
-                            extra=("--budget-seconds", "1", "--step-timeout", "1"))
+    _timeout_once_the_fake_hangs(env, monkeypatch)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
     assert "timed out" in result["rounds"][0]["output"]
     assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_INCONCLUSIVE)]
     assert _survivors(env.pids()) == []
 
 
-def test_a_hung_recheck_ends_on_time_with_nothing_left_running(
+def test_a_hung_recheck_ends_with_nothing_left_running(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(["", "a"])
-    monkeypatch.setattr(nb, "_RUN_MARGIN_SECONDS", 1)
     monkeypatch.setenv("FAKE_HANG", "30")
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7},
-                            extra=("--step-timeout", "1"))
+    _timeout_once_the_fake_hangs(env, monkeypatch)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
     assert rc == 1
-    assert result["events"][0]["kind"] == "range"
+    assert result["events"] == [nb.event_for_range(shas[0], shas[1], [_A], nb.REASON_UNVERIFIED)]
+    assert result["rounds"][0]["verify"]["culprit_rc"] == nb.STEP_SKIP
     assert _survivors(env.pids()) == []
 
 
@@ -1796,6 +1813,126 @@ def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
     _tests_file(tmp_path / "ids.txt", _A)
     assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--dry-run") == 0
     assert env.uv_calls() == []
+
+
+# ---------------------------------------------------------------- budget
+
+class _FakeClock:
+    """The script's `time` module, with a clock a test moves."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _hanging_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hangs: str, *extra: str) -> tuple[int, int, float]:
+    """The real step in-process on 50 module ids. A child whose arguments
+    hold `hangs` takes its whole timeout on the fake clock. Returns the step's
+    status, how many children it started, and the seconds that passed."""
+    (tmp_path / "tests").mkdir()
+    ids = [f"tests/mod{i}.py" for i in range(50)]
+    for path in ids:
+        (tmp_path / path).write_text("", encoding="utf-8")
+    clock = _FakeClock()
+    started = clock.now
+    calls: list[list[str]] = []
+
+    def run_group(argv: list[str], timeout: float, **_: Any) -> tuple[int | None, str]:
+        calls.append(argv)
+        if hangs in argv:
+            clock.now += timeout
+            return None, ""
+        return 0, ""
+
+    monkeypatch.setattr(nb, "run_group", run_group)
+    monkeypatch.setattr(nb, "time", clock)
+    monkeypatch.chdir(tmp_path)
+    rc = nb.main(["step", "--tests", str(_tests_file(tmp_path / "ids.txt", *ids)), *extra])
+    return rc, len(calls), clock.now - started
+
+
+@pytest.mark.parametrize("hangs", ["sync", "--collect-only"])
+def test_step_timeout_bounds_the_whole_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hangs: str,
+) -> None:
+    """50 module ids with a hung collect took 156.8 s under a budget of 5:
+    each one got at least 1 s and 2 s of grace, past the step's own end."""
+    rc, calls, spent = _hanging_step(tmp_path, monkeypatch, hangs, "--deadline", "9e12", "--step-timeout", "3")
+    assert rc == nb.STEP_SKIP
+    assert spent == 3
+    assert calls == (1 if hangs == "sync" else 2)
+
+
+def test_the_deadline_bounds_the_step_when_it_comes_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rc, calls, spent = _hanging_step(tmp_path, monkeypatch, "sync", "--deadline", "1002", "--step-timeout", "300")
+    assert rc == nb.STEP_SKIP
+    assert (calls, spent) == (1, 2)
+
+
+def test_the_run_gives_its_children_only_the_budget_and_the_margin(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound on `git bisect run` was the budget plus a whole step."""
+    shas = env.repo(_LINEAR)
+    real = nb.run_group
+    timeouts: dict[str, list[float]] = {"bisect": [], "check": []}
+
+    def spy(argv: list[str], timeout: float, **kwargs: Any) -> tuple[int | None, str]:
+        timeouts["bisect" if argv[0] == "git" else "check"].append(timeout)
+        return real(argv, timeout, **kwargs)
+
+    monkeypatch.setattr(nb, "run_group", spy)
+    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
+                       extra=("--budget-seconds", "100", "--step-timeout", "90"))
+    assert rc == 0
+    assert timeouts["bisect"] and max(timeouts["bisect"]) <= 100 + 15
+    assert timeouts["check"] and max(timeouts["check"]) <= 90 + 15
+
+
+def test_a_check_past_the_deadline_runs_nothing(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    real = nb.Bisector.bisect_round
+
+    def then_out_of_time(self: nb.Bisector, lo: str, tests: list[str], n: int) -> Any:
+        out = real(self, lo, tests, n)
+        self.deadline = 0.0
+        return out
+
+    monkeypatch.setattr(nb.Bisector, "bisect_round", then_out_of_time)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
+    assert "check" not in env.step_log.read_text(encoding="utf-8")
+
+
+def test_the_skip_loop_stops_at_the_deadline(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    clock = _FakeClock()
+    real = nb.Git.run
+    skips: list[tuple[str, ...]] = []
+
+    def run(self: nb.Git, *args: str, check: bool = True, timeout: float = 120) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("bisect", "skip"):
+            skips.append(args)
+            clock.now = 1e10
+        return real(self, *args, check=check, timeout=timeout)
+
+    monkeypatch.setattr(nb.Git, "run", run)
+    monkeypatch.setattr(nb, "time", clock)
+    monkeypatch.setattr(nb, "_SKIP_CHUNK", 1)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert len(skips) == 1
+    assert result["events"][0]["kind"] == "range"
 
 
 # ------------------------------------------------------------ pure parts

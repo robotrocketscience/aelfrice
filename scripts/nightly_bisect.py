@@ -160,9 +160,13 @@ from `pytest --collect-only -q <module>` is bad, exit 0 is good, and a file
 absent from the commit is good. Any other status there is a skip, as any
 status but 0 or 1 is when a node id runs.
 
-Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300)
-each step, and at most 50 tests are bisected; the others get a range
-event. Every child that can run long has its own process group and writes
+Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300) the
+whole of each step, sync and every collection included, and at most 50 tests
+are bisected; the others get a range event. Every loop stops at the deadline,
+and no child starts past it. The margin: a child running at its bound gets
+SIGTERM and 2 s before SIGKILL, and `run` ends a `git bisect run` or a check
+whose step ignored `--deadline` 15 s past its own bound. Git calls have their
+own 120 s timeout, outside that margin. Every child that can run long has its own process group and writes
 its output to a temporary file. A timeout sends the group SIGTERM, then
 SIGKILL, so a killed `uv` leaves no pytest behind and a process that leaves
 the group cannot hold a pipe open. A step that receives SIGTERM kills its
@@ -233,7 +237,7 @@ _API_TIMEOUT_SECONDS = 60
 _PR_LIST_LIMIT = 500
 # Revisions per `git bisect skip`, to keep each command line short.
 _SKIP_CHUNK = 200
-# `git bisect run` gets the rest of the budget, one more step, and this.
+# Seconds `run` gives a step that ignores `--deadline` or `--step-timeout`.
 _RUN_MARGIN_SECONDS = 15
 # Seconds a process group gets between SIGTERM and SIGKILL.
 _TERM_GRACE_SECONDS = 2
@@ -654,8 +658,12 @@ def _die_with_children(_signum: int, _frame: object) -> None:
 # ------------------------------------------------------------- the step
 
 def _bounded(argv: list[str], end: float, capture: bool = False) -> tuple[int | None, str]:
-    """Run `argv` until `end` (epoch seconds), by `run_group`."""
-    rc, output = run_group(argv, max(1.0, end - time.time()), capture=capture)
+    """Run `argv` until `end` (epoch seconds), by `run_group`. Past `end` it
+    starts nothing, and the status is the None of a timeout."""
+    left = end - time.time()
+    if left <= 0:
+        return None, ""
+    rc, output = run_group(argv, left, capture=capture)
     return rc, output if capture else ""
 
 
@@ -805,7 +813,11 @@ class Bisector:
         return path
 
     def _check(self, sha: str, tests: list[str]) -> Check:
-        """The step at `sha` over `tests`, run outside a bisect."""
+        """The step at `sha` over `tests`, run outside a bisect. Past the
+        deadline it reads as the step's abort, and nothing runs."""
+        left = self.deadline - time.time()
+        if left <= 0:
+            return Check(STEP_ABORT, [], [])
         tests_file = self._write_tests("check.txt", tests)
         failed_out = self.scratch / "check-failed.txt"
         absent_out = self.scratch / "check-absent.txt"
@@ -814,7 +826,7 @@ class Bisector:
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out, absent_out),
-            self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
         )
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
         absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
@@ -836,11 +848,12 @@ class Bisector:
         try:
             wt.run("bisect", "start", self.bad, lo)
             for i in range(0, len(skips), _SKIP_CHUNK):
+                if time.time() >= self.deadline:
+                    break  # The step aborts at once, so the unskipped commits never run.
                 wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
-            remaining = self.deadline - time.time()
             rc, output = run_group(
                 ["git", "bisect", "run", *self._step(tests_file)],
-                max(1.0, remaining) + self.step_timeout + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+                max(0.0, self.deadline - time.time()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
             )
             if rc is None:
                 output += "\ngit bisect run timed out"
