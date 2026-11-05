@@ -187,13 +187,20 @@ sys.exit(1 if red else 0)
 
 # The fake `gh`: logs its arguments, its folder and its GIT_DIR, then prints FAKE_GH_OUT's file. With
 # FAKE_GH_FAIL set it fails; set to `with-output`, it prints the file first.
+# FAKE_GH_HANG ignores SIGTERM and sleeps, with a child that sleeps too.
 _FAKE_GH = '''\
-import json, os, sys
+import json, os, signal, subprocess, sys, time
 from pathlib import Path
 with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
 with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"gh {os.getcwd()} {os.environ.get('GIT_DIR')}\\n")
+if os.environ.get("FAKE_GH_HANG"):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\\n{child.pid}\\n")
+    time.sleep(30)
 if os.environ.get("FAKE_GH_FAIL"):
     if os.environ["FAKE_GH_FAIL"] == "with-output":
         print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
@@ -315,7 +322,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
+                "FAKE_GH_HANG"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -587,7 +595,7 @@ def _timeout_once_the_fake_hangs(env: Env, monkeypatch: pytest.MonkeyPatch) -> N
     def wait(self: subprocess.Popen[Any], timeout: float | None = None) -> int:
         if timeout is None or timeout <= nb._TERM_GRACE_SECONDS or not isinstance(self.args, list):
             return real_wait(self, timeout)
-        if self.args[:3] == ["git", "bisect", "run"] or "--failed-out" in self.args:
+        if self.args[:3] == ["git", "bisect", "run"] or "--failed-out" in self.args or self.args[0] == "gh":
             limit = time.monotonic() + 60
             while not env.pids() and time.monotonic() < limit:
                 time.sleep(0.05)
@@ -2008,25 +2016,27 @@ def test_merge_points_leaves_out_a_merged_side_branch(env: Env, tmp_path: Path) 
     assert json.loads(out.read_text(encoding="utf-8")) == {shas[2]: 7, merge: 6}
 
 
-def test_a_gh_that_hangs_means_every_commit(
+def test_a_gh_that_hangs_means_every_commit_with_nothing_left_running(
     env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """A gh that ignored SIGTERM left a child behind after its timeout."""
     shas = env.repo(_LINEAR)
-    real = subprocess.run
+    monkeypatch.setenv("FAKE_GH_HANG", "1")
+    _timeout_once_the_fake_hangs(env, monkeypatch)
+    real = nb.run_group
     timeouts: list[float] = []
 
-    def run(argv: list[str], **kwargs: Any) -> Any:
-        if argv[0] != "gh":
-            return real(argv, **kwargs)
-        timeouts.append(kwargs["timeout"])
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+    def spy(argv: list[str], timeout: float, **kwargs: Any) -> tuple[int | None, str]:
+        timeouts.append(timeout)
+        return real(argv, timeout, **kwargs)
 
-    monkeypatch.setattr(nb.subprocess, "run", run)
+    monkeypatch.setattr(nb, "run_group", spy)
     out = tmp_path / "points.json"
     assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
     assert timeouts == [nb._API_TIMEOUT_SECONDS]
     assert json.loads(out.read_text(encoding="utf-8")) == {}
-    assert "::warning::" in capsys.readouterr().err
+    assert "::warning::merge points unavailable, so the bisect tests every commit: timed out" in capsys.readouterr().err
+    assert _survivors(env.pids()) == []
 
 
 def test_gh_runs_in_the_repo_root_without_git_variables(

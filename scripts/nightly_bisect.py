@@ -185,12 +185,14 @@ Caps: `--budget-seconds` (1200, at least 1) bounds the run, `--step-timeout`
 tests are bisected; the others get a range event. Every loop stops at the
 deadline, and no step or `git bisect run` starts past it. The margin: a child running at its bound gets
 SIGTERM and 2 s before SIGKILL, and `run` ends a `git bisect run` or a check
-whose step ignored `--deadline` 15 s past its own bound. Git calls have their
-own 120 s timeout, outside that margin. Every child that can run long has its
-own process group and writes its output to a temporary file. A timeout sends
-the group SIGTERM, then SIGKILL, so a killed `uv` leaves no pytest behind and a
-process that leaves the group cannot hold a pipe open. A step that receives
-SIGTERM kills its own children first. Process groups make this script POSIX
+whose step ignored `--deadline` 15 s past its own bound. `git bisect run`, the
+step, its `uv` and pytest, and `gh` each have their own process group and write
+their output to a temporary file. A timeout sends the group SIGTERM, then
+SIGKILL, so a killed `uv` leaves no pytest behind and a process that leaves the
+group cannot hold a pipe open. A step that receives SIGTERM kills its own
+children first. Other git calls are plain children with a 120 s timeout, outside
+that margin, and killing one leaves running anything it started, such as a hook.
+Process groups make this script POSIX
 only; the canary runs it on Linux and macOS.
 
 SIGTERM or SIGINT to `run` ends the running child's group, removes the folder,
@@ -1211,13 +1213,10 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         print(f"dry run: would write {args.out}")
         return 0
     try:
-        r = subprocess.run(
-            argv, cwd=git.cwd, env=repo_free_env(), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False, timeout=_API_TIMEOUT_SECONDS,
-        )
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.strip() or f"exit status {r.returncode}")
-        prs = json.loads(r.stdout)
+        rc, output = run_group(argv, _API_TIMEOUT_SECONDS, cwd=git.cwd)
+        if rc != 0:
+            raise RuntimeError(output.strip() or ("timed out" if rc is None else f"exit status {rc}"))
+        prs = json.loads(output)
         if not isinstance(prs, list):
             raise ValueError("gh pr list did not return a list")
         rows = cast(list[dict[str, Any]], prs)
@@ -1226,8 +1225,7 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         points = select_points(order, rows, bad)
         if not points:
             raise ValueError("gh pr list names no merge in the range")
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError,
-            subprocess.TimeoutExpired) as exc:
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         print(f"::warning::merge points unavailable, so the bisect tests every commit: {exc}", file=sys.stderr)
         points = {}
     _write_json(args.out, points)
