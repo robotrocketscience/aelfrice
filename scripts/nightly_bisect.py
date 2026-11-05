@@ -1219,8 +1219,8 @@ def cmd_merge_points(args: argparse.Namespace) -> int:
         return 0
     try:
         r = subprocess.run(
-            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False, timeout=_API_TIMEOUT_SECONDS,
+            argv, cwd=git.cwd, env=repo_free_env(), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, timeout=_API_TIMEOUT_SECONDS,
         )
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip() or f"exit status {r.returncode}")

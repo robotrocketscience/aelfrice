@@ -169,13 +169,15 @@ for a in argv:
 sys.exit(1 if red else 0)
 '''
 
-# The fake `gh`: logs its arguments, then prints FAKE_GH_OUT's file. With
+# The fake `gh`: logs its arguments, its folder and its GIT_DIR, then prints FAKE_GH_OUT's file. With
 # FAKE_GH_FAIL set it fails; set to `with-output`, it prints the file first.
 _FAKE_GH = '''\
 import json, os, sys
 from pathlib import Path
 with open(os.environ["FAKE_GH_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
+with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(f"gh {os.getcwd()} {os.environ.get('GIT_DIR')}\\n")
 if os.environ.get("FAKE_GH_FAIL"):
     if os.environ["FAKE_GH_FAIL"] == "with-output":
         print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
@@ -1692,6 +1694,19 @@ def test_merge_points_leaves_out_a_merged_side_branch(env: Env, tmp_path: Path) 
     out = tmp_path / "points.json"
     assert _merge_points(repo, shas[1], merge, out) == 0
     assert json.loads(out.read_text(encoding="utf-8")) == {shas[2]: 7, merge: 6}
+
+
+def test_gh_runs_in_the_repo_root_without_git_variables(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `--repo`, gh reads the remote of the folder it runs in."""
+    shas = env.repo(_LINEAR)
+    _write(env.gh_out, [])
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere"))
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], tmp_path / "p.json") == 0
+    _, folder, git_dir = env.env_log.read_text(encoding="utf-8").split()
+    assert Path(folder).resolve() == (tmp_path / "repo").resolve()
+    assert git_dir == "None"
 
 
 def test_merge_points_dry_run_calls_no_api(env: Env, tmp_path: Path) -> None:
