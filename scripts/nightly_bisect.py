@@ -12,7 +12,7 @@ Usage:
         --out RESULT.json [--points POINTS.json] [--repo-root DIR]
         [--budget-seconds 1200] [--step-timeout 300] [--step-cmd CMD]
         [--python VERSION] [--extra NAME ...] [--dry-run]
-    nightly_bisect.py step --tests IDS.txt --deadline EPOCH
+    nightly_bisect.py step --tests IDS.txt --deadline MONOTONIC_SECONDS
         [--step-timeout 300] [--failed-out FILE] [--absent-out FILE]
         [--python VERSION] [--extra NAME ...] [--dry-run]
 
@@ -132,9 +132,11 @@ folder inside one. That git call failing exits 2 with a range event.
 
 The step. `--failed-out` and `--absent-out` name the tests that failed and
 the tests that do not exist at the commit. Its exit status follows `git
-bisect run`: 0 good, 1 bad, 125 skip, 255 abort. Past `--deadline` it exits
-255, which stops the bisect; the result then names the range it had narrowed
-to. Otherwise it runs `uv sync --frozen` (125 when that fails), collects the
+bisect run`: 0 good, 1 bad, 125 skip, 255 abort. `--deadline` is a reading of
+`time.monotonic`, which Python documents as system-wide, so `run` and the step
+share that clock and a change to the wall clock moves neither. Past it the step
+exits 255, which stops the bisect; the result then names the range it had
+narrowed to. Otherwise it runs `uv sync --frozen` (125 when that fails), collects the
 test files with `pytest --collect-only -q` (125 when collection fails) and keeps
 the ids it collected. When none is collected the commit predates the tests and
 is good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
@@ -730,9 +732,9 @@ def _die_with_children(_signum: int, _frame: object) -> None:
 # ------------------------------------------------------------- the step
 
 def _bounded(argv: list[str], end: float, capture: bool = False) -> tuple[int | None, str]:
-    """Run `argv` until `end` (epoch seconds), by `run_group`. Past `end` it
-    starts nothing, and the status is the None of a timeout."""
-    left = end - time.time()
+    """Run `argv` until `end` on the `time.monotonic` clock, by `run_group`.
+    Past `end` it starts nothing, and the status is the None of a timeout."""
+    left = end - time.monotonic()
     if left <= 0:
         return None, ""
     rc, output = run_group(argv, left, capture=capture)
@@ -766,7 +768,7 @@ def cmd_step(args: argparse.Namespace) -> int:
         print(f"dry run: would run {shlex.join(sync)}")
         print(f"dry run: would collect {len(ids)} test id(s) from {len(test_files(ids))} file(s) and run those present")
         return 0
-    now = time.time()
+    now = time.monotonic()
     if now >= args.deadline:
         print("nightly_bisect step: past the deadline; aborting the bisect", file=sys.stderr)
         return step_verdict(past_deadline=True)
@@ -891,7 +893,7 @@ class Bisector:
     def _check(self, sha: str, tests: list[str]) -> Check:
         """The step at `sha` over `tests`, run outside a bisect. Past the
         deadline it reads as the step's abort, and nothing runs."""
-        left = self.deadline - time.time()
+        left = self.deadline - time.monotonic()
         if left <= 0:
             return Check(STEP_ABORT, [], [])
         tests_file = self._write_tests("check.txt", tests)
@@ -923,12 +925,12 @@ class Bisector:
         record["skipped"] = len(skips)
         wt.run("bisect", "start", self.bad, lo)
         for i in range(0, len(skips), _SKIP_CHUNK):
-            if time.time() >= self.deadline:
+            if time.monotonic() >= self.deadline:
                 break  # The step aborts at once, so the unskipped commits never run.
             wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
         rc, output = run_group(
             ["git", "bisect", "run", *self._step(tests_file)],
-            max(0.0, self.deadline - time.time()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            max(0.0, self.deadline - time.monotonic()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
             ceiling=self.worktree.parent,
         )
         if rc is None:
@@ -1062,7 +1064,7 @@ class Bisector:
             if lo == self.bad:
                 self._event(event_for_range(lo, self.bad, remaining, REASON_PASSES_AT_BAD))
                 return
-            if time.time() >= self.deadline:
+            if time.monotonic() >= self.deadline:
                 self._event(event_for_range(lo, self.bad, remaining, REASON_BUDGET))
                 return
             if n > 1:
@@ -1071,7 +1073,7 @@ class Bisector:
             self.rounds.append(record)
             if outcome.culprit is None:
                 record["culprit"] = None
-                reason = REASON_BUDGET if time.time() >= self.deadline else REASON_INCONCLUSIVE
+                reason = REASON_BUDGET if time.monotonic() >= self.deadline else REASON_INCONCLUSIVE
                 self._event(event_for_range(outcome.good, outcome.bad, remaining, reason))
                 return
             record["culprit"] = outcome.culprit
@@ -1255,7 +1257,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"dry run: would add a worktree in a new temporary folder and run {shlex.join([*step_cmd, *step_args])}")
         print(f"dry run: would write {args.out}")
         return 0
-    deadline = time.time() + args.budget_seconds
+    deadline = time.monotonic() + args.budget_seconds
 
     def save(complete: bool) -> None:
         _write_json(args.out, {
@@ -1335,7 +1337,7 @@ def _seconds(text: str) -> int:
     return value
 
 
-def _epoch(text: str) -> float:
+def _finite(text: str) -> float:
     value = float(text)
     if not math.isfinite(value):
         raise argparse.ArgumentTypeError("must be a finite number")
@@ -1375,7 +1377,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("step", parents=[common, env], help="judge the checked-out commit for git bisect run")
     p.add_argument("--tests", required=True, type=Path)
-    p.add_argument("--deadline", required=True, type=_epoch, help="epoch seconds; past it the step exits 255")
+    p.add_argument("--deadline", required=True, type=_finite, help="a time.monotonic reading; past it the step exits 255")
     p.add_argument("--failed-out", type=Path, default=None, help="write the ids that failed here")
     p.add_argument("--absent-out", type=Path, default=None, help="write the ids that do not exist here")
     p.set_defaults(func=cmd_step)

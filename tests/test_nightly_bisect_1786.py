@@ -2369,13 +2369,34 @@ def test_a_second_signal_cannot_stop_the_cleanup(monkeypatch: pytest.MonkeyPatch
 
 # ---------------------------------------------------------------- budget
 
-class _FakeClock:
-    """The script's `time` module, with a clock a test moves."""
+class _NoWallClock:
+    """The script's `time` module, with no wall clock to read: a jump in it
+    made a budget of 5 s run on, or ended a budget of 1200 s at once."""
+
+    def time(self) -> float:
+        raise AssertionError("a deadline read the wall clock")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def test_a_run_never_reads_the_wall_clock(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setattr(nb, "time", _NoWallClock())
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
+
+
+class _FakeClock(_NoWallClock):
+    """`_NoWallClock`, with a monotonic clock a test moves."""
 
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
 
-    def time(self) -> float:
+    def monotonic(self) -> float:
         return self.now
 
     def __getattr__(self, name: str) -> Any:
