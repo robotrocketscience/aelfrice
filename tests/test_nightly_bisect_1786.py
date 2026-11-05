@@ -2663,6 +2663,7 @@ def test_the_skip_loop_stops_at_the_deadline(
     assert len(skips) == 1
     assert [set(e["reasons"].values()) for e in result["events"]] == [{nb.REASON_BUDGET}]
     assert env.stepped() == [], "`git bisect run` started past the deadline"
+    assert result["rounds"][0]["output"] == "", "`git bisect run` started past the deadline"
 
 
 # ------------------------------------------------------------ pure parts
