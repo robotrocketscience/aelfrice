@@ -124,14 +124,21 @@ What the checks cannot detect:
   can each name the PR that brought the test back. Git looks for a copy's
   source only among the files a commit changed.
 
-A step that dirties a tracked file stops the bisect, which ends in a range.
+A step that dirties a tracked file stops the bisect, which ends in a range, when
+the next commit changes that file. Otherwise the edit carries into the next
+commits, and a check discards it with `checkout --force`.
+
+The step runs the repository's own reviewed tests with the caller's permissions.
+This script defends against accidents. A test that means harm can write to the
+caller directly, and no script can stop that.
 
 The script confirms the clone before and after each step, from what git reports
 for the folder: the folder and the clone are no symbolic links, the git directory
 is the clone's own `.git` and the top level is the clone. A step can replace any
 of them, and a `checkout --force` would then write where they lead. On a mismatch
 the script touches nothing more, drops that step's verdict, and gives the tests
-left a range with the reason `clone changed`.
+left a range with the reason `clone changed`. It cannot confirm between the steps
+of one `git bisect run`, which stops by itself once `.git` is replaced.
 
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
@@ -232,7 +239,8 @@ script, known by its `kind`, and `--out` cannot be `--tests`, `--triage` or
 real run then writes `complete` false over `--out` before anything else, so an
 earlier result cannot pass for this run's whatever happens next, and a missing
 folder for `--out` exits 2 at once. A flag that `argparse` refuses exits 2 before
-all of this. The file is replaced atomically after every change, with `complete` false until the run ends, so a
+all of this. Two runs given one `--out` overwrite each other's result. The file
+is replaced atomically after every change, with `complete` false until the run ends, so a
 run that dies keeps what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `step aborted`,
 `inconclusive`, `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`,
