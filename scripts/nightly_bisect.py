@@ -58,8 +58,9 @@ The result comes from `refs/bisect/bad` and `refs/bisect/good-*`, never
 from the exit status of `git bisect run`, which is nonzero both when it
 stops on skipped commits and when a step aborts it. The bad commit is the
 culprit when the merge point before it is good. The checks below then run
-the step outside the bisect. When the deadline stops a check, the range is
-the one the bisect narrowed to.
+the step outside the bisect. A check that exits 255, or one the deadline stopped
+with no verdict, gets the range the bisect narrowed to: with the reason `budget`
+past the deadline, and `step aborted` with time left.
 
 `git bisect reset` runs before every round but the first, since the worktree
 goes away after the last. A test that dirties a tracked file can make it fail,
@@ -209,9 +210,10 @@ before any work, so a missing folder for `--out` exits 2 at once and an earlier
 run's result cannot pass for this one's. It is replaced atomically after every
 change, with `complete` false until the run ends, so a run that dies keeps
 what it found. Each event lists its tests, and a range event maps
-each test to the reason it has no culprit: `budget`, `inconclusive`,
-`unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed`,
-`returned`, `nonlinear` or `stopped`, for a run that raised or got a signal.
+each test to the reason it has no culprit: `budget`, `step aborted`,
+`inconclusive`, `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`,
+`renamed`, `returned`, `nonlinear` or `stopped`, for a run that raised or got a
+signal.
 Every input test ends in exactly one event. Each round keeps its `git bisect
 log`.
 
@@ -281,6 +283,7 @@ _WORKTREE_NAME = "nightly-bisect"
 _MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
+REASON_ABORTED = "step aborted"
 REASON_INCONCLUSIVE = "inconclusive"
 REASON_UNVERIFIED = "unverified"
 REASON_ROUNDS = "rounds"
@@ -892,7 +895,8 @@ class Bisector:
 
     def _check(self, sha: str, tests: list[str]) -> Check:
         """The step at `sha` over `tests`, run outside a bisect. Past the
-        deadline it reads as the step's abort, and nothing runs."""
+        deadline it reads as the step's abort, and nothing runs. So does a status
+        with no verdict once the deadline has passed, as the deadline stopped it."""
         left = self.deadline - time.monotonic()
         if left <= 0:
             return Check(STEP_ABORT, [], [])
@@ -908,7 +912,14 @@ class Bisector:
         )
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
         absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
-        return Check(STEP_SKIP if rc is None else rc, failed, absent)
+        status = STEP_SKIP if rc is None else rc
+        if status not in (STEP_GOOD, STEP_BAD) and time.monotonic() >= self.deadline:
+            status = STEP_ABORT
+        return Check(status, failed, absent)
+
+    def _abort_reason(self) -> str:
+        """Why a check's abort ended the round: the deadline, or the step itself."""
+        return REASON_BUDGET if time.monotonic() >= self.deadline else REASON_ABORTED
 
     def bisect_round(self, lo: str, tests: list[str], n: int) -> tuple[Outcome, dict[str, Any]]:
         """One `git bisect` from `lo` to `bad` over `tests`."""
@@ -976,7 +987,7 @@ class Bisector:
         before = self._check(outcome.good, remaining)
         record.update(verify={"culprit_rc": first.rc, "preceding": outcome.good, "preceding_rc": before.rc})
         if STEP_ABORT in (first.rc, before.rc):
-            self._event(event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
+            self._event(event_for_range(outcome.good, outcome.bad, remaining, self._abort_reason()))
             return None
         if first.rc != STEP_BAD or not first.judged or not before.judged:
             self._event(event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
@@ -991,7 +1002,7 @@ class Bisector:
             again = self._check(culprit, broke)
             record["verify"]["again_rc"] = again.rc
             if again.rc == STEP_ABORT:
-                self._event(event_for_range(outcome.good, outcome.bad, undecided, REASON_BUDGET))
+                self._event(event_for_range(outcome.good, outcome.bad, undecided, self._abort_reason()))
                 return None
             if not again.judged:
                 self._event(event_for_range(lo, self.bad, undecided, REASON_UNVERIFIED))
@@ -1022,7 +1033,7 @@ class Bisector:
             origin = self._check(lo, unexplained)
             if origin.rc not in (STEP_GOOD, STEP_BAD):
                 # The round's first commit could not say the test is new.
-                reason = REASON_BUDGET if origin.rc == STEP_ABORT else REASON_UNVERIFIED
+                reason = self._abort_reason() if origin.rc == STEP_ABORT else REASON_UNVERIFIED
                 self._event(event_for_range(lo, culprit, unexplained, reason))
                 return [t for t in blamed if t not in absent]
             returned = [t for t in unexplained if t not in origin.absent]
@@ -1041,7 +1052,7 @@ class Bisector:
         later = self._check(after, blamed)
         record["verify"].update(following=after, following_rc=later.rc)
         if later.rc == STEP_ABORT:
-            self._event(event_for_range(outcome.good, outcome.bad, blamed, REASON_BUDGET))
+            self._event(event_for_range(outcome.good, outcome.bad, blamed, self._abort_reason()))
             return []
         if later.rc not in (STEP_GOOD, STEP_BAD):
             return blamed  # This commit cannot be judged, which says nothing about the culprit.

@@ -624,15 +624,80 @@ def test_a_hung_recheck_ends_with_nothing_left_running(
     assert _survivors(env.pids()) == []
 
 
-def test_a_deadline_during_the_recheck_keeps_the_narrowed_range(
+def test_an_abort_during_the_recheck_with_time_left_names_the_abort(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bisect had finished, yet the result named the whole range."""
+    """The bisect had finished, yet the result named the whole range, and a
+    step that exited 255 with 600 s left read as `budget`."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_ABORT_CHECK", "1")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_ABORTED)]
+
+
+def _deadline_at_check(monkeypatch: pytest.MonkeyPatch, nth: int, status: int) -> None:
+    """The `nth` check of the run gets `status`, and the deadline passes during it."""
+    clock = _FakeClock()
+    real = nb.run_group
+    checks: list[list[str]] = []
+
+    def stopped_by_the_deadline(argv: list[str], timeout: float, **kwargs: Any) -> tuple[int | None, str]:
+        out = real(argv, timeout, **kwargs)
+        if "--failed-out" in argv:
+            checks.append(argv)
+            if len(checks) == nth:
+                clock.now = 1e10
+                return status, out[1]
+        return out
+
+    monkeypatch.setattr(nb, "run_group", stopped_by_the_deadline)
+    monkeypatch.setattr(nb, "time", clock)
+
+
+@pytest.mark.parametrize("status", [255, 125], ids=["the-step-aborted", "no-verdict"])
+@pytest.mark.parametrize("nth", [1, 2, 3, 4], ids=["culprit", "preceding", "second-run", "next-point"])
+def test_a_check_the_deadline_stopped_keeps_the_narrowed_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, nth: int, status: int,
+) -> None:
+    """The step's own deadline ends a hung check with a status of 125, and the
+    result read as `unverified` over the whole range."""
+    shas = env.repo(_LINEAR)
+    _deadline_at_check(monkeypatch, nth, status)
+    points: dict[str, int | None] = {shas[2]: 11, shas[5]: 12, shas[6]: 13, shas[7]: 14}
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
+    assert rc == 1
     assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
+
+
+@pytest.mark.parametrize("status", [255, 125], ids=["the-step-aborted", "no-verdict"])
+def test_a_check_of_the_first_commit_the_deadline_stopped_reads_as_budget(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, status: int,
+) -> None:
+    shas = env.repo(["", "A", "A", "A", "a", "a"])
+    _deadline_at_check(monkeypatch, 4, status)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, points={shas[i]: 30 + i for i in range(1, 6)})
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A], nb.REASON_BUDGET)]
+
+
+def test_a_check_with_a_verdict_keeps_it_past_the_deadline(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    clock = _FakeClock()
+    real = nb.run_group
+
+    def then_out_of_time(argv: list[str], timeout: float, **kwargs: Any) -> tuple[int | None, str]:
+        out = real(argv, timeout, **kwargs)
+        if "--failed-out" in argv:
+            clock.now = 1e10
+        return out
+
+    monkeypatch.setattr(nb, "run_group", then_out_of_time)
+    monkeypatch.setattr(nb, "time", clock)
+    _, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert result["rounds"][0]["verify"]["culprit_rc"] == nb.STEP_BAD
 
 
 def test_a_bystander_that_flakes_once_at_the_culprit_goes_to_the_next_round(
@@ -697,7 +762,7 @@ def test_a_false_bad_at_the_bisect_and_the_recheck_is_caught_at_the_next_point(
     assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
 
 
-def test_a_deadline_at_the_next_point_keeps_the_narrowed_range(
+def test_an_abort_at_the_next_point_keeps_the_narrowed_range(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(_LINEAR)
@@ -705,7 +770,7 @@ def test_a_deadline_at_the_next_point_keeps_the_narrowed_range(
     monkeypatch.setenv("FAKE_ABORT_CHECK", shas[6])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
     assert rc == 1
-    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_BUDGET)]
+    assert result["events"] == [nb.event_for_range(shas[2], shas[5], [_A], nb.REASON_ABORTED)]
     assert env.stepped()[-1] == shas[6]
 
 
@@ -791,7 +856,7 @@ def test_a_test_function_removed_and_added_back_is_not_blamed_on_the_return(
     assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A], nb.REASON_RETURNED)]
 
 
-@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_BUDGET)])
+@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_ABORTED)])
 def test_a_first_commit_that_cannot_be_judged_is_no_proof_a_test_is_new(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, rc: int, reason: str,
 ) -> None:
@@ -949,7 +1014,7 @@ def test_a_run_that_raises_keeps_what_it_found(
     ]
 
 
-@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_BUDGET)])
+@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_ABORTED)])
 def test_a_second_run_that_cannot_judge_the_culprit_leaves_no_test_out(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, rc: int, reason: str,
 ) -> None:
