@@ -155,7 +155,12 @@ children, also run with `GIT_CEILING_DIRECTORIES` set to the clone's parent. A
 clone that lost its `.git` then gives "not a git repository", and git cannot find
 a repository above it, even with the temporary folder inside one.
 
-The step. `--failed-out` and `--absent-out` name the tests that failed and
+The step. It first deletes what the commit before left in the clone, ignored files
+too, with `git clean -ffdxq --exclude=.venv`, so each commit is judged on its own
+tree; a clean that fails exits 255. `run` names its clone in `NIGHTLY_BISECT_CLONE`,
+and the step cleans only when git's real top level is that path, so a `step` run
+by hand in a repository leaves every file in place. `--failed-out` and
+`--absent-out` name the tests that failed and
 the tests that do not exist at the commit. Its exit status follows `git
 bisect run`: 0 good, 1 bad, 125 skip, 255 abort. `--deadline` is a reading of
 `time.monotonic`, which Python documents as system-wide, so `run` and the step
@@ -315,6 +320,8 @@ _TERM_GRACE_SECONDS = 2
 _OUTPUT_TAIL_LINES = 40
 # The clone's name inside the folder `run` makes.
 _CLONE_NAME = "nightly-bisect"
+# Names that clone to the step, the one place the step may delete files.
+_CLONE_ENV = "NIGHTLY_BISECT_CLONE"
 _MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
@@ -724,19 +731,23 @@ def _end_group(proc: subprocess.Popen[bytes]) -> None:
 
 def run_group(
     argv: list[str], timeout: float, *, cwd: Path | None = None, capture: bool = True,
-    ceiling: Path | None = None,
+    clone: Path | None = None,
 ) -> tuple[int | None, str]:
     """Run `argv` in its own process group and end the whole group after it.
 
     Status None is a timeout; a missing program is status 127. Output goes
     to a temporary file, not a pipe, so a process that escapes the group
     cannot keep this call waiting. With `capture` the output is stdout and
-    stderr together.
+    stderr together. With `clone`, git stops at its folder and the step can
+    tell it is in that clone.
     """
+    env = repo_free_env(clone.parent if clone else None)
+    if clone:
+        env[_CLONE_ENV] = str(clone)
     with tempfile.TemporaryFile() as out:
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, env=repo_free_env(ceiling), stdin=subprocess.DEVNULL,
+                argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
                 start_new_session=True,
             )
@@ -797,7 +808,18 @@ def _sync_argv(python: str | None, extras: Sequence[str]) -> list[str]:
 _PYTEST = ["uv", "run", "--no-sync", "pytest", "-p", "no:cacheprovider"]
 
 
+def _clean_clone() -> None:
+    """Delete what the commit before left in `run`'s clone. Anywhere else this
+    deletes nothing: `step` can be run by hand in someone's repository."""
+    git = Git(Path("."))
+    clone = os.environ.get(_CLONE_ENV)
+    if clone and git.run("rev-parse", "--show-toplevel", check=False).stdout == f"{clone}\n":
+        git.run("clean", "-ffdxq", "--exclude=.venv")
+
+
 def cmd_step(args: argparse.Namespace) -> int:
+    if not args.dry_run:
+        _clean_clone()
     given = parse_tests(args.tests.read_text(encoding="utf-8"))
     sync = _sync_argv(args.python, args.extra)
     mapped = {test: canonical_id(test, _on_disk) for test in given}
@@ -957,7 +979,7 @@ class Bisector:
         wt.run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out, absent_out),
-            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.clone, ceiling=self.clone.parent,
+            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.clone, clone=self.clone,
         )
         self._wt()
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
@@ -994,7 +1016,7 @@ class Bisector:
         if left > 0:
             rc, output = run_group(
                 ["git", "bisect", "run", *self._step(tests_file)],
-                left + _RUN_MARGIN_SECONDS, cwd=self.clone, ceiling=self.clone.parent,
+                left + _RUN_MARGIN_SECONDS, cwd=self.clone, clone=self.clone,
             )
             if rc is None:
                 output += "\ngit bisect run timed out"

@@ -169,7 +169,8 @@ sys.exit(1 if failing else 0)
 # marks bad and writes a JUnit report for `--junitxml=`, which
 # FAKE_UV_JUNIT=missing leaves out and FAKE_UV_JUNIT=corrupt makes unreadable.
 # Each call is logged. FAKE_UV_HANG=<stage> makes that stage (sync, collect
-# or run) sleep with a child that sleeps too.
+# or run) sleep with a child that sleeps too. FAKE_UV_RESIDUE keeps `state.db`
+# in the folder, and every test fails when it comes from another commit.
 _FAKE_UV = '''\
 import json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -206,11 +207,16 @@ if "--collect-only" in argv:
             print(f"{f}::{name}")
     sys.exit(status)
 state = dict(line.split("=", 1) for line in Path("state.txt").read_text(encoding="utf-8").split())
+stale = False
+if os.environ.get("FAKE_UV_RESIDUE"):
+    residue = Path("state.db")
+    stale = residue.exists() and residue.read_text(encoding="utf-8") != state["n"]
+    residue.write_text(state["n"], encoding="utf-8")
 cases, red = [], 0
 for i in args:
     path, name = i.split("::")
     body = ""
-    if state.get(name) == "bad":
+    if stale or state.get(name) == "bad":
         body, red = '<failure message="boom">boom</failure>', red + 1
     cls = path[:-3].replace("/", ".")
     cases.append(f'<testcase classname="{cls}" name="{name}">{body}</testcase>')
@@ -362,7 +368,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
                 "FAKE_HANG", "FAKE_READONLY", "FAKE_TAMPER", "FAKE_CALLER", "FAKE_STATUS_LOG", "FAKE_GIT_STATE", "FAKE_UV_HANG",
-                "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL", "FAKE_GH_HANG"):
+                "FAKE_UV_JUNIT", "FAKE_UV_RESIDUE", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL", "FAKE_GH_HANG", nb._CLONE_ENV):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -2824,6 +2830,78 @@ def test_run_refuses_a_budget_of_0(capsys: pytest.CaptureFixture[str]) -> None:
 @pytest.mark.parametrize("value", ["0", str(7 * 24 * 3600)])
 def test_seconds_takes_its_whole_range(value: str) -> None:
     assert nb._seconds(value) == int(value)
+
+
+def _a_repo_with_residue(env: Env, tmp_path: Path) -> Path:
+    env.repo(["a"], edits=((0, ".gitignore", "state.db\n.venv/\n"),))
+    repo = tmp_path / "repo"
+    (repo / "state.db").write_text("ignored\n", encoding="utf-8")
+    (repo / "scratch.txt").write_text("untracked\n", encoding="utf-8")
+    (repo / ".venv").mkdir()
+    (repo / ".venv" / "keep").write_text("venv\n", encoding="utf-8")
+    _tests_file(tmp_path / "ids.txt", _A)
+    return repo
+
+
+@pytest.mark.parametrize("named", ["nothing", "another-path", "the-parent", "an-empty-name"])
+def test_a_step_run_by_hand_deletes_no_file(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: str,
+) -> None:
+    """`step` can be run in someone's real repository."""
+    repo = _a_repo_with_residue(env, tmp_path)
+    tree = _tree_state(repo / ".venv"), (repo / "state.db").read_bytes(), (repo / "scratch.txt").read_bytes()
+    value = {"another-path": str(tmp_path / "elsewhere"), "the-parent": str(tmp_path), "an-empty-name": ""}.get(named)
+    if value is not None:
+        monkeypatch.setenv(nb._CLONE_ENV, value)
+    _step(tmp_path, repo, "--deadline", "9e12")
+    assert env.uv_calls(), "the step never ran, so this proves nothing"
+    assert (_tree_state(repo / ".venv"), (repo / "state.db").read_bytes(), (repo / "scratch.txt").read_bytes()) == tree
+
+
+def test_the_step_in_the_clone_it_was_named_deletes_all_but_the_venv(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _a_repo_with_residue(env, tmp_path)
+    monkeypatch.setenv(nb._CLONE_ENV, str(repo))
+    _step(tmp_path, repo, "--deadline", "9e12")
+    assert not (repo / "state.db").exists()
+    assert not (repo / "scratch.txt").exists()
+    assert (repo / ".venv" / "keep").is_file()
+    assert (repo / "tests" / "test_x.py").is_file()
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+def test_a_dry_run_step_deletes_nothing(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _a_repo_with_residue(env, tmp_path)
+    monkeypatch.setenv(nb._CLONE_ENV, str(repo))
+    assert _step(tmp_path, repo, "--deadline", "9e12", "--dry-run") == 0
+    assert (repo / "state.db").is_file()
+
+
+def test_a_clean_that_fails_stops_the_bisect(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The commit would otherwise be judged on what the one before it left."""
+    repo = _a_repo_with_residue(env, tmp_path)
+    (repo / "stuck").mkdir()
+    (repo / "stuck" / "file.txt").write_text("x", encoding="utf-8")
+    (repo / "stuck").chmod(0o500)
+    monkeypatch.setenv(nb._CLONE_ENV, str(repo))
+    try:
+        assert _step(tmp_path, repo, "--deadline", "9e12") == nb.STEP_ABORT
+        assert env.uv_calls() == []
+    finally:
+        (repo / "stuck").chmod(0o700)
+
+
+def test_each_commit_is_judged_without_what_the_last_one_left(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ignored `state.db` from an earlier commit failed every test at a later
+    one, and the run named the wrong PR with exit 0."""
+    shas = env.repo(_LINEAR, edits=((0, ".gitignore", "state.db\n"),))
+    monkeypatch.setenv("FAKE_UV_RESIDUE", "1")
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas), step=False)
+    assert rc == 0
+    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
 
 
 def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
