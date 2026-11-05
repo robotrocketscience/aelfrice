@@ -1059,7 +1059,8 @@ class Bisector:
             self.rounds.append(record)
             if outcome.culprit is None:
                 record["culprit"] = None
-                self._event(event_for_range(outcome.good, outcome.bad, remaining, REASON_INCONCLUSIVE))
+                reason = REASON_BUDGET if time.time() >= self.deadline else REASON_INCONCLUSIVE
+                self._event(event_for_range(outcome.good, outcome.bad, remaining, reason))
                 return
             record["culprit"] = outcome.culprit
             attributed = self.attribute(lo, outcome, remaining, record)

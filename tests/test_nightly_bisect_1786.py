@@ -507,6 +507,24 @@ def test_a_step_that_aborts_reports_the_range_so_far(
     assert result["events"] == [nb.event_for_range(good, bad, [_A], nb.REASON_INCONCLUSIVE)]
 
 
+def test_a_bisect_the_deadline_stopped_reads_as_budget(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_ABORT_AFTER", "1")
+    real = nb.Bisector.bisect_round
+
+    def then_out_of_time(self: nb.Bisector, lo: str, tests: list[str], n: int) -> Any:
+        out = real(self, lo, tests, n)
+        self.deadline = 0.0
+        return out
+
+    monkeypatch.setattr(nb.Bisector, "bisect_round", then_out_of_time)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert [set(e["reasons"].values()) for e in result["events"]] == [{nb.REASON_BUDGET}]
+
+
 def test_a_culprit_that_passes_when_checked_again_is_a_range(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2203,7 +2221,7 @@ def test_the_skip_loop_stops_at_the_deadline(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
     assert len(skips) == 1
-    assert result["events"][0]["kind"] == "range"
+    assert [set(e["reasons"].values()) for e in result["events"]] == [{nb.REASON_BUDGET}]
 
 
 # ------------------------------------------------------------ pure parts
