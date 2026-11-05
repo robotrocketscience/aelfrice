@@ -682,6 +682,19 @@ def test_a_test_function_removed_and_added_back_is_not_blamed_on_the_return(
     assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A], nb.REASON_RETURNED)]
 
 
+@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_BUDGET)])
+def test_a_first_commit_that_cannot_be_judged_is_no_proof_a_test_is_new(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, rc: int, reason: str,
+) -> None:
+    """The status left `returned` empty, so the test was blamed on the return."""
+    shas = env.repo(["", "A", "A", "A", "a", "a"])
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[0], "phase": "check", "rc": rc}]))
+    status, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A,
+                                points={shas[i]: 30 + i for i in range(1, 6)})
+    assert status == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A], reason)]
+
+
 def test_a_test_added_failing_is_blamed_on_the_merge_that_added_it(
     env: Env, tmp_path: Path, run_bisect: Runner,
 ) -> None:

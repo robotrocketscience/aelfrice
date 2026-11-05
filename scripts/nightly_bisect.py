@@ -86,9 +86,9 @@ A commit where a test does not exist reads good, so a test that existed
 under another name, or was gone for a while, looks new at the commit that
 brought it back. When a blamed test is absent at the merge point before the
 culprit, and git sees its file renamed or copied between the two, or the
-test is present at the round's first commit, it gets a range event up to
-the culprit. A test absent all the way back is new, and is blamed on the
-commit that added it.
+test is present at the round's first commit, or that commit cannot be judged,
+it gets a range event up to the culprit. A test absent all the way back is
+new, and is blamed on the commit that added it.
 
 What the checks cannot detect:
 
@@ -917,8 +917,12 @@ class Bisector:
         unexplained = [t for t in absent if t not in moved]
         if unexplained and outcome.good != lo:
             origin = self._check(lo, unexplained)
-            if origin.rc in (STEP_GOOD, STEP_BAD):
-                returned = [t for t in unexplained if t not in origin.absent]
+            if origin.rc not in (STEP_GOOD, STEP_BAD):
+                # The round's first commit could not say the test is new.
+                reason = REASON_BUDGET if origin.rc == STEP_ABORT else REASON_UNVERIFIED
+                self._event(event_for_range(lo, culprit, unexplained, reason))
+                return [t for t in blamed if t not in absent]
+            returned = [t for t in unexplained if t not in origin.absent]
         if returned:
             self._event(event_for_range(lo, culprit, returned, REASON_RETURNED))
         return [t for t in blamed if t not in moved and t not in returned]
