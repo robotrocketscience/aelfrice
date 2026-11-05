@@ -2632,6 +2632,19 @@ def test_a_corrupt_last_green_file_still_publishes_the_night_and_exits_1(
     assert not (branch / "runs/2026-11-05-101-a1").exists()
 
 
+def test_a_corrupt_pointer_file_and_a_corrupt_index_each_say_no_pointer_moved(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, (c0, _, _), _ = main_repo
+    (tmp_path / "branch").mkdir()
+    (tmp_path / "branch" / "last-green.json").write_text("oops", encoding="utf-8")
+    (tmp_path / "branch" / "index.jsonl").write_text("oops\n", encoding="utf-8")
+    assert _publish(tmp_path, repo, _green(c0, 100), None) == 1
+    out = capsys.readouterr().out
+    assert out.count("no pointer moved") == 2
+    assert (tmp_path / "branch" / "last-green.json").read_text(encoding="utf-8") == "oops"
+
+
 def test_the_next_night_after_repairing_the_pointer_file_moves_it(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
@@ -2667,9 +2680,10 @@ def test_a_triage_file_of_the_wrong_shape_is_a_usage_error(
     "line", ["oops", "[]", '{"x": 1}', '{"run_id": "x", "run_attempt": 1}', '{"run_id": 1}'],
     ids=["corrupt", "array", "no-run", "run-str", "no-attempt"],
 )
-def test_a_corrupt_index_still_publishes_the_night_moves_the_pointer_and_exits_1(
+def test_a_corrupt_index_still_publishes_the_night_moves_no_pointer_and_exits_1(
     tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], line: str,
 ) -> None:
+    """The index is what says a newer run of this commit came first."""
     repo, (c0, _, _), _ = main_repo
     branch = tmp_path / "branch"
     branch.mkdir()
@@ -2677,8 +2691,51 @@ def test_a_corrupt_index_still_publishes_the_night_moves_the_pointer_and_exits_1
     assert _publish(tmp_path, repo, _green(c0, 100), None) == 1
     assert (branch / "index.jsonl").read_text(encoding="utf-8") == line + "\n"
     assert (branch / "runs/2026-11-04-100-a1/record.json").is_file()
+    assert _last_green(tmp_path) == {"canary": None, "legs": {}}
+    out = capsys.readouterr().out
+    assert "::error::index.jsonl is unreadable" in out
+    assert "nothing moved, since index.jsonl is unreadable" in out
+
+
+def test_a_late_green_cannot_move_the_pointer_past_a_red_night_the_index_missed(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Run 20 was published while the index was corrupt, so only `runs/` holds it."""
+    repo, (c0, _, c2), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 1), None) == 0
+    index = tmp_path / "branch" / "index.jsonl"
+    good = index.read_text(encoding="utf-8")
+    index.write_text(good + "xbad\n", encoding="utf-8")
+    assert _publish(tmp_path, repo, _red(c2, 20), None) == 1
+    index.write_text(good, encoding="utf-8")
+    assert _publish(tmp_path, repo, _green(c2, 10), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c0
-    assert "::error::index.jsonl is unreadable" in capsys.readouterr().out
+
+
+def _with_runs(tmp_path: Path, *dirs: tuple[str, bytes]) -> list[tuple[tuple[int, int], Path]]:
+    for name, content in dirs:
+        (tmp_path / "runs" / name).mkdir(parents=True)
+        (tmp_path / "runs" / name / "record.json").write_bytes(content)
+    return nc._run_dirs(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "this_run", "expected"),
+    [
+        ("2026-11-04-20-a1", json.dumps({"sha": SHA1}).encode(), (10, 1), True),
+        ("2026-11-04-10-a2", json.dumps({"sha": SHA1}).encode(), (10, 1), True),
+        ("2026-11-04-10-a1", json.dumps({"sha": SHA1}).encode(), (10, 1), False),
+        ("2026-11-04-9-a5", json.dumps({"sha": SHA1}).encode(), (10, 1), False),
+        ("2026-11-04-20-a1", json.dumps({"sha": SHA2}).encode(), (10, 1), False),
+        ("2026-11-04-20-a1", b"oops", (10, 1), True),
+        ("2026-11-04-20-a1", b"[" * 200_000, (10, 1), True),
+    ],
+    ids=["newer-run", "newer-attempt", "this-run", "older-run", "other-commit", "corrupt-counts", "too-deep-counts"],
+)
+def test_a_newer_record_on_disk_is_read_by_run_attempt_and_commit(
+    tmp_path: Path, name: str, content: bytes, this_run: tuple[int, int], expected: bool,
+) -> None:
+    assert nc._newer_on_disk(_with_runs(tmp_path, (name, content)), this_run, SHA1) is expected
 
 
 def test_an_index_too_deep_to_parse_is_corrupt_rather_than_fatal(

@@ -156,8 +156,9 @@ run, the newest attempt's, and names that attempt's directory. A missing
 triage file is a notice: the night's record is still published, with no
 event keys. A corrupt `index.jsonl` or `last-green.json` does not lose the night
 either: the record and triage are written, the corrupt file stays as it is for
-inspection, and `publish` names it and exits 1. A corrupt `last-green.json` moves
-no pointer until someone repairs it.
+inspection, and `publish` names it and exits 1. Either one moves no pointer on
+that night, since a corrupt index cannot say whether a newer run of the commit
+came first.
 
 Only a green night moves `last-green.json`: the `canary` entry, and each
 `legs` entry whose leg is green. A red or incomplete night changes no entry,
@@ -167,9 +168,11 @@ main that descends from the old one, the first pointer included. Main is
 green night on a commit that is not on main, or that git cannot place, moves
 nothing, and `publish` exits 1. A later commit already named stays named,
 which is the ordinary case of a late run: that exits 0. At one commit, the
-newer run and attempt hold the pointer. When `index.jsonl` already holds a
-newer run or attempt of the commit, a late older one moves nothing, an empty
-pointer included, since the newer one may have been red. An entry holds
+newer run and attempt hold the pointer. When `index.jsonl` or a record under
+`runs/` shows a newer run or attempt of the commit, a late older one moves
+nothing, an empty pointer included, since the newer one may have been red. A
+newer record too corrupt to name its commit counts as one. `runs/` also covers
+nights published while the index was corrupt. An entry holds
 `attempt` beside `run_id` for that comparison. A record does not change once
 written: publishing a run and attempt that `runs/` already holds with different
 content, a new `created_at` date included, exits 1 and writes nothing, whether
@@ -1027,11 +1030,11 @@ def next_last_green(
     record: dict[str, Any],
     is_ancestor: Callable[[str, str], bool | None],
     on_main: Callable[[str], bool | None],
-    superseded: bool = False,
+    hold: str | None = None,
 ) -> tuple[dict[str, Any], list[str], list[str]]:
     """`last-green.json` after this night, a printable note per entry it
-    touched, and a problem per entry that needs an operator. A `superseded`
-    night, which a newer run of its commit came after, moves nothing."""
+    touched, and a problem per entry that needs an operator. With `hold`, which
+    says why, the night moves nothing."""
     nightly = record["nightly"]
     old = current or {}
     pointer: dict[str, Any] = {
@@ -1047,8 +1050,8 @@ def next_last_green(
     legs: dict[str, Any] = dict(old.get("legs") or {})
     roles: dict[str, str] = nightly["roles"]
     report_only: list[str] = []
-    if nightly["verdict"] == GREEN and superseded:
-        notes.append(f"last green: nothing moved, since a newer run of {pointer['sha'][:12]} came after this one")
+    if nightly["verdict"] == GREEN and hold is not None:
+        notes.append(f"last green: nothing moved, since {hold}")
     elif nightly["verdict"] == GREEN:
         canary = _moved(canary, pointer, is_ancestor, on_main, "canary", notes, problems)
         for leg, status in sorted(nightly["status"].items()):
@@ -1428,6 +1431,20 @@ def _run_dirs(branch: Path) -> list[tuple[tuple[int, int], Path]]:
     return sorted(found)
 
 
+def _newer_on_disk(on_disk: list[tuple[tuple[int, int], Path]], this_run: tuple[int, int], sha: str) -> bool:
+    """Whether a newer run or attempt under `runs/` tested this commit. Only
+    those are read, and tonight is usually the newest, so this reads none."""
+    for order, run_dir in on_disk:
+        if order > this_run:
+            try:
+                other = _read_json(run_dir / "record.json")
+            except _UNREADABLE:
+                return True
+            if other.get("sha") == sha:
+                return True
+    return False
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     record = _read_json(args.record)
     validate_record(record, str(args.record))
@@ -1443,7 +1460,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
     path = run_path(record)
     this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
     dumped = _dumps(record).encode("utf-8")
-    for order, run_dir in _run_dirs(branch):
+    on_disk = _run_dirs(branch)
+    for order, run_dir in on_disk:
         if order == this_run and (run_dir / "record.json").read_bytes() != dumped:
             print(f"::error::runs/{run_dir.name} already holds run {order[0]} attempt {order[1]} with other content, "
                   "so it stays as it is; nothing was written")
@@ -1461,7 +1479,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         index = merge_index(lines, index_entry(record, None if keep_triage else triage), keep_triage)
         superseded = superseded_at_commit(lines, record)
     except _UNREADABLE as exc:
-        problems.append(f"index.jsonl is unreadable, so it stays as it is for inspection: {exc}")
+        problems.append(f"index.jsonl is unreadable, so it stays as it is and no pointer moved: {exc}")
     green_file = branch / "last-green.json"
     old_green: dict[str, Any] | None = None
     green_readable = True
@@ -1483,9 +1501,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
     new_green: dict[str, Any] = {}
     notes: list[str] = []
     pointer_problems: list[str] = []
+    hold: str | None = None
+    if index is None:
+        hold = "index.jsonl is unreadable"
+    elif superseded or _newer_on_disk(on_disk, this_run, str(record["sha"])):
+        hold = f"a newer run of {str(record['sha'])[:12]} came after this one"
     if green_readable:
         new_green, notes, pointer_problems = next_last_green(
-            old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main, superseded,
+            old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main, hold,
         )
     writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
     if triage is not None and not keep_triage:
