@@ -1122,19 +1122,101 @@ def test_every_input_test_ends_in_exactly_one_event(
     assert sorted(named) == sorted(ids), result["events"]
 
 
+_EARLIER = {"kind": nb.RESULT_KIND, "complete": True, "good": "earlier", "events": []}
+
+
 def test_a_run_that_exits_2_leaves_no_earlier_result(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """A range that cannot be read left the old `complete: true` in place."""
     shas = env.repo(["", "a"])
-    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
-    assert run_bisect(tmp_path / "repo", shas[1], shas[0], _A)[0] == 2
-    assert not (tmp_path / "result.json").exists()
+    _write(tmp_path / "result.json", _EARLIER)
+    rc, result = run_bisect(tmp_path / "repo", shas[1], shas[0], _A)
+    assert rc == 2
+    assert (result["kind"], result["complete"], result["good"]) == (nb.RESULT_KIND, False, shas[1])
+    assert (result["events"], result["tests"]) == ([], [])
+
+
+_NOT_A_RESULT = {
+    "tracked": lambda t: t / "repo" / "tests" / "test_x.py",
+    "git-head": lambda t: t / "repo" / ".git" / "HEAD",
+    "a-link-to-tracked": lambda t: _linked(t / "out-link", t / "repo" / "tests" / "test_x.py"),
+    "text": lambda t: _written(t / "out.txt", "not json\n"),
+    "bytes": lambda t: _written_bytes(t / "out.bin", b"\xff\xfe"),
+    "a-list": lambda t: _written(t / "out.json", "[]\n"),
+    "no-kind": lambda t: _written(t / "out.json", json.dumps({"complete": True, "good": "x", "events": []})),
+    "other-kind": lambda t: _written(t / "out.json", json.dumps({"kind": "pr", "events": []})),
+    "a-dangling-link": lambda t: _linked(t / "out-link", t / "nowhere"),
+    "a-folder": lambda t: t / "repo" / "tests",
+}
+
+
+def _linked(path: Path, target: Path) -> Path:
+    path.symlink_to(target)
+    return path
+
+
+def _written(path: Path, text: str) -> Path:
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _written_bytes(path: Path, data: bytes) -> Path:
+    path.write_bytes(data)
+    return path
+
+
+@pytest.mark.parametrize("dry", [False, True], ids=["run", "dry-run"])
+@pytest.mark.parametrize("name", list(_NOT_A_RESULT))
+def test_an_out_that_holds_no_result_exits_2_untouched(
+    env: Env, tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str, dry: bool,
+) -> None:
+    """`run` deleted a tracked test, the ids file, and the caller's `.git/HEAD`."""
+    shas = env.repo(["", "a"])
+    out = _NOT_A_RESULT[name](tmp_path)
+    tree = _tree_state(tmp_path / "repo")
+    argv = ["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+            "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(out), "--step-cmd", env.step_cmd]
+    kept = (os.lstat(out).st_mtime_ns, out.read_bytes() if out.is_file() else b"") if os.path.lexists(out) else None
+    assert nb.main([*argv, *(("--dry-run",) if dry else ())]) == 2
+    assert "holds no result of this script" in capsys.readouterr().err
+    assert (os.lstat(out).st_mtime_ns, out.read_bytes() if out.is_file() else b"") == kept
+    assert _tree_state(tmp_path / "repo") == tree
+    assert env.stepped() == []
+
+
+@pytest.mark.parametrize("name", ["tests", "triage", "points", "tests-by-a-link"])
+def test_an_out_that_is_also_an_input_exits_2_untouched(
+    env: Env, tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str,
+) -> None:
+    """Even a file holding an earlier result: the run would read what it overwrote."""
+    shas = env.repo(["", "a"])
+    shared = _write(tmp_path / "shared.json", _EARLIER)
+    argv = ["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+            "--out", str(shared), "--step-cmd", env.step_cmd]
+    if name == "triage":
+        argv += ["--triage", str(shared)]
+    elif name == "tests-by-a-link":
+        argv += ["--tests", str(_linked(tmp_path / "link", shared))]
+    elif name == "tests":
+        argv += ["--tests", str(shared)]
+    else:
+        argv += ["--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--points", str(shared)]
+    assert nb.main(argv) == 2
+    assert "--out is the same file as" in capsys.readouterr().err
+    assert json.loads(shared.read_text(encoding="utf-8")) == _EARLIER
+    assert env.stepped() == []
+
+
+def test_a_run_replaces_the_result_of_the_run_before_it(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    for _ in range(2):
+        rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
+        assert (rc, result["kind"], result["complete"]) == (0, nb.RESULT_KIND, True)
 
 
 def test_a_dry_run_keeps_an_earlier_result(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "a"])
-    earlier = {"complete": True, "good": "earlier", "events": []}
-    _write(tmp_path / "result.json", earlier)
-    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, extra=("--dry-run",)) == (0, earlier)
+    _write(tmp_path / "result.json", _EARLIER)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, extra=("--dry-run",)) == (0, _EARLIER)
 
 
 def test_an_earlier_result_is_replaced_before_any_work(
@@ -1142,7 +1224,7 @@ def test_an_earlier_result_is_replaced_before_any_work(
 ) -> None:
     """An old `complete: true` stayed during a new run and after it died."""
     shas = env.repo(["", "a"])
-    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
+    _write(tmp_path / "result.json", _EARLIER)
 
     _fail_git(monkeypatch, "clone")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
@@ -1154,7 +1236,7 @@ def test_the_result_is_false_while_the_clone_is_prepared(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(["", "a"])
-    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
+    _write(tmp_path / "result.json", _EARLIER)
     real = nb.Git.run
     seen: list[dict[str, Any]] = []
 

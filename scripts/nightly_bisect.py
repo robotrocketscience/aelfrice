@@ -222,11 +222,13 @@ another run, and two runs can share a `--repo-root`.
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
-when no culprit was found. `run` deletes an earlier result at `--out` first, so
-it cannot pass for this run's whatever happens next; a flag that `argparse`
-refuses exits 2 before that. The result file is written with `complete` false
-before any work, so a missing folder for `--out` exits 2 at once. It is replaced
-atomically after every change, with `complete` false until the run ends, so a
+when no culprit was found. An existing `--out` has to hold a result of this
+script, known by its `kind`, and `--out` cannot be `--tests`, `--triage` or
+`--points`; otherwise `run` exits 2 with the file untouched, in a dry run too. A
+real run then writes `complete` false over `--out` before anything else, so an
+earlier result cannot pass for this run's whatever happens next, and a missing
+folder for `--out` exits 2 at once. A flag that `argparse` refuses exits 2 before
+all of this. The file is replaced atomically after every change, with `complete` false until the run ends, so a
 run that dies keeps what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `step aborted`,
 `inconclusive`, `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`,
@@ -266,6 +268,7 @@ from typing import Any, cast
 from xml.etree import ElementTree
 
 RESULT_FORMAT = 1
+RESULT_KIND = "nightly-bisect-result"
 # The `format` this script reads from `nightly_canary.py regressions`.
 TRIAGE_FORMAT = 1
 
@@ -1295,9 +1298,29 @@ def _temp_location(root: Path) -> Path:
     return temp
 
 
+def _refuse_out(args: argparse.Namespace) -> None:
+    """ValueError, with nothing touched, unless `--out` is free or holds this script's result."""
+    out = args.out.resolve()
+    for other in (args.tests, args.triage, args.points):
+        if other is not None and other.resolve() == out:
+            raise ValueError(f"--out is the same file as {other}")
+    if not os.path.lexists(args.out):
+        return
+    try:
+        earlier = _read_json(args.out)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"--out {args.out} holds no result of this script: {exc}") from exc
+    if not isinstance(earlier, dict) or cast(dict[str, Any], earlier).get("kind") != RESULT_KIND:
+        raise ValueError(f"--out {args.out} holds no result of this script")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
+    _refuse_out(args)
     if not args.dry_run:
-        args.out.unlink(missing_ok=True)
+        _write_json(args.out, {
+            "kind": RESULT_KIND, "format": RESULT_FORMAT, "complete": False, "good": args.good, "bad": args.bad,
+            "tests": [], "merge_points": 0, "events": [], "rounds": [], "reset_errors": [],
+        })
     root = (args.repo_root / Git(args.repo_root).out("rev-parse", "--show-cdup")).resolve()
     temp = _temp_location(root)
     git = Git(root)
@@ -1338,7 +1361,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     def save(complete: bool) -> None:
         _write_json(args.out, {
-            "format": RESULT_FORMAT, "complete": complete, "good": good, "bad": bad, "tests": tests,
+            "kind": RESULT_KIND, "format": RESULT_FORMAT, "complete": complete, "good": good, "bad": bad, "tests": tests,
             "merge_points": len(points), "events": [_as_given(e, mapped) for e in bisector.events],
             "rounds": bisector.rounds, "reset_errors": bisector.reset_errors,
         })
