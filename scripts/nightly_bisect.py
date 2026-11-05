@@ -124,7 +124,11 @@ last round gets a range event.
 `git bisect run` exports `GIT_DIR` to the step. A test that runs `git init`
 in a temporary directory under that variable re-initializes the worktree's
 git directory instead, so the step's children, and every git call here, run
-without git's repository variables.
+without git's repository variables. Every git call in the worktree, and the
+step and its children, also run with `GIT_CEILING_DIRECTORIES` set to the
+worktree's parent. A worktree that lost its `.git` file then gives "not a git
+repository", and git cannot find a repository above it, even with the temporary
+folder inside one. That git call failing exits 2 with a range event.
 
 The step. `--failed-out` and `--absent-out` name the tests that failed and
 the tests that do not exist at the commit. Its exit status follows `git
@@ -578,20 +582,25 @@ _GIT_REPO_VARS = frozenset({
 })
 
 
-def repo_free_env() -> dict[str, str]:
-    """This process's environment without git's repository variables."""
-    return {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+def repo_free_env(ceiling: Path | None = None) -> dict[str, str]:
+    """This process's environment without git's repository variables. With
+    `ceiling`, git looks for a repository no higher than that folder's children."""
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REPO_VARS}
+    if ceiling is not None:
+        env["GIT_CEILING_DIRECTORIES"] = str(ceiling)
+    return env
 
 
 class Git:
     """`git` in one directory, with a timeout on every call."""
 
-    def __init__(self, cwd: Path) -> None:
+    def __init__(self, cwd: Path, ceiling: Path | None = None) -> None:
         self.cwd = cwd
+        self.ceiling = ceiling
 
     def run(self, *args: str, check: bool = True, timeout: float = _GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
         r = subprocess.run(
-            ["git", *args], cwd=self.cwd, capture_output=True, text=True, env=repo_free_env(),
+            ["git", *args], cwd=self.cwd, capture_output=True, text=True, env=repo_free_env(self.ceiling),
             encoding="utf-8", errors="replace", check=False, timeout=timeout,
         )
         if check and r.returncode != 0:
@@ -678,6 +687,7 @@ def _end_group(proc: subprocess.Popen[bytes]) -> None:
 
 def run_group(
     argv: list[str], timeout: float, *, cwd: Path | None = None, capture: bool = True,
+    ceiling: Path | None = None,
 ) -> tuple[int | None, str]:
     """Run `argv` in its own process group and end the whole group after it.
 
@@ -689,7 +699,7 @@ def run_group(
     with tempfile.TemporaryFile() as out:
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, env=repo_free_env(), stdin=subprocess.DEVNULL,
+                argv, cwd=cwd, env=repo_free_env(ceiling), stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
                 start_new_session=True, pass_fds=tuple(_HELD_FDS),
             )
@@ -863,7 +873,7 @@ class Bisector:
         return set(self.points) | {self.bad} if self.points else None
 
     def _wt(self) -> Git:
-        return Git(self.worktree)
+        return Git(self.worktree, ceiling=self.worktree.parent)
 
     def _step(self, tests_file: Path, failed_out: Path | None = None, absent_out: Path | None = None) -> list[str]:
         argv = [
@@ -896,7 +906,7 @@ class Bisector:
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out, absent_out),
-            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.worktree, ceiling=self.worktree.parent,
         )
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
         absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
@@ -924,6 +934,7 @@ class Bisector:
             rc, output = run_group(
                 ["git", "bisect", "run", *self._step(tests_file)],
                 max(0.0, self.deadline - time.time()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+                ceiling=self.worktree.parent,
             )
             if rc is None:
                 output += "\ngit bisect run timed out"

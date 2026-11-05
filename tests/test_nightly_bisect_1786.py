@@ -54,7 +54,8 @@ _D = "tests/test_x.py::test_d"
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
 # phase, FAKE_HANG=<seconds> sleeps first, with a child that sleeps too, and
 # FAKE_READONLY=<path> leaves in the check phase a read-only folder and a
-# symbolic link to that path.
+# symbolic link to that path. FAKE_RM_GIT=<phase> deletes the worktree's `.git`
+# file in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES.
 _FAKE_STEP = '''\
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
@@ -73,6 +74,8 @@ with log.open("a", encoding="utf-8") as fh:
 calls = log.read_text(encoding="utf-8").splitlines()
 with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"step {phase} {os.environ.get('GIT_DIR')}\\n")
+with open(os.environ["FAKE_CEILING_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(f"step {phase} {os.environ.get('GIT_CEILING_DIRECTORIES')}\\n")
 hang = os.environ.get("FAKE_HANG")
 if hang:
     child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({hang})"])
@@ -112,6 +115,8 @@ if args.absent_out:
 if os.environ.get("FAKE_DIRTY") == phase:
     with open("state.txt", "a", encoding="utf-8") as fh:
         fh.write("dirty=1\\n")
+if os.environ.get("FAKE_RM_GIT") == phase:
+    Path(".git").unlink(missing_ok=True)
 if os.environ.get("FAKE_READONLY") and phase == "check" and not Path("link").is_symlink():
     Path("link").symlink_to(os.environ["FAKE_READONLY"])
     Path("locked").mkdir()
@@ -137,6 +142,8 @@ with open(os.environ["FAKE_UV_LOG"], "a", encoding="utf-8") as fh:
 stage = "sync" if argv[0] == "sync" else "collect" if "--collect-only" in argv else "run"
 with open(os.environ["FAKE_ENV_LOG"], "a", encoding="utf-8") as fh:
     fh.write(f"uv {stage} {os.environ.get('GIT_DIR')}\\n")
+with open(os.environ["FAKE_CEILING_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(f"uv {stage} {os.environ.get('GIT_CEILING_DIRECTORIES')}\\n")
 if os.environ.get("FAKE_UV_HANG") == stage:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     with open(os.environ["FAKE_PIDS"], "a", encoding="utf-8") as fh:
@@ -231,6 +238,7 @@ class Env:
         self.gh_out = root / "gh.json"
         self.pids_file = root / "pids.txt"
         self.env_log = root / "env.log"
+        self.ceiling_log = root / "ceiling.log"
         self.tmp = root / "tmp"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
@@ -305,8 +313,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_GH_OUT", str(e.gh_out))
     monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
+    monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_READONLY", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -1203,6 +1212,51 @@ def test_a_run_touches_no_other_folder_and_prunes_nothing(env: Env, tmp_path: Pa
     assert (repo / ".bisect" / "tracked.txt").is_file()
     assert (repo / ".nightly-bisect-worktree").is_file()
     assert (tmp_path / "moved" / "state.txt").is_file()
+
+
+@pytest.mark.parametrize("phase", ["bisect", "check"])
+def test_a_lost_git_file_cannot_reach_the_repository_above_it(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], phase: str,
+) -> None:
+    """`git checkout --force` walked up to the caller's repository and moved its
+    checkout, losing a modified and a staged file. The temporary folder sits
+    inside that repository here, so only the ceiling stops git."""
+    shas = env.repo(_LINEAR)
+    repo = tmp_path / "repo"
+    _a_checkout_with_work(repo)
+    before = _repo_state(repo)
+    del before["worktree list --porcelain"]
+    inside = repo / "tmp"
+    inside.mkdir()
+    env.tmp = inside
+    monkeypatch.setattr(tempfile, "tempdir", str(inside))
+    monkeypatch.setenv("FAKE_RM_GIT", phase)
+    rc, result = run_bisect(repo, shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 2
+    assert "not a git repository" in capsys.readouterr().err
+    after = _repo_state(repo)
+    del after["worktree list --porcelain"]
+    assert after == before
+    assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == "# edited\n"
+    assert [(e["kind"], e["reasons"]) for e in result["events"]] == [("range", {_A: nb.REASON_STOPPED})]
+
+
+def test_the_step_and_its_children_cannot_find_a_repository_above_the_worktree(
+    env: Env, tmp_path: Path, run_bisect: Runner,
+) -> None:
+    """Fake step for the bisect and the checks, then the real step's `uv` children."""
+    shas = env.repo(["", "", "", "a", "a"])
+    points: dict[str, int | None] = {shas[i]: 20 + i for i in range(1, 5)}
+    for step in (True, False):
+        env.ceiling_log.unlink(missing_ok=True)
+        assert run_bisect(tmp_path / "repo", shas[0], shas[4], _A, points=points, step=step)[0] == 0
+        rows = [row.rsplit(" ", 1) for row in env.ceiling_log.read_text(encoding="utf-8").splitlines()]
+        kinds = {"step bisect", "step check"} if step else {"uv sync", "uv collect", "uv run"}
+        assert {kind for kind, _ in rows} == kinds
+        assert len({ceiling for _, ceiling in rows}) == 1
+        assert Path(rows[0][1]).parent == env.tmp
+        assert Path(rows[0][1]).name.startswith("nightly-bisect-")
 
 
 def test_a_worktree_git_cannot_remove_goes_by_its_path(
