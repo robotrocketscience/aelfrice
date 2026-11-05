@@ -1316,6 +1316,26 @@ def test_a_folder_whose_conftest_stops_importing_is_bisected(
     assert result["events"] == [nb.event_for_culprit(shas[2], 22, [target], shas[1])]
 
 
+def test_a_non_ascii_test_file_maps(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """`ls-tree` quotes the name without `-z`, and the id read as unmapped."""
+    shas = env.repo(["", "", "a"], edits=((0, "tests/test_caf\u00e9.py", "def test_a():\n    pass\n"),))
+    node_id = "tests/test_caf\u00e9.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[2], node_id, points={shas[1]: 1, shas[2]: 2})
+    assert rc == 0, result
+    assert result["events"] == [nb.event_for_culprit(shas[2], 2, [node_id], shas[1])]
+
+
+def test_a_non_ascii_file_renamed_after_the_break_is_a_range(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    body = "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"
+    shas = env.repo(["", "a", "a", "a", "a"], edits=(
+        (0, "tests/test_old.py", body), (3, "tests/test_old.py", None), (3, "tests/test_caf\u00e9.py", body),
+    ))
+    new_id = "tests/test_caf\u00e9.py::test_a"
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], new_id, points={shas[i]: 30 + i for i in range(1, 5)})
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [new_id], nb.REASON_RENAMED)]
+
+
 def test_a_junit_id_is_bisected_like_its_node_id(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     """`test_outcome_record.py` names a test `tests.test_x::test_a`. Read as
     a path, that names no file, and the step called every commit good."""

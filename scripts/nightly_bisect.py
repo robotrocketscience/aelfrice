@@ -599,6 +599,10 @@ class Git:
     def lines(self, *args: str) -> list[str]:
         return [line for line in self.out(*args).splitlines() if line]
 
+    def paths(self, *args: str) -> list[str]:
+        """The paths of a command given `-z`, which leaves a non-ASCII name unquoted."""
+        return [path for path in self.run(*args, "-z").stdout.split("\0") if path]
+
 
 def ancestry(git: Git, good: str, bad: str) -> list[str]:
     return git.lines("rev-list", "--reverse", "--ancestry-path", f"{good}..{bad}")
@@ -996,7 +1000,7 @@ class Bisector:
         absent = [t for t in blamed if t in absent_before]
         if not absent:
             return blamed
-        moved_files = self.git.lines(
+        moved_files = self.git.paths(
             "diff", "--name-only", "--find-renames", "--find-copies", "--diff-filter=RC", outcome.good, culprit,
         )
         moved = [t for t in absent if t.split("::", 1)[0] in moved_files]
@@ -1246,7 +1250,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     git = Git(root)
     good, bad = resolve_range(git, args.good, args.bad)
-    files = tree_paths(git.lines("ls-tree", "-r", "--name-only", bad))
+    files = tree_paths(git.paths("ls-tree", "-r", "--name-only", bad))
     if args.triage is not None:
         mapped, unmapped = map_triage(_read_json(args.triage), files)
     else:
