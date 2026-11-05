@@ -407,7 +407,9 @@ def test_culprit_is_the_merge_point_and_other_commits_never_run(
     points = _linear_points(shas)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=points)
     assert rc == 0
-    assert result["events"] == [{"key": "pr-12", "kind": "pr", "pr": 12, "sha": shas[5], "tests": [_A]}]
+    assert result["events"] == [
+        {"key": "pr-12", "kind": "pr", "pr": 12, "sha": shas[5], "preceding": shas[2], "tests": [_A]},
+    ]
     stepped = set(env.stepped())
     assert shas[5] in stepped
     assert stepped <= {shas[0], *points}, "a commit that is not a merge point was tested"
@@ -435,7 +437,9 @@ def test_without_merge_points_every_commit_is_tested(env: Env, tmp_path: Path, r
     shas = env.repo(_LINEAR)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points={})
     assert rc == 0
-    assert result["events"] == [{"key": f"commit-{shas[4][:12]}", "kind": "commit", "sha": shas[4], "tests": [_A]}]
+    assert result["events"] == [
+        {"key": f"commit-{shas[4][:12]}", "kind": "commit", "sha": shas[4], "preceding": shas[3], "tests": [_A]},
+    ]
     assert set(env.stepped()) - {shas[0], shas[2], shas[5], shas[7]}, "no commit outside a PR merge was tested"
 
 
@@ -578,7 +582,7 @@ def test_a_test_that_fails_at_the_preceding_point_is_not_blamed_on_the_culprit(
     assert rc == 1
     assert result["events"] == [
         nb.event_for_range(shas[0], shas[2], [_B], nb.REASON_UNVERIFIED),
-        nb.event_for_culprit(shas[2], 32, [_A]),
+        nb.event_for_culprit(shas[2], 32, [_A], shas[1]),
     ]
 
 
@@ -686,7 +690,7 @@ def test_a_test_added_failing_is_blamed_on_the_merge_that_added_it(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], new_id,
                             points={shas[i]: 30 + i for i in range(1, 5)})
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[3], 33, [new_id])]
+    assert result["events"] == [nb.event_for_culprit(shas[3], 33, [new_id], shas[2])]
 
 
 def test_a_repeated_false_good_at_the_real_culprit_stays_undetected(
@@ -700,7 +704,7 @@ def test_a_repeated_false_good_at_the_real_culprit_stays_undetected(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A,
                             points={shas[i]: 30 + i for i in range(1, 8)})
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[4], 34, [_A])]
+    assert result["events"] == [nb.event_for_culprit(shas[4], 34, [_A], shas[3])]
 
 
 def test_a_status_of_one_with_no_test_named_blames_them_all(
@@ -711,7 +715,7 @@ def test_a_status_of_one_with_no_test_named_blames_them_all(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B,
                             points={shas[i]: 30 + i for i in range(1, 4)})
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[2], 32, [_A, _B])]
+    assert result["events"] == [nb.event_for_culprit(shas[2], 32, [_A, _B], shas[1])]
 
 
 def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -777,9 +781,9 @@ def test_tests_left_after_the_last_round_get_a_range(env: Env, tmp_path: Path, r
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], _A, _B, _C, _D, points=points)
     assert rc == 1
     assert result["events"] == [
-        nb.event_for_culprit(shas[1], 31, [_A]),
-        nb.event_for_culprit(shas[2], 32, [_B]),
-        nb.event_for_culprit(shas[3], 33, [_C]),
+        nb.event_for_culprit(shas[1], 31, [_A], shas[0]),
+        nb.event_for_culprit(shas[2], 32, [_B], shas[1]),
+        nb.event_for_culprit(shas[3], 33, [_C], shas[2]),
         nb.event_for_range(shas[3], shas[5], [_D], nb.REASON_ROUNDS),
     ]
     assert len(result["rounds"]) == nb.MAX_ROUNDS
@@ -790,7 +794,7 @@ def test_a_test_that_passes_at_bad_gets_a_range(env: Env, tmp_path: Path, run_bi
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[2], _A, _B, points={shas[1]: 31, shas[2]: 32})
     assert rc == 1
     assert result["events"] == [
-        nb.event_for_culprit(shas[2], 32, [_A]),
+        nb.event_for_culprit(shas[2], 32, [_A], shas[1]),
         nb.event_for_range(shas[2], shas[2], [_B], nb.REASON_PASSES_AT_BAD),
     ]
 
@@ -801,7 +805,7 @@ def test_bad_is_never_skipped_when_the_points_file_leaves_it_out(
     shas = env.repo(["", "", "", "", "", "", "", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points={shas[2]: 11, shas[5]: 12})
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[7], None, [_A])]
+    assert result["events"] == [nb.event_for_culprit(shas[7], None, [_A], shas[5])]
     # Commits 1, 3, 4 and 6, and never bad itself.
     assert result["rounds"][0]["skipped"] == 4
 
@@ -811,7 +815,7 @@ def test_adjacent_commits_run_only_the_checks(env: Env, tmp_path: Path, run_bise
     shas = env.repo(["", "a"])
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A])]
+    assert result["events"] == [nb.event_for_culprit(shas[1], 7, [_A], shas[0])]
     assert env.stepped() == [shas[1], shas[0], shas[1]]
 
 
@@ -822,7 +826,7 @@ def test_a_recheck_survives_a_dirty_tree(
     monkeypatch.setenv("FAKE_DIRTY", "check")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A])]
+    assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
 
 
 def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -1055,7 +1059,7 @@ def test_a_module_that_stops_importing_is_bisected_by_its_file(
     points: dict[str, int | None] = {shas[1]: 41, shas[3]: 42, shas[5]: 43}
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[5], module_id, points=points, step=False)
     assert rc == 0, result
-    assert result["events"] == [{"key": "pr-42", "kind": "pr", "pr": 42, "sha": shas[3], "tests": [module_id]}]
+    assert result["events"] == [nb.event_for_culprit(shas[3], 42, [module_id], shas[1])]
 
 
 def test_a_junit_id_is_bisected_like_its_node_id(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -1066,7 +1070,7 @@ def test_a_junit_id_is_bisected_like_its_node_id(env: Env, tmp_path: Path, run_b
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], junit,
                             points={shas[1]: 21, shas[2]: 22, shas[3]: 23}, step=False)
     assert rc == 0, result
-    assert result["events"] == [{"key": "pr-22", "kind": "pr", "pr": 22, "sha": shas[2], "tests": [junit]}]
+    assert result["events"] == [nb.event_for_culprit(shas[2], 22, [junit], shas[1])]
 
 
 def test_ids_that_name_no_file_get_a_range_without_a_step(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -1185,9 +1189,9 @@ def test_the_bisect_reads_the_canarys_real_triage(env: Env, tmp_path: Path) -> N
     result = json.loads(out.read_text(encoding="utf-8"))
     assert rc == 1, result
     assert result["events"] == [
-        nb.event_for_culprit(shas[2], 32, ["tests.test_x::test_a"]),
-        nb.event_for_culprit(shas[3], 33, ["::tests.test_y"]),
-        nb.event_for_culprit(shas[4], 34, ["tests.test_x::test_b"]),
+        nb.event_for_culprit(shas[2], 32, ["tests.test_x::test_a"], shas[1]),
+        nb.event_for_culprit(shas[3], 33, ["::tests.test_y"], shas[2]),
+        nb.event_for_culprit(shas[4], 34, ["tests.test_x::test_b"], shas[3]),
         nb.event_for_range(shas[0], shas[5], ["tests.test_gone::test_a"], nb.REASON_UNMAPPED),
     ]
 
@@ -1278,7 +1282,6 @@ def test_merge_points_keeps_merges_in_the_range_and_bad(env: Env, tmp_path: Path
         {"number": 11, "mergeCommit": {"oid": shas[2]}, "title": "t", "url": "u"},
         {"number": 9, "mergeCommit": {"oid": shas[0]}, "title": "before the range", "url": "u"},
         {"number": 99, "mergeCommit": {"oid": "f" * 40}, "title": "elsewhere", "url": "u"},
-        {"number": 100, "mergeCommit": None, "title": "no merge commit", "url": "u"},
     ])
     out = tmp_path / "points.json"
     assert _merge_points(tmp_path / "repo", shas[0], shas[6], out, "--repo", "o/r") == 0
@@ -1346,6 +1349,21 @@ def test_merge_points_at_the_list_limit_means_every_commit(
     points = json.loads(out.read_text(encoding="utf-8"))
     assert points == ({shas[5]: 12, shas[7]: None} if kept else {})
     assert ("::warning::" in capsys.readouterr().err) is not kept
+
+
+@pytest.mark.parametrize("merge", [None, {}, {"oid": ""}, "abc"], ids=["null", "no-oid", "empty-oid", "not-an-object"])
+def test_a_pr_with_no_merge_commit_means_every_commit(
+    env: Env, tmp_path: Path, capsys: pytest.CaptureFixture[str], merge: Any,
+) -> None:
+    """The real culprit's PR had a null `mergeCommit`, and one other PR in
+    range was enough to accept the list, so the blame moved to the next PR."""
+    shas = env.repo(_LINEAR)
+    _write(env.gh_out, [{"number": 12, "mergeCommit": merge},
+                        {"number": 13, "mergeCommit": {"oid": shas[7]}}])
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+    assert "PR 12 has no merge commit" in capsys.readouterr().err
 
 
 def test_merge_points_ignores_output_from_a_failed_gh(

@@ -28,10 +28,16 @@ commit of a PR merged since the day before `--good` was committed, as
 `gh pr list --state merged` reports them. `--bad` is always kept. The
 output maps each kept commit to its PR number, or to null for `--bad`
 when no PR merged it, in history order. When the `gh` call fails, returns
-as many PRs as its `--limit` (the list may be cut short), or names no merge
+as many PRs as its `--limit` (the list may be cut short), lists a PR with no
+merge commit (the commit it merged cannot be told apart), or names no merge
 in the range, the output is `{}` with a warning, and `run` then tests every
 commit. `run` reads a points file with no PR in the range the same way,
 since blaming `--bad` would test nothing.
+
+A commit that no listed PR merged, a direct push for one, cannot always be
+detected: it is skipped, and its break reads as the next merge point's. So
+every culprit event also names `preceding`, the merge point it was checked
+against, and an issue can say the test broke between the two.
 
 The run needs one chain of commits, which main is: its last 710 first-parent
 commits held no merge commit on 2026-11-04. The check on "the merge point
@@ -377,12 +383,16 @@ def failing_ids(junit_text: str, ids: Iterable[str]) -> list[str]:
 def select_points(order: Sequence[str], prs: Iterable[dict[str, Any]], bad: str) -> dict[str, int | None]:
     """Commit to PR number for each commit of `order` that a PR merged,
     plus `bad`, in history order. Empty when no PR merged one of them: the
-    list says nothing about the range, so `bad` alone would be a false claim."""
+    list says nothing about the range, so `bad` alone would be a false claim.
+    Raises ValueError for a PR with no merge commit: a point could be missing,
+    and a missing point shifts the blame to the next one."""
     by_oid: dict[str, int] = {}
     for pr in prs:
         merge = pr.get("mergeCommit")
-        if isinstance(merge, dict) and cast(dict[str, Any], merge).get("oid"):
-            by_oid[str(cast(dict[str, Any], merge)["oid"])] = int(pr["number"])
+        oid = cast(dict[str, Any], merge).get("oid") if isinstance(merge, dict) else None
+        if not oid:
+            raise ValueError(f"PR {pr.get('number')} has no merge commit in gh pr list")
+        by_oid[str(oid)] = int(pr["number"])
     if not any(sha in by_oid for sha in order):
         return {}
     return {sha: by_oid.get(sha) for sha in order if sha in by_oid or sha == bad}
@@ -463,10 +473,10 @@ def read_outcome(
     return Outcome(culprit=None, good=newest_good, bad=bad_ref)
 
 
-def event_for_culprit(sha: str, pr: int | None, tests: list[str]) -> dict[str, Any]:
+def event_for_culprit(sha: str, pr: int | None, tests: list[str], preceding: str) -> dict[str, Any]:
     if pr is not None:
-        return {"key": f"pr-{pr}", "kind": "pr", "pr": pr, "sha": sha, "tests": tests}
-    return {"key": f"commit-{sha[:12]}", "kind": "commit", "sha": sha, "tests": tests}
+        return {"key": f"pr-{pr}", "kind": "pr", "pr": pr, "sha": sha, "preceding": preceding, "tests": tests}
+    return {"key": f"commit-{sha[:12]}", "kind": "commit", "sha": sha, "preceding": preceding, "tests": tests}
 
 
 def event_for_range(good: str, bad: str, tests: list[str], reason: str) -> dict[str, Any]:
@@ -957,7 +967,7 @@ class Bisector:
                 return
             blamed, remaining = attributed
             if blamed:
-                self._event(event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), blamed))
+                self._event(event_for_culprit(outcome.culprit, self.points.get(outcome.culprit), blamed, outcome.good))
             lo = outcome.culprit
         if remaining:
             self._event(event_for_range(lo, self.bad, remaining, REASON_ROUNDS))
