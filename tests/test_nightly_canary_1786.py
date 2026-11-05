@@ -2092,17 +2092,50 @@ def test_a_retired_legs_entry_exits_0_with_one_notice_each_night(
     assert _last_green(tmp_path)["legs"]["3.11"] == retired
 
 
-def test_a_leg_tonight_names_is_checked_even_when_it_is_extra(
+def test_an_extra_legs_off_main_entry_is_a_notice_and_never_the_exit_status(
     tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Extra legs are report-only by operator ruling, so a red 3.14 must not fail the job."""
     repo, (c0, _, _), side = main_repo
     branch = tmp_path / "branch"
     branch.mkdir()
     entry = {"sha": side, "path": "runs/gone", "run_id": 1, "attempt": 1}
     (branch / "last-green.json").write_text(json.dumps({"canary": None, "legs": {"3.14": entry}}), encoding="utf-8")
-    assert _publish(tmp_path, repo, _with_extra(c0, 2, tor.FAILED, 2), None) == 1
+    assert _publish(tmp_path, repo, _with_extra(c0, 2, tor.FAILED, 2), None) == 0
     out = capsys.readouterr().out
-    assert "leg 3.14: names runs/gone" in out and f"leg 3.14: names {side[:12]}" in out
+    assert f"::notice::last green leg 3.14: names {side[:12]}, which is not on main" in out
+    assert "::notice::last green leg 3.14: names runs/gone, which holds no record" in out
+    assert "::error::" not in out
+    assert _last_green(tmp_path)["legs"]["3.14"] == entry
+
+
+def test_a_green_extra_leg_refused_a_move_is_a_notice_too(
+    main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Its entry is at a newer run off main, and the canary legs move as usual."""
+    old = {"canary": None, "legs": {"3.14": {"sha": SHA1, "path": "runs/a", "run_id": 50, "attempt": 1}}}
+    new, notes, problems = nc.next_last_green(old, _with_extra(SHA2, 2, tor.PASSED, 2), lambda a, b: True,
+                                              lambda sha: sha == SHA2)
+    assert new["legs"]["3.14"]["run_id"] == 50 and new["canary"]["sha"] == SHA2
+    assert problems == []
+    assert any(n.startswith("::notice::last green leg 3.14: refused") for n in notes)
+
+
+def test_a_canary_leg_refused_a_move_stays_a_problem() -> None:
+    old = {"canary": None, "legs": {"3.13": {"sha": SHA1, "path": "runs/a", "run_id": 50, "attempt": 1}}}
+    _, _, problems = nc.next_last_green(old, _green(SHA2, 2), lambda a, b: True, lambda sha: sha == SHA2)
+    assert any(p.startswith("leg 3.13: refused") for p in problems)
+
+
+def test_problems_are_sorted_by_the_role_they_are_asked_for() -> None:
+    entry = {"sha": SHA1, "path": "runs/a", "run_id": 1}
+    green = {"canary": entry, "legs": {"3.12": entry, "3.14": entry}}
+    roles = {"3.12": nc.CANARY, "3.14": nc.EXTRA}
+    assert [p.split(":")[0] for p in nc.off_main_pointers(green, lambda sha: False, roles)] == ["canary", "leg 3.12"]
+    assert [p.split(":")[0] for p in nc.off_main_pointers(green, lambda sha: False, roles, nc.EXTRA)] == ["leg 3.14"]
+    gone = (None, "which holds no record")
+    assert [p.split(":")[0] for p in nc.record_problems(green, lambda p: gone, roles)] == ["canary", "leg 3.12"]
+    assert [p.split(":")[0] for p in nc.record_problems(green, lambda p: gone, roles, nc.EXTRA)] == ["leg 3.14"]
 
 
 @pytest.mark.parametrize(("answer", "says"), [(False, "is not on main"), (None, "could not be checked against main")],

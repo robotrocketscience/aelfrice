@@ -194,7 +194,8 @@ night moves it. `regressions` reads such a record as no baseline. Exit 1 comes
 after the writes, so the workflow can commit the night's record before it
 fails the job. A `legs` entry for a leg the night's record does not name, such
 as a retired Python, is not checked and gets one `::notice::`; no night would
-ever move it, so exit 1 would never clear.
+ever move it, so exit 1 would never clear. Extra legs are report-only: a problem
+with an extra leg's entry prints as a `::notice::` and never sets the exit status.
 
 What this does not catch, by design. A passing test that later skips or is
 deleted produces no event; the outcome ratchet in `test_outcome_record.py`
@@ -971,23 +972,29 @@ def _moved(
     return old
 
 
-def _live_entries(green: dict[str, Any], roles: dict[str, str]) -> list[tuple[str, str | None, dict[str, Any]]]:
-    """The set entries of `last-green.json` that tonight can move: `canary`,
-    and each leg the night's record names. Each as (label, leg, entry)."""
+def _live_entries(
+    green: dict[str, Any], roles: dict[str, str], role: str,
+) -> list[tuple[str, str | None, dict[str, Any]]]:
+    """The set entries of `last-green.json` that tonight can move, for one role:
+    each leg of that role, and `canary` with the canary role. Each as
+    (label, leg, entry). A leg the night's record does not name has no role."""
     canary = green.get("canary")
-    entries: list[tuple[str, str | None, dict[str, Any]]] = [] if canary is None else [("canary", None, canary)]
-    entries.extend((f"leg {leg}", leg, p) for leg, p in sorted(green.get("legs", {}).items()) if leg in roles)
+    entries: list[tuple[str, str | None, dict[str, Any]]] = []
+    if role == CANARY and canary is not None:
+        entries.append(("canary", None, canary))
+    entries.extend((f"leg {leg}", leg, p) for leg, p in sorted(green.get("legs", {}).items()) if roles.get(leg) == role)
     return entries
 
 
 def record_problems(
     green: dict[str, Any], load: Callable[[str], tuple[dict[str, Any] | None, str | None]], roles: dict[str, str],
+    role: str = CANARY,
 ) -> list[str]:
     """A problem per live entry of `last-green.json` whose record does not back
     it: `load` gives a run directory's record, or None and why not. A leg entry
     needs that leg green there, and the `canary` entry needs a green night."""
     problems: list[str] = []
-    for what, leg, pointer in _live_entries(green, roles):
+    for what, leg, pointer in _live_entries(green, roles, role):
         path = str(pointer["path"])
         record, why = load(path)
         if record is None:
@@ -1001,11 +1008,11 @@ def record_problems(
 
 
 def off_main_pointers(
-    green: dict[str, Any], on_main: Callable[[str], bool | None], roles: dict[str, str],
+    green: dict[str, Any], on_main: Callable[[str], bool | None], roles: dict[str, str], role: str = CANARY,
 ) -> list[str]:
     """A problem per live entry of `last-green.json` whose commit is not on main."""
     problems: list[str] = []
-    for what, _, pointer in _live_entries(green, roles):
+    for what, _, pointer in _live_entries(green, roles, role):
         answer = on_main(str(pointer["sha"]))
         if answer is not True:
             why = "is not on main" if answer is False else "could not be checked against main"
@@ -1038,22 +1045,26 @@ def next_last_green(
     problems: list[str] = []
     canary = old.get("canary")
     legs: dict[str, Any] = dict(old.get("legs") or {})
+    roles: dict[str, str] = nightly["roles"]
+    report_only: list[str] = []
     if nightly["verdict"] == GREEN and superseded:
         notes.append(f"last green: nothing moved, since a newer run of {pointer['sha'][:12]} came after this one")
     elif nightly["verdict"] == GREEN:
         canary = _moved(canary, pointer, is_ancestor, on_main, "canary", notes, problems)
         for leg, status in sorted(nightly["status"].items()):
             if status == GREEN:
-                moved = _moved(legs.get(leg), pointer, is_ancestor, on_main, f"leg {leg}", notes, problems)
+                sink = report_only if roles.get(leg) == EXTRA else problems
+                moved = _moved(legs.get(leg), pointer, is_ancestor, on_main, f"leg {leg}", notes, sink)
                 if moved is not None:
                     legs[leg] = moved
     new_green = {"canary": canary, "legs": dict(sorted(legs.items()))}
-    roles: dict[str, str] = nightly["roles"]
     notes.extend(
         f"::notice::last green leg {leg}: no such leg tonight, so its entry is not checked"
         for leg in sorted(legs) if leg not in roles
     )
     problems.extend(off_main_pointers(new_green, on_main, roles))
+    report_only.extend(off_main_pointers(new_green, on_main, roles, EXTRA))
+    notes.extend(f"::notice::last green {problem}" for problem in report_only)
     return new_green, notes, problems
 
 
@@ -1492,6 +1503,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     if green_readable:
         pointer_problems.extend(record_problems(new_green, load, record["nightly"]["roles"]))
+        notes.extend(f"::notice::last green {problem}" for problem in record_problems(new_green, load, record["nightly"]["roles"], EXTRA))
     problems.extend(f"last green {problem}" for problem in pointer_problems)
     for note in notes:
         print(note)
