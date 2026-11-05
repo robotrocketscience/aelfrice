@@ -6,11 +6,12 @@ Covers:
 - Different slots entirely → no flag
 - Empty locked set → no flag
 - Multiple locked beliefs, first match wins
-- Latency budget (≤5 ms p95 for 10 hits × 5 locked; budget is 2 ms per
-  spec but relaxed to 5 ms to accommodate slower CI hardware)
+- Latency budget (median of 100 rounds of 10 hits × 5 locked ≤ 5 ms; budget
+  is 2 ms per spec but relaxed to 5 ms to accommodate slower CI hardware)
 """
 from __future__ import annotations
 
+import statistics
 import time
 
 from aelfrice.contradiction import _slot_conflict, _slot_conflict_preextracted
@@ -156,7 +157,16 @@ _LATENCY_THRESHOLD_MS = 5.0  # relaxed from spec's 2 ms for CI tolerance
 
 
 def test_latency_budget() -> None:
-    """p95 of _slot_conflict_preextracted over 10 hits × 5 locked ≤ 5 ms."""
+    """Median round of _slot_conflict_preextracted over 10 hits × 5 locked ≤ 5 ms.
+
+    The median, because a busy host preempts a minority of rounds: under 44
+    busy-loop processes the p95 reached 28 ms while the median stayed under
+    0.3 ms, and it stayed there at 88 (#1853). A slowdown of over 5 ms on half or
+    more of the rounds moves the median past the budget. A slowdown on fewer
+    stays uncaught: 50 ms every 100th call, 10 ms every 50th call and a gc pass
+    every 100th call all pass. 10 ms every 20th call lands on exactly half the
+    rounds, so it fails only just.
+    """
     # Build 5 locked beliefs with distinct numeric slots
     locked_beliefs = [
         _mk(f"locked_{i}", f"param_{i} = {float(i + 1)} baseline",
@@ -181,11 +191,9 @@ def test_latency_budget() -> None:
         t1 = time.perf_counter_ns()
         elapsed_ms_list.append((t1 - t0) / 1_000_000)
 
-    elapsed_ms_list.sort()
-    p95_idx = int(len(elapsed_ms_list) * 0.95)
-    p95_ms = elapsed_ms_list[p95_idx]
+    median_ms = statistics.median(elapsed_ms_list)
 
-    assert p95_ms <= _LATENCY_THRESHOLD_MS, (
-        f"p95 latency {p95_ms:.3f} ms exceeded threshold "
-        f"{_LATENCY_THRESHOLD_MS} ms (10 hits × 5 locked)"
+    assert median_ms <= _LATENCY_THRESHOLD_MS, (
+        f"median of {ITERATIONS} rounds took {median_ms:.3f} ms, over the "
+        f"{_LATENCY_THRESHOLD_MS} ms threshold (10 hits × 5 locked)"
     )
