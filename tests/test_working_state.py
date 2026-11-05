@@ -227,3 +227,34 @@ class TestLatency:
         ws = project_working_state(tmp_repo, recent_turns=[])
         assert expired == []
         assert ws.branch == "main"
+
+    def test_every_git_call_carries_the_timeout(
+        self, tmp_repo: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing timeout costs nothing until git hangs, so no clock sees it.
+        Read the argument instead, with and without a session in the turns. The
+        literal states the module's hard 1.5s, so raising it fails here too. The
+        process counts are upper bounds, so merging two calls passes and adding
+        one fails.
+        """
+        real_run = subprocess.run
+        subcommands = {"rev-parse", "status", "log"}
+        seen: list[tuple[str, object]] = []
+
+        def recording_run(cmd: list[str], **kwargs: object) -> object:
+            subcommand = next((a for a in cmd[1:] if a in subcommands), " ".join(cmd))
+            seen.append((subcommand, kwargs.get("timeout")))
+            return real_run(cmd, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(subprocess, "run", recording_run)
+        session = [
+            RecentTurn(role="user", text="q", session_id="s1", ts="2026-01-01T00:00:00Z"),
+        ]
+        for turns, max_processes in (([], 3), (session, 4)):
+            seen.clear()
+            project_working_state(tmp_repo, recent_turns=turns)
+            assert seen
+            assert len(seen) <= max_processes
+            for subcommand, timeout in seen:
+                assert subcommand in subcommands
+                assert timeout == 1.5
