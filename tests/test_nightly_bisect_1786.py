@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -51,7 +52,9 @@ _D = "tests/test_x.py::test_d"
 # on, FAKE_ABORT_CHECK exits 255 in the check phase (given a sha, at that
 # commit only), FAKE_NO_FAILED leaves
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
-# phase, and FAKE_HANG=<seconds> sleeps first, with a child that sleeps too.
+# phase, FAKE_HANG=<seconds> sleeps first, with a child that sleeps too, and
+# FAKE_READONLY=<path> leaves in the check phase a read-only folder and a
+# symbolic link to that path.
 _FAKE_STEP = '''\
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
@@ -109,6 +112,11 @@ if args.absent_out:
 if os.environ.get("FAKE_DIRTY") == phase:
     with open("state.txt", "a", encoding="utf-8") as fh:
         fh.write("dirty=1\\n")
+if os.environ.get("FAKE_READONLY") and phase == "check" and not Path("link").is_symlink():
+    Path("link").symlink_to(os.environ["FAKE_READONLY"])
+    Path("locked").mkdir()
+    Path("locked/file.txt").write_text("x", encoding="utf-8")
+    Path("locked").chmod(0o555)
 sys.exit(1 if failing else 0)
 '''
 
@@ -223,6 +231,7 @@ class Env:
         self.gh_out = root / "gh.json"
         self.pids_file = root / "pids.txt"
         self.env_log = root / "env.log"
+        self.tmp = root / "tmp"
         self.fake_step = _executable(root / "fake_step.py", _FAKE_STEP)
 
     def repo(self, bad_tests: list[str], edits: tuple[_Edit, ...] = ()) -> list[str]:
@@ -245,6 +254,10 @@ class Env:
         if not self.step_log.is_file():
             return []
         return [row.split()[0] for row in self.step_log.read_text(encoding="utf-8").splitlines()]
+
+    def folders(self) -> list[Path]:
+        """The folders `run` made and has not removed."""
+        return sorted(self.tmp.glob("nightly-bisect-*"))
 
     def pids(self) -> list[int]:
         """The processes the hanging fakes started and named."""
@@ -275,6 +288,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     home.mkdir()
     e = Env(tmp_path, tmp_path_factory, _built)
     e.bin.mkdir()
+    e.tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(e.tmp))
+    monkeypatch.setenv("TMPDIR", str(e.tmp))
     _executable(e.bin / "gh", _FAKE_GH)
     _executable(e.bin / "uv", _FAKE_UV)
     monkeypatch.setenv("HOME", str(home))
@@ -290,7 +306,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -375,7 +391,8 @@ Runner = Callable[..., tuple[int, dict[str, Any]]]
 
 @pytest.fixture
 def run_bisect(env: Env, tmp_path: Path) -> Runner:
-    """`run` in-process; returns its exit status and result file."""
+    """`run` in-process; returns its exit status and result file. Every run
+    removes the folder it made."""
 
     def run(repo: Path, good: str, bad: str, *ids: str, points: dict[str, int | None] | None = None,
             extra: tuple[str, ...] = (), step: bool = True) -> tuple[int, dict[str, Any]]:
@@ -386,7 +403,9 @@ def run_bisect(env: Env, tmp_path: Path) -> Runner:
             argv += ["--points", str(_write(tmp_path / "points.json", points))]
         if step:
             argv += ["--step-cmd", env.step_cmd]
+        before = env.folders()
         rc = nb.main([*argv, *extra])
+        assert env.folders() == before, "the run left its folder"
         return rc, json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
 
     return run
@@ -481,7 +500,7 @@ def test_a_range_that_is_not_one_chain_tests_nothing_and_gets_a_range(
     assert (result["events"][0]["good"], result["events"][0]["bad"]) == (shas[1], merge)
     assert result["complete"] is True
     assert env.stepped() == []
-    assert not (repo / ".bisect").exists()
+    assert _git(repo, "worktree", "list").stdout.count("\n") == 1
 
 
 def test_a_dry_run_of_a_range_that_is_not_one_chain_says_so(
@@ -971,10 +990,7 @@ def test_an_earlier_result_is_replaced_before_any_work(
     shas = env.repo(["", "a"])
     _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
 
-    def dies(*_: Any) -> None:
-        raise RuntimeError("died before the worktree")
-
-    monkeypatch.setattr(nb, "_prepare_worktree", dies)
+    _fail_git(monkeypatch, "worktree", "add")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})
     assert rc == 2
     assert (result["complete"], result["good"]) == (False, shas[0])
@@ -985,14 +1001,15 @@ def test_the_result_is_false_while_the_worktree_is_prepared(
 ) -> None:
     shas = env.repo(["", "a"])
     _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
-    real = nb._prepare_worktree
+    real = nb.Git.run
     seen: list[dict[str, Any]] = []
 
-    def spy(*args: Any) -> None:
-        seen.append(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
-        real(*args)
+    def spy(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("worktree", "add"):
+            seen.append(json.loads((tmp_path / "result.json").read_text(encoding="utf-8")))
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(nb, "_prepare_worktree", spy)
+    monkeypatch.setattr(nb.Git, "run", spy)
     assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
     assert (seen[0]["complete"], seen[0]["good"]) == (False, shas[0])
 
@@ -1008,7 +1025,7 @@ def test_an_out_path_that_cannot_be_written_stops_before_any_work(
                   "--step-cmd", env.step_cmd])
     assert rc == 2
     assert env.stepped() == []
-    assert not (tmp_path / "repo" / ".bisect").exists()
+    assert env.folders() == []
     if target == "a-folder":
         assert [p.name for p in tmp_path.parent.iterdir() if p.name.startswith(f".{tmp_path.name}.")] == []
 
@@ -1116,16 +1133,130 @@ def test_a_recheck_survives_a_dirty_tree(
     assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
 
 
-def test_the_bisect_is_reset_after_the_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def _repo_state(repo: Path) -> dict[str, str]:
+    """What a run has to leave as it was in the repository it was pointed at."""
+    return {command: _git(repo, *command.split()).stdout for command in (
+        "rev-parse HEAD", "symbolic-ref HEAD", "status --porcelain", "ls-files -s", "for-each-ref",
+        "worktree list --porcelain",
+    )}
+
+
+def _a_checkout_with_work(repo: Path) -> None:
+    """A modified file and a staged one, which a checkout there would lose."""
+    (repo / "tests" / "test_x.py").write_text("# edited\n", encoding="utf-8")
+    (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+    assert _git(repo, "add", "staged.txt").returncode == 0
+
+
+def test_the_run_leaves_the_repository_as_it_found_it(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     shas = env.repo(["", "", "a", "a"])
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A,
-                            points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
+    repo = tmp_path / "repo"
+    _a_checkout_with_work(repo)
+    before = _repo_state(repo)
+    real = nb.Bisector.bisect
+    worktrees: list[Path] = []
+
+    def spy(self: nb.Bisector, good: str, tests: list[str]) -> None:
+        worktrees.append(self.worktree)
+        real(self, good, tests)
+
+    monkeypatch.setattr(nb.Bisector, "bisect", spy)
+    rc, result = run_bisect(repo, shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})
     assert rc == 0
     assert result["rounds"][0]["log"], "the round kept no bisect log"
-    worktree = tmp_path / "repo" / ".bisect"
-    assert worktree.is_dir()
-    log = _git(worktree, "bisect", "log")
-    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+    assert _repo_state(repo) == before
+    assert worktrees[0].parent.parent == env.tmp
+    assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == "# edited\n"
+
+
+def test_two_runs_on_one_repository_each_get_their_own_folder(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "a"])
+    real = nb._remove_folder
+    folders: list[Path] = []
+
+    def spy(git: nb.Git, folder: Path) -> None:
+        folders.append(folder)
+        real(git, folder)
+
+    monkeypatch.setattr(nb, "_remove_folder", spy)
+    for _ in range(2):
+        assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert len(set(folders)) == 2
+    assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
+
+
+def test_a_run_touches_no_other_folder_and_prunes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """`.bisect` was deleted even when tracked, and `git worktree prune` took
+    the registration of a worktree someone moved."""
+    shas = env.repo(["", "a"], edits=((0, ".bisect/tracked.txt", "tracked\n"),))
+    repo, other = tmp_path / "repo", tmp_path / "other"
+    (repo / ".nightly-bisect-worktree").write_text("not this script's\n", encoding="utf-8")
+    assert _git(repo, "worktree", "add", "-q", "--detach", str(other), shas[0]).returncode == 0
+    other.rename(tmp_path / "moved")
+    before = _repo_state(repo)
+    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert _repo_state(repo) == before
+    assert (repo / ".bisect" / "tracked.txt").is_file()
+    assert (repo / ".nightly-bisect-worktree").is_file()
+    assert (tmp_path / "moved" / "state.txt").is_file()
+
+
+def test_a_worktree_git_cannot_remove_goes_by_its_path(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(["", "a"])
+    _fail_git(monkeypatch, "worktree", "remove")
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert "::warning::removing" in capsys.readouterr().err
+    assert env.folders() == []
+
+
+def test_a_read_only_folder_goes_and_a_link_is_not_followed(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only folder stops `git worktree remove`; `chmod -R` runs next,
+    and what a symbolic link names is not this run's to change."""
+    shas = env.repo(["", "a"])
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("keep\n", encoding="utf-8")
+    victim.chmod(0o500)
+    monkeypatch.setenv("FAKE_READONLY", str(victim))
+    try:
+        assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+        assert (victim / "keep.txt").is_file()
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o500
+    finally:
+        victim.chmod(0o700)
+
+
+def test_a_folder_that_cannot_be_removed_is_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(nb.shutil, "rmtree", lambda *_, **__: None)
+    nb._remove_folder(nb.Git(tmp_path), tmp_path)
+    assert f"::warning::{tmp_path} could not be removed" in capsys.readouterr().err
+
+
+def test_a_signal_cannot_stop_the_removal(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "a"])
+    real = nb._remove_folder
+    during: list[Any] = []
+
+    def spy(git: nb.Git, folder: Path) -> None:
+        during.append((signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)))
+        real(git, folder)
+
+    monkeypatch.setattr(nb, "_remove_folder", spy)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert during == [(signal.SIG_IGN, signal.SIG_IGN)]
 
 
 def test_a_dirty_tree_does_not_stop_the_reset(
@@ -1138,8 +1269,6 @@ def test_a_dirty_tree_does_not_stop_the_reset(
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
     assert result["reset_errors"] == []
-    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
-    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
 
 
 def _fail_git(monkeypatch: pytest.MonkeyPatch, *prefix: str) -> None:
@@ -1187,158 +1316,28 @@ def test_a_reset_that_times_out_is_reported_and_the_result_kept(
     assert result["complete"] is True
 
 
-def test_the_bisect_is_reset_when_the_round_raises(
+def test_the_folder_goes_when_the_round_raises(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(_LINEAR)
     _fail_git(monkeypatch, "rev-parse", "--verify", "refs/bisect/bad")
     rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 2
-    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
-    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+    assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
-@pytest.mark.parametrize("worktree", [None, "elsewhere"])
-def test_a_relative_repo_root_works(
-    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worktree: str | None,
-) -> None:
-    """A relative root exited 2 and left `repo/repo/.bisect` behind."""
+def test_a_relative_repo_root_works(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A relative root exited 2 and left `repo/repo/` behind."""
     shas = env.repo(["", "a"])
     monkeypatch.chdir(tmp_path)
     ids = _tests_file(tmp_path / "ids.txt", _A)
-    extra = ["--worktree", worktree] if worktree else []
     rc = nb.main(["run", "--repo-root", "repo", "--good", shas[0], "--bad", shas[1], "--tests", str(ids),
-                  "--out", "result.json", "--step-cmd", env.step_cmd, *extra])
+                  "--out", "result.json", "--step-cmd", env.step_cmd])
     assert rc == 0
     assert not (tmp_path / "repo" / "repo").exists()
-    assert (tmp_path / (worktree or "repo/.bisect")).is_dir()
     points = nb.main(["merge-points", "--repo-root", "repo", "--good", shas[0], "--bad", shas[1],
                       "--out", "points.json", "--dry-run"])
     assert points == 0
-
-
-@pytest.mark.parametrize("leftover", ["folder-deleted", "dotgit-removed", "unregistered"])
-def test_a_later_run_recovers_from_what_a_run_left(
-    env: Env, tmp_path: Path, run_bisect: Runner, leftover: str,
-) -> None:
-    shas = env.repo(["", "", "a", "a"])
-    points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
-    assert run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)[0] == 0
-    worktree = tmp_path / "repo" / ".bisect"
-    if leftover == "folder-deleted":
-        shutil.rmtree(worktree)
-    elif leftover == "dotgit-removed":
-        (worktree / ".git").unlink()
-    else:
-        (worktree / ".git").unlink()
-        assert _git(tmp_path / "repo", "worktree", "prune").returncode == 0
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)
-    assert rc == 0
-    assert [e["key"] for e in result["events"]] == ["pr-22"]
-
-
-def test_a_folder_that_is_not_a_worktree_is_left_alone(env: Env, tmp_path: Path) -> None:
-    shas = env.repo(["", "a"])
-    mine = tmp_path / "mine"
-    mine.mkdir()
-    (mine / "keep.txt").write_text("keep", encoding="utf-8")
-    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
-                  "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(tmp_path / "r.json"),
-                  "--step-cmd", env.step_cmd, "--worktree", str(mine)])
-    assert rc == 2
-    assert (mine / "keep.txt").is_file()
-    assert env.stepped() == []
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_the_repository_root_is_refused_as_a_worktree(
-    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
-) -> None:
-    """`--worktree REPO_ROOT` removed the checkout, `.git` included."""
-    shas = env.repo(["", "a"])
-    repo = tmp_path / "repo"
-    extra = ("--worktree", str(repo), *(("--dry-run",) if dry_run else ()))
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
-    assert (repo / ".git").is_dir()
-    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == shas[1]
-    assert env.stepped() == []
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_another_worktree_is_refused_with_its_work_intact(
-    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
-) -> None:
-    """`--worktree` naming a registered worktree removed its uncommitted work."""
-    shas = env.repo(["", "a"])
-    repo, other = tmp_path / "repo", tmp_path / "other"
-    assert _git(repo, "worktree", "add", "-q", "--detach", str(other), shas[0]).returncode == 0
-    work = other / "UNCOMMITTED.txt"
-    work.write_text("work", encoding="utf-8")
-    extra = ("--worktree", str(other), *(("--dry-run",) if dry_run else ()))
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
-    assert work.read_text(encoding="utf-8") == "work"
-    assert env.stepped() == []
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_a_symbolic_link_at_the_default_worktree_is_refused(
-    env: Env, tmp_path: Path, run_bisect: Runner, dry_run: bool,
-) -> None:
-    shas = env.repo(["", "a"])
-    repo, target = tmp_path / "repo", tmp_path / "target"
-    target.mkdir()
-    (target / "keep.txt").write_text("keep", encoding="utf-8")
-    (repo / ".bisect").symlink_to(target)
-    extra = ("--dry-run",) if dry_run else ()
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 2
-    assert (target / "keep.txt").is_file()
-
-
-def test_a_worktree_this_script_created_elsewhere_is_replaced(
-    env: Env, tmp_path: Path, run_bisect: Runner,
-) -> None:
-    """An empty folder is used, and the marker a run writes there lets the next run replace it."""
-    shas = env.repo(["", "a"])
-    repo, mine = tmp_path / "repo", tmp_path / "mine"
-    mine.mkdir()
-    extra = ("--worktree", str(mine))
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 0
-    assert (mine / nb._WORKTREE_MARKER).is_file()
-    leftover = mine / "left-by-a-test.txt"
-    leftover.write_text("x", encoding="utf-8")
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7}, extra=extra)[0] == 0
-    assert not leftover.exists()
-    assert (mine / nb._WORKTREE_MARKER).is_file()
-
-
-def test_the_default_worktree_gets_no_marker(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
-    """An untracked file there would fail a test that reads `git status`."""
-    shas = env.repo(["", "a"])
-    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert not (tmp_path / "repo" / ".bisect" / nb._WORKTREE_MARKER).exists()
-
-
-def test_a_read_only_folder_a_test_left_does_not_stop_the_next_run(
-    env: Env, tmp_path: Path, run_bisect: Runner,
-) -> None:
-    shas = env.repo(["", "a"])
-    repo = tmp_path / "repo"
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    locked = repo / ".bisect" / "locked"
-    locked.mkdir()
-    (locked / "file.txt").write_text("x", encoding="utf-8")
-    locked.chmod(0o555)
-    assert run_bisect(repo, shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert not locked.exists()
-
-
-def test_a_second_run_replaces_the_worktree(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
-    shas = env.repo(["", "", "a", "a"])
-    points: dict[str, int | None] = {shas[1]: 21, shas[2]: 22, shas[3]: 23}
-    assert run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)[0] == 0
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points=points)
-    assert rc == 0
-    assert [e["key"] for e in result["events"]] == ["pr-22"]
 
 
 def test_python_and_extras_reach_the_step(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
@@ -1481,18 +1480,13 @@ def test_an_outside_git_dir_does_not_redirect_the_script(
     assert _merge_points(tmp_path / "repo", shas[0], shas[7], out, "--dry-run") == 0
 
 
-def test_the_default_worktree_is_ignored() -> None:
-    """A real run showed `?? .bisect/` in the checkout."""
-    assert _git(_REPO, "check-ignore", "-q", ".bisect/").returncode == 0
-
-
 def test_dry_run_changes_nothing(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(_LINEAR)
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
                             extra=("--dry-run",))
     assert (rc, result) == (0, {})
     assert env.stepped() == []
-    assert not (tmp_path / "repo" / ".bisect").exists()
+    assert env.folders() == []
     assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
@@ -1647,7 +1641,7 @@ def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(env: Env, tmp_
     result = json.loads(out.read_text(encoding="utf-8"))
     assert (result["events"], result["tests"], result["complete"]) == ([], [], True)
     assert env.stepped() == []
-    assert not (tmp_path / "repo" / ".bisect").exists()
+    assert env.folders() == []
 
 
 def test_tests_given_a_triage_exits_2(env: Env, tmp_path: Path) -> None:
@@ -2184,10 +2178,10 @@ def _wait_for(condition: Callable[[], Any], what: str) -> None:
 
 
 @pytest.mark.parametrize("signum", [15, 2], ids=["SIGTERM", "SIGINT"])
-def test_a_signal_ends_the_children_resets_and_saves(
+def test_a_signal_ends_the_children_removes_the_folder_and_saves(
     env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signum: int,
 ) -> None:
-    """SIGTERM left `git bisect run` and the step alive, and ran no reset."""
+    """SIGTERM left `git bisect run` and the step alive."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_HANG", "30")
     ids = str(_tests_file(tmp_path / "ids.txt", _A, _B))
@@ -2196,8 +2190,8 @@ def test_a_signal_ends_the_children_resets_and_saves(
     result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert result["complete"] is False
     assert sorted(t for e in result["events"] for t in e["tests"]) == [_A, _B]
-    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
-    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+    assert env.folders() == []
+    assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
 def test_a_signal_runs_the_step_handler_before_the_kill(

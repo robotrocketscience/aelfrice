@@ -25,9 +25,6 @@ hook_audit.jsonl.*
 # Build artefact of the run, not source; regenerated on every invocation.
 mutants/
 
-# The worktree `scripts/nightly_bisect.py run` leaves for the next run (#1786).
-.bisect/
-
 # Host configuration directories (#1617). Per-machine config whose
 # content is almost entirely local absolute paths, so committing one
 # publishes a home-directory layout. PR #1610 added `.gemini/settings.json`

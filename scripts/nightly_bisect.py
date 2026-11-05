@@ -9,7 +9,7 @@ Usage:
     nightly_bisect.py merge-points --good SHA --bad SHA --out POINTS.json
         [--repo OWNER/NAME] [--repo-root DIR] [--dry-run]
     nightly_bisect.py run --good SHA --bad SHA (--tests IDS.txt | --triage TRIAGE.json)
-        --out RESULT.json [--points POINTS.json] [--repo-root DIR] [--worktree DIR]
+        --out RESULT.json [--points POINTS.json] [--repo-root DIR]
         [--budget-seconds 1200] [--step-timeout 300] [--step-cmd CMD]
         [--python VERSION] [--extra NAME ...] [--dry-run]
     nightly_bisect.py step --tests IDS.txt --deadline EPOCH
@@ -45,14 +45,14 @@ before the culprit" only means something on such a chain, so a range holding a
 commit with more than one parent, or one off the ancestry path, tests nothing
 and gets a range event with the reason `nonlinear`.
 
-The run. `run` adds a detached worktree at `--good` (`.bisect` under the
-repository root by default, removed first if a previous run left it), and
-in it runs `git bisect start BAD GOOD`, marks every commit that is not a
-merge point with `git bisect skip`, and runs `git bisect run` with the
-step. The step is this script's `step` subcommand, invoked by its absolute
-path, because `git bisect run` runs it inside the worktree, where
-`scripts/` holds the bisected commit's files. `--step-cmd` replaces the
-step command; the tests use it to run a fake in place of uv and pytest.
+The run. `run` makes a folder with `tempfile.mkdtemp`, adds a detached
+worktree at `--good` inside it, and there runs `git bisect start BAD GOOD`,
+marks every commit that is not a merge point with `git bisect skip`, and runs
+`git bisect run` with the step. The step is this script's `step` subcommand,
+invoked by its absolute path, because `git bisect run` runs it inside the
+worktree, where `scripts/` holds the bisected commit's files. `--step-cmd`
+replaces the step command; the tests use it to run a fake in place of uv and
+pytest.
 
 The result comes from `refs/bisect/bad` and `refs/bisect/good-*`, never
 from the exit status of `git bisect run`, which is nonzero both when it
@@ -64,14 +64,14 @@ the one the bisect narrowed to.
 `git bisect reset` runs in a `finally` after every round. A test that
 dirties a tracked file can make it fail, so it runs again after `git reset
 --hard`; a reset that still fails is a warning and lands in the result's
-`reset_errors`. The worktree stays after the run; the next run removes it
-first, including when its folder or its `.git` file is gone.
+`reset_errors`.
 
-This script removes only a folder it owns: the default `.bisect`, or a folder
-holding the `.nightly-bisect-worktree` file a run wrote when it created that
-worktree. Any other `--worktree` that holds files, the repository root and
-another worktree among them, exits 2 with nothing touched, in a dry run too.
-A folder that is missing or empty is used. A symbolic link exits 2.
+`run` removes the folder it made when it ends, after an error or a signal too,
+with `git worktree remove --force`. When that fails, as it does once the `.git`
+file is gone, a warning names the error and the folder goes by its path, which
+leaves the worktree's registration in `git worktree list`. This script removes
+nothing else and never runs `git worktree prune`, which could also drop the
+registration of a worktree someone moved.
 
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
@@ -272,7 +272,8 @@ _RUN_MARGIN_SECONDS = 15
 _TERM_GRACE_SECONDS = 2
 # Lines of `git bisect run` output a round keeps.
 _OUTPUT_TAIL_LINES = 40
-_WORKTREE_MARKER = ".nightly-bisect-worktree"
+# The worktree's name inside the folder `run` makes.
+_WORKTREE_NAME = "nightly-bisect"
 _MAX_SECONDS = 7 * 24 * 3600
 
 REASON_BUDGET = "budget"
@@ -851,7 +852,6 @@ class Bisector:
     step_args: list[str]
     deadline: float
     step_timeout: int
-    scratch: Path
     events: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     rounds: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     reset_errors: list[str] = field(default_factory=list[str])
@@ -878,7 +878,7 @@ class Bisector:
         return argv
 
     def _write_tests(self, name: str, tests: list[str]) -> Path:
-        path = self.scratch / name
+        path = self.worktree.parent / name
         path.write_text("".join(f"{t}\n" for t in tests), encoding="utf-8")
         return path
 
@@ -889,8 +889,8 @@ class Bisector:
         if left <= 0:
             return Check(STEP_ABORT, [], [])
         tests_file = self._write_tests("check.txt", tests)
-        failed_out = self.scratch / "check-failed.txt"
-        absent_out = self.scratch / "check-absent.txt"
+        failed_out = self.worktree.parent / "check-failed.txt"
+        absent_out = self.worktree.parent / "check-absent.txt"
         for path in (failed_out, absent_out):
             path.write_text("", encoding="utf-8")
         self._wt().run("checkout", "-q", "--force", "--detach", sha)
@@ -1147,35 +1147,19 @@ def _triage_rows(
     return out
 
 
-def worktree_refusal(path: Path, default: Path) -> str | None:
-    """Why `run` may not use `path` as its worktree, or None. A folder this
-    script does not own may hold someone's work, so it is never removed."""
-    if path.is_symlink() or (path.exists() and not path.is_dir()):
-        return f"{path} is not a folder"
-    if path == default or (path / _WORKTREE_MARKER).is_file():
-        return None
-    if path.exists() and any(path.iterdir()):
-        return f"{path} holds files and this script did not create a worktree there"
-    return None
-
-
-def _prepare_worktree(git: Git, path: Path, default: Path, good: str) -> None:
-    """A detached worktree at `good`, replacing what a previous run left: a
-    worktree, a registered folder missing its `.git` file, or a registration
-    whose folder is gone. `worktree_refusal` has passed `path`."""
-    if path.exists() and any(path.iterdir()):
-        # A test can leave a read-only folder, which would stop the removal.
-        subprocess.run(["chmod", "-R", "u+rwx", str(path)], capture_output=True, check=False,
-                       timeout=_GIT_TIMEOUT_SECONDS)
-        git.run("worktree", "remove", "--force", "--force", str(path), check=False)
-        if path.exists():
-            shutil.rmtree(path)
-    git.run("worktree", "prune")
-    git.run("worktree", "add", "--detach", str(path), good)
-    if path != default:
-        # The default needs no marker, and an untracked file there could
-        # fail a test that reads `git status`.
-        (path / _WORKTREE_MARKER).write_text(f"{git.cwd}\n", encoding="utf-8")
+def _remove_folder(git: Git, folder: Path) -> None:
+    """Remove `folder`, which this run made, and the worktree inside it."""
+    worktree = folder / _WORKTREE_NAME
+    try:
+        if worktree.exists():
+            git.run("worktree", "remove", "--force", str(worktree))
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(f"::warning::removing {folder} by its path: {exc}", file=sys.stderr)
+        # A test can leave a read-only folder, which stops the removal.
+        run_group(["chmod", "-R", "u+rwx", str(folder)], _GIT_TIMEOUT_SECONDS)
+    shutil.rmtree(folder, ignore_errors=True)
+    if folder.exists():
+        print(f"::warning::{folder} could not be removed", file=sys.stderr)
 
 
 @contextlib.contextmanager
@@ -1270,12 +1254,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     bisected, over_cap = canonical[:MAX_TESTS], canonical[MAX_TESTS:]
     step_cmd = shlex.split(args.step_cmd) if args.step_cmd else default_step_cmd()
     step_args = _step_passthrough(args)
-    # Git runs in `root`, so a relative path would land under it.
-    default_worktree = root / ".bisect"
-    worktree = args.worktree.resolve() if args.worktree is not None else default_worktree
-    refusal = worktree_refusal(worktree, default_worktree)
-    if refusal is not None:
-        raise ValueError(refusal)
     linear = is_linear(git, good, bad)
     if args.dry_run:
         in_range = ancestry(git, good, bad)
@@ -1286,7 +1264,7 @@ def cmd_run(args: argparse.Namespace) -> int:
               f"{len(in_range) - len(skip_list(in_range, point_set))} to test, {len(bisected)} test(s)")
         if unmapped:
             print(f"dry run: {len(unmapped)} id(s) name no file at {bad[:12]}: {unmapped}")
-        print(f"dry run: would add the worktree {worktree} and run {shlex.join([*step_cmd, *step_args])}")
+        print(f"dry run: would add a worktree in a new temporary folder and run {shlex.join([*step_cmd, *step_args])}")
         print(f"dry run: would write {args.out}")
         return 0
     deadline = time.time() + args.budget_seconds
@@ -1299,10 +1277,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         })
 
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    with _run_lock(git), tempfile.TemporaryDirectory() as scratch:
+    with _run_lock(git):
+        # Resolved, as git compares `GIT_CEILING_DIRECTORIES` with real paths.
+        folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-")).resolve()
+        worktree = folder / _WORKTREE_NAME
         bisector = Bisector(
             git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
-            step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
+            step_args=step_args, deadline=deadline, step_timeout=args.step_timeout,
             on_change=lambda: save(False),
         )
         complete = False
@@ -1313,21 +1294,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             if bisected and not linear:
                 add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
             elif bisected:
-                _prepare_worktree(git, worktree, default_worktree, good)
+                git.run("worktree", "add", "--detach", str(worktree), good)
                 bisector.bisect(good, bisected)
             complete = True
         except Interrupted as exc:
             print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
             return 128 + exc.signum
         finally:
-            bisector.settle(good, bisected)
-            if over_cap:
-                add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
-            if unmapped:
-                add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
-            save(complete)
-            for signum, handler in previous.items():
-                signal.signal(signum, handler)
+            # A signal from here on cannot stop the removal.
+            for signum in previous:
+                signal.signal(signum, signal.SIG_IGN)
+            try:
+                _remove_folder(git, folder)
+                bisector.settle(good, bisected)
+                if over_cap:
+                    add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+                if unmapped:
+                    add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
+                save(complete)
+            finally:
+                for signum, handler in previous.items():
+                    signal.signal(signum, handler)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0
@@ -1394,7 +1381,6 @@ def build_parser() -> argparse.ArgumentParser:
     tests.add_argument("--triage", type=Path, help="nightly_canary.py regressions output")
     p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
     p.add_argument("--repo-root", type=Path, default=Path("."))
-    p.add_argument("--worktree", type=Path, default=None, help="default: .bisect under --repo-root")
     p.add_argument("--budget-seconds", type=_seconds, default=DEFAULT_BUDGET_SECONDS)
     p.add_argument("--step-cmd", default=None, help="a command line that replaces this script's step")
     p.add_argument("--out", required=True, type=Path)
