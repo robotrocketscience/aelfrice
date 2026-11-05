@@ -2259,31 +2259,32 @@ def test_a_signal_runs_the_step_handler_before_the_kill(
     assert _survivors(env.pids()) == []
 
 
-def test_a_killed_run_keeps_the_next_one_out_until_its_children_end(
+def test_a_killed_run_does_not_reach_the_next_one(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An orphan wrote into the next run's bisect: `was both good and bad`."""
+    """An orphan wrote into the next run's bisect: `was both good and bad`.
+    What the killed run left stays in place, and only the second run ends."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_HANG", "30")
     ids = str(_tests_file(tmp_path / "ids.txt", _A, _B))
     assert _signal_a_run(env, tmp_path, shas, 9, "--tests", ids, "--step-cmd", env.step_cmd) == -9
     orphan = env.pids()[0]
     group = os.getpgid(orphan)
-    assert _running(orphan)
+    left = env.folders()
+    assert len(left) == 1
     monkeypatch.delenv("FAKE_HANG")
-    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
-    assert rc == 2
-    assert len(env.stepped()) == 1, "the second run tested a commit"
-    os.killpg(group, 9)
+    try:
+        rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+        assert rc == 0
+        assert result["events"] == [nb.event_for_culprit(shas[5], 12, [_A], shas[2])]
+        assert _running(orphan)
+        assert env.folders() == left
+    finally:
+        os.killpg(group, 9)
     _wait_for(lambda: not _running(orphan), "the orphan's end")
 
-    def lock_is_free() -> bool:
-        return run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))[0] == 0
 
-    _wait_for(lock_is_free, "the lock's release")
-
-
-def test_the_lock_and_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def test_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "a"])
 
     def mine(*_: Any) -> None:
@@ -2293,7 +2294,6 @@ def test_the_lock_and_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path
     try:
         for _ in range(2):
             assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-        assert nb._HELD_FDS == []
         assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == (mine, mine)
     finally:
         signal.signal(signal.SIGTERM, previous[0])

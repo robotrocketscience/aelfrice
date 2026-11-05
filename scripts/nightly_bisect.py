@@ -190,14 +190,14 @@ process that leaves the group cannot hold a pipe open. A step that receives
 SIGTERM kills its own children first. Process groups make this script POSIX
 only; the canary runs it on Linux and macOS.
 
-SIGTERM or SIGINT to `run` ends the running child's group, resets the bisect,
+SIGTERM or SIGINT to `run` ends the running child's group, removes the folder,
 saves the partial result with the rest of the tests under the reason `stopped`,
-and exits 128 plus the signal. A `run` killed outright leaves `git bisect run`
-and its step alive, and those would write into the next run's bisect. So each
-`run` holds a lock in the repository's git directory and passes it to its
-children, and while any of them lives the next `run` exits 2. They end at the
-earlier run's deadline, when the step aborts. A child that calls `setsid`
-leaves the group, and neither signal nor timeout reaches it.
+and exits 128 plus the signal. A `run` killed outright leaves its folder, the
+worktree's registration, and `git bisect run` and its step alive until they
+reach that run's deadline. A child that calls `setsid` leaves the group, and
+neither signal nor timeout reaches it. Runs do not share a bisect, since
+`refs/bisect/*` and the bisect state belong to one worktree, so what a killed run
+left cannot reach another run, and two runs can share a clone.
 
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
@@ -225,8 +225,6 @@ command that failed.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
 import json
 import math
 import os
@@ -237,7 +235,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -645,8 +643,6 @@ def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
 
 # The groups this process has running, for the step's SIGTERM handler.
 _LIVE_GROUPS: set[int] = set()
-# What every child inherits: `run`'s lock, so an orphan keeps it held.
-_HELD_FDS: list[int] = []
 
 
 class Interrupted(Exception):
@@ -701,7 +697,7 @@ def run_group(
             proc = subprocess.Popen(
                 argv, cwd=cwd, env=repo_free_env(ceiling), stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
-                start_new_session=True, pass_fds=tuple(_HELD_FDS),
+                start_new_session=True,
             )
         except FileNotFoundError:
             return 127, ""
@@ -1173,24 +1169,6 @@ def _remove_folder(git: Git, folder: Path) -> None:
         print(f"::warning::{folder} could not be removed", file=sys.stderr)
 
 
-@contextlib.contextmanager
-def _run_lock(git: Git) -> Generator[None, None, None]:
-    """Hold the repository's lock for the block, or raise ValueError when a
-    run, or what a killed run left alive, holds it. Children inherit it."""
-    path = git.cwd / git.out("rev-parse", "--git-common-dir") / "nightly-bisect.lock"
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise ValueError(f"{path} is held: an earlier run, or what it left alive, is still running") from exc
-        _HELD_FDS.append(fd)
-        yield
-    finally:
-        _HELD_FDS.clear()
-        os.close(fd)
-
-
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1288,44 +1266,43 @@ def cmd_run(args: argparse.Namespace) -> int:
         })
 
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
-    with _run_lock(git):
-        # Resolved, as git compares `GIT_CEILING_DIRECTORIES` with real paths.
-        folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-")).resolve()
-        worktree = folder / _WORKTREE_NAME
-        bisector = Bisector(
-            git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
-            step_args=step_args, deadline=deadline, step_timeout=args.step_timeout,
-            on_change=lambda: save(False),
-        )
-        complete = False
+    # Resolved, as git compares `GIT_CEILING_DIRECTORIES` with real paths.
+    folder = Path(tempfile.mkdtemp(prefix="nightly-bisect-")).resolve()
+    worktree = folder / _WORKTREE_NAME
+    bisector = Bisector(
+        git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
+        step_args=step_args, deadline=deadline, step_timeout=args.step_timeout,
+        on_change=lambda: save(False),
+    )
+    complete = False
+    try:
+        for signum in previous:
+            signal.signal(signum, _interrupt)
+        save(False)
+        if bisected and not linear:
+            add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
+        elif bisected:
+            git.run("worktree", "add", "--detach", str(worktree), good)
+            bisector.bisect(good, bisected)
+        complete = True
+    except Interrupted as exc:
+        print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
+        return 128 + exc.signum
+    finally:
+        # A signal from here on cannot stop the removal.
+        for signum in previous:
+            signal.signal(signum, signal.SIG_IGN)
         try:
-            for signum in previous:
-                signal.signal(signum, _interrupt)
-            save(False)
-            if bisected and not linear:
-                add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
-            elif bisected:
-                git.run("worktree", "add", "--detach", str(worktree), good)
-                bisector.bisect(good, bisected)
-            complete = True
-        except Interrupted as exc:
-            print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
-            return 128 + exc.signum
+            _remove_folder(git, folder)
+            bisector.settle(good, bisected)
+            if over_cap:
+                add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+            if unmapped:
+                add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
+            save(complete)
         finally:
-            # A signal from here on cannot stop the removal.
-            for signum in previous:
-                signal.signal(signum, signal.SIG_IGN)
-            try:
-                _remove_folder(git, folder)
-                bisector.settle(good, bisected)
-                if over_cap:
-                    add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
-                if unmapped:
-                    add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
-                save(complete)
-            finally:
-                for signum, handler in previous.items():
-                    signal.signal(signum, handler)
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0
