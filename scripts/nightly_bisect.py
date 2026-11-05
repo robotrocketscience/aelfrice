@@ -177,7 +177,8 @@ every change, with `complete` false until the run ends, so a run that dies
 keeps what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `inconclusive`,
 `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed`,
-`returned` or `nonlinear`. Each round keeps its `git bisect log`.
+`returned`, `nonlinear` or `stopped`, for a run that raised. Every input test
+ends in exactly one event. Each round keeps its `git bisect log`.
 
 Standard library only. The functions above `Git` are pure; the tests in
 `tests/test_nightly_bisect_1786.py` run them on values, and run the
@@ -248,6 +249,7 @@ REASON_UNMAPPED = "unmapped"
 REASON_RENAMED = "renamed"
 REASON_RETURNED = "returned"
 REASON_NONLINEAR = "nonlinear"
+REASON_STOPPED = "stopped"
 
 
 # ------------------------------------------------------------------ step
@@ -887,16 +889,17 @@ class Bisector:
         earlier = [t for t in first.failed if t in before.failed]
         if earlier:
             self._event(event_for_range(lo, culprit, earlier, REASON_UNVERIFIED))
+        undecided = [t for t in remaining if t not in earlier]
         broke = [t for t in first.failed if t not in earlier]
         blamed: list[str] = []
         if broke:
             again = self._check(culprit, broke)
             record["verify"]["again_rc"] = again.rc
             if again.rc == STEP_ABORT:
-                self._event(event_for_range(outcome.good, outcome.bad, broke, REASON_BUDGET))
+                self._event(event_for_range(outcome.good, outcome.bad, undecided, REASON_BUDGET))
                 return None
             if not again.judged:
-                self._event(event_for_range(lo, self.bad, broke, REASON_UNVERIFIED))
+                self._event(event_for_range(lo, self.bad, undecided, REASON_UNVERIFIED))
                 return None
             blamed = again.failed
         settled = [*earlier, *blamed]
@@ -952,6 +955,13 @@ class Bisector:
         if passed:
             self._event(event_for_range(lo, self.bad, passed, REASON_UNVERIFIED))
         return [t for t in blamed if t in red]
+
+    def settle(self, good: str, tests: list[str]) -> None:
+        """Give any of `tests` that no event names a range: the run stopped early."""
+        named = {t for event in self.events for t in event["tests"]}
+        rest = [t for t in tests if t not in named]
+        if rest:
+            add_event(self.events, event_for_range(good, self.bad, rest, REASON_STOPPED))
 
     def bisect(self, good: str, tests: list[str]) -> None:
         lo, remaining = good, list(tests)
@@ -1153,16 +1163,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
             on_change=lambda: save(False),
         )
-        if bisected and not linear:
-            add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
-        elif bisected:
-            _prepare_worktree(git, worktree, default_worktree, good)
-            bisector.bisect(good, bisected)
-    if over_cap:
-        add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
-    if unmapped:
-        add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
-    save(True)
+        complete = False
+        try:
+            if bisected and not linear:
+                add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
+            elif bisected:
+                _prepare_worktree(git, worktree, default_worktree, good)
+                bisector.bisect(good, bisected)
+            complete = True
+        finally:
+            bisector.settle(good, bisected)
+            if over_cap:
+                add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
+            if unmapped:
+                add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
+            save(complete)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0

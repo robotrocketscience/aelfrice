@@ -830,7 +830,70 @@ def test_a_run_that_raises_keeps_what_it_found(
                             points={shas[i]: 30 + i for i in range(1, 6)})
     assert rc == 2
     assert result["complete"] is False
-    assert [(e["key"], e["tests"]) for e in result["events"]] == [("pr-32", [_A])]
+    assert result["events"] == [
+        nb.event_for_culprit(shas[2], 32, [_A], shas[1]),
+        nb.event_for_range(shas[0], shas[5], [_B], nb.REASON_STOPPED),
+    ]
+
+
+@pytest.mark.parametrize(("rc", "reason"), [(125, nb.REASON_UNVERIFIED), (255, nb.REASON_BUDGET)])
+def test_a_second_run_that_cannot_judge_the_culprit_leaves_no_test_out(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, rc: int, reason: str,
+) -> None:
+    """Test b did not fail at the culprit, and got no event at all."""
+    shas = env.repo(["", "a", "ab", "ab"])
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[1], "phase": "check", "rc": rc, "nth": [2]}]))
+    status, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B,
+                                points={shas[i]: 30 + i for i in range(1, 4)})
+    assert status == 1
+    low, high = (shas[0], shas[3]) if rc == 125 else (shas[0], shas[1])
+    assert result["events"] == [nb.event_for_range(low, high, [_A, _B], reason)]
+
+
+def _exits(sha: str, rc: int, nth: int | None = None) -> str:
+    entry: dict[str, Any] = {"sha": sha, "phase": "check", "rc": rc}
+    return json.dumps([entry if nth is None else {**entry, "nth": [nth]}])
+
+
+# What each case sets, by the commit indexes of `_EVERY_HISTORY`, where a breaks
+# at 2, b at 4 and c never. Merge points are every commit.
+_EVERY_HISTORY = ["", "", "a", "a", "ab", "ab", "ab", "ab"]
+_EVERY_CASES: dict[str, dict[str, Any]] = {
+    "two-culprits": {},
+    "budget-gone": {"extra": ("--budget-seconds", "0")},
+    "abort-in-the-bisect": {"env": {"FAKE_ABORT_AFTER": "1"}},
+    "abort-at-every-check": {"env": {"FAKE_ABORT_CHECK": "1"}},
+    "no-report": {"env": {"FAKE_NO_FAILED": "1"}},
+    "culprit-skip": {"exit": (2, 125, None)},
+    "preceding-skip": {"exit": (1, 125, None)},
+    "second-run-skip": {"exit": (2, 125, 2)},
+    "second-run-abort": {"exit": (2, 255, 2)},
+    "next-point-skip": {"exit": (3, 125, None)},
+    "next-point-abort": {"exit": (3, 255, None)},
+    "raises": {"raises": True},
+    "over-the-cap": {"extra_ids": [f"tests/test_x.py::test_n{i}" for i in range(55)]},
+    "unmapped": {"extra_ids": ["tests/test_gone.py::test_a", "tests.test_gone::test_a"]},
+}
+
+
+@pytest.mark.parametrize("case", list(_EVERY_CASES))
+def test_every_input_test_ends_in_exactly_one_event(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    spec = _EVERY_CASES[case]
+    shas = env.repo(_EVERY_HISTORY)
+    for name, value in spec.get("env", {}).items():
+        monkeypatch.setenv(name, value)
+    if "exit" in spec:
+        at, status, nth = spec["exit"]
+        monkeypatch.setenv("FAKE_EXITS", _exits(shas[at], status, nth))
+    if spec.get("raises"):
+        monkeypatch.setattr(nb.Bisector, "attribute", lambda *_: (_ for _ in ()).throw(RuntimeError("in the test")))
+    ids = [_A, _B, _C, *spec.get("extra_ids", [])]
+    _, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, extra=spec.get("extra", ()),
+                           points={shas[i]: 30 + i for i in range(1, 8)})
+    named = [t for event in result["events"] for t in event["tests"]]
+    assert sorted(named) == sorted(ids), result["events"]
 
 
 def test_a_finished_run_is_marked_complete_and_leaves_no_temporary_file(
