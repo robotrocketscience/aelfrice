@@ -1313,16 +1313,72 @@ def test_a_signal_cannot_stop_the_removal(
     assert during == [(signal.SIG_IGN, signal.SIG_IGN)]
 
 
-def test_a_dirty_tree_does_not_stop_the_reset(
+def test_a_step_that_dirties_a_file_stops_the_bisect_in_a_range(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The step dirties a file that differs between commits: the bisect
-    cannot go on, and a plain `git bisect reset` refuses too."""
+    """The file differs between commits, so the bisect cannot go on."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_DIRTY", "bisect")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
+    assert [e["kind"] for e in result["events"]] == ["range"]
+
+
+# Test a breaks at 2 and test b at 4, so a run has two rounds.
+_TWO_ROUNDS = ["", "", "a", "a", "ab", "ab"]
+
+
+def _two_rounds(run_bisect: Runner, repo: Path, shas: list[str]) -> tuple[int, dict[str, Any]]:
+    return run_bisect(repo, shas[0], shas[5], _A, _B, points={shas[i]: 30 + i for i in range(1, 6)})
+
+
+def test_a_dirty_tree_does_not_stop_the_reset(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last check dirties a file that differs between commits, so a plain
+    `git bisect reset` refuses."""
+    shas = env.repo(_TWO_ROUNDS)
+    monkeypatch.setenv("FAKE_DIRTY", "check")
+    rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
+    assert rc == 0
     assert result["reset_errors"] == []
+    assert [e["key"] for e in result["events"]] == ["pr-32", "pr-34"]
+
+
+@pytest.mark.parametrize(("tests", "resets"), [((_A, _B), 1), ((_A,), 0)], ids=["two-rounds", "one-round"])
+def test_the_bisect_is_reset_only_between_rounds(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, tests: tuple[str, ...], resets: int,
+) -> None:
+    shas = env.repo(_TWO_ROUNDS)
+    real = nb.Git.run
+    seen: list[tuple[str, ...]] = []
+
+    def spy(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(args)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(nb.Git, "run", spy)
+    points: dict[str, int | None] = {shas[i]: 30 + i for i in range(1, 6)}
+    assert run_bisect(tmp_path / "repo", shas[0], shas[5], *tests, points=points)[0] == 0
+    assert seen.count(("bisect", "reset")) == resets
+
+
+def test_a_signal_during_a_reset_reaches_the_removal(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_TWO_ROUNDS)
+    real = nb.Git.run
+
+    def run(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args == ("bisect", "reset"):
+            raise nb.Interrupted(signal.SIGTERM)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(nb.Git, "run", run)
+    rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
+    assert rc == 128 + signal.SIGTERM
+    assert result["complete"] is False
+    assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
 def _fail_git(monkeypatch: pytest.MonkeyPatch, *prefix: str) -> None:
@@ -1343,9 +1399,9 @@ def test_a_reset_that_fails_is_reported(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    shas = env.repo(_LINEAR)
+    shas = env.repo(_TWO_ROUNDS)
     _fail_git(monkeypatch, "bisect", "reset")
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
     assert result["reset_errors"] == ["refused by the test"]
     assert "::warning::git bisect reset failed: refused by the test" in capsys.readouterr().err
     assert rc == 0
@@ -1354,7 +1410,7 @@ def test_a_reset_that_fails_is_reported(
 def test_a_reset_that_times_out_is_reported_and_the_result_kept(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    shas = env.repo(_LINEAR)
+    shas = env.repo(_TWO_ROUNDS)
     real = nb.Git.run
 
     def run(self: nb.Git, *args: str, check: bool = True, timeout: float = 120) -> subprocess.CompletedProcess[str]:
@@ -1363,7 +1419,7 @@ def test_a_reset_that_times_out_is_reported_and_the_result_kept(
         return real(self, *args, check=check, timeout=timeout)
 
     monkeypatch.setattr(nb.Git, "run", run)
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
     assert rc == 0
     assert len(result["reset_errors"]) == 1
     assert "timed out" in result["reset_errors"][0]

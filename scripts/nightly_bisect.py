@@ -61,10 +61,10 @@ culprit when the merge point before it is good. The checks below then run
 the step outside the bisect. When the deadline stops a check, the range is
 the one the bisect narrowed to.
 
-`git bisect reset` runs in a `finally` after every round. A test that
-dirties a tracked file can make it fail, so it runs again after `git reset
---hard`; a reset that still fails is a warning and lands in the result's
-`reset_errors`.
+`git bisect reset` runs before every round but the first, since the worktree
+goes away after the last. A test that dirties a tracked file can make it fail,
+so it runs again after `git reset --hard`; a reset that still fails is a warning
+and lands in the result's `reset_errors`.
 
 `run` removes the folder it made when it ends, after an error or a signal too,
 with `git worktree remove --force`. When that fails, as it does once the `.git`
@@ -921,30 +921,27 @@ class Bisector:
         wt = self._wt()
         skips = skip_list(order, points)
         record["skipped"] = len(skips)
-        try:
-            wt.run("bisect", "start", self.bad, lo)
-            for i in range(0, len(skips), _SKIP_CHUNK):
-                if time.time() >= self.deadline:
-                    break  # The step aborts at once, so the unskipped commits never run.
-                wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
-            rc, output = run_group(
-                ["git", "bisect", "run", *self._step(tests_file)],
-                max(0.0, self.deadline - time.time()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
-                ceiling=self.worktree.parent,
-            )
-            if rc is None:
-                output += "\ngit bisect run timed out"
-            bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
-            goods = [
-                sha for sha, ref in (line.split(" ", 1) for line in wt.lines(
-                    "for-each-ref", "--format=%(objectname) %(refname)", "refs/bisect/",
-                ))
-                if ref.startswith("refs/bisect/good-")
-            ]
-            record["log"] = wt.run("bisect", "log", check=False).stdout
-            record["output"] = "\n".join(output.splitlines()[-_OUTPUT_TAIL_LINES:])
-        finally:
-            self._reset(wt)
+        wt.run("bisect", "start", self.bad, lo)
+        for i in range(0, len(skips), _SKIP_CHUNK):
+            if time.time() >= self.deadline:
+                break  # The step aborts at once, so the unskipped commits never run.
+            wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
+        rc, output = run_group(
+            ["git", "bisect", "run", *self._step(tests_file)],
+            max(0.0, self.deadline - time.time()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
+            ceiling=self.worktree.parent,
+        )
+        if rc is None:
+            output += "\ngit bisect run timed out"
+        bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
+        goods = [
+            sha for sha, ref in (line.split(" ", 1) for line in wt.lines(
+                "for-each-ref", "--format=%(objectname) %(refname)", "refs/bisect/",
+            ))
+            if ref.startswith("refs/bisect/good-")
+        ]
+        record["log"] = wt.run("bisect", "log", check=False).stdout
+        record["output"] = "\n".join(output.splitlines()[-_OUTPUT_TAIL_LINES:])
         return read_outcome(order, points, lo, bad_ref, goods), record
 
     def _event(self, event: dict[str, Any]) -> None:
@@ -1068,6 +1065,8 @@ class Bisector:
             if time.time() >= self.deadline:
                 self._event(event_for_range(lo, self.bad, remaining, REASON_BUDGET))
                 return
+            if n > 1:
+                self._reset(self._wt())
             outcome, record = self.bisect_round(lo, remaining, n)
             self.rounds.append(record)
             if outcome.culprit is None:
