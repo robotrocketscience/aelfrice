@@ -1083,6 +1083,21 @@ def test_every_input_test_ends_in_exactly_one_event(
     assert sorted(named) == sorted(ids), result["events"]
 
 
+def test_a_run_that_exits_2_leaves_no_earlier_result(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    """A range that cannot be read left the old `complete: true` in place."""
+    shas = env.repo(["", "a"])
+    _write(tmp_path / "result.json", {"complete": True, "good": "earlier", "events": []})
+    assert run_bisect(tmp_path / "repo", shas[1], shas[0], _A)[0] == 2
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_a_dry_run_keeps_an_earlier_result(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    earlier = {"complete": True, "good": "earlier", "events": []}
+    _write(tmp_path / "result.json", earlier)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, extra=("--dry-run",)) == (0, earlier)
+
+
 def test_an_earlier_result_is_replaced_before_any_work(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
