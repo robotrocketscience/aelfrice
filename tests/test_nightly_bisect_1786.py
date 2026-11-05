@@ -474,10 +474,23 @@ def test_without_merge_points_every_commit_is_tested(env: Env, tmp_path: Path, r
     assert set(env.stepped()) - {shas[0], shas[2], shas[5], shas[7]}, "no commit outside a PR merge was tested"
 
 
-def test_past_the_budget_reports_the_range(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def _no_time_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The deadline has passed when the bisect starts."""
+    real = nb.Bisector.bisect
+
+    def bisect(self: nb.Bisector, good: str, tests: list[str]) -> None:
+        self.deadline = 0.0
+        real(self, good, tests)
+
+    monkeypatch.setattr(nb.Bisector, "bisect", bisect)
+
+
+def test_past_the_budget_reports_the_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     shas = env.repo(_LINEAR)
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas),
-                            extra=("--budget-seconds", "0"))
+    _no_time_left(monkeypatch)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
     assert rc == 1
     assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_BUDGET)]
     assert env.stepped() == []
@@ -886,13 +899,15 @@ def test_step_with_no_readable_report_is_bad_and_names_no_test(
     assert failed.read_text(encoding="utf-8") == ""
 
 
-def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def test_tests_past_the_cap_keep_their_own_reason(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One range merged 50 `budget` tests and 5 `cap` tests, and the cap
     tests read as `budget`."""
     shas = env.repo(_LINEAR)
     ids = [f"tests/test_x.py::test_n{i}" for i in range(55)]
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, points=_linear_points(shas),
-                            extra=("--budget-seconds", "0"))
+    _no_time_left(monkeypatch)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, points=_linear_points(shas))
     assert rc == 1
     expected = {t: nb.REASON_BUDGET for t in ids[:50]} | {t: nb.REASON_CAP for t in ids[50:]}
     assert [(e["key"], e["reasons"], sorted(e["tests"])) for e in result["events"]] == [
@@ -900,11 +915,13 @@ def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_
     ]
 
 
-def test_reasons_use_the_ids_as_given(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def test_reasons_use_the_ids_as_given(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     shas = env.repo(["", "a"])
     junit = "tests.test_x::test_a"
-    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], junit, points={shas[1]: 7},
-                            extra=("--budget-seconds", "0"))
+    _no_time_left(monkeypatch)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[1], junit, points={shas[1]: 7})
     assert rc == 1
     assert result["events"] == [nb.event_for_range(shas[0], shas[1], [junit], nb.REASON_BUDGET)]
 
@@ -956,7 +973,7 @@ def _exits(sha: str, rc: int, nth: int | None = None) -> str:
 _EVERY_HISTORY = ["", "", "a", "a", "ab", "ab", "ab", "ab"]
 _EVERY_CASES: dict[str, dict[str, Any]] = {
     "two-culprits": {},
-    "budget-gone": {"extra": ("--budget-seconds", "0")},
+    "budget-gone": {"no_time": True},
     "abort-in-the-bisect": {"env": {"FAKE_ABORT_AFTER": "1"}},
     "abort-at-every-check": {"env": {"FAKE_ABORT_CHECK": "1"}},
     "no-report": {"env": {"FAKE_NO_FAILED": "1"}},
@@ -983,11 +1000,12 @@ def test_every_input_test_ends_in_exactly_one_event(
     if "exit" in spec:
         at, status, nth = spec["exit"]
         monkeypatch.setenv("FAKE_EXITS", _exits(shas[at], status, nth))
+    if spec.get("no_time"):
+        _no_time_left(monkeypatch)
     if spec.get("raises"):
         monkeypatch.setattr(nb.Bisector, "attribute", lambda *_: (_ for _ in ()).throw(RuntimeError("in the test")))
     ids = [_A, _B, _C, *spec.get("extra_ids", [])]
-    _, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, extra=spec.get("extra", ()),
-                           points={shas[i]: 30 + i for i in range(1, 8)})
+    _, result = run_bisect(tmp_path / "repo", shas[0], shas[7], *ids, points={shas[i]: 30 + i for i in range(1, 8)})
     named = [t for event in result["events"] for t in event["tests"]]
     assert sorted(named) == sorted(ids), result["events"]
 
@@ -2235,6 +2253,15 @@ def test_run_refuses_a_bad_number(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert flag in capsys.readouterr().err
 
 
+def test_run_refuses_a_budget_of_0(capsys: pytest.CaptureFixture[str]) -> None:
+    """It ran git and named the whole range without testing a commit."""
+    with pytest.raises(SystemExit) as exit_info:
+        nb.main(["run", "--good", "a", "--bad", "b", "--tests", "t", "--out", "o", "--budget-seconds", "0"])
+    assert exit_info.value.code == 2
+    assert "must be above 0" in capsys.readouterr().err
+    assert nb._budget("1") == 1
+
+
 @pytest.mark.parametrize("value", ["0", str(7 * 24 * 3600)])
 def test_seconds_takes_its_whole_range(value: str) -> None:
     assert nb._seconds(value) == int(value)
@@ -2506,6 +2533,7 @@ def test_the_skip_loop_stops_at_the_deadline(
     assert rc == 1
     assert len(skips) == 1
     assert [set(e["reasons"].values()) for e in result["events"]] == [{nb.REASON_BUDGET}]
+    assert env.stepped() == [], "`git bisect run` started past the deadline"
 
 
 # ------------------------------------------------------------ pure parts

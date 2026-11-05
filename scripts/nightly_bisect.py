@@ -179,10 +179,10 @@ the path exists, since one absent from the commit is good. From `pytest
 `conftest.py`'s, which pytest loads at startup) are bad, 0 and 5 are good, and
 any other status is a skip, as any status but 0 or 1 is when a node id runs.
 
-Caps: `--budget-seconds` (1200) bounds the run, `--step-timeout` (300) the
-whole of each step, sync and every collection included, and at most 50 tests
-are bisected; the others get a range event. Every loop stops at the deadline,
-and no child starts past it. The margin: a child running at its bound gets
+Caps: `--budget-seconds` (1200, at least 1) bounds the run, `--step-timeout`
+(300) the whole of each step, sync and every collection included, and at most 50
+tests are bisected; the others get a range event. Every loop stops at the
+deadline, and no step or `git bisect run` starts past it. The margin: a child running at its bound gets
 SIGTERM and 2 s before SIGKILL, and `run` ends a `git bisect run` or a check
 whose step ignored `--deadline` 15 s past its own bound. Git calls have their
 own 120 s timeout, outside that margin. Every child that can run long has its
@@ -926,15 +926,17 @@ class Bisector:
         wt.run("bisect", "start", self.bad, lo)
         for i in range(0, len(skips), _SKIP_CHUNK):
             if time.monotonic() >= self.deadline:
-                break  # The step aborts at once, so the unskipped commits never run.
+                break
             wt.run("bisect", "skip", *skips[i : i + _SKIP_CHUNK])
-        rc, output = run_group(
-            ["git", "bisect", "run", *self._step(tests_file)],
-            max(0.0, self.deadline - time.monotonic()) + _RUN_MARGIN_SECONDS, cwd=self.worktree,
-            ceiling=self.worktree.parent,
-        )
-        if rc is None:
-            output += "\ngit bisect run timed out"
+        output = ""
+        left = self.deadline - time.monotonic()
+        if left > 0:
+            rc, output = run_group(
+                ["git", "bisect", "run", *self._step(tests_file)],
+                left + _RUN_MARGIN_SECONDS, cwd=self.worktree, ceiling=self.worktree.parent,
+            )
+            if rc is None:
+                output += "\ngit bisect run timed out"
         bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
         goods = [
             sha for sha, ref in (line.split(" ", 1) for line in wt.lines(
@@ -1337,6 +1339,14 @@ def _seconds(text: str) -> int:
     return value
 
 
+def _budget(text: str) -> int:
+    """`_seconds`, above 0: a run with no time could only name the whole range."""
+    value = _seconds(text)
+    if value == 0:
+        raise argparse.ArgumentTypeError("must be above 0")
+    return value
+
+
 def _finite(text: str) -> float:
     value = float(text)
     if not math.isfinite(value):
@@ -1370,7 +1380,7 @@ def build_parser() -> argparse.ArgumentParser:
     tests.add_argument("--triage", type=Path, help="nightly_canary.py regressions output")
     p.add_argument("--points", type=Path, default=None, help="merge-points output; every commit is tested without it")
     p.add_argument("--repo-root", type=Path, default=Path("."))
-    p.add_argument("--budget-seconds", type=_seconds, default=DEFAULT_BUDGET_SECONDS)
+    p.add_argument("--budget-seconds", type=_budget, default=DEFAULT_BUDGET_SECONDS)
     p.add_argument("--step-cmd", default=None, help="a command line that replaces this script's step")
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(func=cmd_run)
