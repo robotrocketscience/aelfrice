@@ -11,8 +11,10 @@
 
 ```bash
 uv tool install aelfrice                # core (deps: numpy, scipy, snowballstemmer — local-only)
-uv tool install "aelfrice[archive]"     # add the encrypted-archive uninstall path
+uv tool install --python 3.12 "aelfrice[archive]"     # add the encrypted-archive uninstall path
 ```
+
+If `uv` warns that a folder isn't on your `PATH`, run `uv tool update-shell`, then open a new terminal.
 
 Or install from the source repository, which is the developer install:
 
