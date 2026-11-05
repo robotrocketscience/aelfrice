@@ -1736,9 +1736,8 @@ def test_run_usage_errors_exit_2(env: Env, tmp_path: Path, case: str) -> None:
 
 # ------------------------------------------------- the canary's triage
 
-# Input and output of a real run of `nightly_canary.py regressions`, from
-# ci/issue-1786-nightly-canary-script at 67ef5347, before that script reached
-# this branch. `--repo-root` held tests/test_x.py, tests/test_y.py and tests/sub/.
+# Input and output of a real run of `nightly_canary.py regressions`, whose
+# `--repo-root` held tests/test_x.py, tests/test_y.py and tests/sub/.
 _TRIAGE_FIXTURE = Path(__file__).parent / "fixtures" / "nightly_triage_1786.json"
 _CANARY_SCRIPT = _REPO / "scripts" / "nightly_canary.py"
 
@@ -1772,11 +1771,8 @@ def test_the_bisect_reads_the_canarys_real_triage(env: Env, tmp_path: Path) -> N
 
 
 def test_the_triage_fixture_is_what_the_canary_writes(tmp_path: Path) -> None:
-    """Fails when `regressions` changes the shape this script reads. Holds
-    nothing until `nightly_canary.py` reaches the same branch; then a change
-    to either script has to update the fixture here."""
-    if not _CANARY_SCRIPT.is_file():
-        return
+    """Fails when `regressions` changes the shape this script reads, or when
+    the script moves. A change to either script has to update the fixture here."""
     case = _triage_case()
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
