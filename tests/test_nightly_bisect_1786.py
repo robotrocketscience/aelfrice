@@ -1771,6 +1771,17 @@ def test_a_folder_that_cannot_be_removed_is_a_warning(
     assert f"::warning::{tmp_path} could not be removed" in capsys.readouterr().err
 
 
+def test_the_clone_borrows_objects_has_no_remote_and_sits_at_good(env: Env, tmp_path: Path) -> None:
+    shas = env.repo(["", "a"])
+    clone = tmp_path / "folder" / "clone"
+    clone.parent.mkdir()
+    nb._clone(nb.Git(tmp_path / "repo"), clone, shas[0], shas[1])
+    assert (clone / ".git" / "objects" / "info" / "alternates").is_file()
+    assert _git(clone, "remote").stdout == ""
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == shas[0]
+    assert _git(clone, "symbolic-ref", "-q", "HEAD").returncode != 0
+
+
 def _a_commit_no_ref_reaches(repo: Path) -> str:
     """A commit on a detached HEAD, with `main` checked out again."""
     for args in (["checkout", "-q", "--detach"], ["commit", "-q", "--allow-empty", "-m", "loose"]):
