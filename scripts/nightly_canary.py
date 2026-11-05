@@ -1484,8 +1484,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     problems: list[str] = []
     record_file = branch / path / "record.json"
     triage_file = branch / path / "triage.json"
-    same_record = record_file.is_file()
-    keep_triage = triage is None or (same_record and triage_file.is_file())
+    keep_triage = triage is None or triage_file.is_file()
     index_file = branch / "index.jsonl"
     index: list[str] | None = None
     superseded = False
