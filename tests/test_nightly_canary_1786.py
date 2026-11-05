@@ -759,11 +759,38 @@ def test_a_night_of_only_extra_legs_is_incomplete(required: tuple[str, ...]) -> 
     assert nc.night_verdict({}, {}, required) == nc.INCOMPLETE
 
 
+@pytest.mark.parametrize(
+    ("outcome", "ran"),
+    [(tor.PASSED, True), (tor.FAILED, True), (tor.ERROR, True), (tor.XPASSED, True),
+     (tor.SKIPPED, False), (tor.XFAILED, False), (tor.NEVER_EXECUTED, False)],
+)
+def test_a_leg_has_run_only_with_a_test_that_passed_failed_errored_or_xpassed(outcome: str, ran: bool) -> None:
+    """A confirmed failure reads red first, so the rule shows on a flaky one."""
+    red = outcome in nc.RED_OUTCOMES
+    verdict = nc.classify_leg(1 if red else 0, {_A: outcome}, {_A: tor.PASSED} if red else None)
+    assert verdict["status"] == (nc.GREEN if ran else nc.BROKEN)
+
+
+def test_a_real_leg_of_only_never_executed_tests_is_broken(tmp_path: Path) -> None:
+    """Real pytest exits 0 on it, and `parse_junit` reads the perf reason as `never executed`."""
+    project = tmp_path / "project"
+    (project / "tests").mkdir(parents=True)
+    reason = sorted(tor.PERF_SKIP_REASONS)[0]
+    (project / "tests" / "test_p.py").write_text(
+        f"import pytest\n@pytest.mark.skip(reason={reason!r})\ndef test_p():\n    pass\n", encoding="utf-8",
+    )
+    full = _pytest(project, "--junitxml=junit.xml")
+    assert full.returncode == 0, full.stdout
+    junit = project / "junit.xml"
+    assert list(tor.parse_junit(junit.read_text(encoding="utf-8")).values()) == [tor.NEVER_EXECUTED]
+    assert nc.main(["verdict", "--rc", "0", "--junit", str(junit)]) == 1
+
+
 def test_a_leg_where_every_test_skipped_is_broken_and_cannot_move_the_pointer(tmp_path: Path) -> None:
     """A missing dependency can skip the whole suite with exit 0."""
     assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.SKIPPED}, None)["status"] == nc.BROKEN
     assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.PASSED}, None)["status"] == nc.GREEN
-    assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.XFAILED}, None)["status"] == nc.GREEN
+    assert nc.classify_leg(0, {_A: tor.SKIPPED, _B: tor.XFAILED}, None)["status"] == nc.BROKEN
     a = _bundle(tmp_path / "a", {_A: tor.SKIPPED}, rc=0)
     b = _bundle(tmp_path / "b", {_A: tor.PASSED})
     rc, record = _record_cmd(tmp_path, f"3.12={a}", f"3.13={b}")
