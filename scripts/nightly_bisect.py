@@ -153,9 +153,12 @@ that commit, which is good.
 every entry of `collection_errors` by its `module`. A null there is an id
 that mapped to no file, and gets a range event as `unmapped`. The result
 names each by its `test`, the id the records use. A triage of another format,
-or missing one of those keys, exits 2, so a change in `regressions` output
-cannot pass as a run with nothing to do. `drift_check` is not read: the
-workflow decides what to bisect, and writes a triage holding only that.
+missing one of those keys, or with an entry of another shape (a `node_id` has
+to be `file.py::name`, a `module` a `.py` file or a folder ending in a slash)
+exits 2, so a change in `regressions` output cannot pass as a run with nothing
+to do. A valid triage with no test in it exits 0 with an empty result, and
+`--tests` given JSON exits 2. `drift_check` is not read: the workflow decides
+what to bisect, and writes a triage holding only that.
 
 For a target the step follows the contract in `nightly_canary.py`: it checks
 the path exists, since one absent from the commit is good. From `pytest
@@ -1095,10 +1098,13 @@ def map_triage(triage: Any, files: set[str]) -> tuple[dict[str, list[str]], list
     if not isinstance(triage, dict):
         raise ValueError("the triage file must hold a JSON object")
     data = cast(dict[str, Any], triage)
-    if data.get("format") != TRIAGE_FORMAT:
+    if type(data.get("format")) is not int or data["format"] != TRIAGE_FORMAT:
         raise ValueError(f"the triage file has format {data.get('format')!r}, not {TRIAGE_FORMAT}")
-    entries = [(e["test"], e["node_id"]) for e in [*data["candidates"], *data["new_failing"]]]
-    entries += [(e["test"], e["module"]) for e in data["collection_errors"]]
+    entries = [
+        *_triage_rows(data, "candidates", "node_id", _is_node_id),
+        *_triage_rows(data, "new_failing", "node_id", _is_node_id),
+        *_triage_rows(data, "collection_errors", "module", lambda path: module_file(path) == path),
+    ]
     mapped: dict[str, list[str]] = {}
     unmapped: list[str] = []
     seen: set[str] = set()
@@ -1106,11 +1112,32 @@ def map_triage(triage: Any, files: set[str]) -> tuple[dict[str, list[str]], list
         if test in seen:
             continue
         seen.add(test)
-        if canon is None or str(canon).split("::", 1)[0] not in files:
+        if canon is None or canon.split("::", 1)[0] not in files:
             unmapped.append(test)
         else:
             mapped.setdefault(canon, []).append(test)
     return mapped, unmapped
+
+
+def _is_node_id(text: str) -> bool:
+    path, sep, name = text.partition("::")
+    return bool(sep and name) and path.endswith(".py")
+
+
+def _triage_rows(
+    data: dict[str, Any], key: str, target: str, valid: Callable[[str], bool],
+) -> list[tuple[str, str | None]]:
+    """(test, target) of each row of `data[key]`; ValueError unless the shape is right."""
+    rows = data[key]
+    if not isinstance(rows, list):
+        raise ValueError(f"the triage's {key} is not a list")
+    out: list[tuple[str, str | None]] = []
+    for row in cast(list[dict[str, Any]], rows):
+        test, path = row["test"], row[target]
+        if not isinstance(test, str) or not test or not (path is None or (isinstance(path, str) and valid(path))):
+            raise ValueError(f"the triage's {key} holds {row!r}")
+        out.append((test, path))
+    return out
 
 
 def worktree_refusal(path: Path, default: Path) -> str | None:
@@ -1222,10 +1249,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.triage is not None:
         mapped, unmapped = map_triage(_read_json(args.triage), files)
     else:
-        mapped, unmapped = map_ids(parse_tests(args.tests.read_text(encoding="utf-8")), files)
+        text = args.tests.read_text(encoding="utf-8")
+        if text.lstrip().startswith("{"):
+            raise ValueError(f"{args.tests} holds JSON; a triage goes to --triage")
+        mapped, unmapped = map_ids(parse_tests(text), files)
     tests = [*(given for ids in mapped.values() for given in ids), *unmapped]
-    if not tests:
-        raise ValueError(f"{args.triage or args.tests} names no test")
+    if not tests and args.triage is None:
+        raise ValueError(f"{args.tests} names no test")
     given_points = parse_points(_read_json(args.points)) if args.points is not None else {}
     points = usable_points(given_points, ancestry(git, good, bad))
     if given_points and not points:

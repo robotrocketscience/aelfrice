@@ -1469,8 +1469,25 @@ def test_the_triage_fixture_is_what_the_canary_writes(tmp_path: Path) -> None:
         {"candidates": [{"test": "tests.test_x::test_a", "node": "tests/test_x.py::test_a"}]},
         {"collection_errors": [{"test": "::tests.test_y", "path": "tests/test_y.py"}]},
         {"new_failing": None},
+        {"format": True},
+        {"format": 1.0},
+        {"format": "1"},
+        {"candidates": "abc"},
+        {"candidates": {}},
+        {"candidates": [None]},
+        {"candidates": [{"test": None, "node_id": _A}]},
+        {"candidates": [{"test": "", "node_id": _A}]},
+        {"candidates": [{"test": 5, "node_id": _A}]},
+        {"candidates": [{"test": "x", "node_id": [_A]}]},
+        {"candidates": [{"test": "x", "node_id": "state.txt"}]},
+        {"new_failing": [{"test": "x", "node_id": "tests/test_x.py"}]},
+        {"new_failing": [{"test": "x", "node_id": "tests/test_x.py::"}]},
+        {"collection_errors": [{"test": "x", "module": "tests.test_y"}]},
+        {"collection_errors": [{"test": "x", "module": "state.txt"}]},
     ],
-    ids=["format", "node-id-renamed", "module-renamed", "not-a-list"],
+    ids=["format", "node-id-renamed", "module-renamed", "not-a-list", "format-true", "format-float", "format-text",
+         "text-list", "object-list", "null-row", "null-test", "empty-test", "number-test", "list-node-id",
+         "tracked-non-test-file", "node-id-no-name", "node-id-empty-name", "module-dotted", "module-non-test-file"],
 )
 def test_a_triage_of_another_shape_exits_2(env: Env, tmp_path: Path, change: dict[str, Any]) -> None:
     shas = env.repo(["", "a"])
@@ -1479,6 +1496,41 @@ def test_a_triage_of_another_shape_exits_2(env: Env, tmp_path: Path, change: dic
                   "--triage", str(triage), "--out", str(tmp_path / "r.json"), "--step-cmd", env.step_cmd])
     assert rc == 2
     assert env.stepped() == []
+
+
+@pytest.mark.parametrize("key", ["candidates", "new_failing", "collection_errors", "format"])
+def test_a_triage_missing_a_key_exits_2(env: Env, tmp_path: Path, key: str) -> None:
+    shas = env.repo(["", "a"])
+    case = _triage_case()["triage"]
+    del case[key]
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--triage", str(_write(tmp_path / "triage.json", case)), "--out", str(tmp_path / "r.json"),
+                  "--step-cmd", env.step_cmd])
+    assert rc == 2
+    assert env.stepped() == []
+
+
+def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(env: Env, tmp_path: Path) -> None:
+    shas = env.repo(["", "a"])
+    triage = _write(tmp_path / "triage.json", {"format": 1, "candidates": [], "new_failing": [], "collection_errors": []})
+    out = tmp_path / "r.json"
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--triage", str(triage), "--out", str(out), "--step-cmd", env.step_cmd])
+    assert rc == 0
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert (result["events"], result["tests"], result["complete"]) == ([], [], True)
+    assert env.stepped() == []
+    assert not (tmp_path / "repo" / ".bisect").exists()
+
+
+def test_tests_given_a_triage_exits_2(env: Env, tmp_path: Path) -> None:
+    """Each line of the JSON read as a test id."""
+    shas = env.repo(["", "a"])
+    triage = _write(tmp_path / "triage.json", _triage_case()["triage"])
+    rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
+                  "--tests", str(triage), "--out", str(tmp_path / "r.json"), "--step-cmd", env.step_cmd])
+    assert rc == 2
+    assert not (tmp_path / "r.json").exists()
 
 
 def test_a_triage_naming_a_file_missing_at_bad_gets_a_range() -> None:
@@ -1490,11 +1542,14 @@ def test_a_triage_naming_a_file_missing_at_bad_gets_a_range() -> None:
             {"test": "tests.test_x::test_a", "node_id": _A},
         ],
         "collection_errors": [{"test": "::tests.test_y", "module": "tests/test_y.py"},
+                              {"test": "::tests.sub", "module": "tests/sub/"},
+                              {"test": "::tests.gone_sub", "module": "tests/gone_sub/"},
                               {"test": "::tests.test_z", "module": None}],
     }
-    mapped, unmapped = nb.map_triage(triage, {"tests/test_x.py", "tests/test_y.py"})
-    assert mapped == {_A: ["tests.test_x::test_a"], "tests/test_y.py": ["::tests.test_y"]}
-    assert unmapped == ["tests.gone::test_a", "::tests.test_z"]
+    mapped, unmapped = nb.map_triage(triage, nb.tree_paths({"tests/test_x.py", "tests/test_y.py", "tests/sub/a.py"}))
+    assert mapped == {_A: ["tests.test_x::test_a"], "tests/test_y.py": ["::tests.test_y"],
+                      "tests/sub/": ["::tests.sub"]}
+    assert unmapped == ["tests.gone::test_a", "::tests.gone_sub", "::tests.test_z"]
 
 
 def test_run_takes_tests_or_a_triage_and_not_both(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
