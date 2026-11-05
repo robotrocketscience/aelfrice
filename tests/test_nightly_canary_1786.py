@@ -1784,7 +1784,7 @@ def test_the_same_run_and_attempt_on_a_later_date_writes_nothing(
     before = {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()}
     assert _publish(tmp_path, repo, night(c0, 100, day=5), None) == 1
     assert {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()} == before
-    assert "::error::last green names runs/2026-11-04-100-a1" in capsys.readouterr().out
+    assert "::error::runs/2026-11-04-100-a1 already holds run 100 attempt 1" in capsys.readouterr().out
 
 
 def test_a_refusal_needs_the_same_attempt_as_well_as_the_same_run(
@@ -1796,12 +1796,20 @@ def test_a_refusal_needs_the_same_attempt_as_well_as_the_same_run(
     assert (tmp_path / "branch/runs/2026-11-04-100-a2/record.json").is_file()
 
 
-def test_named_runs_reads_the_canary_entry_and_the_leg_entries() -> None:
-    a = {"sha": SHA1, "path": "runs/a", "run_id": 5, "attempt": 2}
-    b = {"sha": SHA1, "path": "runs/b", "run_id": 6, "attempt": 1}
-    assert nc.named_runs({"canary": a, "legs": {"3.12": b}}, (5, 2)) == ["runs/a"]
-    assert nc.named_runs({"canary": a, "legs": {"3.12": b}}, (6, 1)) == ["runs/b"]
-    assert nc.named_runs({"canary": None, "legs": {}}, (5, 2)) == []
+def test_a_run_directory_name_gives_its_run_and_attempt() -> None:
+    assert nc.run_dir_order("2026-11-04-100-a2") == (100, 2)
+    assert nc.run_dir_order("old") is None
+    assert nc.run_dir_order("2026-11-04-100-a2.bak") is None
+
+
+def test_a_directory_with_no_record_or_another_name_holds_no_run(tmp_path: Path) -> None:
+    (tmp_path / "runs" / "2026-11-04-100-a1").mkdir(parents=True)
+    (tmp_path / "runs" / "2026-11-04-101-a1").mkdir()
+    (tmp_path / "runs" / "2026-11-04-101-a1" / "record.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "runs" / "old").mkdir()
+    (tmp_path / "runs" / "old" / "record.json").write_text("{}", encoding="utf-8")
+    assert [order for order, _ in nc._run_dirs(tmp_path)] == [(101, 1)]
+    assert nc._run_dirs(tmp_path / "no-branch") == []
 
 
 def test_a_late_green_attempt_cannot_take_an_empty_pointer_after_a_newer_red_one(
@@ -1872,7 +1880,7 @@ def test_a_red_republish_of_the_run_and_attempt_last_green_names_writes_nothing(
     before = {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()}
     assert _publish(tmp_path, repo, _red(c0, 100), None) == 1
     assert {p: p.read_bytes() for p in branch.rglob("*") if p.is_file()} == before
-    assert "::error::last green names runs/2026-11-04-100-a1" in capsys.readouterr().out
+    assert "::error::runs/2026-11-04-100-a1 already holds run 100 attempt 1" in capsys.readouterr().out
 
 
 def _with_extra(sha: str, run_id: int, extra: str, day: int) -> dict[str, Any]:
@@ -1951,30 +1959,6 @@ def test_a_triage_can_still_join_a_record_published_without_one(
     assert _index(tmp_path)[0]["events"] == ["pr-1"]
 
 
-def test_a_changed_unpointed_record_takes_its_new_triage_and_events(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str],
-) -> None:
-    repo, (c0, _, _), _ = main_repo
-    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
-    assert _publish(tmp_path, repo, both_red, _PR_1) == 0
-    assert _publish(tmp_path, repo, _red(c0, 100), {"events": [{"key": "pr-2"}]}) == 0
-    assert _index(tmp_path)[0]["events"] == ["pr-2"]
-    assert json.loads((tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").read_text(encoding="utf-8")) == {
-        "events": [{"key": "pr-2"}],
-    }
-
-
-def test_a_changed_unpointed_record_with_no_triage_keeps_the_runs_events(
-    tmp_path: Path, main_repo: tuple[Path, list[str], str],
-) -> None:
-    repo, (c0, _, _), _ = main_repo
-    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
-    assert _publish(tmp_path, repo, both_red, _PR_1) == 0
-    assert _publish(tmp_path, repo, _red(c0, 100), None) == 0
-    assert _index(tmp_path)[0]["events"] == ["pr-1"]
-    assert (tmp_path / "branch/runs/2026-11-04-100-a1/triage.json").is_file()
-
-
 def test_a_new_attempt_does_not_inherit_the_events_of_the_last_one() -> None:
     lines = nc.merge_index([], {**nc.index_entry(_red(SHA1, 100, run_attempt=1), None), "events": ["pr-1"]})
     merged = nc.merge_index(lines, nc.index_entry(_red(SHA1, 100, run_attempt=2), None), keep_events=True)
@@ -1990,17 +1974,28 @@ def test_the_index_is_ordered_by_run_and_skips_blank_lines() -> None:
     assert [json.loads(line)["run_id"] for line in lines] == [2, 9, 10]
 
 
-def test_republishing_a_run_no_entry_names_replaces_it(
+@pytest.mark.parametrize("day", [4, 5], ids=["same-date", "new-date"])
+def test_a_red_record_no_entry_names_cannot_be_rewritten_as_green(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str], capsys: pytest.CaptureFixture[str], day: int,
+) -> None:
+    """Rewriting it would move the pointer on a night that was red."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 100), _PR_1) == 0
+    before = _tree_bytes(tmp_path)
+    assert _publish(tmp_path, repo, _green(c0, 100, day=day), None) == 1
+    assert _tree_bytes(tmp_path) == before
+    assert "already holds run 100 attempt 1" in capsys.readouterr().out
+
+
+def test_an_old_green_record_no_entry_names_any_more_cannot_be_rewritten_as_red(
     tmp_path: Path, main_repo: tuple[Path, list[str], str],
 ) -> None:
-    """Every leg red, so no entry points here and a workflow retry may rewrite it."""
-    repo, (c0, _, _), _ = main_repo
-    both_red = _night(c0, {"3.12": ({_A: tor.FAILED}, None), "3.13": ({_A: tor.FAILED}, None)}, run_id=100)
-    assert _publish(tmp_path, repo, both_red, None) == 0
-    assert _publish(tmp_path, repo, _green(c0, 100), None) == 0
-    published = json.loads((tmp_path / "branch/runs/2026-11-04-100-a1/record.json").read_text(encoding="utf-8"))
-    assert published["nightly"]["verdict"] == nc.GREEN
-    assert _index(tmp_path)[0]["verdict"] == nc.GREEN
+    repo, (c0, c1, _), _ = main_repo
+    assert _publish(tmp_path, repo, _green(c0, 100, day=1), None) == 0
+    assert _publish(tmp_path, repo, _green(c1, 101, day=2), None) == 0
+    before = _tree_bytes(tmp_path)
+    assert _publish(tmp_path, repo, _red(c0, 100, day=1), None) == 1
+    assert _tree_bytes(tmp_path) == before
 
 
 def test_a_pointer_whose_record_is_gone_exits_1_until_a_green_night_moves_it(

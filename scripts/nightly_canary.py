@@ -170,10 +170,10 @@ which is the ordinary case of a late run: that exits 0. At one commit, the
 newer run and attempt hold the pointer. When `index.jsonl` already holds a
 newer run or attempt of the commit, a late older one moves nothing, an empty
 pointer included, since the newer one may have been red. An entry holds
-`attempt` beside `run_id` for that comparison. The record
-an entry names does not change: republishing the same run and attempt with
-different content, a new `created_at` date included, exits 1 and writes
-nothing. The same content is a no-op, whichever triage file comes with it: a
+`attempt` beside `run_id` for that comparison. A record does not change once
+written: publishing a run and attempt that `runs/` already holds with different
+content, a new `created_at` date included, exits 1 and writes nothing, whether
+or not an entry names it. The same content is a no-op, whichever triage file comes with it: a
 triage already written stays. A republish with no triage keeps the run's
 triage and the event keys on its index line. The index stays ordered by run.
 
@@ -287,6 +287,7 @@ _UNREADABLE: tuple[type[Exception], ...] = (OSError, ValueError, ElementTree.Par
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _SHA = re.compile(r"[0-9a-f]{7,64}")
+_RUN_DIR = re.compile(r"\d{4}-\d{2}-\d{2}-(\d+)-a(\d+)")
 
 _LEG_STATUSES = (GREEN, RED, BROKEN, MISSING)
 _NIGHT_VERDICTS = (GREEN, RED, INCOMPLETE)
@@ -849,6 +850,12 @@ def run_date(created_at: str) -> str:
     return created_at[:10]
 
 
+def run_dir_order(name: str) -> tuple[int, int] | None:
+    """(run_id, attempt) of a directory name `run_path` writes, or None."""
+    m = _RUN_DIR.fullmatch(name)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def run_path(record: dict[str, Any]) -> str:
     nightly = record["nightly"]
     date = run_date(str(nightly["created_at"]))
@@ -962,12 +969,6 @@ def _moved(
     else:
         problems.append(f"{what}: stays at {old_sha[:12]}, ancestry against {new_sha[:12]} unknown")
     return old
-
-
-def named_runs(green: dict[str, Any], run: tuple[int, int]) -> list[str]:
-    """The run directories `last-green.json` names for this (run_id, attempt)."""
-    entries = [green.get("canary"), *green.get("legs", {}).values()]
-    return sorted({str(entry["path"]) for entry in entries if entry is not None and _run_order(entry) == run})
 
 
 def _live_entries(green: dict[str, Any], roles: dict[str, str]) -> list[tuple[str, str | None, dict[str, Any]]]:
@@ -1402,6 +1403,20 @@ def cmd_regressions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_dirs(branch: Path) -> list[tuple[tuple[int, int], Path]]:
+    """The run directories under `runs/` that hold a record, oldest run first,
+    each with its (run_id, attempt)."""
+    runs = branch / "runs"
+    if not runs.is_dir():
+        return []
+    found: list[tuple[tuple[int, int], Path]] = []
+    for child in runs.iterdir():
+        order = run_dir_order(child.name)
+        if order is not None and (child / "record.json").is_file():
+            found.append((order, child))
+    return sorted(found)
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     record = _read_json(args.record)
     validate_record(record, str(args.record))
@@ -1415,10 +1430,17 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not branch.is_dir():
         raise ValueError(f"--branch-dir {branch} is not a directory")
     path = run_path(record)
+    this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
+    dumped = _dumps(record).encode("utf-8")
+    for order, run_dir in _run_dirs(branch):
+        if order == this_run and (run_dir / "record.json").read_bytes() != dumped:
+            print(f"::error::runs/{run_dir.name} already holds run {order[0]} attempt {order[1]} with other content, "
+                  "so it stays as it is; nothing was written")
+            return 1
     problems: list[str] = []
     record_file = branch / path / "record.json"
     triage_file = branch / path / "triage.json"
-    same_record = record_file.is_file() and record_file.read_bytes() == _dumps(record).encode("utf-8")
+    same_record = record_file.is_file()
     keep_triage = triage is None or (same_record and triage_file.is_file())
     index_file = branch / "index.jsonl"
     index: list[str] | None = None
@@ -1454,12 +1476,6 @@ def cmd_publish(args: argparse.Namespace) -> int:
         new_green, notes, pointer_problems = next_last_green(
             old_green, record, lambda old, new: git_is_ancestor(args.main_repo, old, new), on_main, superseded,
         )
-    this_run = (int(record["nightly"]["run_id"]), int(record["nightly"]["run_attempt"]))
-    for named in named_runs(old_green or {}, this_run):
-        named_file = branch / named / "record.json"
-        if named_file.is_file() and named_file.read_bytes() != _dumps(record).encode("utf-8"):
-            print(f"::error::last green names {named}, so its record stays as it is; nothing was written")
-            return 1
     writes: list[tuple[Path, str]] = [(record_file, _dumps(record))]
     if triage is not None and not keep_triage:
         writes.append((triage_file, _dumps(triage)))
