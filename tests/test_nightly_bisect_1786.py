@@ -1788,6 +1788,16 @@ def test_the_clone_borrows_objects_has_no_remote_and_sits_at_good(env: Env, tmp_
     assert _git(clone, "symbolic-ref", "-q", "HEAD").returncode != 0
 
 
+def test_a_global_default_remote_name_does_not_stop_the_clone(env: Env, tmp_path: Path) -> None:
+    """`git remote remove origin` failed under `clone.defaultRemoteName`."""
+    shas = env.repo(["", "a"])
+    Path(os.environ["GIT_CONFIG_GLOBAL"]).write_text("[clone]\n\tdefaultRemoteName = upstream\n", encoding="utf-8")
+    clone = tmp_path / "folder" / "clone"
+    clone.parent.mkdir()
+    nb._clone(nb.Git(tmp_path / "repo"), clone, shas[0], shas[1])
+    assert _git(clone, "remote").stdout == ""
+
+
 def _a_commit_no_ref_reaches(repo: Path) -> str:
     """A commit on a detached HEAD, with `main` checked out again."""
     for args in (["checkout", "-q", "--detach"], ["commit", "-q", "--allow-empty", "-m", "loose"]):

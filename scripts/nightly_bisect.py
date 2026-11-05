@@ -46,7 +46,7 @@ commit with more than one parent, or one off the ancestry path, tests nothing
 and gets a range event with the reason `nonlinear`.
 
 The run. `run` makes a folder with `tempfile.mkdtemp`, clones `--repo-root` into
-it with `git clone --shared --no-checkout`, deletes the clone's `origin`, so a
+it with `git clone --shared --no-checkout --origin origin`, deletes that `origin`, so a
 test's `git push origin` cannot reach `--repo-root`, and checks out `--good`. In
 the clone it runs `git bisect start BAD GOOD`, marks every commit that is not a
 merge point with `git bisect skip`, and runs `git bisect run` with the step. The
@@ -1243,7 +1243,7 @@ def _triage_rows(
 
 def _clone(git: Git, clone: Path, good: str, bad: str) -> None:
     """`clone` of `git`'s repository, at `good`. RuntimeError when it lacks `good` or `bad`."""
-    git.run("clone", "--shared", "--no-checkout", str(git.cwd), str(clone))
+    git.run("clone", "--shared", "--no-checkout", "--origin", "origin", str(git.cwd), str(clone))
     inside = Git(clone, ceiling=clone.parent)
     inside.commit(bad)
     inside.run("remote", "remove", "origin")
