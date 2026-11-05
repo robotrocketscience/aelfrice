@@ -1808,7 +1808,9 @@ def test_a_directory_with_no_record_or_another_name_holds_no_run(tmp_path: Path)
     (tmp_path / "runs" / "2026-11-04-101-a1" / "record.json").write_text("{}", encoding="utf-8")
     (tmp_path / "runs" / "old").mkdir()
     (tmp_path / "runs" / "old" / "record.json").write_text("{}", encoding="utf-8")
-    assert [order for order, _ in nc._run_dirs(tmp_path)] == [(101, 1)]
+    (tmp_path / "runs" / "2026-11-04-99-a1").mkdir()
+    (tmp_path / "runs" / "2026-11-04-99-a1" / "record.json").write_text("{}", encoding="utf-8")
+    assert [order for order, _ in nc._run_dirs(tmp_path)] == [(99, 1), (101, 1)]
     assert nc._run_dirs(tmp_path / "no-branch") == []
 
 
@@ -1841,6 +1843,17 @@ def test_a_late_run_of_another_commit_is_not_superseded(
     assert _publish(tmp_path, repo, _red(c1, 101, day=3), None) == 0
     assert _publish(tmp_path, repo, _green(c0, 100, day=2), None) == 0
     assert _last_green(tmp_path)["canary"]["sha"] == c0
+
+
+def test_an_index_line_alone_still_holds_a_late_run(
+    tmp_path: Path, main_repo: tuple[Path, list[str], str],
+) -> None:
+    """Run 101's directory is gone, so only the index says a newer run of c0 came first."""
+    repo, (c0, _, _), _ = main_repo
+    assert _publish(tmp_path, repo, _red(c0, 101, day=3), None) == 0
+    shutil.rmtree(tmp_path / "branch" / "runs" / "2026-11-03-101-a1")
+    assert _publish(tmp_path, repo, _green(c0, 100, day=2), None) == 0
+    assert _last_green(tmp_path) == {"canary": None, "legs": {}}
 
 
 def test_superseded_at_commit_reads_each_part_of_the_order() -> None:
@@ -2004,6 +2017,7 @@ def test_an_index_gap_counts_each_direction() -> None:
     lines = nc.merge_index([], nc.index_entry(_red(SHA1, 1), None))
     lines = nc.merge_index(lines, nc.index_entry(_red(SHA1, 2), None))
     assert nc.index_gap(lines, {1, 2}) is None
+    assert nc.index_gap(lines, {1, 3}) == "index.jsonl holds 2 run(s) and runs/ holds 2: 1 missing from the index, 1 with no record"
     assert nc.index_gap(lines, {1}) == "index.jsonl holds 2 run(s) and runs/ holds 1: 0 missing from the index, 1 with no record"
     assert nc.index_gap(lines, {1, 2, 3}) == "index.jsonl holds 2 run(s) and runs/ holds 3: 1 missing from the index, 0 with no record"
 
@@ -2614,8 +2628,10 @@ def test_the_records_this_script_writes_pass_its_own_check(tmp_path: Path) -> No
     flaky = _night(SHA1, {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)})
     broken = _night(SHA1, {"3.12": ({_A: tor.FAILED}, {_A: tor.PASSED}), "3.13": ({_A: tor.PASSED}, None)}, rcs={"3.12": 2})
     many = _night(SHA1, {"3.12": ({f"t::{i}": tor.FAILED for i in range(60)}, None), "3.13": ({_A: tor.PASSED}, None)})
+    skipped = _night(SHA1, {"3.12": ({_A: tor.SKIPPED}, None), "3.13": ({_A: tor.PASSED}, None)})
     assert (flaky["nightly"]["verdict"], broken["nightly"]["status"]["3.12"]) == (nc.GREEN, nc.BROKEN)
-    for record in (_green(SHA1, 1), _red(SHA1, 2), _night(SHA1, {"3.12": (None, None)}), flaky, broken, many):
+    assert skipped["nightly"]["status"]["3.12"] == nc.BROKEN
+    for record in (_green(SHA1, 1), _red(SHA1, 2), _night(SHA1, {"3.12": (None, None)}), flaky, broken, many, skipped):
         nc.validate_record(json.loads(json.dumps(record)), "test")
 
 
