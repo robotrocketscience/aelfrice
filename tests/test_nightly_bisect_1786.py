@@ -1369,12 +1369,23 @@ def test_the_step_and_its_children_cannot_find_a_repository_above_the_worktree(
         assert Path(rows[0][1]).name.startswith("nightly-bisect-")
 
 
+@pytest.mark.parametrize(
+    "error", [RuntimeError("refused"), subprocess.TimeoutExpired("git", 120), OSError("gone")],
+    ids=["git-failed", "timed-out", "no-git"],
+)
 def test_a_worktree_git_cannot_remove_goes_by_its_path(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], error: Exception,
 ) -> None:
     shas = env.repo(["", "a"])
-    _fail_git(monkeypatch, "worktree", "remove")
+    real = nb.Git.run
+
+    def run(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("worktree", "remove"):
+            raise error
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(nb.Git, "run", run)
     assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
     assert "::warning::removing" in capsys.readouterr().err
     assert env.folders() == []
@@ -1442,17 +1453,20 @@ def _two_rounds(run_bisect: Runner, repo: Path, shas: list[str]) -> tuple[int, d
     return run_bisect(repo, shas[0], shas[5], _A, _B, points={shas[i]: 30 + i for i in range(1, 6)})
 
 
-def test_a_dirty_tree_does_not_stop_the_reset(
+def test_a_dirty_tree_stops_neither_the_reset_nor_the_removal(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The last check dirties a file that differs between commits, so a plain
-    `git bisect reset` refuses."""
+    `git bisect reset` refuses, and so does `git worktree remove` without `--force`."""
     shas = env.repo(_TWO_ROUNDS)
     monkeypatch.setenv("FAKE_DIRTY", "check")
     rc, result = _two_rounds(run_bisect, tmp_path / "repo", shas)
     assert rc == 0
     assert result["reset_errors"] == []
     assert [e["key"] for e in result["events"]] == ["pr-32", "pr-34"]
+    assert "::warning::" not in capsys.readouterr().err
+    assert _git(tmp_path / "repo", "worktree", "list").stdout.count("\n") == 1
 
 
 @pytest.mark.parametrize(("tests", "resets"), [((_A, _B), 1), ((_A,), 0)], ids=["two-rounds", "one-round"])
@@ -1847,7 +1861,9 @@ def test_a_triage_missing_a_key_exits_2(env: Env, tmp_path: Path, key: str) -> N
     assert env.stepped() == []
 
 
-def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(env: Env, tmp_path: Path) -> None:
+def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(
+    env: Env, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
     shas = env.repo(["", "a"])
     triage = _write(tmp_path / "triage.json", {"format": 1, "candidates": [], "new_failing": [], "collection_errors": []})
     out = tmp_path / "r.json"
@@ -1858,6 +1874,7 @@ def test_a_valid_triage_with_no_test_exits_0_with_an_empty_result(env: Env, tmp_
     assert (result["events"], result["tests"], result["complete"]) == ([], [], True)
     assert env.stepped() == []
     assert env.folders() == []
+    assert "::warning::" not in capsys.readouterr().err, "there was no worktree to remove"
 
 
 def test_tests_given_a_triage_exits_2(env: Env, tmp_path: Path) -> None:
