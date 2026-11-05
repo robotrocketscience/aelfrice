@@ -14,6 +14,9 @@ from __future__ import annotations
 import statistics
 import time
 
+import pytest
+
+from aelfrice import contradiction
 from aelfrice.contradiction import _slot_conflict, _slot_conflict_preextracted
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -21,7 +24,7 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
 )
-from aelfrice.value_compare import extract_values
+from aelfrice.value_compare import SlotConflict, ValueSlots, extract_values
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +200,64 @@ def test_latency_budget() -> None:
         f"median of {ITERATIONS} rounds took {median_ms:.3f} ms, over the "
         f"{_LATENCY_THRESHOLD_MS} ms threshold (10 hits × 5 locked)"
     )
+
+
+def _count_hot_path_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, int]:
+    """Count the two calls that do the hot path's work, and still make them."""
+    counts = {"extract_values": 0, "find_conflicts": 0}
+    real_extract = contradiction.extract_values
+    real_find = contradiction.find_conflicts
+
+    def counted_extract(text: str) -> ValueSlots:
+        counts["extract_values"] += 1
+        return real_extract(text)
+
+    def counted_find(a: ValueSlots, b: ValueSlots) -> list[SlotConflict]:
+        counts["find_conflicts"] += 1
+        return real_find(a, b)
+
+    monkeypatch.setattr(contradiction, "extract_values", counted_extract)
+    monkeypatch.setattr(contradiction, "find_conflicts", counted_find)
+    return counts
+
+
+def test_work_per_call_without_a_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hit extracts at most once and compares at most once per locked belief (#1853).
+
+    A count holds on any host. These are upper bounds, so a refactor that does
+    less passes and one that re-extracts the locked set fails.
+    """
+    pairs = [
+        (_mk(f"locked_{i}", f"param_{i} = {float(i + 1)} baseline"),
+         extract_values(f"param_{i} = {float(i + 1)} baseline"))
+        for i in range(5)
+    ]
+    hits = [_mk(f"hit_{i}", f"depth = {float(i + 10)} max") for i in range(10)]
+    counts = _count_hot_path_work(monkeypatch)
+
+    results = [_slot_conflict_preextracted(h, pairs) for h in hits]
+
+    assert results == [None] * 10
+    assert counts["extract_values"] <= 10
+    assert counts["find_conflicts"] <= 50
+
+
+def test_work_per_call_stops_at_the_first_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflict on the first locked belief ends that hit's comparisons (#1853)."""
+    pairs = [
+        (_mk(f"locked_{i}", f"depth = {float(i + 100)} max"),
+         extract_values(f"depth = {float(i + 100)} max"))
+        for i in range(5)
+    ]
+    hits = [_mk(f"hit_{i}", f"depth = {float(i + 10)} max") for i in range(10)]
+    counts = _count_hot_path_work(monkeypatch)
+
+    results = [_slot_conflict_preextracted(h, pairs) for h in hits]
+
+    assert results == ["locked_0"] * 10
+    assert counts["extract_values"] <= 10
+    assert counts["find_conflicts"] <= 10
