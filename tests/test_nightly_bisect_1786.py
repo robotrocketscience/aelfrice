@@ -45,7 +45,8 @@ _D = "tests/test_x.py::test_d"
 #
 # FAKE_FLAKES is a JSON list of {sha, test, phase, as, nth}: at that commit
 # and phase the test reads as `as` (bad or ok), on the visits in `nth` or on
-# every visit without it. FAKE_ABORT_AFTER=N exits 255 from the (N+1)th call
+# every visit without it. FAKE_EXITS is a JSON list of {sha, phase, rc, nth}:
+# at that commit and phase the step exits rc. FAKE_ABORT_AFTER=N exits 255 from the (N+1)th call
 # on, FAKE_ABORT_CHECK exits 255 in the check phase (given a sha, at that
 # commit only), FAKE_NO_FAILED leaves
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
@@ -84,6 +85,9 @@ state = dict(row.split("=", 1) for row in Path("state.txt").read_text(encoding="
 ids = [row for row in Path(args.tests).read_text(encoding="utf-8").split() if row]
 visit = calls.count(line)
 flakes = json.loads(os.environ.get("FAKE_FLAKES", "[]"))
+for e in json.loads(os.environ.get("FAKE_EXITS", "[]")):
+    if e["sha"] == head and e["phase"] == phase and visit in e.get("nth", [visit]):
+        sys.exit(e["rc"])
 failing, absent = [], []
 for i in ids:
     name = i.split("::")[-1]
@@ -109,10 +113,12 @@ sys.exit(1 if failing else 0)
 
 # The fake `uv`: `sync` passes unless FAKE_UV_SYNC_FAIL is set; `run
 # --no-sync pytest --collect-only -q FILES` prints the `def test_*` ids of
-# each file, and exits 2 when one holds `import BROKEN`; `run --no-sync
-# pytest ... IDS` fails the ids `state.txt` marks bad and writes a JUnit
-# report for `--junitxml=`. Each call is logged. FAKE_UV_HANG=<stage> makes
-# that stage (sync, collect or run) sleep with a child that sleeps too.
+# each file, and exits 2 when one holds `import BROKEN`, or 4 when a folder's
+# `conftest.py` does; `run --no-sync pytest ... IDS` fails the ids `state.txt`
+# marks bad and writes a JUnit report for `--junitxml=`, which
+# FAKE_UV_JUNIT=missing leaves out and FAKE_UV_JUNIT=corrupt makes unreadable.
+# Each call is logged. FAKE_UV_HANG=<stage> makes that stage (sync, collect
+# or run) sleep with a child that sleeps too.
 _FAKE_UV = '''\
 import json, os, re, subprocess, sys, time
 from pathlib import Path
@@ -132,16 +138,20 @@ if argv[0] == "sync":
     sys.exit(1 if os.environ.get("FAKE_UV_SYNC_FAIL") else 0)
 args = [a for a in argv[4:] if not a.startswith("-") and a != "no:cacheprovider"]
 if "--collect-only" in argv:
-    broken = False
+    status = 0
     for f in args:
+        if f.endswith("/"):
+            if "import BROKEN" in Path(f, "conftest.py").read_text(encoding="utf-8"):
+                status = 4
+            continue
         text = Path(f).read_text(encoding="utf-8")
         if "import BROKEN" in text:
             print(f"ERROR {f}")
-            broken = True
+            status = 2
             continue
         for name in re.findall(r"^def (test_\\w+)", text, re.M):
             print(f"{f}::{name}")
-    sys.exit(2 if broken else 0)
+    sys.exit(status)
 state = dict(line.split("=", 1) for line in Path("state.txt").read_text(encoding="utf-8").split())
 cases, red = [], 0
 for i in args:
@@ -151,10 +161,11 @@ for i in args:
         body, red = '<failure message="boom">boom</failure>', red + 1
     cls = path[:-3].replace("/", ".")
     cases.append(f'<testcase classname="{cls}" name="{name}">{body}</testcase>')
+report = "<testsuites><testsuite>" + "".join(cases) + "</testsuite></testsuites>"
+mode = os.environ.get("FAKE_UV_JUNIT")
 for a in argv:
-    if a.startswith("--junitxml="):
-        Path(a.split("=", 1)[1]).write_text("<testsuites><testsuite>" + "".join(cases)
-                                            + "</testsuite></testsuites>", encoding="utf-8")
+    if a.startswith("--junitxml=") and mode != "missing":
+        Path(a.split("=", 1)[1]).write_text("<testsuites" if mode == "corrupt" else report, encoding="utf-8")
 sys.exit(1 if red else 0)
 '''
 
@@ -275,8 +286,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_GH_OUT", str(e.gh_out))
     monkeypatch.setenv("FAKE_PIDS", str(e.pids_file))
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
-    for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_UV_HANG", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
+    for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
+                "FAKE_HANG", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -319,6 +330,7 @@ def _build_repo(root: Path, bad_tests: list[str], edits: tuple[_Edit, ...] = ())
             if content is None:
                 target.unlink()
             else:
+                target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
         assert _git(root, "add", "-A", env=git_env).returncode == 0
         date = f"2026-11-01T00:{i:02d}:00+00:00"
