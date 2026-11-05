@@ -2558,6 +2558,13 @@ def _forged_green(sha: str = SHA1, run_id: int = 1) -> dict[str, Any]:
     return record
 
 
+def _no_counts() -> dict[str, Any]:
+    """A good record but for one leg's `counts`, so no other check refuses it."""
+    record = _with("verdict", nc.RED)
+    del record["legs"]["3.12"]["counts"]
+    return record
+
+
 _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("nightly-list", _with("nightly", [])),
     ("nightly-str", _with("nightly", "x")),
@@ -2567,7 +2574,7 @@ _BAD_RECORDS: list[tuple[str, dict[str, Any]]] = [
     ("legs-list", _with("legs", [])),
     ("leg-str", _with("legs", {"3.12": "x"})),
     ("leg-tests-list", _with("legs", {"3.12": {"tests": [], "counts": {}}})),
-    ("leg-no-counts", _with("legs", {"3.12": {"tests": {}}})),
+    ("leg-no-counts", _no_counts()),
     ("status-list", _with("status", [])),
     ("status-unknown", _with("status", {"3.12": "fine"})),
     ("confirmed-list", _with("confirmed", [])),
