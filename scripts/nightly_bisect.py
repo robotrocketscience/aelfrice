@@ -183,17 +183,17 @@ any other status is a skip, as any status but 0 or 1 is when a node id runs.
 Caps: `--budget-seconds` (1200, at least 1) bounds the run, `--step-timeout`
 (300) the whole of each step, sync and every collection included, and at most 50
 tests are bisected; the others get a range event. Every loop stops at the
-deadline, and no step or `git bisect run` starts past it. The margin: a child running at its bound gets
-SIGTERM and 2 s before SIGKILL, and `run` ends a `git bisect run` or a check
-whose step ignored `--deadline` 15 s past its own bound. `git bisect run`, the
-step, its `uv` and pytest, and `gh` each have their own process group and write
-their output to a temporary file. A timeout sends the group SIGTERM, then
-SIGKILL, so a killed `uv` leaves no pytest behind and a process that leaves the
-group cannot hold a pipe open. A step that receives SIGTERM kills its own
-children first. Other git calls are plain children with a 120 s timeout, outside
-that margin, and killing one leaves running anything it started, such as a hook.
-Process groups make this script POSIX
-only; the canary runs it on Linux and macOS.
+deadline, and no step or `git bisect run` starts past it. The margin: a child
+running at its bound gets SIGTERM and 2 s before SIGKILL, and `run` ends a `git
+bisect run` or a check whose step ignored `--deadline` 15 s past its own bound.
+`git bisect run`, the step, its `uv` and pytest, and `gh` each have their own
+process group and write their output to a temporary file. A timeout sends the
+group SIGTERM, then SIGKILL, so a killed `uv` leaves no pytest behind and a
+process that leaves the group cannot hold a pipe open. A step that receives
+SIGTERM kills its own children first. Other git calls are plain children with a
+120 s timeout, outside that margin, and killing one leaves running anything it
+started, such as a hook. Process groups make this script POSIX only; the canary
+runs it on Linux and macOS.
 
 SIGTERM or SIGINT to `run` ends the running child's group, removes the folder,
 saves the partial result with the rest of the tests under the reason `stopped`,
