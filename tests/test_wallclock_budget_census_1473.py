@@ -73,7 +73,6 @@ KNOWN: frozenset[str] = frozenset(
         "tests/test_bm25_index.py::test_build_under_1s_at_n10k",
         "tests/test_ingest_log.py::test_ingest_latency_within_budget",
         "tests/test_transcript_logger.py::test_per_turn_latency_under_budget",
-        "tests/test_working_state.py::TestLatency::test_projector_under_500ms_on_clean_repo",
     }
 )
 

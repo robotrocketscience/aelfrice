@@ -201,14 +201,29 @@ class TestIsEmpty:
 
 
 class TestLatency:
-    def test_projector_under_500ms_on_clean_repo(self, tmp_repo: Path) -> None:
-        """AC#3 sets ≤50ms p95 in production. The CI host bound is
-        looser: assert under 500ms (10x budget) so the test remains
-        non-flaky on shared/cold runners while still catching a real
-        regression (subprocess hang, missing timeout)."""
-        import time
-        t0 = time.monotonic()
+    @pytest.mark.timeout(60)
+    def test_clean_repo_run_finishes_without_a_git_timeout(
+        self, tmp_repo: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AC#3 sets ≤50ms p95 in production. This test catches a subprocess
+        hang, so it watches for the hang and reads no clock (#1853).
+
+        A hung call runs into the module's timeout and raises TimeoutExpired on
+        any host, so a run with no expiry had no hung call. That timeout is the
+        only bound here, so a slow host can't widen it. It runs once, so a git
+        call that takes over 1.5s on a busy host fails it too.
+        """
+        real_run = subprocess.run
+        expired: list[str] = []
+
+        def watching_run(cmd: list[str], **kwargs: object) -> object:
+            try:
+                return real_run(cmd, **kwargs)  # type: ignore[call-overload]
+            except subprocess.TimeoutExpired:
+                expired.append(" ".join(cmd))
+                raise
+
+        monkeypatch.setattr(subprocess, "run", watching_run)
         ws = project_working_state(tmp_repo, recent_turns=[])
-        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert expired == []
         assert ws.branch == "main"
-        assert elapsed_ms < 500, f"projector took {elapsed_ms:.1f}ms; expected <500ms"
