@@ -2218,7 +2218,7 @@ def test_the_lock_and_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path
     before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
     for _ in range(2):
         assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
-    assert nb._INHERITED_FDS == ()
+    assert nb._HELD_FDS == []
     assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == before
 
 

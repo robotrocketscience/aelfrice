@@ -233,7 +233,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -636,7 +636,7 @@ def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
 # The groups this process has running, for the step's SIGTERM handler.
 _LIVE_GROUPS: set[int] = set()
 # What every child inherits: `run`'s lock, so an orphan keeps it held.
-_INHERITED_FDS: tuple[int, ...] = ()
+_HELD_FDS: list[int] = []
 
 
 class Interrupted(Exception):
@@ -690,7 +690,7 @@ def run_group(
             proc = subprocess.Popen(
                 argv, cwd=cwd, env=repo_free_env(), stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
-                start_new_session=True, pass_fds=_INHERITED_FDS,
+                start_new_session=True, pass_fds=tuple(_HELD_FDS),
             )
         except FileNotFoundError:
             return 127, ""
@@ -1179,10 +1179,9 @@ def _prepare_worktree(git: Git, path: Path, default: Path, good: str) -> None:
 
 
 @contextlib.contextmanager
-def _run_lock(git: Git) -> Iterator[None]:
+def _run_lock(git: Git) -> Generator[None, None, None]:
     """Hold the repository's lock for the block, or raise ValueError when a
     run, or what a killed run left alive, holds it. Children inherit it."""
-    global _INHERITED_FDS
     path = git.cwd / git.out("rev-parse", "--git-common-dir") / "nightly-bisect.lock"
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -1190,10 +1189,10 @@ def _run_lock(git: Git) -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise ValueError(f"{path} is held: an earlier run, or what it left alive, is still running") from exc
-        _INHERITED_FDS = (fd,)
+        _HELD_FDS.append(fd)
         yield
     finally:
-        _INHERITED_FDS = ()
+        _HELD_FDS.clear()
         os.close(fd)
 
 
