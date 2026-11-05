@@ -32,6 +32,12 @@ A belief is one statement with its source, type, and Bayesian confidence score. 
 
 ## Installation
 
+aelfrice works with the `claude` CLI and Codex. You install it once on each machine, then onboard each project.
+
+### Install on your machine
+
+Run these commands in a terminal, from any folder:
+
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
 2. Install aelfrice:
 
@@ -39,27 +45,48 @@ A belief is one statement with its source, type, and Bayesian confidence score. 
    uv tool install aelfrice
    ```
 
+   If uv warns that a folder isn't on your `PATH`, run `uv tool update-shell`, then open a new terminal.
+
 3. Connect aelfrice to your agent:
 
    ```bash
    aelf setup
    ```
 
-   On Codex, run `aelf setup --host codex` instead, then trust the hooks with `/hooks`. Codex uses `$aelf-*` in place of `/aelf:`.
+   This adds the hooks and `/aelf:` commands for every project on the machine. On Codex, run `aelf setup --host codex` instead, then trust the hooks with `/hooks`. Codex uses `$aelf-*` in place of `/aelf:`.
 
-4. In your agent, scan your project from its directory:
+To have your agent run these steps, paste this prompt into it, then exit and start a new session:
+
+```text
+Install aelfrice from github.com/robotrocketscience/aelfrice for all my projects, following its README, and verify the install with aelf doctor.
+```
+
+### Onboard a project
+
+1. Start your agent in the project's folder. If the agent was already open before setup, exit it first so that it loads the new commands.
+
+   ```bash
+   cd ~/projects/my-app
+   claude
+   ```
+
+2. In the agent, scan the project. The `.` means the current folder.
 
    ```text
    /aelf:onboard .
    ```
 
-5. Lock your first belief:
+   The command asks which model to use and shows what each costs, then shows the estimated time before it starts. Choose the low-cost model, which is the default and the one the command recommends. The scan uses your agent's existing plan and needs no API key. To scan without a model, add `--no-subagents`.
+
+3. Lock your first belief:
 
    ```text
    /aelf:lock never push directly to main
    ```
 
-aelfrice then runs without further commands. `/aelf:doctor` checks the install (`aelf doctor --host codex` on Codex). The [installation guide](docs/user/INSTALL.md) covers every option.
+aelfrice then runs without further commands. To check the install, run `/aelf:doctor` (`aelf doctor --host codex` on Codex). The [installation guide](docs/user/INSTALL.md) covers every option.
+
+Each git repository keeps its own store, in its `.git` folder. Folders outside git share one store at `~/.aelfrice/memory.db`. On the `claude` CLI, `aelf setup` adds the git hook that reads commit messages only to the repository you run it in, so run `aelf setup` once in each project where you want that. Codex doesn't get this hook.
 
 <p align="center"><img src="docs/assets/retrieval-lanes.png" width="88%" alt="An illustrative schematic of the retrieval lanes of aelfrice over a belief graph: locked beliefs pinned at the query, keyword seeds from full-text search spreading outward, an optional typed-edge graph walk, and a structural lane for marker queries."></p>
 
