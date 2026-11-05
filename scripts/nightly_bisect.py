@@ -123,6 +123,15 @@ What the checks cannot detect:
   test present at `--good`, gone by a later round's first commit and then back,
   can each name the PR that brought the test back. Git looks for a copy's
   source only among the files a commit changed.
+- The clone has no remote and a detached HEAD, so a commit that starts reading the
+  branch name or `origin`, in a test or in code, fails there and the blame can
+  land on it with exit 0. On 2026-11-05 a CI-style checkout and a clone gave the
+  same outcomes on the whole suite: 0 differences across 14429 passed.
+- A clone does not carry local git settings, filters or submodules, so a test
+  relying on them fails from the first commit and gets a range that may not hold
+  the real break.
+- A signal between the stub and the clone's creation leaves the stub, with exit
+  128 plus the signal and no events.
 
 A step that dirties a tracked file stops the bisect, which ends in a range, when
 the next commit changes that file. Otherwise the edit carries into the next
