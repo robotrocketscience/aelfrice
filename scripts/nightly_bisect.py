@@ -78,12 +78,11 @@ has to fail, and on the merge point before it, which has to pass. A test
 that fails at that merge point too gets a range event up to the culprit.
 A status of 1 that names no test, as when a test kills pytest before it writes
 its report, says nothing about any one test, so every test of that check gets
-a range event over the round.
-The tests that failed at the culprit then run there a second time, and only
-a test that fails both times is blamed on it. One that passes the second
-time flaked, and goes to the next round. A real break stays broken, so the
-blamed tests also run at the merge point after the culprit, unless that is
-`--bad`: one that passes there gets a range event.
+a range event over the round. The tests that failed at the culprit then run
+there a second time, and only a test that fails both times is blamed on it.
+One that passes the second time flaked, and goes to the next round. A real
+break stays broken, so the blamed tests also run at the merge point after the
+culprit, unless that is `--bad`: one that passes there gets a range event.
 
 A commit where a test does not exist reads good, so a test that existed
 under another name, or was gone for a while, looks new at the commit that
@@ -105,6 +104,16 @@ What the checks cannot detect:
   left for git's similarity check: the new name reads as a new test.
 - A test that breaks, recovers and breaks again. The bisect finds one change
   from pass to fail, not all of them.
+- A flaky test that fails at a culprit check can name the wrong PR. On a fake
+  step with one real break among 8 merge points, 60 runs each on 2026-11-04: at
+  a failure chance of 0.5 per run once broken, 5 wrong, 5 right, 50 ranges; at
+  0.8, 2 wrong, 20 right, 38 ranges; at 0.95, none wrong, 54 right, 6 ranges.
+- A rename split across two PRs, a copy of a file unchanged in that PR, and a
+  test present at `--good`, gone by a later round's first commit and then back,
+  can each name the PR that brought the test back. Git looks for a copy's
+  source only among the files a commit changed.
+
+A step that dirties a tracked file stops the bisect, which ends in a range.
 
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
@@ -120,19 +129,17 @@ without git's repository variables.
 The step. `--failed-out` and `--absent-out` name the tests that failed and
 the tests that do not exist at the commit. Its exit status follows `git
 bisect run`: 0 good, 1 bad, 125 skip, 255 abort. Past `--deadline` it exits
-255, which stops the bisect; the result then names the range it had
-narrowed to. Otherwise it runs
-`uv sync --frozen` (125 when that fails), collects the test files with
-`pytest --collect-only -q` (125 when collection fails) and keeps the ids
-it collected. When none is collected the commit predates the tests and is
-good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
-status or a timeout is a skip. A module that fails to import, or a folder
-whose `conftest.py` does, reaches the step as a target (`tests.test_x`, the
-name pytest's JUnit report gives a collection error, or `tests/sub/`), judged
-by collecting it alone as below.
-`--step-timeout` bounds the whole step. A step that cannot read its input
-exits 255 rather than 2, which `git bisect run` would read as a bad commit, and
-a bad flag or any other uncaught error exits 125 for the same reason.
+255, which stops the bisect; the result then names the range it had narrowed
+to. Otherwise it runs `uv sync --frozen` (125 when that fails), collects the
+test files with `pytest --collect-only -q` (125 when collection fails) and keeps
+the ids it collected. When none is collected the commit predates the tests and
+is good. It then runs those ids: pytest's 0 is good, 1 is bad, and any other
+status or a timeout is a skip. A module that fails to import, or a folder whose
+`conftest.py` does, reaches the step as a target (`tests.test_x`, the name
+pytest's JUnit report gives a collection error, or `tests/sub/`), judged by
+collecting it alone as below. A step that cannot read its input exits 255
+rather than 2, which `git bisect run` would read as a bad commit, and a bad flag
+or any other uncaught error exits 125 for the same reason.
 
 Test ids. `--tests` takes three forms: a node id
 (`tests/test_x.py::TestC::test_a[p]`), a JUnit id
@@ -172,12 +179,12 @@ are bisected; the others get a range event. Every loop stops at the deadline,
 and no child starts past it. The margin: a child running at its bound gets
 SIGTERM and 2 s before SIGKILL, and `run` ends a `git bisect run` or a check
 whose step ignored `--deadline` 15 s past its own bound. Git calls have their
-own 120 s timeout, outside that margin. Every child that can run long has its own process group and writes
-its output to a temporary file. A timeout sends the group SIGTERM, then
-SIGKILL, so a killed `uv` leaves no pytest behind and a process that leaves
-the group cannot hold a pipe open. A step that receives SIGTERM kills its
-own children first. Process groups make this script POSIX only; the canary
-runs it on Linux and macOS.
+own 120 s timeout, outside that margin. Every child that can run long has its
+own process group and writes its output to a temporary file. A timeout sends
+the group SIGTERM, then SIGKILL, so a killed `uv` leaves no pytest behind and a
+process that leaves the group cannot hold a pipe open. A step that receives
+SIGTERM kills its own children first. Process groups make this script POSIX
+only; the canary runs it on Linux and macOS.
 
 SIGTERM or SIGINT to `run` ends the running child's group, resets the bisect,
 saves the partial result with the rest of the tests under the reason `stopped`,
