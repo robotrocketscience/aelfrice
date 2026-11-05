@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -2122,13 +2123,35 @@ def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
 
 # --------------------------------------------------------------- signals
 
-def _start_a_run(env: Env, tmp_path: Path, shas: list[str], out: Path) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        [sys.executable, str(_REPO / "scripts" / "nightly_bisect.py"), "run", "--repo-root", str(tmp_path / "repo"),
-         "--good", shas[0], "--bad", shas[-1], "--tests", str(_tests_file(tmp_path / "ids.txt", _A, _B)),
-         "--out", str(out), "--step-cmd", env.step_cmd],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+# Starts `run`, sends it a signal once the fake has named a process, and
+# prints its status. A driver, so that the bounded `subprocess.run` around it
+# gives the test its exit.
+_SIGNALLER = '''\
+import subprocess, sys, time
+from pathlib import Path
+signum, pids, *argv = sys.argv[1:]
+proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+limit = time.monotonic() + 60
+while not (Path(pids).is_file() and Path(pids).read_text(encoding="utf-8").strip()):
+    if time.monotonic() > limit:
+        proc.kill()
+        sys.exit("the fake never started")
+    time.sleep(0.05)
+proc.send_signal(int(signum))
+print(proc.wait(timeout=60))
+'''
+
+
+def _signal_a_run(env: Env, tmp_path: Path, shas: list[str], signum: int, *extra: str) -> int:
+    """The status of a `run` that got `signum` while the hanging fake was up."""
+    r = subprocess.run(
+        [sys.executable, "-c", _SIGNALLER, str(signum), str(env.pids_file),
+         sys.executable, str(_REPO / "scripts" / "nightly_bisect.py"), "run", "--repo-root", str(tmp_path / "repo"),
+         "--good", shas[0], "--bad", shas[-1], "--out", str(tmp_path / "result.json"), *extra],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=110, check=False,
     )
+    assert r.returncode == 0, r.stderr
+    return int(r.stdout)
 
 
 def _wait_for(condition: Callable[[], Any], what: str) -> None:
@@ -2145,13 +2168,10 @@ def test_a_signal_ends_the_children_resets_and_saves(
     """SIGTERM left `git bisect run` and the step alive, and ran no reset."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_HANG", "30")
-    out = tmp_path / "result.json"
-    proc = _start_a_run(env, tmp_path, shas, out)
-    _wait_for(env.pids, "the fake step's start")
-    proc.send_signal(signum)
-    assert proc.wait(timeout=60) == 128 + signum
+    ids = str(_tests_file(tmp_path / "ids.txt", _A, _B))
+    assert _signal_a_run(env, tmp_path, shas, signum, "--tests", ids, "--step-cmd", env.step_cmd) == 128 + signum
     assert _survivors(env.pids()) == []
-    result = json.loads(out.read_text(encoding="utf-8"))
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert result["complete"] is False
     assert sorted(t for e in result["events"] for t in e["tests"]) == [_A, _B]
     log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
@@ -2164,15 +2184,8 @@ def test_a_signal_runs_the_step_handler_before_the_kill(
     """The real step's children have their own group, and only its handler ends them."""
     shas = env.repo(["", "", "a"])
     monkeypatch.setenv("FAKE_UV_HANG", "sync")
-    proc = subprocess.Popen(
-        [sys.executable, str(_REPO / "scripts" / "nightly_bisect.py"), "run", "--repo-root", str(tmp_path / "repo"),
-         "--good", shas[0], "--bad", shas[-1], "--tests", str(_tests_file(tmp_path / "ids.txt", _A)),
-         "--out", str(tmp_path / "result.json")],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    _wait_for(env.pids, "the fake uv's start")
-    proc.terminate()
-    assert proc.wait(timeout=60) == 128 + 15
+    ids = str(_tests_file(tmp_path / "ids.txt", _A))
+    assert _signal_a_run(env, tmp_path, shas, 15, "--tests", ids) == 128 + 15
     assert _survivors(env.pids()) == []
 
 
@@ -2182,10 +2195,8 @@ def test_a_killed_run_keeps_the_next_one_out_until_its_children_end(
     """An orphan wrote into the next run's bisect: `was both good and bad`."""
     shas = env.repo(_LINEAR)
     monkeypatch.setenv("FAKE_HANG", "30")
-    proc = _start_a_run(env, tmp_path, shas, tmp_path / "killed.json")
-    _wait_for(env.pids, "the fake step's start")
-    proc.kill()
-    proc.wait(timeout=60)
+    ids = str(_tests_file(tmp_path / "ids.txt", _A, _B))
+    assert _signal_a_run(env, tmp_path, shas, 9, "--tests", ids, "--step-cmd", env.step_cmd) == -9
     orphan = env.pids()[0]
     group = os.getpgid(orphan)
     assert _running(orphan)
@@ -2202,11 +2213,24 @@ def test_a_killed_run_keeps_the_next_one_out_until_its_children_end(
     _wait_for(lock_is_free, "the lock's release")
 
 
-def test_the_lock_is_free_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+def test_the_lock_and_the_handlers_are_back_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
     shas = env.repo(["", "a"])
+    before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
     for _ in range(2):
         assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
     assert nb._INHERITED_FDS == ()
+    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == before
+
+
+def test_a_second_signal_cannot_stop_the_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    previous = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    try:
+        with pytest.raises(nb.Interrupted):
+            nb._interrupt(signal.SIGTERM, None)
+        assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)) == (signal.SIG_IGN, signal.SIG_IGN)
+    finally:
+        signal.signal(signal.SIGTERM, previous[0])
+        signal.signal(signal.SIGINT, previous[1])
 
 
 # ---------------------------------------------------------------- budget
