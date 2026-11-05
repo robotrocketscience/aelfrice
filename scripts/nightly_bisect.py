@@ -609,14 +609,9 @@ def ancestry(git: Git, good: str, bad: str) -> list[str]:
 
 
 def is_linear(git: Git, good: str, bad: str) -> bool:
-    """True when each commit of `good..bad` has the one before it as its only parent."""
-    previous = good
-    for row in git.lines("rev-list", "--reverse", "--parents", f"{good}..{bad}"):
-        sha, *parents = row.split()
-        if parents != [previous]:
-            return False
-        previous = sha
-    return True
+    """True when no commit of `good..bad` has two parents. A commit off the
+    ancestry path can only be in the range through such a merge."""
+    return all(len(row.split()) == 2 for row in git.lines("rev-list", "--parents", f"{good}..{bad}"))
 
 
 def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
