@@ -1081,6 +1081,25 @@ def test_a_reset_that_fails_is_reported(
     assert rc == 0
 
 
+def test_a_reset_that_times_out_is_reported_and_the_result_kept(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    real = nb.Git.run
+
+    def run(self: nb.Git, *args: str, check: bool = True, timeout: float = 120) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ("bisect", "reset"):
+            raise subprocess.TimeoutExpired(["git", *args], timeout)
+        return real(self, *args, check=check, timeout=timeout)
+
+    monkeypatch.setattr(nb.Git, "run", run)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 0
+    assert len(result["reset_errors"]) == 1
+    assert "timed out" in result["reset_errors"][0]
+    assert result["complete"] is True
+
+
 def test_the_bisect_is_reset_when_the_round_raises(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

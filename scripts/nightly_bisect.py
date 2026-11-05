@@ -934,13 +934,15 @@ class Bisector:
 
     def _reset(self, wt: Git) -> None:
         """End the bisect, on a clean tree when the first try fails."""
-        r = wt.run("bisect", "reset", check=False)
-        if r.returncode == 0:
-            return
-        wt.run("reset", "-q", "--hard", check=False)
-        r = wt.run("bisect", "reset", check=False)
-        if r.returncode != 0:
-            error = r.stderr.strip() or f"exit status {r.returncode}"
+        try:
+            r = wt.run("bisect", "reset", check=False)
+            if r.returncode != 0:
+                wt.run("reset", "-q", "--hard", check=False)
+                r = wt.run("bisect", "reset", check=False)
+            error = (r.stderr.strip() or f"exit status {r.returncode}") if r.returncode != 0 else ""
+        except subprocess.TimeoutExpired as exc:
+            error = str(exc)
+        if error:
             self.reset_errors.append(error)
             print(f"::warning::git bisect reset failed: {error}", file=sys.stderr)
 
