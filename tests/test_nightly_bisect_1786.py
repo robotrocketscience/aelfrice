@@ -191,7 +191,8 @@ sys.exit(1 if red else 0)
 '''
 
 # The fake `gh`: logs its arguments, its folder and its GIT_DIR, then prints FAKE_GH_OUT's file. With
-# FAKE_GH_FAIL set it fails; set to `with-output`, it prints the file first.
+# FAKE_GH_FAIL set it fails; set to `with-output`, it prints the file first,
+# and set to `silent`, it prints nothing.
 # FAKE_GH_HANG ignores SIGTERM and sleeps, with a child that sleeps too.
 _FAKE_GH = '''\
 import json, os, signal, subprocess, sys, time
@@ -209,7 +210,8 @@ if os.environ.get("FAKE_GH_HANG"):
 if os.environ.get("FAKE_GH_FAIL"):
     if os.environ["FAKE_GH_FAIL"] == "with-output":
         print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
-    print("HTTP 502", file=sys.stderr)
+    if os.environ["FAKE_GH_FAIL"] != "silent":
+        print("HTTP 502", file=sys.stderr)
     sys.exit(1)
 print(Path(os.environ["FAKE_GH_OUT"]).read_text(encoding="utf-8"))
 '''
@@ -2046,6 +2048,17 @@ def test_merge_points_ignores_output_from_a_failed_gh(
     assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
     assert json.loads(out.read_text(encoding="utf-8")) == {}
     assert "HTTP 502" in capsys.readouterr().err
+
+
+def test_merge_points_names_the_status_of_a_gh_that_says_nothing(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_GH_FAIL", "silent")
+    out = tmp_path / "points.json"
+    assert _merge_points(tmp_path / "repo", shas[0], shas[7], out) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+    assert "tests every commit: exit status 1" in capsys.readouterr().err
 
 
 def test_merge_points_leaves_out_a_merged_side_branch(env: Env, tmp_path: Path) -> None:
