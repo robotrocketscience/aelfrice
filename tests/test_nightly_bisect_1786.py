@@ -2125,8 +2125,14 @@ def test_run_usage_errors_exit_2(env: Env, tmp_path: Path, case: str) -> None:
     rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", good, "--bad", bad,
                   "--tests", str(ids), "--out", str(tmp_path / "r.json"), "--step-cmd", env.step_cmd, *extra])
     assert rc == 2
-    assert not (tmp_path / "r.json").exists()
+    assert _nothing_found(tmp_path / "r.json")
     assert env.stepped() == []
+
+
+def _nothing_found(path: Path) -> bool:
+    """What a run that exited 2 before any work leaves at `--out`."""
+    result = json.loads(path.read_text(encoding="utf-8"))
+    return (result["kind"], result["complete"], result["events"]) == (nb.RESULT_KIND, False, [])
 
 
 # ------------------------------------------------- the canary's triage
@@ -2261,7 +2267,7 @@ def test_tests_given_a_triage_exits_2(env: Env, tmp_path: Path) -> None:
     rc = nb.main(["run", "--repo-root", str(tmp_path / "repo"), "--good", shas[0], "--bad", shas[1],
                   "--tests", str(triage), "--out", str(tmp_path / "r.json"), "--step-cmd", env.step_cmd])
     assert rc == 2
-    assert not (tmp_path / "r.json").exists()
+    assert _nothing_found(tmp_path / "r.json")
 
 
 def test_a_triage_naming_a_file_missing_at_bad_gets_a_range() -> None:
