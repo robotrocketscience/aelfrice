@@ -76,6 +76,9 @@ A folder that is missing or empty is used. A symbolic link exits 2.
 The checks, per test, at each culprit. The step runs on the culprit, which
 has to fail, and on the merge point before it, which has to pass. A test
 that fails at that merge point too gets a range event up to the culprit.
+A status of 1 that names no test, as when a test kills pytest before it writes
+its report, says nothing about any one test, so every test of that check gets
+a range event over the round.
 The tests that failed at the culprit then run there a second time, and only
 a test that fails both times is blamed on it. One that passes the second
 time flaked, and goes to the next round. A real break stays broken, so the
@@ -749,6 +752,12 @@ class Check:
     failed: list[str]
     absent: list[str]
 
+    @property
+    def judged(self) -> bool:
+        """False for a status with no verdict, and for a 1 that names no test,
+        which is what a missing or corrupt JUnit report leaves."""
+        return self.rc == STEP_GOOD or (self.rc == STEP_BAD and bool(self.failed))
+
 
 @dataclass
 class Bisector:
@@ -872,16 +881,13 @@ class Bisector:
         if STEP_ABORT in (first.rc, before.rc):
             self._event(event_for_range(outcome.good, outcome.bad, remaining, REASON_BUDGET))
             return None
-        if first.rc != STEP_BAD or before.rc not in (STEP_GOOD, STEP_BAD):
+        if first.rc != STEP_BAD or not first.judged or not before.judged:
             self._event(event_for_range(lo, self.bad, remaining, REASON_UNVERIFIED))
             return None
-        # A status of 1 with no test named blames all of them.
-        broke = first.failed or remaining
-        red_before = (before.failed or remaining) if before.rc == STEP_BAD else []
-        earlier = [t for t in broke if t in red_before]
+        earlier = [t for t in first.failed if t in before.failed]
         if earlier:
             self._event(event_for_range(lo, culprit, earlier, REASON_UNVERIFIED))
-        broke = [t for t in broke if t not in earlier]
+        broke = [t for t in first.failed if t not in earlier]
         blamed: list[str] = []
         if broke:
             again = self._check(culprit, broke)
@@ -889,11 +895,10 @@ class Bisector:
             if again.rc == STEP_ABORT:
                 self._event(event_for_range(outcome.good, outcome.bad, broke, REASON_BUDGET))
                 return None
-            if again.rc not in (STEP_GOOD, STEP_BAD):
+            if not again.judged:
                 self._event(event_for_range(lo, self.bad, broke, REASON_UNVERIFIED))
                 return None
-            if again.rc == STEP_BAD:
-                blamed = again.failed or broke
+            blamed = again.failed
         settled = [*earlier, *blamed]
         blamed = self._still_broken(lo, outcome, blamed, record)
         blamed = self._new_here(lo, outcome, blamed, before.absent)

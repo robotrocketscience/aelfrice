@@ -720,15 +720,74 @@ def test_a_repeated_false_good_at_the_real_culprit_stays_undetected(
     assert result["events"] == [nb.event_for_culprit(shas[4], 34, [_A], shas[3])]
 
 
-def test_a_status_of_one_with_no_test_named_blames_them_all(
+def test_a_status_of_one_with_no_test_named_is_a_range(
     env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shas = env.repo(["", "", "ab", "ab"])
     monkeypatch.setenv("FAKE_NO_FAILED", "1")
     rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B,
                             points={shas[i]: 30 + i for i in range(1, 4)})
-    assert rc == 0
-    assert result["events"] == [nb.event_for_culprit(shas[2], 32, [_A, _B], shas[1])]
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [_A, _B], nb.REASON_UNVERIFIED)]
+
+
+@pytest.mark.parametrize("report", ["missing", "corrupt"])
+def test_a_missing_junit_report_names_no_pr(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, report: str,
+) -> None:
+    """A test calling `os._exit(1)` at 1 blamed test b too, which breaks at 3."""
+    shas = env.repo(["", "a", "a", "ab", "ab"])
+    monkeypatch.setenv("FAKE_UV_JUNIT", report)
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[4], _A, _B,
+                            points={shas[i]: 30 + i for i in range(1, 5)}, step=False)
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[4], [_A, _B], nb.REASON_UNVERIFIED)]
+
+
+def test_a_preceding_point_with_no_report_is_a_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a report there, the two tests cannot be told apart at the preceding point."""
+    shas = env.repo(["", "", "ab", "ab"])
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[1], "phase": "check", "rc": 1}]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[3], _A, _B,
+                            points={shas[i]: 30 + i for i in range(1, 4)})
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[3], [_A, _B], nb.REASON_UNVERIFIED)]
+
+
+@pytest.mark.parametrize("rc", [125, 1], ids=["cannot-judge", "no-report"])
+def test_a_preceding_point_that_cannot_be_judged_is_a_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch, rc: int,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[2], "phase": "check", "rc": rc}]))
+    status, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert status == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
+    assert result["rounds"][0]["verify"]["preceding_rc"] == rc
+
+
+def test_a_second_run_with_no_report_at_the_culprit_is_a_range(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_EXITS", json.dumps([{"sha": shas[5], "phase": "check", "rc": 1, "nth": [2]}]))
+    rc, result = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 1
+    assert result["events"] == [nb.event_for_range(shas[0], shas[7], [_A], nb.REASON_UNVERIFIED)]
+
+
+@pytest.mark.parametrize("report", ["missing", "corrupt"])
+def test_step_with_no_readable_report_is_bad_and_names_no_test(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report: str,
+) -> None:
+    env.repo(["a"])
+    _tests_file(tmp_path / "ids.txt", _A)
+    failed = tmp_path / "failed.txt"
+    monkeypatch.setenv("FAKE_UV_JUNIT", report)
+    assert _step(tmp_path, tmp_path / "repo", "--deadline", "9e12", "--failed-out", str(failed)) == nb.STEP_BAD
+    assert failed.read_text(encoding="utf-8") == ""
 
 
 def test_tests_past_the_cap_keep_their_own_reason(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
