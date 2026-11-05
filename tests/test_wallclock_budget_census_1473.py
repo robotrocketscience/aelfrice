@@ -73,6 +73,8 @@ KNOWN: frozenset[str] = frozenset(
         "tests/test_bm25_index.py::test_build_under_1s_at_n10k",
         "tests/test_ingest_log.py::test_ingest_latency_within_budget",
         "tests/test_transcript_logger.py::test_per_turn_latency_under_budget",
+        # Stubs every git call, so it times only the projector's own code (#1853).
+        "tests/test_working_state.py::TestLatency::test_projector_own_time_with_git_stubbed",
     }
 )
 

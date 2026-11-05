@@ -258,3 +258,28 @@ class TestLatency:
             for subcommand, timeout in seen:
                 assert subcommand in subcommands
                 assert timeout == 1.5
+
+    def test_projector_own_time_with_git_stubbed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With every git call stubbed, what's left is the projector's own time.
+
+        Stubbed runs stayed at or below 0.033ms at every load measured, so 50ms
+        holds on a slow host and a sleep or a slow loop in the projector fails
+        it (#1853). The fastest of five runs is judged, so a slowdown on some
+        runs passes. Delay inside the git process stays uncaught.
+        """
+        import time
+
+        def stub(cmd: list[str], **kwargs: object) -> object:
+            return subprocess.CompletedProcess(cmd, 0, "main\n", "")
+
+        monkeypatch.setattr(subprocess, "run", stub)
+        best_ms = float("inf")
+        for _ in range(5):
+            t0 = time.perf_counter()
+            project_working_state(tmp_path, recent_turns=[])
+            best_ms = min(best_ms, (time.perf_counter() - t0) * 1000)
+            if best_ms < 50:
+                break
+        assert best_ms < 50, f"fastest of 5 stubbed runs took {best_ms:.1f}ms; expected <50ms"
