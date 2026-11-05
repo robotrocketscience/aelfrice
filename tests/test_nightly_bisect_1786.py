@@ -54,8 +54,9 @@ _D = "tests/test_x.py::test_d"
 # `--failed-out` empty, FAKE_DIRTY=<phase> dirties a tracked file in that
 # phase, FAKE_HANG=<seconds> sleeps first, with a child that sleeps too, and
 # FAKE_READONLY=<path> leaves in the check phase a read-only folder and a
-# symbolic link to that path. FAKE_RM_GIT=<phase> deletes the clone's `.git`
-# in that phase. FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES,
+# symbolic link to that path. FAKE_TAMPER=<kind>:<phase>:<nth> replaces part of
+# the clone at that call of that phase with what leads to FAKE_CALLER.
+# FAKE_CEILING_LOG names a file for GIT_CEILING_DIRECTORIES,
 # and FAKE_STATUS_LOG one for the output of `git status --porcelain`.
 # FAKE_GIT_STATE changes the config, branches and stash, and pushes to `origin`.
 _FAKE_STEP = '''\
@@ -127,8 +128,32 @@ if os.environ.get("FAKE_GIT_STATE"):
         subprocess.run(["git", *cmd], capture_output=True, timeout=30, check=False)
     Path("stashed.txt").write_text("z", encoding="utf-8")
     subprocess.run(["git", "stash", "push", "-q", "-u"], capture_output=True, timeout=30, check=False)
-if os.environ.get("FAKE_RM_GIT") == phase:
-    shutil.rmtree(".git", ignore_errors=True)
+kind, when, nth = (os.environ.get("FAKE_TAMPER") or "::").split(":")
+if when == phase and sum(c.endswith(" " + phase) for c in calls) == int(nth):
+    here, caller = Path.cwd(), os.environ.get("FAKE_CALLER", "")
+    folder = here.parent
+    if kind == "no-git":
+        shutil.rmtree(".git")
+    elif kind == "git-file":
+        shutil.rmtree(".git")
+        Path(".git").write_text(f"gitdir: {caller}/.git\\n", encoding="utf-8")
+    elif kind == "git-link":
+        shutil.rmtree(".git")
+        Path(".git").symlink_to(f"{caller}/.git")
+    elif kind == "clone-link":
+        here.rename(folder / "moved")
+        here.symlink_to(caller)
+    elif kind == "folder-link":
+        folder.rename(folder.with_name("moved"))
+        folder.symlink_to(caller)
+    elif kind == "no-folder":
+        shutil.rmtree(folder)
+    elif kind == "folder-000":
+        folder.chmod(0)
+    elif kind == "clone-000":
+        here.chmod(0)
+    elif kind == "top-level":
+        subprocess.run(["git", "config", "core.worktree", caller], capture_output=True, timeout=30, check=True)
 if os.environ.get("FAKE_READONLY") and phase == "check" and not Path("link").is_symlink():
     Path("link").symlink_to(os.environ["FAKE_READONLY"])
     Path("locked").mkdir()
@@ -336,8 +361,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytes
     monkeypatch.setenv("FAKE_ENV_LOG", str(e.env_log))
     monkeypatch.setenv("FAKE_CEILING_LOG", str(e.ceiling_log))
     for var in ("FAKE_ABORT_AFTER", "FAKE_ABORT_CHECK", "FAKE_EXITS", "FAKE_FLAKES", "FAKE_NO_FAILED", "FAKE_DIRTY",
-                "FAKE_HANG", "FAKE_READONLY", "FAKE_RM_GIT", "FAKE_STATUS_LOG", "FAKE_GIT_STATE", "FAKE_UV_HANG", "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL",
-                "FAKE_GH_HANG"):
+                "FAKE_HANG", "FAKE_READONLY", "FAKE_TAMPER", "FAKE_CALLER", "FAKE_STATUS_LOG", "FAKE_GIT_STATE", "FAKE_UV_HANG",
+                "FAKE_UV_JUNIT", "FAKE_UV_SYNC_FAIL", "FAKE_GH_FAIL", "FAKE_GH_HANG"):
         monkeypatch.delenv(var, raising=False)
     return e
 
@@ -1347,36 +1372,106 @@ def test_a_run_touches_no_other_folder_and_prunes_nothing(env: Env, tmp_path: Pa
     assert (tmp_path / "moved" / "state.txt").is_file()
 
 
-@pytest.mark.parametrize("via_link", [False, True], ids=["direct", "through-a-link"])
-@pytest.mark.parametrize("phase", ["bisect", "check"])
-def test_a_lost_git_file_cannot_reach_the_repository_above_it(
-    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], phase: str, via_link: bool,
+def _tree_state(repo: Path) -> dict[str, tuple[int, bytes]]:
+    """Every path under `repo` with its mode and, for a file, its bytes."""
+    state: dict[str, tuple[int, bytes]] = {}
+    for path in [repo, *repo.rglob("*")]:
+        info = path.lstat()
+        body = path.read_bytes() if stat.S_ISREG(info.st_mode) else b""
+        state[str(path.relative_to(repo))] = (info.st_mode, body)
+    return state
+
+
+_TAMPERED = [
+    *((kind, "check") for kind in (
+        "no-git", "git-file", "git-link", "clone-link", "folder-link", "no-folder", "folder-000", "clone-000",
+        "top-level",
+    )),
+    *((kind, "bisect") for kind in ("no-git", "git-file", "clone-link", "folder-link", "no-folder")),
+]
+
+
+def _run_with_tampering(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, repo: Path, good: str, bad: str,
+    points: dict[str, int | None], tamper: str,
+) -> tuple[int, dict[str, Any]]:
+    out = tmp_path / "result.json"
+    monkeypatch.setenv("FAKE_TAMPER", tamper)
+    monkeypatch.setenv("FAKE_CALLER", str(repo))
+    rc = nb.main([
+        "run", "--repo-root", str(repo), "--good", good, "--bad", bad,
+        "--tests", str(_tests_file(tmp_path / "ids.txt", _A)), "--out", str(out),
+        "--points", str(_write(tmp_path / "points.json", points)), "--step-cmd", env.step_cmd,
+    ])
+    return rc, json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(("kind", "phase"), _TAMPERED, ids=[f"{kind}-{phase}" for kind, phase in _TAMPERED])
+def test_a_step_that_replaces_the_clone_gets_a_range_and_the_caller_keeps_its_state(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    kind: str, phase: str,
 ) -> None:
-    """`git checkout --force` walked up to the caller's repository and moved its
-    checkout, losing a modified and a staged file. The temporary folder sits
-    inside that repository here, so only the ceiling stops git. Git resolves a
-    link in the ceiling itself, as macOS's `/tmp` and `/var` are."""
+    """`git checkout --force` moved the caller's checkout through each of these,
+    and the run then named a culprit from steps that had tested the caller."""
     shas = env.repo(_LINEAR)
     repo = tmp_path / "repo"
     _a_checkout_with_work(repo)
     before = _repo_state(repo)
-    del before["worktree list --porcelain"]
-    inside = repo / "tmp"
-    inside.mkdir()
-    if via_link:
-        (tmp_path / "link").symlink_to(inside)
-    env.tmp = tmp_path / "link" if via_link else inside
-    monkeypatch.setattr(tempfile, "tempdir", str(env.tmp))
-    monkeypatch.setenv("FAKE_RM_GIT", phase)
-    rc, result = run_bisect(repo, shas[0], shas[7], _A, points=_linear_points(shas))
-    assert rc == 2
-    assert "not a git repository" in capsys.readouterr().err
-    after = _repo_state(repo)
-    del after["worktree list --porcelain"]
-    assert after == before
-    assert (repo / "tests" / "test_x.py").read_text(encoding="utf-8") == "# edited\n"
-    assert [(e["kind"], e["reasons"]) for e in result["events"]] == [("range", {_A: nb.REASON_STOPPED})]
+    tree = _tree_state(repo)
+    rc, result = _run_with_tampering(env, tmp_path, monkeypatch, repo, shas[0], shas[7], _linear_points(shas),
+                                     f"{kind}:{phase}:1")
+    assert rc == 1
+    assert result["complete"] is True
+    assert [(e["kind"], e["reasons"]) for e in result["events"]] == [("range", {_A: nb.REASON_CLONE_CHANGED})]
+    assert _repo_state(repo) == before
+    assert _tree_state(repo) == tree
+    assert "::warning::" in capsys.readouterr().err
+    if kind != "folder-link":
+        assert env.folders() == []
+
+
+def test_a_step_that_replaces_the_clone_at_the_last_check_names_no_culprit(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No check follows the last one to notice, so its own verdict has to go."""
+    shas = env.repo(["", "a"])
+    repo = tmp_path / "repo"
+    tree = _tree_state(repo)
+    rc, result = _run_with_tampering(env, tmp_path, monkeypatch, repo, shas[0], shas[1], {shas[1]: 7},
+                                     "git-file:check:3")
+    assert len([row for row in env.stepped()]) == 3
+    assert rc == 1
+    assert [(e["kind"], e["reasons"]) for e in result["events"]] == [("range", {_A: nb.REASON_CLONE_CHANGED})]
+    assert _tree_state(repo) == tree
+
+
+def test_a_clone_that_lost_its_git_directory_finds_no_repository_above_it(tmp_path: Path) -> None:
+    """The ceiling stops git in the gap before the next confirmation, and in
+    whatever the step starts."""
+    outer = tmp_path / "outer"
+    inner = outer / "folder" / "clone"
+    inner.mkdir(parents=True)
+    assert _git(outer, "init", "-q").returncode == 0
+    assert nb.Git(inner).run("rev-parse", "--git-dir", check=False).returncode == 0
+    assert nb.Git(inner, ceiling=inner.parent).run("rev-parse", "--git-dir", check=False).returncode != 0
+
+
+def test_every_git_call_in_the_clone_stops_at_its_folder(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shas = env.repo(["", "", "a", "a"])
+    real = nb.Git.run
+    seen: list[tuple[Path, Path | None]] = []
+
+    def run(self: nb.Git, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if self.cwd.name == nb._CLONE_NAME and args[0] != "clone":
+            seen.append((self.cwd, self.ceiling))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(nb.Git, "run", run)
+    assert run_bisect(tmp_path / "repo", shas[0], shas[3], _A, points={shas[1]: 21, shas[2]: 22, shas[3]: 23})[0] == 0
+    assert seen
+    assert [(cwd, ceiling) for cwd, ceiling in seen if ceiling != cwd.parent] == []
 
 
 def test_the_step_and_its_children_cannot_find_a_repository_above_the_clone(

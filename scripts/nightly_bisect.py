@@ -121,6 +121,13 @@ What the checks cannot detect:
 
 A step that dirties a tracked file stops the bisect, which ends in a range.
 
+The script confirms the clone before and after each step, from what git reports
+for the folder: the folder and the clone are no symbolic links, the git directory
+is the clone's own `.git` and the top level is the clone. A step can replace any
+of them, and a `checkout --force` would then write where they lead. On a mismatch
+the script touches nothing more, drops that step's verdict, and gives the tests
+left a range with the reason `clone changed`.
+
 Several culprits. The step fails when any of its tests fails, so the
 first round finds the first commit that broke one of them. Tests that
 still pass at the culprit broke later, and get a new round from the culprit
@@ -218,8 +225,8 @@ atomically after every change, with `complete` false until the run ends, so a
 run that dies keeps what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `step aborted`,
 `inconclusive`, `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`,
-`renamed`, `returned`, `nonlinear` or `stopped`, for a run that raised or got a
-signal.
+`renamed`, `returned`, `nonlinear`, `clone changed` or `stopped`, for a run that
+raised or got a signal.
 Every input test ends in exactly one event. Each round keeps its `git bisect
 log`.
 
@@ -300,6 +307,7 @@ REASON_UNMAPPED = "unmapped"
 REASON_RENAMED = "renamed"
 REASON_RETURNED = "returned"
 REASON_NONLINEAR = "nonlinear"
+REASON_CLONE_CHANGED = "clone changed"
 REASON_STOPPED = "stopped"
 
 
@@ -860,6 +868,10 @@ class Check:
         return self.rc == STEP_GOOD or (self.rc == STEP_BAD and bool(self.failed))
 
 
+class CloneChanged(Exception):
+    """A step replaced the clone, its folder or its git directory."""
+
+
 @dataclass
 class Bisector:
     git: Git
@@ -881,7 +893,18 @@ class Bisector:
         return set(self.points) | {self.bad} if self.points else None
 
     def _wt(self) -> Git:
-        return Git(self.clone, ceiling=self.clone.parent)
+        """The clone, confirmed to be the one this run made."""
+        wt = Git(self.clone, ceiling=self.clone.parent)
+        real = self.clone.resolve()
+        found = ""
+        try:
+            if not (self.clone.parent.is_symlink() or self.clone.is_symlink()):
+                found = wt.run("rev-parse", "--absolute-git-dir", "--show-toplevel", check=False).stdout
+        except OSError as exc:
+            raise CloneChanged(f"{self.clone}: {exc}") from exc
+        if found != f"{real}/.git\n{real}\n":
+            raise CloneChanged(f"{self.clone} is no longer the clone this run made")
+        return wt
 
     def _step(self, tests_file: Path, failed_out: Path | None = None, absent_out: Path | None = None) -> list[str]:
         argv = [
@@ -907,16 +930,18 @@ class Bisector:
         left = self.deadline - time.monotonic()
         if left <= 0:
             return Check(STEP_ABORT, [], [])
+        wt = self._wt()
         tests_file = self._write_tests("check.txt", tests)
         failed_out = self.clone.parent / "check-failed.txt"
         absent_out = self.clone.parent / "check-absent.txt"
         for path in (failed_out, absent_out):
             path.write_text("", encoding="utf-8")
-        self._wt().run("checkout", "-q", "--force", "--detach", sha)
+        wt.run("checkout", "-q", "--force", "--detach", sha)
         rc, _ = run_group(
             self._step(tests_file, failed_out, absent_out),
             min(self.step_timeout, left) + _RUN_MARGIN_SECONDS, cwd=self.clone, ceiling=self.clone.parent,
         )
+        self._wt()
         failed = [t for t in parse_tests(failed_out.read_text(encoding="utf-8")) if t in tests]
         absent = [t for t in parse_tests(absent_out.read_text(encoding="utf-8")) if t in tests]
         status = STEP_SKIP if rc is None else rc
@@ -932,13 +957,13 @@ class Bisector:
         """One `git bisect` from `lo` to `bad` over `tests`."""
         order = ancestry(self.git, lo, self.bad)
         points = self.point_set
-        tests_file = self._write_tests(f"round-{n}.txt", tests)
         record: dict[str, Any] = {"good": lo, "bad": self.bad, "tests": tests}
         if not points_between(order, points, self.bad):
             # Nothing between the two to test: `bad` follows `lo` directly.
             record.update(log="", output="")
             return Outcome(culprit=self.bad, good=lo, bad=self.bad), record
         wt = self._wt()
+        tests_file = self._write_tests(f"round-{n}.txt", tests)
         skips = skip_list(order, points)
         record["skipped"] = len(skips)
         wt.run("bisect", "start", self.bad, lo)
@@ -955,6 +980,7 @@ class Bisector:
             )
             if rc is None:
                 output += "\ngit bisect run timed out"
+        self._wt()
         bad_ref = wt.out("rev-parse", "--verify", "refs/bisect/bad")
         goods = [
             sha for sha, ref in (line.split(" ", 1) for line in wt.lines(
@@ -1069,12 +1095,12 @@ class Bisector:
             self._event(event_for_range(lo, self.bad, passed, REASON_UNVERIFIED))
         return [t for t in blamed if t in red]
 
-    def settle(self, good: str, tests: list[str]) -> None:
+    def settle(self, good: str, tests: list[str], reason: str) -> None:
         """Give any of `tests` that no event names a range: the run stopped early."""
         named = {t for event in self.events for t in event["tests"]}
         rest = [t for t in tests if t not in named]
         if rest:
-            add_event(self.events, event_for_range(good, self.bad, rest, REASON_STOPPED))
+            add_event(self.events, event_for_range(good, self.bad, rest, reason))
 
     def bisect(self, good: str, tests: list[str]) -> None:
         lo, remaining = good, list(tests)
@@ -1310,6 +1336,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         on_change=lambda: save(False),
     )
     complete = False
+    stop_reason = REASON_STOPPED
     try:
         for signum in previous:
             signal.signal(signum, _interrupt)
@@ -1320,6 +1347,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             _clone(git, clone, good, bad)
             bisector.bisect(good, bisected)
         complete = True
+    except CloneChanged as exc:
+        print(f"::warning::{exc}", file=sys.stderr)
+        stop_reason = REASON_CLONE_CHANGED
+        complete = True
     except Interrupted as exc:
         print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
         return 128 + exc.signum
@@ -1329,7 +1360,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             signal.signal(signum, signal.SIG_IGN)
         try:
             _remove_folder(folder)
-            bisector.settle(good, bisected)
+            bisector.settle(good, bisected, stop_reason)
             if over_cap:
                 add_event(bisector.events, event_for_range(good, bad, over_cap, REASON_CAP))
             if unmapped:
