@@ -2847,6 +2847,9 @@ def _a_repo_with_residue(env: Env, tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     (repo / "state.db").write_text("ignored\n", encoding="utf-8")
     (repo / "scratch.txt").write_text("untracked\n", encoding="utf-8")
+    (repo / "folder").mkdir()
+    (repo / "folder" / "left.txt").write_text("untracked\n", encoding="utf-8")
+    assert _git(repo, "init", "-q", "nested").returncode == 0
     (repo / ".venv").mkdir()
     (repo / ".venv" / "keep").write_text("venv\n", encoding="utf-8")
     _tests_file(tmp_path / "ids.txt", _A)
@@ -2876,6 +2879,8 @@ def test_the_step_in_the_clone_it_was_named_deletes_all_but_the_venv(
     _step(tmp_path, repo, "--deadline", "9e12")
     assert not (repo / "state.db").exists()
     assert not (repo / "scratch.txt").exists()
+    assert not (repo / "folder").exists()
+    assert not (repo / "nested").exists()
     assert (repo / ".venv" / "keep").is_file()
     assert (repo / "tests" / "test_x.py").is_file()
     assert _git(repo, "status", "--porcelain").stdout == ""
