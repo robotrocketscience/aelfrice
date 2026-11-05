@@ -1815,6 +1815,95 @@ def test_step_dry_run_runs_nothing(env: Env, tmp_path: Path) -> None:
     assert env.uv_calls() == []
 
 
+# --------------------------------------------------------------- signals
+
+def _start_a_run(env: Env, tmp_path: Path, shas: list[str], out: Path) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [sys.executable, str(_REPO / "scripts" / "nightly_bisect.py"), "run", "--repo-root", str(tmp_path / "repo"),
+         "--good", shas[0], "--bad", shas[-1], "--tests", str(_tests_file(tmp_path / "ids.txt", _A, _B)),
+         "--out", str(out), "--step-cmd", env.step_cmd],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_for(condition: Callable[[], Any], what: str) -> None:
+    limit = time.monotonic() + 60
+    while not condition():
+        assert time.monotonic() < limit, f"{what} never happened"
+        time.sleep(0.05)
+
+
+@pytest.mark.parametrize("signum", [15, 2], ids=["SIGTERM", "SIGINT"])
+def test_a_signal_ends_the_children_resets_and_saves(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signum: int,
+) -> None:
+    """SIGTERM left `git bisect run` and the step alive, and ran no reset."""
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_HANG", "30")
+    out = tmp_path / "result.json"
+    proc = _start_a_run(env, tmp_path, shas, out)
+    _wait_for(env.pids, "the fake step's start")
+    proc.send_signal(signum)
+    assert proc.wait(timeout=60) == 128 + signum
+    assert _survivors(env.pids()) == []
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["complete"] is False
+    assert sorted(t for e in result["events"] for t in e["tests"]) == [_A, _B]
+    log = _git(tmp_path / "repo" / ".bisect", "bisect", "log")
+    assert log.returncode != 0, f"a bisect is still in progress:\n{log.stdout}"
+
+
+def test_a_signal_runs_the_step_handler_before_the_kill(
+    env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real step's children have their own group, and only its handler ends them."""
+    shas = env.repo(["", "", "a"])
+    monkeypatch.setenv("FAKE_UV_HANG", "sync")
+    proc = subprocess.Popen(
+        [sys.executable, str(_REPO / "scripts" / "nightly_bisect.py"), "run", "--repo-root", str(tmp_path / "repo"),
+         "--good", shas[0], "--bad", shas[-1], "--tests", str(_tests_file(tmp_path / "ids.txt", _A)),
+         "--out", str(tmp_path / "result.json")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    _wait_for(env.pids, "the fake uv's start")
+    proc.terminate()
+    assert proc.wait(timeout=60) == 128 + 15
+    assert _survivors(env.pids()) == []
+
+
+def test_a_killed_run_keeps_the_next_one_out_until_its_children_end(
+    env: Env, tmp_path: Path, run_bisect: Runner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An orphan wrote into the next run's bisect: `was both good and bad`."""
+    shas = env.repo(_LINEAR)
+    monkeypatch.setenv("FAKE_HANG", "30")
+    proc = _start_a_run(env, tmp_path, shas, tmp_path / "killed.json")
+    _wait_for(env.pids, "the fake step's start")
+    proc.kill()
+    proc.wait(timeout=60)
+    orphan = env.pids()[0]
+    group = os.getpgid(orphan)
+    assert _running(orphan)
+    monkeypatch.delenv("FAKE_HANG")
+    rc, _ = run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))
+    assert rc == 2
+    assert len(env.stepped()) == 1, "the second run tested a commit"
+    os.killpg(group, 9)
+    _wait_for(lambda: not _running(orphan), "the orphan's end")
+
+    def lock_is_free() -> bool:
+        return run_bisect(tmp_path / "repo", shas[0], shas[7], _A, points=_linear_points(shas))[0] == 0
+
+    _wait_for(lock_is_free, "the lock's release")
+
+
+def test_the_lock_is_free_after_a_run(env: Env, tmp_path: Path, run_bisect: Runner) -> None:
+    shas = env.repo(["", "a"])
+    for _ in range(2):
+        assert run_bisect(tmp_path / "repo", shas[0], shas[1], _A, points={shas[1]: 7})[0] == 0
+    assert nb._INHERITED_FDS == ()
+
+
 # ---------------------------------------------------------------- budget
 
 class _FakeClock:

@@ -173,6 +173,15 @@ the group cannot hold a pipe open. A step that receives SIGTERM kills its
 own children first. Process groups make this script POSIX only; the canary
 runs it on Linux and macOS.
 
+SIGTERM or SIGINT to `run` ends the running child's group, resets the bisect,
+saves the partial result with the rest of the tests under the reason `stopped`,
+and exits 128 plus the signal. A `run` killed outright leaves `git bisect run`
+and its step alive, and those would write into the next run's bisect. So each
+`run` holds a lock in the repository's git directory and passes it to its
+children, and while any of them lives the next `run` exits 2. They end at the
+earlier run's deadline, when the step aborts. A child that calls `setsid`
+leaves the group, and neither signal nor timeout reaches it.
+
 Events. The result names one event per culprit or range, with the event
 keys the canary uses: `pr-<N>` for a culprit that merged as PR N,
 `commit-<sha12>` for a culprit with no PR, and `range-<good12>-<bad12>`
@@ -183,8 +192,9 @@ change, with `complete` false until the run ends, so a run that dies keeps
 what it found. Each event lists its tests, and a range event maps
 each test to the reason it has no culprit: `budget`, `inconclusive`,
 `unverified`, `rounds`, `cap`, `passes at bad`, `unmapped`, `renamed`,
-`returned`, `nonlinear` or `stopped`, for a run that raised. Every input test
-ends in exactly one event. Each round keeps its `git bisect log`.
+`returned`, `nonlinear` or `stopped`, for a run that raised or got a signal.
+Every input test ends in exactly one event. Each round keeps its `git bisect
+log`.
 
 Standard library only. The functions above `Git` are pure; the tests in
 `tests/test_nightly_bisect_1786.py` run them on values, and run the
@@ -198,6 +208,8 @@ command that failed.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import shlex
@@ -207,7 +219,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -600,6 +612,23 @@ def resolve_range(git: Git, good: str, bad: str) -> tuple[str, str]:
 
 # The groups this process has running, for the step's SIGTERM handler.
 _LIVE_GROUPS: set[int] = set()
+# What every child inherits: `run`'s lock, so an orphan keeps it held.
+_INHERITED_FDS: tuple[int, ...] = ()
+
+
+class Interrupted(Exception):
+    """`run` got SIGTERM or SIGINT."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"signal {signum}")
+        self.signum = signum
+
+
+def _interrupt(signum: int, _frame: object) -> None:
+    """`run`'s signal handler. A second signal is ignored, so the cleanup finishes."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise Interrupted(signum)
 
 
 def _signal_group(group: int, signum: int) -> None:
@@ -607,6 +636,20 @@ def _signal_group(group: int, signum: int) -> None:
         os.killpg(group, signum)
     except OSError:
         pass  # The group has already ended.
+
+
+def _end_group(proc: subprocess.Popen[bytes]) -> None:
+    """SIGTERM the group and give all of it the grace to end: the step's handler
+    has to run before the SIGKILL that follows, even once `git` has gone."""
+    _signal_group(proc.pid, signal.SIGTERM)
+    limit = time.monotonic() + _TERM_GRACE_SECONDS
+    while time.monotonic() < limit:
+        proc.poll()
+        try:
+            os.killpg(proc.pid, 0)
+        except OSError:
+            return
+        time.sleep(0.05)
 
 
 def run_group(
@@ -624,7 +667,7 @@ def run_group(
             proc = subprocess.Popen(
                 argv, cwd=cwd, env=repo_free_env(), stdin=subprocess.DEVNULL,
                 stdout=out if capture else None, stderr=subprocess.STDOUT if capture else None,
-                start_new_session=True,
+                start_new_session=True, pass_fds=_INHERITED_FDS,
             )
         except FileNotFoundError:
             return 127, ""
@@ -634,11 +677,10 @@ def run_group(
             try:
                 rc = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _signal_group(proc.pid, signal.SIGTERM)
-                try:
-                    proc.wait(timeout=_TERM_GRACE_SECONDS)
-                except subprocess.TimeoutExpired:
-                    pass
+                _end_group(proc)
+            except Interrupted:
+                _end_group(proc)
+                raise
         finally:
             _signal_group(proc.pid, signal.SIGKILL)
             _LIVE_GROUPS.discard(proc.pid)
@@ -1076,6 +1118,25 @@ def _prepare_worktree(git: Git, path: Path, default: Path, good: str) -> None:
         (path / _WORKTREE_MARKER).write_text(f"{git.cwd}\n", encoding="utf-8")
 
 
+@contextlib.contextmanager
+def _run_lock(git: Git) -> Iterator[None]:
+    """Hold the repository's lock for the block, or raise ValueError when a
+    run, or what a killed run left alive, holds it. Children inherit it."""
+    global _INHERITED_FDS
+    path = git.cwd / git.out("rev-parse", "--git-common-dir") / "nightly-bisect.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError(f"{path} is held: an earlier run, or what it left alive, is still running") from exc
+        _INHERITED_FDS = (fd,)
+        yield
+    finally:
+        _INHERITED_FDS = ()
+        os.close(fd)
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1175,21 +1236,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             "rounds": bisector.rounds, "reset_errors": bisector.reset_errors,
         })
 
-    with tempfile.TemporaryDirectory() as scratch:
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+    with _run_lock(git), tempfile.TemporaryDirectory() as scratch:
         bisector = Bisector(
             git=git, worktree=worktree, bad=bad, points=points, step_cmd=step_cmd,
             step_args=step_args, deadline=deadline, step_timeout=args.step_timeout, scratch=Path(scratch),
             on_change=lambda: save(False),
         )
-        save(False)
         complete = False
         try:
+            for signum in previous:
+                signal.signal(signum, _interrupt)
+            save(False)
             if bisected and not linear:
                 add_event(bisector.events, event_for_range(good, bad, bisected, REASON_NONLINEAR))
             elif bisected:
                 _prepare_worktree(git, worktree, default_worktree, good)
                 bisector.bisect(good, bisected)
             complete = True
+        except Interrupted as exc:
+            print(f"nightly_bisect: stopped by {exc}", file=sys.stderr)
+            return 128 + exc.signum
         finally:
             bisector.settle(good, bisected)
             if over_cap:
@@ -1197,6 +1264,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             if unmapped:
                 add_event(bisector.events, event_for_range(good, bad, unmapped, REASON_UNMAPPED))
             save(complete)
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
     for event in bisector.events:
         print(f"{event['key']}: {len(event['tests'])} test(s)")
     return 1 if any(e["kind"] == "range" for e in bisector.events) else 0
