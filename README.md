@@ -155,7 +155,7 @@ Every belief has one type. A rule-based classifier types transcript text; `/aelf
 | `preference` | How you like things done. | Contains "I prefer", "always use", or similar. |
 | `speculative` | A phantom: a guess that isn't trusted yet. | `/aelf:wonder` writes it. |
 
-Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads each commit message in the repository and matches only unambiguous phrasings: "is supported by" counts, and "supports" doesn't. A match stores the noun phrase on each side as a belief, with an edge between them. A message with no match stores nothing.
+Edges link a source belief to a target belief. Today, only `TEMPORAL_NEXT` and `DERIVED_FROM` are written for every conversation. The commit hook reads the message of each new commit and matches a fixed list of phrasings: "is supported by" counts, and "supports" doesn't. On a match, aelfrice stores up to six words from each side as a belief, with an edge between them. Those words might not form a complete phrase. The edge also keeps about 80 characters of the message. From a message with no match, aelfrice stores nothing.
 
 | Edge | Meaning | Written by | Default |
 |---|---|---|---|
