@@ -412,6 +412,7 @@ _RUN_MARKER = re.compile(r"^<!-- nightly-canary-run run_id=(\d+) kind=(\w+) -->[
 _LIST_START = "<!-- nightly-canary-list start -->"
 _LIST_END = "<!-- nightly-canary-list end -->"
 _LIST_BLOCK = re.compile(rf"^{_LIST_START}.*?^{_LIST_END}[ \t]*\r?$", re.M | re.S)
+_REASON_START = " (reason: "
 _COUNT_IN_TITLE = re.compile(r"\b\d+ test\(s\)")
 
 
@@ -1275,16 +1276,32 @@ def _tests_lines(tests: list[str]) -> str:
     return line
 
 
-def _list_block(tests: list[str], reasons: dict[str, Any]) -> str:
-    """The visible test list, with a test's reason when it has one, and how
-    many tests it left out."""
+def _shown_reasons(body: str) -> dict[str, str]:
+    """What the list in `body` shows after each test's code span that has a reason,
+    by the line's start. An edit reads this, since only some events carry reasons."""
+    block = _LIST_BLOCK.search(body)
+    if block is None:
+        return {}
+    shown: dict[str, str] = {}
+    for line in block.group(0).splitlines():
+        start, sep, rest = line.partition(_REASON_START)
+        if line.startswith("- ") and sep:
+            shown[start] = sep + rest
+    return shown
+
+
+def _list_block(tests: list[str], reasons: dict[str, Any], shown: dict[str, str] | None = None) -> str:
+    """The visible test list, with a test's reason when tonight gave one or the
+    old list in `shown` held one, and how many tests it left out."""
     ordered = sorted(tests)
     lines: list[str] = []
     used = 0
     for test in ordered:
         line = f"- {_code(test)}"
         if test in reasons:
-            line += f" (reason: {_code(str(reasons[test])[:_REASON_LIMIT])})"
+            line += f"{_REASON_START}{_code(str(reasons[test])[:_REASON_LIMIT])})"
+        elif shown:
+            line += shown.get(line, "")
         used += len(line.encode("utf-8")) + 1
         if used > _LIST_BUDGET:
             break
@@ -1564,13 +1581,14 @@ def issue_body(
 
 def updated_body(body: str, tests: list[str], reasons: dict[str, Any]) -> str:
     """`body` with its markers and list replaced and everything else kept."""
+    shown = _shown_reasons(body)
     body = _PARTIAL_MARKER.sub("", body)
     lines = _tests_lines(tests)
     if _TESTS_MARKER.search(body):
         body = _TESTS_MARKER.sub(lambda _: lines, body, count=1)
     else:
         body = _KEY_MARKER.sub(lambda m: f"{m.group(0).rstrip()}\n{lines}", body, count=1)
-    listing = _list_block(tests, reasons)
+    listing = _list_block(tests, reasons, shown)
     if _LIST_BLOCK.search(body):
         return _LIST_BLOCK.sub(lambda _: listing, body, count=1)
     return f"{body.rstrip()}\n\n{listing}\n"

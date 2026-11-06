@@ -3074,6 +3074,35 @@ def test_issues_an_edit_replaces_the_list_and_shows_the_reasons_tonight_gave() -
     assert edit["body"].count(nc._LIST_START) == 1
 
 
+def test_issues_an_edit_keeps_the_reasons_the_list_already_shows() -> None:
+    """A test that recovers is an edit with no event tonight, so no reason arrives."""
+    event = _range_event({_A: "over the cap", _B: "not linear"})
+    issues = _opened(event)
+    half = _night(SHA2, _both({_A: tor.PASSED, _B: tor.FAILED}))
+    actions = nc.plan_actions(issues, [], _facts(half))
+    assert _kinds(actions) == ["edit", "comment"]
+    assert f"- `{_B}` (reason: `not linear`)" in actions[0]["body"]
+    assert "over the cap" not in actions[0]["body"]
+
+
+def test_issues_tonights_reason_replaces_the_one_the_list_shows() -> None:
+    issues = _opened(_range_event({_A: "over the cap"}))
+    tonight = _range_event({_A: "still over", _B: "not linear"})
+    body = nc.plan_actions(issues, [tonight], _base(run_id=201))[0]["body"]
+    assert f"- `{_A}` (reason: `still over`)" in body and "over the cap" not in body
+    assert f"- `{_B}` (reason: `not linear`)" in body
+
+
+def test_issues_an_edit_keeps_a_reason_through_crlf_and_odd_ids() -> None:
+    odd = "tests.t::test[a`b]"
+    issues = _opened(_range_event({odd: "why`this", _B: "other"}))
+    crlf = [{**issues[0], "body": issues[0]["body"].replace("\n", "\r\n")}]
+    tonight = _range_event({"tests.t::test_new": "new"})
+    body = nc.plan_actions(crlf, [tonight], _base(run_id=201))[0]["body"]
+    assert f"- {nc._code(odd)} (reason: {nc._code('why`this')})" in body.splitlines()
+    assert f"- `{_B}` (reason: `other`)" in body.splitlines()
+
+
 def test_issues_two_open_issues_with_one_key_grow_the_older() -> None:
     issues = _land(_opened(_pr_event(_A)), [{
         "action": "create", "title": "t", "body": '<!-- nightly-canary-event v1 key=pr-7 -->\n<!-- nightly-canary-tests [] -->\n',
