@@ -220,9 +220,9 @@ failed retries exit 1.
 Each issue body holds one `<!-- nightly-canary-event v1 key=<key> -->` line and
 one `<!-- nightly-canary-tests ["id", ...] -->` line, each at the start of its
 line, and a person can edit anything around them. An issue with no event marker
-is not the canary's. The ids in the marker are JSON with `<`, `>` and `--`
-written as `\\uXXXX`, so no id can end the comment. An edit replaces only the
-marker lines and the list between the `nightly-canary-list` lines.
+is not the canary's. The ids in the marker are JSON with `>` written as
+`\\u003e`, so no id can end the comment. An edit replaces only the marker lines
+and the list between the `nightly-canary-list` lines.
 
 A confirmed test in an open issue gets no new issue, unless that issue is the
 `canary-broken` one, which says the canary failed and not why a test did. Other
@@ -1243,7 +1243,7 @@ def _digest(tests: Iterable[str]) -> str:
 
 def _marker_json(ids: list[str]) -> str:
     """`ids` as JSON that can't end an HTML comment, whatever they hold."""
-    return json.dumps(ids).replace("<", "\\u003c").replace(">", "\\u003e").replace("--", "\\u002d\\u002d")
+    return json.dumps(ids).replace(">", "\\u003e")
 
 
 def marker_ids(tests: Iterable[str]) -> list[str]:
@@ -1407,11 +1407,11 @@ def _recovered(issue: dict[str, Any], night: dict[str, Any], broken_tonight: boo
 def _canary_events(events: Iterable[dict[str, Any]], night: dict[str, Any]) -> list[dict[str, Any]]:
     """The events to act on, in `_KIND_ORDER`. Events with one key merge, an event
     naming only extra legs is gone, and each test stays in the first event naming
-    it. An event left with no test is gone, unless it says the canary broke."""
+    it. An empty `legs` names no leg, so it can't be only extra ones."""
     canary = set(night.get("canary_legs") or DEFAULT_CANARY_LEGS)
     merged: dict[str, dict[str, Any]] = {}
     for event in events:
-        if "legs" in event and not canary & set(event["legs"]):
+        if event.get("legs") and not canary & set(event["legs"]):
             continue
         key = str(event["key"])
         if key in merged:
@@ -1426,8 +1426,7 @@ def _canary_events(events: Iterable[dict[str, Any]], night: dict[str, Any]) -> l
         event = merged[key]
         tests = sorted(set(event["tests"]) - placed)
         placed |= set(tests)
-        if tests or key_kind(key)[0] == KEY_BROKEN:
-            ordered.append({**event, "tests": tests})
+        ordered.append({**event, "tests": tests})
     return ordered
 
 
@@ -1502,6 +1501,19 @@ def _intro(event: dict[str, Any], tests: list[str], night: dict[str, Any]) -> st
     return f"The canary reports the event {_code(str(event['key']))} for {len(tests)} test(s)."
 
 
+def _closing(event: dict[str, Any]) -> str:
+    """When the canary closes the issue, in the terms of its event."""
+    kind = key_kind(str(event["key"]))[0]
+    if kind == KEY_BROKEN:
+        return "The canary closes it on a night that reaches both canary legs, once any tests here pass on both."
+    if kind == KEY_COLLECTION:
+        return "The canary closes it when pytest gets past collecting on both canary legs and reports none of these."
+    return (
+        "The canary closes it when every test here passes in the full run on both canary legs. If you remove, "
+        "rename, or skip a test, close the issue yourself, because that test can't pass."
+    )
+
+
 def issue_body(
     event: dict[str, Any], tests: list[str], night: dict[str, Any], others: list[tuple[str, int]],
 ) -> str:
@@ -1515,11 +1527,7 @@ def issue_body(
         shown = ", ".join(f"{_code(key)} ({count})" for key, count in others[:_COMMENT_LIST])
         paragraphs.append(f"This mass failure holds {len(tests)} tests in one issue, including these events: {shown}.")
     paragraphs.append(_list_block(tests, event.get("reasons", {})))
-    paragraphs.append(
-        f"The [nightly run]({night.get('run_url', '')}) opened this issue. The canary closes it when every test here "
-        "passes in the full run on both canary legs. If you remove, rename, or skip a test, close the issue yourself, "
-        "because that test can't pass."
-    )
+    paragraphs.append(f"The [nightly run]({night.get('run_url', '')}) opened this issue. {_closing(event)}")
     return "\n\n".join(paragraphs) + "\n"
 
 
@@ -1565,9 +1573,8 @@ def _recovered_comment(night: dict[str, Any]) -> str:
 
 
 def _touched(issue: dict[str, Any], night: dict[str, Any]) -> bool:
-    """Whether an earlier attempt of this run already opened or changed the issue."""
-    run_id = night.get("run_id")
-    return run_id is not None and bool(issue["runs"] & {(run_id, "opened"), (run_id, "changed")})
+    """Whether an earlier attempt of this run already wrote to the issue."""
+    return any(run == night.get("run_id") for run, _ in issue["runs"])
 
 
 def _edit_actions(
