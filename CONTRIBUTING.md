@@ -299,6 +299,70 @@ a failed lookup and passes. A dispatched run finds its base from the merge base 
 regresses fails too. The docstring of `scripts/test_outcome_record.py` has the
 full rules.
 
+### The nightly canary
+
+The `nightly-canary` workflow runs the full suite on `main` every night at 02:17
+UTC (#1786). You can also dispatch it from `main`. A dispatch from any other
+branch tests nothing.
+
+The workflow runs these jobs:
+
+- `suite` runs the `pytest` job's command on Python 3.12 and 3.13, then reruns
+  each leg's failures once. A test that passes on the rerun is flaky. A test
+  that fails again is confirmed. Like the `pytest` job, it leaves out the
+  producer check, and this workflow doesn't run the `derived-figures` job.
+- `triage` reruns the confirmed failures on the last green commit, under the
+  Python of the leg that failed them. A test that also fails there is
+  environment drift. For the other tests, `triage` bisects the pull requests
+  merged since that commit.
+- `publish` writes the night to the `test-results` branch. The first run creates
+  the branch.
+
+A red leg fails the run, so the Actions tab shows a red night. The canary doesn't
+open issues yet. A later pull request adds them.
+
+To read the newest night, run these commands:
+
+```bash
+git fetch origin test-results
+git show origin/test-results:index.jsonl | tail -n 1
+```
+
+The `test-results` branch holds these files:
+
+- `index.jsonl` has one line for each night: the run, the commit, the verdict,
+  the flaky tests on each leg, and the event keys.
+- `last-green.json` names the newest green commit. It moves only on a green
+  night.
+- `runs/<date>-<run_id>-a<attempt>/record.json` holds the outcome of every test
+  on each leg.
+- `runs/<date>-<run_id>-a<attempt>/triage.json` holds the events, the tests left
+  to bisect, and each bisect's log.
+
+A night's verdict is `green` when both legs reported and no test is confirmed,
+`incomplete` when a leg left no usable report, and `red` otherwise. A flaky test
+doesn't change the verdict.
+
+Each event key says what the canary found:
+
+- `pr-<N>`: the bisect points at pull request N.
+- `commit-<sha12>`: the bisect points at a commit that no pull request merged.
+- `range-<good12>-<bad12>`: the bisect narrowed the break to this range and named
+  no commit. The event's `reasons` map says why for each test.
+- `drift-<sha12>`: the tests also fail on the last green commit, so the
+  environment may have changed.
+- `collection-error-<sha12>`: pytest could not import a test module or a
+  `conftest.py`.
+- `no-baseline-<sha12>`: tests failed, and there is no green night to compare
+  with.
+- `canary-broken`: a leg is missing or produced no usable result.
+
+A bisect names the commit where a test started to fail, which may not be the
+cause. The docstring of `scripts/nightly_bisect.py` lists what the checks can't
+detect, and the docstring of `scripts/nightly_canary.py` has the full rules. Each
+leg's reports stay for 30 days in the `nightly-<leg>-<sha>-a<attempt>` artifact,
+and the night's working files in the `nightly-triage-<sha>` artifact.
+
 ### Changelog entries — one file per entry
 
 **Add a file under `CHANGELOG/unreleased/`. Do not edit the
